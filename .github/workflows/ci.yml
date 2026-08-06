@@ -63,8 +63,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive  # vendored Eigen (MED transpose)
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -91,6 +104,7 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Run C++ tests
+        if: steps.lfs.outputs.available != 'false'
         run: ctest --test-dir build --output-on-failure
       # The one place the install/export/pkg-config story is actually
       # exercised end-to-end: install the C API + Fortran module, then build
@@ -431,8 +445,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -475,6 +502,7 @@ jobs:
       - name: Build
         run: cmake --build build-kahip
       - name: Run the partition suite (KaHIP cases live)
+        if: steps.lfs.outputs.available != 'false'
         run: ctest --test-dir build-kahip -R "Partition|CApi" --output-on-failure
       - name: Install meshioplusplus with KaHIP
         run: >-
@@ -488,6 +516,7 @@ jobs:
       # extension is imported from site-packages. Point it at the prefix, the
       # same way the C-API consumer smoke tests above do.
       - name: Run the Python partition suite (C++ KaHIP backend)
+        if: steps.lfs.outputs.available != 'false'
         run: |
           export LD_LIBRARY_PATH="$HOME/kahip-install/lib:$HOME/kahip-install/lib64:$LD_LIBRARY_PATH"
           python -c "from meshioplusplus import _core; assert _core.__has_kahip__"
@@ -496,6 +525,7 @@ jobs:
       # `kahip` PyPI wheel -- the shim must serve method="kahip" through the
       # pure-Python dual graph + kahip.kaffpa, never the named error.
       - name: Run it again through the kahip PyPI package (pure-Python path)
+        if: steps.lfs.outputs.available != 'false'
         run: |
           pip uninstall -y meshioplusplus
           pip install .
@@ -516,8 +546,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -564,8 +607,10 @@ jobs:
       - name: Build
         run: cmake --build build-kokkos
       - name: Run the full suite
+        if: steps.lfs.outputs.available != 'false'
         run: ctest --test-dir build-kokkos --output-on-failure
       - name: Run it again with a 2-thread Kokkos host pool
+        if: steps.lfs.outputs.available != 'false'
         run: OMP_NUM_THREADS=2 ctest --test-dir build-kokkos --output-on-failure
 
   # Include hygiene: fail the PR on any UNUSED #include (clang-tidy's
@@ -627,8 +672,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive  # vendored Eigen (MED transpose)
+      # shell: bash explicitly: this job also runs on windows-latest, whose
+      # default shell is pwsh, but Git Bash (bundled with Git for Windows) is
+      # on PATH there and both of these steps are plain POSIX shell.
+      - name: Compute the Git LFS cache key
+        shell: bash
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        shell: bash
+        run: bash tools/fetch-lfs.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -676,6 +739,7 @@ jobs:
       # Coverage is not collected here -- the dedicated `coverage` job below
       # owns it, so this matrix stays focused on cross-platform correctness.
       - name: Run tests
+        if: steps.lfs.outputs.available != 'false'
         run: pytest tests/python/ --codeblocks
 
   # --------------------------------------------------------------------------
@@ -701,8 +765,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive  # vendored Eigen (MED transpose)
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red. Coverage
+      # is meaningless without the real fixtures, so every step below that
+      # needs them (through the two upload steps) is gated on this output.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -746,6 +825,7 @@ jobs:
           max-size: 500M
 
       - name: Build and run the C++ tests (instrumented)
+        if: steps.lfs.outputs.available != 'false'
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
             -DMESHIOPLUSPLUS_COVERAGE=ON \
@@ -765,6 +845,7 @@ jobs:
       # the extension on first import during pytest -- that rebuild would race
       # the instrumented objects lcov is about to capture.
       - name: Build instrumented _core and run the Python tests
+        if: steps.lfs.outputs.available != 'false'
         env:
           CMAKE_ARGS: >-
             -DMESHIOPLUSPLUS_COVERAGE=ON
@@ -799,6 +880,7 @@ jobs:
       # job cannot reach. Drop them from the denominator here (Codecov's ignore
       # list mirrors this so the badge and the log summary agree).
       - name: Capture C++ coverage
+        if: steps.lfs.outputs.available != 'false'
         run: |
           lcov --capture --gcov-tool gcov \
                --directory build-cpp-cov --directory build \
@@ -824,7 +906,7 @@ jobs:
           echo "::warning title=Coverage not uploaded::CODECOV_TOKEN is not set, so coverage was measured but not uploaded and the README badge will stay 'unknown'. Enable the repo on codecov.io and add the CODECOV_TOKEN secret."
 
       - name: Upload Python coverage
-        if: ${{ env.CODECOV_TOKEN != '' }}
+        if: ${{ env.CODECOV_TOKEN != '' && steps.lfs.outputs.available != 'false' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -833,7 +915,7 @@ jobs:
           fail_ci_if_error: true
 
       - name: Upload C++ coverage
-        if: ${{ env.CODECOV_TOKEN != '' }}
+        if: ${{ env.CODECOV_TOKEN != '' && steps.lfs.outputs.available != 'false' }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -1150,8 +1232,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh. The screenshot/CLI-flag steps below use the
+      # LFS-EXEMPT src/viewer/public/samples/block.vtu (.gitattributes), so
+      # only the ctest step, which may reach committed gtest fixtures, needs
+      # to be gated.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1180,6 +1276,7 @@ jobs:
       # The payload invariants need no GL and also run in the default build --
       # running them here too catches a Polyscope-only compilation divergence.
       - name: Payload invariants
+        if: steps.lfs.outputs.available != 'false'
         run: ctest --test-dir build-view -R ViewPayload --output-on-failure
 
       - name: The viewer is really compiled in
@@ -1223,8 +1320,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive  # vendored Eigen (MED transpose)
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1261,6 +1371,7 @@ jobs:
       # path is the fallback. Setting both exercises the documented primary one
       # while keeping any dependent .so resolvable.
       - name: Run the test suite
+        if: steps.lfs.outputs.available != 'false'
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
         run: |
@@ -1268,6 +1379,7 @@ jobs:
           julia --project=bindings/julia/MeshioPlusPlus -e 'using Pkg; Pkg.test()'
 
       - name: Run the doc example
+        if: steps.lfs.outputs.available != 'false'
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
         run: |
@@ -1298,8 +1410,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
+      # not a failure) when the account's Git LFS budget is exhausted, so a
+      # billing condition does not turn an unrelated PR's CI red.
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1333,6 +1458,7 @@ jobs:
       # pkg-config is the package's first discovery route (the relocatable .pc
       # the C API installs); MESHIOPLUSPLUS_HOME is the documented fallback.
       - name: R CMD check --as-cran
+        if: steps.lfs.outputs.available != 'false'
         env:
           PKG_CONFIG_PATH: ${{ github.workspace }}/inst/lib/pkgconfig
           LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
@@ -1349,6 +1475,7 @@ jobs:
         run: cat meshioplusplus.Rcheck/00check.log || true
 
       - name: Install and run the doc example
+        if: steps.lfs.outputs.available != 'false'
         env:
           PKG_CONFIG_PATH: ${{ github.workspace }}/inst/lib/pkgconfig
           LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
