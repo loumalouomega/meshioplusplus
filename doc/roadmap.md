@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v9.27.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers, an MCP server, a settings-driven pipeline engine, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
+Status at time of writing: **v9.30.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 6).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -8,23 +8,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. NVIDIA PhysicsNeMo integration
-
-**The gap.** PhysicsNeMo (github.com/NVIDIA/physicsnemo) is the mainstream open Physics-ML framework, and its data ingestion is where most users write bespoke glue. meshio++ already has 41 readers, GPU/DLPack handoff, and the operations (`interpolate`, `partition`, `gradient`, `decimate`) that a training pipeline needs for preprocessing. A thin, well-documented bridge would let people train on simulation output without integrating their solver at all — which is exactly the friction PhysicsNeMo users hit.
-
-- **Reconnaissance first, and treat it as a real deliverable.** PhysicsNeMo's dataset/datapipe contracts, its mesh and point-cloud conventions, and its dependency weight (CUDA-specific, container-oriented) all need checking against the repo's "optional, gated, never in `[all]`" rule. Write the findings down before writing code — the CuPy packaging finding is the precedent for how this repo handles such constraints. **S**
-- **A `physicsnemo` optional extra + dataset adapter**: a meshio++-backed dataset class yielding the tensors PhysicsNeMo's datapipes expect, built on the shipped `feature_matrix` contract and `to_torch` handoff (v9.27.0, `doc/ml.md`). Pure Python, lazily imported, named install error. **M**
-- **Preprocessing recipes as pipeline documents** — sampling, normalisation, surface extraction, decimation, partitioning into training patches — expressed as v9.11.0 `settings.json` files so they are reproducible and reviewable rather than notebook cells. A strong fit for the pipeline engine, and cheap once the adapter exists. **S–M**
-- **A worked end-to-end example**: simulation output → meshio++ preprocessing → PhysicsNeMo training → inference results read back as a mesh and rendered. The example *is* the feature; without it the adapter will not be adopted. **M**
-- **CI reality check**: PhysicsNeMo needs a GPU, which public runners do not have. Follow the precedent set for the GPU work — test the pure adapter logic without the framework, gate the rest, and state plainly that the integration path is not covered by public CI. **S**
-- **Dataset manager (multi-solution registry)**: a training run is driven off a *directory of solution outputs* (many cases, each possibly a time series), not one mesh — today there is nothing that catalogues, tags, organizes or annotates such a collection. A `DatasetManifest` (JSON, the settings.json family the pipeline/sequence engines already use, and — like those — meant to be **hand-edited**, not a hidden cache) records each entry's source path(s), the `Sequence`/`TimeSeries` it resolves to (`doc/sequences.md`), a split assignment, a free-form list of tags, an optional group/category path for organizing a large collection (e.g. by solver, campaign, or physical regime), and an open `notes`/`metadata` object for whatever contextual information a case needs (provenance, run parameters, known issues) that has no dedicated field. **The manifest is the single source of truth**: the CLI, the UI below, and a plain text editor all read and write the same JSON, so tagging, organizing or annotating a dataset never requires the UI — editing the file by hand is a first-class workflow, not a fallback. It is also the object the dataset adapter above actually iterates, rather than each training script re-discovering files with its own glob. Pure Python over the existing sequence/glob machinery and `_interop`'s table payload for a flat manifest export; no core or C++ change. A CLI/MCP surface (`dataset add/list/split/tag/annotate`, mirroring `regions`' read-only-summary shape) makes every one of those edits scriptable too. **M**
-- **Dataset-manager UI**: a browser page — a fourth `src/viewer/`-family app, or a mode of the existing one, reusing its MEMFS staging and WASM worker rather than a new render stack — to build and curate that manifest visually: point it at a set of local files/directories, preview each solution (and, for a time series, scrub through its steps) through the existing viewer pipeline, assign splits/tags/group, and edit each case's notes — writing straight back to the same `DatasetManifest` JSON rather than separate UI-only state, so a session can freely mix hand edits and UI edits without either clobbering the other. This is what makes the dataset manager usable by someone who is not scripting `_sequence.py`/the manifest by hand, and is the natural place to surface per-entry `data_info`/`quality` summaries so a bad case is visible before it corrupts a training split. Depends on the dataset manager above existing first. **M**
-
-*Recommended entry point: the reconnaissance note, then the dataset adapter, the dataset manager, and one worked example (the UI is the natural follow-up once the manifest format is settled, not a precondition for it). Do not build the adapter before writing down what PhysicsNeMo actually expects.*
-
----
-
-## 2. Remaining refinement and coarsening gaps
+## 1. Remaining refinement and coarsening gaps
 
 `refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
 
@@ -35,7 +19,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 3. Field capability beyond derivatives
+## 2. Field capability beyond derivatives
 
 - **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
 - **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
@@ -43,7 +27,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 4. Scale
+## 3. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -53,7 +37,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 5. Ecosystem reach
+## 4. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -61,7 +45,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 6. Quality of implementation
+## 5. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -69,7 +53,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. NURBS and higher-order geometry (long run)
+## 6. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -82,7 +66,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 8. Mesh generation
+## 7. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -95,7 +79,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Primitive constructors (§8, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
-2. **PhysicsNeMo reconnaissance (§1, first item)** — a written findings note before any code. Its prerequisite — the ML data-handling section (`edge_index`, the `feature_matrix` contract, dataset export, tensor handoff) — shipped complete in v9.27.0 (`doc/ml.md`).
-3. **Fuzzing (§6)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-4. **NURBS spike (§7)** — a documented investigation, scheduled independently of the rest.
+1. **Primitive constructors (§7, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+2. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
+3. **Fuzzing (§5)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+4. **NURBS spike (§6)** — a documented investigation, scheduled independently of the rest.

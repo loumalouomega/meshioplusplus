@@ -11,6 +11,7 @@ from . import (
     _convert_cells,
     _crop,
     _data,
+    _dataset,
     _decimate,
     _decompress,
     _diff,
@@ -258,6 +259,15 @@ def main(argv=None):
     )
     _data.add_args(parser)
     parser.set_defaults(func=_data.data_cmd)
+
+    # Second nested group: `meshioplusplus dataset <verb>` — curate the
+    # hand-editable DatasetManifest JSON (doc/datasets.md). Same wiring.
+    parser = subparsers.add_parser(
+        "dataset",
+        help="Catalogue / split / tag / annotate a dataset manifest",
+    )
+    _dataset.add_args(parser)
+    parser.set_defaults(func=_dataset.dataset_cmd)
 
     args = parent_parser.parse_args(argv)
 

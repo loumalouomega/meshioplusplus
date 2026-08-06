@@ -164,6 +164,57 @@ export interface MeshMeta {
     cellDataNames: string[];
     bboxMin?: number[];
     bboxMax?: number[];
+    /** Per-step time values of a multi-step file — the dataset page's step
+     * scrubber's count; `readMetadata` always returns it. */
+    timeValues?: number[];
+}
+
+// --- dataset-manager requests (dataset.html) ------------------------------ //
+// Strictly additive: the viewer's own requests and its single staged
+// `session` are untouched, so the existing Playwright suite is the
+// regression net for everything below.
+
+/** One resolved step of a staged entry (`sequenceEntries`' shape). */
+export interface PlanEntry {
+    path: string;
+    step: number;
+    time: number;
+    timeSource: 'explicit' | 'file' | 'filename' | 'index';
+}
+
+/** The `Source` plan inputs of a manifest entry, workspace-relative
+ * (doc/datasets.md); the worker prefixes them into its staging directory. */
+export interface StagedSource {
+    Pattern?: string;
+    Path?: string;
+    Paths?: string[];
+    Format?: string;
+    Times?: number[];
+    TimeFrom?: 'auto' | 'file' | 'filename' | 'index';
+    Sort?: boolean;
+}
+
+/** The per-array facts the summary table shows — the "bad case" signals. */
+export interface ArraySummary {
+    location: string;
+    name: string;
+    dtype: string;
+    numValues: number;
+    numComponents: number;
+    min: number;
+    max: number;
+    mean: number;
+    numNan: number;
+    numInf: number;
+}
+
+export interface StageResult {
+    plan: PlanEntry[];
+    meta: MeshMeta;
+}
+
+export interface SummaryResult {
+    arrays: ArraySummary[];
 }
 
 /**
@@ -179,7 +230,16 @@ export type Request =
     | { id: number; type: 'open'; name: string; bytes: ArrayBuffer }
     | { id: number; type: 'apply'; ops: OpSpec[] }
     | { id: number; type: 'convert'; outFormat: string; ops: OpSpec[] }
-    | { id: number; type: 'close' };
+    | { id: number; type: 'close' }
+    | {
+          id: number;
+          type: 'stageEntry';
+          files: { relPath: string; bytes: ArrayBuffer }[];
+          source: StagedSource;
+      }
+    | { id: number; type: 'previewStep'; step: number }
+    | { id: number; type: 'summaryStep'; step: number }
+    | { id: number; type: 'evictEntry' };
 
 export interface InitResult {
     formats: { readers: string[]; writers: string[] };
@@ -207,6 +267,9 @@ export type Response =
           | ({ kind: 'render' } & RenderResult)
           | ({ kind: 'convert' } & ConvertResult)
           | { kind: 'closed' }
+          | ({ kind: 'staged' } & StageResult)
+          | ({ kind: 'summary' } & SummaryResult)
+          | { kind: 'evicted' }
       ))
     | { id: number; type: 'error'; message: string };
 

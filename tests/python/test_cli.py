@@ -578,3 +578,162 @@ def test_convert_color_by_unknown_array(tmp_path):
         meshioplusplus._cli.main(
             ["convert", str(infile), str(outfile), "--color-by", "nope"]
         )
+
+
+# --------------------------------------------------------------------------- #
+# the `dataset` group (dataset manifests, doc/datasets.md)                    #
+# --------------------------------------------------------------------------- #
+def _dataset_cases(tmp_path, n=4):
+    cases = tmp_path / "cases"
+    cases.mkdir(exist_ok=True)
+    for i in range(n):
+        meshioplusplus.write(cases / f"case_{i}.vtu", helpers.tri_mesh)
+    return cases
+
+
+def test_dataset_group_end_to_end(tmp_path, monkeypatch, capsys):
+    _dataset_cases(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    manifest = "m.json"
+    # add: a glob and an explicit two-path case
+    assert (
+        meshioplusplus._cli.main(
+            [
+                "dataset",
+                "add",
+                manifest,
+                "cases/case_*.vtu",
+                "--id",
+                "sweep",
+                "--tag",
+                "raw",
+                "--meta",
+                "Re=100",
+            ]
+        )
+        == 0
+    )
+    assert (
+        meshioplusplus._cli.main(
+            [
+                "dataset",
+                "add",
+                manifest,
+                "cases/case_0.vtu",
+                "cases/case_1.vtu",
+                "--id",
+                "pair",
+                "--group",
+                "g/h",
+            ]
+        )
+        == 0
+    )
+    doc = json.loads((tmp_path / manifest).read_text(encoding="utf-8"))
+    assert [e["Id"] for e in doc["Entries"]] == ["sweep", "pair"]
+    # sources are stored relative to the manifest's directory
+    assert doc["Entries"][0]["Source"]["Pattern"] == "cases/case_*.vtu"
+    assert doc["Entries"][0]["Metadata"] == {"Re": 100}
+    # split --set, then tag / annotate
+    assert (
+        meshioplusplus._cli.main(
+            ["dataset", "split", manifest, "--id", "sweep", "--set", "train"]
+        )
+        == 0
+    )
+    assert (
+        meshioplusplus._cli.main(
+            ["dataset", "tag", manifest, "--all", "--add", "v1", "--remove", "raw"]
+        )
+        == 0
+    )
+    assert (
+        meshioplusplus._cli.main(
+            [
+                "dataset",
+                "annotate",
+                manifest,
+                "--id",
+                "pair",
+                "--notes",
+                "odd",
+                "--meta",
+                "Ma=0.3",
+            ]
+        )
+        == 0
+    )
+    m = meshioplusplus.DatasetManifest.load(str(tmp_path / manifest))
+    assert m["sweep"].split == "train" and m["sweep"].tags == ("v1",)
+    assert m["pair"].notes == "odd" and m["pair"].metadata == {"Ma": 0.3}
+    # list --json round-trips the document's entries, with resolved plans
+    capsys.readouterr()
+    assert (
+        meshioplusplus._cli.main(["dataset", "list", manifest, "--resolve", "--json"])
+        == 0
+    )
+    listing = json.loads(capsys.readouterr().out)
+    assert [e["Id"] for e in listing] == ["sweep", "pair"]
+    assert len(listing[0]["Resolved"]) == 4 and len(listing[1]["Resolved"]) == 2
+    # filters reach the CLI
+    capsys.readouterr()
+    assert (
+        meshioplusplus._cli.main(
+            ["dataset", "list", manifest, "--split", "train", "--json"]
+        )
+        == 0
+    )
+    assert [e["Id"] for e in json.loads(capsys.readouterr().out)] == ["sweep"]
+
+
+def test_dataset_split_assign_is_deterministic(tmp_path, monkeypatch):
+    _dataset_cases(tmp_path, n=10)
+    monkeypatch.chdir(tmp_path)
+    for i in range(10):
+        meshioplusplus._cli.main(
+            ["dataset", "add", "m.json", f"cases/case_{i}.vtu", "--id", f"c{i}"]
+        )
+    assert (
+        meshioplusplus._cli.main(
+            [
+                "dataset",
+                "split",
+                "m.json",
+                "--assign",
+                "train=0.8,test=0.2",
+                "--seed",
+                "3",
+            ]
+        )
+        == 0
+    )
+    m1 = meshioplusplus.DatasetManifest.load("m.json")
+    counts = m1.splits()
+    assert counts == {"train": 8, "test": 2}
+    meshioplusplus._cli.main(
+        ["dataset", "split", "m.json", "--assign", "train=0.8,test=0.2", "--seed", "3"]
+    )
+    m2 = meshioplusplus.DatasetManifest.load("m.json")
+    assert [e.split for e in m1] == [e.split for e in m2]
+
+
+def test_dataset_add_empty_glob_fails_by_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus._cli.main(["dataset", "add", "m.json", "missing_*.vtu"])
+    # nothing half-written
+    assert not (tmp_path / "m.json").exists()
+
+
+def test_dataset_hand_edit_survives_cli_edit(tmp_path, monkeypatch):
+    _dataset_cases(tmp_path, n=1)
+    monkeypatch.chdir(tmp_path)
+    meshioplusplus._cli.main(["dataset", "add", "m.json", "cases/case_0.vtu"])
+    doc = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
+    doc["Entries"][0]["Notes"] = "hand-written"
+    (tmp_path / "m.json").write_text(json.dumps(doc, indent=2) + "\n")
+    meshioplusplus._cli.main(
+        ["dataset", "split", "m.json", "--id", "case_0", "--set", "train"]
+    )
+    m = meshioplusplus.DatasetManifest.load("m.json")
+    assert m["case_0"].notes == "hand-written" and m["case_0"].split == "train"

@@ -30,11 +30,15 @@ import wasmMtUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm_mt.wasm?url
 
 import type { Vector3 } from '../types';
 import type {
+    ArraySummary,
     MeshMeta,
     OpReport,
     OpSpec,
+    PlanEntry,
     Request,
     Response,
+    StagedSource,
+    StageResult,
 } from './protocol';
 
 type Module = Awaited<ReturnType<typeof loadMeshioPlusPlus>>;
@@ -53,6 +57,22 @@ interface Session {
 }
 
 let session: Session | null = null;
+
+/**
+ * The dataset page's staged entry — a second, independent slot beside the
+ * viewer's `session`; the two never interact. Exactly ONE entry is resident
+ * at a time (MEMFS never reclaims, so staging a manifest's every case would
+ * exhaust the 32-bit heap): `stageEntry` evicts the previous one first.
+ */
+interface DatasetStage {
+    dir: string;
+    plan: PlanEntry[];
+    /** Per-plan-step inferred format ('' = let the reader infer). */
+    formats: string[];
+}
+
+let datasetStage: DatasetStage | null = null;
+let stageCounter = 0;
 
 async function ready(): Promise<Module> {
     if (!mio) {
@@ -119,6 +139,130 @@ function renderPipeline(m: Module, ops: OpSpec[]): { vtp: ArrayBuffer; report: O
 
 function post(message: Response, transfer: Transferable[] = []): void {
     (self as unknown as Worker).postMessage(message, transfer);
+}
+
+// --- dataset staging (dataset.html) --------------------------------------- //
+
+/** Create every directory of `path` (a `mkdir -p` over the typed FS API). */
+function mkdirs(m: Module, path: string): void {
+    const parts = path.split('/').filter(Boolean);
+    let current = '';
+    for (const part of parts) {
+        current += `/${part}`;
+        try {
+            m.FS.mkdir(current);
+        } catch {
+            // already there
+        }
+    }
+}
+
+// The wasm package's FS type enumerates only the four calls the viewer uses;
+// everything else sits behind its `[key: string]: unknown` index signature.
+// Narrow, named casts (the vtk-shims convention), never `any`.
+function fsReaddir(m: Module, dir: string): string[] {
+    return (m.FS.readdir as (path: string) => string[])(dir);
+}
+
+function fsRmdir(m: Module, dir: string): void {
+    (m.FS.rmdir as (path: string) => void)(dir);
+}
+
+/** Remove a staging directory recursively (MEMFS never reclaims on its own). */
+function removeTree(m: Module, dir: string): void {
+    let names: string[];
+    try {
+        names = fsReaddir(m, dir).filter((n) => n !== '.' && n !== '..');
+    } catch {
+        return; // not there
+    }
+    for (const name of names) {
+        const path = `${dir}/${name}`;
+        try {
+            m.FS.unlink(path); // a file
+        } catch {
+            removeTree(m, path); // a directory
+        }
+    }
+    try {
+        fsRmdir(m, dir);
+    } catch {
+        // best effort
+    }
+}
+
+function sniffOf(m: Module, path: string): string {
+    try {
+        return m.sniffFormat(path) || '';
+    } catch {
+        return '';
+    }
+}
+
+function stageEntry(
+    m: Module,
+    files: { relPath: string; bytes: ArrayBuffer }[],
+    source: StagedSource,
+): StageResult {
+    if (datasetStage) removeTree(m, datasetStage.dir);
+    datasetStage = null;
+
+    stageCounter += 1;
+    const dir = `/data/e${stageCounter}`;
+    for (const file of files) {
+        const segments = file.relPath.split('/');
+        if (
+            file.relPath.startsWith('/') ||
+            segments.some((s) => s === '..' || s === '')
+        ) {
+            throw new Error(`meshio++: unsafe staged path '${file.relPath}'`);
+        }
+        // Directory structure is PRESERVED here (unlike `open`'s `/`→`_`
+        // flattening): a manifest Pattern's directory part is literal, so the
+        // staged tree must mirror the workspace's.
+        mkdirs(m, `${dir}/${segments.slice(0, -1).join('/')}`);
+        m.FS.writeFile(`${dir}/${file.relPath}`, new Uint8Array(file.bytes));
+    }
+
+    // The wasm side is the single authority on plan ordering and times —
+    // identical to Python's `DatasetEntry.entries()`.
+    const prefix = (p: string) => `${dir}/${p}`;
+    const memfsSource: string | string[] = source.Paths
+        ? source.Paths.map(prefix)
+        : prefix(source.Pattern ?? source.Path ?? '');
+    let plan = m.sequenceEntries(memfsSource, {
+        format: source.Format,
+        times: source.Times,
+        timeFrom: source.TimeFrom,
+        sort: source.Sort,
+    }) as PlanEntry[];
+
+    // A multi-step file's steps cannot be previewed directly — the render
+    // path (`convertSurfaceOps`) has no step selector — so fan it out once
+    // into per-step files; every later scrub tick is then the same cheap
+    // single-file render every other Source kind uses.
+    if (plan.some((entry) => entry.step !== 0)) {
+        mkdirs(m, `${dir}/steps`);
+        const inPath = plan[0].path;
+        const fanned = m.timeseriesToSequence(
+            inPath,
+            `${dir}/steps/s_{step}.vtu`,
+            source.Format,
+        );
+        plan = plan.map((entry, i) => ({ ...entry, path: fanned[i] ?? entry.path, step: 0 }));
+    }
+
+    const formats = plan.map((entry) => source.Format ?? sniffOf(m, entry.path));
+    const meta = m.readMetadata(plan[0].path, formats[0]) as unknown as MeshMeta;
+    datasetStage = { dir, plan, formats };
+    return { plan, meta };
+}
+
+function stagedStep(step: number): { path: string; format: string } {
+    if (!datasetStage) throw new Error('no dataset entry is staged');
+    const entry = datasetStage.plan[step];
+    if (!entry) throw new Error(`step ${step} is out of range`);
+    return { path: entry.path, format: datasetStage.formats[step] ?? '' };
 }
 
 async function handle(request: Request): Promise<void> {
@@ -242,6 +386,80 @@ async function handle(request: Request): Promise<void> {
             if (session) unlink(m, session.path);
             session = null;
             post({ id, type: 'result', kind: 'closed' });
+            return;
+        }
+
+        case 'stageEntry': {
+            post({ id, type: 'progress', stage: 'stage' });
+            const result = stageEntry(m, request.files, request.source);
+            post({ id, type: 'result', kind: 'staged', ...result });
+            return;
+        }
+
+        case 'previewStep': {
+            const { path, format } = stagedStep(request.step);
+            post({ id, type: 'progress', stage: 'surface' });
+            const meta = m.readMetadata(path, format) as unknown as MeshMeta;
+            const report = m.convertSurfaceOps(path, SURFACE_PATH, [], {
+                inFormat: format,
+                keepProvenance: true,
+            }) as OpReport;
+            const vtp = take(m, SURFACE_PATH);
+            unlink(m, SURFACE_PATH);
+            post(
+                {
+                    id,
+                    type: 'result',
+                    kind: 'render',
+                    vtp,
+                    meta,
+                    format: meta.format || format,
+                    report,
+                    bounds: boundsOf(meta),
+                },
+                [vtp],
+            );
+            return;
+        }
+
+        case 'summaryStep': {
+            const { path, format } = stagedStep(request.step);
+            post({ id, type: 'progress', stage: 'summary' });
+            // Mesh-taking is fine for scalar aggregates (never a rendering
+            // path — the flat JS Mesh cannot carry multi-component arrays,
+            // but their component stats survive via the sidecar convention).
+            let mesh = m.readMeshSelective(path, { format });
+            try {
+                // quality:* rows ride the same ArraySummary shape. Their NaN
+                // means "metric N/A for this cell type" BY DESIGN — the UI's
+                // bad-case rules must exclude quality-prefixed names.
+                mesh = m.attachQuality(mesh);
+            } catch {
+                // quality is best-effort; the plain summary still answers
+            }
+            const arrays = m.dataInfo(mesh).map(
+                (info) =>
+                    ({
+                        location: info.location,
+                        name: info.name,
+                        dtype: info.dtype,
+                        numValues: info.numValues,
+                        numComponents: info.numComponents,
+                        min: info.min,
+                        max: info.max,
+                        mean: info.mean,
+                        numNan: info.numNan,
+                        numInf: info.numInf,
+                    }) satisfies ArraySummary,
+            );
+            post({ id, type: 'result', kind: 'summary', arrays });
+            return;
+        }
+
+        case 'evictEntry': {
+            if (datasetStage) removeTree(m, datasetStage.dir);
+            datasetStage = null;
+            post({ id, type: 'result', kind: 'evicted' });
             return;
         }
     }

@@ -1,0 +1,16 @@
+{
+  "Version": 1,
+  "Input": { "Pattern": "cases_raw/case_*.vtu" },
+  "Operations": [
+    { "Op": "DataCalc", "Expr": "q_scaled = q / 25.0", "Location": "point" },
+    {
+      "Op": "DataCondition",
+      "Mode": "clamp",
+      "Location": "point",
+      "Names": ["T"],
+      "Lo": 0.0,
+      "Hi": 1.0
+    }
+  ],
+  "Output": { "Path": "cases/case_{step}.vtu" }
+}

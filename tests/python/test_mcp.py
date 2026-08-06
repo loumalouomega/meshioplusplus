@@ -463,6 +463,7 @@ _NOT_TOOLS = {
     "Region",
     "TimeSeries",  # in-memory random-access class; the `sequence` tool covers
     # the path-in/path-out cases (fan-in/fan-out/per-step chain)
+    "DatasetEntry",  # class; the dataset_* tools cover the path-based cases
     "ReadError",
     "WriteError",
     "topological_dimension",
@@ -663,3 +664,128 @@ def test_has_mcp_and_named_error_without_it():
     if not mmcp.has_mcp():
         with pytest.raises(ImportError, match=r"pip install meshioplusplus\[mcp\]"):
             mmcp.create_server()
+
+
+# --------------------------------------------------------------------------- #
+# Pure half: dataset-manifest tools                                           #
+# --------------------------------------------------------------------------- #
+def _case_files(tmp_path, n=3):
+    cases = tmp_path / "cases"
+    cases.mkdir(exist_ok=True)
+    for i in range(n):
+        meshioplusplus.write(str(cases / f"case_{i}.vtu"), _mixed_mesh())
+    return cases
+
+
+def test_dataset_add_list_update_round_trip(tmp_path, monkeypatch):
+    _case_files(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    manifest = str(tmp_path / "m.json")
+
+    out = _dump(
+        _tools.tool_dataset_add(
+            manifest,
+            input_pattern="cases/case_*.vtu",
+            entry_id="sweep",
+            tags=["raw"],
+            metadata={"Re": 100},
+        )
+    )
+    assert out["entry_id"] == "sweep" and out["num_steps"] == 3
+    # the stored source is manifest-relative, so the manifest is portable
+    doc = json.loads(open(manifest, encoding="utf-8").read())
+    assert doc["Entries"][0]["Source"]["Pattern"] == os.path.join("cases", "case_*.vtu")
+
+    _dump(
+        _tools.tool_dataset_add(
+            manifest,
+            input_paths=["cases/case_0.vtu", "cases/case_1.vtu"],
+            entry_id="pair",
+            group="g/h",
+        )
+    )
+    out = _dump(
+        _tools.tool_dataset_update(
+            manifest, entry_ids=["sweep"], split="train", add_tags=["v1"]
+        )
+    )
+    assert out["splits"] == {"train": 1, "None": 1}
+    out = _dump(_tools.tool_dataset_list(manifest, split="train", resolve=True))
+    assert out["num_matching"] == 1
+    entry = out["entries"][0]
+    assert entry["Id"] == "sweep" and entry["Tags"] == ["raw", "v1"]
+    assert len(entry["resolved"]) == 3
+    assert all(item["time_source"] for item in entry["resolved"])
+
+
+def test_dataset_update_assign_and_annotate(tmp_path, monkeypatch):
+    _case_files(tmp_path, n=6)
+    monkeypatch.chdir(tmp_path)
+    manifest = str(tmp_path / "m.json")
+    for i in range(6):
+        _tools.tool_dataset_add(
+            manifest, input_paths=[f"cases/case_{i}.vtu"], entry_id=f"c{i}"
+        )
+    out = _dump(
+        _tools.tool_dataset_update(
+            manifest, assign_splits={"train": 0.5, "test": 0.5}, seed=1
+        )
+    )
+    assert out["splits"] == {"train": 3, "test": 3}
+    _dump(
+        _tools.tool_dataset_update(
+            manifest, entry_ids=["c0"], notes="odd", metadata={"Ma": 0.3}
+        )
+    )
+    m = meshioplusplus.DatasetManifest.load(manifest)
+    assert m["c0"].notes == "odd" and m["c0"].metadata == {"Ma": 0.3}
+    with pytest.raises(ValueError, match="exactly one entry_id"):
+        _tools.tool_dataset_update(manifest, all_entries=True, notes="x")
+    with pytest.raises(ValueError, match="entry_ids or all_entries"):
+        _tools.tool_dataset_update(manifest, split="train")
+
+
+def test_dataset_tools_validate_input_shape(tmp_path):
+    manifest = str(tmp_path / "m.json")
+    with pytest.raises(ValueError, match="exactly one of input_pattern"):
+        _tools.tool_dataset_add(manifest)
+    with pytest.raises(ValueError, match="exactly one of input_pattern"):
+        _tools.tool_dataset_add(manifest, input_pattern="a*.vtu", input_paths=["a.vtu"])
+
+
+def test_dataset_add_sandboxes_the_sources(tmp_path, monkeypatch):
+    # A source outside the root must fail exactly the way a path argument
+    # would — before anything is written to the manifest.
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.vtu"
+    meshioplusplus.write(str(outside), _mixed_mesh())
+    monkeypatch.setattr(_tools, "_ROOT", str(root))
+    manifest = str(root / "m.json")
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_add(manifest, input_paths=[str(outside)])
+    assert not os.path.exists(manifest)
+
+
+def test_dataset_list_sandboxes_hand_edited_sources(tmp_path, monkeypatch):
+    # A hand-edited manifest naming files outside the root: listing is fine
+    # (the document is data), but resolving its plan must refuse — the
+    # pipeline-tool rule applied to manifests.
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.vtu"
+    meshioplusplus.write(str(outside), _mixed_mesh())
+    manifest = root / "m.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "Version": 1,
+                "Entries": [{"Id": "x", "Source": {"Path": str(outside)}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_tools, "_ROOT", str(root))
+    _dump(_tools.tool_dataset_list(str(manifest)))  # data-only: allowed
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_list(str(manifest), resolve=True)

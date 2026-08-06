@@ -14,6 +14,13 @@ const REQUIRED_WASM_API = [
     'sniffFormat',
     'availableFormats',
     'meshBackend',
+    // The dataset-manager page (dataset.html): plan resolution, multi-step
+    // fan-out for the scrubber, and per-array summaries (quality included).
+    'sequenceEntries',
+    'timeseriesToSequence',
+    'readMeshSelective',
+    'dataInfo',
+    'attachQuality',
 ];
 
 const REFRESH_INSTRUCTIONS =
@@ -172,5 +179,16 @@ export default defineConfig({
         // The embed build must inline every asset; nothing may be fetched.
         assetsInlineLimit: embedded ? 100_000_000 : 4096,
         chunkSizeWarningLimit: 4096,
+        // The web build ships two pages: the viewer and the dataset manager.
+        // The embed build keeps its single implicit entry — viteSingleFile
+        // guarantees exactly one output file, and CI asserts it stays one.
+        rollupOptions: embedded
+            ? {}
+            : {
+                  input: {
+                      index: fileURLToPath(new URL('./index.html', import.meta.url)),
+                      dataset: fileURLToPath(new URL('./dataset.html', import.meta.url)),
+                  },
+              },
     },
 });

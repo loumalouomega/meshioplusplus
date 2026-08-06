@@ -1,0 +1,170 @@
+/* Dataset-manager-only styling, layered over the shared src/style.css.
+ * Deliberately a separate file: the embed (wheel) bundle never includes it,
+ * so its bytes cannot drift the embed-freshness size check. */
+
+#entry-list {
+    list-style: none;
+    margin: 0.5rem 0;
+    padding: 0;
+    max-height: 16rem;
+    overflow-y: auto;
+    border: 1px solid var(--border, #2a3648);
+    border-radius: 6px;
+}
+
+#entry-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.5rem;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border, #2a3648);
+    font-size: 0.85rem;
+}
+
+#entry-list li:last-child {
+    border-bottom: none;
+}
+
+#entry-list li.selected {
+    background: rgba(46, 196, 182, 0.15);
+}
+
+#entry-list li .eid {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chip {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    background: rgba(120, 144, 180, 0.25);
+    white-space: nowrap;
+}
+
+.chip.split {
+    background: rgba(46, 196, 182, 0.3);
+}
+
+.chip.warn {
+    background: rgba(230, 120, 60, 0.4);
+}
+
+#add-files {
+    list-style: none;
+    margin: 0.4rem 0;
+    padding: 0;
+    max-height: 12rem;
+    overflow-y: auto;
+    border: 1px solid var(--border, #2a3648);
+    border-radius: 6px;
+    font-size: 0.8rem;
+}
+
+#add-files li {
+    padding: 0.15rem 0.5rem;
+}
+
+#add-files label {
+    display: flex;
+    gap: 0.4rem;
+    align-items: center;
+    cursor: pointer;
+}
+
+.error {
+    color: #ff8a7a;
+    font-size: 0.8rem;
+}
+
+.counts {
+    font-weight: normal;
+    font-size: 0.8rem;
+    opacity: 0.75;
+}
+
+#m-dirty {
+    color: #ffc857;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+
+label.col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    margin: 0.4rem 0;
+    font-size: 0.85rem;
+}
+
+label.col textarea {
+    resize: vertical;
+    font: inherit;
+    font-size: 0.8rem;
+}
+
+#scrub-row {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 3.2rem;
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    background: rgba(10, 16, 26, 0.8);
+    padding: 0.4rem 0.8rem;
+    border-radius: 8px;
+}
+
+#scrub-row input[type='range'] {
+    width: 16rem;
+}
+
+#scrub-label {
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+#summary-wrap {
+    position: absolute;
+    right: 0.8rem;
+    top: 0.8rem;
+    max-height: 45%;
+    overflow-y: auto;
+    background: rgba(10, 16, 26, 0.85);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+}
+
+#summary {
+    border-collapse: collapse;
+    font-size: 0.75rem;
+}
+
+#summary th,
+#summary td {
+    padding: 0.15rem 0.5rem;
+    text-align: right;
+    border-bottom: 1px solid var(--border, #2a3648);
+}
+
+#summary th:first-child,
+#summary td:first-child {
+    text-align: left;
+}
+
+#summary tr.bad td {
+    color: #ff8a7a;
+}
+
+#summary tr.quality td {
+    opacity: 0.75;
+}
+
+#summary tr.quality.bad td {
+    opacity: 1;
+    color: #ff8a7a;
+}

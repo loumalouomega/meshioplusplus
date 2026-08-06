@@ -224,6 +224,20 @@ See [`src/viewer/README.md`](https://github.com/loumalouomega/meshioplusplus/blo
 for the build layout, and note that after changing `bindings/wasm/` or `src/cpp/` you
 must rebuild the WASM package *and* force npm to refresh its copy.
 
+### The dataset-manager page
+
+![The dataset-manager page: a curated manifest with three entries, previewing a transient case coloured by point data, with its step scrubber and per-array summary table](/viewer/dataset-manager.png)
+
+The web build ships a second page,
+[`dataset.html`](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)
+(v9.29.0): a curation UI for the [dataset manifests](./datasets) used to
+organize ML training collections. It reuses this viewer's worker, MEMFS
+staging and render pipeline — previewing any manifest entry (with a step
+scrubber for time series) and summarizing its data arrays (NaN/Inf
+badging) — and reads/writes the same hand-editable manifest JSON the CLI
+and Python API do. See [the datasets page](./datasets#curating-in-the-browser)
+for capabilities per browser (in-place save is a Chromium-family feature).
+
 ### The offline page
 
 `view(backend="browser")` writes a page with no WebAssembly in it — Python

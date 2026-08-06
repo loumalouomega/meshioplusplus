@@ -13,6 +13,9 @@ import type {
     RenderResult,
     Request,
     Response,
+    StagedSource,
+    StageResult,
+    SummaryResult,
 } from './protocol';
 
 type Pending = {
@@ -90,3 +93,32 @@ export const applyOps = (
 /** Convert the staged file (with `ops` applied) to another format. */
 export const convertTo = (outFormat: string, ops: OpSpec[]): Promise<ConvertResult> =>
     request<ConvertResult>({ type: 'convert', outFormat, ops });
+
+// --- dataset-manager requests (dataset.html) ------------------------------ //
+
+/** Stage one manifest entry's files (directory structure preserved) and
+ * resolve its plan; evicts the previously staged entry first. */
+export const stageEntry = (
+    files: { relPath: string; bytes: ArrayBuffer }[],
+    source: StagedSource,
+    onProgress?: (stage: string) => void,
+): Promise<StageResult> =>
+    request<StageResult>(
+        { type: 'stageEntry', files, source },
+        { transfer: files.map((f) => f.bytes), onProgress },
+    );
+
+/** Render step `step` of the staged entry (empty pipeline, provenance kept). */
+export const previewStep = (
+    step: number,
+    onProgress?: (stage: string) => void,
+): Promise<RenderResult> =>
+    request<RenderResult>({ type: 'previewStep', step }, { onProgress });
+
+/** Per-array summary (min/max/mean, NaN/Inf counts) of one staged step. */
+export const summarizeStep = (step: number): Promise<SummaryResult> =>
+    request<SummaryResult>({ type: 'summaryStep', step });
+
+/** Drop the staged entry's MEMFS tree. */
+export const evictEntry = (): Promise<void> =>
+    request<void>({ type: 'evictEntry' });

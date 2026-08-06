@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-42 tools; the two marked *gated* need a further extra and return a named
+45 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -132,6 +132,14 @@ response.
 | `data_convert` | average between locations (`direction: point_to_cell \| cell_to_point`) |
 | `data_calc` | expression evaluator; accepts the CLI's `"NAME = EXPR"` spelling |
 | `data_condition` | clamp / normalize / standardize |
+
+### Dataset manifests
+
+| Tool | Notes |
+|---|---|
+| `dataset_add` | add a case to a [dataset manifest](datasets.md) (created if absent): `input_pattern` **or** `input_paths` (the `sequence` tool's shape, same sandboxed glob handling), optional `entry_id`/`split`/`tags`/`group`/`notes`/`metadata`; the source is validated now and stored relative to the manifest's directory |
+| `dataset_list` | a manifest's entries, filtered by `split`/`tags` (must carry all)/`group` (path or descendant); `resolve: true` also expands each entry's file/step/time plan — every resolved path is containment-checked, since a hand-edited manifest is client input too |
+| `dataset_update` | curate: `split` on `entry_ids`/`all_entries`, `assign_splits` by fractions (deterministic via `seed`; `by_group` keeps groups together), `add_tags`/`remove_tags`, or one entry's `group`/`notes`/`metadata` |
 
 ### Gated
 

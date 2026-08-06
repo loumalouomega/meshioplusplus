@@ -8,6 +8,116 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.30.0 (2026-08-06)
+
+**Roadmap §1 closed** — the PhysicsNeMo section's last four follow-ups ship
+and the section is removed from the roadmap. Pure Python + viewer work; no
+C++/binding change, no wasm rebuild, no ABI move.
+
+- **Autoregressive t→t+1 target pairing** (`meshioplusplus.physicsnemo`) —
+  `target_offset=n` on `iter_samples`/`make_dataset`/`make_reader` pairs
+  step k's inputs with step k+n's targets (each entry contributes
+  `len(series) − n` samples; a too-short entry contributes none, with one
+  warning naming it); `target_delta=True` makes `y` the increment
+  `f_{k+n} − f_k` (the MeshGraphNet convention), normalized by the new
+  `field_stats(delta=…)` emitting `{field}_diff_mean`/`{field}_diff_std`.
+  A paired sample honestly costs two reads ("at most two meshes alive" —
+  `TimeSeries` caches nothing), and a remeshed series fails the row-count
+  check by name rather than mis-pairing. The `GraphSample` schema records
+  `target_offset`/`target_delta`, so `GRAPH_SAMPLE_VERSION` bumps 1→2 —
+  additive, but a stored v1 schema now compares unequal, which is the
+  feature-drift guard doing its job.
+- **The `physicsnemo.mesh.Mesh` bridge** — `to_physicsnemo(mesh,
+  manifold_dim="auto", float32=True)` / `from_physicsnemo(pm)`, built
+  despite v9.28.0's recorded deferral, with the risk stated rather than
+  avoided: the target is PhysicsNeMo's newest surface, so the bridge is
+  gated (named `pip install nvidia-physicsnemo` error), touches only the
+  tensorclass constructor and public attributes (never the
+  self-declared-unstable `.pmsh` format), and the docs pin
+  `nvidia-physicsnemo>=2.1,<2.2`. The target holds exactly one simplex
+  kind, so non-simplex cells tessellate through the existing
+  `convert_cells` operations and everything it cannot hold (other-dim
+  blocks, regions, non-numeric data) is dropped with a warning.
+- **Dataset-manager UI: persisted directory handles** — the picked
+  directory survives a reload (best-effort IndexedDB) and a **Reopen**
+  button re-grants access with one click (the browser requires that user
+  gesture); denial or a stale handle falls back to a fresh pick.
+- **Dataset-manager UI: per-entry quality summaries** — preview summaries
+  and the whole-manifest Scan now include the `quality:*` metrics (worst
+  scaled Jacobian, inverted-cell badge), with quality rows excluded from
+  the NaN/Inf bad-case counts — a quality metric's NaN means "not
+  applicable to this cell type" by design, not a bad value.
+
+## v9.29.0 (2026-08-06)
+
+**The dataset-manager UI** — the last item of the roadmap's PhysicsNeMo
+section: a second page of the browser viewer (`dataset.html`, deployed
+beside it on Pages) that builds and curates the v9.28.0
+[dataset manifests](doc/datasets.md) visually. Pure viewer-stack work — no
+C++/binding change, no wasm rebuild (everything it needed was already
+bound), and the wheel's embedded viewer bytes are untouched.
+
+- **Workspace**: point it at a local case directory — File System Access
+  picker in Chromium-family browsers (the manifest then saves **back in
+  place**, so hand edits, CLI edits and UI edits interleave on the same
+  file), `webkitdirectory` + download fallback elsewhere, stated in the UI.
+- **Curation**: add cases (one file, an explicit list, or a suggested
+  `Pattern` verified to match the selection exactly and nothing else),
+  assign splits/tags/groups, edit notes/metadata; the page's TypeScript
+  manifest model is a strict twin of `_dataset.py` — unknown keys refuse to
+  load, and serialization is byte-parity with `DatasetManifest.save`
+  (pinned against a Python-written fixture). Fraction-based `assign_splits`
+  deliberately stays in Python/the CLI (a JS RNG could not reproduce the
+  seeded shuffle — a "same seed, different assignment" trap).
+- **Previews**: any entry renders through the viewer's own worker/MEMFS
+  pipeline; a multi-step case is fanned out once and gets a step scrubber;
+  a per-array summary table (min/max/mean, **NaN/Inf counts**) and a
+  whole-manifest **Scan** badge bad cases before they corrupt a training
+  split.
+
+## v9.28.0 (2026-08-06)
+
+**The PhysicsNeMo integration** — roadmap §1 shipped through the worked
+example; only the browser dataset-manager UI remains. All pure Python; the
+C++/WASM/C/Fortran core is untouched and the ABI version does not move.
+
+- **Dataset manifests** (`DatasetManifest`/`DatasetEntry`, `doc/datasets.md`)
+  — a hand-editable settings-family JSON cataloguing many solution outputs
+  (each possibly a time series) for ML training: per-entry source plan
+  (pattern / path / path list, times, ordering), train/valid/test splits
+  (deterministic seeded `assign_splits`, `by_group` leakage guard), tags,
+  group paths, notes and open metadata. Relative sources resolve against the
+  manifest's own directory, so a campaign moves as one portable unit; the
+  manifest is the single source of truth — hand edits and tool edits
+  interleave against the same file. New nested CLI group
+  `meshioplusplus dataset add/list/split/tag/annotate` (Python CLI only) and
+  three ungated MCP tools `dataset_add`/`dataset_list`/`dataset_update`
+  (42 → 45 tools; the sandbox covers every path a manifest names or
+  resolves).
+- **PhysicsNeMo adapter** (`meshioplusplus.physicsnemo`,
+  `doc/physicsnemo.md`) — meshes to the tensors NVIDIA PhysicsNeMo's
+  datapipes expect: `graph_sample` (the MeshGraphNet
+  `pos`/`x`/`y`/`edge_index`/`edge_attr` set, edge features in the
+  displacement+norm convention, columns carried from the `feature_matrix`
+  contract), streaming `field_stats`/`edge_stats` in the
+  `node_stats.json`/`edge_stats.json` convention, `make_dataset` (PyTorch
+  Geometric `Dataset` — the training path) and `make_reader` (the Gen-2
+  `Reader` extension point). The subpackage is deliberately not imported by
+  `import meshioplusplus` (PhysicsNeMo's Python floor is 3.11), and there is
+  deliberately **no `[physicsnemo]` extra** — the framework hard-depends on
+  torch, the exact wheel the no-`[torch]`-extra precedent refuses to pin; a
+  missing install raises naming `pip install nvidia-physicsnemo`. The doc
+  page opens with the dated reconnaissance note (DGL removed / PyG only, the
+  `Reader` ABC, the simplicial `physicsnemo.mesh.Mesh` and why the mesh
+  bridge is deferred, the torch_scatter wheel-lag pin).
+- **Worked end-to-end example** (`example/physicsnemo/`) — 200 manufactured
+  Poisson cases, preprocessing as a settings-pipeline document, manifest
+  curation through the real CLI, MeshGraphNet training and inference
+  executed on a real GPU (100 epochs / 73.8 s, mean test RMSE 0.0040), with
+  predictions written back as ordinary `point_data` and the renders
+  committed. Public CI still installs neither torch nor PhysicsNeMo — the
+  GPU-work precedent, stated in the docs.
+
 ## v9.27.0 (2026-08-05)
 
 **The ML gap, closed.** The roadmap's machine-learning section ships in full —

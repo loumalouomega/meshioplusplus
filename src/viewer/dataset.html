@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>meshio++ dataset manager</title>
+    <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/dataset/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="panel">
+        <header>
+          <h1>meshio++ <span>datasets</span></h1>
+          <p class="sub">
+            Curate a <code>DatasetManifest</code> — everything runs in your
+            browser; no file is uploaded anywhere.
+          </p>
+        </header>
+
+        <section id="ws-section">
+          <button id="ws-pick" class="button" type="button">
+            Choose a case directory…
+          </button>
+          <button id="ws-reopen" class="button" type="button" hidden></button>
+          <input id="ws-input" type="file" webkitdirectory hidden />
+          <p class="hint" id="ws-hint">
+            The directory holding your solver output (and the manifest). In
+            Chromium-family browsers the manifest saves back in place;
+            elsewhere it downloads.
+          </p>
+          <p id="ws-info" class="hint" hidden></p>
+        </section>
+
+        <section id="manifest-section" hidden>
+          <h2>Manifest</h2>
+          <div class="row">
+            <select id="manifest-file"></select>
+            <button id="manifest-open" type="button">Open</button>
+          </div>
+          <div id="manifest-editor" hidden>
+            <label class="row"><span>Name</span><input id="m-name" type="text" /></label>
+            <label class="row">
+              <span>Description</span><input id="m-desc" type="text" />
+            </label>
+            <div class="row">
+              <button id="m-save" class="button" type="button">
+                Save manifest
+              </button>
+              <span id="m-dirty" title="Unsaved changes" hidden>●</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="entries-section" hidden>
+          <h2>Entries <span id="e-counts" class="counts"></span></h2>
+          <div class="row">
+            <input id="e-filter" type="text" placeholder="Filter by id / split / tag" />
+          </div>
+          <ul id="entry-list"></ul>
+          <div class="row">
+            <button id="e-add" class="button" type="button">Add case…</button>
+            <button
+              id="e-scan"
+              type="button"
+              title="Stage each entry once and summarize its data arrays (NaN/Inf counts)"
+            >
+              Scan
+            </button>
+          </div>
+          <div id="add-flow" hidden>
+            <p class="hint">Pick the file(s) forming one case:</p>
+            <ul id="add-files"></ul>
+            <p id="add-suggest" class="hint"></p>
+            <label class="row"><span>Id</span><input id="add-id" type="text" /></label>
+            <div class="row">
+              <button id="add-commit" class="button" type="button">Add entry</button>
+              <button id="add-cancel" type="button">Cancel</button>
+            </div>
+            <p id="add-error" class="error" hidden></p>
+          </div>
+        </section>
+
+        <section id="detail-section" hidden>
+          <h2 id="d-id"></h2>
+          <p id="d-source" class="hint"></p>
+          <label class="row">
+            <span>Split</span>
+            <input id="d-split" type="text" list="split-options" />
+          </label>
+          <datalist id="split-options"></datalist>
+          <label class="row">
+            <span>Tags</span>
+            <input id="d-tags" type="text" placeholder="comma, separated" />
+          </label>
+          <label class="row"><span>Group</span><input id="d-group" type="text" /></label>
+          <label class="col"><span>Notes</span><textarea id="d-notes" rows="3"></textarea></label>
+          <label class="col">
+            <span>Metadata (JSON object)</span>
+            <textarea id="d-meta" rows="3"></textarea>
+          </label>
+          <p id="d-meta-error" class="error" hidden></p>
+          <div class="row">
+            <button id="d-preview" class="button" type="button">Preview</button>
+            <button id="d-remove" type="button">Remove entry</button>
+          </div>
+        </section>
+
+        <footer>
+          <a href="./index.html">viewer</a> ·
+          <a href="https://github.com/loumalouomega/meshioplusplus">meshio++</a>
+        </footer>
+      </aside>
+
+      <main id="stage">
+        <div id="render"></div>
+        <div id="legend"></div>
+        <div id="viewport-tools">
+          <label class="row">
+            <select id="color-by" title="Colour the preview by a data array"></select>
+          </label>
+          <button type="button" id="tool-reset" title="Reset the camera">Fit</button>
+        </div>
+        <div id="scrub-row" hidden>
+          <input id="scrub" type="range" min="0" max="0" value="0" step="1" />
+          <span id="scrub-label"></span>
+        </div>
+        <div id="summary-wrap" hidden>
+          <table id="summary"></table>
+        </div>
+        <div id="status" role="status"></div>
+      </main>
+    </div>
+
+    <script type="module" src="./src/dataset/main.ts"></script>
+  </body>
+</html>

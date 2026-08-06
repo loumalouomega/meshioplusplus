@@ -26,6 +26,7 @@ export default defineConfig({
       { text: "Benchmarks", link: "/benchmarks" },
       { text: "CLI", link: "/cli" },
       { text: "Viewer", link: "/viewer/", target: "_self" },
+      { text: "Dataset manager", link: "/viewer/dataset.html", target: "_self" },
       { text: "API (Doxygen)", link: "/api/", target: "_self" },
     ],
 
@@ -71,6 +72,8 @@ export default defineConfig({
           { text: "Interoperability", link: "/interop" },
           { text: "GPU handoff (DLPack / CuPy)", link: "/gpu" },
           { text: "ML data handling", link: "/ml" },
+          { text: "Dataset manifests", link: "/datasets" },
+          { text: "PhysicsNeMo integration", link: "/physicsnemo" },
           { text: "MCP server", link: "/mcp" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Uniform refinement", link: "/refine" },
