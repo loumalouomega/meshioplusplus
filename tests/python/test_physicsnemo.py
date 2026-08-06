@@ -234,3 +234,286 @@ def test_reader_load_sample_returns_tensor_dict(tmp_path):
     assert set(sample) == {"pos", "x", "edge_index", "edge_attr"}
     assert all(isinstance(t, torch.Tensor) for t in sample.values())
     assert sample["pos"].device.type == "cpu"
+
+
+# --------------------------------------------------------------------------- #
+# t->t+1 pairing (v9.30.0)                                                    #
+# --------------------------------------------------------------------------- #
+def _series_manifest(tmp_path, steps=3, entries=1):
+    """Entries whose cases are k-step series with k-dependent field values."""
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    for e in range(entries):
+        cases = tmp_path / f"runs{e}"
+        cases.mkdir(exist_ok=True)
+        for k in range(steps):
+            meshioplusplus.write(str(cases / f"out_{k}.vtu"), _mesh(float(k)))
+        manifest.add(f"runs{e}/out_*.vtu", id=f"run{e}")
+    return manifest
+
+
+def test_graph_sample_target_mesh_gives_next_step_targets():
+    mesh_k, mesh_k1 = _mesh(0.0), _mesh(1.0)
+    s = mpn.graph_sample(
+        mesh_k,
+        fields=["T"],
+        target_fields=["T"],
+        target_mesh=mesh_k1,
+        target_offset=1,
+        float32=False,
+    )
+    # x/pos from the input step, y from the target step
+    np.testing.assert_array_equal(s.arrays["x"][:, 0], np.arange(4.0))
+    np.testing.assert_array_equal(s.arrays["y"][:, 0], np.arange(4.0) + 1.0)
+    np.testing.assert_array_equal(s.arrays["pos"], mesh_k.points)
+    assert s.schema["target_offset"] == 1 and s.schema["target_delta"] is False
+
+
+def test_graph_sample_target_delta_is_the_field_difference():
+    mesh_k, mesh_k1 = _mesh(0.0), _mesh(2.5)
+    s = mpn.graph_sample(
+        mesh_k,
+        target_fields=["T", "v"],
+        target_mesh=mesh_k1,
+        target_delta=True,
+        float32=False,
+    )
+    # T differs by the offset; v is offset-independent so its delta is zero
+    np.testing.assert_allclose(s.arrays["y"][:, 0], 2.5)
+    np.testing.assert_allclose(s.arrays["y"][:, 1:], 0.0)
+    assert s.y_columns == ("T", "v_0", "v_1")
+    assert s.schema["target_delta"] is True
+
+
+def test_graph_sample_pairing_validation_errors():
+    mesh = _mesh()
+    with pytest.raises(ValueError, match="target_mesh requires target_fields"):
+        mpn.graph_sample(mesh, target_mesh=_mesh(1.0))
+    with pytest.raises(ValueError, match="target_delta requires target_mesh"):
+        mpn.graph_sample(mesh, target_fields=["T"], target_delta=True)
+    with pytest.raises(ValueError, match="target_offset must be >= 0"):
+        mpn.graph_sample(mesh, target_offset=-1)
+    bigger = Mesh(
+        np.vstack([mesh.points, [[2.0, 2.0, 0.0]]]),
+        mesh.cells,
+        point_data={"T": np.arange(5, dtype=np.float64)},
+    )
+    with pytest.raises(ValueError, match="pairing requires matching meshes"):
+        mpn.graph_sample(mesh, target_fields=["T"], target_mesh=bigger)
+
+
+def test_graph_sample_schema_v2_records_offset_and_delta():
+    s = mpn.graph_sample(_mesh(), fields=["T"])
+    assert s.schema["graph_sample_version"] == 2
+    assert s.schema["target_offset"] == 0
+    assert s.schema["target_delta"] is False
+
+
+def test_iter_samples_target_offset_pairs_and_shrinks(tmp_path):
+    manifest = _series_manifest(tmp_path, steps=3)
+    paired = list(
+        mpn.iter_samples(
+            manifest,
+            fields=["T"],
+            target_fields=["T"],
+            target_offset=1,
+            float32=False,
+        )
+    )
+    assert len(paired) == 2  # 3 steps -> 2 pairs
+    for k, (_, _, sample) in enumerate(paired):
+        np.testing.assert_array_equal(sample.arrays["x"][:, 0], np.arange(4.0) + k)
+        np.testing.assert_array_equal(sample.arrays["y"][:, 0], np.arange(4.0) + k + 1)
+        assert sample.schema["target_offset"] == 1
+    delta = list(
+        mpn.iter_samples(
+            manifest,
+            target_fields=["T"],
+            target_offset=1,
+            target_delta=True,
+            float32=False,
+        )
+    )
+    for _, _, sample in delta:
+        np.testing.assert_allclose(sample.arrays["y"][:, 0], 1.0)
+
+
+def test_iter_samples_target_offset_skips_short_entries_with_warning(tmp_path):
+    manifest = _series_manifest(tmp_path, steps=2)
+    with pytest.warns(UserWarning, match="entry 'run0' has 2 step"):
+        samples = list(
+            mpn.iter_samples(
+                manifest, target_fields=["T"], target_offset=5, float32=False
+            )
+        )
+    assert samples == []
+
+
+def test_field_stats_delta_matches_direct_differences(tmp_path):
+    manifest = _series_manifest(tmp_path, steps=4)
+    stats = mpn.field_stats(manifest, fields=["T"], delta=True)
+    # every consecutive difference is exactly 1.0 per point
+    assert set(stats) == {"T_diff_mean", "T_diff_std"}
+    assert stats["T_diff_mean"] == pytest.approx([1.0])
+    assert stats["T_diff_std"] == pytest.approx([0.0])
+    lag2 = mpn.field_stats(manifest, fields=["T"], delta=2)
+    assert lag2["T_diff_mean"] == pytest.approx([2.0])
+    with pytest.raises(ValueError, match="delta must be True or an int >= 1"):
+        mpn.field_stats(manifest, fields=["T"], delta=0)
+    # plain stats keep the undecorated keys
+    plain = mpn.field_stats(manifest, fields=["T"])
+    assert set(plain) == {"T_mean", "T_std"}
+
+
+def test_pyg_dataset_pairs_targets_with_offset(tmp_path):
+    pytest.importorskip("torch_geometric")
+    import torch
+
+    manifest = _series_manifest(tmp_path, steps=3)
+    ds = mpn.make_dataset(manifest, fields=["T"], target_fields=["T"], target_offset=1)
+    assert len(ds) == 2  # 3 steps -> 2 pairs
+    for k in range(2):
+        data = ds[k]
+        torch.testing.assert_close(
+            data.y[:, 0], torch.arange(4, dtype=torch.float32) + k + 1
+        )
+        torch.testing.assert_close(
+            data.x[:, 0], torch.arange(4, dtype=torch.float32) + k
+        )
+    assert ds.schema["target_offset"] == 1
+    from torch_geometric.loader import DataLoader
+
+    batch = next(iter(DataLoader(ds, batch_size=2)))
+    assert batch.num_graphs == 2 and batch.y.shape == (8, 1)
+
+
+def test_reader_pairs_targets_with_offset(tmp_path):
+    pytest.importorskip("physicsnemo")
+    import torch
+
+    manifest = _series_manifest(tmp_path, steps=3)
+    reader = mpn.make_reader(
+        manifest, fields=["T"], target_fields=["T"], target_offset=1
+    )
+    assert len(reader) == 2
+    sample = reader._load_sample(0)
+    torch.testing.assert_close(
+        sample["y"][:, 0], torch.arange(4, dtype=torch.float32) + 1
+    )
+
+
+# --------------------------------------------------------------------------- #
+# the physicsnemo.mesh.Mesh bridge (v9.30.0)                                  #
+# --------------------------------------------------------------------------- #
+def _mixed_dim_mesh():
+    """A hex volume plus a stray line: exercises tessellation AND dropping."""
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ]
+    )
+    return Mesh(
+        points,
+        [
+            ("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]], dtype=np.int64)),
+            ("line", np.array([[0, 1]], dtype=np.int64)),
+        ],
+        point_data={"T": np.arange(8, dtype=np.float64)},
+        cell_data={"mat": [np.array([7.0]), np.array([1.0])]},
+        field_data={"Re": np.array(100.0), "solver": "kratos"},
+    )
+
+
+def test_physicsnemo_payload_selects_dim_tessellates_and_notes():
+    payload = mpn._to_physicsnemo_payload(_mixed_dim_mesh())
+    assert payload["manifold_dim"] == 3
+    assert payload["cells"].shape == (6, 4)  # hex -> 6 tetra (Freudenthal)
+    assert payload["cells"].dtype == np.int64
+    assert payload["points"].dtype == np.float32
+    # cell_data replicated to the 6 children; the line block's row dropped
+    np.testing.assert_array_equal(payload["cell_data"]["mat"], np.full(6, 7.0))
+    # numeric field_data lands in global_data; the string is dropped by name
+    assert "Re" in payload["global_data"] and "solver" not in payload["global_data"]
+    text = " | ".join(payload["notes"])
+    assert "tessellated" in text and "line x 1" in text and "'solver'" in text
+
+
+def test_physicsnemo_payload_dim_selection_and_errors():
+    mesh = _mesh()  # triangles with 3-D points
+    payload = mpn._to_physicsnemo_payload(mesh, manifold_dim=2, float32=False)
+    assert payload["manifold_dim"] == 2
+    assert payload["points"].dtype == np.float64
+    np.testing.assert_array_equal(payload["cells"], mesh.cells[0].data)
+    # regions dropped with a note naming them
+    assert any("'inlet'" in n or "inlet" in n for n in payload["notes"])
+    with pytest.raises(ValueError, match="no dimension-3 cells"):
+        mpn._to_physicsnemo_payload(mesh, manifold_dim=3)
+    with pytest.raises(ValueError, match="manifold_dim must be 'auto' or"):
+        mpn._to_physicsnemo_payload(mesh, manifold_dim=7)
+    flat = Mesh(
+        np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]),
+        [("tetra", np.array([[0, 1, 2, 3]], dtype=np.int64))],
+    )
+    with pytest.raises(ValueError, match="needs 3-D points"):
+        mpn._to_physicsnemo_payload(flat)
+
+
+def test_from_physicsnemo_payload_maps_types_and_field_data():
+    payload = {
+        "points": np.eye(4, 3),
+        "cells": np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int64),
+        "point_data": {"T": np.arange(4.0)},
+        "cell_data": {"mat": np.array([1.0, 2.0])},
+        "global_data": {"Re": np.array(100.0)},
+    }
+    mesh = mpn._from_physicsnemo_payload(payload)
+    assert mesh.cells[0].type == "triangle"
+    np.testing.assert_array_equal(mesh.cell_data["mat"][0], [1.0, 2.0])
+    assert "Re" in mesh.field_data
+    with pytest.raises(ValueError, match="map to no simplex"):
+        mpn._from_physicsnemo_payload(
+            {"points": np.eye(3), "cells": np.zeros((1, 5), dtype=np.int64)}
+        )
+
+
+def test_bridge_install_errors_name_the_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(_gpu, "_importable", lambda module: False)
+    for fn, arg in ((mpn.to_physicsnemo, _mesh()), (mpn.from_physicsnemo, None)):
+        with pytest.raises(ImportError, match="pip install nvidia-physicsnemo") as e:
+            fn(arg)
+        assert "meshioplusplus[" not in str(e.value)
+        assert "doc/physicsnemo.md" in str(e.value)
+
+
+def test_to_physicsnemo_roundtrip():
+    pytest.importorskip("physicsnemo")
+    import torch
+
+    mesh = _mesh()
+    pm = mpn.to_physicsnemo(mesh)  # emits the dropped-regions warning (stderr)
+    assert pm.points.dtype == torch.float32 and pm.points.device.type == "cpu"
+    assert pm.cells.dtype == torch.int64 and tuple(pm.cells.shape) == (2, 3)
+    torch.testing.assert_close(pm.point_data["T"], torch.arange(4, dtype=torch.float64))
+    back = mpn.from_physicsnemo(pm)
+    assert back.cells[0].type == "triangle"
+    np.testing.assert_array_equal(back.cells[0].data, mesh.cells[0].data)
+    np.testing.assert_allclose(back.points, mesh.points)
+    np.testing.assert_array_equal(back.point_data["T"], mesh.point_data["T"])
+    np.testing.assert_array_equal(back.cell_data["mat"][0], mesh.cell_data["mat"][0])
+
+
+def test_to_physicsnemo_tessellation_warns(capsys):
+    pytest.importorskip("physicsnemo")
+
+    pm = mpn.to_physicsnemo(_mixed_dim_mesh())
+    assert tuple(pm.cells.shape) == (6, 4)  # tets
+    # notes surface through the repo's rich-console warn(), not the warnings
+    # module -- assert on stderr, where every lossy step must be named
+    err = capsys.readouterr().err
+    assert "tessellated" in err and "line x 1" in err

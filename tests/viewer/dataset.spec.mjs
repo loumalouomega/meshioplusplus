@@ -189,3 +189,168 @@ test('FSA flow: in-place save through a mocked directory handle', async ({
     expect(writes.length).toBe(1);
     expect(writes[0]).toBe(s.lastSave.text);
 });
+
+// --------------------------------------------------------------------------- //
+// v9.30.0: persisted directory handles (IndexedDB) + quality summaries        //
+// --------------------------------------------------------------------------- //
+
+/**
+ * A Map-backed `indexedDB` fake, installed before page scripts run. The
+ * production code reads `window.indexedDB` at call time (the test seam) and
+ * treats every failure as best-effort, so this only needs the happy-path
+ * subset persist.ts touches: open → onupgradeneeded/onsuccess, transaction →
+ * objectStore → put/get/delete with async onsuccess. The backing Map is
+ * exposed as `window.__idbStore`; `seedHandle` pre-seeds a mock directory
+ * handle whose permission starts at 'prompt' (a restored handle's real
+ * state) and is granted or denied by the flag.
+ */
+async function installIdbFake(page, { seedHandle, grant = true } = {}) {
+    await page.addInitScript(
+        ({ seed, grantPermission }) => {
+            const store = new Map();
+            window.__idbStore = store;
+            window.__pickerInvoked = false;
+            if (seed) {
+                store.set('workspace-root', {
+                    kind: 'directory',
+                    name: 'root',
+                    async *entries() {
+                        yield [
+                            'block.vtu',
+                            {
+                                kind: 'file',
+                                name: 'block.vtu',
+                                getFile: async () => {
+                                    const url = new URL('samples/block.vtu', location.href);
+                                    const bytes = await (await fetch(url)).arrayBuffer();
+                                    return new File([bytes], 'block.vtu');
+                                },
+                            },
+                        ];
+                    },
+                    queryPermission: async () => 'prompt',
+                    requestPermission: async () =>
+                        grantPermission ? 'granted' : 'denied',
+                    getFileHandle: async (name) => ({
+                        kind: 'file',
+                        name,
+                        getFile: async () => new File([''], name),
+                        createWritable: async () => ({
+                            write: async () => {},
+                            close: async () => {},
+                        }),
+                    }),
+                });
+            }
+            const request = (result) => {
+                const r = { result, onsuccess: null, onerror: null };
+                queueMicrotask(() => r.onsuccess && r.onsuccess());
+                return r;
+            };
+            const objectStore = {
+                put: (value, key) => request(void store.set(key, value)),
+                get: (key) => request(store.get(key)),
+                delete: (key) => request(void store.delete(key)),
+            };
+            const fake = {
+                open: () => {
+                    const r = {
+                        result: {
+                            createObjectStore: () => objectStore,
+                            transaction: () => ({ objectStore: () => objectStore }),
+                            close: () => {},
+                        },
+                        onupgradeneeded: null,
+                        onsuccess: null,
+                        onerror: null,
+                    };
+                    queueMicrotask(() => {
+                        if (r.onupgradeneeded) r.onupgradeneeded();
+                        if (r.onsuccess) r.onsuccess();
+                    });
+                    return r;
+                },
+            };
+            Object.defineProperty(window, 'indexedDB', { value: fake });
+            // Track fallback-picker invocations for the denial test.
+            delete window.showDirectoryPicker;
+            window.showDirectoryPicker = async () => {
+                window.__pickerInvoked = true;
+                throw new DOMException('aborted', 'AbortError');
+            };
+        },
+        { seed: !!seedHandle, grantPermission: grant },
+    );
+}
+
+test('reopen: a persisted handle restores the workspace behind a click', async ({
+    page,
+}) => {
+    await installIdbFake(page, { seedHandle: true, grant: true });
+    await page.goto('./dataset.html');
+    await waitStatus(page, 'idle');
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.restoreAvailable))
+        .toBe(true);
+    await expect(page.locator('#ws-reopen')).toContainText('root');
+
+    await page.locator('#ws-reopen').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.backendMode))
+        .toBe('fsa');
+    // continue as a smoke: the restored workspace opens a manifest normally
+    await page.locator('#manifest-open').click();
+    await waitStatus(page, 'ready');
+});
+
+test('reopen: denial clears the handle and falls back to the picker', async ({
+    page,
+}) => {
+    await installIdbFake(page, { seedHandle: true, grant: false });
+    await page.goto('./dataset.html');
+    await waitStatus(page, 'idle');
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.restoreAvailable))
+        .toBe(true);
+
+    await page.locator('#ws-reopen').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.restoreAvailable))
+        .toBe(false);
+    const after = await page.evaluate(() => ({
+        stored: window.__idbStore.size,
+        pickerInvoked: window.__pickerInvoked,
+        reopenHidden: document.getElementById('ws-reopen').hidden,
+    }));
+    expect(after.stored).toBe(0); // clearHandle ran
+    expect(after.pickerInvoked).toBe(true); // fell back to a fresh pick
+    expect(after.reopenHidden).toBe(true);
+});
+
+test('quality: summary rows flow from attachQuality and the scan is unpolluted', async ({
+    page,
+}) => {
+    await useFallback(page);
+    await page.goto('./dataset.html');
+    await waitStatus(page, 'idle');
+    await openNewManifest(page);
+    await addCase(page, 'block.vtu');
+
+    let s = await state(page);
+    // quality:* rows ride the same summary; scaled_jacobian has a finite min
+    const names = s.summary.map((r) => r.name);
+    expect(names.some((n) => n.startsWith('quality:'))).toBe(true);
+    const jacobian = s.summary.find((r) => r.name === 'quality:scaled_jacobian');
+    expect(Number.isFinite(jacobian.min)).toBe(true);
+
+    await page.locator('#e-scan').click();
+    await waitStatus(page, 'ready');
+    s = await state(page);
+    const scan = s.scans.block;
+    expect(scan.steps).toBe(1);
+    expect(scan.numInverted).toBe(0);
+    expect(typeof scan.minScaledJacobian).toBe('number');
+    // quality NaN (= metric N/A) must NOT pollute the bad-case lane
+    expect(scan.numNan).toBe(0);
+    expect(scan.numInf).toBe(0);
+});
