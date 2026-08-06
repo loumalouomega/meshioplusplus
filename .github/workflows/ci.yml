@@ -1173,6 +1173,11 @@ jobs:
           npm run build:web
           npm run build:embed
 
+      - name: The web build ships both pages
+        run: |
+          test -f src/viewer/dist-web/index.html
+          test -f src/viewer/dist-web/dataset.html
+
       - name: The embedded build is a single self-contained file
         run: |
           test "$(ls src/viewer/dist-embed | wc -l)" -eq 1
