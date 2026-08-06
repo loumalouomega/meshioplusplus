@@ -8,6 +8,49 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.28.0 (2026-08-06)
+
+**The PhysicsNeMo integration** — roadmap §1 shipped through the worked
+example; only the browser dataset-manager UI remains. All pure Python; the
+C++/WASM/C/Fortran core is untouched and the ABI version does not move.
+
+- **Dataset manifests** (`DatasetManifest`/`DatasetEntry`, `doc/datasets.md`)
+  — a hand-editable settings-family JSON cataloguing many solution outputs
+  (each possibly a time series) for ML training: per-entry source plan
+  (pattern / path / path list, times, ordering), train/valid/test splits
+  (deterministic seeded `assign_splits`, `by_group` leakage guard), tags,
+  group paths, notes and open metadata. Relative sources resolve against the
+  manifest's own directory, so a campaign moves as one portable unit; the
+  manifest is the single source of truth — hand edits and tool edits
+  interleave against the same file. New nested CLI group
+  `meshioplusplus dataset add/list/split/tag/annotate` (Python CLI only) and
+  three ungated MCP tools `dataset_add`/`dataset_list`/`dataset_update`
+  (42 → 45 tools; the sandbox covers every path a manifest names or
+  resolves).
+- **PhysicsNeMo adapter** (`meshioplusplus.physicsnemo`,
+  `doc/physicsnemo.md`) — meshes to the tensors NVIDIA PhysicsNeMo's
+  datapipes expect: `graph_sample` (the MeshGraphNet
+  `pos`/`x`/`y`/`edge_index`/`edge_attr` set, edge features in the
+  displacement+norm convention, columns carried from the `feature_matrix`
+  contract), streaming `field_stats`/`edge_stats` in the
+  `node_stats.json`/`edge_stats.json` convention, `make_dataset` (PyTorch
+  Geometric `Dataset` — the training path) and `make_reader` (the Gen-2
+  `Reader` extension point). The subpackage is deliberately not imported by
+  `import meshioplusplus` (PhysicsNeMo's Python floor is 3.11), and there is
+  deliberately **no `[physicsnemo]` extra** — the framework hard-depends on
+  torch, the exact wheel the no-`[torch]`-extra precedent refuses to pin; a
+  missing install raises naming `pip install nvidia-physicsnemo`. The doc
+  page opens with the dated reconnaissance note (DGL removed / PyG only, the
+  `Reader` ABC, the simplicial `physicsnemo.mesh.Mesh` and why the mesh
+  bridge is deferred, the torch_scatter wheel-lag pin).
+- **Worked end-to-end example** (`example/physicsnemo/`) — 200 manufactured
+  Poisson cases, preprocessing as a settings-pipeline document, manifest
+  curation through the real CLI, MeshGraphNet training and inference
+  executed on a real GPU (100 epochs / 73.8 s, mean test RMSE 0.0040), with
+  predictions written back as ordinary `point_data` and the renders
+  committed. Public CI still installs neither torch nor PhysicsNeMo — the
+  GPU-work precedent, stated in the docs.
+
 ## v9.27.0 (2026-08-05)
 
 **The ML gap, closed.** The roadmap's machine-learning section ships in full —
