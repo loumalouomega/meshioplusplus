@@ -215,8 +215,8 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 9
-#define MIO_VERSION_MINOR 30
+#define MIO_VERSION_MAJOR 10
+#define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 

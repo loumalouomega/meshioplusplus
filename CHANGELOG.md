@@ -8,6 +8,12 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.0.0 (2026-08-06)
+
+Version-number bump only (9.30.0 → 10.0.0) — no API, behavior or ABI change;
+`MESHIOPLUSPLUS_ABI_VERSION` stays 6. Pins mentioning the major version
+(`find_package(meshioplusplus 9 …)` and similar) move to `10` in the docs.
+
 ## v9.30.0 (2026-08-06)
 
 **Roadmap §1 closed** — the PhysicsNeMo section's last four follow-ups ship

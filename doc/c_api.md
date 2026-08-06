@@ -29,8 +29,8 @@ gcc my_solver.c $(pkg-config --cflags --libs meshioplusplus) -o my_solver
 or CMake:
 
 ```cmake
-find_package(meshioplusplus REQUIRED)  # pin a minimum version if you need one, e.g. `meshioplusplus 9.0`
-                                       # (compatibility is SameMajorVersion: an 8.x request rejects a 9.x install)
+find_package(meshioplusplus REQUIRED)  # pin a minimum version if you need one, e.g. `meshioplusplus 10.0`
+                                       # (compatibility is SameMajorVersion: a 9.x request rejects a 10.x install)
 target_link_libraries(my_solver PRIVATE meshioplusplus::meshioplusplus)
 ```
 

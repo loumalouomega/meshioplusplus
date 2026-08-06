@@ -47,7 +47,7 @@ bin/meshioplusplus                # the CLI, when BUILD_CLI=ON
 ## Consuming it
 
 ```cmake
-find_package(meshioplusplus 9.0 CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.0 CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -212,7 +212,7 @@ CMake package's `SameMajorVersion` mode describes only the first.
 a 9.1 `.so`.
 
 ```cmake
-find_package(meshioplusplus 9 CONFIG REQUIRED COMPONENTS C)
+find_package(meshioplusplus 10 CONFIG REQUIRED COMPONENTS C)
 ```
 
 Nothing in the rest of this section applies to it: a C consumer compiles no
@@ -243,7 +243,7 @@ The conservative pin is still fully supported, and is the right choice if you
 would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 9.30.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a
