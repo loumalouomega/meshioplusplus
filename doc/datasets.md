@@ -133,6 +133,23 @@ understand — the single-source-of-truth rule, enforced in both directions.
 |---|---|---|
 | browse a case directory | File System Access picker | `webkitdirectory` input |
 | save the manifest | **in place**, back into the picked directory | downloads a copy (the browser cannot write back) |
+| reopen after a reload | **Reopen** button (the handle persists in IndexedDB; one click re-grants access) | re-pick the directory |
+
+Since v9.30.0 the picked directory handle is remembered (best-effort, in
+IndexedDB — private mode or an unsupported browser silently degrades to
+re-picking): the next visit shows a **Reopen** button, whose click re-grants
+permission — the browser requires that user gesture, so nothing restores
+automatically — and a denied or stale handle is forgotten and falls back to
+a fresh pick.
+
+The per-entry summary and the **Scan** also report **quality metrics**
+(v9.30.0): each preview's summary table gains the `quality:*` rows (worst
+scaled Jacobian, inverted/degenerate counts, …), and a scan badges entries
+with inverted cells alongside the NaN/Inf badge. One rule is load-bearing
+here: a quality metric's NaN means *"does not apply to this cell type"* by
+design (`compute_quality`'s own convention), so quality rows are **excluded**
+from the NaN/Inf bad-case counts — a quality row flags red only on actual
+inverted/degenerate cells or a negative scaled Jacobian.
 
 Two knowingly-accepted gaps, stated rather than hidden: fraction-based
 `assign_splits` stays in Python/the CLI (its seeded shuffle is

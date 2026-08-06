@@ -99,14 +99,17 @@ training projects.
   `field_stats`/`edge_stats` produce dicts in that key convention; meshio++
   defines no new stats file format.
 - **`physicsnemo.mesh.Mesh`** (new in 2.1.0) is **simplicial-only** —
-  points, lines, triangles, tetrahedra; hexes/wedges/pyramids are tessellated
-  on ingest with data-loss warnings — and its only file on-ramp is a
-  PyVista-backed `from_pyvista`/`to_pyvista` pair; its `.pmsh` save format is
-  self-declared unstable. A `from_meshio` bridge is therefore **deferred**:
-  it would buy nothing over the Reader/PyG path for training, and would pin
-  meshio++ to the least stable surface in the framework. If PhysicsNeMo's
-  `Mesh` stabilizes, an upstream `io_meshio.py` mirroring `io_pyvista`'s
-  shape is the natural follow-up.
+  points, lines, triangles, tetrahedra, exactly one kind per `Mesh` (mixed
+  dimensions are "separate Mesh objects", its own docs) — and its only file
+  on-ramp is a PyVista-backed `from_pyvista`/`to_pyvista` pair; its `.pmsh`
+  save format is self-declared unstable, and its `io` module is a hardcoded
+  PEP-562 set with no plugin registry, so a bridge can only live
+  meshio++-side. v9.28.0 deferred that bridge; **v9.30.0 builds it anyway**
+  ([`to_physicsnemo`/`from_physicsnemo`](#the-physicsnemomesh-bridge)) with
+  the risk stated rather than avoided: `physicsnemo.mesh` is the framework's
+  newest and least stable surface, so the bridge touches only the
+  tensorclass constructor and public attributes, never `.pmsh`, and training
+  projects should pin `nvidia-physicsnemo>=2.1,<2.2`.
 - **Every mesh file enters PhysicsNeMo through PyVista/VTK today** (the
   `VTKReader` hard-requires pyvista and reads `.stl`/`.vtp`/`.vtu`/`.vtk`
   only). That is the slot this adapter fills: meshio++'s 42 readers, regions,
@@ -133,7 +136,7 @@ s.schema        # JSON-ready: versions, columns, edge-feature rule
 |---|---|---|
 | `pos` | `(N, dim)` float32¹ | `mesh.points`, never folded into `x` (the MGN convention — coordinates enter through edge features) |
 | `x` | `(N, Fx)` float32¹ | [`feature_matrix(mesh, "point", fields=fields, coords=False, regions=regions)`](./ml#the-feature-matrix-and-its-contract-feature_matrix) — fields in stated order, then `region:<name>` one-hots (the node-type slot) |
-| `y` | `(N, Fy)` float32¹ | a second `feature_matrix` over `target_fields`; absent when `target_fields=None` |
+| `y` | `(N, Fy)` float32¹ | a second `feature_matrix` over `target_fields`; absent when `target_fields=None`. Same-step by default; [`target_mesh`/`target_delta` pair steps](#autoregressive-t-t1-pairing) |
 | `edge_index` | `(2, E)` **int64** | [`edge_index(mesh, kind=, undirected=)`](./ml#graphs-for-gnns-edge_index) verbatim |
 | `edge_attr` | `(E, dim+1)` float32¹ | `cat((pos[row] − pos[col], ‖·‖))` — the PhysicsNeMo convention above |
 
@@ -183,10 +186,81 @@ convention, so batching across meshes of different sizes remains the PyG
 path's job. Both index the flat `(entry, step)` sequence resolved once from
 the manifest's plans, and read one mesh per `__getitem__`/`_load_sample`.
 
-Deferred, deliberately, and recorded here rather than half-built:
-autoregressive t→t+1 target pairing (`target_fields` is same-step in v1 —
-the steady-state surrogate shape), and the `physicsnemo.mesh.Mesh` bridge
-(see the reconnaissance section for why).
+Both of v9.28.0's recorded deferrals shipped in v9.30.0 — the
+[t→t+1 pairing](#autoregressive-t-t1-pairing) and the
+[`physicsnemo.mesh` bridge](#the-physicsnemomesh-bridge) below.
+
+### Autoregressive t→t+1 pairing
+
+```python
+# steady-state surrogate (v1's shape, still the default): y from the SAME step
+ds = mpn.make_dataset(manifest, fields=["q"], target_fields=["T"])
+
+# autoregressive: step k's inputs paired with step k+1's targets
+ds = mpn.make_dataset(manifest, target_fields=["v"], target_offset=1)
+
+# the MeshGraphNet increment convention: y = v_{k+1} − v_k
+ds = mpn.make_dataset(manifest, target_fields=["v"],
+                      target_offset=1, target_delta=True)
+stats = mpn.field_stats(manifest, fields=["v"], delta=True)
+# {"v_diff_mean": [...], "v_diff_std": [...]} — normalize the delta targets
+```
+
+`target_offset=n` pairs step k with step k+n across `iter_samples`,
+`make_dataset` and `make_reader`: each entry contributes
+`len(series) − n` samples (an entry too short to pair contributes nothing,
+with one warning naming it, emitted at index-build time), and the yielded
+`time` is the *input* step's. `target_delta=True` makes `y` the target's
+values minus the same step's own — normalize with `field_stats(delta=...)`
+(`delta=True` is lag 1; an int matches a larger offset), whose
+`{field}_diff_mean`/`{field}_diff_std` keys stay plain JSON like everything
+else here.
+
+Two honesty notes. A paired sample costs **two reads** — `TimeSeries`
+caches nothing, so the streaming invariant becomes "at most two meshes
+alive"; that is the price of never holding a dataset in memory, stated
+rather than cached away. And a **remeshed series cannot pair**: the target
+step's row count must match the input's, and a mismatch is a named error,
+never a silent mis-pairing. At the `graph_sample` level the same machinery
+is `target_mesh=` (the iteration layer derives it from the series); the
+schema records `target_offset`/`target_delta`, which is why
+`graph_sample_version` bumped to 2 — a stored v1 schema now compares
+unequal, exactly the drift guard doing its job.
+
+### The `physicsnemo.mesh` bridge
+
+```python
+pm = mpn.to_physicsnemo(mesh)              # physicsnemo.mesh.Mesh, CPU
+pm = mpn.to_physicsnemo(mesh, manifold_dim=2)   # pick the surface, not the volume
+mesh_again = mpn.from_physicsnemo(pm)
+pm.to("cuda")                              # device moves are upstream's job
+```
+
+`physicsnemo.mesh.Mesh` holds exactly **one simplex kind** — the cells
+tensor's trailing dim names it — so `to_physicsnemo` selects one
+topological dimension (`"auto"` = the highest present), tessellates
+non-simplex cells there through the existing
+[`convert_cells`](./convert_cells) operations (linearize, then simplexify —
+`cell_data` rows replicate to the children natively), and **drops with a
+warning** everything the target cannot hold: blocks of other dimensions,
+regions (encode membership as `graph_sample` one-hots instead), non-numeric
+data. Points follow the upstream float32 convention (`float32=False` keeps
+float64), cells are int64, numeric `field_data` lands in `global_data`, and
+every buffer is freshly owned — upstream in-place edits invalidate that
+`Mesh`'s caches, so sharing memory with the source would be a
+spooky-action bug. `from_physicsnemo` inverts the mapping
+(vertex/line/triangle/tetra by trailing dim, `global_data` →
+`field_data`).
+
+**The risk, stated**: this rides the framework's newest surface. The bridge
+therefore touches only the tensorclass constructor and public attributes —
+never the self-declared-unstable `.pmsh` format — its gated module is the
+only one importing `physicsnemo.mesh` (an import that pulls in NVIDIA Warp,
+~1.5 s, which is why it stays lazy), and training projects should pin
+`nvidia-physicsnemo>=2.1,<2.2`. If upstream's `Mesh` stabilizes, an
+`io_meshio.py` contributed upstream (mirroring `io_pyvista`'s shape) is
+still the natural end state; today its `io` module has no plugin registry,
+so the bridge lives here.
 
 ## Dataset manifests
 
