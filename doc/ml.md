@@ -228,3 +228,12 @@ named error pointing here.
 `importorskip` and are not exercised by public CI — the frameworks are too
 heavy for the runners. The payload construction they share with `to_dlpack`
 *is* fully covered.
+
+## From here to PhysicsNeMo
+
+Everything above is per-mesh. For a *collection* of solution outputs —
+splits, tags, per-case metadata — the [dataset manifests](./datasets) page is
+next, and the [PhysicsNeMo adapter](./physicsnemo) builds directly on this
+page's contracts: `graph_sample` composes `feature_matrix` + `edge_index`
+into the MeshGraphNet tensor set, and the manifest replaces the ad-hoc glob
+in every training script.

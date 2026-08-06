@@ -919,6 +919,39 @@ meshioplusplus data export in.vtu cells.parquet --location cell
 
 ---
 
+## meshioplusplus dataset
+
+The second nested group: curate a hand-editable
+[dataset manifest](datasets.md) — the JSON cataloguing many cases (each
+possibly a time series) with splits, tags, groups and notes. Python CLI only,
+like `data export`. Every mutating verb is load → mutate → save against the
+same file a text editor uses, so hand edits made between two CLI calls
+survive; sources given on the command line are stored **relative to the
+manifest's directory** (absolute paths stay absolute), keeping the manifest
+portable.
+
+```
+meshioplusplus dataset <subcommand> [options]
+```
+
+| verb | does |
+|---|---|
+| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent |
+| `list MANIFEST` | entries filtered by `--split`/`--tag`/`--group`; `--resolve` expands each plan (checks files exist, reads no mesh); `--json` emits the entries (plus `Resolved` plans) as JSON |
+| `split MANIFEST` | `--set S` on `--id` (repeatable) or `--all`; or `--assign train=0.8,valid=0.1,test=0.1` over every entry — deterministic (`--seed`), `--by-group` keeps entries sharing a `Group` together |
+| `tag MANIFEST` | `--add T,T` / `--remove T,T` on `--id` (repeatable) or `--all` |
+| `annotate MANIFEST --id ID` | set `--notes`, `--group`, merge `--meta K=V`, drop `--del-meta K` |
+
+```sh
+meshioplusplus dataset add m.json 'runs/c42/out_*.vtu' --split train --meta Re=100
+meshioplusplus dataset add m.json a.vtu b.vtu --id pair --tag coarse
+meshioplusplus dataset split m.json --assign train=0.8,valid=0.1,test=0.1 --seed 0
+meshioplusplus dataset list m.json --split train --resolve
+meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
+```
+
+---
+
 ## meshioplusplus pipeline
 
 Run a whole [settings pipeline](pipeline.md): read `Input.Path`, apply the

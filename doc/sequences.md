@@ -415,3 +415,5 @@ Writes `steps/frame_0000.vtu …`, each carrying its own
 - [Selective reads](selective_read.md) — `time_step`, and what `read_metadata`
   can answer without a full read.
 - [CLI reference](cli.md#meshioplusplus-convert).
+- [Dataset manifests](datasets.md) — cataloguing many sequences (each entry
+  *is* a `TimeSeries` plan) with splits/tags for ML training.
