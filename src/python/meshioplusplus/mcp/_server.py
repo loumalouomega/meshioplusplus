@@ -50,6 +50,7 @@ def create_server(root: Optional[str] = None) -> FastMCP:
     _register_conversion(server)
     _register_operations(server)
     _register_data(server)
+    _register_dataset(server)
     _register_gated(server)
     _register_resources(server)
     return server
@@ -1042,6 +1043,105 @@ def _register_data(server: FastMCP) -> None:
             nan_replacement=nan_replacement,
             suffix=suffix,
             preserve_dtype=preserve_dtype,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Dataset manifests (doc/datasets.md)                                         #
+# --------------------------------------------------------------------------- #
+def _register_dataset(server: FastMCP) -> None:
+    @server.tool()
+    def dataset_add(
+        manifest_path: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        entry_id: Optional[str] = None,
+        input_format: Optional[str] = None,
+        time_from: Optional[str] = None,
+        times: Optional[List[float]] = None,
+        sort: bool = False,
+        split: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        group: Optional[str] = None,
+        notes: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> dict:
+        """Add a case to a dataset manifest JSON (created if absent). Give
+        exactly one of input_pattern (a glob) or input_paths; the source is
+        validated now and stored relative to the manifest's directory.
+        Optional curation: split, tags, group, notes, metadata."""
+        return _guard(
+            _tools.tool_dataset_add,
+            manifest_path=manifest_path,
+            input_pattern=input_pattern,
+            input_paths=input_paths,
+            entry_id=entry_id,
+            input_format=input_format,
+            time_from=time_from,
+            times=times,
+            sort=sort,
+            split=split,
+            tags=tags,
+            group=group,
+            notes=notes,
+            metadata=metadata,
+        )
+
+    @server.tool()
+    def dataset_list(
+        manifest_path: str,
+        split: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        group: Optional[str] = None,
+        resolve: bool = False,
+    ) -> dict:
+        """List a dataset manifest's entries, optionally filtered by split /
+        tags (must carry all) / group (path or descendant). resolve=true also
+        expands each entry's file/step/time plan (no mesh is read)."""
+        return _guard(
+            _tools.tool_dataset_list,
+            manifest_path=manifest_path,
+            split=split,
+            tags=tags,
+            group=group,
+            resolve=resolve,
+        )
+
+    @server.tool()
+    def dataset_update(
+        manifest_path: str,
+        entry_ids: Optional[List[str]] = None,
+        all_entries: bool = False,
+        split: Optional[str] = None,
+        assign_splits: Optional[dict] = None,
+        seed: int = 0,
+        by_group: bool = False,
+        add_tags: Optional[List[str]] = None,
+        remove_tags: Optional[List[str]] = None,
+        group: Optional[str] = None,
+        notes: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        drop_metadata: Optional[List[str]] = None,
+    ) -> dict:
+        """Curate a dataset manifest: set a split on selected entries, assign
+        splits by fractions (assign_splits={"train": 0.8, ...}, deterministic
+        via seed; by_group keeps groups together), add/remove tags, or set one
+        entry's group/notes/metadata."""
+        return _guard(
+            _tools.tool_dataset_update,
+            manifest_path=manifest_path,
+            entry_ids=entry_ids,
+            all_entries=all_entries,
+            split=split,
+            assign_splits=assign_splits,
+            seed=seed,
+            by_group=by_group,
+            add_tags=add_tags,
+            remove_tags=remove_tags,
+            group=group,
+            notes=notes,
+            metadata=metadata,
+            drop_metadata=drop_metadata,
         )
 
 

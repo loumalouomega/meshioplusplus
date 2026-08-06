@@ -1347,6 +1347,175 @@ def tool_data_condition(
 
 
 # --------------------------------------------------------------------------- #
+# Dataset manifests (doc/datasets.md) — pure stdlib, ungated                  #
+# --------------------------------------------------------------------------- #
+def _load_manifest(manifest_path, must_exist=True):
+    from .._dataset import DatasetManifest
+
+    resolved = _resolve(manifest_path, must_exist=must_exist, for_write=not must_exist)
+    if os.path.isfile(resolved):
+        return DatasetManifest.load(resolved), resolved
+    return DatasetManifest(base_dir=os.path.dirname(resolved)), resolved
+
+
+def _sandbox_entry_paths(entry):
+    """Enforce the root on the paths a manifest entry resolves to — a
+    hand-edited manifest can name anything, so the sandbox must hold on the
+    *resolved* plan, not only on the manifest file (the pipeline-tool rule:
+    paths inside the document are client input too)."""
+    plan = entry.entries()
+    for item in plan:
+        _resolve(item["path"], must_exist=True)
+    return plan
+
+
+def tool_dataset_add(
+    manifest_path,
+    input_pattern=None,
+    input_paths=None,
+    entry_id=None,
+    input_format=None,
+    time_from=None,
+    times=None,
+    sort=False,
+    split=None,
+    tags=None,
+    group=None,
+    notes=None,
+    metadata=None,
+):
+    """Add a case to a dataset manifest (created if absent).
+
+    Same input shape as the `sequence` tool: exactly one of input_pattern (a
+    sandboxed glob) or input_paths. The source is validated (expanded once)
+    and stored relative to the manifest's directory, which is the manifest's
+    resolution anchor.
+    """
+    if (input_pattern is None) == (input_paths is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of input_pattern or input_paths"
+        )
+    manifest, resolved_manifest = _load_manifest(manifest_path, must_exist=False)
+    base = os.path.dirname(resolved_manifest)
+    if input_pattern is not None:
+        _resolve_pattern(input_pattern)  # sandbox + non-empty, before storing
+        head, tail = os.path.split(str(input_pattern))
+        rel_head = os.path.relpath(_resolve(head or "."), base)
+        source = {"Pattern": os.path.normpath(os.path.join(rel_head, tail))}
+    else:
+        resolved = [_resolve(p, must_exist=True) for p in input_paths]
+        source = {"Paths": [os.path.relpath(p, base) for p in resolved]}
+        if sort:
+            source["Sort"] = True
+    if input_format:
+        source["Format"] = input_format
+    if times is not None:
+        source["Times"] = [float(t) for t in times]
+    if time_from:
+        source["TimeFrom"] = time_from
+    entry = manifest.add(
+        source,
+        id=entry_id,
+        split=split,
+        tags=tags or (),
+        group=group,
+        notes=notes,
+        metadata=metadata,
+    )
+    manifest.save(resolved_manifest)
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "entry_id": entry.id,
+            "num_steps": len(entry.entries()),
+            "num_entries": len(manifest),
+        }
+    )
+
+
+def tool_dataset_list(manifest_path, split=None, tags=None, group=None, resolve=False):
+    """List a manifest's entries, optionally filtered by split/tags/group.
+
+    resolve=True also expands each entry's plan (paths/steps/times — no mesh
+    is read) with every resolved path sandbox-checked.
+    """
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    entries = manifest.entries(split=split, tags=tags or None, group=group)
+    payload = []
+    for entry in entries:
+        item = entry.to_dict()
+        if resolve:
+            item["resolved"] = _sandbox_entry_paths(entry)
+        payload.append(item)
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "name": manifest.name,
+            "num_entries": len(manifest),
+            "num_matching": len(entries),
+            "splits": {str(k): v for k, v in manifest.splits().items()},
+            "entries": payload,
+        }
+    )
+
+
+def tool_dataset_update(
+    manifest_path,
+    entry_ids=None,
+    all_entries=False,
+    split=None,
+    assign_splits=None,
+    seed=0,
+    by_group=False,
+    add_tags=None,
+    remove_tags=None,
+    group=None,
+    notes=None,
+    metadata=None,
+    drop_metadata=None,
+):
+    """Curate a manifest: set splits (or assign by fractions), tag, annotate.
+
+    entry_ids (or all_entries=true) selects; split/add_tags/remove_tags apply
+    to the selection; assign_splits={"train": 0.8, ...} reassigns every entry
+    deterministically (seed; by_group keeps groups together); group/notes/
+    metadata/drop_metadata need exactly one selected entry.
+    """
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    ids = "all" if all_entries else list(entry_ids or ())
+    if assign_splits is not None:
+        manifest.assign_splits(dict(assign_splits), seed=int(seed), by_group=by_group)
+    if split is not None:
+        if not ids:
+            raise ValueError("meshio++: mcp: split needs entry_ids or all_entries")
+        manifest.set_split(ids, split)
+    if add_tags or remove_tags:
+        if not ids:
+            raise ValueError("meshio++: mcp: tagging needs entry_ids or all_entries")
+        manifest.tag(ids, add=add_tags or (), remove=remove_tags or ())
+    if group is not None or notes is not None or metadata or drop_metadata:
+        if ids == "all" or len(ids) != 1:
+            raise ValueError(
+                "meshio++: mcp: group/notes/metadata apply to exactly one entry_id"
+            )
+        manifest.annotate(
+            ids[0],
+            notes=notes,
+            group=group,
+            metadata=metadata,
+            drop_metadata=drop_metadata or (),
+        )
+    manifest.save(resolved_manifest)
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "num_entries": len(manifest),
+            "splits": {str(k): v for k, v in manifest.splits().items()},
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Gated tools (optional extras; the wrapped functions raise the named error)  #
 # --------------------------------------------------------------------------- #
 def tool_data_export(input_path, output_path, input_format=None, location="point"):
@@ -1546,6 +1715,18 @@ TOOL_REGISTRY = OrderedDict(
         (
             "data_condition",
             {"fn": tool_data_condition, "wraps": ("data_condition",), "gated": None},
+        ),
+        (
+            "dataset_add",
+            {"fn": tool_dataset_add, "wraps": ("DatasetManifest",), "gated": None},
+        ),
+        (
+            "dataset_list",
+            {"fn": tool_dataset_list, "wraps": (), "gated": None},
+        ),
+        (
+            "dataset_update",
+            {"fn": tool_dataset_update, "wraps": (), "gated": None},
         ),
         (
             "data_export",

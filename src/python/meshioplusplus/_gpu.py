@@ -612,7 +612,7 @@ def has_jax() -> bool:
     return _importable("jax")
 
 
-def _require_framework(op, module, hint):
+def _require_framework(op, module, hint, doc="doc/ml.md"):
     """Import a heavyweight ML framework or raise naming the install command.
 
     The CuPy precedent, not ``_interop._require``: there is deliberately no
@@ -620,13 +620,15 @@ def _require_framework(op, module, hint):
     bundles CUDA at ~900 MB and JAX's accelerator story lives in its own
     extras (``jax[cuda12]``, …), so an extra pinning either would surprise far
     more people than it would help (the Open3D ~400 MB-wheel reasoning).
+    ``doc`` names the page the error points at — the PhysicsNeMo adapter
+    reuses this rather than growing a second no-extra error shape.
     """
     if _importable(module):
         return __import__(module)
     raise ImportError(
         f"meshio++: {op}: {module} is not installed. There is deliberately no "
         f"pip extra for it; install it directly with `{hint}` (pick the wheel "
-        "matching your accelerator). See doc/ml.md."
+        f"matching your accelerator). See {doc}."
     )
 
 

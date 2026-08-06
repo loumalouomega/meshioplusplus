@@ -55,6 +55,7 @@ from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_info import data_info
 from ._data_manage import data_drop, data_keep, data_manage, data_rename
+from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
 from ._diff import diff, meshes_equal
 from ._exceptions import ReadError, WriteError
@@ -259,6 +260,8 @@ __all__ = [
     "FeatureMatrix",
     "write_dataset",
     "has_zarr",
+    "DatasetManifest",
+    "DatasetEntry",
     "to_dlpack",
     "to_cupy",
     "from_cupy",
