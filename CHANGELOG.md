@@ -8,6 +8,46 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v9.30.0 (2026-08-06)
+
+**Roadmap §1 closed** — the PhysicsNeMo section's last four follow-ups ship
+and the section is removed from the roadmap. Pure Python + viewer work; no
+C++/binding change, no wasm rebuild, no ABI move.
+
+- **Autoregressive t→t+1 target pairing** (`meshioplusplus.physicsnemo`) —
+  `target_offset=n` on `iter_samples`/`make_dataset`/`make_reader` pairs
+  step k's inputs with step k+n's targets (each entry contributes
+  `len(series) − n` samples; a too-short entry contributes none, with one
+  warning naming it); `target_delta=True` makes `y` the increment
+  `f_{k+n} − f_k` (the MeshGraphNet convention), normalized by the new
+  `field_stats(delta=…)` emitting `{field}_diff_mean`/`{field}_diff_std`.
+  A paired sample honestly costs two reads ("at most two meshes alive" —
+  `TimeSeries` caches nothing), and a remeshed series fails the row-count
+  check by name rather than mis-pairing. The `GraphSample` schema records
+  `target_offset`/`target_delta`, so `GRAPH_SAMPLE_VERSION` bumps 1→2 —
+  additive, but a stored v1 schema now compares unequal, which is the
+  feature-drift guard doing its job.
+- **The `physicsnemo.mesh.Mesh` bridge** — `to_physicsnemo(mesh,
+  manifold_dim="auto", float32=True)` / `from_physicsnemo(pm)`, built
+  despite v9.28.0's recorded deferral, with the risk stated rather than
+  avoided: the target is PhysicsNeMo's newest surface, so the bridge is
+  gated (named `pip install nvidia-physicsnemo` error), touches only the
+  tensorclass constructor and public attributes (never the
+  self-declared-unstable `.pmsh` format), and the docs pin
+  `nvidia-physicsnemo>=2.1,<2.2`. The target holds exactly one simplex
+  kind, so non-simplex cells tessellate through the existing
+  `convert_cells` operations and everything it cannot hold (other-dim
+  blocks, regions, non-numeric data) is dropped with a warning.
+- **Dataset-manager UI: persisted directory handles** — the picked
+  directory survives a reload (best-effort IndexedDB) and a **Reopen**
+  button re-grants access with one click (the browser requires that user
+  gesture); denial or a stale handle falls back to a fresh pick.
+- **Dataset-manager UI: per-entry quality summaries** — preview summaries
+  and the whole-manifest Scan now include the `quality:*` metrics (worst
+  scaled Jacobian, inverted-cell badge), with quality rows excluded from
+  the NaN/Inf bad-case counts — a quality metric's NaN means "not
+  applicable to this cell type" by design, not a bad value.
+
 ## v9.29.0 (2026-08-06)
 
 **The dataset-manager UI** — the last item of the roadmap's PhysicsNeMo
