@@ -1018,6 +1018,7 @@ def tool_refine(
     where=None,
     closure="redgreen",
     record_levels=False,
+    record_hierarchy=False,
 ):
     """Subdivide cells into same-type children, all or a selected subset."""
     mesh = _load(input_path, input_format)
@@ -1030,6 +1031,7 @@ def tool_refine(
         where=where,
         closure=closure,
         record_levels=record_levels,
+        record_hierarchy=record_hierarchy,
     )
     return _result(_store(out, output_path, output_format), out)
 

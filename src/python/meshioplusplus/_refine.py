@@ -79,6 +79,16 @@ HANGING_NAME = "refine:hanging"
 #: duplicate. See ``operations/refine.hpp``'s ``kRefineEntityName``.
 ENTITY_NAME = "refine:entity"
 
+#: The Int64 ``cell_data`` array ``record_hierarchy`` attaches: a stable,
+#: never-reused id per cell -- the persistent parent/child hierarchy
+#: ``refine:level`` alone cannot give. See ``kRefineCellIdName``.
+CELL_ID_NAME = "refine:cell_id"
+
+#: The Int64 ``cell_data`` array naming, per output cell, the ``CELL_ID_NAME``
+#: of the cell in the mesh passed to *this call* that it came from. See
+#: ``kRefineParentIdName``.
+PARENT_ID_NAME = "refine:parent_id"
+
 
 # --------------------------------------------------------------------------- #
 # validation                                                                   #
@@ -276,7 +286,88 @@ def _read_entity_keys(mesh):
     return keys
 
 
-def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False):
+def _read_hierarchy(mesh, blocks):
+    """Read the input's ``refine:cell_id``/``refine:parent_id``, if any.
+
+    The numpy twin of ``refine_read_hierarchy`` in the C++ core, including its
+    warn-and-drop policy: this is the operation's own bookkeeping, not user
+    input, so a malformed or non-unique pair is dropped with a warning rather
+    than rejected outright.
+
+    Returns ``(ids, id_base)`` -- one id per global (block-major) input cell,
+    and one past the largest id in use anywhere, taken over BOTH arrays
+    defensively (a parent's id can outlive its own row once the cell is
+    split) -- or ``(None, 0)`` when the input carries no valid pair.
+    """
+    ids_blk = mesh.cell_data.get(CELL_ID_NAME)
+    if ids_blk is None:
+        return None, 0
+    parent_blk = mesh.cell_data.get(PARENT_ID_NAME)
+    if len(ids_blk) != len(blocks) or (
+        parent_blk is not None and len(parent_blk) != len(blocks)
+    ):
+        warnings.warn(
+            f"refine: ignoring {CELL_ID_NAME!r}/{PARENT_ID_NAME!r}: they do not cover every "
+            "cell block.",
+            stacklevel=2,
+        )
+        return None, 0
+
+    ids_parts = []
+    parent_parts = [] if parent_blk is not None else None
+    for b, (_, data) in enumerate(blocks):
+        value = np.asarray(ids_blk[b]) if ids_blk[b] is not None else None
+        if (
+            value is None
+            or len(value) != len(data)
+            or (len(data) and value.reshape(len(data), -1).shape[1] != 1)
+        ):
+            warnings.warn(
+                f"refine: ignoring {CELL_ID_NAME!r}: block {b} is not one scalar value per "
+                "cell.",
+                stacklevel=2,
+            )
+            return None, 0
+        ids_parts.append(value.reshape(-1).astype(np.int64, copy=False))
+        if parent_parts is not None:
+            pvalue = np.asarray(parent_blk[b]) if parent_blk[b] is not None else None
+            if (
+                pvalue is None
+                or len(pvalue) != len(data)
+                or (len(data) and pvalue.reshape(len(data), -1).shape[1] != 1)
+            ):
+                warnings.warn(
+                    f"refine: ignoring {PARENT_ID_NAME!r}: block {b} is not one scalar value "
+                    "per cell.",
+                    stacklevel=2,
+                )
+                return None, 0
+            parent_parts.append(pvalue.reshape(-1).astype(np.int64, copy=False))
+
+    ids = np.concatenate(ids_parts) if ids_parts else np.empty(0, dtype=np.int64)
+    if np.any(ids < 0) or len(np.unique(ids)) != len(ids):
+        warnings.warn(
+            f"refine: ignoring {CELL_ID_NAME!r}/{PARENT_ID_NAME!r}: the ids are not both "
+            "unique and non-negative, so the mesh was merged or the array was replicated by "
+            "another operation.",
+            stacklevel=2,
+        )
+        return None, 0
+    max_id = int(ids.max()) if len(ids) else -1
+    if parent_parts is not None:
+        parents = (
+            np.concatenate(parent_parts)
+            if parent_parts
+            else np.empty(0, dtype=np.int64)
+        )
+        if len(parents):
+            max_id = max(max_id, int(parents.max()))
+    return ids, max_id + 1
+
+
+def _refine_once_py(
+    mesh, red_seed=None, closure="redgreen", record_levels=False, record_hierarchy=False
+):
     n = len(mesh.points)
     blocks = [(cb.type, np.asarray(cb.data)) for cb in mesh.cells]
     for cell_type, data in blocks:
@@ -609,8 +700,8 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
     # base_levels was hoisted above: the balanced closure compares levels.
     cell_data = {}
     for key, blk in mesh.cell_data.items():
-        if key == LEVEL_NAME:
-            continue  # recomputed below, never replicated
+        if key in (LEVEL_NAME, CELL_ID_NAME, PARENT_ID_NAME):
+            continue  # this operation's own bookkeeping, rebuilt separately
         out_blk = []
         for b, value in enumerate(blk):
             if value is None or b >= len(blocks):
@@ -643,8 +734,11 @@ def _refine_once_py(mesh, red_seed=None, closure="redgreen", record_levels=False
     # Attached whenever this pass leaves hanging nodes, and maintained thereafter
     # once present, exactly as refine:level is. A pass that leaves none and
     # inherits none writes nothing, which keeps every conforming closure's output
-    # byte-identical to what it was before the array existed.
-    if hanging.any() or base_entities is not None:
+    # byte-identical to what it was before the array existed -- UNLESS
+    # record_hierarchy, which forces it: it already records the coarse corners
+    # each new fine node is the mean of, the multigrid prolongation stencil
+    # redgreen/propagate would otherwise never expose.
+    if hanging.any() or base_entities is not None or record_hierarchy:
         point_data[ENTITY_NAME] = out_entities
 
     out = Mesh(
@@ -668,6 +762,7 @@ def _refine_py(
     red_seed=None,
     closure="redgreen",
     record_levels=False,
+    record_hierarchy=False,
 ):
     if levels <= 0:
         out = Mesh(
@@ -684,7 +779,7 @@ def _refine_py(
         cell_maps = [np.arange(len(cb.data), dtype=np.int64) for cb in mesh.cells]
     else:
         out, point_map, cell_maps, next_seed = _refine_once_py(
-            mesh, red_seed, closure, record_levels
+            mesh, red_seed, closure, record_levels, record_hierarchy
         )
         for _ in range(levels - 1):
             # Level k > 1 refines the children of level k - 1's red cells; green
@@ -694,12 +789,17 @@ def _refine_py(
                 next_seed if red_seed is not None else None,
                 closure,
                 record_levels,
+                record_hierarchy,
             )
             point_map = next_pm[point_map]
             cell_maps = [next_cm[b][cm] for b, cm in enumerate(cell_maps)]
 
     if record_parent_ids:
         out.cell_data[PARENT_CELL_NAME] = _parent_ids(out, cell_maps)
+    # Reads the ORIGINAL mesh, never an intermediate: cell_maps already
+    # composes through every internal level, so "the mesh passed to this
+    # call" is unambiguous regardless of levels -- see _attach_hierarchy.
+    _attach_hierarchy(mesh, out, cell_maps, record_hierarchy)
     return out, point_map, cell_maps
 
 
@@ -716,6 +816,60 @@ def _parent_ids(out, cell_maps):
                 ids[lo:hi] = p
         blocks.append(ids)
     return blocks
+
+
+def _attach_hierarchy(input_mesh, out, cell_maps, record_hierarchy):
+    """Attach ``refine:cell_id``/``refine:parent_id`` from the FINAL composed
+    cell maps -- the numpy twin of ``refine_attach_hierarchy``. One serial pass
+    over the whole call's result, exactly parity with :func:`_parent_ids`: a
+    composed run of length one is a cell no level ever split, so it keeps its
+    own identity and is its own parent; every other cell in a longer run gets
+    one fresh id from a single counter walking the output's own block/cell
+    order, and carries the run's original (in THIS call's input) ancestor as
+    its parent.
+    """
+    input_ids, id_base = _read_hierarchy(
+        input_mesh, [(cb.type, np.asarray(cb.data)) for cb in input_mesh.cells]
+    )
+    maintained = input_ids is not None
+    if not maintained and not record_hierarchy:
+        return
+    if not maintained:
+        # Absent, or dropped as malformed/non-unique (warned already): start a
+        # fresh id space from the mesh's implicit global block-major ids.
+        total = sum(len(cb.data) for cb in input_mesh.cells)
+        input_ids = np.arange(total, dtype=np.int64)
+        id_base = total
+
+    bases = block_bases(input_mesh.cells)
+    next_id = id_base
+    id_blocks = []
+    parent_blocks = []
+    for b, cb in enumerate(out.cells):
+        ncells = len(cb.data)
+        ids = np.full(ncells, -1, dtype=np.int64)
+        parents = np.full(ncells, -1, dtype=np.int64)
+        first = np.asarray(cell_maps[b], dtype=np.int64) if b < len(cell_maps) else None
+        if first is not None and len(first):
+            ends = np.append(first[1:], ncells)
+            base = int(bases[b]) if b < len(bases) else 0
+            for p, (lo, hi) in enumerate(zip(first, ends)):
+                original_id = int(input_ids[base + p])
+                if hi - lo == 1:
+                    # A run of length one is a cell no level of this call ever
+                    # split (every admissible non-empty mask yields more than
+                    # one child), so it keeps its own identity.
+                    ids[lo] = original_id
+                    parents[lo] = original_id
+                else:
+                    for c in range(lo, hi):
+                        ids[c] = next_id
+                        next_id += 1
+                        parents[c] = original_id
+        id_blocks.append(ids.reshape(-1, 1))
+        parent_blocks.append(parents.reshape(-1, 1))
+    out.cell_data[CELL_ID_NAME] = id_blocks
+    out.cell_data[PARENT_ID_NAME] = parent_blocks
 
 
 # --------------------------------------------------------------------------- #
@@ -771,6 +925,7 @@ def refine(
     where: str | None = None,
     closure: str = "redgreen",
     record_levels: bool = False,
+    record_hierarchy: bool = False,
 ) -> Mesh:
     """Refine a mesh, subdividing cells into same-type children.
 
@@ -805,6 +960,21 @@ def refine(
         (0 for a cell no full split touched, +1 per full split; a transitional
         child inherits its parent's level). An input already carrying it is
         updated whatever this says — the flag only controls *creating* it.
+    :param record_hierarchy: attach the int64 ``refine:cell_id``/
+        ``refine:parent_id`` ``cell_data`` arrays -- the persistent parent/child
+        hierarchy a multigrid caller resolves across the sequence of meshes it
+        keeps ("a link between two meshes, not a tree inside one"): an
+        unsplit cell keeps its id and is its own parent; a split cell's
+        children each get a fresh id and carry the parent's id. An input
+        already carrying ``refine:cell_id`` is updated whatever this says.
+        Also forces ``refine:entity`` to be attached even when the closure
+        leaves no hanging node, since it already records the coarse corners
+        each new fine node is the mean of -- the multigrid prolongation
+        weights, which ``redgreen``/``propagate`` would otherwise never
+        expose. Interacts with :func:`meshioplusplus.split`: an unqualified
+        ``split(mesh, by="tag")`` auto-picks the first sorted integer
+        ``cell_data`` array, and ``"refine:cell_id"`` sorts ahead of ordinary
+        material tags -- name the array explicitly on a mesh carrying it.
     :returns: the refined mesh.
     :raises ValueError: on a higher-order, ``pyramid``, or ragged cell block; on
         more than one selector; on an out-of-range cell index; on an unknown
@@ -833,6 +1003,7 @@ def refine(
             predicate_value,
             closure,
             bool(record_levels),
+            bool(record_hierarchy),
         )
         out = res["mesh"]
         point_map = np.asarray(res["point_map"])
@@ -860,6 +1031,7 @@ def refine(
             red_seed,
             closure,
             record_levels,
+            record_hierarchy,
         )
 
     # The C++ core carries named regions across itself (and therefore

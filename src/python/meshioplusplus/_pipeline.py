@@ -76,6 +76,7 @@ _OP_TABLE = {
         "Value",
         "Closure",
         "RecordLevels",
+        "RecordHierarchy",
     ),
     "Decimate": (
         "Ratio",
@@ -369,6 +370,7 @@ def _apply_step(mesh, step, steps, warnings):
             where=where,
             closure=_text(step, "Closure", "redgreen"),
             record_levels=_flag(step, "RecordLevels", False),
+            record_hierarchy=_flag(step, "RecordHierarchy", False),
         )
     elif op == "Decimate":
         ratio = _number(step, "Ratio", -1.0)

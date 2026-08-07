@@ -81,6 +81,16 @@ def add_args(parser):
         action="store_true",
         help="attach refine:level cell_data of each cell's refinement depth",
     )
+    parser.add_argument(
+        "--record-hierarchy",
+        action="store_true",
+        help=(
+            "attach refine:cell_id/refine:parent_id cell_data -- the persistent "
+            "parent/child hierarchy a multigrid caller resolves across the "
+            "sequence of meshes it keeps; also forces refine:entity to be "
+            "attached even when the closure leaves no hanging node"
+        ),
+    )
 
 
 def refine_cmd(args):
@@ -97,6 +107,7 @@ def refine_cmd(args):
         where=args.where,
         closure=args.closure,
         record_levels=args.record_levels,
+        record_hierarchy=args.record_hierarchy,
     )
     write(args.outfile, out, file_format=args.output_format)
     return 0

@@ -1605,6 +1605,7 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
                                   {"where", {}, true},
                                   {"closure", {}, true},
                                   {"record-levels", {}, false},
+                                  {"record-hierarchy", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
@@ -1614,6 +1615,7 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     options.mLevels = std::stoi(opt_value(p, "levels", "1"));
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
     options.mRecordLevels = has_flag(p, "record-levels");
+    options.mRecordHierarchy = has_flag(p, "record-hierarchy");
     options.mClosure = meshioplusplus::refine_closure_from_name(opt_value(p, "closure"));
     if (has_opt(p, "cells"))
         options.mCells = refine_parse_int64s(opt_value(p, "cells"));

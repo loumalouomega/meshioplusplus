@@ -236,6 +236,13 @@ export type OpSpec =
       value?: number;
       closure?: RefineClosure;
       recordLevels?: boolean;
+      /**
+       * Attach `refine:cell_id`/`refine:parent_id` -- the persistent
+       * parent/child hierarchy a multigrid caller resolves across the
+       * sequence of meshes it keeps. Also forces `refine:entity` to be
+       * attached even when the closure leaves no hanging node.
+       */
+      recordHierarchy?: boolean;
     }
   | {
       /**
@@ -438,6 +445,19 @@ export interface RefineOptions {
   closure?: RefineClosure;
   /** Attach the `refine:level` `cell_data` array. */
   recordLevels?: boolean;
+  /**
+   * Attach the `refine:cell_id`/`refine:parent_id` `cell_data` arrays -- the
+   * persistent parent/child hierarchy a multigrid caller resolves across the
+   * sequence of meshes it keeps ("a link between two meshes, not a tree
+   * inside one"): an unsplit cell keeps its id and is its own parent; a
+   * split cell's children each get a fresh id and carry the parent's id. An
+   * input already carrying `refine:cell_id` is updated whatever this says.
+   * Also forces `refine:entity` to be attached even when the closure leaves
+   * no hanging node, since it already records the coarse corners each new
+   * fine node is the mean of -- the multigrid prolongation weights, which
+   * `'redgreen'`/`'propagate'` would otherwise never expose.
+   */
+  recordHierarchy?: boolean;
 }
 
 /** Where `decimate` places the surviving vertex of a collapsed edge. */

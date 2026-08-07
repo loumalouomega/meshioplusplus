@@ -720,6 +720,7 @@ def _register_operations(server: FastMCP) -> None:
         where: Optional[str] = None,
         closure: str = "redgreen",
         record_levels: bool = False,
+        record_hierarchy: bool = False,
     ) -> dict:
         """Refine: subdivide cells into congruent same-type children, `levels`
         times. With no selector every cell is refined; give at most one of
@@ -730,7 +731,11 @@ def _register_operations(server: FastMCP) -> None:
         "redgreen" keeps that local, "propagate" reaches the whole connected
         component, and "balanced" keeps the hanging nodes and only enforces 2:1
         balance (the output is then NOT conforming; the constrained nodes are
-        reported in refine:hanging). `record_levels` attaches refine:level."""
+        reported in refine:hanging). `record_levels` attaches refine:level.
+        `record_hierarchy` attaches refine:cell_id/refine:parent_id -- the
+        persistent parent/child hierarchy a multigrid caller resolves across
+        the sequence of meshes it keeps; also forces refine:entity to be
+        attached even when the closure leaves no hanging node."""
         return _guard(
             _tools.tool_refine,
             input_path=input_path,
@@ -744,6 +749,7 @@ def _register_operations(server: FastMCP) -> None:
             where=where,
             closure=closure,
             record_levels=record_levels,
+            record_hierarchy=record_hierarchy,
         )
 
     @server.tool()

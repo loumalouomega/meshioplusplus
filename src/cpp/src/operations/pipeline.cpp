@@ -226,7 +226,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
           "GuardInversion"}},
         {"Refine",
-         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels"}},
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels",
+          "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
@@ -481,6 +482,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         RefineOptions opts;
         opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
         opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", false);
+        opts.mRecordHierarchy = pipe_flag(rStep, "RecordHierarchy", false);
         opts.mClosure = refine_closure_from_name(pipe_text(rStep, "Closure", ""));
         opts.mCells = pipe_ivec(rStep, "Cells");
         opts.mRegion = pipe_text(rStep, "Region", "");
