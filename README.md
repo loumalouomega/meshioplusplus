@@ -107,6 +107,7 @@ meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-sect
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
 meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
+meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6  # ZZ error indicator + marking
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -455,7 +456,19 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, which is a mesh operation grouped under `data` because that is where a user looks for it).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+
+#### Error estimation (Zienkiewicz-Zhu recovery + marking)
+
+**`meshioplusplus.estimate_error`** estimates the per-cell recovered-gradient error of a `point_data` field, and can mark cells for refinement — the piece that closes the adaptive loop: `gradient` differentiates and selective `refine`'s `--where` consumes any scalar `cell_data` predicate; this produces one, so estimate → mark → refine is three verbs and no new numerical code. It is a **composition**, not a new kernel: `gradient` (Green-Gauss, cell location) → the measure-weighted point↔cell averaging round trip recovers a smoothed gradient, and `eta_K = sqrt(|measure| · sum((recovered − raw)²))` per cell is the standard ZZ indicator. `marking` turns it into a boolean `error:marked` array: `"absolute"` (threshold), `"fraction"` (top N by indicator), or `"dorfler"` (the smallest indicator-descending prefix covering a bulk fraction of the total — the usual AMR criterion). Cells that cannot be evaluated read NaN in the indicator and 0 (never NaN) in the marking array, counted and excluded from the global error. See `doc/error.md`.
+
+```python
+out, report = meshioplusplus.estimate_error(
+    vol, "T", marking="dorfler", marking_value=0.6, return_report=True,
+)
+print(report["global_error"], report["num_marked"])
+adapted = meshioplusplus.refine(out, where="error:marked > 0.5")
+```
 
 #### Data operations (rename / average / calc / condition / summarize)
 
@@ -746,7 +759,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.1.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
