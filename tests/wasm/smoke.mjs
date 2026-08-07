@@ -929,6 +929,52 @@ step('gradient: a linear field is differentiated exactly, and the (n,3) shape su
     assert.throws(() => m.gradient(field, 'f', 'divergence'));
 });
 
+step('estimateError: zero on a linear field, nonzero and markable on a quadratic one', () => {
+    // Two unit-cube hexahedra stacked along z, sharing the z=1 face -- a
+    // single-cell mesh cannot show a nonzero indicator at all, since
+    // averaging one cell's own value back onto itself is a no-op.
+    const pts = new Float64Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+        0, 0, 2, 1, 0, 2, 1, 1, 2, 0, 1, 2,
+    ]);
+    const conn = new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11]);
+    const twoCells = {
+        points: pts, dim: 3,
+        cells: [{ type: 'hexahedron', data: conn, nodesPerCell: 8 }],
+        point_data: {}, cell_data: {}, field_data: {},
+    };
+
+    // Linear field: raw == recovered everywhere, so the indicator is zero.
+    const lin = new Float64Array(12);
+    for (let i = 0; i < 12; ++i) lin[i] = 2 * pts[i * 3] - 3 * pts[i * 3 + 1] + 0.5 * pts[i * 3 + 2];
+    const linField = { ...twoCells, point_data: { f: lin } };
+    const e0 = m.estimateError(linField, 'f');
+    assert.equal(e0.numSkipped, 0);
+    assert.ok(e0.globalError < 1e-9, `global_error ${e0.globalError} should be ~0 on a linear field`);
+    assert.ok(e0.mesh.cell_data['error:zz'][0].every((v) => Math.abs(v) < 1e-9));
+    assert.equal(e0.mesh.cell_data['error:marked'], undefined, 'no marking requested');
+
+    // Quadratic field: the two cells' raw gradients genuinely differ, so
+    // recovery (averaging across the shared face) gives a nonzero indicator.
+    const quad = new Float64Array(12);
+    for (let i = 0; i < 12; ++i) {
+        const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        quad[i] = x * x + y * y + z * z;
+    }
+    const quadField = { ...twoCells, point_data: { f: quad } };
+    const e1 = m.estimateError(quadField, 'f', 'zz', 'absolute', 1e-9, '', '', true);
+    assert.equal(e1.numSkipped, 0);
+    assert.ok(e1.globalError > 0, 'a quadratic field must give a nonzero global error');
+    assert.equal(e1.mesh.cell_data['error:marked'].length, 1, 'one marked block per cell block');
+    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => v === 0 || v === 1));
+
+    // A cell_data field has no derivative to recover; an out-of-range
+    // marking_value for "fraction" is rejected.
+    assert.throws(() => m.estimateError(e1.mesh, 'error:zz'));
+    assert.throws(() => m.estimateError(quadField, 'f', 'zz', 'fraction', 1.5));
+});
+
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
     // The pipeline is path-based and re-skins at the end, so a POINT-located
     // gradient is the one that survives to the written surface.
@@ -1137,6 +1183,7 @@ step('every binding is reachable through the wrapper', () => {
         'slice',
         'isosurface',
         'gradient',
+        'estimateError',
         'cropBbox',
         'cropPlane',
         'cropPredicate',
