@@ -90,6 +90,26 @@ def test_run_pipeline_chains_and_reports(settings_env):
     assert "quality:scaled_jacobian" in out.cell_data
 
 
+def test_refine_record_hierarchy_step(settings_env):
+    """RecordHierarchy round-trips through a pipeline document -- both the
+    pure-Python runner and (when available) the C++ engine, since the op is
+    dispatched generically off the same _OP_TABLE/pipeline_op_table pair
+    test_op_table_matches_core pins."""
+    settings = make_settings(settings_env, [{"Op": "Refine", "RecordHierarchy": True}])
+    meshioplusplus.run_pipeline(settings)
+    out = meshioplusplus.read(settings_env["out"])
+    assert "refine:cell_id" in out.cell_data
+    assert "refine:parent_id" in out.cell_data
+    assert "refine:entity" in out.point_data  # the multigrid-stencil fix
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert "refine:cell_id" in out_cpp.cell_data
+        assert "refine:parent_id" in out_cpp.cell_data
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict

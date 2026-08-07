@@ -36,7 +36,9 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 
@@ -1319,6 +1321,297 @@ TEST(RefineSelective, SelectiveNumberingIsStableAcrossRepeatedRuns) {
         ASSERT_EQ(rows_of(again.mMesh, 0), rows_of(first.mMesh, 0)) << "run " << run;
         mt::expect_points_close(first.mMesh, again.mMesh, 0.0);
     }
+}
+
+// --- refine:cell_id / refine:parent_id ----------------------------------------
+//
+// The persistent hierarchy: "a link between two meshes, not a tree inside
+// one". A multigrid or green-undo caller keeps every pass's OUTPUT mesh; the
+// fine mesh's refine:parent_id resolves against the coarse mesh's
+// refine:cell_id (implicit, or the coarse mesh's own recorded ids).
+
+TEST(RefineSelective, HierarchyIsNotRecordedUnlessAsked) {
+    Mesh m = tri_grid(2);
+    const RefineResult res = refine(m, cells_opt({0}));
+    EXPECT_FALSE(res.mMesh.HasCellData("refine:cell_id"));
+    EXPECT_FALSE(res.mMesh.HasCellData("refine:parent_id"));
+}
+
+TEST(RefineSelective, AnUnsplitCellKeepsItsIdAndIsItsOwnParent) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({8});
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:cell_id"));
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:parent_id"));
+    const NDArray& ids = res.mMesh.CellData("refine:cell_id", 0);
+    const NDArray& parents = res.mMesh.CellData("refine:parent_id", 0);
+    const std::int64_t* map = res.mCellMaps[0].As<std::int64_t>();
+    const std::size_t nparents = res.mCellMaps[0].Size();
+    const std::size_t ncells = res.mMesh.Cells(0).NumCells();
+    std::size_t untouched_checked = 0;
+    for (std::size_t p = 0; p < nparents; ++p) {
+        const std::int64_t lo = map[p];
+        const std::int64_t hi = p + 1 < nparents ? map[p + 1] : static_cast<std::int64_t>(ncells);
+        if (hi - lo != 1)
+            continue;  // this parent was split; not what this test checks
+        const std::size_t c = static_cast<std::size_t>(lo);
+        EXPECT_EQ(meshioplusplus::detail::read_int(ids, c), static_cast<std::int64_t>(p))
+            << "an untouched cell must keep its own implicit id";
+        EXPECT_EQ(meshioplusplus::detail::read_int(parents, c), static_cast<std::int64_t>(p))
+            << "an untouched cell is its own parent";
+        ++untouched_checked;
+    }
+    EXPECT_GT(untouched_checked, 0u) << "the selection must leave some cell untouched to check";
+}
+
+TEST(RefineSelective, EveryCellIdIsUniqueAcrossBlocks) {
+    Mesh m = mt::tri_quad_mesh();
+    RefineOptions o;
+    o.mLevels = 2;
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    std::set<std::int64_t> seen;
+    for (std::size_t b = 0; b < res.mMesh.NumCellBlocks(); ++b) {
+        const NDArray& ids = res.mMesh.CellData("refine:cell_id", b);
+        for (std::size_t i = 0; i < ids.Size(); ++i) {
+            const std::int64_t id = meshioplusplus::detail::read_int(ids, i);
+            EXPECT_TRUE(seen.insert(id).second) << "duplicate id " << id << " in block " << b;
+        }
+    }
+}
+
+TEST(RefineSelective, ImplicitIdsAreTheGlobalBlockMajorIndex) {
+    // A mixed-block mesh, so implicit numbering across blocks (not just within
+    // one) is what is actually being checked -- the same numbering
+    // detail::block_bases/partition_labels use.
+    Mesh m = mt::tri_quad_mesh();
+    RefineOptions o = cells_opt({0});
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    const std::vector<std::int64_t> bases = meshioplusplus::detail::block_bases(m);
+    for (std::size_t b = 0; b < res.mMesh.NumCellBlocks(); ++b) {
+        const NDArray& ids = res.mMesh.CellData("refine:cell_id", b);
+        const std::int64_t* map = res.mCellMaps[b].As<std::int64_t>();
+        const std::size_t nparents = res.mCellMaps[b].Size();
+        const std::size_t ncells = res.mMesh.Cells(b).NumCells();
+        for (std::size_t p = 0; p < nparents; ++p) {
+            const std::int64_t lo = map[p];
+            const std::int64_t hi =
+                p + 1 < nparents ? map[p + 1] : static_cast<std::int64_t>(ncells);
+            if (hi - lo != 1)
+                continue;  // only untouched cells keep their implicit id
+            EXPECT_EQ(meshioplusplus::detail::read_int(ids, static_cast<std::size_t>(lo)),
+                      bases[b] + static_cast<std::int64_t>(p));
+        }
+    }
+}
+
+TEST(RefineSelective, FreshIdsExceedEveryInputId) {
+    Mesh m = tri_grid(3);
+    RefineOptions o1 = cells_opt({8});
+    o1.mRecordHierarchy = true;
+    const RefineResult first = refine(m, o1);
+    std::int64_t max_first_id = -1;
+    const NDArray& ids1 = first.mMesh.CellData("refine:cell_id", 0);
+    for (std::size_t i = 0; i < ids1.Size(); ++i)
+        max_first_id = std::max(max_first_id, meshioplusplus::detail::read_int(ids1, i));
+
+    RefineOptions o2 = cells_opt({0});
+    o2.mRecordHierarchy = true;
+    const RefineResult second = refine(first.mMesh, o2);
+    const NDArray& ids2 = second.mMesh.CellData("refine:cell_id", 0);
+    const std::int64_t* map2 = second.mCellMaps[0].As<std::int64_t>();
+    const std::size_t nparents2 = second.mCellMaps[0].Size();
+    const std::size_t ncells2 = second.mMesh.Cells(0).NumCells();
+    bool checked_a_fresh_id = false;
+    for (std::size_t p = 0; p < nparents2; ++p) {
+        const std::int64_t lo = map2[p];
+        const std::int64_t hi =
+            p + 1 < nparents2 ? map2[p + 1] : static_cast<std::int64_t>(ncells2);
+        if (hi - lo == 1)
+            continue;  // untouched, kept its old (possibly small) id
+        for (std::int64_t c = lo; c < hi; ++c) {
+            EXPECT_GT(meshioplusplus::detail::read_int(ids2, static_cast<std::size_t>(c)),
+                      max_first_id);
+            checked_a_fresh_id = true;
+        }
+    }
+    EXPECT_TRUE(checked_a_fresh_id) << "the second call must have split something to check";
+}
+
+TEST(RefineSelective, EveryParentIdResolvesInTheInputMesh) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({8});
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    // m carries no refine:cell_id of its own, so its implicit ids are its
+    // global block-major indices: [0, NumCells()).
+    const std::int64_t coarse_n = static_cast<std::int64_t>(m.Cells(0).NumCells());
+    const NDArray& parents = res.mMesh.CellData("refine:parent_id", 0);
+    for (std::size_t i = 0; i < parents.Size(); ++i) {
+        const std::int64_t p = meshioplusplus::detail::read_int(parents, i);
+        EXPECT_GE(p, 0);
+        EXPECT_LT(p, coarse_n) << "every parent_id must resolve to a cell of the coarse mesh";
+    }
+}
+
+TEST(RefineSelective, RedGreenAndUntouchedAreDistinguishableFromTheTwoMeshes) {
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({8});
+    o.mRecordHierarchy = true;
+    o.mRecordLevels = true;
+    const RefineResult res = refine(m, o);
+    const NDArray& ids = res.mMesh.CellData("refine:cell_id", 0);
+    const NDArray& parents = res.mMesh.CellData("refine:parent_id", 0);
+    const NDArray& levels = res.mMesh.CellData("refine:level", 0);
+    // m has no PRIOR refine:level, so every parent's own level is implicitly 0
+    // and the classification collapses to the rule stated in refine.hpp:
+    // untouched: id == parent; green: id != parent && level == 0 (unchanged);
+    // red: id != parent && level == 1 (one more than the parent's 0).
+    std::size_t untouched = 0, green = 0, red = 0;
+    for (std::size_t c = 0; c < ids.Size(); ++c) {
+        const std::int64_t id = meshioplusplus::detail::read_int(ids, c);
+        const std::int64_t parent = meshioplusplus::detail::read_int(parents, c);
+        const std::int64_t level = meshioplusplus::detail::read_int(levels, c);
+        if (id == parent) {
+            EXPECT_EQ(level, 0) << "an untouched cell must be at level 0 too";
+            ++untouched;
+        } else if (level == 1) {
+            ++red;
+        } else {
+            EXPECT_EQ(level, 0) << "a green child inherits its parent's level unchanged";
+            ++green;
+        }
+    }
+    EXPECT_GT(untouched, 0u) << "no third array is needed only if all three classes are covered";
+    EXPECT_GT(green, 0u);
+    EXPECT_GT(red, 0u);
+}
+
+TEST(RefineSelective, SiblingsGroupUnderSplitByTag) {
+    using meshioplusplus::split;
+    using meshioplusplus::SplitBy;
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({4, 8});
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    const NDArray& parents = res.mMesh.CellData("refine:parent_id", 0);
+    std::set<std::int64_t> distinct_parents;
+    for (std::size_t i = 0; i < parents.Size(); ++i)
+        distinct_parents.insert(meshioplusplus::detail::read_int(parents, i));
+
+    const auto grouped = split(res.mMesh, SplitBy::Tag, "refine:parent_id");
+    EXPECT_EQ(grouped.mPieces.size(), distinct_parents.size())
+        << "one piece per distinct parent -- siblings grouped, untouched cells singletons";
+    for (const auto& piece : grouped.mPieces) {
+        const std::int64_t key = std::stoll(piece.mKey);
+        EXPECT_TRUE(distinct_parents.count(key));
+    }
+}
+
+TEST(RefineSelective, TwoLevelsNameTheOriginalInputLikeParentCell) {
+    Mesh m = tri_grid(3);
+    RefineOptions o;
+    o.mLevels = 2;
+    o.mRecordHierarchy = true;
+    o.mRecordParentIds = true;
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:parent_cell"));
+    ASSERT_TRUE(res.mMesh.HasCellData("refine:parent_id"));
+    const NDArray& parent_cell = res.mMesh.CellData("refine:parent_cell", 0);
+    const NDArray& parent_id = res.mMesh.CellData("refine:parent_id", 0);
+    // refine:parent_cell names the original ancestor's ROW INDEX; for a mesh
+    // with no prior hierarchy the implicit refine:cell_id of an input cell IS
+    // its row index, so the two must induce the identical partition even
+    // across several internal levels.
+    ASSERT_EQ(parent_cell.Size(), parent_id.Size());
+    for (std::size_t i = 0; i < parent_cell.Size(); ++i)
+        EXPECT_EQ(meshioplusplus::detail::read_int(parent_cell, i),
+                  meshioplusplus::detail::read_int(parent_id, i));
+}
+
+TEST(RefineSelective, RecordHierarchyAlsoAttachesTheEntityKeys) {
+    // RedGreen leaves no hanging nodes, so refine:entity would normally never
+    // be attached at all -- but mRecordHierarchy needs it as the multigrid
+    // prolongation stencil (each new fine node's coarse corners and weights).
+    Mesh m = tri_grid(3);
+    RefineOptions o = cells_opt({8}, RefineClosure::RedGreen);
+    o.mRecordHierarchy = true;
+    const RefineResult res = refine(m, o);
+    ASSERT_TRUE(res.mMesh.HasPointData("refine:entity"));
+    const NDArray& keys = res.mMesh.PointData("refine:entity");
+    const NDArray& pts = res.mMesh.Points();
+    const std::size_t dim = res.mMesh.PointDim();
+    std::size_t new_nodes_checked = 0;
+    for (std::size_t p = 0; p < res.mMesh.NumPoints(); ++p) {
+        std::array<std::int64_t, 4> key{};
+        for (std::size_t k = 0; k < 4; ++k)
+            key[k] = meshioplusplus::detail::read_int(keys, p * 4 + k);
+        if (key[3] < 0)
+            continue;  // an original point, not one refine created
+        const std::size_t first = key[0] < 0 ? 2 : 0;
+        for (std::size_t k = 0; k < dim; ++k) {
+            double sum = 0.0;
+            for (std::size_t c = first; c < 4; ++c)
+                sum += pts.As<double>()[static_cast<std::size_t>(key[c]) * dim + k];
+            EXPECT_DOUBLE_EQ(pts.As<double>()[p * dim + k], sum / static_cast<double>(4 - first))
+                << "point " << p << " must sit at the corner mean of its recorded entity";
+        }
+        ++new_nodes_checked;
+    }
+    EXPECT_GT(new_nodes_checked, 0u) << "the selection must have created some new node to check";
+}
+
+// A validation guard nobody tests for firing is exactly how an oracle ships
+// inert (see TheConformityOraclesActuallyFire above). This proves the
+// hierarchy guard checks TWO independent things -- uniqueness and
+// non-negativity -- and does NOT reject a genuinely valid array, so the two
+// sabotages below are not meaningless (a guard that rejected everything would
+// "catch" both for the wrong reason).
+TEST(RefineSelective, TheHierarchyOraclesActuallyFire) {
+    const auto attach_and_refine = [](std::vector<std::int64_t> ids,
+                                      std::vector<std::int64_t> parents) {
+        Mesh m = tri_grid(2);
+        const std::size_t n = m.Cells(0).NumCells();
+        NDArray id_arr = NDArray::Uninit(meshioplusplus::DType::Int64, {n, 1});
+        NDArray parent_arr = NDArray::Uninit(meshioplusplus::DType::Int64, {n, 1});
+        for (std::size_t c = 0; c < n; ++c) {
+            id_arr.As<std::int64_t>()[c] = ids[c];
+            parent_arr.As<std::int64_t>()[c] = parents[c];
+        }
+        std::vector<NDArray> id_blocks, parent_blocks;
+        id_blocks.push_back(std::move(id_arr));
+        parent_blocks.push_back(std::move(parent_arr));
+        m.AddCellData("refine:cell_id", std::move(id_blocks));
+        m.AddCellData("refine:parent_id", std::move(parent_blocks));
+        return refine(m, cells_opt({0})).mMesh.HasCellData("refine:cell_id");
+    };
+    const std::size_t n = tri_grid(2).Cells(0).NumCells();
+    std::vector<std::int64_t> sequential(n), self_parent(n);
+    for (std::size_t c = 0; c < n; ++c)
+        sequential[c] = self_parent[c] = static_cast<std::int64_t>(c);
+
+    // Sabotage 1: a duplicated id, otherwise well-formed. A guard checking
+    // only shape/coverage would let this through.
+    {
+        std::vector<std::int64_t> dup = sequential;
+        dup[0] = dup[1];
+        EXPECT_FALSE(attach_and_refine(dup, self_parent))
+            << "the uniqueness check must have fired on the duplicated id";
+    }
+    // Sabotage 2: a negative id, unique otherwise. A guard checking only
+    // uniqueness (e.g. via a hash set) would let this through.
+    {
+        std::vector<std::int64_t> negative = sequential;
+        negative[0] = -1;
+        EXPECT_FALSE(attach_and_refine(negative, self_parent))
+            << "the non-negativity check must have fired on the negative id";
+    }
+    // Control: genuinely valid input must survive, or the two sabotages above
+    // prove nothing (a guard rejecting everything "catches" both trivially).
+    EXPECT_TRUE(attach_and_refine(sequential, self_parent))
+        << "a genuinely valid hierarchy must be maintained, not rejected";
 }
 
 }  // namespace selective

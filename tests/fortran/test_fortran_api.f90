@@ -465,6 +465,42 @@ program test_fortran_api
         call prop%free()
     end block
 
+    ! -- refine: the persistent parent/child hierarchy --
+    block
+        type(mio_mesh) :: hier
+        real(real64), allocatable :: entity(:, :)
+        integer :: st
+
+        ! record_hierarchy is opt-in ('quality' was attached to m earlier and
+        ! is carried through regardless -- only the two new reserved names are
+        ! gated on the flag).
+        hier = m%refine(cells=[1_int64], stat=st)
+        call check(st == 0, 'plain selective refine succeeded')
+        call check(hier%cell_data_num_blocks('refine:cell_id') < 0_int64, &
+                   'refine:cell_id is not recorded unless asked')
+        call hier%free()
+
+        hier = m%refine(cells=[1_int64], record_hierarchy=.true., stat=st)
+        call check(st == 0, 'record_hierarchy refine succeeded')
+        call check(hier%cell_data_num_blocks('refine:cell_id') == 1_int64, &
+                   'refine:cell_id attached')
+        call check(hier%cell_data_num_blocks('refine:parent_id') == 1_int64, &
+                   'refine:parent_id attached')
+        ! Both arrays are (n, 1)-shaped (one component per cell), and the
+        ! rank-1 get_cell_data getter refuses anything but a true rank-1
+        ! array -- a pre-existing Fortran-binding limitation unrelated to this
+        ! feature (there is no rank-2 cell_data getter, unlike point_data), so
+        ! presence/coverage is what this binding can check; value-level parity
+        ! is covered by the C++ and Python test suites.
+        !
+        ! Also proves the multigrid-stencil fix: this call used the redgreen
+        ! closure, which leaves no hanging nodes, so refine:entity would
+        ! normally never be attached at all.
+        call hier%get_point_data('refine:entity', entity)
+        call check(size(entity, 1) == 4, 'refine:entity is 4 values per point')
+        call hier%free()
+    end block
+
     ! -- decimate: QEM edge collapse of a surface mesh --
     block
         type(mio_mesh) :: fan, coarse, bad

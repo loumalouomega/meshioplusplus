@@ -1541,6 +1541,41 @@ TEST(CApi, RefineExWithDefaultsMatchesMioRefine) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RefineExRecordHierarchyAttachesCellIdAndParentId) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.record_hierarchy = 1;
+    mio_refine_result* r = mio_refine_ex(m, &opts);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_refine_result_mesh(r);
+
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "refine:cell_id", 0, &data, &dt, &ndim, shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(shape[0], 8);  // one hexahedron -> 8 children, uniform refinement
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "refine:parent_id", 0, &data, &dt, &ndim, shape), MIO_OK);
+    const std::int64_t* parents = static_cast<const std::int64_t*>(data);
+    for (int64_t i = 0; i < shape[0]; ++i)
+        EXPECT_EQ(parents[i], 0) << "every child of the sole input cell shares parent 0";
+
+    // Also proves the multigrid-stencil fix: RedGreen leaves no hanging nodes,
+    // so refine:entity would normally never be attached at all.
+    EXPECT_EQ(mio_mesh_get_point_data(out, "refine:entity", &data, &dt, &ndim, shape), MIO_OK);
+
+    mio_refine_result_free(r);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
     // A 3 x 3 grid of quadrilaterals; refine the middle one only.
     std::vector<double> pts;

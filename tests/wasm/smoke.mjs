@@ -622,6 +622,34 @@ step('refine: a selection is closed up conformingly, not propagated', () => {
     assert.ok(back.cells[0].data.length > 0);
 });
 
+step('refine: recordHierarchy attaches the persistent parent/child ids', () => {
+    const plain = m.refine(cube, 1, false, { recordHierarchy: false });
+    assert.ok(!('refine:cell_id' in plain.cell_data), 'not recorded unless asked');
+
+    const hier = m.refine(cube, 1, false, { recordHierarchy: true });
+    assert.ok('refine:cell_id' in hier.cell_data);
+    assert.ok('refine:parent_id' in hier.cell_data);
+    const ids = Array.from(hier.cell_data['refine:cell_id'][0]);
+    const parents = Array.from(hier.cell_data['refine:parent_id'][0]);
+    assert.equal(new Set(ids).size, ids.length, 'ids are unique');
+    // The whole cube is one cell, uniformly refined into 8 -- every child
+    // therefore shares parent 0, none can be self-parented (untouched).
+    assert.ok(parents.every((p) => p === 0));
+    assert.ok(ids.every((id, i) => id !== parents[i]));
+    // Also proves the multigrid-stencil fix: redgreen leaves no hanging
+    // nodes, so refine:entity would normally never be attached at all.
+    assert.ok('refine:entity' in hier.point_data);
+
+    // And through the pipeline (PascalCase keys, generic dispatch).
+    m.writeMesh('/cube.vtu', cube);
+    const piped = m.convertSurfaceOps('/cube.vtu', '/cube-hier.vtu', [
+        { op: 'refine', recordHierarchy: true },
+    ]);
+    assert.equal(piped.steps.length, 1);
+    const backHier = m.readMesh('/cube-hier.vtu');
+    assert.ok('refine:cell_id' in backHier.cell_data);
+});
+
 step('decimate: collapses a refined cube skin, pinning its creases', () => {
     // The skin of a refined cube: 24 quads -> 48 triangles, with every cube
     // edge/corner vertex a pinned feature; only face-interior vertices go.

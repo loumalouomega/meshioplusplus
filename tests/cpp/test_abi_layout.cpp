@@ -67,6 +67,7 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -161,6 +162,14 @@ MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
 MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
+
+// RefineOptions is passed by const-ref through the exported `refine()`,
+// exactly like SdfOptions/VoxelOptions above -- but unlike them it went
+// unpinned from v9.0.0 (when this file was introduced) all the way through
+// the v9.23.0/v9.24.0 rows that grew it, which is precisely the "unpinned
+// aggregate looks free to grow" gap the pipeline/sequence comment above
+// warns about. Closed here rather than after a third field is added to it.
+MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
 
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and

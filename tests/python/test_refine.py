@@ -536,6 +536,148 @@ def test_an_existing_level_array_accumulates_rather_than_replicating():
     assert levels.max() >= 1
 
 
+# --------------------------------------------------------------------------- #
+# refine:cell_id / refine:parent_id: the persistent hierarchy                  #
+# --------------------------------------------------------------------------- #
+def test_hierarchy_is_opt_in():
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[8])
+    assert "refine:cell_id" not in out.cell_data
+    assert "refine:parent_id" not in out.cell_data
+
+
+def test_an_unsplit_cell_keeps_its_id_and_is_its_own_parent():
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[8], record_hierarchy=True)
+    ids = np.asarray(out.cell_data["refine:cell_id"][0]).reshape(-1)
+    parents = np.asarray(out.cell_data["refine:parent_id"][0]).reshape(-1)
+    first, last = _first_child_map(mesh, out, 8)
+    # A cell far from the selection is untouched; it must keep its own
+    # implicit id (its own global block-major index).
+    untouched = 0
+    for c in range(len(ids)):
+        if first <= c < last:
+            continue
+        if ids[c] == parents[c]:
+            untouched += 1
+    assert untouched > 0
+
+
+def test_every_parent_id_resolves_in_the_coarse_mesh():
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[8], record_hierarchy=True)
+    coarse_n = len(mesh.cells[0].data)
+    parents = np.asarray(out.cell_data["refine:parent_id"][0]).reshape(-1)
+    assert np.all(parents >= 0) and np.all(parents < coarse_n)
+
+
+def test_fresh_ids_exceed_every_input_id():
+    mesh = _tri_grid(3)
+    first = refine(mesh, cells=[8], record_hierarchy=True)
+    max_first_id = np.asarray(first.cell_data["refine:cell_id"][0]).max()
+    second = refine(first, cells=[0], record_hierarchy=True)
+    ids = np.asarray(second.cell_data["refine:cell_id"][0]).reshape(-1)
+    parents = np.asarray(second.cell_data["refine:parent_id"][0]).reshape(-1)
+    fresh = ids[ids != parents]
+    assert len(fresh) > 0 and np.all(fresh > max_first_id)
+
+
+def test_an_existing_hierarchy_accumulates_rather_than_replicating():
+    mesh = _tri_grid(3)
+    first = refine(mesh, cells=[4], record_hierarchy=True)
+    # The flag only controls CREATING the arrays; once present they are
+    # maintained even without the flag.
+    again = refine(first, cells=[0])
+    assert "refine:cell_id" in again.cell_data
+    ids = np.asarray(again.cell_data["refine:cell_id"][0]).reshape(-1)
+    assert len(set(ids.tolist())) == len(ids), "ids stay unique across calls"
+
+
+def test_two_levels_names_the_original_input_like_parent_cell():
+    mesh = _tri_grid(3)
+    out = refine(mesh, levels=2, record_parent_ids=True, record_hierarchy=True)
+    parent_cell = np.asarray(out.cell_data["refine:parent_cell"][0]).reshape(-1)
+    parent_id = np.asarray(out.cell_data["refine:parent_id"][0]).reshape(-1)
+    # For a mesh with no PRIOR hierarchy the implicit id of an input cell IS
+    # its row index, so the two must induce the same partition even across
+    # several internal levels.
+    assert np.array_equal(parent_cell, parent_id)
+
+
+def test_record_hierarchy_also_attaches_the_entity_keys():
+    # redgreen leaves no hanging nodes, so refine:entity would normally never
+    # be attached -- but record_hierarchy needs it as the multigrid
+    # prolongation stencil.
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[8], closure="redgreen", record_hierarchy=True)
+    assert "refine:entity" in out.point_data
+    keys = np.asarray(out.point_data["refine:entity"])
+    pts = np.asarray(out.points)
+    new_nodes = 0
+    for p in range(len(pts)):
+        key = keys[p]
+        if key[3] < 0:
+            continue
+        corners = key[2:] if key[0] < 0 else key
+        want = pts[list(corners)].mean(axis=0)
+        assert np.allclose(pts[p], want)
+        new_nodes += 1
+    assert new_nodes > 0
+
+
+def test_split_by_parent_id_groups_siblings():
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[4, 8], record_hierarchy=True)
+    parents = np.asarray(out.cell_data["refine:parent_id"][0]).reshape(-1)
+    distinct_parents = set(parents.tolist())
+    pieces = meshioplusplus.split(out, by="tag", tag="refine:parent_id")
+    assert len(pieces) == len(distinct_parents)
+
+
+def test_hierarchy_classifies_red_green_untouched_from_the_two_meshes():
+    mesh = _tri_grid(3)
+    out = refine(mesh, cells=[8], record_hierarchy=True, record_levels=True)
+    ids = np.asarray(out.cell_data["refine:cell_id"][0]).reshape(-1)
+    parents = np.asarray(out.cell_data["refine:parent_id"][0]).reshape(-1)
+    levels = np.asarray(out.cell_data["refine:level"][0]).reshape(-1)
+    untouched = green = red = 0
+    for c in range(len(ids)):
+        if ids[c] == parents[c]:
+            assert levels[c] == 0
+            untouched += 1
+        elif levels[c] == 1:
+            red += 1
+        else:
+            assert levels[c] == 0
+            green += 1
+    assert untouched > 0 and green > 0 and red > 0
+
+
+def test_a_duplicated_id_is_dropped_rather_than_trusted():
+    """A duplicated id means the mesh was merged or the array was replicated by
+    another operation. Mirrors test_a_stale_entity_array_is_ignored_rather_than_trusted:
+    the warning is asserted on the pure-numpy reader directly (refine() itself
+    may take the C++ path, whose equivalent warning goes to meshio++'s own log,
+    not a Python warning), and the drop behaviour is asserted through refine()."""
+    mesh = _tri_grid(2)
+    n = len(mesh.cells[0].data)
+    ids = np.arange(n, dtype=np.int64)
+    ids[0] = ids[1]  # duplicate
+    mesh.cell_data["refine:cell_id"] = [ids.reshape(-1, 1)]
+    mesh.cell_data["refine:parent_id"] = [ids.reshape(-1, 1)]
+
+    with pytest.warns(UserWarning, match="not both unique"):
+        from meshioplusplus._refine import _read_hierarchy
+
+        blocks = [(cb.type, np.asarray(cb.data)) for cb in mesh.cells]
+        got_ids, _ = _read_hierarchy(mesh, blocks)
+        assert got_ids is None
+
+    out = refine(mesh, cells=[0])
+    assert "refine:cell_id" not in out.cell_data
+    assert "refine:parent_id" not in out.cell_data
+
+
 def test_cell_data_is_gathered_not_blindly_repeated():
     mesh = _tri_grid(2)
     n = len(mesh.cells[0].data)
@@ -657,6 +799,60 @@ def test_cpp_matches_python_selective(factory, n, selected, closure, levels):
             b = np.asarray(want.point_data[name])
             assert a.dtype == b.dtype and a.shape == b.shape, name
             assert a.tobytes() == b.tobytes(), name
+
+
+@pytest.mark.parametrize(
+    "factory,n,selected", [(_tri_grid, 3, 8), (_quad_grid, 4, 5), (_hex_grid, 3, 13)]
+)
+@pytest.mark.parametrize("levels", [1, 2])
+def test_cpp_matches_python_hierarchy(factory, n, selected, levels):
+    """Byte-identical refine:cell_id/refine:parent_id, uniform and selective.
+
+    The pre-existing parity test above compares only geometry, level and the
+    two pre-existing reserved point arrays -- it would not have caught a
+    cell_data divergence in the new hierarchy arrays, so this is a dedicated
+    element-wise comparison, not an addition to the existing assertions.
+    """
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._refine import _refine_py, _resolve_selection
+
+    mesh = factory(n)
+    ids = np.array([selected], dtype=np.int64)
+    got = core.refine(
+        mesh, levels, False, ids, "", "", "<", 0.0, "redgreen", False, True
+    )["mesh"]
+    seed = _resolve_selection(mesh, ids, None, "", "<", 0.0)
+    want, _, _ = _refine_py(mesh, levels, False, seed, "redgreen", False, True)
+
+    for name in ("refine:cell_id", "refine:parent_id"):
+        assert name in got.cell_data and name in want.cell_data
+        for a, b in zip(got.cell_data[name], want.cell_data[name]):
+            a = np.asarray(a)
+            b = np.asarray(b)
+            assert a.dtype == b.dtype and a.shape == b.shape, name
+            assert a.tobytes() == b.tobytes(), name
+    assert np.array_equal(
+        got.point_data["refine:entity"], want.point_data["refine:entity"]
+    )
+
+
+@pytest.mark.parametrize("factory", [_two_triangles, _unit_quad, _unit_tet, _unit_cube])
+def test_cpp_matches_python_hierarchy_uniform(factory):
+    """The uniform path too: every cell splits, so rule 1 (keep the id) never
+    fires, which is exactly the case
+    test_cpp_matches_python_hierarchy's selected-cell fixtures do not exercise
+    on their own (some cells there are always left untouched)."""
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._refine import _refine_py
+
+    mesh = factory()
+    got = core.refine(mesh, 2, False, None, "", "", "<", 0.0, "redgreen", False, True)[
+        "mesh"
+    ]
+    want, _, _ = _refine_py(mesh, 2, False, None, "redgreen", False, True)
+    for name in ("refine:cell_id", "refine:parent_id"):
+        for a, b in zip(got.cell_data[name], want.cell_data[name]):
+            assert np.asarray(a).tobytes() == np.asarray(b).tobytes(), name
 
 
 # --------------------------------------------------------------------------- #
