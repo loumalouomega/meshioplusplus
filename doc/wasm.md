@@ -256,7 +256,19 @@ geometry: it attaches one array and hands the mesh back. **Its result is an
 must carry them, or the array re-enters C++ flattened. Note that `component` is
 negative for **every** component here, deliberately the opposite of
 `isosurface`'s sentinel. It is also a `convertSurfaceOps` pipeline step
-(`{op: 'gradient', array, operator, method, location, output}`). See
+(`{op: 'gradient', array, operator, method, location, output}`).
+
+`estimateError(mesh, array, method, marking, markingValue, output, marked,
+overwrite)` returns `{ mesh, globalError, numSkipped, numMarked }` — the
+Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field, a
+composition of `gradient` with the measure-weighted point↔cell averaging round
+trip, not a new kernel. Like `gradient` it changes no geometry: `error:zz`
+(Float64) is always attached, and `error:marked` (Int64 0/1) too when `marking`
+is not `"none"` — so `refine`'s own `where` selector needs no change at all.
+Cells that cannot be evaluated read NaN in `error:zz` and `0` (never NaN) in
+`error:marked`, counted in `numSkipped`. It is also a `convertSurfaceOps`
+pipeline step (`{op: 'estimateError', array, method, marking, markingValue,
+output, marked}`). See [error estimation](./error.md),
 [field derivatives](./gradient.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),

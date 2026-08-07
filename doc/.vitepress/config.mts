@@ -85,6 +85,7 @@ export default defineConfig({
           { text: "Regular grids / voxelize", link: "/voxelize" },
           { text: "Signed distance", link: "/sdf" },
           { text: "Field derivatives", link: "/gradient" },
+          { text: "Error estimation", link: "/error" },
           { text: "Data operations", link: "/data_operations" },
           { text: "· Array management", link: "/data_manage" },
           { text: "· Location averaging", link: "/data_average" },

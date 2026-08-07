@@ -776,6 +776,7 @@ meshioplusplus data <subcommand> [options]
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
+| `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 
@@ -787,12 +788,13 @@ instead, plus `--mesh-id stem|index`, and its input is several paths, one
 quoted glob, or one multi-step file — the sequence source language). Both are
 **Python CLI only**; both need the matching optional extra.
 
-::: tip `data gradient` is a mesh operation
+::: tip `data gradient` and `data estimate-error` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by
 definition never touches geometry. `gradient` consumes and produces data arrays
 but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
-so it lives in the mesh-operations layer. It is grouped here because that is
-where a user looks for it. See [field derivatives](/gradient).
+so it lives in the mesh-operations layer; `estimate-error` composes `gradient`
+itself. Both are grouped here because that is where a user looks for them. See
+[field derivatives](/gradient) and [error estimation](/error).
 :::
 
 ::: warning `data export` is not a mesh conversion
@@ -891,6 +893,31 @@ field. Cells that cannot be differentiated are reported as `cells skipped
 Green-Gauss and are reported separately. See
 [field derivatives](/gradient) for the exactness guarantees and caveats.
 
+### data estimate-error
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The `point_data` array to estimate the error of (**required**) |
+| `--method` | `zz` (default; the only estimator family today) |
+| `--marking` | `none` (default), `absolute`, `fraction` or `dorfler` |
+| `--marking-value V` | Meaning depends on `--marking`: an absolute threshold, a fraction in `(0, 1]` of cells, or the Dörfler bulk fraction theta in `(0, 1]` (ignored for `none`) |
+| `--output NAME` | Indicator array name (default `error:zz`) |
+| `--marked NAME` | Marking array name (default `error:marked`; ignored when `--marking none`) |
+| `--overwrite` | Replace an existing array of an output name instead of failing |
+| `--quiet`, `-q` | Suppress the summary |
+
+The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a
+composition of `gradient` and the point↔cell averaging round trip, not a new
+kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for
+the same reason `data gradient` rejects one. Cells that cannot be evaluated are
+reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in
+`error:marked`. With `--marking` not `none`, a second `cell_data` array is
+attached so [`refine`](/refine)'s own `--where` selector needs no change at
+all — the intended use is
+`meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`.
+See [error estimation](/error) for the composition, the marking policies and
+the byte-identity tolerance.
+
 **Examples:**
 
 ```sh
@@ -900,6 +927,9 @@ meshioplusplus data info mesh.vtu --json
 meshioplusplus data gradient in.vtu out.vtu --array T
 meshioplusplus data gradient in.vtu out.vtu --array u --op curl --location point
 meshioplusplus data gradient in.vtu out.vtu --array T --method least-squares --output dT
+
+meshioplusplus data estimate-error in.vtu out.vtu --array T
+meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6
 
 meshioplusplus data rename in.vtu out.vtu --point T:temperature
 meshioplusplus data drop   in.vtu out.vtu --point a,b --cell c

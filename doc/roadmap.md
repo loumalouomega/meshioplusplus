@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.1.0** — 42 formats, twenty-three mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
+Status at time of writing: **v10.2.0** — 42 formats, twenty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -14,8 +14,9 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 - **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
 - **Polyhedral refinement and coarsening** — both `refine` and `decimate` raise by name on a polyhedron, pointing at `convert_cells(simplexify)`. Both are built on fixed subdivision templates and an arbitrary polyhedron has none, so closing this means polyhedral agglomeration — a genuinely different algorithm, not another template table. **L**
-- **Green-element undo** — the standard rule is to restore a transitional cell to its parent and re-split from scratch before a new refinement pass; this implementation refines the transitional children directly, so repeated selective passes over the same region degrade element quality without bound. The persistent parent/child hierarchy that rule needs shipped in v10.1.0 (`refine(..., record_hierarchy=True)` → `refine:cell_id`/`refine:parent_id`, plus `refine:level`); implementing the undo itself — reconstructing a parent's connectivity from its children and `refine:entity` — remains open. **M**
-- **Error-estimator helpers** — now that `gradient` exists, a gradient-jump or recovery-based indicator that feeds `refine`'s selection directly closes the adaptive loop end to end. **M**
+- **Green-element undo** — the standard rule is to restore a transitional cell to its parent and re-split from scratch before a new refinement pass; this implementation refines the transitional children directly, so repeated selective passes over the same region degrade element quality without bound. The persistent parent/child hierarchy that rule needs shipped in v10.1.0 (`refine(..., record_hierarchy=True)` → `refine:cell_id`/`refine:parent_id`, plus `refine:level`); implementing the undo itself — inverting `refine_templates.cpp`'s subdivision tables against a sibling run to recover the parent's connectivity, since `refine:entity` records *an* entity rather than a *generation* and cannot distinguish it alone — remains open. **M**
+
+**Closed in v10.2.0**: the error-estimator-helpers gap — `estimate_error` (`operations/error.hpp`, [`doc/error.md`](doc/error.md)) is the Zienkiewicz-Zhu recovery-based indicator, composed from `gradient` and the existing point↔cell averaging round trip, plus absolute/fraction/Dörfler marking into a `error:marked` array `refine`'s own `--where` selector consumes directly with no change to `refine` — closing the adaptive loop (estimate → mark → refine) end to end across every binding surface.
 
 ---
 

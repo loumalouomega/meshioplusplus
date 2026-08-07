@@ -213,6 +213,24 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v10.2.0 additions
+
+- `mio_estimate_error(mesh, array, method = "zz", marking = "none",
+  marking_value = 0.0, output = "", marked = "", overwrite = FALSE)` — the
+  Zienkiewicz-Zhu recovery-based error indicator of a **point-data** field,
+  plus optional marking, returning a list of `mesh`, `global_error`,
+  `num_skipped` and `num_marked`. A composition of `mio_gradient` with the
+  point↔cell averaging round trip, not a new kernel. See
+  [`doc/error.md`](error.md).
+
+  `error:zz` is always attached; `error:marked` too when `marking` is not
+  `"none"`, so `mio_refine`'s own predicate needs no change to consume it.
+  Cells that cannot be evaluated read `NaN` in `error:zz` and `0` (never
+  `NaN`) in `error:marked`, counted in `num_skipped` and excluded from
+  `global_error`/`num_marked`. The three counters come back as `double`, like
+  every other 64-bit integer in this binding (see
+  [64-bit integers](#bit-integers)).
+
 ## v9.11.0 additions
 
 - The [settings pipeline](pipeline.md): `mio_pipeline_run_file(settings_path)`

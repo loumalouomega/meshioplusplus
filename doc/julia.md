@@ -228,6 +228,24 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v10.2.0 additions
+
+- `estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
+  output="", marked="", overwrite=false)` — the Zienkiewicz-Zhu recovery-based
+  error indicator of a **point-data** field, plus optional marking, returning
+  `(; mesh, global_error, num_skipped, num_marked)`. A composition of
+  `gradient` with the point↔cell averaging round trip, not a new kernel. See
+  [`doc/error.md`](error.md).
+
+  `error:zz` is always attached; `error:marked` too when `marking` is not
+  `:none`, so `refine`'s own `where` selector needs no change to consume it —
+  `refine(mesh, where="error:marked > 0.5")`. Cells that cannot be evaluated
+  read `NaN` in `error:zz` and `0` (never `NaN`) in `error:marked`, counted in
+  `num_skipped` and excluded from `global_error`/`num_marked`.
+
+  `estimate_error` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
+
 ## v9.11.0 additions
 
 - The [settings pipeline](pipeline.md): `run_pipeline_file(settings_path)` and

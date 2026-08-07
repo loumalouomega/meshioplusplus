@@ -80,6 +80,7 @@ An option the output format cannot honour is an error.
 | `Partition` | `Nparts` (2), `Method` ("auto"), `Imbalance` (0.03), `Mode` ("eco"), `Seed` (0), `WeightsKey` | attaches `partition:part`; counter `Nparts` |
 | `Slice` (alias `Section`) | `Point`, `Normal` (required), `RecordParentIds` (false) | counter `SectionFaces`; warns when the plane misses |
 | `Gradient` | `Array` (required), `Operator` ("gradient"), `Method` ("green-gauss"), `Location` ("cell"), `Output`, `Component` | counters `NumSkipped`, `NumFallback`; warns on skipped cells |
+| `EstimateError` | `Array` (required), `Method` ("zz"), `Marking` ("none" \| "absolute" \| "fraction" \| "dorfler"), `MarkingValue` (0), `Output`, `Marked` | attaches `error:zz` (and `error:marked` when `Marking` isn't "none"); counters `GlobalError`, `NumSkipped`, `NumMarked`; warns on skipped cells |
 | `Isosurface` | `Array` (required), `Isovalue` (0) or `Isovalues`, `Component`, `RecordParentIds` (false) | counter `ContourCells`; warns when empty |
 | `Transform` | exactly one of `Translate[3]`, `Scale` (number or `[3]`), `RotateAxis[3]`+`RotateDegrees`, `Matrix[16]` (row-major), `ScaleUnits` (a factor, e.g. `0.001` for mm→m); plus `RotateData` (false) | |
 | `ConvertCells` | `Mode` ("linearize" \| "simplexify" \| "elevate"), `RecordParentIds` (false) | |
