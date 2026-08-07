@@ -8,6 +8,45 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.2.0 (2026-08-07)
+
+**Roadmap §1 narrowed further** — the error-estimator-helpers gap is closed;
+volume decimation, polyhedral refinement/coarsening and green-element undo
+remain open.
+
+- **`estimate_error`** (`operations/error.hpp`, [`doc/error.md`](doc/error.md))
+  — the Zienkiewicz-Zhu (ZZ) recovery-based error indicator of a `point_data`
+  field, plus optional marking, the piece that closes the adaptive loop:
+  `gradient` already differentiates a field and selective `refine`'s
+  `--where` already consumes any scalar `cell_data` predicate; this produces
+  one. Deliberately a **composition, not a new numerical kernel**:
+  `gradient(location="cell")` (raw per-cell gradient) → the existing
+  measure-weighted point↔cell averaging round trip (recovery) → the
+  recovered-minus-raw difference is the local indicator
+  `eta_K = sqrt(|measure_K| · sum((recovered − raw)²))`, reported globally as
+  `sqrt(sum eta_K²)`. `marking="absolute"|"fraction"|"dorfler"` turns the
+  indicator into a boolean `error:marked` array (`refine`'s own `--where`
+  selector needs no change at all to consume it — the Dörfler bulk-fraction
+  criterion is the usual AMR choice). Cells that cannot be evaluated read NaN
+  in `error:zz` and `0` (never NaN) in `error:marked`, counted and excluded
+  from the global error and every marking policy's count. Reachable as `data
+  estimate-error` in both CLIs alongside `gradient`, for the same reason.
+  Reaches every binding surface: C++ core, pybind, the C API
+  (`mio_estimate_error`), Fortran, Julia, R, WASM (`estimateError()` plus an
+  `EstimateError` `convertSurfaceOps`/settings-pipeline step), both CLIs, and
+  the MCP `estimate_error` tool.
+- **Fixed a real, independently-discovered bug**: `_data_average.py`'s
+  `_FACES` table (the numpy twin's tabulated-cell fan-volume formula, used by
+  `cell_data_to_point_data(weighted=True)`, and now also by
+  `estimate_error`'s recovery step) had inconsistent face winding for all
+  four linear 3D cell types (tetra/hexahedron/wedge/pyramid) — exactly one
+  inward-wound face per type — which silently made the reported "volume" of
+  a cell depend on how far it sat from the coordinate origin rather than on
+  its shape, corrupting `Measure`-weighted recovery for any mesh not
+  centred near the origin. Fixed by transcribing
+  `detail/cell_faces.cpp`'s Newell-normal-gtested windings verbatim; pinned
+  by `test_data_location.py::test_cell_measures_are_translation_invariant`.
+
 ## v10.1.0 (2026-08-07)
 
 **Roadmap §1 narrowed** — `refine` gains a persistent parent/child hierarchy
