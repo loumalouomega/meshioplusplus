@@ -556,6 +556,7 @@ meshioplusplus refine [options] INFILE OUTFILE
 | `--where "EXPR"` | Refine the cells satisfying a threshold on a scalar cell_data array, e.g. `"quality:scaled_jacobian < 0.3"` |
 | `--closure redgreen\|propagate\|balanced` | How to resolve hanging nodes (default `redgreen`) |
 | `--record-levels` | Attach `refine:level` cell_data of each cell's refinement depth |
+| `--record-hierarchy` | Attach `refine:cell_id`/`refine:parent_id` cell_data — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps; also forces `refine:entity` to be attached even when the closure leaves no hanging node |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 At most one of `--cells`, `--region` and `--where` may be given; with none, every
@@ -586,6 +587,7 @@ meshioplusplus refine in.msh out.vtu --levels 2
 meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
 meshioplusplus refine coarse.vtu graded.vtu --cells 12,13,44 --record-levels
 meshioplusplus refine coarse.vtu graded.vtu --where "quality:scaled_jacobian < 0.3"
+meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy
 ```
 
 ---

@@ -75,7 +75,7 @@ An option the output format cannot honour is an error.
 | `Quality` | — | attaches `quality:*` cell data |
 | `Clean` | `Weld` (false), `Atol` (1e-8), `RemoveOrphans` (true), `DropDegenerate` (true), `DropDuplicateCells` (true) | counters `PointsWelded`, `PointsRemovedOrphan`, `CellsDroppedDegenerate`, `CellsDroppedDuplicate` |
 | `Smooth` | `Method` ("taubin"), `Iterations` (10), `Lambda` (method default), `Mu` (−0.34), `FixBoundary` (true), `PreserveFeatures` (true), `FeatureAngle` (30), `GuardInversion` (true) | counters `NumNodesMoved`, `MaxDisplacement`, `NumSkippedInversion` |
-| `Refine` | `Levels` (1), `Cells`, `Region`, `Array` + `Compare` ("<") + `Value` (0), `Closure` ("redgreen"), `RecordLevels` (false) | at most one selector; `Compare`, not `Op` |
+| `Refine` | `Levels` (1), `Cells`, `Region`, `Array` + `Compare` ("<") + `Value` (0), `Closure` ("redgreen"), `RecordLevels` (false), `RecordHierarchy` (false) | at most one selector; `Compare`, not `Op`; `RecordHierarchy` attaches `refine:cell_id`/`refine:parent_id` and forces `refine:entity` |
 | `Decimate` | `Ratio` \| `TargetFaces` \| `MaxError` (none → `Ratio` 0.5), `Placement` ("optimal"), `PreserveBoundary` (true), `PreserveFeatures` (true), `FeatureAngle` (30) | counters `FacesRemoved`, `CollapsesRejected` |
 | `Partition` | `Nparts` (2), `Method` ("auto"), `Imbalance` (0.03), `Mode` ("eco"), `Seed` (0), `WeightsKey` | attaches `partition:part`; counter `Nparts` |
 | `Slice` (alias `Section`) | `Point`, `Normal` (required), `RecordParentIds` (false) | counter `SectionFaces`; warns when the plane misses |

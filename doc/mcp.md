@@ -115,7 +115,11 @@ report.
 `cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a
 surface, filled — `structure` `voxel`/`octree`), `transform`,
 `convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
-with a conforming `closure`), `decimate`, `smooth`, `merge` (N inputs), `split`
+with a conforming `closure`; `record_hierarchy` attaches the persistent
+`refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller
+resolves across the sequence of meshes it keeps — see
+[refine](/refine#refinecell_id-and-refineparent_id)), `decimate`, `smooth`,
+`merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
 `interpolate` (source → target field transfer), `gradient` (the gradient,
 divergence or curl of a `point_data` field — see

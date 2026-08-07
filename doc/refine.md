@@ -317,14 +317,67 @@ without the array and without the flag is unaffected.
 With `levels > 1` and a selector, level *k* refines the children of level
 *k − 1*'s fully split cells; green and untouched cells are not re-refined.
 
+### `refine:cell_id` and `refine:parent_id` {#refinecell_id-and-refineparent_id}
+
+`record_hierarchy=True` attaches two Int64 `cell_data` arrays that persist a
+parent/child hierarchy the caller can resolve *across separate calls*, unlike
+`mCellMaps` (which dies with the call) or `refine:parent_cell` (a row index
+into a mesh the caller may since have renumbered).
+
+**The hierarchy is a link between two meshes, not a tree inside one.** A
+multigrid — or future green-undo — caller keeps every pass's output mesh; the
+fine mesh's `refine:parent_id` resolves against the coarse mesh's
+`refine:cell_id`:
+
+- An unsplit cell **keeps its own id** and is its own parent
+  (`parent_id == cell_id`).
+- A split cell's children each get a **fresh id** and carry the parent's id.
+- When the coarse mesh carries no `refine:cell_id` of its own, a cell's
+  implicit id is its **global block-major index** — the same numbering
+  `detail::block_bases`/`partition_labels` use.
+- `parent_id` names a cell of **the mesh passed to this call** — the same
+  rule `refine:parent_cell` follows: two `levels=1` calls give immediate
+  parents, one `levels=n` call gives the original ancestor, because only the
+  mesh actually named in the call is one the caller could have kept.
+
+Given both meshes, red/green/untouched classify with **no further storage**:
+an untouched cell has `parent_id == cell_id`; a green (transitional) child has
+`parent_id != cell_id` and the same `refine:level` as its parent; a red
+child's `refine:level` is one more than its parent's — which is why no third
+`refine:green` array exists.
+
+`record_hierarchy=True` also **forces `refine:entity` to be attached**, even
+when the closure leaves no hanging node (the normal `redgreen`/`propagate`
+case, where it would otherwise never appear at all — see above). That array
+already records exactly which 2 or 4 coarse nodes each new fine node is the
+mean of, which is the multigrid prolongation operator's stencil and weights:
+combined with `mPointMap` being the identity (a coarse node keeps its index
+in the fine mesh), it completes the coarse→fine transfer operator for free.
+
+The name is **reserved**, on the same policy as `refine:level`: an input that
+already carries a *valid* `refine:cell_id` is updated whatever the flag says.
+A **duplicated or malformed id** is dropped with a warning rather than
+trusted — ids are values, not indices, so `reorder`/`crop`/`clean` carry them
+correctly with no coordinate check, but a repeat means the mesh was `merge`d
+with another hierarchy or the array was replicated without being updated.
+
+**Interacts with `split`:** an unqualified `split(mesh, by="tag")` (no
+explicit array name) auto-picks the first sorted integer `cell_data` array,
+and `"refine:cell_id"` sorts ahead of ordinary material tags. On a mesh
+carrying this array, always name the array explicitly — and note that
+`split(mesh, by="tag", tag="refine:parent_id")` is itself the sibling-grouping
+recipe: it yields one piece per distinct parent (a singleton for every
+untouched cell).
+
 ### What is not implemented
 
 - **Green elements are not undone** before a later refinement. The standard rule
   is to restore a transitional cell to its parent and re-split from scratch;
   this implementation refines the transitional children directly, so *repeated*
   selective passes over the same region degrade element quality without bound.
-  `refine:level` plus `mCellMaps` is exactly the hierarchy a future green-undo
-  would need, which is why they are recorded now.
+  `refine:cell_id`/`refine:parent_id` plus `refine:level` is exactly the
+  hierarchy a future green-undo would need, which is why they can now be
+  recorded.
 - **Mixed-type green** (a quad closing into triangles, a hex into pyramids) is
   not offered. It would localize the quad's one- and three-edge cases further,
   at the cost of one input block emitting several output blocks — which the
@@ -384,6 +437,7 @@ meshioplusplus refine in.msh out.vtu --region hot
 meshioplusplus refine in.msh out.vtu --where "quality:scaled_jacobian < 0.3"
 meshioplusplus refine in.msh out.vtu --cells 12 --closure propagate
 meshioplusplus refine in.msh out.vtu --cells 12 --closure balanced --record-levels
+meshioplusplus refine in.msh out.vtu --cells 12,13 --record-hierarchy
 ```
 
 See the [CLI reference](/cli).
@@ -393,22 +447,25 @@ See the [CLI reference](/cli).
 - **C API** — `mio_refine(mesh, levels, record_parent_ids)` returns an opaque
   `mio_refine_result` (`_mesh` borrow, `_take_mesh`, zero-copy `_point_map` /
   `_cell_map`, `_free`). `mio_refine_ex(mesh, &opts)` takes a `mio_refine_opts`
-  with the selection and closure; zero-initialize it through
-  `mio_refine_opts_init` and it reproduces `mio_refine` exactly. See the
-  [C API reference](/c_api).
+  with the selection, closure and `record_hierarchy`; zero-initialize it
+  through `mio_refine_opts_init` and it reproduces `mio_refine` exactly. See
+  the [C API reference](/c_api).
 - **Fortran** — `mesh%refine(levels, record_parent_ids=..., point_map=...,
   cells=..., region=..., where_array=..., where_op=..., where_value=...,
-  closure=..., record_levels=...)`; `cells` is 1-based here. See the
-  [Fortran reference](/fortran).
+  closure=..., record_levels=..., record_hierarchy=...)`; `cells` is 1-based
+  here. See the [Fortran reference](/fortran).
 - **Julia** — `refine(mesh; levels, record_parent_ids, cells, region,
-  where_array, where_op, where_value, closure, record_levels)`; `cells` is
-  1-based. See the [Julia reference](/julia).
+  where_array, where_op, where_value, closure, record_levels,
+  record_hierarchy)`; `cells` is 1-based. `refine:cell_id`/`refine:parent_id`
+  ride the raw C-side numbering unshifted, like `partition_labels`' part ids
+  — they are stable identifiers, not index maps. See the
+  [Julia reference](/julia).
 - **R** — `mio_refine(mesh, levels, record_parent_ids, cells, region,
-  where_array, where_op, where_value, closure, record_levels)`; `cells` is
-  1-based. See the [R reference](/r).
+  where_array, where_op, where_value, closure, record_levels,
+  record_hierarchy)`; `cells` is 1-based. See the [R reference](/r).
 - **WebAssembly / JavaScript** — `refine(mesh, levels, recordParentIds, options)`
   where `options` is `{cells, region, array, compare, value, closure,
-  recordLevels}`, and the `convertSurfaceOps` pipeline op `{op: 'refine', ...}`
-  takes the same fields. The comparison is spelled `compare` there because `op`
-  is the pipeline step's own discriminant. See the
-  [WebAssembly reference](/wasm).
+  recordLevels, recordHierarchy}`, and the `convertSurfaceOps` pipeline op
+  `{op: 'refine', ...}` takes the same fields. The comparison is spelled
+  `compare` there because `op` is the pipeline step's own discriminant. See
+  the [WebAssembly reference](/wasm).
