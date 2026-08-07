@@ -325,6 +325,8 @@ Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-
 
 New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron only) body, and carry the mean of that entity's corner values for every `point_data` array — so a linear field is interpolated exactly. Mid-edge and quad-face-centre nodes are **shared** between every cell touching the entity, so the refined mesh has no hanging nodes; each parent's `cell_data` row is replicated to its children.
 
+`record_hierarchy=True` attaches two persistent `cell_data` arrays, `refine:cell_id`/`refine:parent_id`: a stable identity that survives across separate `refine` calls — **a link between two meshes, not a tree inside one**, resolved by a multigrid caller against the sequence of meshes it keeps.
+
 <!--pytest-codeblocks:skip-->
 
 ```python
@@ -338,6 +340,9 @@ graded = meshioplusplus.refine(
     where="quality:scaled_jacobian < 0.3",
     record_levels=True,                                 # colour by refine:level
 )
+
+# multigrid: keep the coarse mesh, resolve the fine mesh's parent ids against it
+fine = meshioplusplus.refine(coarse, cells=[4, 8], record_hierarchy=True)
 ```
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
@@ -741,7 +746,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.1.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

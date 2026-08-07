@@ -8,6 +8,46 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.1.0 (2026-08-07)
+
+**Roadmap §1 narrowed** — `refine` gains a persistent parent/child hierarchy
+across passes, closing the first half of that bullet (green-element undo
+remains open).
+
+- **`refine`'s persistent hierarchy** (`record_hierarchy=True` /
+  `--record-hierarchy` / `RefineOptions::mRecordHierarchy`) — two new
+  reserved `cell_data` arrays, `refine:cell_id` and `refine:parent_id`, on
+  the same reserved-and-maintained pattern as `refine:level`: a cell no pass
+  ever split keeps its own id and is its own parent; a split cell's children
+  each get a fresh id and carry the parent's id. **The hierarchy is a link
+  between two meshes, not a tree inside one** — a multigrid or green-undo
+  caller keeps every pass's output mesh, and the fine mesh's `parent_id`
+  resolves against the coarse mesh's `cell_id` (implicit, as its global
+  block-major index, when the coarse mesh carries none of its own). An input
+  already carrying `refine:cell_id` is updated whatever the flag says.
+  Setting the flag also forces `refine:entity` to be attached even when the
+  closure leaves no hanging node (the normal `redgreen`/`propagate` case),
+  since it already records the coarse corners each new fine node is the mean
+  of — the multigrid prolongation stencil, which was otherwise unreachable
+  outside `balanced`. Reaches every binding surface: C++ core, pybind,
+  the C API (`mio_refine_opts::record_hierarchy`, appended into the struct's
+  reserved tail so `sizeof(mio_refine_opts)` is unchanged), Fortran, Julia,
+  R, WASM (`recordHierarchy` on `refine()` and the `convertSurfaceOps`
+  pipeline step), both CLIs' `refine --record-hierarchy`, the MCP `refine`
+  tool, and the settings-pipeline `Refine` step's `RecordHierarchy` key.
+  See [`doc/refine.md`](doc/refine.md#refinecell_id-and-refineparent_id).
+- Closed the two ABI-guard gaps `doc/roadmap.md`'s note flagged:
+  `RefineOptions` is now pinned in `tests/cpp/test_abi_layout.cpp`, and the
+  Fortran `mio_refine_opts_t` mirror gained a runtime `sizeof` check
+  (`check_refine_opts_layout`, the Julia `_check_abi_layout()` precedent) —
+  previously the only guard on that struct was C's `static_assert` and
+  Julia's own load-time check.
+- **Breaking (ABI):** `RefineOptions` gained a member, so
+  `MESHIOPLUSPLUS_ABI_VERSION` moves 6 → 7 and the installed C++ variants'
+  `SOVERSION` moves with it; the C and Fortran libraries stay at
+  `SOVERSION 0` (the flat ABI's own append-only-`reserved` contract is
+  unaffected). See [`doc/abi.md`](doc/abi.md).
+
 ## v10.0.0 (2026-08-06)
 
 Version-number bump only (9.30.0 → 10.0.0) — no API, behavior or ABI change;
