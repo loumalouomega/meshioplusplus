@@ -197,6 +197,29 @@ SEXP R_mio_gradient(SEXP mesh, SEXP array, SEXP op, SEXP method, SEXP location, 
     return res;
 }
 
+SEXP R_mio_estimate_error(SEXP mesh, SEXP array, SEXP method, SEXP marking, SEXP marking_value,
+                          SEXP output, SEXP marked, SEXP overwrite) {
+    double global_error = 0.0;
+    int64_t skipped = 0, nmarked = 0;
+    mio_mesh *out = mio_estimate_error(
+        mio_r_mesh(mesh), mio_r_string(array, "array"), mio_r_opt_string(method),
+        mio_r_opt_string(marking), mio_r_double(marking_value, "marking_value"),
+        mio_r_opt_string(output), mio_r_opt_string(marked),
+        mio_r_bool(overwrite, "overwrite"), &global_error, &skipped, &nmarked);
+    if (out == NULL) mio_r_fail("estimate_error");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    /* R has no native int64, so the counters come back as doubles (exact well
+       past any plausible cell count) -- the mio_gradient wrapper's rule. */
+    SEXP ge = PROTECT(Rf_ScalarReal(global_error));
+    SEXP sk = PROTECT(Rf_ScalarReal((double)skipped));
+    SEXP mk = PROTECT(Rf_ScalarReal((double)nmarked));
+    const char *names[] = {"mesh", "global_error", "num_skipped", "num_marked"};
+    SEXP values[] = {mo, ge, sk, mk};
+    SEXP res = PROTECT(mio_r_named_list(4, names, values));
+    UNPROTECT(5);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

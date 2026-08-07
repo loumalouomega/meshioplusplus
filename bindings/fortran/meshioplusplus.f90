@@ -361,6 +361,7 @@ module meshioplusplus
         procedure :: slice => mesh_slice
         procedure :: isosurface => mesh_isosurface
         procedure :: gradient => mesh_gradient
+        procedure :: estimate_error => mesh_estimate_error
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: refine => mesh_refine
@@ -977,6 +978,21 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: location, output_name
             integer(c_int), value :: component, overwrite
             integer(c_int64_t), intent(out) :: n_skipped, n_fallback
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_estimate_error(h, array_name, method, marking, marking_value, &
+                                      output_name, marked_name, overwrite, global_error, &
+                                      n_skipped, n_marked) &
+                bind(c, name="mio_estimate_error") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array_name, method, marking
+            character(kind=c_char), dimension(*), intent(in) :: output_name, marked_name
+            real(c_double), value :: marking_value
+            integer(c_int), value :: overwrite
+            real(c_double), intent(out) :: global_error
+            integer(c_int64_t), intent(out) :: n_skipped, n_marked
             type(c_ptr) :: r
         end function
 
@@ -2792,6 +2808,70 @@ contains
         end if
         if (present(num_skipped)) num_skipped = int(nskip, int64)
         if (present(num_fallback)) num_fallback = int(nfall, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+    !> point_data field, and optionally mark cells for refinement.
+    !>
+    !> A composition of `gradient` (Green-Gauss, cell location) with the
+    !> measure-weighted point<->cell averaging round trip: the indicator is
+    !> `sqrt(|measure| * sum((recovered - raw)^2))` per cell, attached as
+    !> `output` (default "error:zz"). `marking` is "none" (default), "absolute",
+    !> "fraction", or "dorfler"; when not "none" a second Int64 0/1 array
+    !> `marked` (default "error:marked") is attached too, so `refine`'s own
+    !> `where` selector needs no change at all -- the intended use is
+    !> `refine(where="error:marked > 0.5")`. `marking_value`'s meaning depends
+    !> on `marking`: an absolute indicator threshold, a fraction in (0, 1] of
+    !> cells, or the Doerfler bulk fraction theta in (0, 1].
+    !>
+    !> Cells that cannot be evaluated read NaN in the indicator array and 0
+    !> (never NaN) in the marking array, and are reported in `num_skipped`
+    !> (excluded from `global_error` and from `num_marked`).
+    function mesh_estimate_error(self, array, method, marking, marking_value, output, &
+                                 marked, overwrite, global_error, num_skipped, num_marked, &
+                                 stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        character(*), intent(in), optional :: method, marking, output, marked
+        real(real64), intent(in), optional :: marking_value
+        logical, intent(in), optional :: overwrite
+        real(real64), intent(out), optional :: global_error
+        integer(int64), intent(out), optional :: num_skipped, num_marked
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cover
+        real(c_double) :: cvalue, cerror
+        integer(c_int64_t) :: nskip, nmark
+        character(:), allocatable :: cmethod, cmarking, cout, cmarked
+        cmethod = ''
+        if (present(method)) cmethod = method
+        cmarking = ''
+        if (present(marking)) cmarking = marking
+        cvalue = 0.0_c_double
+        if (present(marking_value)) cvalue = real(marking_value, c_double)
+        cout = ''
+        if (present(output)) cout = output
+        cmarked = ''
+        if (present(marked)) cmarked = marked
+        cover = 0
+        if (present(overwrite)) then
+            if (overwrite) cover = 1
+        end if
+        cerror = 0.0_c_double
+        nskip = 0
+        nmark = 0
+        out%handle = c_mio_estimate_error(self%handle, c_str(array), c_str(cmethod), &
+                                          c_str(cmarking), cvalue, c_str(cout), c_str(cmarked), &
+                                          cover, cerror, nskip, nmark)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('estimate_error', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(global_error)) global_error = real(cerror, real64)
+        if (present(num_skipped)) num_skipped = int(nskip, int64)
+        if (present(num_marked)) num_marked = int(nmark, int64)
         call clear_status(stat, errmsg)
     end function
 

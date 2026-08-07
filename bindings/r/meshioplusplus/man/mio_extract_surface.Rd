@@ -12,6 +12,7 @@
 \alias{mio_crop_plane}
 \alias{mio_slice}
 \alias{mio_gradient}
+\alias{mio_estimate_error}
 \alias{mio_isosurface}
 \alias{mio_merge}
 \alias{mio_interpolate}
@@ -81,6 +82,17 @@ mio_gradient(
   location = "cell",
   output = "",
   component = -1L,
+  overwrite = FALSE
+)
+
+mio_estimate_error(
+  mesh,
+  array,
+  method = "zz",
+  marking = "none",
+  marking_value = 0,
+  output = "",
+  marked = "",
   overwrite = FALSE
 )
 
@@ -216,11 +228,24 @@ a negative value means the row magnitude; for \code{mio_gradient} it means
 
 \item{op}{For \code{mio_gradient}: \code{"gradient"}, \code{"divergence"} or \code{"curl"}.}
 
-\item{method}{For \code{mio_gradient}: \code{"green-gauss"} or \code{"least-squares"}.}
+\item{method}{For \code{mio_gradient}: \code{"green-gauss"} or \code{"least-squares"}. For
+\code{mio_estimate_error}: only \code{"zz"} exists today; \code{""} selects it.}
 
 \item{location}{For \code{mio_gradient}: \code{"cell"} or \code{"point"}.}
 
-\item{output}{Output array name; \code{""} uses \code{<array>:<op>}.}
+\item{output}{Output array name; \code{""} uses \code{<array>:<op>} for
+\code{mio_gradient}, \code{"error:zz"} for \code{mio_estimate_error}.}
+
+\item{marking}{For \code{mio_estimate_error}: \code{"none"} (default), \code{"absolute"},
+\code{"fraction"}, or \code{"dorfler"}.}
+
+\item{marking_value}{For \code{mio_estimate_error}: meaning depends on
+\code{marking} -- an absolute indicator threshold, a fraction in \code{(0, 1]} of
+cells, or the Doerfler bulk fraction theta in \code{(0, 1]}. Ignored for
+\code{"none"}.}
+
+\item{marked}{For \code{mio_estimate_error}: the marking array name; \code{""} uses
+\code{"error:marked"}. Ignored when \code{marking} is \code{"none"}.}
 
 \item{overwrite}{Replace an existing array of the output name instead of
 failing.}

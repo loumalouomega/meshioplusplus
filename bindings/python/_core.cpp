@@ -92,6 +92,7 @@
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -1225,6 +1226,37 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
         py::arg("method") = "green-gauss", py::arg("location") = "cell", py::arg("output") = "",
         py::arg("component") = -1, py::arg("overwrite") = false);
+
+    // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
+    // entirely as a composition of `gradient` + the two `data_average`
+    // directions. See operations/error.hpp for the indicator/marking contract.
+    m.def(
+        "estimate_error",
+        [](py::object pymesh, const std::string& array, const std::string& method,
+           const std::string& marking, double marking_value, const std::string& output,
+           const std::string& marked_name, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ErrorOptions options;
+            options.mArrayName = array;
+            options.mMethod = meshioplusplus::error_method_from_name(method);
+            options.mMarking = meshioplusplus::error_marking_from_name(marking);
+            options.mMarkingValue = marking_value;
+            options.mOutputName = output;
+            options.mMarkedName = marked_name;
+            options.mOverwrite = overwrite;
+            meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["global_error"] = r.mGlobalError;
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_marked"] = r.mNumMarked;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("method") = "zz", py::arg("marking") = "none",
+        py::arg("marking_value") = 0.0, py::arg("output") = "", py::arg("marked_name") = "",
+        py::arg("overwrite") = false);
 
     // The settings.json pipeline (read -> operation chain -> write), run
     // entirely in C++ against file paths. Bound for parity tests and for

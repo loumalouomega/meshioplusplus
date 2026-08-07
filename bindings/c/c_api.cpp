@@ -78,6 +78,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -1099,6 +1100,34 @@ mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char*
             *num_skipped = r.mNumSkipped;
         if (num_fallback)
             *num_fallback = r.mNumFallback;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const char* method,
+                             const char* marking, double marking_value, const char* output_name,
+                             const char* marked_name, int overwrite, double* global_error,
+                             int64_t* num_skipped, int64_t* num_marked) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
+        meshioplusplus::ErrorOptions opts;
+        opts.mArrayName = array_name;
+        opts.mMethod = meshioplusplus::error_method_from_name(method ? method : "");
+        opts.mMarking = meshioplusplus::error_marking_from_name(marking ? marking : "");
+        opts.mMarkingValue = marking_value;
+        if (output_name)
+            opts.mOutputName = output_name;
+        if (marked_name)
+            opts.mMarkedName = marked_name;
+        opts.mOverwrite = overwrite != 0;
+        meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(mesh->mMesh, opts);
+        if (global_error)
+            *global_error = r.mGlobalError;
+        if (num_skipped)
+            *num_skipped = r.mNumSkipped;
+        if (num_marked)
+            *num_marked = r.mNumMarked;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

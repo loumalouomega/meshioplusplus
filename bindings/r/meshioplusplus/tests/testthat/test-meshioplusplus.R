@@ -489,6 +489,31 @@ test_that("gradient differentiates a point-data field", {
   expect_error(mio_gradient(m, "temperature", op = "divergence"))
 })
 
+test_that("estimate_error estimates a recovery-based indicator and marks", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  e <- mio_estimate_error(m, "temperature")
+  expect_equal(e$num_skipped, 0)
+  expect_gte(e$global_error, 0)
+  expect_equal(e$num_marked, 0)
+  expect_true("error:zz" %in% mio_cell_data_names(e$mesh))
+  expect_false("error:marked" %in% mio_cell_data_names(e$mesh))
+  mio_release(e$mesh)
+
+  f <- mio_estimate_error(m, "temperature", marking = "absolute", marking_value = 1e-9,
+                          output = "ind", marked = "flag")
+  expect_true("ind" %in% mio_cell_data_names(f$mesh))
+  expect_true("flag" %in% mio_cell_data_names(f$mesh))
+  expect_gte(f$num_marked, 0)
+  mio_release(f$mesh)
+
+  # A cell_data array has no derivative to recover, and an out-of-range
+  # marking_value for "fraction" is rejected. Both must fail by name.
+  expect_error(mio_estimate_error(m, "material"))
+  expect_error(mio_estimate_error(m, "temperature", marking = "fraction", marking_value = 1.5))
+})
+
 test_that("merge and interpolate work", {
   a <- fixture()
   b <- fixture()

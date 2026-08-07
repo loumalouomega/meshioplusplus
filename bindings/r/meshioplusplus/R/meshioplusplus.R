@@ -595,9 +595,19 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #'   a negative value means the row magnitude; for `mio_gradient` it means
 #'   **every** component -- deliberately the opposite sentinel.
 #' @param op For `mio_gradient`: `"gradient"`, `"divergence"` or `"curl"`.
-#' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`.
+#' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`. For
+#'   `mio_estimate_error`: only `"zz"` exists today; `""` selects it.
 #' @param location For `mio_gradient`: `"cell"` or `"point"`.
-#' @param output Output array name; `""` uses `<array>:<op>`.
+#' @param output Output array name; `""` uses `<array>:<op>` for
+#'   `mio_gradient`, `"error:zz"` for `mio_estimate_error`.
+#' @param marking For `mio_estimate_error`: `"none"` (default), `"absolute"`,
+#'   `"fraction"`, or `"dorfler"`.
+#' @param marking_value For `mio_estimate_error`: meaning depends on
+#'   `marking` -- an absolute indicator threshold, a fraction in `(0, 1]` of
+#'   cells, or the Doerfler bulk fraction theta in `(0, 1]`. Ignored for
+#'   `"none"`.
+#' @param marked For `mio_estimate_error`: the marking array name; `""` uses
+#'   `"error:marked"`. Ignored when `marking` is `"none"`.
 #' @param dims Cell counts `c(nx, ny, nz)` for `mio_grid()`.
 #' @param origin Lattice lo corner.
 #' @param spacing Cell size per axis.
@@ -749,6 +759,18 @@ mio_gradient <- function(mesh, array, op = "gradient", method = "green-gauss",
     R_mio_gradient, mesh, as.character(array), as.character(op),
     as.character(method), as.character(location), as.character(output),
     as.integer(component), isTRUE(overwrite)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
+                               marking_value = 0.0, output = "", marked = "",
+                               overwrite = FALSE) {
+  .Call(
+    R_mio_estimate_error, mesh, as.character(array), as.character(method),
+    as.character(marking), as.numeric(marking_value), as.character(output),
+    as.character(marked), isTRUE(overwrite)
   )
 }
 

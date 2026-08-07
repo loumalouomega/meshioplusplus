@@ -216,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MINOR 2
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -818,6 +818,58 @@ MIO_API mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, con
                                const char* method, const char* location, const char* output_name,
                                int component, int overwrite, int64_t* num_skipped,
                                int64_t* num_fallback);
+
+/**
+ * Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+ * point_data field, and optionally mark cells for refinement.
+ *
+ * A composition of mio_gradient (Green-Gauss, cell location) with the
+ * measure-weighted point<->cell averaging round trip: the indicator is
+ * sqrt(|measure| * sum((recovered - raw)^2)) per cell. The result is a copy
+ * of the input carrying "<output_name>" (Float64, default "error:zz") and,
+ * when marking is not "none", "<marked_name>" (Int64 0/1, default
+ * "error:marked") -- so refine's own --where predicate needs no change at
+ * all: the intended use is `mio_refine_ex` with a "error:marked > 0.5"
+ * selector. Geometry, connectivity, regions and every existing array come
+ * through unchanged.
+ *
+ * A cell that cannot be evaluated (an unsupported/degenerate gradient cell, a
+ * recovery neighbourhood with no finite contribution, or an unmeasurable
+ * cell) reads NaN in the indicator array and 0 (never NaN) in the marking
+ * array, and is excluded from global_error and from every marking policy's
+ * cell count.
+ *
+ * @param mesh          input mesh.
+ * @param array_name    name of the point_data array to estimate the error
+ *                      of. A cell_data name is an error naming the fix, since
+ *                      a piecewise-constant field has no derivative to
+ *                      recover.
+ * @param method        estimator family; NULL, "" or "zz" selects the only
+ *                      one that exists today.
+ * @param marking       "none" (default; NULL or "" also selects it),
+ *                      "absolute", "fraction", or "dorfler".
+ * @param marking_value meaning depends on marking: ignored for "none"; an
+ *                      absolute indicator threshold for "absolute"; a
+ *                      fraction in (0, 1] of cells for "fraction"; the
+ *                      Doerfler bulk fraction theta in (0, 1] for "dorfler".
+ * @param output_name   indicator array name; NULL or "" selects "error:zz".
+ * @param marked_name   marking array name; NULL or "" selects
+ *                      "error:marked". Ignored when marking is "none".
+ * @param overwrite     nonzero to replace an existing array of an output
+ *                      name instead of failing.
+ * @param global_error  optional out: sqrt(sum of eta_K^2) over evaluable
+ *                      cells -- the estimated global error.
+ * @param num_skipped   optional out: cells that could not be evaluated.
+ * @param num_marked    optional out: cells marked; always 0 for "none".
+ * @return the mesh carrying the produced array(s) (free with mio_mesh_free),
+ *         or NULL on failure.
+ */
+MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name,
+                                     const char* method, const char* marking,
+                                     double marking_value, const char* output_name,
+                                     const char* marked_name, int overwrite,
+                                     double* global_error, int64_t* num_skipped,
+                                     int64_t* num_marked);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).

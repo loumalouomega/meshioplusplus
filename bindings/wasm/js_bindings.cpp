@@ -109,6 +109,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -2018,6 +2019,38 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
 }
 
 /**
+ * @brief The ZZ recovery-based error indicator plus marking.
+ *
+ * A composition of `gradient_js` with the measure-weighted point<->cell
+ * averaging round trip; see operations/error.hpp for the indicator/marking
+ * contract. `marking` "none" (default) attaches only the Float64 `error:zz`
+ * indicator; any other policy also attaches an Int64 0/1 `error:marked`
+ * array, so `refine`'s own `--where` selector needs no change at all.
+ */
+val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std::string& rMethod,
+                      const std::string& rMarking, double markingValue, const std::string& rOutput,
+                      const std::string& rMarked, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ErrorOptions options;
+        options.mArrayName = rArray;
+        options.mMethod = meshioplusplus::error_method_from_name(rMethod);
+        options.mMarking = meshioplusplus::error_marking_from_name(rMarking);
+        options.mMarkingValue = markingValue;
+        options.mOutputName = rOutput;
+        options.mMarkedName = rMarked;
+        options.mOverwrite = overwrite;
+        meshioplusplus::ErrorResult r =
+            meshioplusplus::estimate_error(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("globalError", r.mGlobalError);
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numMarked", static_cast<double>(r.mNumMarked));
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -2721,6 +2754,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("distanceToSurface", &distance_to_surface_js);
     emscripten::function("computeSdf", &compute_sdf_js);
     emscripten::function("gradient", &gradient_js);
+    emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

@@ -341,6 +341,47 @@ end
 _op_name(op) = String(op)
 _method_name(m) = replace(String(m), '_' => '-')
 
+"""
+    estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
+                   output="", marked="", overwrite=false)
+        -> (; mesh, global_error, num_skipped, num_marked)
+
+Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+**point-data** field, and optionally mark cells for refinement.
+
+A composition of [`gradient`](@ref) (Green-Gauss, cell location) with the
+measure-weighted point<->cell averaging round trip: the indicator is
+`sqrt(|measure| * sum((recovered - raw)^2))` per cell, attached as `output`
+(default `"error:zz"`). `marking` is `:none` (default), `:absolute`,
+`:fraction`, or `:dorfler`; when not `:none` a second Int64 0/1 array `marked`
+(default `"error:marked"`) is attached too, so [`refine`](@ref)'s own `where`
+selector needs no change at all — the intended use is
+`refine(mesh, where="error:marked > 0.5")`. `marking_value`'s meaning depends
+on `marking`: an absolute indicator threshold, a fraction in `(0, 1]` of
+cells, or the Dörfler bulk fraction theta in `(0, 1]`.
+
+Cells that cannot be evaluated read `NaN` in the indicator array and `0`
+(never `NaN`) in the marking array, and are counted in `num_skipped`
+(excluded from `global_error` and from `num_marked`).
+
+Naming a *cell-data* array fails by name, for the same reason `gradient` does.
+See `doc/gradient.md`.
+"""
+function estimate_error(m::Mesh, array::AbstractString; method=:zz, marking=:none,
+                        marking_value::Real=0.0, output::AbstractString="",
+                        marked::AbstractString="", overwrite::Bool=false)
+    global_error = Ref{Cdouble}(0.0)
+    skipped = Ref{Int64}(0)
+    nmarked = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_estimate_error), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cdouble, Cstring, Cstring, Cint,
+                 Ptr{Cdouble}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), array, String(method), String(marking), Cdouble(marking_value),
+                output, marked, overwrite ? Cint(1) : Cint(0), global_error, skipped, nmarked)
+    (mesh=Mesh(_check_ptr(ptr)), global_error=Float64(global_error[]),
+     num_skipped=Int(skipped[]), num_marked=Int(nmarked[]))
+end
+
 # --- combining / comparing ---------------------------------------------------
 
 """

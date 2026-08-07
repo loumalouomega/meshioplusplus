@@ -537,6 +537,32 @@ end
     close(m)
 end
 
+@testset "operations: estimate_error" begin
+    m = fixture()
+
+    e = estimate_error(m, "temperature")
+    @test e.num_skipped == 0
+    @test e.global_error >= 0.0
+    @test e.num_marked == 0
+    @test "error:zz" in cell_data_names(e.mesh)
+    @test !("error:marked" in cell_data_names(e.mesh))
+    close(e.mesh)
+
+    f = estimate_error(m, "temperature"; marking=:absolute, marking_value=1e-9,
+                       output="ind", marked="flag")
+    @test "ind" in cell_data_names(f.mesh)
+    @test "flag" in cell_data_names(f.mesh)
+    @test f.num_marked >= 0
+    close(f.mesh)
+
+    # A cell_data array has no derivative to recover, and an out-of-range
+    # marking_value for "fraction" is rejected: both must fail by name.
+    @test_throws MeshioError estimate_error(m, "material")
+    @test_throws MeshioError estimate_error(m, "temperature"; marking=:fraction,
+                                            marking_value=1.5)
+    close(m)
+end
+
 @testset "operations: merge and interpolate" begin
     a = fixture()
     b = fixture()
