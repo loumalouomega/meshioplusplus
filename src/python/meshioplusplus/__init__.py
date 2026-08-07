@@ -58,6 +58,7 @@ from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
 from ._diff import diff, meshes_equal
+from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
 from ._gpu import (
     from_cupy,
@@ -201,6 +202,7 @@ __all__ = [
     "merge",
     "interpolate",
     "gradient",
+    "estimate_error",
     "slice",
     "isosurface",
     "transform",

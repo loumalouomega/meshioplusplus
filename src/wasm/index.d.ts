@@ -304,6 +304,21 @@ export type OpSpec =
     }
   | {
       /**
+       * The ZZ recovery-based error indicator of a `point_data` field, plus
+       * optional marking. A pure data step: geometry is untouched and the
+       * indicator (and, when `marking` is not `"none"`, the marking) array
+       * is attached.
+       */
+      op: 'estimateError';
+      array: string;
+      method?: ErrorMethod;
+      marking?: ErrorMarking;
+      markingValue?: number;
+      output?: string;
+      marked?: string;
+    }
+  | {
+      /**
        * A regular grid around the mesh. One of the two steps that replace their
        * input's geometry rather than transforming it: what comes out is a
        * lattice, not the mesh that went in. Give exactly one of `resolution` and
@@ -369,6 +384,12 @@ export type SdfWatertightCheck = 'off' | 'warn' | 'error';
 
 /** `gradient`'s reconstruction method. See doc/gradient.md. */
 export type GradientMethod = 'green-gauss' | 'least-squares';
+
+/** `estimateError`'s estimator family. Only `"zz"` exists today. */
+export type ErrorMethod = 'zz';
+
+/** `estimateError`'s marking policy. See doc/error.md. */
+export type ErrorMarking = 'none' | 'absolute' | 'fraction' | 'dorfler';
 
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
@@ -1207,6 +1228,41 @@ export interface MeshioPlusPlusModule {
     component?: number,
     overwrite?: boolean,
   ): { mesh: Mesh; numSkipped: number; numFallback: number };
+
+  /**
+   * The Zienkiewicz-Zhu (ZZ) recovery-based error indicator of a `point_data`
+   * field, plus optional marking. A composition of `gradient` (Green-Gauss,
+   * cell location) with the measure-weighted point↔cell averaging round
+   * trip: the indicator is `sqrt(|measure| * sum((recovered - raw)^2))` per
+   * cell, attached as `output` (default `"error:zz"`, Float64).
+   *
+   * `marking` is `"none"` (default), `"absolute"`, `"fraction"`, or
+   * `"dorfler"`; when not `"none"` a second Int64 0/1 array `marked`
+   * (default `"error:marked"`) is attached too, so `refine`'s own `where`/
+   * `--where` selector needs no change at all — the intended use is
+   * `refine(mesh, {compare: '>', value: 0.5, array: 'error:marked'})`.
+   * `markingValue`'s meaning depends on `marking`: an absolute indicator
+   * threshold, a fraction in `(0, 1]` of cells, or the Doerfler bulk fraction
+   * theta in `(0, 1]`.
+   *
+   * Cells that cannot be evaluated read NaN in the indicator array and 0
+   * (never NaN) in the marking array, and are counted in `numSkipped`
+   * (excluded from `globalError` and from `numMarked`).
+   * @throws {Error} when `array` names a `cell_data` array (piecewise
+   *   constant, so it has no derivative to recover), an unknown array, an
+   *   unknown method/marking policy, or an out-of-range `markingValue` for
+   *   `"fraction"`/`"dorfler"`.
+   */
+  estimateError(
+    mesh: Mesh,
+    array: string,
+    method?: ErrorMethod,
+    marking?: ErrorMarking,
+    markingValue?: number,
+    output?: string,
+    marked?: string,
+    overwrite?: boolean,
+  ): { mesh: Mesh; globalError: number; numSkipped: number; numMarked: number };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];

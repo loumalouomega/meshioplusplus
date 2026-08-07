@@ -27,18 +27,27 @@ import numpy as np
 
 from ._data_common import normalize_location, require_key
 
+#: Outward-wound corner-only face tables, transcribed verbatim (winding
+#: included) from `detail/cell_faces.cpp`'s C++ tables -- the authoritative,
+#: Newell-normal-gtested source. This table's own consistency IS the
+#: correctness of `_cell_measures`' divergence-theorem volume below: the
+#: origin-tetrahedra decomposition it uses only gives a translation-invariant
+#: answer when every face of the closed surface is wound outward the same
+#: way, so a single inward face here would silently make the "volume" of a
+#: cell depend on where the cell sits in space rather than on its shape --
+#: exactly the defect `TranslatedCellMeasureIsInvariant` below pins.
 _FACES = {
-    "tetra": [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)],
+    "tetra": [(0, 1, 3), (1, 2, 3), (2, 0, 3), (0, 2, 1)],
     "hexahedron": [
-        (0, 1, 2, 3),
-        (4, 5, 6, 7),
-        (0, 1, 5, 4),
+        (0, 4, 7, 3),
         (1, 2, 6, 5),
-        (2, 3, 7, 6),
-        (3, 0, 4, 7),
+        (0, 1, 5, 4),
+        (3, 7, 6, 2),
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
     ],
-    "wedge": [(0, 1, 2), (3, 4, 5), (0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)],
-    "pyramid": [(0, 1, 2, 3), (0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)],
+    "wedge": [(0, 2, 1), (3, 4, 5), (0, 1, 4, 3), (1, 2, 5, 4), (2, 0, 3, 5)],
+    "pyramid": [(0, 3, 2, 1), (0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)],
 }
 
 _CORNERS = {

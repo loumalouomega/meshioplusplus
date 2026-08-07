@@ -75,6 +75,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -2375,6 +2376,58 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `data estimate-error` is a slight departure from the rest of this group too,
+// for the same reason `data gradient` is: a mesh operation (it reads geometry
+// and topology), living here because it consumes and produces data arrays. It
+// composes `gradient` with the point<->cell averaging round trip to produce
+// the ZZ recovery-based error indicator `refine`'s own `--where` consumes. See
+// doc/error.md.
+int cmd_data_estimate_error(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"method", {}, true});
+    specs.push_back({"marking", {}, true});
+    specs.push_back({"marking-value", {}, true});
+    specs.push_back({"output", {}, true});
+    specs.push_back({"marked", {}, true});
+    specs.push_back({"overwrite", {}, false});
+    specs.push_back({"quiet", {"-q"}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data estimate-error requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("data estimate-error requires --array NAME");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::ErrorOptions opts;
+    opts.mArrayName = opt_value(p, "array");
+    // The defaults here must stay string-identical to the Python CLI's.
+    opts.mMethod = meshioplusplus::error_method_from_name(opt_value(p, "method", "zz"));
+    opts.mMarking = meshioplusplus::error_marking_from_name(opt_value(p, "marking", "none"));
+    if (has_opt(p, "marking-value"))
+        opts.mMarkingValue = std::stod(opt_value(p, "marking-value"));
+    opts.mOutputName = opt_value(p, "output");
+    opts.mMarkedName = opt_value(p, "marked");
+    opts.mOverwrite = has_flag(p, "overwrite");
+
+    meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(mesh, opts);
+    if (!has_flag(p, "quiet")) {
+        const std::string name = opts.mOutputName.empty() ? "error:zz" : opts.mOutputName;
+        std::cout << "wrote cell_data '" << name << "' (" << opt_value(p, "method", "zz") << ")\n";
+        std::cout << "  global error:             " << r.mGlobalError << "\n";
+        std::cout << "  cells skipped (NaN):      " << r.mNumSkipped << "\n";
+        const std::string marking = opt_value(p, "marking", "none");
+        if (marking != "none") {
+            const std::string marked_name =
+                opts.mMarkedName.empty() ? "error:marked" : opts.mMarkedName;
+            std::cout << "  wrote cell_data '" << marked_name << "' (" << marking << ")\n";
+            std::cout << "  cells marked:             " << r.mNumMarked << "\n";
+        }
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 /// One report counter, printed as an integer when it is one (most are counts;
 /// only e.g. Smooth's MaxDisplacement is genuinely fractional).
 void pipeline_print_counter(std::ostream& rOut, double value) {
@@ -2458,7 +2511,9 @@ void print_data_usage(std::ostream& rOut) {
             "  clamp       Clamp values into [--min, --max]\n"
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
-            "gradient|divergence|curl)\n\n";
+            "gradient|divergence|curl)\n"
+            "  estimate-error  ZZ recovery-based error indicator (--array NAME "
+            "--marking none|absolute|fraction|dorfler)\n\n";
 }
 
 int cmd_data(const std::vector<std::string>& rArgs) {
@@ -2492,6 +2547,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_normalize(rest);
     if (sub == "gradient")
         return cmd_data_gradient(rest);
+    if (sub == "estimate-error")
+        return cmd_data_estimate_error(rest);
     std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";
     print_data_usage(std::cerr);
     return 2;

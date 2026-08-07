@@ -46,6 +46,7 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
@@ -235,6 +236,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -567,6 +569,28 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
+    }
+    if (op == "EstimateError") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with the indicator (and, if requested, the
+        // marking) array attached.
+        ErrorOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mMethod = error_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mMarking = error_marking_from_name(pipe_text(rStep, "Marking", ""));
+        opts.mMarkingValue = pipe_number(rStep, "MarkingValue", 0.0);
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        opts.mMarkedName = pipe_text(rStep, "Marked", "");
+        opts.mOverwrite = true;
+        ErrorResult er = estimate_error(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"GlobalError", er.mGlobalError},
+                        {"NumSkipped", static_cast<double>(er.mNumSkipped)},
+                        {"NumMarked", static_cast<double>(er.mNumMarked)}});
+        if (er.mNumSkipped > 0)
+            rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
+                                        " cell(s) could not be evaluated and are NaN");
+        return std::move(er.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does

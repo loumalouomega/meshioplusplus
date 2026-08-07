@@ -653,6 +653,51 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def estimate_error(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "zz",
+        marking: str = "none",
+        marking_value: float = 0.0,
+        output: Optional[str] = None,
+        marked: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """ZZ recovery-based error indicator of a point_data field, plus
+        optional marking of cells for refinement.
+
+        A composition of `gradient` (Green-Gauss, cell location) with the
+        measure-weighted point<->cell averaging round trip: the indicator is
+        sqrt(|measure| * sum((recovered - raw)^2)) per cell, attached as
+        `output` (default "error:zz"). marking: none|absolute|fraction|dorfler;
+        when not "none" a second Int64 0/1 array `marked` (default
+        "error:marked") is attached too, so refine's own `where` selector
+        needs no change at all -- the intended use is
+        `refine(..., where="error:marked > 0.5")`. marking_value's meaning
+        depends on marking: an absolute indicator threshold, a fraction in
+        (0, 1] of cells, or the Doerfler bulk fraction theta in (0, 1].
+        Cells that cannot be evaluated read NaN in the indicator array and 0
+        (never NaN) in the marking array, and are reported in num_skipped
+        (excluded from global_error and from num_marked)."""
+        return _guard(
+            _tools.tool_estimate_error,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            marking=marking,
+            marking_value=marking_value,
+            output=output,
+            marked=marked,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def transform(
         input_path: str,
         output_path: str,

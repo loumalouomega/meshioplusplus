@@ -52,6 +52,7 @@ from .. import (
     decimate,
     diff,
     distance_to_surface,
+    estimate_error,
     extract_skin,
     extract_surface,
     gradient,
@@ -958,6 +959,42 @@ def tool_gradient(
     )
 
 
+def tool_estimate_error(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    method="zz",
+    marking="none",
+    marking_value=0.0,
+    output=None,
+    marked=None,
+    overwrite=False,
+):
+    """ZZ recovery-based error indicator of a point_data field, plus optional
+    marking (absolute/fraction/dorfler) of cells for refinement."""
+    mesh = _load(input_path, input_format)
+    out, report = estimate_error(
+        mesh,
+        array,
+        method=method,
+        marking=marking,
+        marking_value=marking_value,
+        output=output,
+        marked_name=marked,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        global_error=float(report["global_error"]),
+        num_skipped=int(report["num_skipped"]),
+        num_marked=int(report["num_marked"]),
+    )
+
+
 def tool_transform(
     input_path,
     output_path,
@@ -1656,6 +1693,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
+        (
+            "estimate_error",
+            {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
+        ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
         (

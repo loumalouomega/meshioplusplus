@@ -160,6 +160,7 @@ function resolveVariant(variant) {
  *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
  *   computeSdf: (surface: Mesh, structure?: string, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, rootResolution?: number, maxDepth?: number, bandCells?: number, recordLevels?: boolean, maxCells?: number, sign?: string, location?: string, band?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], maxDepth: number, numBanded: number, quality: object},
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
+ *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
@@ -431,6 +432,26 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             overwrite = false,
         ) =>
             Module.gradient(mesh, array, operator, method, location, output, component, overwrite),
+        estimateError: (
+            mesh,
+            array,
+            method = 'zz',
+            marking = 'none',
+            markingValue = 0.0,
+            output = '',
+            marked = '',
+            overwrite = false,
+        ) =>
+            Module.estimateError(
+                mesh,
+                array,
+                method,
+                marking,
+                markingValue,
+                output,
+                marked,
+                overwrite,
+            ),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),

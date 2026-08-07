@@ -34,6 +34,7 @@ from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
+from ._error import estimate_error
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
 from ._isosurface import isosurface
@@ -91,6 +92,7 @@ _OP_TABLE = {
     "Slice": ("Point", "Normal", "RecordParentIds"),
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
+    "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
         "Resolution",
@@ -435,6 +437,26 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 f"gradient: {report['num_skipped']} cell(s) could not be "
                 "differentiated and are NaN"
+            )
+    elif op == "EstimateError":
+        mesh, report = estimate_error(
+            mesh,
+            _text(step, "Array", ""),
+            method=_text(step, "Method", "zz"),
+            marking=_text(step, "Marking", "none"),
+            marking_value=_number(step, "MarkingValue", 0.0),
+            output=_text(step, "Output", "") or None,
+            marked_name=_text(step, "Marked", "") or None,
+            overwrite=True,
+            return_report=True,
+        )
+        entry["GlobalError"] = report["global_error"]
+        entry["NumSkipped"] = report["num_skipped"]
+        entry["NumMarked"] = report["num_marked"]
+        if report["num_skipped"] > 0:
+            warnings.append(
+                f"estimate_error: {report['num_skipped']} cell(s) could not be "
+                "evaluated and are NaN"
             )
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")
