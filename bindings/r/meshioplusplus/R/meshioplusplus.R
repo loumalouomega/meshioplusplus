@@ -837,15 +837,26 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 #'   enforces 2:1 balance (the output is then **not** conforming; the constrained
 #'   nodes come back in `refine:hanging`).
 #' @param record_levels attach the `refine:level` `cell_data` array.
+#' @param record_hierarchy attach the `refine:cell_id`/`refine:parent_id`
+#'   `cell_data` arrays -- the persistent parent/child hierarchy a multigrid
+#'   caller resolves across the sequence of meshes it keeps ("a link between
+#'   two meshes, not a tree inside one"): an unsplit cell keeps its id and is
+#'   its own parent; a split cell's children each get a fresh id and carry the
+#'   parent's id. An input already carrying `refine:cell_id` is updated
+#'   whatever this says. Also forces `refine:entity` to be attached even when
+#'   the closure leaves no hanging node, since it already records the coarse
+#'   corners each new fine node is the mean of -- the multigrid prolongation
+#'   weights, which `"redgreen"`/`"propagate"` would otherwise never expose.
 #' @export
 mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
                        cells = NULL, region = NULL, where_array = NULL,
                        where_op = "<", where_value = 0,
-                       closure = "redgreen", record_levels = FALSE) {
+                       closure = "redgreen", record_levels = FALSE,
+                       record_hierarchy = FALSE) {
   .Call(
     R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids),
     cells, region, where_array, where_op, as.numeric(where_value),
-    closure, isTRUE(record_levels)
+    closure, isTRUE(record_levels), isTRUE(record_hierarchy)
   )
 }
 

@@ -607,7 +607,7 @@ const _REFINE_COMPARES = Dict("<" => Int32(0), "lt" => Int32(0), "<=" => Int32(1
 """
     refine(mesh; levels=1, record_parent_ids=false, cells=nothing, region="",
            where_array="", where_op="<", where_value=0.0, closure="redgreen",
-           record_levels=false)
+           record_levels=false, record_hierarchy=false)
         -> (; mesh, point_map, cell_maps)
 
 Subdivide cells into same-type children (line → 2, triangle → 4, quad → 4,
@@ -628,12 +628,23 @@ nodes come back in `refine:hanging`).
 
 Higher-order cells, pyramids and ragged blocks have no same-type subdivision
 and fail by name. See `doc/refine.md`.
+
+`record_hierarchy` attaches the `refine:cell_id`/`refine:parent_id` `cell_data`
+arrays -- the persistent parent/child hierarchy a multigrid caller resolves
+across the sequence of meshes it keeps ("a link between two meshes, not a tree
+inside one"): an unsplit cell keeps its id and is its own parent; a split
+cell's children each get a fresh id and carry the parent's id. An input
+already carrying `refine:cell_id` is updated whatever this says. Also forces
+`refine:entity` to be attached even when the closure leaves no hanging node,
+since it already records the coarse corners each new fine node is the mean of
+-- the multigrid prolongation weights, which `"redgreen"`/`"propagate"` would
+otherwise never expose.
 """
 function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                 cells=nothing, region::AbstractString="",
                 where_array::AbstractString="", where_op::AbstractString="<",
                 where_value::Real=0.0, closure::AbstractString="redgreen",
-                record_levels::Bool=false)
+                record_levels::Bool=false, record_hierarchy::Bool=false)
     closure_code = get(_REFINE_CLOSURES, String(closure)) do
         throw(ArgumentError("refine: unknown closure '$closure' " *
                             "(expected 'redgreen'/'green', 'propagate' or 'balanced')"))
@@ -657,7 +668,8 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                             record_parent_ids ? Int32(1) : Int32(0),
                             record_levels ? Int32(1) : Int32(0),
                             closure_code, compare_code, Int32(0),
-                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                            record_hierarchy ? Int64(1) : Int64(0),
+                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
         _check_ptr(ccall(_sym(:mio_refine_ex), Ptr{Cvoid},
                          (Ptr{Cvoid}, Ref{_CRefineOpts}), _handle(m), Ref(opts)))
     end

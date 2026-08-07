@@ -730,7 +730,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, int levels, bool record_parent_ids, py::object cells,
            const std::string& region, const std::string& predicate_array,
            const std::string& predicate_op, double predicate_value, const std::string& closure,
-           bool record_levels) {
+           bool record_levels, bool record_hierarchy) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -748,6 +748,7 @@ PYBIND11_MODULE(_core, m) {
             options.mPredicateValue = predicate_value;
             options.mClosure = meshioplusplus::refine_closure_from_name(closure);
             options.mRecordLevels = record_levels;
+            options.mRecordHierarchy = record_hierarchy;
             meshioplusplus::RefineResult r = meshioplusplus::refine(cpp, options);
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
@@ -761,7 +762,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false,
         py::arg("cells") = py::none(), py::arg("region") = "", py::arg("predicate_array") = "",
         py::arg("predicate_op") = "<", py::arg("predicate_value") = 0.0,
-        py::arg("closure") = "redgreen", py::arg("record_levels") = false);
+        py::arg("closure") = "redgreen", py::arg("record_levels") = false,
+        py::arg("record_hierarchy") = false);
 
     // The selective-refinement subdivision table for one cell type, as
     // {mask: [[child node ids], ...]} plus the tie-break metadata. Exported so

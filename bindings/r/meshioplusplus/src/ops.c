@@ -532,7 +532,7 @@ static int refine_compare_code(const char *name) {
 
 SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SEXP region,
                   SEXP where_array, SEXP where_op, SEXP where_value, SEXP closure,
-                  SEXP record_levels) {
+                  SEXP record_levels, SEXP record_hierarchy) {
     mio_refine_opts opts;
     int64_t *ids = NULL;
     R_xlen_t n_ids = 0;
@@ -542,6 +542,7 @@ SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SE
     opts.levels = (int32_t)mio_r_int(levels, "levels");
     opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
     opts.record_levels = mio_r_bool(record_levels, "record_levels");
+    opts.record_hierarchy = mio_r_bool(record_hierarchy, "record_hierarchy");
     opts.region = mio_r_opt_string(region);
     opts.predicate_array = mio_r_opt_string(where_array);
     if (where_value != R_NilValue && Rf_length(where_value) > 0)

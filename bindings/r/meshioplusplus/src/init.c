@@ -83,7 +83,7 @@ extern SEXP R_mio_compute_bandwidth(SEXP);
 extern SEXP R_mio_reorder(SEXP, SEXP);
 extern SEXP R_mio_split(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
-extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -196,7 +196,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_reorder, 2),
     CALLDEF(R_mio_split, 3),
     CALLDEF(R_mio_convert_cells, 3),
-    CALLDEF(R_mio_refine, 10),
+    CALLDEF(R_mio_refine, 11),
     CALLDEF(R_mio_decimate, 8),
     CALLDEF(R_mio_partition, 9),
     CALLDEF(R_mio_partition_labels, 8),

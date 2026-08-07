@@ -345,6 +345,38 @@ test_that("selective refine closes up conformingly", {
   expect_error(mio_refine(m, where_array = "q", where_op = "~="))
 })
 
+test_that("refine's persistent parent/child hierarchy is opt-in and maintained", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  plain <- mio_refine(m, cells = c(1))
+  expect_false("refine:cell_id" %in% mio_cell_data_names(plain$mesh))
+  mio_release(plain$mesh)
+
+  hier <- mio_refine(m, cells = c(1), record_hierarchy = TRUE)
+  expect_true("refine:cell_id" %in% mio_cell_data_names(hier$mesh))
+  expect_true("refine:parent_id" %in% mio_cell_data_names(hier$mesh))
+  ids <- mio_cell_data(hier$mesh, "refine:cell_id", 1)
+  parents <- mio_cell_data(hier$mesh, "refine:parent_id", 1)
+  # Ids/parent-ids are stable IDENTIFIERS, not the 1-based index maps this
+  # binding otherwise shifts -- they ride the raw C-side numbering unchanged,
+  # like mio_partition_labels' part ids.
+  expect_equal(length(unique(ids)), length(ids))
+  # The coarse mesh (m) has 2 cells, implicitly numbered 0 and 1; every
+  # parent_id must resolve to one of them.
+  expect_true(all(parents %in% c(0, 1)))
+  # Also proves the multigrid-stencil fix: this call used the default
+  # redgreen closure, which leaves no hanging nodes, so refine:entity would
+  # normally never be attached at all.
+  expect_true("refine:entity" %in% mio_point_data_names(hier$mesh))
+
+  # An existing hierarchy is maintained without the flag.
+  again <- mio_refine(hier$mesh, cells = c(1))
+  expect_true("refine:cell_id" %in% mio_cell_data_names(again$mesh))
+  mio_release(again$mesh)
+  mio_release(hier$mesh)
+})
+
 test_that("split and partition pieces own their handles", {
   m <- fixture()
   on.exit(mio_release(m))

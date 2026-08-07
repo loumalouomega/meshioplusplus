@@ -148,7 +148,13 @@ struct _CRefineOpts
     closure::Int32
     predicate_op::Int32
     reserved_pad::Int32
-    reserved::NTuple{6,Int64}
+    # Nonzero to attach refine:cell_id/refine:parent_id -- the persistent
+    # parent/child hierarchy a multigrid caller resolves across the sequence
+    # of meshes it keeps. Took one of the former reserved slots (the
+    # time_step/lenient precedent above), so the struct is still 112 bytes --
+    # see _check_abi_layout.
+    record_hierarchy::Int64
+    reserved::NTuple{5,Int64}
 end
 
 """Mirror of C `mio_stats_report`."""

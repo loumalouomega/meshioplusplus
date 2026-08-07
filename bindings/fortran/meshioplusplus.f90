@@ -277,7 +277,13 @@ module meshioplusplus
         integer(c_int32_t) :: closure = 0
         integer(c_int32_t) :: predicate_op = 0
         integer(c_int32_t) :: reserved_pad = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        !> Nonzero to attach refine:cell_id/refine:parent_id -- the persistent
+        !> parent/child hierarchy a multigrid caller resolves across the
+        !> sequence of meshes it keeps. Also forces refine:entity to be
+        !> attached even when the closure leaves no hanging node. Takes one of
+        !> the former `reserved` slots; size unchanged.
+        integer(c_int64_t) :: record_hierarchy = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
@@ -3335,9 +3341,28 @@ contains
         end select
     end function
 
+    !> One-time ABI layout guard for mio_refine_opts_t, the Julia
+    !> `_check_abi_layout()` precedent applied to Fortran. The C header pins
+    !> `sizeof(mio_refine_opts) == 112` with a `static_assert`, and Julia
+    !> checks its own mirror at load time, but Fortran has no compile-time
+    !> equivalent -- without this, a field added to one side and not the
+    !> other silently corrupts every call rather than failing loudly. Runs
+    !> once per process (a SAVE'd flag), not on every refine() call.
+    subroutine check_refine_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_refine_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 112_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_refine_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
     function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg, &
                          cells, region, where_array, where_op, where_value, closure, &
-                         record_levels) result(out)
+                         record_levels, record_hierarchy) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: levels
         logical, intent(in), optional :: record_parent_ids
@@ -3362,6 +3387,12 @@ contains
         character(*), intent(in), optional :: closure
         !> Attach the refine:level cell_data array.
         logical, intent(in), optional :: record_levels
+        !> Attach refine:cell_id/refine:parent_id -- the persistent parent/
+        !> child hierarchy a multigrid caller resolves across the sequence of
+        !> meshes it keeps. An input already carrying refine:cell_id is
+        !> updated whatever this says. Also forces refine:entity to be
+        !> attached even when the closure leaves no hanging node.
+        logical, intent(in), optional :: record_hierarchy
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
         integer(c_int) :: s, dt
@@ -3373,6 +3404,7 @@ contains
         character(kind=c_char, len=STRBUF_LEN), target :: region_buf, array_buf
         integer(c_int64_t), allocatable, target :: cell_ids(:)
 
+        call check_refine_opts_layout()
         call c_mio_refine_opts_init(opts)
         if (present(levels)) opts%levels = int(levels, c_int32_t)
         if (present(record_parent_ids)) then
@@ -3380,6 +3412,9 @@ contains
         end if
         if (present(record_levels)) then
             if (record_levels) opts%record_levels = 1
+        end if
+        if (present(record_hierarchy)) then
+            if (record_hierarchy) opts%record_hierarchy = 1_c_int64_t
         end if
         if (present(cells)) then
             allocate (cell_ids(max(size(cells), 1)))

@@ -392,6 +392,39 @@ end
     close(m)
 end
 
+@testset "operations: refine's persistent hierarchy" begin
+    m = fixture()
+
+    # Opt-in.
+    plain = refine(m; cells=[1])
+    @test !("refine:cell_id" in cell_data_names(plain.mesh))
+    close(plain.mesh)
+
+    hier = refine(m; cells=[1], record_hierarchy=true)
+    @test "refine:cell_id" in cell_data_names(hier.mesh)
+    @test "refine:parent_id" in cell_data_names(hier.mesh)
+    ids = vec(cell_data(hier.mesh, "refine:cell_id", 1))
+    parents = vec(cell_data(hier.mesh, "refine:parent_id", 1))
+    # Ids/parent-ids are stable IDENTIFIERS, not index maps into a Julia
+    # array -- the partition_labels precedent (returns part *ids*,
+    # deliberately unshifted). They ride the raw C-side numbering unchanged.
+    @test length(unique(ids)) == length(ids)  # every id unique
+    # The coarse mesh (m) has 2 cells, implicitly numbered 0 and 1; every
+    # parent_id must resolve to one of them.
+    @test all(p -> p in (0, 1), parents)
+    # Also proves the multigrid-stencil fix: this call used the redgreen
+    # closure, which leaves no hanging nodes, so refine:entity would
+    # normally never be attached at all.
+    @test "refine:entity" in point_data_names(hier.mesh)
+
+    # An existing hierarchy is maintained without the flag.
+    again = refine(hier.mesh; cells=[1])
+    @test "refine:cell_id" in cell_data_names(again.mesh)
+    close(again.mesh)
+    close(hier.mesh)
+    close(m)
+end
+
 @testset "operations: split and partition own their meshes" begin
     m = fixture()
 

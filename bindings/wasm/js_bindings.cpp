@@ -2059,9 +2059,17 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
  * `recordParentIds` for the `refine:parent_cell` cell_data instead).
  *
  * `options` is an optional object selecting a SUBSET of the cells to refine —
- * `{cells, region, array/op/value, closure, recordLevels}`, at most one
- * selector — in which case the hanging nodes that leaves are resolved by the
- * closure and the output is still conforming. Omit it to refine every cell.
+ * `{cells, region, array/op/value, closure, recordLevels, recordHierarchy}`,
+ * at most one selector — in which case the hanging nodes that leaves are
+ * resolved by the closure and the output is still conforming. Omit it to
+ * refine every cell.
+ *
+ * `recordHierarchy` attaches the `refine:cell_id`/`refine:parent_id`
+ * cell_data arrays -- the persistent parent/child hierarchy a multigrid
+ * caller resolves across the sequence of meshes it keeps. Also forces
+ * `refine:entity` to be attached even when the closure leaves no hanging
+ * node, since it already records the coarse corners each new fine node is
+ * the mean of -- the multigrid prolongation weights.
  */
 val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions) {
     return with_js_errors([&]() -> val {
@@ -2093,6 +2101,9 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
             val levels_flag = rOptions["recordLevels"];
             options.mRecordLevels =
                 !levels_flag.isUndefined() && !levels_flag.isNull() && levels_flag.as<bool>();
+            val hierarchy_flag = rOptions["recordHierarchy"];
+            options.mRecordHierarchy = !hierarchy_flag.isUndefined() && !hierarchy_flag.isNull() &&
+                                       hierarchy_flag.as<bool>();
         }
         return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
     });

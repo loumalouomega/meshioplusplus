@@ -216,7 +216,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 0
+#define MIO_VERSION_MINOR 1
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1039,7 +1039,20 @@ typedef struct mio_refine_opts {
     /** A mio_refine_compare. */
     int32_t predicate_op;
     int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
-    int64_t reserved[6];  /**< must be zero; room for additive growth */
+    /**
+     * Nonzero to attach the refine:cell_id/refine:parent_id cell_data arrays --
+     * the persistent parent/child hierarchy a multigrid caller resolves across
+     * the sequence of meshes it keeps ("a link between two meshes, not a tree
+     * inside one"). An input already carrying refine:cell_id is updated
+     * whatever this says. Also forces refine:entity to be attached even when
+     * the closure leaves no hanging node, since it already records the coarse
+     * corners each new fine node is the mean of -- the multigrid prolongation
+     * weights. Takes one of the former `reserved` slots, keeping the struct's
+     * size and every other field's offset unchanged -- the mio_read_opts
+     * `lenient` precedent.
+     */
+    int64_t record_hierarchy;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_refine_opts;
 
 /** Zero-initialize refine options (every field its default). */

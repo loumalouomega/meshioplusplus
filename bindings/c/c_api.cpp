@@ -1319,6 +1319,7 @@ meshioplusplus::RefineOptions capi_refine_options(const mio_refine_opts& rOpts) 
     options.mLevels = rOpts.levels;
     options.mRecordParentIds = rOpts.record_parent_ids != 0;
     options.mRecordLevels = rOpts.record_levels != 0;
+    options.mRecordHierarchy = rOpts.record_hierarchy != 0;
     if (rOpts.cells != nullptr && rOpts.num_cells > 0)
         options.mCells.assign(rOpts.cells, rOpts.cells + rOpts.num_cells);
     if (rOpts.region != nullptr)
