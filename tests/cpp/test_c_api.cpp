@@ -1939,6 +1939,90 @@ TEST(CApi, GradientErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, EstimateError) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8);
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double x = pts[i * 3 + 0], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        f[i] = 3.0 * x - 2.0 * y + 5.0 * z + 7.0;
+    }
+    const std::int64_t sshape[1] = {8};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    double global_error = -1.0;
+    std::int64_t skipped = -1, marked = -1;
+    mio_mesh* out = mio_estimate_error(m, "f", nullptr, nullptr, 0.0, nullptr, nullptr, 0,
+                                       &global_error, &skipped, &marked);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(skipped, 0);
+    EXPECT_EQ(marked, 0);
+    EXPECT_NEAR(global_error, 0.0, 1e-9);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "error:zz", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    EXPECT_LE(mio_mesh_cell_data_num_blocks(out, "error:marked"), 0)
+        << "no marking requested, so no marked array";
+    mio_mesh_free(out);
+
+    // Custom names + marking.
+    double ge2 = -1.0;
+    std::int64_t sk2 = -1, mk2 = -1;
+    mio_mesh* out2 =
+        mio_estimate_error(m, "f", "zz", "absolute", 1e-6, "ind", "flag", 1, &ge2, &sk2, &mk2);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    EXPECT_EQ(mk2, 0);
+    ASSERT_EQ(mio_mesh_get_cell_data(out2, "ind", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    ASSERT_EQ(mio_mesh_get_cell_data(out2, "flag", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    mio_mesh_free(out2);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, EstimateErrorErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8, 1.0);
+    const std::int64_t sshape[1] = {8};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    EXPECT_EQ(mio_estimate_error(m, "nope", nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_estimate_error(m, "f", "kelly", nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, "f", nullptr, "median", 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, "f", nullptr, "fraction", 1.5, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr)
+        << "out-of-range marking_value";
+    EXPECT_EQ(mio_estimate_error(nullptr, "f", nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, nullptr, nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
     const std::vector<std::int64_t> conn = {0, 1, 2, 3};
