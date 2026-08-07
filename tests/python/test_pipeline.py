@@ -110,6 +110,43 @@ def test_refine_record_hierarchy_step(settings_env):
         assert "refine:parent_id" in out_cpp.cell_data
 
 
+def test_estimate_error_pipeline_step(settings_env):
+    """EstimateError dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair test_op_table_matches_core pins. Unlike
+    test_refine_record_hierarchy_step this does NOT assert cross-engine
+    equality of the produced arrays -- estimate_error's own
+    test_cpp_matches_python (test_error.py) already established that the two
+    engines only agree to within a numeric tolerance (the same,
+    already-accepted precedent data_average's own measure weighting has), not
+    bit-for-bit, so this only checks that both engines run and attach the
+    right arrays."""
+    settings = make_settings(
+        settings_env,
+        [
+            {
+                "Op": "EstimateError",
+                "Array": "temperature",
+                "Marking": "absolute",
+                "MarkingValue": 1e-9,
+            }
+        ],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "EstimateError"
+    assert "GlobalError" in report["steps"][0]
+    out = meshioplusplus.read(settings_env["out"])
+    assert "error:zz" in out.cell_data
+    assert "error:marked" in out.cell_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "EstimateError"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert "error:zz" in out_cpp.cell_data
+        assert "error:marked" in out_cpp.cell_data
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict

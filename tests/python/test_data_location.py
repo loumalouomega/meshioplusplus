@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mp
-from meshioplusplus._data_average import _to_cell_py, _to_point_py
+from meshioplusplus._data_average import _cell_measures, _to_cell_py, _to_point_py
 
 from .helpers_data import assert_same_geometry, data_mesh
 
@@ -28,6 +28,60 @@ def test_point_to_cell_of_a_linear_field():
         centroids = m.points[conn].mean(axis=1)
         expected = centroids[:, 0] + 10 * centroids[:, 1]
         assert values == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("cell_type", "points", "expected"),
+    [
+        ("tetra", [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], 1.0 / 6.0),
+        (
+            "hexahedron",
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            1.0,
+        ),
+        (
+            "wedge",
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1]],
+            0.5,
+        ),
+        (
+            "pyramid",
+            [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 1]],
+            1.0 / 3.0,
+        ),
+    ],
+)
+def test_cell_measures_are_translation_invariant(cell_type, points, expected):
+    """`_cell_measures`' divergence-theorem volume decomposes a closed surface
+    into tetrahedra from the ORIGIN, so it gives the true (translation-
+    invariant) volume only when every face table entry is wound outward the
+    same way -- one inward face silently makes the "volume" grow with
+    distance from the origin instead of depending only on the cell's shape.
+
+    All four `_FACES` tables (tetra/hexahedron/wedge/pyramid) had exactly
+    this defect until fixed to match `detail/cell_faces.cpp`'s
+    Newell-normal-gtested windings verbatim: the same reference-element cell
+    translated far from the origin used to report a wildly different
+    "volume" purely from where it sat in space.
+    """
+    p0 = np.asarray(points, dtype=float)
+    p1 = p0 + np.array([37.0, -19.0, 53.0])
+    pts = np.vstack([p0, p1])
+    conn = np.array(
+        [list(range(len(p0))), list(range(len(p0), 2 * len(p0)))], dtype=np.int64
+    )
+    mesh = mp.Mesh(pts, [(cell_type, conn)])
+    measures = _cell_measures(mesh, mesh.cells[0])
+    assert measures == pytest.approx([expected, expected])
 
 
 def test_cell_to_point_unweighted_is_the_incident_cell_mean():
