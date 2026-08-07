@@ -666,6 +666,38 @@ program test_fortran_api
         call check(st /= 0, 'gradient rejects a scalar divergence')
     end block
 
+    ! ---- estimate_error (ZZ recovery-based error indicator) ---------------
+    block
+        type(mio_mesh) :: e
+        real(real64) :: gerr
+        integer(int64) :: nskip, nmark
+        integer :: st
+
+        e = m%estimate_error('temperature', stat=st, global_error=gerr, num_skipped=nskip)
+        call check(st == 0, 'estimate_error succeeded')
+        call check(e%cell_data_num_blocks('error:zz') >= 1_int64, &
+                   'estimate_error attaches error:zz')
+        call check(e%cell_data_num_blocks('error:marked') <= 0_int64, &
+                   'no marking requested by default')
+        call check(gerr >= 0.0_real64, 'global_error is reported')
+        call e%free()
+
+        e = m%estimate_error('temperature', marking='absolute', marking_value=1.0d-9, &
+                             output='ind', marked='flag', stat=st, num_marked=nmark)
+        call check(st == 0, 'estimate_error with marking succeeded')
+        call check(e%cell_data_num_blocks('ind') >= 1_int64, 'custom indicator name honoured')
+        call check(e%cell_data_num_blocks('flag') >= 1_int64, 'custom marked name honoured')
+        call check(nmark >= 0_int64, 'num_marked is reported')
+        call e%free()
+
+        ! A cell_data field has no derivative to recover: fails through stat.
+        e = m%estimate_error('quality', stat=st)
+        call check(st /= 0, 'estimate_error rejects a cell_data field')
+        ! An out-of-range marking_value for "fraction" fails through stat too.
+        e = m%estimate_error('temperature', marking='fraction', marking_value=1.5d0, stat=st)
+        call check(st /= 0, 'estimate_error rejects an out-of-range marking_value')
+    end block
+
     ! --- named regions (doc/regions.md) ---------------------------------------
     ! The first named groups this API can carry at all; before meshio++ 8.1 they
     ! never left the Python layer.
