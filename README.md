@@ -98,6 +98,7 @@ meshioplusplus crop       in.vtu out.vtu --where "d<0"       # ... or by a data 
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterion
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
+meshioplusplus subdivide  in.vtu out.vtu                      # polyhedral refinement, any 3D cell
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
 meshioplusplus refine     in.vtu out.vtu --where "q<0.3"     # adaptive, closed conformingly
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
@@ -320,6 +321,16 @@ quadratic = meshioplusplus.convert_cells(mesh, mode="elevate")
 
 Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-order mesh, and output is byte-identical across mesh backends and thread counts.
 
+#### Polyhedral refinement (subdivide)
+
+**`meshioplusplus.subdivide`** splits every eligible 3D cell into one polyhedral child per face, connected to a new interior point. `refine` and `decimate` both raise by name on a polyhedron, pointing at `convert_cells(mode="simplexify")` — both are built on fixed same-type subdivision templates, and an arbitrary polyhedron has none. `subdivide` needs no per-type table at all: tabulated types (reduced to corners for a quadratic variant) and existing polyhedron blocks are handled uniformly, so the same code covers every 3D cell type the mesh already supports. Automatically conforming (no closure, no hanging nodes), unlike `refine`. See `doc/subdivide.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.subdivide(mesh, record_parent_ids=True)
+```
+
 #### Refinement
 
 **`meshioplusplus.refine`** subdivides cells into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. Given a **selection** — a cell list, a region name, or a `cell_data` threshold — it refines only those cells and resolves the resulting hanging nodes, so the output is still conforming. See `doc/refine.md`.
@@ -456,7 +467,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -759,7 +770,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

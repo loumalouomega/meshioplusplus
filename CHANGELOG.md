@@ -8,6 +8,55 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.3.0 (2026-08-08)
+
+**Roadmap §1 narrowed further** — the polyhedral-*refinement* half of the
+"polyhedral refinement and coarsening" gap is closed; polyhedral coarsening
+(agglomeration), volume decimation and green-element undo remain open.
+
+- **`subdivide`** (`operations/subdivide.hpp`, [`doc/subdivide.md`](doc/subdivide.md))
+  — polyhedral refinement: splits every eligible 3D cell into one polyhedral
+  child per face, connected to a new interior point. `refine` and `decimate`
+  both raise by name on a polyhedron, pointing at `convert_cells(mode=
+  "simplexify")` — both are built on fixed same-type subdivision templates,
+  and an arbitrary polyhedron has none. `subdivide` needs **no per-type
+  table at all**: it goes through the same uniform face-ring machinery
+  `gradient`/`compute_quality` already use (`detail::cell_rings`/
+  `orient_rings`), which treats a tabulated type and an existing polyhedron
+  block identically. Each child's interior apex is the plain corner average
+  of the parent's own nodes (deliberately **not** the volume centroid),
+  which is what makes the children's total volume conserve to a tight
+  tolerance rather than merely by the divergence theorem's abstract
+  equality. **Automatically conforming** — a shared face between two input
+  cells is never touched, so unlike `refine` there is no closure, no 2:1
+  balance, no hanging-node bookkeeping. **One polyhedron output block per
+  input block, with genuinely mixed cell shapes inside** — `AddPolyhedronBlock`
+  stores cells as ragged CSR with no same-shape constraint, so there is no
+  need to group children by node count the way some *readers* (CGNS's
+  `NFACE_n`, OpenFOAM, EnSight) do for their own format-compatibility
+  reasons. Point and Cell regions survive (`CellMapKind::FirstChild`, the
+  same shape `convert_cells` already uses for its own one-to-many splits,
+  and with **no point map at all** — subdivide never prunes or renumbers a
+  point); named Side regions do not, the same limitation
+  `convert_cells(mode="simplexify")` already has. **C++-core only, with no
+  numpy fallback** — the winding repair is a discrete branch a second
+  implementation could disagree with near-degenerate cells, the same
+  reasoning `_convert_cells.py`'s polyhedron branch and `_smooth.py`'s
+  inversion guard already document. Reachable as a `Subdivide`
+  settings-pipeline/`convertSurfaceOps` step, and across every binding
+  surface: C++ core, pybind, the C API (`mio_subdivide`), Fortran, Julia, R,
+  WASM, both CLIs (`subdivide`), and the MCP `subdivide` tool.
+- **Fixed a real, independently-discovered bug**: `has_skinnable_cells`
+  (`surface.cpp`, gating `convertSurfaceOps`/`convert_surface` and the
+  `skin=true` default on the STL/PLY/SVG/TikZ writers) excluded *every*
+  ragged block including polyhedra, even though `extract_surface`/
+  `extract_skin` have supported polyhedron blocks since v9.16.0 — so a mesh
+  with only a polyhedron block (`subdivide`'s own output being the first
+  thing in the repo to construct one) silently took the unskinned fallback
+  path everywhere `has_skinnable_cells` gates. Fixed by recognizing a
+  polyhedron block the same way `extract_surface`'s own pre-scan already
+  does; pinned by `Skin.HasSkinnableCellsRecognizesAPolyhedronOnlyMesh`.
+
 ## v10.2.0 (2026-08-07)
 
 **Roadmap §1 narrowed further** — the error-estimator-helpers gap is closed;
