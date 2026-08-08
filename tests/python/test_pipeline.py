@@ -110,6 +110,29 @@ def test_refine_record_hierarchy_step(settings_env):
         assert "refine:parent_id" in out_cpp.cell_data
 
 
+def test_subdivide_pipeline_step(settings_env):
+    """Subdivide dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair test_op_table_matches_core pins. Since subdivide
+    has no numpy fallback, both the Python runner and the C++ engine call the
+    same underlying `_core.subdivide` -- so, unlike EstimateError, the two
+    engines' output is bit-for-bit comparable, not merely within tolerance."""
+    settings = make_settings(
+        settings_env, [{"Op": "Subdivide", "RecordParentIds": True}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Subdivide"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two tetra cells, 4 faces each -> 8 children.
+    assert len(out.cells[0].data) == 8
+    assert "subdivide:parent_cell" in out.cell_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_estimate_error_pipeline_step(settings_env):
     """EstimateError dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike

@@ -393,6 +393,19 @@ TEST(Skin, SurfaceOnlyThrows) {
     EXPECT_TRUE(meshioplusplus::has_skinnable_cells(mt::tet_mesh()));
 }
 
+TEST(Skin, HasSkinnableCellsRecognizesAPolyhedronOnlyMesh) {
+    // A polyhedron block carries its own faces and IS skinnable (extract_skin
+    // supports it since v9.16.0) -- has_skinnable_cells must agree, or every
+    // consumer gated on it (convertSurfaceOps/convert_surface, and the
+    // STL/PLY/SVG/TikZ writers' skin=true default) silently takes the
+    // unskinned fallback for a mesh with only a polyhedron block.
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
+    m.AddPolyhedronBlock("polyhedron4", {{{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}}});
+    EXPECT_TRUE(meshioplusplus::has_skinnable_cells(m));
+    EXPECT_NO_THROW(meshioplusplus::extract_skin(m));
+}
+
 TEST(Skin, SurfaceBlocksIgnored) {
     // A mesh with both a tetra block and a pre-existing triangle block: the
     // skin comes from the volume cells only.

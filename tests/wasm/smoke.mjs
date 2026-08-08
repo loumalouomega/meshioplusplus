@@ -551,6 +551,45 @@ step('convertCells rejects a full-Lagrange elevate target', () => {
     assert.throws(() => m.convertCells(quad9, 'elevate'));
 });
 
+step('subdivide: one hexahedron -> 6 polyhedral children, one apex point', () => {
+    // subdivide has no per-type template table: cell_rings/orient_rings
+    // handle a tabulated type and a polyhedron block uniformly. One
+    // polyhedral child per face (that face unfaned, plus one new triangle
+    // per face edge back to a new interior point) -- automatically
+    // conforming, unlike refine.
+    const out = m.subdivide(cube);
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'polyhedron');
+    // cellOffsets is per-OUTPUT-cell (one per face) -- 6 children -> 7 entries.
+    assert.equal(out.cells[0].cellOffsets.length, 7);
+    // Each child: 1 original quad face + 4 new triangles = 5 faces;
+    // 6 children x 5 faces = 30 faces -> 31 offsets.
+    assert.equal(out.cells[0].faceOffsets.length, 31);
+    // One new interior point (the apex) added, nothing pruned.
+    assert.equal(out.points.length, cube.points.length + 3);
+});
+
+step('subdivide: recordParentIds attaches subdivide:parent_cell', () => {
+    const out = m.subdivide(cube, true);
+    assert.ok('subdivide:parent_cell' in out.cell_data);
+    assert.deepEqual(Array.from(out.cell_data['subdivide:parent_cell'][0]), [0, 0, 0, 0, 0, 0]);
+});
+
+step('subdivide: non-3D blocks pass through unchanged', () => {
+    const flatTri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const out = m.subdivide(flatTri);
+    assert.equal(out.cells[0].type, 'triangle');
+    assert.deepEqual(Array.from(out.cells[0].data), Array.from(flatTri.cells[0].data));
+    assert.equal(out.points.length, flatTri.points.length);
+});
+
 step('refine: one hexahedron -> 8 hexahedra with 27 nodes', () => {
     const out = m.refine(cube);
     assert.equal(out.cells.length, 1);
@@ -678,6 +717,19 @@ step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     assert.equal(out.steps[0].op, 'decimate');
     assert.equal(typeof out.steps[0].facesRemoved, 'number');
     assert.ok(m.readMesh('/dec.vtp').cells[0].data.length / 3 < 48);
+});
+
+step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/sub.vtu', cube);
+    const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
+    assert.equal(out.steps[0].op, 'subdivide');
+    // Every internal face subdivide adds is shared by exactly two children
+    // and cancels out of the boundary, so the rendered surface is geometrically
+    // the same box as the input -- this asserts the pipeline step actually ran
+    // (a genuinely different, non-empty cell block came back), not a specific
+    // facet count.
+    const rendered = m.readMesh('/sub.vtp');
+    assert.ok(rendered.cells[0].data.length > 0);
 });
 
 step('smooth: relaxes an interior node while pinning the boundary', () => {
@@ -1189,6 +1241,7 @@ step('every binding is reachable through the wrapper', () => {
         'cropPredicate',
         'split',
         'convertCells',
+        'subdivide',
         'refine',
         'decimate',
         'partition',

@@ -1392,6 +1392,60 @@ TEST(CApi, ConvertCellsErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SubdivideHexahedronThroughTheAbi) {
+    // One unit-cube hexahedron -> 6 polyhedral children, one per face.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_subdivide_result* r = mio_subdivide(m, /*record_parent_ids=*/1);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_subdivide_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(out), 9);  // one new interior point (apex)
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "polyhedron");
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(out, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 6);
+    EXPECT_EQ(info.is_ragged, 1);
+    EXPECT_EQ(info.is_polyhedron, 1);
+
+    // Zero-copy borrow of the cell map -- there is no point map (subdivide
+    // never prunes or renumbers an original point).
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_subdivide_result_num_cell_maps(r), 1);
+    ASSERT_EQ(mio_subdivide_result_cell_map(r, 0, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);
+
+    mio_mesh* owned = mio_subdivide_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(owned), 9);
+    mio_mesh_free(owned);
+    mio_subdivide_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, SubdivideErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    EXPECT_EQ(mio_subdivide(nullptr, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_subdivide_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_subdivide_result_num_cell_maps(nullptr), -1);
+    EXPECT_EQ(mio_subdivide_result_cell_map(nullptr, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_subdivide_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}
+
 TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
     // A 3x3 grid of quads: only the centre node is interior, so it is the only
     // one free to move -- which makes both halves of the assertion sharp.

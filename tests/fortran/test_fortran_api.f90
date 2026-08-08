@@ -341,6 +341,24 @@ program test_fortran_api
         call check(st /= 0, 'convert_cells rejects an unknown mode')
     end block
 
+    ! -- subdivide: one polyhedral child per face, no per-type table needed --
+    block
+        type(mio_mesh) :: sub
+        integer :: st
+
+        sub = m%subdivide(record_parent_ids=.true., stat=st)
+        call check(st == 0, 'subdivide succeeded')
+        call check(sub%num_cell_blocks() == 1, 'subdivide kept one block')
+        call check(sub%cell_block_type(1) == 'polyhedron', 'subdivide produced polyhedron cells')
+        call check(sub%cell_block_is_polyhedron(1), 'subdivide block is 2-level ragged')
+        ! Two tetra parents, 4 faces each -> 8 children.
+        call check(sub%cell_block_num_cells(1) == 8_int64, 'subdivide made 4 children per tetra')
+        call check(sub%num_points() == m%num_points() + 2_int64, &
+                   'subdivide added one interior point per parent cell')
+
+        call sub%free()
+    end block
+
     ! -- smooth: relax coordinates, leaving topology and data intact --
     block
         type(mio_mesh) :: relaxed, bad
