@@ -104,7 +104,7 @@ A mesh handle is an **external pointer** (`R_MakeExternalPtr`) with a registered
 
 `mio_refine()` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id). Note that R's data setters always write `Float64`, so a predicate over an array built fresh in R still works — the comparison is numeric — but `mio_split(by = "region")`'s integer-tag restriction does not apply here.
 
-Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
+Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`, `mio_subdivide()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
 
 ## Error handling
 
@@ -212,6 +212,22 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 ```
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
+
+## v10.3.0 additions
+
+- `mio_subdivide(mesh, record_parent_ids = FALSE)` — polyhedral refinement:
+  one polyhedral child per face of every eligible 3D cell, connected to a new
+  interior point, returning a list of `mesh` and `cell_maps`. Needs no
+  per-type template table — tabulated types (reduced to corners for a
+  quadratic variant) and existing polyhedron blocks are handled uniformly —
+  and is automatically conforming, unlike `mio_refine()`. See
+  [`doc/subdivide.md`](subdivide.md).
+
+  Unlike `mio_convert_cells()`, there is **no `point_map`**: subdivide never
+  prunes or renumbers an original point. `cell_maps[[b]]` is 1-based input
+  cell → the index of its **first** child (one per face) in the
+  corresponding output block, the same shape `mio_convert_cells()` already
+  uses for its own one-to-many splits.
 
 ## v10.2.0 additions
 

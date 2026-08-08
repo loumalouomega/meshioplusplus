@@ -69,7 +69,7 @@ so nothing is ever transposed — exactly the reasoning the Fortran module docum
 
 A borrow cannot be shifted without copying it, which is the whole point of a borrow — hence the two names. `point_data_ptr`, `cell_data_ptr` and `field_data_ptr` follow the same pattern.
 
-Index maps and permutations (`refine`, `convert_cells`, `decimate`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
+Index maps and permutations (`refine`, `convert_cells`, `subdivide`, `decimate`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
 
 `partition_labels` is the exception: those are part **ids**, not indices, so they stay in `0:nparts-1`.
 
@@ -94,7 +94,7 @@ A `Mesh` releases its handle through a **finalizer** — the one real difference
 
 `refine` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps, riding the raw C-side numbering unshifted like `partition_labels`' part ids — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id).
 
-Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `convert_cells`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
+Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `convert_cells`, `subdivide`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
 
 ```julia
 for (key, piece) in mio.split(m; by="type")
@@ -227,6 +227,26 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 ```
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
+
+## v10.3.0 additions
+
+- `subdivide(mesh; record_parent_ids=false)` — polyhedral refinement: one
+  polyhedral child per face of every eligible 3D cell, connected to a new
+  interior point, returning `(; mesh, cell_maps)`. Needs no per-type template
+  table — tabulated types (reduced to corners for a quadratic variant) and
+  existing polyhedron blocks are handled uniformly through the same
+  `detail::cell_rings`/`orient_rings` machinery `gradient` uses — and is
+  automatically conforming, unlike [`refine`](@ref). See
+  [`doc/subdivide.md`](subdivide.md).
+
+  Unlike [`convert_cells`](@ref), there is no `point_map`: `subdivide` never
+  prunes or renumbers an original point. `cell_maps[b]` is 1-based input cell
+  → the index of its **first** child (one per face) in the corresponding
+  output block, the same `FirstChild` shape `convert_cells` already uses for
+  its own one-to-many splits.
+
+  `subdivide` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
+  is exported.
 
 ## v10.2.0 additions
 

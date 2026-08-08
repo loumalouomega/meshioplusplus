@@ -76,6 +76,7 @@ export default defineConfig({
           { text: "PhysicsNeMo integration", link: "/physicsnemo" },
           { text: "MCP server", link: "/mcp" },
           { text: "Cell conversion", link: "/convert_cells" },
+          { text: "Polyhedral refinement (subdivide)", link: "/subdivide" },
           { text: "Uniform refinement", link: "/refine" },
           { text: "Decimation (QEM edge collapse)", link: "/decimate" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },

@@ -538,6 +538,35 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ---
 
+## meshioplusplus subdivide
+
+Polyhedrally refine a mesh: split every eligible 3D cell into one polyhedral
+child per face, connected to a new interior point (see [subdivide](/subdivide)).
+Distinct from `refine`, which is built on fixed same-type templates and raises
+by name on a polyhedron.
+
+```
+meshioplusplus subdivide [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--record-parent-ids` | Attach `subdivide:parent_cell` cell_data of the source cell indices |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+No per-type template table is needed: tabulated types (reduced to corners for
+a quadratic variant) and existing polyhedron blocks are handled uniformly.
+Automatically conforming — no closure flag, unlike `refine`. Non-3D blocks and
+the full-Lagrange family (no face table) pass through unchanged.
+
+**Example:**
+
+```sh
+meshioplusplus subdivide bracket.msh bracket_subdivided.vtu --record-parent-ids
+```
+
+---
+
 ## meshioplusplus refine
 
 Refine a mesh, subdividing cells into same-type children — every cell, or a

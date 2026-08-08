@@ -84,6 +84,7 @@ An option the output format cannot honour is an error.
 | `Isosurface` | `Array` (required), `Isovalue` (0) or `Isovalues`, `Component`, `RecordParentIds` (false) | counter `ContourCells`; warns when empty |
 | `Transform` | exactly one of `Translate[3]`, `Scale` (number or `[3]`), `RotateAxis[3]`+`RotateDegrees`, `Matrix[16]` (row-major), `ScaleUnits` (a factor, e.g. `0.001` for mm→m); plus `RotateData` (false) | |
 | `ConvertCells` | `Mode` ("linearize" \| "simplexify" \| "elevate"), `RecordParentIds` (false) | |
+| `Subdivide` | `RecordParentIds` (false) | one polyhedral child per 3D cell face, connected to a new interior point; no per-type template table |
 | `Crop` | one of `Bbox[6]` (`[xmin,ymin,zmin,xmax,ymax,zmax]`), `Point[3]`+`Normal[3]`, or `Where` (a scalar `cell_data` name) + `Compare` ("<") + `Value` (0); `Mode` ("all" \| "any", **not** with `Where`), `RecordIds` (false) | counter `CellsKept` |
 | `ExtractSurface` | `RecordParentIds` (false) | |
 | `ExtractSkin` | `Linearize` (false) | |

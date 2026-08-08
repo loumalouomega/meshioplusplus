@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-47 tools; the two marked *gated* need a further extra and return a named
+48 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -114,7 +114,10 @@ report.
 `clean`, `crop` (bbox, half-space, or a `where_array`/`where_compare`/`where_value`
 `cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a
 surface, filled — `structure` `voxel`/`octree`), `transform`,
-`convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
+`convert_cells`, `subdivide` (polyhedral refinement: one polyhedral child per
+3D cell face, connected to a new interior point — no per-type template table,
+unlike `refine`; see [subdivide](/subdivide)),
+`refine` (uniform, or a subset via `cells`/`region`/`where`
 with a conforming `closure`; `record_hierarchy` attaches the persistent
 `refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller
 resolves across the sequence of meshes it keeps — see
