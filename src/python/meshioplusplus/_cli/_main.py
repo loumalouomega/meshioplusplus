@@ -31,6 +31,7 @@ from . import (
     _smooth,
     _split,
     _stats,
+    _subdivide,
     _transform,
     _view,
     _voxelize,
@@ -182,6 +183,16 @@ def main(argv=None):
     )
     _convert_cells.add_args(parser)
     parser.set_defaults(func=_convert_cells.convert_cells_cmd)
+
+    parser = subparsers.add_parser(
+        "subdivide",
+        help=(
+            "Polyhedrally refine: split every eligible 3D cell into one "
+            "polyhedral child per face, connected to a new interior point"
+        ),
+    )
+    _subdivide.add_args(parser)
+    parser.set_defaults(func=_subdivide.subdivide_cmd)
 
     parser = subparsers.add_parser(
         "refine",

@@ -163,6 +163,7 @@ function resolveVariant(variant) {
  *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
+ *   subdivide: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object) => Mesh,
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
@@ -455,6 +456,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),
+        subdivide: (mesh, recordParentIds = false) => Module.subdivide(mesh, recordParentIds),
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined) =>
             Module.refine(mesh, levels, recordParentIds, options),
         // Exactly one of ratio / targetFaces / maxError must be non-negative;

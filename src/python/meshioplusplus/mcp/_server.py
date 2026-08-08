@@ -753,6 +753,27 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def subdivide(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Polyhedrally refine: split every eligible 3D cell into one
+        polyhedral child per face, connected to a new interior point. No
+        per-type template table is needed -- it handles tabulated types and
+        existing polyhedron blocks uniformly. Automatically conforming."""
+        return _guard(
+            _tools.tool_subdivide,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
     def refine(
         input_path: str,
         output_path: str,

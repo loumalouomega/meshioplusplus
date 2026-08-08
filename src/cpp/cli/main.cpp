@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
 #include "meshioplusplus/formats/ansys.hpp"
@@ -438,6 +439,8 @@ void print_usage(std::ostream& os) {
           "                            (not a partition -- overlapping regions overlap)\n"
           "  regions                 List a mesh's named regions (name/kind/dim/tag/entries)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
+          "  subdivide               Polyhedrally refine: one polyhedral child per 3D\n"
+          "                            cell face, connected to a new interior point\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
           "                          selected subset with a conforming closure)\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
@@ -1567,6 +1570,24 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
 
     auto result = meshioplusplus::convert_cells(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_subdivide(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("subdivide requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::SubdivideOptions options;
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+
+    auto result = meshioplusplus::subdivide(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
@@ -2822,6 +2843,8 @@ int main(int argc, char** argv) {
             return cmd_regions(rest);
         if (cmd == "convert-cells")
             return cmd_convert_cells(rest);
+        if (cmd == "subdivide")
+            return cmd_subdivide(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
         if (cmd == "decimate")

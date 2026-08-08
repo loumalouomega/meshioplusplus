@@ -46,6 +46,7 @@ from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
+from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._transform import transform
 from ._voxelize import voxelize
@@ -131,6 +132,7 @@ _OP_TABLE = {
         "RotateData",
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
+    "Subdivide": ("RecordParentIds",),
     "Crop": (
         "Bbox",
         "Point",
@@ -527,6 +529,11 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = convert_cells(
             mesh,
             mode=_text(step, "Mode", "linearize"),
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+    elif op == "Subdivide":
+        mesh = subdivide(
+            mesh,
             record_parent_ids=_flag(step, "RecordParentIds", False),
         )
     elif op == "Crop":

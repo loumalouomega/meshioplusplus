@@ -59,6 +59,7 @@
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 
@@ -249,6 +250,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Subdivide", {"RecordParentIds"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -679,6 +681,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
         auto result = convert_cells(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Subdivide") {
+        SubdivideOptions opts;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = subdivide(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
     }

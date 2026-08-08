@@ -19242,6 +19242,124 @@ MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
+/**
+ * @file operations/subdivide.hpp
+ * @brief Polyhedral refinement: split every 3D cell into one polyhedral child
+ * per face, by connecting each face's boundary to a new interior point.
+ *
+ * `refine` and `decimate` both raise by name on a polyhedron, pointing at
+ * `convert_cells(Simplexify)` — both are built on fixed same-type subdivision
+ * templates, and an arbitrary polyhedron has none. `subdivide` is the answer
+ * for polyhedral refinement specifically: rather than a per-type template
+ * table, it goes through `detail::cell_rings` — the same uniform face-ring
+ * abstraction `gradient` and `detail::cell_measure` already use — which treats
+ * a tabulated type (`tetra`, `hexahedron`, `wedge`, `pyramid`, and their
+ * quadratic variants, reduced to corners) and an existing `polyhedronN` block
+ * identically. So `subdivide` needs **no per-type table at all**: the same
+ * code handles every 3D cell type the mesh already supports.
+ *
+ * ### The construction
+ *
+ * For each eligible 3D cell:
+ *
+ * 1. `detail::cell_rings` gives the cell's faces as global node-id rings,
+ *    uniformly whether the cell is tabulated or already a polyhedron.
+ * 2. `detail::orient_rings` repairs winding so every face points outward;
+ *    a cell whose faces are not a closed orientable surface **throws**,
+ *    naming the cell — the same guard `convert_cells(Simplexify)` uses for
+ *    its own polyhedron branch.
+ * 3. One new point is added per cell: the plain arithmetic mean of the
+ *    cell's own corner node coordinates (`rings.mNodes`) — the same ad hoc
+ *    corner average `convert_cells.cpp`'s polyhedron branch already computes
+ *    inline. This is deliberately **not** `poly_measure().mCentroid`, the
+ *    volume centroid, a different point: the corner average is what makes
+ *    the children's total volume *literally the same sum* as the parent's
+ *    own `poly_measure` computation, rather than merely equal by the
+ *    divergence theorem (both true; only the former is checkable by exact
+ *    equality rather than a tolerance).
+ * 4. For each face, one polyhedron child is emitted whose boundary is that
+ *    face **unchanged** (original winding, so a neighbouring cell across it
+ *    still sees the identical face) plus one new triangle per face edge,
+ *    connecting that edge to the cell's new interior point.
+ *
+ * This makes the result **automatically conforming** — no closure, no 2:1
+ * balance, no `refine:hanging`/`refine:entity` analogue is needed, because a
+ * shared face between two input cells is never touched, only the interior of
+ * each cell is subdivided.
+ *
+ * ### Output structure
+ *
+ * **One polyhedron output block per input 3D block**, with genuinely mixed
+ * cell shapes inside — `AddPolyhedronBlock` stores cells as ragged CSR with
+ * no constraint that they share a node or face count, so there is no need to
+ * group children by distinct node count into `polyhedronN` blocks the way
+ * some *readers* (CGNS's `NFACE_n`, OpenFOAM, EnSight) do for their own
+ * format-compatibility reasons — that convention is not a requirement of the
+ * uniform mesh API. Keeping one output block per input block also keeps the
+ * block correspondence 1:1, which is exactly what `CellMapKind::FirstChild`
+ * needs to carry regions correctly (see `mCellMaps` below).
+ *
+ * Non-3D blocks (2D/1D boundary markers) and 3D blocks with no
+ * `detail::cell_faces` row (the 3D Lagrange family) pass through unchanged.
+ *
+ * ### Regions
+ *
+ * Point and Cell regions survive (via `CellMapKind::FirstChild`, the same
+ * shape `convert_cells` already uses for its own one-to-many splits — a
+ * parent's children occupy a contiguous run in the corresponding output
+ * block). Named **Side** regions do not: `FirstChild` drops them
+ * unconditionally, since a child's facets have no correspondence with the
+ * parent's — the same limitation `convert_cells(Simplexify)` already has and
+ * documents, not a new gap this operation introduces.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `subdivide`.
+struct SubdivideOptions {
+    /// Attach an Int64 `subdivide:parent_cell` `cell_data` array recording,
+    /// per output cell, the index of the input cell it came from *within its
+    /// own block* (blocks correspond 1:1).
+    bool mRecordParentIds = false;
+};
+
+/// The result of `subdivide`: the subdivided mesh plus the cell index map.
+struct SubdivideResult {
+    /// The subdivided mesh.
+    Mesh mMesh;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`: input cell -> the
+    /// index of its **first** child in the corresponding output block
+    /// (`CellMapKind::FirstChild`; see the file docs). A non-3D or otherwise
+    /// ineligible block passes through unchanged, so its entries are the
+    /// identity. A cell whose rings could not be built at all (out-of-range
+    /// connectivity) contributes no children, giving it an empty run.
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Split every eligible 3D cell into one polyhedral child per face.
+ * @param rMesh the mesh to subdivide.
+ * @param rOptions whether to record parent ids (defaults to false).
+ * @return the subdivided mesh plus the per-block cell index map.
+ * @throws std::invalid_argument when a cell's faces are not a closed
+ *         orientable surface (naming the cell and block).
+ */
+MESHIOPLUSPLUS_API SubdivideResult subdivide(const Mesh& rMesh,
+                                             const SubdivideOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/surface.hpp =====
 /**
  * @file operations/surface.hpp
@@ -20214,7 +20332,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 2
+#define MESHIOPLUSPLUS_VERSION_MINOR 3
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -20224,7 +20342,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.2.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.3.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -74072,6 +74190,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Subdivide", {"RecordParentIds"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -74502,6 +74621,13 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
         auto result = convert_cells(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Subdivide") {
+        SubdivideOptions opts;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = subdivide(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
     }
@@ -80615,6 +80741,305 @@ StatsReport compute_stats(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/stats.cpp =====
+// ===== begin src/cpp/src/operations/subdivide.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSubPrefix = "meshio++: subdivide: ";
+constexpr const char* kSubParentName = "subdivide:parent_cell";
+
+/// A staged output block: either an unchanged copy of an input block (any of
+/// its three storage shapes), or a freshly built polyhedron block.
+struct SubOutBlock {
+    std::string mType;
+    std::size_t mNodesPerCell = 0;  // rectangular pass-through only
+    std::vector<std::int64_t> mConn;
+    std::vector<std::vector<std::int64_t>> mPolygonRows;
+    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;
+    bool mIsRagged = false;
+    bool mIsPolyhedron = false;
+};
+
+/// Stage an input block unchanged -- the pass-through case, one branch per
+/// existing storage shape. Mirrors convert_cells.cpp's own staging helper;
+/// not shared with it directly, since that one is file-private there too.
+SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
+    SubOutBlock out;
+    out.mType = std::string(rBlock.Type());
+    if (rBlock.IsPolyhedron()) {
+        out.mIsRagged = true;
+        out.mIsPolyhedron = true;
+        out.mPolyhedronCells.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+                const auto face = rBlock.Face(c, f);
+                out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
+            }
+        }
+    } else if (rBlock.IsRagged()) {
+        out.mIsRagged = true;
+        out.mPolygonRows.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+        }
+    } else {
+        const NDArray& conn = rBlock.Conn();
+        const std::size_t npc = rBlock.NodesPerCell();
+        out.mNodesPerCell = npc;
+        out.mConn.resize(rBlock.NumCells() * npc);
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
+            for (std::size_t k = 0; k < npc; ++k)
+                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+    }
+    return out;
+}
+
+/// Add a staged block to `rOut`.
+void sub_emit_block(Mesh& rOut, SubOutBlock& rBlock) {
+    if (rBlock.mIsPolyhedron) {
+        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
+    } else if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
+    } else {
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
+            dst[i] = rBlock.mConn[i];
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+    }
+}
+
+/// Whether a block can be polyhedrally subdivided: a 3D type with a
+/// `cell_faces` row (reduces to corners for any quadratic variant), or an
+/// existing polyhedron block. 2D/1D blocks and the 3D Lagrange family (no
+/// `cell_faces` row) pass through unchanged instead.
+bool sub_eligible(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return true;
+    if (rBlock.IsRagged())
+        return false;  // a ragged (polygon) block has no volume to subdivide
+    const CellType t = cell_type_from_name(rBlock.Type());
+    if (cell_type_dimension(t) != 3)
+        return false;
+    return !detail::cell_faces(t).empty();
+}
+
+}  // namespace
+
+SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // Every new point's coordinates are the plain average of a list of
+    // existing node ids -- resolved in one batch pass after the main loop,
+    // exactly convert_cells.cpp's own polyhedron-branch convention.
+    std::vector<std::vector<std::int64_t>> new_point_src;
+
+    std::vector<SubOutBlock> staged;
+    staged.reserve(nblocks);
+    std::vector<std::vector<std::int64_t>> first_child(nblocks);
+    std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+
+    detail::CellRings rings;
+    std::vector<detail::Vec3> coords;
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t ncells = cb.NumCells();
+        std::vector<std::int64_t>& firsts = first_child[b];
+        std::vector<std::int64_t>& parents = parent_of_child[b];
+        firsts.resize(ncells);
+
+        if (!sub_eligible(cb)) {
+            staged.push_back(sub_stage_passthrough(cb));
+            for (std::size_t c = 0; c < ncells; ++c) {
+                firsts[c] = static_cast<std::int64_t>(c);
+                parents.push_back(static_cast<std::int64_t>(c));
+            }
+            continue;
+        }
+
+        SubOutBlock out;
+        out.mType = "polyhedron";
+        out.mIsRagged = true;
+        out.mIsPolyhedron = true;
+        out.mPolyhedronCells.reserve(ncells);
+
+        for (std::size_t c = 0; c < ncells; ++c) {
+            firsts[c] = static_cast<std::int64_t>(out.mPolyhedronCells.size());
+            if (!detail::cell_rings(cb, c, points, pdim, rings, coords))
+                continue;  // no face topology at all: contributes nothing
+            if (detail::orient_rings(rings, coords.data()) == detail::RingOrientation::Unorientable)
+                throw std::invalid_argument(
+                    std::string(kSubPrefix) + "cannot subdivide cell " + std::to_string(c) +
+                    " of block '" + std::string(cb.Type()) +
+                    "': its faces are not a closed orientable surface, so it bounds no volume");
+
+            // One new interior point per cell: the plain average of the
+            // cell's own corner nodes -- deliberately not poly_measure()'s
+            // volume centroid, a different point. See the file docs.
+            const std::int64_t apex = static_cast<std::int64_t>(num_points + new_point_src.size());
+            new_point_src.push_back(rings.mNodes);
+
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                const std::uint32_t* ring = rings.Face(f);
+                const std::size_t m = rings.FaceSize(f);
+
+                std::vector<std::vector<std::int64_t>> child;
+                child.reserve(1 + m);
+                // The original face, unchanged (same global ids, same
+                // winding), so a neighbouring cell across it still sees the
+                // identical face -- this is what keeps the result conforming.
+                std::vector<std::int64_t> face_nodes(m);
+                for (std::size_t k = 0; k < m; ++k)
+                    face_nodes[k] = rings.mNodes[ring[k]];
+                child.push_back(std::move(face_nodes));
+                // One new triangle per face edge, back to the apex.
+                for (std::size_t k = 0; k < m; ++k) {
+                    const std::int64_t a = rings.mNodes[ring[k]];
+                    const std::int64_t nb = rings.mNodes[ring[(k + 1) % m]];
+                    child.push_back({apex, a, nb});
+                }
+                out.mPolyhedronCells.push_back(std::move(child));
+                parents.push_back(static_cast<std::int64_t>(c));
+            }
+        }
+        staged.push_back(std::move(out));
+    }
+
+    Mesh out;
+    if (new_point_src.empty()) {
+        out.AssignPoints(detail::data_owned_copy(points));
+    } else {
+        const std::size_t dim = pdim;
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t d = 0; d < dim; ++d) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                detail::write_double(np, (num_points + i) * dim + d,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AssignPoints(std::move(np));
+    }
+
+    for (SubOutBlock& block : staged)
+        sub_emit_block(out, block);
+
+    // point_data: originals copied verbatim; new (apex) points get the mean
+    // of their source nodes' values, the same convention as coordinates.
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != num_points || new_point_src.empty()) {
+            out.AddPointData(name, detail::data_owned_copy(a));
+            continue;
+        }
+        const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = num_points + new_point_src.size();
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+        std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t k = 0; k < ncomp; ++k) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                detail::write_double(b, (num_points + i) * ncomp + k,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AddPointData(name, std::move(b));
+    }
+
+    // cell_data: replicate each parent's row to its children, by raw byte copy
+    // (dtype-agnostic, no precision loss) -- convert_cells.cpp's own pattern
+    // for the identical "each child inherits its parent's row" shape. An
+    // array whose block count does not match the mesh is not per-cell data,
+    // so it is copied verbatim rather than mangled.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(ndata);
+        for (std::size_t b = 0; b < ndata; ++b) {
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t in_rows = detail::rows(src);
+            if (ndata != nblocks || in_rows == 0 || parent_of_child[b].empty()) {
+                blocks.push_back(detail::data_owned_copy(src));
+                continue;
+            }
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
+            std::vector<std::size_t> shape = src.Shape();
+            shape[0] = parents.size();
+            const std::size_t row_bytes = src.Nbytes() / in_rows;
+            NDArray dst = NDArray::Uninit(src.Dtype(), std::move(shape));
+            const std::byte* p_src = src.Data();
+            std::byte* p_dst = dst.Data();
+            parallel_for_bw(parents.size(), [&](std::size_t i) {
+                std::memcpy(p_dst + i * row_bytes,
+                            p_src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
+            });
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    if (rOptions.mRecordParentIds) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(nblocks);
+        for (const std::vector<std::int64_t>& parents : parent_of_child) {
+            NDArray dst(DType::Int64, {parents.size()});
+            std::int64_t* p = dst.As<std::int64_t>();
+            for (std::size_t i = 0; i < parents.size(); ++i)
+                p[i] = parents[i];
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(kSubParentName, std::move(blocks));
+    }
+
+    SubdivideResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps.reserve(nblocks);
+    for (std::vector<std::int64_t>& firsts : first_child) {
+        NDArray m(DType::Int64, {firsts.size()});
+        std::int64_t* p = m.As<std::int64_t>();
+        for (std::size_t i = 0; i < firsts.size(); ++i)
+            p[i] = firsts[i];
+        res.mCellMaps.push_back(std::move(m));
+    }
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = "subdivide";
+    detail::remap_regions(rMesh, res.mMesh, rmap);
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/subdivide.cpp =====
 // ===== begin src/cpp/src/operations/surface.cpp =====
 #include <algorithm>
 #include <array>
@@ -81078,8 +81503,18 @@ Mesh extract_skin(const Mesh& rMesh, bool linearize) {
 }
 
 bool has_skinnable_cells(const Mesh& rMesh) {
+    // A polyhedron block carries its own faces, so it is supported by
+    // construction -- there is no table for it to be missing from, the same
+    // exception `surface_extract`'s own pre-scan makes. This was missed here
+    // until v10.3.0: `surface_skin_block_supported` excludes every ragged
+    // block including polyhedra, so a mesh with ONLY a polyhedron block (e.g.
+    // `subdivide`'s output) reported false and every `has_skinnable_cells`
+    // consumer (convertSurfaceOps/convert_surface, and the `skin=true`
+    // default on the STL/PLY/SVG/TikZ writers) silently fell back to its
+    // unskinned path instead of actually skinning it.
     for (const auto cb : rMesh.CellRange()) {
-        if (surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+        if (cb.IsPolyhedron() ||
+            surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
             return true;
     }
     return false;

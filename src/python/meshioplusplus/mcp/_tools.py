@@ -75,6 +75,7 @@ from .. import (
     smooth,
     sniff_format,
     split,
+    subdivide,
     surface_watertight_check,
     transform,
     voxelize,
@@ -1043,6 +1044,19 @@ def tool_convert_cells(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_subdivide(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    record_parent_ids=False,
+):
+    """Polyhedrally refine: one polyhedral child per 3D cell face."""
+    mesh = _load(input_path, input_format)
+    out = subdivide(mesh, record_parent_ids=record_parent_ids)
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_refine(
     input_path,
     output_path,
@@ -1727,6 +1741,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "convert_cells",
             {"fn": tool_convert_cells, "wraps": ("convert_cells",), "gated": None},
+        ),
+        (
+            "subdivide",
+            {"fn": tool_subdivide, "wraps": ("subdivide",), "gated": None},
         ),
         ("refine", {"fn": tool_refine, "wraps": ("refine",), "gated": None}),
         ("decimate", {"fn": tool_decimate, "wraps": ("decimate",), "gated": None}),

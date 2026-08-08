@@ -1277,6 +1277,19 @@ export interface MeshioPlusPlusModule {
   convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
 
   /**
+   * Polyhedrally refine a mesh: one polyhedral child per face of every
+   * eligible 3D cell, connected to a new interior point. Needs no per-type
+   * template table -- tabulated types (reduced to corners for a quadratic
+   * variant) and existing polyhedron blocks are handled uniformly.
+   * Automatically conforming, unlike `refine`. Non-3D blocks and the
+   * full-Lagrange family (no face table) pass through unchanged. Unlike
+   * `convertCells`, there is no point map -- subdivide never prunes or
+   * renumbers an original point.
+   * @throws {Error} when a cell's faces are not a closed orientable surface.
+   */
+  subdivide(mesh: Mesh, recordParentIds?: boolean): Mesh;
+
+  /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,
    * `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8).
    * New nodes sit at edge / quad-face / body midpoints and are shared between

@@ -495,8 +495,18 @@ Mesh extract_skin(const Mesh& rMesh, bool linearize) {
 }
 
 bool has_skinnable_cells(const Mesh& rMesh) {
+    // A polyhedron block carries its own faces, so it is supported by
+    // construction -- there is no table for it to be missing from, the same
+    // exception `surface_extract`'s own pre-scan makes. This was missed here
+    // until v10.3.0: `surface_skin_block_supported` excludes every ragged
+    // block including polyhedra, so a mesh with ONLY a polyhedron block (e.g.
+    // `subdivide`'s output) reported false and every `has_skinnable_cells`
+    // consumer (convertSurfaceOps/convert_surface, and the `skin=true`
+    // default on the STL/PLY/SVG/TikZ writers) silently fell back to its
+    // unskinned path instead of actually skinning it.
     for (const auto cb : rMesh.CellRange()) {
-        if (surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+        if (cb.IsPolyhedron() ||
+            surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
             return true;
     }
     return false;
