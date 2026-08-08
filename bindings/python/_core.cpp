@@ -99,6 +99,7 @@
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -722,6 +723,29 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
+
+    // Polyhedral refinement: one polyhedral child per face, connected to a new
+    // interior point. Returns a dict {mesh, cell_maps} -- no point_map, since
+    // this never prunes or renumbers an original point. See
+    // operations/subdivide.hpp.
+    m.def(
+        "subdivide",
+        [](py::object pymesh, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SubdivideOptions options;
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::SubdivideResult r = meshioplusplus::subdivide(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("record_parent_ids") = false);
 
     // Refinement: subdivide every cell (uniform) or a selected subset with a
     // conforming closure (selective) into same-type children. Returns a dict

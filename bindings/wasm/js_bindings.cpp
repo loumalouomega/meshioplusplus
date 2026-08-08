@@ -116,6 +116,7 @@
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/read_options.hpp"
@@ -2086,6 +2087,25 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
 }
 
 /**
+ * @brief Polyhedrally refine a mesh: one polyhedral child per face of every
+ * eligible 3D cell, connected to a new interior point. Needs no per-type
+ * template table -- tabulated types (reduced to corners for a quadratic
+ * variant) and existing polyhedron blocks are handled uniformly.
+ * Automatically conforming, unlike `refine`. Returns the subdivided mesh; the
+ * cell maps are not carried across the JS boundary (use `recordParentIds` for
+ * the `subdivide:parent_cell` cell_data instead) -- and unlike
+ * `convertCells`, there is no point map at all, since subdivide never prunes
+ * or renumbers an original point.
+ */
+val subdivide_js(const val& rMeshObj, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SubdivideOptions options;
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::subdivide(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
  * the refined mesh; the index maps are not carried across the JS boundary (use
@@ -2760,6 +2780,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("cropPredicate", &crop_predicate_js);
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
+    emscripten::function("subdivide", &subdivide_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
     emscripten::function("partition", &partition_js);

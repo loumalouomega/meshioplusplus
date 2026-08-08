@@ -842,6 +842,12 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 }
 
 #' @rdname mio_extract_surface
+#' @export
+mio_subdivide <- function(mesh, record_parent_ids = FALSE) {
+  .Call(R_mio_subdivide, mesh, isTRUE(record_parent_ids))
+}
+
+#' @rdname mio_extract_surface
 #' @param cells global (block-major) **1-based** cell indices to refine. At most
 #'   one of `cells`, `region` and `where_array` may be given; with none, every
 #'   cell is refined.

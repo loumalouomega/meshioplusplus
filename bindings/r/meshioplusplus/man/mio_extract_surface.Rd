@@ -23,6 +23,7 @@
 \alias{mio_reorder}
 \alias{mio_split}
 \alias{mio_convert_cells}
+\alias{mio_subdivide}
 \alias{mio_refine}
 \alias{mio_decimate}
 \alias{mio_partition}
@@ -128,6 +129,8 @@ mio_reorder(mesh, method = "rcm")
 mio_split(mesh, by = "type", tag_name = NULL)
 
 mio_convert_cells(mesh, convert_mode, record_parent_ids = FALSE)
+
+mio_subdivide(mesh, record_parent_ids = FALSE)
 
 mio_refine(mesh, levels = 1L, record_parent_ids = FALSE)
 

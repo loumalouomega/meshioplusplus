@@ -368,6 +368,26 @@ end
     close(m)
 end
 
+@testset "operations: subdivide (polyhedral refinement)" begin
+    m = fixture()
+    s = subdivide(m; record_parent_ids=true)
+    @test num_cell_blocks(s.mesh) == 1
+    @test cell_block_type(s.mesh, 1) == "polyhedron"
+    info = cell_block_info(s.mesh, 1)
+    @test info.is_polyhedron
+    @test info.num_cells == 8                # 2 tetra, 4 faces each -> 8 children
+    @test num_points(s.mesh) == num_points(m) + 2  # one interior apex per parent
+
+    # No point map (subdivide never prunes/renumbers a point); cell_maps is
+    # per-block, first-child, 1-based -- the second parent's children start
+    # right after the first parent's 4.
+    @test length(s.cell_maps) == 1
+    @test s.cell_maps[1] == [1, 5]
+    @test "subdivide:parent_cell" in cell_data_names(s.mesh)
+    close(s.mesh)
+    close(m)
+end
+
 @testset "operations: selective refine with a conforming closure" begin
     m = fixture()
 

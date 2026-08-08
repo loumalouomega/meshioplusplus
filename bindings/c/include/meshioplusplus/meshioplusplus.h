@@ -89,6 +89,12 @@ typedef struct mio_sequence mio_sequence;
  *  index maps. Destroy with mio_convert_cells_result_free(). */
 typedef struct mio_convert_cells_result mio_convert_cells_result;
 
+/** Opaque result of mio_subdivide(): the subdivided mesh plus the per-block
+ *  cell index maps. Unlike mio_convert_cells_result, there is no point map --
+ *  subdivide never prunes or renumbers an original point. Destroy with
+ *  mio_subdivide_result_free(). */
+typedef struct mio_subdivide_result mio_subdivide_result;
+
 /** Opaque result of mio_refine(): the refined mesh plus the point/cell index
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
@@ -216,7 +222,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 2
+#define MIO_VERSION_MINOR 3
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1026,6 +1032,54 @@ MIO_API mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_res
 
 /** Free a convert-cells result (and the mesh it still owns). */
 MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
+
+/**
+ * Polyhedrally refine a mesh: one polyhedral child per face of every eligible
+ * 3D cell, connected to a new interior point. Needs no per-type template
+ * table -- tabulated types (reduced to corners for a quadratic variant) and
+ * existing polyhedron blocks are handled uniformly. Automatically conforming:
+ * a shared face between two input cells is never touched. Non-3D blocks and
+ * the full-Lagrange family (no face table) pass through unchanged. Point/Cell
+ * regions survive; named Side regions do not (no facet correspondence).
+ * point_sets/cell_sets are not carried across the C ABI.
+ * @param record_parent_ids  nonzero to attach a subdivide:parent_cell
+ *                           cell_data array of per-block source cell indices.
+ * @return a result handle (free with mio_subdivide_result_free), or NULL on
+ *         failure -- a cell whose faces are not a closed orientable surface.
+ */
+MIO_API mio_subdivide_result* mio_subdivide(const mio_mesh* mesh, int record_parent_ids);
+
+/**
+ * Borrow the subdivided mesh. Owned by the result: valid until
+ * mio_subdivide_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the subdivided mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_subdivide_result_mesh(const mio_subdivide_result* result);
+
+/**
+ * Transfer ownership of the subdivided mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_subdivide_result_take_mesh(mio_subdivide_result* result);
+
+/** Number of per-block cell maps in a subdivide result, or -1 on error. */
+MIO_API int64_t mio_subdivide_result_num_cell_maps(const mio_subdivide_result* result);
+
+/**
+ * Zero-copy borrow of cell block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> the index of its FIRST child (one per
+ * face) in the corresponding output block). Any out-param may be NULL.
+ * @param result a subdivide result.
+ * @param block  cell-block index in [0, mio_subdivide_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int64_t block,
+                                                 const void** data, mio_dtype* dtype, int64_t* n);
+
+/** Free a subdivide result (and the mesh it still owns). */
+MIO_API void mio_subdivide_result_free(mio_subdivide_result* result);
 
 /** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
 typedef enum mio_refine_closure {

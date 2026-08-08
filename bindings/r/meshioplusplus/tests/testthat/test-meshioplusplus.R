@@ -321,6 +321,27 @@ test_that("refine reports 1-based maps with a 0 sentinel", {
   mio_release(cc$mesh)
 })
 
+test_that("subdivide polyhedrally refines with no point map", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  s <- mio_subdivide(m, record_parent_ids = TRUE)
+  expect_equal(mio_num_cell_blocks(s$mesh), 1)
+  expect_equal(mio_cell_block_type(s$mesh, 1), "polyhedron")
+  info <- mio_cell_block_info(s$mesh, 1)
+  expect_true(info$is_polyhedron)
+  expect_equal(info$num_cells, 8) # 2 tetra, 4 faces each -> 8 children
+  expect_equal(mio_num_points(s$mesh), mio_num_points(m) + 2) # one apex each
+
+  # No point_map (subdivide never prunes/renumbers a point); cell_maps is
+  # per-block, first-child, 1-based.
+  expect_null(s$point_map)
+  expect_length(s$cell_maps, 1)
+  expect_equal(s$cell_maps[[1]], c(1, 5))
+  expect_true("subdivide:parent_cell" %in% mio_cell_data_names(s$mesh))
+  mio_release(s$mesh)
+})
+
 test_that("selective refine closes up conformingly", {
   m <- fixture()
   on.exit(mio_release(m))

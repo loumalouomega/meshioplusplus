@@ -364,6 +364,7 @@ module meshioplusplus
         procedure :: estimate_error => mesh_estimate_error
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
+        procedure :: subdivide => mesh_subdivide
         procedure :: refine => mesh_refine
         procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
@@ -1059,6 +1060,27 @@ module meshioplusplus
 
         subroutine c_mio_convert_cells_result_free(r) &
                 bind(c, name="mio_convert_cells_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_subdivide(h, record_parent_ids) &
+                bind(c, name="mio_subdivide") result(r)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_subdivide_result_take_mesh(r) &
+                bind(c, name="mio_subdivide_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_subdivide_result_free(r) &
+                bind(c, name="mio_subdivide_result_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -2920,6 +2942,42 @@ contains
         call c_mio_convert_cells_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('convert_cells', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Polyhedrally refine the mesh: one polyhedral child per face of every
+    !> eligible 3D cell, connected to a new interior point. Needs no per-type
+    !> template table -- tabulated types (reduced to corners for a quadratic
+    !> variant) and existing polyhedron blocks are handled uniformly.
+    !> Automatically conforming, unlike `refine`. Non-3D blocks and the
+    !> full-Lagrange family (no face table) pass through unchanged.
+    !> `record_parent_ids` (default .false.) attaches a
+    !> subdivide:parent_cell cell_data array. Unlike `convert_cells`, there is
+    !> no point map to request -- subdivide never prunes or renumbers an
+    !> original point.
+    function mesh_subdivide(self, record_parent_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int) :: crec
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        res = c_mio_subdivide(self%handle, crec)
+        if (.not. c_associated(res)) then
+            call handle_failure('subdivide', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = c_mio_subdivide_result_take_mesh(res)
+        call c_mio_subdivide_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('subdivide', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

@@ -635,6 +635,37 @@ function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=fa
     end
 end
 
+"""
+    subdivide(mesh; record_parent_ids=false) -> (; mesh, cell_maps)
+
+Polyhedrally refine: split every eligible 3-D cell into one polyhedral child
+per face, connected to a new interior point. Needs no per-type template
+table -- tabulated types (reduced to corners for a quadratic variant) and
+existing polyhedron blocks are handled uniformly. Automatically conforming,
+unlike [`refine`](@ref): a shared face between two input cells is never
+touched. Non-3-D blocks and the full-Lagrange family (no face table) pass
+through unchanged.
+
+Unlike [`convert_cells`](@ref), there is no `point_map` -- subdivide never
+prunes or renumbers an original point. Each `cell_maps[b]` is input cell →
+the index of its **first** child (one per face) in the corresponding output
+block. See `doc/subdivide.md`.
+"""
+function subdivide(m::Mesh; record_parent_ids::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_subdivide), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cint), _handle(m),
+                              record_parent_ids ? Cint(1) : Cint(0)))
+    try
+        cm = _result_cell_maps(result, :mio_subdivide_result_num_cell_maps,
+                               :mio_subdivide_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_subdivide_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, cell_maps=cm)
+    finally
+        ccall(_sym(:mio_subdivide_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
                               "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
                               "balanced" => Int32(2), "2:1" => Int32(2))

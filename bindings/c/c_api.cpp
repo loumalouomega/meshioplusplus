@@ -86,6 +86,7 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
@@ -153,6 +154,11 @@ struct mio_split_result {
 struct mio_convert_cells_result {
     mio_mesh mMesh;  // owns the converted mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mPointMap;
+    std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_subdivide_result {
+    mio_mesh mMesh;  // owns the subdivided mesh; borrowed via _result_mesh
     std::vector<meshioplusplus::NDArray> mCellMaps;
 };
 
@@ -1306,6 +1312,66 @@ mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_result* res
 }
 
 void mio_convert_cells_result_free(mio_convert_cells_result* result) {
+    delete result;
+}
+
+mio_subdivide_result* mio_subdivide(const mio_mesh* mesh, int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_subdivide_result*>(nullptr), [&]() -> mio_subdivide_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::SubdivideOptions options;
+        options.mRecordParentIds = record_parent_ids != 0;
+        meshioplusplus::SubdivideResult r = meshioplusplus::subdivide(mesh->mMesh, options);
+        auto* out = new mio_subdivide_result{};
+        out->mMesh = mio_mesh{std::move(r.mMesh)};
+        out->mCellMaps = std::move(r.mCellMaps);
+        return out;
+    });
+}
+
+const mio_mesh* mio_subdivide_result_mesh(const mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_subdivide_result_take_mesh(mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+int64_t mio_subdivide_result_num_cell_maps(const mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellMaps.size());
+    });
+}
+
+mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int64_t block,
+                                         const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_subdivide_result_free(mio_subdivide_result* result) {
     delete result;
 }
 

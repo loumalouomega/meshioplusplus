@@ -504,6 +504,54 @@ static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
     return *cell_maps; /* non-NULL marker; two PROTECTs are outstanding */
 }
 
+/* subdivide's cell maps only -- unlike convert_cells/refine/decimate, there
+ * is no point map to read first (subdivide never prunes or renumbers a
+ * point), so this does not share result_maps() above. Leaves one PROTECT
+ * outstanding on success (the returned list), matching result_maps()'s own
+ * convention of leaving its caller to UNPROTECT. */
+static SEXP subdivide_cell_maps(mio_subdivide_result *r) {
+    int64_t nmaps = mio_subdivide_result_num_cell_maps(r);
+    if (nmaps < 0) nmaps = 0;
+    SEXP cell_maps = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nmaps));
+    for (int64_t b = 0; b < nmaps; ++b) {
+        const void *d = NULL;
+        mio_dtype dt;
+        int64_t len = 0;
+        mio_status st = mio_subdivide_result_cell_map(r, b, &d, &dt, &len);
+        if (st != MIO_OK) {
+            UNPROTECT(1);
+            return NULL;
+        }
+        SEXP p = PROTECT(mio_r_shift_map((const int64_t *)d, len));
+        SET_VECTOR_ELT(cell_maps, (R_xlen_t)b, p);
+        UNPROTECT(1);
+    }
+    return cell_maps; /* one PROTECT outstanding */
+}
+
+SEXP R_mio_subdivide(SEXP mesh, SEXP record_parent_ids) {
+    mio_subdivide_result *r =
+        mio_subdivide(mio_r_mesh(mesh), mio_r_bool(record_parent_ids, "record_parent_ids"));
+    if (r == NULL) mio_r_fail("subdivide");
+    SEXP cm = subdivide_cell_maps(r);
+    if (cm == NULL) {
+        mio_subdivide_result_free(r);
+        mio_r_fail("subdivide maps");
+    }
+    mio_mesh *out = mio_subdivide_result_take_mesh(r);
+    mio_subdivide_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("subdivide take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "cell_maps"};
+    SEXP values[] = {mo, cm};
+    SEXP res = PROTECT(mio_r_named_list(2, names, values));
+    UNPROTECT(3);
+    return res;
+}
+
 SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
     mio_convert_cells_result *r =
         mio_convert_cells(mio_r_mesh(mesh), mio_r_string(mode, "mode"),
