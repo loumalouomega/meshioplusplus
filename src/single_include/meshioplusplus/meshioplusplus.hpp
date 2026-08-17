@@ -8534,6 +8534,64 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
+/**
+ * @file detail/refine_hierarchy.hpp
+ * @brief Shared reader for the `refine:cell_id`/`refine:parent_id` persistent
+ * hierarchy (`RefineOptions::mRecordHierarchy`, `refine.hpp`), hoisted verbatim
+ * out of `operations/refine.cpp` -- `refine_attach_hierarchy` (deciding whether
+ * to maintain an existing hierarchy or start a fresh one) and `undo_green`
+ * (resolving the coarse mesh's own id space) both need the identical
+ * Absent/Valid/Invalid read, and a second transcription would drift silently.
+ *
+ * Free function in `meshioplusplus::detail`, called once per operation (not per
+ * element), so its body lives in `src/cpp/src/detail/refine_hierarchy.cpp`
+ * rather than inline here. Built on the uniform mesh API only.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// How an existing `refine:cell_id`/`refine:parent_id` pair on a mesh relates to
+/// what a caller should do with it: `Absent` (no array at all), `Valid` (usable,
+/// hence maintained) or `Invalid` (malformed or non-unique, hence
+/// dropped-with-a-warning and treated like `Absent`).
+enum class RefineHierarchyState { Absent, Valid, Invalid };
+
+/**
+ * @brief Read a mesh's `refine:cell_id`/`refine:parent_id`, if any.
+ *
+ * On success `rIds` holds one id per global (block-major) cell and `rIdBase` is
+ * one past the largest id in use anywhere -- over BOTH arrays, since a cell's id
+ * can outlive its own row once the cell is split (the row is gone, but the id
+ * must never be reissued to a different cell).
+ *
+ * Uniqueness is the guard here, not staleness: these ids are *values*, not
+ * indices, so `reorder`/`crop`/`clean` carry them correctly with no coordinate
+ * check at all (unlike `refine:entity`). A repeated id means the mesh was
+ * `merge`d with another hierarchy, or a cell-splitting operation replicated the
+ * array without updating it -- either way the array is this operation's own
+ * bookkeeping, not user input, so it is warned-and-dropped rather than rejected
+ * outright.
+ * @param rMesh the mesh to read.
+ * @param rBases a `block_bases` table for @p rMesh.
+ * @param rIds out: one id per global cell (only meaningful on `Valid`).
+ * @param rIdBase out: one past the largest id in use (only meaningful on `Valid`).
+ * @return the hierarchy's state.
+ */
+MESHIOPLUSPLUS_API RefineHierarchyState
+refine_read_hierarchy(const Mesh& rMesh, const std::vector<std::int64_t>& rBases,
+                      std::vector<std::int64_t>& rIds, std::int64_t& rIdBase);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 /**
  * @file refine_templates.hpp
@@ -19673,6 +19731,124 @@ MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
+/**
+ * @file undo_green.hpp
+ * @brief Green-element undo: restore `refine`'s *transitional* (closure-only)
+ * cells back to their original parent, so a subsequent selective `refine` call
+ * re-splits the parent from scratch rather than compounding an already
+ * irregular shape. See `operations/refine.hpp`'s own doc comment for the
+ * red/green/untouched vocabulary this builds on.
+ *
+ * A TWO-MESH operation, `undo_green(coarse, fine)` — the "link between two
+ * meshes, not a tree inside one" framing `refine.hpp` already uses for its
+ * persistent hierarchy, taken literally: `coarse` is the mesh a prior
+ * `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was
+ * run on, `fine` is that call's output.
+ *
+ * **Design: lookup and substitution, not reconstruction.** `refine()` never
+ * renumbers or prunes points -- its point map is always the identity -- so a
+ * green parent's *exact* original connectivity and cell_data are already
+ * sitting, byte-for-byte, in `coarse` at the row `fine`'s `refine:parent_id`
+ * names (resolved against `coarse`'s own `refine:cell_id`, or its implicit
+ * global-block-major id when it carries none -- the same fallback
+ * `refine_attach_hierarchy` itself uses when starting a fresh id space). This
+ * needs no per-type subdivision-table inversion, no graph matching against
+ * `detail::refine_templates.hpp`'s admissible masks, and consequently no
+ * winding repair or other discrete sign branch -- unlike `subdivide` and
+ * `agglomerate`, this operation is pure array bookkeeping and byte copies, and
+ * so (unlike those two) it has a full numpy twin rather than being
+ * twin-exempt.
+ *
+ * A cell's mask -- and hence its red/green status -- is uniform across every
+ * one of its children (`refine_once` sets it once per parent), so
+ * classification is per SIBLING GROUP (cells sharing one `refine:parent_id`),
+ * not per cell: a singleton group (`refine:cell_id == refine:parent_id`) is
+ * **untouched**, kept verbatim; a group whose `refine:level` is one more than
+ * its coarse parent's own level is **red** (a genuine, wanted refinement --
+ * passed through unchanged); a group whose level equals its coarse parent's
+ * own level is **green** (a closure artefact -- the whole group is replaced
+ * by ONE cell copied verbatim from `coarse`).
+ *
+ * **Points are never pruned or renumbered** -- this is what makes the
+ * substitution a zero-translation byte copy: a coarse cell's node ids are
+ * valid indices into `fine`'s own point array with no offset, precisely
+ * because `refine`'s own point map is always the identity. `clean(mesh,
+ * remove_orphans=True)` is the documented follow-up for a caller wanting the
+ * orphaned mid-edge nodes (left behind by a substituted green group) pruned.
+ *
+ * The six reserved `refine:*` cell_data arrays (`parent_cell`, `level`,
+ * `hanging`, `entity`, `cell_id`, `parent_id`) are unconditionally dropped
+ * from the output -- they describe a hierarchy relationship that is now stale
+ * after the undo; a subsequent `refine(..., record_hierarchy=True)` call
+ * rebuilds them fresh. Every other `cell_data` array on `fine` is carried:
+ * untouched/red rows byte-copied from `fine` as usual, a green group's one
+ * output row byte-copied from the SAME-NAMED array on `coarse` -- if `coarse`
+ * lacks that array, or its shape doesn't match, the WHOLE array is dropped
+ * with a warning rather than guessing a value for the substituted row.
+ *
+ * **Named Side regions do not survive** (the `subdivide`/`agglomerate`
+ * precedent): a removed green child's local facet numbering has no
+ * correspondence to the substituted parent's own facets, even though the
+ * cell type is unchanged. Point and Cell regions do survive -- Cell regions
+ * through the first genuinely non-injective `CellMapKind::Direct` use in the
+ * repo (several fine cells collapsing onto one output row), relying on
+ * `Region::Canonicalize`'s existing sort+dedup.
+ *
+ * **Two honest limitations, not gaps**: it can only undo the LAST generation
+ * relative to the specific `coarse` mesh passed in (an untouched cell's
+ * `parent_id == cell_id`, so an older green closure becomes indistinguishable
+ * from an original once a later pass has run over it), and it needs the
+ * caller to hold both meshes -- there is no single-mesh fallback.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The result of `undo_green`.
+struct UndoGreenResult {
+    Mesh mMesh;
+    /// Per FINE input block, Int64 shape `(num_cells_in_block,)`,
+    /// `CellMapKind::Direct` shape: fine cell -> output cell within the
+    /// corresponding output block. Every member of a green sibling group maps
+    /// to the SAME output index (the group's one substituted row).
+    std::vector<NDArray> mCellMaps;
+    /// Number of green sibling groups substituted (i.e. number of NEW cells
+    /// created by this call).
+    std::int64_t mNumGroupsUndone = 0;
+    /// Total number of green child cells removed (mNumGroupsUndone counted
+    /// once each; this is the sum of each undone group's original size).
+    std::int64_t mNumCellsRemoved = 0;
+};
+
+/**
+ * @brief Restore `fine`'s transitional (green) cells back to their original
+ * parent, read verbatim from `coarse`.
+ * @param rCoarse the mesh a prior `refine(rCoarse, ...)` call was run on.
+ * @param rFine that call's output -- must carry one Int64 scalar `cell_data`
+ *        array per block for each of `refine:cell_id`, `refine:parent_id` and
+ *        `refine:level` (i.e. that call must have used
+ *        `record_hierarchy=True, record_levels=True`); throws by name
+ *        otherwise.
+ * @return the undone mesh (fine's own block structure, unchanged types and
+ *         order; some blocks' row counts shrink), plus the cell maps and
+ *         counters above.
+ * @throws std::invalid_argument if `rFine` lacks the required hierarchy
+ *         arrays, if a `refine:parent_id` value cannot be resolved against
+ *         `rCoarse`'s id space (the two meshes are not the input/output pair
+ *         of one `refine()` call), or if a sibling group's `refine:level`
+ *         matches neither the red nor the green relationship to its coarse
+ *         parent's own level.
+ */
+MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
 /**
  * @file operations/voxelize.hpp
@@ -20463,7 +20639,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 4
+#define MESHIOPLUSPLUS_VERSION_MINOR 5
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -20473,7 +20649,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.4.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.5.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -38711,6 +38887,92 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/refine_hierarchy.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <unordered_map>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+RefineHierarchyState refine_read_hierarchy(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           std::vector<std::int64_t>& rIds, std::int64_t& rIdBase) {
+    if (!rMesh.HasCellData(kRefineCellIdName))
+        return RefineHierarchyState::Absent;
+
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const bool has_parent = rMesh.HasCellData(kRefineParentIdName);
+    if (rMesh.CellDataNumBlocks(kRefineCellIdName) != nblocks ||
+        (has_parent && rMesh.CellDataNumBlocks(kRefineParentIdName) != nblocks)) {
+        log::warn("refine: ignoring '{}'/'{}': they do not cover every cell block.",
+                  kRefineCellIdName, kRefineParentIdName);
+        return RefineHierarchyState::Invalid;
+    }
+
+    const std::int64_t total = total_cells(rBases);
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(total));
+    std::vector<std::int64_t> parent_ids;
+    if (has_parent)
+        parent_ids.resize(static_cast<std::size_t>(total));
+
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(kRefineCellIdName, bi);
+        if (rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1)) {
+            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                      kRefineCellIdName, bi);
+            return RefineHierarchyState::Invalid;
+        }
+        for (std::size_t c = 0; c < ncells; ++c)
+            ids[base + c] = read_int(a, c);
+        if (has_parent) {
+            const NDArray& p = rMesh.CellData(kRefineParentIdName, bi);
+            if (rows(p) != ncells || (ncells != 0 && p.Size() / ncells != 1)) {
+                log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                          kRefineParentIdName, bi);
+                return RefineHierarchyState::Invalid;
+            }
+            for (std::size_t c = 0; c < ncells; ++c)
+                parent_ids[base + c] = read_int(p, c);
+        }
+        ++bi;
+    }
+
+    std::int64_t max_id = -1;
+    std::unordered_map<std::int64_t, char> seen;
+    seen.reserve(ids.size() * 2);
+    for (std::int64_t id : ids) {
+        if (id < 0) {
+            log::warn("refine: ignoring '{}'/'{}': ids must be non-negative.", kRefineCellIdName,
+                      kRefineParentIdName);
+            return RefineHierarchyState::Invalid;
+        }
+        if (!seen.emplace(id, 0).second) {
+            log::warn(
+                "refine: ignoring '{}'/'{}': the id {} is not unique, so the mesh was merged or "
+                "the array was replicated by another operation.",
+                kRefineCellIdName, kRefineParentIdName, id);
+            return RefineHierarchyState::Invalid;
+        }
+        max_id = std::max(max_id, id);
+    }
+    for (std::int64_t id : parent_ids)
+        max_id = std::max(max_id, id);
+
+    rIds = std::move(ids);
+    rIdBase = max_id + 1;
+    return RefineHierarchyState::Valid;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/refine_hierarchy.cpp =====
 // ===== begin src/cpp/src/detail/refine_templates.cpp =====
 #include <algorithm>
 #include <array>
@@ -74712,6 +74974,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "Diff")
         return "'Diff' compares two meshes and is not a pipeline step; use the "
                "`diff` CLI verb";
+    if (rOp == "UndoGreen")
+        return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
+               "step; use the `undo-green` CLI verb";
     return nullptr;
 }
 
@@ -76641,98 +76906,13 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
 }
 
 // --- refine:cell_id / refine:parent_id ----------------------------------------
-
-// How an existing `refine:cell_id`/`refine:parent_id` pair on the input relates
-// to what this pass should do: `Absent` (no array at all), `Valid` (usable,
-// hence *maintained* regardless of the flag) or `Invalid` (malformed or
-// non-unique, hence dropped-with-a-warning and treated like `Absent` for the
-// purpose of deciding whether to write anything at all).
-enum class RefineHierarchyState { Absent, Valid, Invalid };
-
-// Read the input's `refine:cell_id`/`refine:parent_id`, if any. On success
-// `rIds` holds one id per global (block-major) input cell and `rIdBase` is one
-// past the largest id in use anywhere -- over BOTH arrays, since a cell's id
-// can outlive its own row once the cell is split (the row is gone, but the id
-// must never be reissued to a different cell).
 //
-// Uniqueness is the guard here, not staleness: these ids are *values*, not
-// indices, so `reorder`/`crop`/`clean` carry them correctly with no coordinate
-// check at all (unlike `refine:entity`). A repeated id means the mesh was
-// `merge`d with another hierarchy, or a cell-splitting operation replicated
-// the array without updating it -- either way the array is this operation's
-// own bookkeeping, not user input, so it is warned-and-dropped rather than
-// rejected outright.
-RefineHierarchyState refine_read_hierarchy(const Mesh& rMesh,
-                                           const std::vector<std::int64_t>& rBases,
-                                           std::vector<std::int64_t>& rIds, std::int64_t& rIdBase) {
-    if (!rMesh.HasCellData(kRefineCellIdName))
-        return RefineHierarchyState::Absent;
-
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    const bool has_parent = rMesh.HasCellData(kRefineParentIdName);
-    if (rMesh.CellDataNumBlocks(kRefineCellIdName) != nblocks ||
-        (has_parent && rMesh.CellDataNumBlocks(kRefineParentIdName) != nblocks)) {
-        log::warn("refine: ignoring '{}'/'{}': they do not cover every cell block.",
-                  kRefineCellIdName, kRefineParentIdName);
-        return RefineHierarchyState::Invalid;
-    }
-
-    const std::int64_t total = detail::total_cells(rBases);
-    std::vector<std::int64_t> ids(static_cast<std::size_t>(total));
-    std::vector<std::int64_t> parent_ids;
-    if (has_parent)
-        parent_ids.resize(static_cast<std::size_t>(total));
-
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
-        const std::size_t ncells = cb.NumCells();
-        const NDArray& a = rMesh.CellData(kRefineCellIdName, bi);
-        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1)) {
-            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
-                      kRefineCellIdName, bi);
-            return RefineHierarchyState::Invalid;
-        }
-        for (std::size_t c = 0; c < ncells; ++c)
-            ids[base + c] = detail::read_int(a, c);
-        if (has_parent) {
-            const NDArray& p = rMesh.CellData(kRefineParentIdName, bi);
-            if (detail::rows(p) != ncells || (ncells != 0 && p.Size() / ncells != 1)) {
-                log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
-                          kRefineParentIdName, bi);
-                return RefineHierarchyState::Invalid;
-            }
-            for (std::size_t c = 0; c < ncells; ++c)
-                parent_ids[base + c] = detail::read_int(p, c);
-        }
-        ++bi;
-    }
-
-    std::int64_t max_id = -1;
-    std::unordered_map<std::int64_t, char> seen;
-    seen.reserve(ids.size() * 2);
-    for (std::int64_t id : ids) {
-        if (id < 0) {
-            log::warn("refine: ignoring '{}'/'{}': ids must be non-negative.", kRefineCellIdName,
-                      kRefineParentIdName);
-            return RefineHierarchyState::Invalid;
-        }
-        if (!seen.emplace(id, 0).second) {
-            log::warn(
-                "refine: ignoring '{}'/'{}': the id {} is not unique, so the mesh was merged or "
-                "the array was replicated by another operation.",
-                kRefineCellIdName, kRefineParentIdName, id);
-            return RefineHierarchyState::Invalid;
-        }
-        max_id = std::max(max_id, id);
-    }
-    for (std::int64_t id : parent_ids)
-        max_id = std::max(max_id, id);
-
-    rIds = std::move(ids);
-    rIdBase = max_id + 1;
-    return RefineHierarchyState::Valid;
-}
+// RefineHierarchyState / refine_read_hierarchy live in
+// detail/refine_hierarchy.hpp now -- hoisted verbatim so undo_green.cpp can
+// share the identical Absent/Valid/Invalid read against the *coarse* mesh
+// rather than transcribing it a second time.
+using detail::refine_read_hierarchy;
+using detail::RefineHierarchyState;
 
 // --- refine:entity -----------------------------------------------------------
 
@@ -82328,6 +82508,405 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/transform.cpp =====
+// ===== begin src/cpp/src/operations/undo_green.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kUgPrefix = "meshio++: undo_green: ";
+
+// Read a required Int64 scalar cell_data array (one value per cell, covering
+// every block) into a flat global-cell-order vector. Throws by name on any
+// mismatch -- undo_green's fine-mesh preconditions are hard requirements,
+// unlike detail::refine_read_hierarchy's warn-and-fall-back contract.
+std::vector<std::int64_t> ug_read_required(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           const char* pName) {
+    if (!rMesh.HasCellData(pName))
+        throw std::invalid_argument(
+            std::string(kUgPrefix) + "the fine mesh has no '" + pName +
+            "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(pName) != nblocks)
+        throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
+                                    "' does not cover every cell block");
+    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(pName, bi);
+        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
+                                        std::to_string(bi) + " is not one scalar value per cell");
+        for (std::size_t c = 0; c < ncells; ++c)
+            out[base + c] = detail::read_int(a, c);
+        ++bi;
+    }
+    return out;
+}
+
+// Same shape check, but returns empty rather than throwing when `pName` is
+// absent or malformed -- used for the coarse mesh's OPTIONAL refine:level,
+// where absence means "never refined" (implicit level 0 for every cell).
+std::vector<std::int64_t> ug_read_optional(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           const char* pName) {
+    if (!rMesh.HasCellData(pName))
+        return {};
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(pName) != nblocks)
+        return {};
+    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(pName, bi);
+        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+            return {};
+        for (std::size_t c = 0; c < ncells; ++c)
+            out[base + c] = detail::read_int(a, c);
+        ++bi;
+    }
+    return out;
+}
+
+// Whether a name is one of the six reserved refine:* arrays -- always
+// excluded from undo_green's output (stale hierarchy bookkeeping).
+bool ug_is_reserved(const std::string& rName) {
+    return rName == kRefineParentCellName || rName == kRefineLevelName ||
+           rName == kRefineHangingName || rName == kRefineEntityName ||
+           rName == kRefineCellIdName || rName == kRefineParentIdName;
+}
+
+// A cell's role in the output, decided once per sibling group.
+enum class UgRole { Keep, AnchorSubstitute, Suppressed };
+
+}  // namespace
+
+UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
+    if (rCoarse.NumPoints() > rFine.NumPoints())
+        throw std::invalid_argument(
+            std::string(kUgPrefix) +
+            "the coarse mesh has more points than the fine mesh, so they cannot be the "
+            "coarse/fine pair of one refine() call");
+
+    const std::vector<std::int64_t> fine_bases = detail::block_bases(rFine);
+    const std::vector<std::int64_t> coarse_bases = detail::block_bases(rCoarse);
+    const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
+
+    const std::vector<std::int64_t> fine_id =
+        ug_read_required(rFine, fine_bases, kRefineCellIdName);
+    const std::vector<std::int64_t> fine_parent =
+        ug_read_required(rFine, fine_bases, kRefineParentIdName);
+    const std::vector<std::int64_t> fine_level =
+        ug_read_required(rFine, fine_bases, kRefineLevelName);
+
+    // --- resolve the coarse mesh's id space: its own recorded ids if valid,
+    // else the implicit global-block-major ids -- refine_attach_hierarchy's
+    // own "start fresh" fallback. --------------------------------------------
+    std::vector<std::int64_t> coarse_ids;
+    std::int64_t coarse_id_base = 0;
+    const detail::RefineHierarchyState state =
+        detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
+    if (state != detail::RefineHierarchyState::Valid) {
+        const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
+        coarse_ids.resize(total_coarse);
+        for (std::size_t i = 0; i < total_coarse; ++i)
+            coarse_ids[i] = static_cast<std::int64_t>(i);
+    }
+    std::unordered_map<std::int64_t, std::int64_t> id_to_coarse_row;
+    id_to_coarse_row.reserve(coarse_ids.size());
+    for (std::size_t i = 0; i < coarse_ids.size(); ++i)
+        id_to_coarse_row[coarse_ids[i]] = static_cast<std::int64_t>(i);
+
+    const std::vector<std::int64_t> coarse_level =
+        ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
+    auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
+        return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
+    };
+
+    // --- group fine cells by parent_id --------------------------------------
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> groups_by_parent;
+    for (std::size_t g = 0; g < total_fine; ++g)
+        groups_by_parent[fine_parent[g]].push_back(static_cast<std::int64_t>(g));
+
+    // --- classify every global fine cell's role; for green groups, resolve
+    // the substitution source once ------------------------------------------
+    std::vector<UgRole> role(total_fine, UgRole::Keep);
+    std::vector<std::int64_t> group_id_of(total_fine, -1);
+    std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
+    std::vector<std::int64_t> group_size;        // indexed by green group id
+    std::int64_t next_group_id = 0;
+
+    for (auto& entry : groups_by_parent) {
+        const std::int64_t parent_id = entry.first;
+        std::vector<std::int64_t>& members = entry.second;
+        std::sort(members.begin(), members.end());
+
+        if (members.size() == 1) {
+            const std::int64_t g = members.front();
+            if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) +
+                    "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
+                    "equal its refine:parent_id (cell " +
+                    std::to_string(g) + ")");
+            continue;  // untouched: role stays Keep
+        }
+
+        const auto it = id_to_coarse_row.find(parent_id);
+        if (it == id_to_coarse_row.end())
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
+                " does not resolve in the coarse mesh's id space -- these two meshes are not "
+                "the coarse/fine pair of one refine() call");
+        const std::int64_t coarse_row = it->second;
+        const std::int64_t clevel = coarse_level_at(coarse_row);
+
+        const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+        for (std::int64_t g : members)
+            if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) +
+                    "malformed hierarchy: the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " does not agree on refine:level");
+
+        if (flevel == clevel + 1)
+            continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
+
+        if (flevel > clevel + 1)
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                ", more than one deeper than its coarse parent's own level (" +
+                std::to_string(clevel) +
+                "); undo_green only supports a single-pass (levels=1) hierarchy");
+
+        if (flevel != clevel)
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
+                ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
+
+        // green: substitute the whole group with one row from the coarse mesh
+        const std::int64_t gid = next_group_id++;
+        group_coarse_row.push_back(coarse_row);
+        group_size.push_back(static_cast<std::int64_t>(members.size()));
+        role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
+        group_id_of[static_cast<std::size_t>(members.front())] = gid;
+        for (std::size_t k = 1; k < members.size(); ++k) {
+            role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                UgRole::Suppressed;
+            group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] = gid;
+        }
+    }
+
+    // --- build the output mesh: fine's own block structure, unchanged types
+    // and order, rows compacted/substituted -----------------------------------
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rFine.Points()));
+
+    const std::size_t nblocks = rFine.NumCellBlocks();
+    std::vector<std::size_t> out_ncells(nblocks, 0);
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] != UgRole::Suppressed)
+                    ++out_ncells[bi];
+            }
+            ++bi;
+        }
+    }
+
+    std::vector<NDArray> cell_maps(nblocks);
+    std::vector<NDArray> out_conn(nblocks);
+    std::vector<std::int64_t> group_output_global(static_cast<std::size_t>(next_group_id), -1);
+    std::vector<std::size_t> group_fine_block(static_cast<std::size_t>(next_group_id), 0);
+
+    {
+        std::size_t bi = 0;
+        std::int64_t out_block_base = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const std::size_t npc = cb.NodesPerCell();
+            NDArray conn = NDArray::Uninit(DType::Int64, {out_ncells[bi], npc});
+            std::int64_t* dst = conn.As<std::int64_t>();
+            NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+            std::int64_t* cm = cmap.As<std::int64_t>();
+
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgRole::Suppressed) {
+                    const std::int64_t gid = group_id_of[g];
+                    cm[r] = group_output_global[static_cast<std::size_t>(gid)];
+                    continue;
+                }
+                if (role[g] == UgRole::Keep) {
+                    const NDArray& src = cb.Conn();
+                    for (std::size_t k = 0; k < npc; ++k)
+                        dst[out_row * npc + k] = detail::read_int(src, r * npc + k);
+                } else {  // AnchorSubstitute
+                    const std::int64_t gid = group_id_of[g];
+                    const std::int64_t coarse_row = group_coarse_row[static_cast<std::size_t>(gid)];
+                    const auto blk_row = detail::global_to_block_row(coarse_bases, coarse_row);
+                    const auto ccb = rCoarse.Cells(blk_row.first);
+                    const NDArray& csrc = ccb.Conn();
+                    for (std::size_t k = 0; k < npc; ++k)
+                        dst[out_row * npc + k] = detail::read_int(
+                            csrc, static_cast<std::size_t>(blk_row.second) * npc + k);
+                    group_output_global[static_cast<std::size_t>(gid)] =
+                        out_block_base + static_cast<std::int64_t>(out_row);
+                    group_fine_block[static_cast<std::size_t>(gid)] = bi;
+                }
+                cm[r] = out_block_base + static_cast<std::int64_t>(out_row);
+                ++out_row;
+            }
+
+            out_conn[bi] = std::move(conn);
+            cell_maps[bi] = std::move(cmap);
+            out_block_base += static_cast<std::int64_t>(out_ncells[bi]);
+            ++bi;
+        }
+    }
+
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            out.AddCellBlock(std::string(cb.Type()), std::move(out_conn[bi]));
+            ++bi;
+        }
+    }
+
+    // --- point_data / field_data: unchanged, no new or pruned points --------
+    // (refine:entity / refine:hanging are POINT data, not cell_data, but are
+    // just as much stale hierarchy bookkeeping as the four cell_data ones --
+    // ug_is_reserved covers all six, so this loop must consult it too)
+    for (const std::string& name : rFine.PointDataNames()) {
+        if (ug_is_reserved(name))
+            continue;
+        out.AddPointData(name, detail::data_owned_copy(rFine.PointData(name)));
+    }
+    for (const std::string& name : rFine.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rFine.FieldData(name)));
+
+    // --- cell_data: reserved refine:* arrays dropped; everything else kept
+    // (fine's own row for Keep, coarse's for AnchorSubstitute) ---------------
+    for (const std::string& name : rFine.CellDataNames()) {
+        if (ug_is_reserved(name))
+            continue;
+        if (rFine.CellDataNumBlocks(name) != nblocks) {
+            log::warn(
+                "{}cell_data '{}' does not have one array per fine block; dropped rather than "
+                "guessed at",
+                kUgPrefix, name);
+            continue;
+        }
+
+        // Pre-check every green group's substitution source before touching
+        // anything, so a bad array is dropped whole rather than half-built.
+        bool ok = true;
+        if (next_group_id > 0) {
+            if (!rCoarse.HasCellData(name) ||
+                rCoarse.CellDataNumBlocks(name) != rCoarse.NumCellBlocks()) {
+                ok = false;
+            } else {
+                for (std::int64_t gid = 0; ok && gid < next_group_id; ++gid) {
+                    const auto ug = static_cast<std::size_t>(gid);
+                    const auto blk_row =
+                        detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
+                    const NDArray& fsrc = rFine.CellData(name, group_fine_block[ug]);
+                    const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
+                    const std::size_t f_row_bytes =
+                        fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+                    const std::size_t c_row_bytes =
+                        csrc.Nbytes() / std::max<std::size_t>(1, detail::rows(csrc));
+                    if (fsrc.Dtype() != csrc.Dtype() || f_row_bytes != c_row_bytes)
+                        ok = false;
+                }
+            }
+        }
+        if (!ok) {
+            log::warn(
+                "{}cell_data '{}' cannot be honestly restored for a substituted cell (missing, "
+                "incomplete or a different shape/dtype on the coarse mesh); dropped",
+                kUgPrefix, name);
+            continue;
+        }
+
+        std::vector<NDArray> out_blocks(nblocks);
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const NDArray& fsrc = rFine.CellData(name, bi);
+            std::vector<std::size_t> shape = fsrc.Shape();
+            shape[0] = out_ncells[bi];
+            NDArray dst = NDArray::Uninit(fsrc.Dtype(), shape);
+            const std::size_t row_bytes =
+                fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+            std::byte* p_dst = dst.Data();
+            const std::byte* p_fsrc = fsrc.Data();
+
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgRole::Suppressed)
+                    continue;
+                if (role[g] == UgRole::Keep) {
+                    std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
+                } else {  // AnchorSubstitute
+                    const std::int64_t gid = group_id_of[g];
+                    const auto ug = static_cast<std::size_t>(gid);
+                    const auto blk_row =
+                        detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
+                    const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
+                    std::memcpy(p_dst + out_row * row_bytes,
+                                csrc.Data() + static_cast<std::size_t>(blk_row.second) * row_bytes,
+                                row_bytes);
+                }
+                ++out_row;
+            }
+            out_blocks[bi] = std::move(dst);
+            ++bi;
+        }
+        out.AddCellData(name, std::move(out_blocks));
+    }
+
+    UndoGreenResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps = std::move(cell_maps);
+    res.mNumGroupsUndone = next_group_id;
+    std::int64_t removed = 0;
+    for (std::int64_t sz : group_size)
+        removed += sz - 1;
+    res.mNumCellsRemoved = removed;
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mDropSideRegions = true;
+    rmap.mOpName = "undo_green";
+    detail::remap_regions(rFine, res.mMesh, rmap);
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/undo_green.cpp =====
 // ===== begin src/cpp/src/operations/voxelize.cpp =====
 #include <algorithm>
 #include <array>

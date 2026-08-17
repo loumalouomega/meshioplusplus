@@ -79,6 +79,7 @@ from .. import (
     subdivide,
     surface_watertight_check,
     transform,
+    undo_green,
     voxelize,
     write,
 )
@@ -1287,6 +1288,23 @@ def tool_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_undo_green(
+    coarse_path,
+    fine_path,
+    output_path,
+    coarse_format=None,
+    fine_format=None,
+    output_format=None,
+):
+    """Restore the fine mesh's transitional (green) cells to their original
+    parent, read verbatim from the coarse mesh (a prior refine() input).
+    Returns num_groups_undone/num_cells_removed alongside the mesh summary."""
+    coarse = _load(coarse_path, coarse_format)
+    fine = _load(fine_path, fine_format)
+    out, report = undo_green(coarse, fine, return_report=True)
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 # --------------------------------------------------------------------------- #
 # Data operations                                                             #
 # --------------------------------------------------------------------------- #
@@ -1765,6 +1783,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_agglomerate, "wraps": ("agglomerate",), "gated": None},
         ),
         ("refine", {"fn": tool_refine, "wraps": ("refine",), "gated": None}),
+        (
+            "undo_green",
+            {"fn": tool_undo_green, "wraps": ("undo_green",), "gated": None},
+        ),
         ("decimate", {"fn": tool_decimate, "wraps": ("decimate",), "gated": None}),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),

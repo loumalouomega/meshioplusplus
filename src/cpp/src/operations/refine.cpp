@@ -59,6 +59,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/refine_hierarchy.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -209,98 +210,13 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
 }
 
 // --- refine:cell_id / refine:parent_id ----------------------------------------
-
-// How an existing `refine:cell_id`/`refine:parent_id` pair on the input relates
-// to what this pass should do: `Absent` (no array at all), `Valid` (usable,
-// hence *maintained* regardless of the flag) or `Invalid` (malformed or
-// non-unique, hence dropped-with-a-warning and treated like `Absent` for the
-// purpose of deciding whether to write anything at all).
-enum class RefineHierarchyState { Absent, Valid, Invalid };
-
-// Read the input's `refine:cell_id`/`refine:parent_id`, if any. On success
-// `rIds` holds one id per global (block-major) input cell and `rIdBase` is one
-// past the largest id in use anywhere -- over BOTH arrays, since a cell's id
-// can outlive its own row once the cell is split (the row is gone, but the id
-// must never be reissued to a different cell).
 //
-// Uniqueness is the guard here, not staleness: these ids are *values*, not
-// indices, so `reorder`/`crop`/`clean` carry them correctly with no coordinate
-// check at all (unlike `refine:entity`). A repeated id means the mesh was
-// `merge`d with another hierarchy, or a cell-splitting operation replicated
-// the array without updating it -- either way the array is this operation's
-// own bookkeeping, not user input, so it is warned-and-dropped rather than
-// rejected outright.
-RefineHierarchyState refine_read_hierarchy(const Mesh& rMesh,
-                                           const std::vector<std::int64_t>& rBases,
-                                           std::vector<std::int64_t>& rIds, std::int64_t& rIdBase) {
-    if (!rMesh.HasCellData(kRefineCellIdName))
-        return RefineHierarchyState::Absent;
-
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    const bool has_parent = rMesh.HasCellData(kRefineParentIdName);
-    if (rMesh.CellDataNumBlocks(kRefineCellIdName) != nblocks ||
-        (has_parent && rMesh.CellDataNumBlocks(kRefineParentIdName) != nblocks)) {
-        log::warn("refine: ignoring '{}'/'{}': they do not cover every cell block.",
-                  kRefineCellIdName, kRefineParentIdName);
-        return RefineHierarchyState::Invalid;
-    }
-
-    const std::int64_t total = detail::total_cells(rBases);
-    std::vector<std::int64_t> ids(static_cast<std::size_t>(total));
-    std::vector<std::int64_t> parent_ids;
-    if (has_parent)
-        parent_ids.resize(static_cast<std::size_t>(total));
-
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
-        const std::size_t ncells = cb.NumCells();
-        const NDArray& a = rMesh.CellData(kRefineCellIdName, bi);
-        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1)) {
-            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
-                      kRefineCellIdName, bi);
-            return RefineHierarchyState::Invalid;
-        }
-        for (std::size_t c = 0; c < ncells; ++c)
-            ids[base + c] = detail::read_int(a, c);
-        if (has_parent) {
-            const NDArray& p = rMesh.CellData(kRefineParentIdName, bi);
-            if (detail::rows(p) != ncells || (ncells != 0 && p.Size() / ncells != 1)) {
-                log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
-                          kRefineParentIdName, bi);
-                return RefineHierarchyState::Invalid;
-            }
-            for (std::size_t c = 0; c < ncells; ++c)
-                parent_ids[base + c] = detail::read_int(p, c);
-        }
-        ++bi;
-    }
-
-    std::int64_t max_id = -1;
-    std::unordered_map<std::int64_t, char> seen;
-    seen.reserve(ids.size() * 2);
-    for (std::int64_t id : ids) {
-        if (id < 0) {
-            log::warn("refine: ignoring '{}'/'{}': ids must be non-negative.", kRefineCellIdName,
-                      kRefineParentIdName);
-            return RefineHierarchyState::Invalid;
-        }
-        if (!seen.emplace(id, 0).second) {
-            log::warn(
-                "refine: ignoring '{}'/'{}': the id {} is not unique, so the mesh was merged or "
-                "the array was replicated by another operation.",
-                kRefineCellIdName, kRefineParentIdName, id);
-            return RefineHierarchyState::Invalid;
-        }
-        max_id = std::max(max_id, id);
-    }
-    for (std::int64_t id : parent_ids)
-        max_id = std::max(max_id, id);
-
-    rIds = std::move(ids);
-    rIdBase = max_id + 1;
-    return RefineHierarchyState::Valid;
-}
+// RefineHierarchyState / refine_read_hierarchy live in
+// detail/refine_hierarchy.hpp now -- hoisted verbatim so undo_green.cpp can
+// share the identical Absent/Valid/Invalid read against the *coarse* mesh
+// rather than transcribing it a second time.
+using detail::refine_read_hierarchy;
+using detail::RefineHierarchyState;
 
 // --- refine:entity -----------------------------------------------------------
 

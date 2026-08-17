@@ -89,6 +89,7 @@
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
 #include "meshioplusplus/formats/ansys.hpp"
@@ -446,6 +447,8 @@ void print_usage(std::ostream& os) {
           "                            single larger polyhedral cells\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
           "                          selected subset with a conforming closure)\n"
+          "  undo-green              Restore a transitional (green) cell to its coarse\n"
+          "                            parent, read verbatim from COARSE FINE OUTFILE\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
           "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
@@ -1689,6 +1692,25 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_undo_green(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("undo-green requires exactly COARSE FINE and OUTFILE");
+    Mesh coarse = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    Mesh fine = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+
+    auto result = meshioplusplus::undo_green(coarse, fine);
+    if (!has_flag(p, "quiet"))
+        std::cout << "undid " << result.mNumGroupsUndone << " green group(s), removing "
+                  << result.mNumCellsRemoved << " cell(s)\n";
+    write_mesh_cli(p.positionals[2], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_decimate(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -2871,6 +2893,8 @@ int main(int argc, char** argv) {
             return cmd_agglomerate(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
+        if (cmd == "undo-green")
+            return cmd_undo_green(rest);
         if (cmd == "decimate")
             return cmd_decimate(rest);
         if (cmd == "smooth")

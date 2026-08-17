@@ -841,6 +841,31 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def undo_green(
+        coarse_path: str,
+        fine_path: str,
+        output_path: str,
+        coarse_format: Optional[str] = None,
+        fine_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Restore fine's transitional (green) cells to their original
+        parent, read verbatim from coarse (the mesh a prior refine() call
+        with record_hierarchy=True, record_levels=True was run on) --
+        undoes refine's known quality-degradation issue with repeated
+        selective passes over the same region. Reports
+        num_groups_undone/num_cells_removed."""
+        return _guard(
+            _tools.tool_undo_green,
+            coarse_path=coarse_path,
+            fine_path=fine_path,
+            output_path=output_path,
+            coarse_format=coarse_format,
+            fine_format=fine_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def decimate(
         input_path: str,
         output_path: str,

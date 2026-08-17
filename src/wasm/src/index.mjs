@@ -355,6 +355,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 defaultValue,
                 onConflict,
             ),
+        // Restore `fine`'s transitional (green) cells to their coarse parent,
+        // read verbatim from `coarse` (a lookup, not a reconstruction).
+        undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),
         cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
             Module.cropBbox(mesh, lo, hi, mode, recordIds),
         cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>

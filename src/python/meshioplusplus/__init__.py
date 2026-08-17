@@ -135,6 +135,7 @@ from ._stats import compute_stats
 from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._transform import transform
+from ._undo_green import undo_green
 from ._viewer import has_viewer, screenshot, view
 from ._voxelize import voxelize
 
@@ -215,6 +216,7 @@ __all__ = [
     "subdivide",
     "agglomerate",
     "refine",
+    "undo_green",
     "decimate",
     "grid",
     "voxelize",

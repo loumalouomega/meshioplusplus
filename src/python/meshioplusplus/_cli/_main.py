@@ -34,6 +34,7 @@ from . import (
     _stats,
     _subdivide,
     _transform,
+    _undo_green,
     _view,
     _voxelize,
 )
@@ -214,6 +215,16 @@ def main(argv=None):
     )
     _refine.add_args(parser)
     parser.set_defaults(func=_refine.refine_cmd)
+
+    parser = subparsers.add_parser(
+        "undo-green",
+        help=(
+            "Restore a transitional (green) cell to its coarse parent, read "
+            "verbatim from the coarse mesh"
+        ),
+    )
+    _undo_green.add_args(parser)
+    parser.set_defaults(func=_undo_green.undo_green_cmd)
 
     parser = subparsers.add_parser(
         "decimate",

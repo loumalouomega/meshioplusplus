@@ -178,6 +178,8 @@ _EXCLUDED_OPS = {
     "step; use the `split` CLI verb",
     "Diff": "'Diff' compares two meshes and is not a pipeline step; use the "
     "`diff` CLI verb",
+    "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
+    "pipeline step; use the `undo-green` CLI verb",
 }
 
 

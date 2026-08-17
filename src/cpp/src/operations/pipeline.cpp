@@ -292,6 +292,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "Diff")
         return "'Diff' compares two meshes and is not a pipeline step; use the "
                "`diff` CLI verb";
+    if (rOp == "UndoGreen")
+        return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
+               "step; use the `undo-green` CLI verb";
     return nullptr;
 }
 

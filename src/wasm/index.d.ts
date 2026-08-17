@@ -1014,6 +1014,25 @@ export interface MeshioPlusPlusModule {
     onConflict?: InterpolateOnConflict,
   ): Mesh;
 
+  /**
+   * Green-element undo: restore `fine`'s transitional (closure-only) cells
+   * back to their original parent, read verbatim from `coarse` — a lookup,
+   * not a reconstruction, since `refine` never renumbers or prunes points.
+   * `fine` must carry `refine:cell_id`/`refine:parent_id`/`refine:level`
+   * (i.e. must come from `refine(coarse, ..., {recordHierarchy: true,
+   * recordLevels: true})`); `coarse` must be the mesh that call was run on.
+   * The six reserved `refine:*` arrays are dropped from the output. Only a
+   * single-pass (`levels=1`) hierarchy is supported.
+   * @throws {Error} when `fine` lacks the required hierarchy arrays, when a
+   *   `refine:parent_id` value does not resolve against `coarse`'s id space,
+   *   or when a sibling group's level matches neither the red nor the green
+   *   relationship to its coarse parent's own level.
+   */
+  undoGreen(
+    coarse: Mesh,
+    fine: Mesh,
+  ): { mesh: Mesh; numGroupsUndone: number; numCellsRemoved: number };
+
   /** Subset a mesh to an axis-aligned bounding box. */
   cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
 
