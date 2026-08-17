@@ -804,6 +804,12 @@ mio_interpolate <- function(source, target, method = "nearest", arrays = NULL,
 
 #' @rdname mio_extract_surface
 #' @export
+mio_undo_green <- function(coarse, fine) {
+  .Call(R_mio_undo_green, coarse, fine)
+}
+
+#' @rdname mio_extract_surface
+#' @export
 mio_meshes_equal <- function(a, b, atol = 0, rtol = 0, unordered = FALSE) {
   .Call(R_mio_meshes_equal, a, b, as.numeric(atol), as.numeric(rtol), isTRUE(unordered))
 }

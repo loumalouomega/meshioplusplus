@@ -16,6 +16,7 @@
 \alias{mio_isosurface}
 \alias{mio_merge}
 \alias{mio_interpolate}
+\alias{mio_undo_green}
 \alias{mio_meshes_equal}
 \alias{mio_diff}
 \alias{mio_stats}
@@ -116,6 +117,8 @@ mio_interpolate(
   default_value = 0,
   on_conflict = "error"
 )
+
+mio_undo_green(coarse, fine)
 
 mio_meshes_equal(a, b, atol = 0, rtol = 0, unordered = FALSE)
 
@@ -272,6 +275,13 @@ source value instead of \code{default_value}.}
 \item{default_value}{Fill value outside the source domain.}
 
 \item{on_conflict}{\code{"error"}, \code{"overwrite"} or \code{"suffix"}.}
+
+\item{coarse}{For \code{mio_undo_green()}, the mesh a prior \code{mio_refine()} call
+was run on.}
+
+\item{fine}{For \code{mio_undo_green()}, that call's output; must carry
+\code{refine:cell_id}/\code{refine:parent_id}/\code{refine:level} (i.e. that call must
+have used \code{record_hierarchy = TRUE, record_levels = TRUE}).}
 
 \item{rtol}{Relative tolerance.}
 

@@ -103,6 +103,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -768,6 +769,32 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("record_parent_ids") = false);
+
+    // Green-element undo: restore `fine`'s transitional (closure-only) cells
+    // back to their original parent, read verbatim from `coarse` (never
+    // reconstructed). Returns a dict {mesh, cell_maps, num_groups_undone,
+    // num_cells_removed}. See operations/undo_green.hpp.
+    m.def(
+        "undo_green",
+        [](py::object pycoarse, py::object pyfine) {
+            meshioplusplus_py::PyMeshRefs refs_coarse;
+            meshioplusplus_py::PyMeshRefs refs_fine;
+            meshioplusplus::Mesh coarse = meshioplusplus_py::py_to_mesh(
+                pycoarse, refs_coarse, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh fine = meshioplusplus_py::py_to_mesh(
+                pyfine, refs_fine, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::UndoGreenResult r = meshioplusplus::undo_green(coarse, fine);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["num_groups_undone"] = r.mNumGroupsUndone;
+            out["num_cells_removed"] = r.mNumCellsRemoved;
+            return out;
+        },
+        py::arg("coarse"), py::arg("fine"));
 
     // Refinement: subdivide every cell (uniform) or a selected subset with a
     // conforming closure (selective) into same-type children. Returns a dict

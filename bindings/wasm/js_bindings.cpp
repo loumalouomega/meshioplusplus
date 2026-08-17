@@ -120,6 +120,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2584,6 +2585,27 @@ val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::stri
     });
 }
 
+/**
+ * @brief Green-element undo: restore `fine`'s transitional (closure-only)
+ * cells back to their original parent, read verbatim from `coarse` -- a
+ * lookup, not a reconstruction, since `refine` never renumbers or prunes
+ * points. `fine` must carry `refine:cell_id`/`refine:parent_id`/
+ * `refine:level` (i.e. must come from `refine(coarse, {recordHierarchy:
+ * true, recordLevels: true})`); `coarse` must be the mesh that call was run
+ * on. Returns `{ mesh, numGroupsUndone, numCellsRemoved }`.
+ */
+val undo_green_js(const val& rCoarseObj, const val& rFineObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::UndoGreenResult r =
+            meshioplusplus::undo_green(val_to_mesh(rCoarseObj), val_to_mesh(rFineObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numGroupsUndone", static_cast<double>(r.mNumGroupsUndone));
+        out.set("numCellsRemoved", static_cast<double>(r.mNumCellsRemoved));
+        return out;
+    });
+}
+
 // ---------------------------------------------------------------------
 // Transient (time-series) XDMF -- the one *stateful* binding in this file.
 //
@@ -2782,6 +2804,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
+    emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);

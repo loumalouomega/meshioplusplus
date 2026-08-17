@@ -411,6 +411,30 @@ function merge(meshes::AbstractVector{Mesh}; weld::Bool=false, atol::Real=1e-12,
 end
 
 """
+    undo_green(coarse, fine) -> (; mesh, num_groups_undone, num_cells_removed)
+
+Green-element undo: restore `fine`'s transitional (closure-only) cells back to
+their original parent, read verbatim from `coarse` — a lookup, not a
+reconstruction, since `refine` never renumbers or prunes points. Undoes
+`refine`'s known quality-degradation issue with repeated selective passes over
+the same region ("restore the parent and re-split from scratch").
+
+`fine` must carry `refine:cell_id`/`refine:parent_id`/`refine:level` (i.e. it
+must come from `refine(coarse, ...; record_hierarchy=true,
+record_levels=true)`); `coarse` must be the exact mesh that call was run on.
+The six reserved `refine:*` arrays are dropped from the output. Only a
+single-pass (`levels=1`) hierarchy is supported. See `doc/undo_green.md`.
+"""
+function undo_green(coarse::Mesh, fine::Mesh)
+    ngroups = Ref{Int64}(0); nremoved = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_undo_green), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}),
+                _handle(coarse), _handle(fine), ngroups, nremoved)
+    (mesh=Mesh(_check_ptr(ptr)), num_groups_undone=Int(ngroups[]),
+     num_cells_removed=Int(nremoved[]))
+end
+
+"""
     interpolate(source, target; method="nearest", arrays=String[],
                 extrapolate=false, default_value=0.0, on_conflict="error") -> Mesh
 

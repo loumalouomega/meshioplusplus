@@ -92,6 +92,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -1025,6 +1026,22 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
             *max_displacement = r.mMaxDisplacement;
         if (skipped_inversion)
             *skipped_inversion = r.mNumSkippedInversion;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine, int64_t* num_groups_undone,
+                         int64_t* num_cells_removed) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!coarse)
+            throw meshioplusplus::ReadError("meshio++: coarse mesh is NULL");
+        if (!fine)
+            throw meshioplusplus::ReadError("meshio++: fine mesh is NULL");
+        meshioplusplus::UndoGreenResult r = meshioplusplus::undo_green(coarse->mMesh, fine->mMesh);
+        if (num_groups_undone)
+            *num_groups_undone = r.mNumGroupsUndone;
+        if (num_cells_removed)
+            *num_cells_removed = r.mNumCellsRemoved;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

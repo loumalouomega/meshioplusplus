@@ -258,6 +258,21 @@ SEXP R_mio_interpolate(SEXP source, SEXP target, SEXP method, SEXP arrays, SEXP 
     return mio_r_wrap_mesh(out);
 }
 
+SEXP R_mio_undo_green(SEXP coarse, SEXP fine) {
+    int64_t ngroups = 0, nremoved = 0;
+    mio_mesh *out =
+        mio_undo_green(mio_r_mesh(coarse), mio_r_mesh(fine), &ngroups, &nremoved);
+    if (out == NULL) mio_r_fail("undo_green");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)ngroups));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nremoved));
+    const char *names[] = {"mesh", "num_groups_undone", "num_cells_removed"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(4);
+    return res;
+}
+
 SEXP R_mio_meshes_equal(SEXP a, SEXP b, SEXP atol, SEXP rtol, SEXP unordered) {
     int equal = 0;
     mio_r_check(mio_meshes_equal(mio_r_mesh(a), mio_r_mesh(b), mio_r_double(atol, "atol"),

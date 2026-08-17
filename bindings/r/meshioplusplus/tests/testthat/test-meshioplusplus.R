@@ -417,6 +417,30 @@ test_that("refine's persistent parent/child hierarchy is opt-in and maintained",
   mio_release(hier$mesh)
 })
 
+test_that("undo_green restores the coarse parent verbatim", {
+  m <- fixture()  # 2 tetrahedra sharing a whole face
+  on.exit(mio_release(m))
+
+  fine <- mio_refine(m, cells = c(1), record_hierarchy = TRUE, record_levels = TRUE)
+  fine_n <- mio_cell_block_info(fine$mesh, 1)$num_cells
+  coarse_n <- mio_cell_block_info(m, 1)$num_cells
+
+  undone <- mio_undo_green(m, fine$mesh)
+  expect_gt(undone$num_groups_undone, 0)
+  expect_gt(undone$num_cells_removed, 0)
+  undone_n <- mio_cell_block_info(undone$mesh, 1)$num_cells
+  expect_lt(undone_n, fine_n)
+  expect_gt(undone_n, coarse_n)
+  expect_false("refine:cell_id" %in% mio_cell_data_names(undone$mesh))
+  expect_false("refine:entity" %in% mio_point_data_names(undone$mesh))
+
+  # Fails by name rather than guessing: no hierarchy at all on "fine" here.
+  expect_error(mio_undo_green(m, m))
+
+  mio_release(undone$mesh)
+  mio_release(fine$mesh)
+})
+
 test_that("split and partition pieces own their handles", {
   m <- fixture()
   on.exit(mio_release(m))

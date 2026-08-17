@@ -229,7 +229,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 4
+#define MIO_VERSION_MINOR 5
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -702,6 +702,43 @@ MIO_API mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int itera
                              double lambda, double mu, int fix_boundary, int preserve_features,
                              double feature_angle, int guard_inversion, int64_t* nodes_moved,
                              double* max_displacement, int64_t* skipped_inversion);
+
+/**
+ * Green-element undo: restore `fine`'s transitional (closure-only) cells back
+ * to their original parent, read verbatim from `coarse` -- a lookup, not a
+ * reconstruction, since `mio_refine` never renumbers or prunes points. Undoes
+ * the known quality-degradation issue of repeated selective `mio_refine`
+ * passes over the same region ("restore the parent and re-split from
+ * scratch").
+ *
+ * `fine` must carry one int64 scalar cell_data array per block for each of
+ * "refine:cell_id", "refine:parent_id" and "refine:level" -- i.e. it must have
+ * come from an `mio_refine_ex` call with `record_hierarchy` AND
+ * `record_levels` both set; fails naming the missing array otherwise.
+ * `coarse` must be the exact mesh that `mio_refine_ex` call was run on (or an
+ * equally-shaped mesh sharing its point/id space); a `refine:parent_id` that
+ * does not resolve against `coarse` fails by name rather than guessing.
+ *
+ * The output keeps `fine`'s own block structure (same types, same order);
+ * some blocks' row counts shrink where a green sibling group collapsed to
+ * one substituted row. The six reserved refine:* arrays (four cell_data:
+ * parent_cell/level/cell_id/parent_id, two point_data: entity/hanging) are
+ * always dropped from the output -- they describe a hierarchy relationship
+ * that is now stale. Points are never pruned or renumbered. Only a
+ * single-pass (levels=1) hierarchy is supported; a multi-level `mio_refine_ex`
+ * call's deeper branches fail by name.
+ *
+ * Its per-block cell maps and the `mFrozen`-style extras are not exposed on
+ * the flat ABI, a documented gap like `mio_smooth`'s.
+ * @param coarse             the mesh a prior `mio_refine_ex` call was run on.
+ * @param fine               that call's output.
+ * @param num_groups_undone  out: number of green sibling groups substituted
+ *                            (nullable).
+ * @param num_cells_removed  out: total green child cells removed (nullable).
+ * @return the undone mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine,
+                                 int64_t* num_groups_undone, int64_t* num_cells_removed);
 
 /**
  * Sample data arrays from a source mesh onto a target mesh (cross-mesh field

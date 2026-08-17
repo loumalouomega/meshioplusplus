@@ -66,6 +66,7 @@ module meshioplusplus
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
     public :: mio_interpolate
+    public :: mio_undo_green
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
     public :: STRBUF_LEN
@@ -893,6 +894,14 @@ module meshioplusplus
             integer(c_int), value :: extrapolate
             real(c_double), value :: default_value
             character(kind=c_char), dimension(*), intent(in) :: on_conflict
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_undo_green(coarse, fine, ngroups, nremoved) &
+                bind(c, name="mio_undo_green") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: coarse, fine
+            integer(c_int64_t), intent(out) :: ngroups, nremoved
             type(c_ptr) :: r
         end function
 
@@ -2505,6 +2514,32 @@ contains
             call handle_failure('interpolate', mio_error_message(), stat, errmsg)
             return
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Green-element undo: restore `fine`'s transitional (closure-only) cells
+    !> back to their original parent, read verbatim from `coarse` -- a lookup,
+    !> not a reconstruction, since refine() never renumbers or prunes points.
+    !> `fine` must carry refine:cell_id/refine:parent_id/refine:level (i.e. it
+    !> must come from a refine() call with record_hierarchy=.true.,
+    !> record_levels=.true.); `coarse` must be the mesh that call was run on.
+    !> The optional num_groups_undone/num_cells_removed report how many green
+    !> sibling groups were substituted and how many cells that removed.
+    function mio_undo_green(coarse, fine, num_groups_undone, num_cells_removed, &
+                            stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: coarse, fine
+        integer(int64), intent(out), optional :: num_groups_undone, num_cells_removed
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: ngroups, nremoved
+        out%handle = c_mio_undo_green(coarse%handle, fine%handle, ngroups, nremoved)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('undo_green', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_groups_undone)) num_groups_undone = int(ngroups, int64)
+        if (present(num_cells_removed)) num_cells_removed = int(nremoved, int64)
         call clear_status(stat, errmsg)
     end function
 

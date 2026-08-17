@@ -463,6 +463,30 @@ end
     close(m)
 end
 
+@testset "operations: undo_green restores the coarse parent" begin
+    m = fixture()  # 2 tetrahedra sharing a whole face
+
+    fine = refine(m; cells=[1], record_hierarchy=true, record_levels=true)
+    fine_n = num_cells(fine.mesh)
+    coarse_n = num_cells(m)
+
+    undone = undo_green(m, fine.mesh)
+    @test undone.num_groups_undone > 0
+    @test undone.num_cells_removed > 0
+    @test num_cells(undone.mesh) < fine_n
+    @test num_cells(undone.mesh) > coarse_n
+    # The reserved refine:* arrays are dropped entirely.
+    @test !("refine:cell_id" in cell_data_names(undone.mesh))
+    @test !("refine:entity" in point_data_names(undone.mesh))
+
+    # Fails by name rather than guessing: no hierarchy on the "fine" argument.
+    @test_throws MeshioError undo_green(m, m)
+
+    close(undone.mesh)
+    close(fine.mesh)
+    close(m)
+end
+
 @testset "operations: split and partition own their meshes" begin
     m = fixture()
 
