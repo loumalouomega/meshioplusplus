@@ -774,6 +774,28 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def agglomerate(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        target_group_size: int = 8,
+    ) -> dict:
+        """Polyhedrally coarsen: merge groups of cells into single larger
+        polyhedral cells via greedy seed-and-grow over the shared-face dual.
+        Non-volume blocks pass through unchanged; points are never pruned or
+        renumbered (clean with remove_orphans=True is the follow-up for
+        that)."""
+        return _guard(
+            _tools.tool_agglomerate,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            target_group_size=target_group_size,
+        )
+
+    @server.tool()
     def refine(
         input_path: str,
         output_path: str,

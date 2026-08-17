@@ -36,6 +36,7 @@ from collections import OrderedDict
 import numpy as np
 
 from .. import (
+    agglomerate,
     attach_quality,
     cell_data_to_point_data,
     clean,
@@ -1057,6 +1058,19 @@ def tool_subdivide(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_agglomerate(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    target_group_size=8,
+):
+    """Polyhedrally coarsen: merge groups of cells into larger polyhedra."""
+    mesh = _load(input_path, input_format)
+    out = agglomerate(mesh, target_group_size=target_group_size)
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_refine(
     input_path,
     output_path,
@@ -1745,6 +1759,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "subdivide",
             {"fn": tool_subdivide, "wraps": ("subdivide",), "gated": None},
+        ),
+        (
+            "agglomerate",
+            {"fn": tool_agglomerate, "wraps": ("agglomerate",), "gated": None},
         ),
         ("refine", {"fn": tool_refine, "wraps": ("refine",), "gated": None}),
         ("decimate", {"fn": tool_decimate, "wraps": ("decimate",), "gated": None}),

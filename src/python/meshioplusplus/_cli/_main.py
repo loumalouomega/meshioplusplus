@@ -3,6 +3,7 @@ from sys import version_info
 
 from ..__about__ import __version__
 from . import (
+    _agglomerate,
     _ascii,
     _binary,
     _clean,
@@ -193,6 +194,16 @@ def main(argv=None):
     )
     _subdivide.add_args(parser)
     parser.set_defaults(func=_subdivide.subdivide_cmd)
+
+    parser = subparsers.add_parser(
+        "agglomerate",
+        help=(
+            "Polyhedrally coarsen: merge groups of cells into single larger "
+            "polyhedral cells via greedy seed-and-grow over the shared-face dual"
+        ),
+    )
+    _agglomerate.add_args(parser)
+    parser.set_defaults(func=_agglomerate.agglomerate_cmd)
 
     parser = subparsers.add_parser(
         "refine",

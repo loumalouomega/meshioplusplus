@@ -26,6 +26,7 @@ import json
 import os
 import pathlib
 
+from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -133,6 +134,7 @@ _OP_TABLE = {
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
     "Subdivide": ("RecordParentIds",),
+    "Agglomerate": ("TargetGroupSize",),
     "Crop": (
         "Bbox",
         "Point",
@@ -535,6 +537,11 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = subdivide(
             mesh,
             record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+    elif op == "Agglomerate":
+        mesh = agglomerate(
+            mesh,
+            target_group_size=int(_number(step, "TargetGroupSize", 8.0)),
         )
     elif op == "Crop":
         has_bbox = "Bbox" in step

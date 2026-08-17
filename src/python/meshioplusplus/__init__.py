@@ -47,6 +47,7 @@ from . import (
     xdmf,
 )
 from .__about__ import __version__
+from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -212,6 +213,7 @@ __all__ = [
     "split",
     "convert_cells",
     "subdivide",
+    "agglomerate",
     "refine",
     "decimate",
     "grid",

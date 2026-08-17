@@ -37,6 +37,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -251,6 +252,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
         {"Subdivide", {"RecordParentIds"}},
+        {"Agglomerate", {"TargetGroupSize"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -688,6 +690,14 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         SubdivideOptions opts;
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
         auto result = subdivide(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Agglomerate") {
+        AgglomerateOptions opts;
+        opts.mTargetGroupSize =
+            static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        auto result = agglomerate(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
     }

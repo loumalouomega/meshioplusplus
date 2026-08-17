@@ -1290,6 +1290,20 @@ export interface MeshioPlusPlusModule {
   subdivide(mesh: Mesh, recordParentIds?: boolean): Mesh;
 
   /**
+   * Polyhedrally coarsen a mesh: merge groups of cells into single larger
+   * polyhedral cells via greedy seed-and-grow over the mesh's shared-face
+   * dual, absorbing face-adjacent neighbours into a group until it reaches
+   * `targetGroupSize` (default 8; a short group at a mesh boundary or
+   * pocket is expected, not an error). `targetGroupSize=1` groups every
+   * cell by itself. Non-volume blocks pass through unchanged; points are
+   * never pruned or renumbered (`clean(mesh, ..., true)` is the follow-up
+   * for a minimal point set).
+   * @throws {Error} when targetGroupSize is 0, or the mesh contains a face
+   *   shared by three or more cells (non-manifold).
+   */
+  agglomerate(mesh: Mesh, targetGroupSize?: number): Mesh;
+
+  /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,
    * `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8).
    * New nodes sit at edge / quad-face / body midpoints and are shared between

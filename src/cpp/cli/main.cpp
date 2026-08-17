@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
@@ -441,6 +442,8 @@ void print_usage(std::ostream& os) {
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
           "  subdivide               Polyhedrally refine: one polyhedral child per 3D\n"
           "                            cell face, connected to a new interior point\n"
+          "  agglomerate             Polyhedrally coarsen: merge groups of cells into\n"
+          "                            single larger polyhedral cells\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
           "                          selected subset with a conforming closure)\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
@@ -1588,6 +1591,25 @@ int cmd_subdivide(const std::vector<std::string>& rArgs) {
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
 
     auto result = meshioplusplus::subdivide(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_agglomerate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"target-group-size", {}, true},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("agglomerate requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::AgglomerateOptions options;
+    options.mTargetGroupSize =
+        static_cast<std::size_t>(std::stoull(opt_value(p, "target-group-size", "8")));
+
+    auto result = meshioplusplus::agglomerate(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
@@ -2845,6 +2867,8 @@ int main(int argc, char** argv) {
             return cmd_convert_cells(rest);
         if (cmd == "subdivide")
             return cmd_subdivide(rest);
+        if (cmd == "agglomerate")
+            return cmd_agglomerate(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
         if (cmd == "decimate")
