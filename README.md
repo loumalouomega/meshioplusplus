@@ -369,6 +369,19 @@ fine = meshioplusplus.refine(coarse, cells=[4, 8], record_hierarchy=True)
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
 
+#### Green-element undo
+
+**`meshioplusplus.undo_green(coarse, fine)`** restores `refine`'s transitional ("green") cells back to their original parent — the standard rule for selective refinement: before a new pass touches a region a prior pass already closed up, restore the transitional cell to its parent and re-split from scratch, rather than refining the transitional children directly (which degrades element quality without bound over repeated passes). It is a **two-mesh** operation, like `interpolate`: `coarse` is the mesh a prior `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was run on, `fine` is that call's output. Since `refine`'s point map is always the identity, a green parent's exact connectivity and cell_data are already sitting, byte-for-byte, in `coarse` — so this is a lookup and substitution, not a reconstruction. See `doc/undo_green.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+fine = meshioplusplus.refine(coarse, cells=[4, 8], record_hierarchy=True, record_levels=True)
+# ... later, decide to refine a different region ...
+undone = meshioplusplus.undo_green(coarse, fine)
+redone = meshioplusplus.refine(undone, cells=[12, 19], record_hierarchy=True, record_levels=True)
+```
+
 #### Decimation
 
 **`meshioplusplus.decimate`** is `refine`'s inverse: it *reduces* a surface mesh's face count by greedy quadric-error-metric (Garland–Heckbert) edge collapse, preserving shape, boundaries and features. Exactly one stopping criterion is given — `ratio` (fraction of faces to keep), `target_faces`, or `max_error` — and the output is all-triangle (`quad`/`polygon` blocks are triangulated first, block structure kept 1:1). See `doc/decimate.md`.
@@ -477,7 +490,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -780,7 +793,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

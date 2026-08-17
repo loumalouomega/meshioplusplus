@@ -8,6 +8,58 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.5.0 (2026-08-17)
+
+**Roadmap §1 closed further** — green-element undo is closed; volume
+decimation remains as the section's one open item.
+
+- **`undo_green`** (`operations/undo_green.hpp`, [`doc/undo_green.md`](doc/undo_green.md))
+  — restores `refine`'s transitional (green) cells back to their original
+  parent, the missing half of the standard selective-refinement rule
+  ("restore a transitional cell to its parent and re-split from scratch
+  before a new refinement pass"); `refine` refines the transitional
+  children directly instead, so repeated selective passes over the same
+  region degrade element quality without bound. A **two-mesh** operation,
+  the repo's second after `interpolate`: `coarse` is the mesh a prior
+  `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was
+  run on, `fine` is that call's output. **Design: lookup and substitution,
+  not reconstruction** — the originally-planned mechanism (inverting
+  `refine`'s per-type subdivision tables against a green group's children,
+  a genuinely hard graph-isomorphism-style match) turns out to be
+  unnecessary: since `refine()`'s point map is always the identity, a green
+  parent's exact connectivity and cell_data are already sitting,
+  byte-for-byte, in `coarse` at the row `fine`'s `refine:parent_id` names.
+  Classification is per sibling group (cells sharing one `parent_id`, since
+  a parent's red/green status is uniform across every child): a singleton
+  group is untouched; a group one level deeper than its coarse parent is
+  red (kept unchanged); a group at the same level is green (substituted
+  with one row read verbatim from `coarse`); a group more than one level
+  deeper is refused by name (only a single-pass, `levels=1`, hierarchy is
+  supported). The six reserved `refine:*` arrays are unconditionally
+  dropped from the output. Points are never pruned or renumbered. Cell
+  regions carry through the first genuinely non-injective
+  `CellMapKind::Direct` use in the C++ core (several fine cells collapsing
+  onto one output row), deduplicated by `Region`'s existing sort+unique;
+  named Side regions do not survive. **Has a full numpy twin**, unlike
+  `subdivide`/`agglomerate` — there is no winding repair or other discrete
+  sign branch anywhere in the algorithm, just array bookkeeping and row
+  copies. Reachable as `undo-green` on both CLIs and as an MCP tool;
+  deliberately **not** reachable as a settings-pipeline/`convertSurfaceOps`
+  step, the same exclusion `Merge`/`Interpolate`/`Split`/`Diff` already
+  have, since a two-mesh op does not fit the single-mesh chain. Shipped
+  across every binding surface: C++ core, pybind, the C API
+  (`mio_undo_green`, a plain `mio_mesh*` with nullable counters like
+  `mio_smooth`, not an opaque result handle), Fortran (module-level, like
+  `mio_interpolate`), Julia, R, WASM. **No ABI change** — corrects the
+  original plan, which assumed a new `RefineOptions` flag (Tier A, a bump
+  to 8); the two-mesh substitution design needs no `RefineOptions` change
+  at all, so `MESHIOPLUSPLUS_ABI_VERSION` stays at 7.
+- Hoisted `RefineHierarchyState`/`refine_read_hierarchy` out of
+  `refine.cpp`'s private scope into `detail/refine_hierarchy.{hpp,cpp}` so
+  `undo_green` can share the identical Absent/Valid/Invalid hierarchy read
+  against a coarse mesh rather than a second transcription; `refine.cpp`'s
+  own behaviour is unchanged (verified by its existing test suite).
+
 ## v10.4.0 (2026-08-17)
 
 **Roadmap §1 closed for polyhedra** — the polyhedral-*coarsening* half of the
