@@ -1446,6 +1446,58 @@ TEST(CApi, SubdivideErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, AgglomerateTwoHexesThroughTheAbi) {
+    // Two unit hexahedra sharing one face (x=1 plane).
+    const std::vector<double> pts = {0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0,
+                                     1, 1, 1, 1, 0, 1, 2, 0, 0, 2, 1, 0, 2, 1, 1, 2, 0, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_agglomerate_result* r = mio_agglomerate(m, /*target_group_size=*/2);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_agglomerate_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "polyhedron");
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(out, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 1);
+    EXPECT_EQ(info.is_polyhedron, 1);
+
+    // Zero-copy borrow of the FLAT cell map -- both hexes land in the one
+    // merged cell.
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_agglomerate_result_cell_map(r, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 2);
+    const auto* cm = static_cast<const std::int64_t*>(data);
+    EXPECT_EQ(cm[0], cm[1]);
+
+    mio_mesh* owned = mio_agglomerate_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(owned), 1);
+    mio_mesh_free(owned);
+    mio_agglomerate_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, AgglomerateErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    EXPECT_EQ(mio_agglomerate(nullptr, 8), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_agglomerate(m, -1), nullptr);
+    EXPECT_EQ(mio_agglomerate_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_agglomerate_result_cell_map(nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_agglomerate_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}
+
 TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
     // A 3x3 grid of quads: only the centre node is interior, so it is the only
     // one free to move -- which makes both halves of the assertion sharp.

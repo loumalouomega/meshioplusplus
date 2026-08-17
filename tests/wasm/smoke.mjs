@@ -590,6 +590,72 @@ step('subdivide: non-3D blocks pass through unchanged', () => {
     assert.equal(out.points.length, flatTri.points.length);
 });
 
+// Two unit hexahedra sharing one face (x=1 plane) -- the fixture agglomerate
+// needs a real (non-identity) merge to exercise.
+const twoHexes = {
+    points: new Float64Array([
+        0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 2, 0, 0, 2, 1, 0,
+        2, 1, 1, 2, 0, 1,
+    ]),
+    dim: 3,
+    cells: [
+        {
+            type: 'hexahedron',
+            data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11]),
+            nodesPerCell: 8,
+        },
+    ],
+    point_data: {},
+    cell_data: {},
+    field_data: {},
+};
+
+step('agglomerate: two adjacent hexes merge into one polyhedron', () => {
+    const out = m.agglomerate(twoHexes, 2);
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'polyhedron');
+    // cellOffsets is per-OUTPUT-cell -- one merged cell -> 2 entries.
+    assert.equal(out.cells[0].cellOffsets.length, 2);
+    // 12 total face-references (6 per hex) minus the 2 references to the 1
+    // shared, now-internal face.
+    assert.equal(out.cells[0].faceOffsets.length, 11);
+    // Points are never pruned.
+    assert.equal(out.points.length, twoHexes.points.length);
+});
+
+step('agglomerate: targetGroupSize=1 is an identity grouping', () => {
+    const out = m.agglomerate(twoHexes, 1);
+    assert.equal(out.cells[0].cellOffsets.length, 3);  // 2 singleton groups
+});
+
+step('agglomerate rejects a non-manifold mesh', () => {
+    const tets = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1, 1, 1, 1]),
+        dim: 3,
+        cells: [
+            {
+                type: 'tetra',
+                data: new Int32Array([0, 1, 2, 3, 0, 2, 1, 4, 0, 1, 2, 5]),
+                nodesPerCell: 4,
+            },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    assert.throws(() => m.agglomerate(tets));
+});
+
+step('agglomerate is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/agg.vtu', twoHexes);
+    const out = m.convertSurfaceOps('/agg.vtu', '/agg.vtp', [
+        { op: 'agglomerate', targetGroupSize: 2 },
+    ]);
+    assert.equal(out.steps[0].op, 'agglomerate');
+    const rendered = m.readMesh('/agg.vtp');
+    assert.ok(rendered.cells[0].data.length > 0);
+});
+
 step('refine: one hexahedron -> 8 hexahedra with 27 nodes', () => {
     const out = m.refine(cube);
     assert.equal(out.cells.length, 1);
@@ -1242,6 +1308,7 @@ step('every binding is reachable through the wrapper', () => {
         'split',
         'convertCells',
         'subdivide',
+        'agglomerate',
         'refine',
         'decimate',
         'partition',

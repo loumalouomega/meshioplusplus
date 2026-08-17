@@ -359,6 +359,23 @@ program test_fortran_api
         call sub%free()
     end block
 
+    ! -- agglomerate: merge face-adjacent cells into one polyhedron --------
+    block
+        type(mio_mesh) :: agg
+        integer :: st
+
+        ! The two tetra share a face (nodes 2,3,4 1-based), so target=2
+        ! merges them into one polyhedron.
+        agg = m%agglomerate(target_group_size=2_int64, stat=st)
+        call check(st == 0, 'agglomerate succeeded')
+        call check(agg%num_cell_blocks() == 1, 'agglomerate kept one block')
+        call check(agg%cell_block_type(1) == 'polyhedron', 'agglomerate produced polyhedron cells')
+        call check(agg%cell_block_num_cells(1) == 1_int64, 'agglomerate merged both tetra')
+        call check(agg%num_points() == m%num_points(), 'agglomerate never prunes points')
+
+        call agg%free()
+    end block
+
     ! -- smooth: relax coordinates, leaving topology and data intact --
     block
         type(mio_mesh) :: relaxed, bad

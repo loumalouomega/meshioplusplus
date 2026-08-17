@@ -133,6 +133,26 @@ def test_subdivide_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_agglomerate_pipeline_step(settings_env):
+    """Agglomerate dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair, and like Subdivide has no numpy fallback, so both
+    engines call the same underlying `_core.agglomerate`."""
+    settings = make_settings(
+        settings_env, [{"Op": "Agglomerate", "TargetGroupSize": 2}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Agglomerate"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two face-adjacent tetra cells -> one merged cell.
+    assert len(out.cells[0].data) == 1
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_estimate_error_pipeline_step(settings_env):
     """EstimateError dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike
