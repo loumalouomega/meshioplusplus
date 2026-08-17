@@ -1725,6 +1725,91 @@ TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, UndoGreenRestoresTheCoarseParentThroughTheAbi) {
+    // A 3 x 3 grid of quadrilaterals; refine the middle one only, so the
+    // neighbours around it get transitional (green) closures.
+    std::vector<double> pts;
+    for (int j = 0; j <= 3; ++j)
+        for (int i = 0; i <= 3; ++i) {
+            pts.push_back(i);
+            pts.push_back(j);
+            pts.push_back(0);
+        }
+    std::vector<std::int64_t> conn;
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            const std::int64_t a = j * 4 + i;
+            conn.insert(conn.end(), {a, a + 1, a + 5, a + 4});
+        }
+    mio_mesh* coarse = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(coarse, MIO_FLOAT64, 16, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(coarse, "quad", 9, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    const std::int64_t selected[] = {4};
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.cells = selected;
+    opts.num_cells = 1;
+    opts.record_hierarchy = 1;
+    opts.record_levels = 1;
+    mio_refine_result* r = mio_refine_ex(coarse, &opts);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* fine = mio_refine_result_mesh(r);
+
+    std::int64_t fine_cells = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(fine, 0, &fine_cells, nullptr, nullptr), MIO_OK);
+
+    std::int64_t num_groups_undone = -1, num_cells_removed = -1;
+    mio_mesh* undone = mio_undo_green(coarse, fine, &num_groups_undone, &num_cells_removed);
+    ASSERT_NE(undone, nullptr);
+    EXPECT_GT(num_groups_undone, 0);
+    EXPECT_GT(num_cells_removed, 0);
+
+    std::int64_t undone_cells = 0, coarse_cells = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(undone, 0, &undone_cells, nullptr, nullptr), MIO_OK);
+    ASSERT_EQ(mio_mesh_cell_block_info(coarse, 0, &coarse_cells, nullptr, nullptr), MIO_OK);
+    EXPECT_LT(undone_cells, fine_cells);
+    EXPECT_GT(undone_cells, coarse_cells);
+
+    // The reserved refine:* arrays are dropped entirely.
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    EXPECT_NE(mio_mesh_get_cell_data(undone, "refine:cell_id", 0, &data, &dt, &ndim, shape),
+              MIO_OK);
+    EXPECT_NE(mio_mesh_get_point_data(undone, "refine:entity", &data, &dt, &ndim, shape), MIO_OK);
+
+    // Nullable counters really are nullable.
+    mio_mesh* undone2 = mio_undo_green(coarse, fine, nullptr, nullptr);
+    ASSERT_NE(undone2, nullptr);
+    mio_mesh_free(undone2);
+
+    mio_mesh_free(undone);
+    mio_refine_result_free(r);
+    mio_mesh_free(coarse);
+}
+
+TEST(CApi, UndoGreenErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    mio_mesh* coarse = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(coarse, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(coarse, "quad", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // No hierarchy at all on "fine" (here just the coarse mesh itself).
+    EXPECT_EQ(mio_undo_green(coarse, coarse, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    // NULL meshes never let an exception cross the ABI.
+    EXPECT_EQ(mio_undo_green(nullptr, coarse, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_undo_green(coarse, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(coarse);
+}
+
 TEST(CApi, RefineChainsOnABorrowedMesh) {
     mio_mesh* m = build_tet_mesh();  // 2 tetrahedra
 

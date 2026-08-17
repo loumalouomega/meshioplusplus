@@ -755,6 +755,60 @@ step('refine: recordHierarchy attaches the persistent parent/child ids', () => {
     assert.ok('refine:cell_id' in backHier.cell_data);
 });
 
+step('undoGreen: restores the coarse parent verbatim, read from coarse', () => {
+    // A 4 x 4 grid of quadrilaterals; refine one cell selectively so its
+    // neighbours pick up transitional (green) closures.
+    const n = 4;
+    const points = [];
+    for (let j = 0; j <= n; ++j)
+        for (let i = 0; i <= n; ++i) points.push(i, j, 0);
+    const conn = [];
+    for (let j = 0; j < n; ++j)
+        for (let i = 0; i < n; ++i) {
+            const a = j * (n + 1) + i;
+            conn.push(a, a + 1, a + n + 2, a + n + 1);
+        }
+    const coarse = {
+        points: Float64Array.from(points),
+        dim: 3,
+        cells: [{ type: 'quad', data: Int32Array.from(conn), nodesPerCell: 4 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+
+    const fine = m.refine(coarse, 1, false, {
+        cells: [5],
+        recordHierarchy: true,
+        recordLevels: true,
+    });
+    const fineCells = fine.cells[0].data.length / 4;
+    const coarseCells = coarse.cells[0].data.length / 4;
+
+    const undone = m.undoGreen(coarse, fine);
+    assert.ok(undone.numGroupsUndone > 0, 'at least one green group was undone');
+    assert.ok(undone.numCellsRemoved > 0);
+    const undoneCells = undone.mesh.cells[0].data.length / 4;
+    assert.ok(undoneCells < fineCells, 'fewer cells than the fine mesh');
+    assert.ok(undoneCells > coarseCells, 'more cells than the coarse mesh (red kept)');
+    assert.ok(!('refine:cell_id' in undone.mesh.cell_data), 'reserved arrays are dropped');
+    assert.ok(!('refine:entity' in undone.mesh.point_data), 'reserved arrays are dropped');
+
+    // Fails by name rather than guessing: no hierarchy at all here.
+    assert.throws(() => m.undoGreen(coarse, coarse));
+
+    // It is a two-mesh op, so it is deliberately NOT reachable as a pipeline
+    // step -- the same exclusion Merge/Interpolate/Split/Diff already have
+    // (it never reaches pipeline_op_table(), so this is the same generic
+    // "unknown operation" message those get here, not the C++ engine's more
+    // specific excluded-hint text).
+    m.writeMesh('/ug-coarse.vtu', coarse);
+    assert.throws(
+        () => m.convertSurfaceOps('/ug-coarse.vtu', '/ug-out.vtu', [{ op: 'undoGreen' }]),
+        /unknown operation 'undoGreen'/,
+    );
+});
+
 step('decimate: collapses a refined cube skin, pinning its creases', () => {
     // The skin of a refined cube: 24 quads -> 48 triangles, with every cube
     // edge/corner vertex a pinned feature; only face-interior vertices go.
@@ -1298,6 +1352,7 @@ step('every binding is reachable through the wrapper', () => {
         'clean',
         'smooth',
         'interpolate',
+        'undoGreen',
         'slice',
         'isosurface',
         'gradient',

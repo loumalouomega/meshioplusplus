@@ -536,6 +536,38 @@ program test_fortran_api
         call hier%free()
     end block
 
+    ! -- undo_green: restore a transitional cell to its coarse parent --
+    block
+        type(mio_mesh) :: fine, undone, bad
+        integer(int64) :: ngroups, nremoved, fine_n, undone_n, coarse_n
+        integer :: st
+
+        ! m's two tetrahedra share a whole face; refining cell 1 forces cell
+        ! 2's shared-face edges to close up as one green group.
+        fine = m%refine(cells=[1_int64], record_hierarchy=.true., record_levels=.true., stat=st)
+        call check(st == 0, 'refine for undo_green succeeded')
+        fine_n = fine%cell_block_num_cells(1)
+        coarse_n = m%cell_block_num_cells(1)
+
+        undone = mio_undo_green(m, fine, num_groups_undone=ngroups, &
+                                num_cells_removed=nremoved, stat=st)
+        call check(st == 0, 'undo_green succeeded')
+        call check(ngroups > 0_int64, 'undo_green undid at least one green group')
+        call check(nremoved > 0_int64, 'undo_green removed at least one cell')
+        undone_n = undone%cell_block_num_cells(1)
+        call check(undone_n < fine_n, 'undo_green produced fewer cells than fine')
+        call check(undone_n > coarse_n, 'undo_green kept the genuine (red) refinement')
+        call check(undone%cell_data_num_blocks('refine:cell_id') < 0_int64, &
+                   'the reserved refine:* arrays are dropped')
+
+        ! Fails by name rather than guessing: "fine" here has no hierarchy at all.
+        bad = mio_undo_green(m, m, stat=st)
+        call check(st /= 0, 'undo_green rejects a mesh with no hierarchy')
+
+        call undone%free()
+        call fine%free()
+    end block
+
     ! -- decimate: QEM edge collapse of a surface mesh --
     block
         type(mio_mesh) :: fan, coarse, bad
