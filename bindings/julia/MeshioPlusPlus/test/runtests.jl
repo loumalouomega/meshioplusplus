@@ -388,6 +388,24 @@ end
     close(m)
 end
 
+@testset "operations: agglomerate (polyhedral coarsening)" begin
+    m = fixture()  # 2 tetra sharing one face
+    a = agglomerate(m; target_group_size=2)
+    @test num_cell_blocks(a.mesh) == 1
+    @test cell_block_type(a.mesh, 1) == "polyhedron"
+    info = cell_block_info(a.mesh, 1)
+    @test info.is_polyhedron
+    @test info.num_cells == 1                # both tetra merge into one cell
+    @test num_points(a.mesh) == num_points(m)  # points never pruned/renumbered
+
+    # cell_map is a single FLAT array (unlike subdivide's per-block
+    # cell_maps): both input cells land in the one merged output cell.
+    @test length(a.cell_map) == 2
+    @test a.cell_map[1] == a.cell_map[2] == 1
+    close(a.mesh)
+    close(m)
+end
+
 @testset "operations: selective refine with a conforming closure" begin
     m = fixture()
 

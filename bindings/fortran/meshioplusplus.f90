@@ -365,6 +365,7 @@ module meshioplusplus
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: subdivide => mesh_subdivide
+        procedure :: agglomerate => mesh_agglomerate
         procedure :: refine => mesh_refine
         procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
@@ -1081,6 +1082,27 @@ module meshioplusplus
 
         subroutine c_mio_subdivide_result_free(r) &
                 bind(c, name="mio_subdivide_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_agglomerate(h, target_group_size) &
+                bind(c, name="mio_agglomerate") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: target_group_size
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_agglomerate_result_take_mesh(r) &
+                bind(c, name="mio_agglomerate_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_agglomerate_result_free(r) &
+                bind(c, name="mio_agglomerate_result_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -2978,6 +3000,38 @@ contains
         call c_mio_subdivide_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('subdivide', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Polyhedrally coarsen the mesh: merge groups of cells into single
+    !> larger polyhedral cells via greedy seed-and-grow over the shared-face
+    !> dual, absorbing face-adjacent neighbours until a group reaches
+    !> `target_group_size` (default 8; a short group at a mesh boundary or
+    !> pocket is expected, not an error). Non-volume blocks pass through
+    !> unchanged; points are never pruned or renumbered (`clean` with
+    !> `remove_orphans=.true.` is the follow-up for a minimal point set).
+    !> `target_group_size=1` groups every cell by itself.
+    function mesh_agglomerate(self, target_group_size, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: target_group_size
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int64_t) :: tgs
+        tgs = 8_c_int64_t
+        if (present(target_group_size)) tgs = int(target_group_size, c_int64_t)
+        res = c_mio_agglomerate(self%handle, tgs)
+        if (.not. c_associated(res)) then
+            call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = c_mio_agglomerate_result_take_mesh(res)
+        call c_mio_agglomerate_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

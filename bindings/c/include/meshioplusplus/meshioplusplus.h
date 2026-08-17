@@ -95,6 +95,13 @@ typedef struct mio_convert_cells_result mio_convert_cells_result;
  *  mio_subdivide_result_free(). */
 typedef struct mio_subdivide_result mio_subdivide_result;
 
+/** Opaque result of mio_agglomerate(): the coarsened mesh plus a single FLAT
+ *  cell index map (unlike mio_subdivide_result's per-block one -- an output
+ *  cell's index is a function of which group it joined, not which input
+ *  block it came from). There is likewise no point map. Destroy with
+ *  mio_agglomerate_result_free(). */
+typedef struct mio_agglomerate_result mio_agglomerate_result;
+
 /** Opaque result of mio_refine(): the refined mesh plus the point/cell index
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
@@ -222,7 +229,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 3
+#define MIO_VERSION_MINOR 4
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1080,6 +1087,61 @@ MIO_API mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* res
 
 /** Free a subdivide result (and the mesh it still owns). */
 MIO_API void mio_subdivide_result_free(mio_subdivide_result* result);
+
+/**
+ * Polyhedrally coarsen a mesh: merge groups of cells into single larger
+ * polyhedral cells via greedy seed-and-grow over the mesh's shared-face
+ * dual, absorbing face-adjacent neighbours into a group until it reaches
+ * target_group_size (or no unclaimed neighbour remains -- a short group at a
+ * mesh boundary or pocket is expected, not an error). Non-volume blocks
+ * (2D/1D, or any 3D block with no face table) pass through unchanged.
+ * Points are never pruned or renumbered; mio_clean(..., remove_orphans=1) is
+ * the follow-up for a caller wanting a minimal point set. Point/Cell regions
+ * survive; named Side regions cannot (a many-to-one collapse has no facet
+ * correspondence to preserve). point_sets/cell_sets are not carried across
+ * the C ABI.
+ * @param target_group_size  approximate member cells per output group; must
+ *                           be at least 1 (1 means every cell is its own
+ *                           group).
+ * @return a result handle (free with mio_agglomerate_result_free), or NULL
+ *         on failure -- target_group_size == 0, or a face shared by three or
+ *         more cells (non-manifold), which the merge refuses rather than
+ *         guessing a boundary classification for.
+ */
+MIO_API mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_group_size);
+
+/**
+ * Borrow the coarsened mesh. Owned by the result: valid until
+ * mio_agglomerate_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the coarsened mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_agglomerate_result_mesh(const mio_agglomerate_result* result);
+
+/**
+ * Transfer ownership of the coarsened mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result);
+
+/**
+ * Zero-copy borrow of the FLAT cell map (int64, shape (total input cell
+ * count,), input global cell -> output global cell). Unlike
+ * mio_subdivide_result_cell_map, this takes no block argument -- an output
+ * cell's index is a function of which group it joined, not which input
+ * block it came from -- and there is correspondingly no
+ * mio_agglomerate_result_num_cell_maps (there is exactly one array). Any
+ * out-param may be NULL.
+ * @param result an agglomerate result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input mesh's total cell count.
+ */
+MIO_API mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result,
+                                                   const void** data, mio_dtype* dtype,
+                                                   int64_t* n);
+
+/** Free an agglomerate result (and the mesh it still owns). */
+MIO_API void mio_agglomerate_result_free(mio_agglomerate_result* result);
 
 /** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
 typedef enum mio_refine_closure {

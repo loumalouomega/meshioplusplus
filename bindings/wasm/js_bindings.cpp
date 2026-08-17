@@ -87,6 +87,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -2106,6 +2107,22 @@ val subdivide_js(const val& rMeshObj, bool recordParentIds) {
 }
 
 /**
+ * @brief Polyhedrally coarsen a mesh: merge groups of cells into single
+ * larger polyhedral cells via greedy seed-and-grow over the shared-face
+ * dual. Non-volume blocks pass through unchanged; points are never pruned or
+ * renumbered (`clean(mesh, ..., true)` is the follow-up for a minimal point
+ * set). Returns the coarsened mesh; the flat cell map is not carried across
+ * the JS boundary.
+ */
+val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AgglomerateOptions options;
+        options.mTargetGroupSize = static_cast<std::size_t>(targetGroupSize);
+        return mesh_to_val(meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
  * the refined mesh; the index maps are not carried across the JS boundary (use
@@ -2781,6 +2798,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("subdivide", &subdivide_js);
+    emscripten::function("agglomerate", &agglomerate_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
     emscripten::function("partition", &partition_js);

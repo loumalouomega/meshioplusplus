@@ -342,6 +342,25 @@ test_that("subdivide polyhedrally refines with no point map", {
   mio_release(s$mesh)
 })
 
+test_that("agglomerate polyhedrally coarsens with a flat cell map", {
+  m <- fixture()  # 2 tetra sharing one face
+  on.exit(mio_release(m))
+
+  a <- mio_agglomerate(m, target_group_size = 2)
+  expect_equal(mio_num_cell_blocks(a$mesh), 1)
+  expect_equal(mio_cell_block_type(a$mesh, 1), "polyhedron")
+  info <- mio_cell_block_info(a$mesh, 1)
+  expect_true(info$is_polyhedron)
+  expect_equal(info$num_cells, 1) # both tetra merge into one cell
+  expect_equal(mio_num_points(a$mesh), mio_num_points(m)) # never pruned
+
+  # cell_map is a single FLAT array (unlike subdivide's per-block
+  # cell_maps): both input cells land in the one merged output cell.
+  expect_length(a$cell_map, 2)
+  expect_equal(a$cell_map[1], a$cell_map[2])
+  mio_release(a$mesh)
+})
+
 test_that("selective refine closes up conformingly", {
   m <- fixture()
   on.exit(mio_release(m))

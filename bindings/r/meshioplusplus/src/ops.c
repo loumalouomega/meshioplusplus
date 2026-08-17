@@ -552,6 +552,36 @@ SEXP R_mio_subdivide(SEXP mesh, SEXP record_parent_ids) {
     return res;
 }
 
+/* agglomerate's cell map is a single FLAT array (unlike subdivide's
+ * per-block cell_maps), so it needs no per-block loop at all -- just one
+ * mio_r_shift_map() call. */
+SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
+    mio_agglomerate_result *r =
+        mio_agglomerate(mio_r_mesh(mesh), mio_r_int64(target_group_size, "target_group_size"));
+    if (r == NULL) mio_r_fail("agglomerate");
+    const void *d = NULL;
+    mio_dtype dt;
+    int64_t len = 0;
+    mio_status st = mio_agglomerate_result_cell_map(r, &d, &dt, &len);
+    if (st != MIO_OK) {
+        mio_agglomerate_result_free(r);
+        mio_r_fail("agglomerate cell_map");
+    }
+    SEXP cm = PROTECT(mio_r_shift_map((const int64_t *)d, len));
+    mio_mesh *out = mio_agglomerate_result_take_mesh(r);
+    mio_agglomerate_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("agglomerate take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "cell_map"};
+    SEXP values[] = {mo, cm};
+    SEXP res = PROTECT(mio_r_named_list(2, names, values));
+    UNPROTECT(3);
+    return res;
+}
+
 SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
     mio_convert_cells_result *r =
         mio_convert_cells(mio_r_mesh(mesh), mio_r_string(mode, "mode"),

@@ -24,6 +24,7 @@
 \alias{mio_split}
 \alias{mio_convert_cells}
 \alias{mio_subdivide}
+\alias{mio_agglomerate}
 \alias{mio_refine}
 \alias{mio_decimate}
 \alias{mio_partition}
@@ -131,6 +132,8 @@ mio_split(mesh, by = "type", tag_name = NULL)
 mio_convert_cells(mesh, convert_mode, record_parent_ids = FALSE)
 
 mio_subdivide(mesh, record_parent_ids = FALSE)
+
+mio_agglomerate(mesh, target_group_size = 8)
 
 mio_refine(mesh, levels = 1L, record_parent_ids = FALSE)
 
@@ -279,6 +282,9 @@ source value instead of \code{default_value}.}
 \item{tag_name}{For \code{by = "region"}, the integer cell-data array name.}
 
 \item{convert_mode}{\code{"linearize"}, \code{"simplexify"} or \code{"elevate"}.}
+
+\item{target_group_size}{Approximate member cells per \code{mio_agglomerate()}
+output group; must be at least 1 (\code{1} groups every cell by itself).}
 
 \item{levels}{How many times to apply the refinement templates.}
 

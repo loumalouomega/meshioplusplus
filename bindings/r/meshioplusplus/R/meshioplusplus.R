@@ -642,6 +642,8 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param by `"type"`, `"component"`, or `"region"`/`"tag"`.
 #' @param tag_name For `by = "region"`, the integer cell-data array name.
 #' @param convert_mode `"linearize"`, `"simplexify"` or `"elevate"`.
+#' @param target_group_size Approximate member cells per `mio_agglomerate()`
+#'   output group; must be at least 1 (`1` groups every cell by itself).
 #' @param levels How many times to apply the refinement templates.
 #' @param ratio Fraction of faces to KEEP, in (0, 1]; negative = unset.
 #' @param target_faces Absolute face count to stop at; negative = unset.
@@ -845,6 +847,12 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 #' @export
 mio_subdivide <- function(mesh, record_parent_ids = FALSE) {
   .Call(R_mio_subdivide, mesh, isTRUE(record_parent_ids))
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_agglomerate <- function(mesh, target_group_size = 8) {
+  .Call(R_mio_agglomerate, mesh, as.numeric(target_group_size))
 }
 
 #' @rdname mio_extract_surface

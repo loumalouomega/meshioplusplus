@@ -666,6 +666,35 @@ function subdivide(m::Mesh; record_parent_ids::Bool=false)
     end
 end
 
+"""
+    agglomerate(mesh; target_group_size=8) -> (; mesh, cell_map)
+
+Polyhedrally coarsen: merge groups of cells into single larger polyhedral
+cells via greedy seed-and-grow over the mesh's shared-face dual, absorbing
+face-adjacent neighbours into a group until it reaches `target_group_size`
+(a short group at a mesh boundary or pocket is expected, not an error).
+Non-volume blocks pass through unchanged; points are never pruned or
+renumbered ([`clean`](@ref) with `remove_orphans=true` is the follow-up for
+a minimal point set). `target_group_size=1` groups every cell by itself.
+
+Unlike [`subdivide`](@ref)'s per-block `cell_maps`, `cell_map` is a single
+**flat** 1-based array (input global cell → output global cell) -- an
+output cell's index is a function of which group it joined, not which
+input block it came from. See `doc/agglomerate.md`.
+"""
+function agglomerate(m::Mesh; target_group_size::Integer=8)
+    result = _check_ptr(ccall(_sym(:mio_agglomerate), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Int64), _handle(m), Int64(target_group_size)))
+    try
+        cm = _result_map(result, :mio_agglomerate_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_agglomerate_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, cell_map=cm)
+    finally
+        ccall(_sym(:mio_agglomerate_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
                               "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
                               "balanced" => Int32(2), "2:1" => Int32(2))

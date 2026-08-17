@@ -71,6 +71,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -723,6 +724,27 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
+
+    // Polyhedral coarsening: merge groups of cells into single larger
+    // polyhedral cells. Returns a dict {mesh, cell_map} -- a single FLAT
+    // array (unlike subdivide's per-block cell_maps), since an output cell's
+    // index is a function of which group it joined, not which input block it
+    // came from. See operations/agglomerate.hpp.
+    m.def(
+        "agglomerate",
+        [](py::object pymesh, std::size_t target_group_size) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::AgglomerateOptions options;
+            options.mTargetGroupSize = target_group_size;
+            meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["cell_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mCellMap));
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_group_size") = 8);
 
     // Polyhedral refinement: one polyhedral child per face, connected to a new
     // interior point. Returns a dict {mesh, cell_maps} -- no point_map, since

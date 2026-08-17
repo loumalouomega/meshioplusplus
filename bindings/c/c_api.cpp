@@ -47,6 +47,7 @@
 #include <cstring>
 #include <exception>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -86,6 +87,7 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -160,6 +162,11 @@ struct mio_convert_cells_result {
 struct mio_subdivide_result {
     mio_mesh mMesh;  // owns the subdivided mesh; borrowed via _result_mesh
     std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_agglomerate_result {
+    mio_mesh mMesh;                    // owns the coarsened mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mCellMap;  // flat, unlike mio_subdivide_result's per-block vector
 };
 
 struct mio_refine_result {
@@ -1372,6 +1379,60 @@ mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int
 }
 
 void mio_subdivide_result_free(mio_subdivide_result* result) {
+    delete result;
+}
+
+mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_group_size) {
+    return guarded_ptr(
+        static_cast<mio_agglomerate_result*>(nullptr), [&]() -> mio_agglomerate_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            if (target_group_size < 0)
+                throw std::invalid_argument(
+                    "meshio++: agglomerate: target_group_size must be >= 1");
+            meshioplusplus::AgglomerateOptions options;
+            options.mTargetGroupSize = static_cast<std::size_t>(target_group_size);
+            meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(mesh->mMesh, options);
+            auto* out = new mio_agglomerate_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mCellMap = std::move(r.mCellMap);
+            return out;
+        });
+}
+
+const mio_mesh* mio_agglomerate_result_mesh(const mio_agglomerate_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result, const void** data,
+                                           mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mCellMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_agglomerate_result_free(mio_agglomerate_result* result) {
     delete result;
 }
 

@@ -98,7 +98,7 @@ export estimate_error
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export interpolate, meshes_equal, stats, compute_bandwidth
-export reorder, convert_cells, subdivide, refine, decimate, partition, partition_labels
+export reorder, convert_cells, subdivide, agglomerate, refine, decimate, partition, partition_labels
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export data_calc, data_condition, data_info
 export run_pipeline_file, run_pipeline_json, pipeline_has_json
