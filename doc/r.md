@@ -104,7 +104,7 @@ A mesh handle is an **external pointer** (`R_MakeExternalPtr`) with a registered
 
 `mio_refine()` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id). Note that R's data setters always write `Float64`, so a predicate over an array built fresh in R still works — the comparison is numeric — but `mio_split(by = "region")`'s integer-tag restriction does not apply here.
 
-Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`, `mio_subdivide()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
+Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`, `mio_subdivide()`, `mio_agglomerate()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
 
 ## Error handling
 
@@ -212,6 +212,28 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 ```
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
+
+## v10.4.0 additions
+
+- `mio_agglomerate(mesh, target_group_size = 8)` — polyhedral coarsening, the
+  many-to-one counterpart to `mio_subdivide()`: greedy seed-and-grow over the
+  mesh's shared-face dual, absorbing face-adjacent neighbours by accumulated
+  shared-face area until each group reaches `target_group_size` members, then
+  emitting one polyhedron per group whose faces are exactly its external
+  boundary — conserving volume exactly, since internal faces are simply
+  dropped rather than re-triangulated. Returns a list of `mesh` and
+  `cell_map`. See [`doc/agglomerate.md`](agglomerate.md).
+
+  Unlike every other opaque-result operation here, `cell_map` is a **single
+  flat**, not per-block, 1-based vector — an agglomerated cell's output index
+  is a function of which group it joined, not which input block it came
+  from — so there is no `subdivide_cell_maps()`-style per-block helper here,
+  only the same single-array shift `mio_split()`'s node map already uses.
+  Like `mio_subdivide()`, there is **no `point_map`**: points are never
+  pruned or renumbered, so `mio_clean(mesh, remove_orphans = TRUE)` is the
+  documented follow-up for a minimal point set. A non-manifold input (a face
+  shared by three or more cells) raises an R error naming the face rather
+  than guessing.
 
 ## v10.3.0 additions
 

@@ -213,7 +213,21 @@ to corners for a quadratic variant) and existing polyhedron blocks are
 handled uniformly, and the result is automatically conforming, unlike
 `refine`. There is no point map, unlike `convertCells` (subdivide never
 prunes or renumbers a point); a cell whose faces are not a closed orientable
-surface throws a catchable `Error`. See [subdivide](/subdivide). Uniform
+surface throws a catchable `Error`. See [subdivide](/subdivide).
+**Polyhedral coarsening**, the many-to-one counterpart, is exposed as
+`agglomerate(mesh, targetGroupSize)`: greedy seed-and-grow over the mesh's
+shared-face dual, absorbing face-adjacent neighbours by accumulated
+shared-face area until each group reaches `targetGroupSize` (default 8)
+members, then emitting one polyhedron per group whose faces are exactly its
+external boundary — conserving volume exactly, since internal faces are
+simply dropped rather than re-triangulated. Like `subdivide` there is no
+point map (points are never pruned or renumbered — `clean(mesh, ...,
+removeOrphans: true)` is the follow-up for a minimal point set), and a
+non-manifold input (a face shared by three or more cells) throws a catchable
+`Error` naming the face. It is also a `convertSurfaceOps`/`runPipeline`
+pipeline step (`{op: 'agglomerate', targetGroupSize}`), reached through the
+same generic `pipe_op_table()` dispatch every other step goes through with no
+extra WASM code. See [agglomerate](/agglomerate). Uniform
 refinement is exposed as `refine(mesh, levels, recordParentIds, options)`, subdividing
 every cell into same-type children (`triangle`/`quad` into 4,
 `tetra`/`wedge`/`hexahedron` into 8) with shared mid-entity nodes, so the result
@@ -280,7 +294,7 @@ output, marked}`). See [error estimation](./error.md),
 [field derivatives](./gradient.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
-[cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [refine](./refine.md),
+[cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [polyhedral coarsening](./agglomerate.md), [refine](./refine.md),
 [partitioning](./partition.md), [smoothing](./smooth.md),
 [slicing](./slice.md), and [isosurfaces](./isosurface.md).
 
@@ -289,7 +303,7 @@ Before v7.4.0 the geometry operations above were bound in the WASM module but
 **not forwarded by the package wrapper**, so they were unreachable through
 `loadMeshioPlusPlus()` (only file I/O and the `data_*` operations were). They are
 all forwarded now. The index maps the C++ core returns for
-`cropBbox`/`cropPlane`/`split`/`convertCells`/`subdivide`/`refine`/`partition` are still not
+`cropBbox`/`cropPlane`/`split`/`convertCells`/`subdivide`/`agglomerate`/`refine`/`partition` are still not
 carried across the JS boundary — use the `recordIds`/`recordParentIds` flags,
 which attach the same provenance as ordinary data arrays (or `partitionLabels`
 for the raw assignment). `smooth` needs none of that — it never adds, removes or

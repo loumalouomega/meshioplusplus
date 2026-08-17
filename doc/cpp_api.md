@@ -243,7 +243,7 @@ The conservative pin is still fully supported, and is the right choice if you
 would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 10.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a

@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-48 tools; the two marked *gated* need a further extra and return a named
+49 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -116,7 +116,10 @@ report.
 surface, filled — `structure` `voxel`/`octree`), `transform`,
 `convert_cells`, `subdivide` (polyhedral refinement: one polyhedral child per
 3D cell face, connected to a new interior point — no per-type template table,
-unlike `refine`; see [subdivide](/subdivide)),
+unlike `refine`; see [subdivide](/subdivide)), `agglomerate` (polyhedral
+coarsening: merge groups of cells into single larger polyhedral cells via
+greedy seed-and-grow over the shared-face dual; see
+[agglomerate](/agglomerate)),
 `refine` (uniform, or a subset via `cells`/`region`/`where`
 with a conforming `closure`; `record_hierarchy` attaches the persistent
 `refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller

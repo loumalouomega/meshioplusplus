@@ -567,6 +567,35 @@ meshioplusplus subdivide bracket.msh bracket_subdivided.vtu --record-parent-ids
 
 ---
 
+## meshioplusplus agglomerate
+
+Polyhedrally coarsen a mesh: merge groups of cells into single larger
+polyhedral cells via greedy seed-and-grow over the shared-face dual (see
+[agglomerate](/agglomerate)). Distinct from `decimate`, whose fixed-template
+QEM edge collapse has no analogue for merging arbitrary polyhedral cells.
+
+```
+meshioplusplus agglomerate [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--target-group-size N` | Approximate member cells per output group (default `8`) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Non-volume blocks pass through unchanged; points are never pruned or
+renumbered (`clean --remove-orphans` is the follow-up for a minimal point
+set). Conserves volume exactly. `--target-group-size 1` groups every cell by
+itself.
+
+**Example:**
+
+```sh
+meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
+```
+
+---
+
 ## meshioplusplus refine
 
 Refine a mesh, subdividing cells into same-type children — every cell, or a
