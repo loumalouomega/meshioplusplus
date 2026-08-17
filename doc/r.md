@@ -213,6 +213,29 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v10.5.0 additions
+
+- `mio_undo_green(coarse, fine)` — green-element undo: restores `fine`'s
+  transitional (closure-only) cells back to their original parent, read
+  verbatim from `coarse` — a **lookup, not a reconstruction**, since
+  `mio_refine()` never renumbers or prunes points, so a green parent's exact
+  connectivity and cell_data are already sitting, byte-for-byte, in `coarse`
+  at the row `fine`'s `refine:parent_id` names. Returns a list of `mesh`,
+  `num_groups_undone` and `num_cells_removed`. See
+  [`doc/undo_green.md`](undo_green.md).
+
+  A **two-mesh** operation, like `mio_interpolate()`: `coarse` is the mesh a
+  prior `mio_refine(coarse, ..., record_hierarchy = TRUE, record_levels =
+  TRUE)` call was run on, `fine` is that call's output — both flags are
+  required, `record_hierarchy` alone does not imply `record_levels`. The six
+  reserved `refine:*` arrays are always dropped from the output; only a
+  single-pass (`levels = 1`) hierarchy is supported, a deeper multi-level
+  hierarchy being refused by name. Unlike `mio_subdivide()`/
+  `mio_agglomerate()`, this operation has no winding repair or discrete sign
+  branch anywhere in it — pure array bookkeeping, which on the Python side
+  means a full numpy reference implementation rather than C++-core-only
+  (this binding always calls the installed C library either way).
+
 ## v10.4.0 additions
 
 - `mio_agglomerate(mesh, target_group_size = 8)` — polyhedral coarsening, the

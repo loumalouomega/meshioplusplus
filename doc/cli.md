@@ -650,6 +650,39 @@ meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy
 
 ---
 
+## meshioplusplus undo-green
+
+Restore a transitional (green) cell back to its coarse parent, read verbatim
+from the COARSE mesh — the standard "restore and re-split from scratch" rule
+for a selective refinement pass over a region a prior pass already closed up
+(see [green-element undo](/undo_green)). A two-mesh verb, like `interpolate`.
+
+```
+meshioplusplus undo-green [options] COARSE FINE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--quiet` (`-q`) | Suppress the undo summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input (both files) / output format |
+
+`FINE` must be the output of a prior `refine COARSE FINE --record-hierarchy
+--record-levels` call (both flags — `--record-hierarchy` alone does not
+imply `--record-levels`); it fails by name otherwise, or when a
+`refine:parent_id` cannot be resolved against `COARSE`'s id space. The six
+reserved `refine:*` arrays are dropped from the output. Only a single-pass
+(`--levels 1`) hierarchy is supported.
+
+**Examples:**
+
+```sh
+meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy --record-levels
+meshioplusplus undo-green coarse.vtu fine.vtu restored.vtu
+meshioplusplus refine restored.vtu regraded.vtu --cells 44,58 --record-hierarchy --record-levels
+```
+
+---
+
 ## meshioplusplus decimate
 
 Reduce a surface mesh's face count by quadric-error-metric edge collapse — the

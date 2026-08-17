@@ -228,6 +228,32 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v10.5.0 additions
+
+- `undo_green(coarse, fine)` — green-element undo: restores `fine`'s
+  transitional (closure-only) cells back to their original parent, read
+  verbatim from `coarse` — a **lookup, not a reconstruction**, since
+  [`refine`](@ref) never renumbers or prunes points, so a green parent's
+  exact connectivity and cell_data are already sitting, byte-for-byte, in
+  `coarse` at the row `fine`'s `refine:parent_id` names. Returns
+  `(; mesh, num_groups_undone, num_cells_removed)`. See
+  [`doc/undo_green.md`](undo_green.md).
+
+  A **two-mesh** operation, like [`interpolate`](@ref): `coarse` is the mesh
+  a prior `refine(coarse, ...; record_hierarchy=true, record_levels=true)`
+  call was run on, `fine` is that call's output — both flags are required,
+  `record_hierarchy` alone does not imply `record_levels`. The six reserved
+  `refine:*` arrays are always dropped from the output; only a single-pass
+  (`levels=1`) hierarchy is supported, a deeper multi-level hierarchy being
+  refused by name. Unlike `subdivide`/`agglomerate`, this operation has **no
+  winding repair or discrete sign branch anywhere in it** — it is pure array
+  bookkeeping, which on the Python side means it has a full numpy reference
+  implementation rather than being C++-core-only (this binding always calls
+  the installed C library either way).
+
+  `undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
+
 ## v10.4.0 additions
 
 - `agglomerate(mesh; target_group_size=8)` — polyhedral coarsening, the

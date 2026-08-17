@@ -243,7 +243,19 @@ attaches the persistent `refine:cell_id`/`refine:parent_id` cell_data — a
 link between the meshes a multigrid caller keeps across passes, not a tree
 inside one — and forces `refine:entity` (the prolongation stencil) even when
 the closure leaves no hanging node; see
-[refine](/refine#refinecell_id-and-refineparent_id). Partitioning is exposed as `partition(mesh, nparts, method,
+[refine](/refine#refinecell_id-and-refineparent_id). **Green-element undo**,
+the two-mesh op restoring `refine`'s transitional cells to their coarse
+parent, is exposed as `undoGreen(coarse, fine)` → `{ mesh, numGroupsUndone,
+numCellsRemoved }` — a lookup and substitution read verbatim from `coarse`
+(no template inversion, no winding repair), needing `fine` to carry
+`refine:cell_id`/`refine:parent_id`/`refine:level` (i.e. it must come from a
+`refine(coarse, ..., {recordHierarchy: true, recordLevels: true})` call).
+The six reserved `refine:*` arrays are dropped from the output. Being a
+two-mesh op it is deliberately **not** reachable as a `convertSurfaceOps`
+pipeline step — `{op: 'undoGreen'}` throws the same "unknown operation" catchable
+`Error` `Merge`/`Interpolate`/`Split`/`Diff` already throw there, since none
+of the two-mesh ops ever reach `pipeline_op_table()`. See
+[green-element undo](/undo_green). Partitioning is exposed as `partition(mesh, nparts, method,
 imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of
 `{ partId, mesh }` (exactly `nparts` entries, blocks kept 1:1 with the input,
 unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,
@@ -295,6 +307,7 @@ output, marked}`). See [error estimation](./error.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
 [cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [polyhedral coarsening](./agglomerate.md), [refine](./refine.md),
+[green-element undo](./undo_green.md),
 [partitioning](./partition.md), [smoothing](./smooth.md),
 [slicing](./slice.md), and [isosurfaces](./isosurface.md).
 
@@ -307,7 +320,9 @@ all forwarded now. The index maps the C++ core returns for
 carried across the JS boundary — use the `recordIds`/`recordParentIds` flags,
 which attach the same provenance as ordinary data arrays (or `partitionLabels`
 for the raw assignment). `smooth` needs none of that — it never adds, removes or
-renumbers a node or a cell.
+renumbers a node or a cell. `undoGreen`'s per-block cell maps are likewise not
+exposed here — a documented flat-binding gap shared with its C API/Fortran
+counterparts.
 :::
 
 The [data operations](./data_operations.md) — which act on `point_data` /

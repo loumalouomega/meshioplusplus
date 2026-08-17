@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-49 tools; the two marked *gated* need a further extra and return a named
+50 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -124,7 +124,11 @@ greedy seed-and-grow over the shared-face dual; see
 with a conforming `closure`; `record_hierarchy` attaches the persistent
 `refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller
 resolves across the sequence of meshes it keeps — see
-[refine](/refine#refinecell_id-and-refineparent_id)), `decimate`, `smooth`,
+[refine](/refine#refinecell_id-and-refineparent_id)), `undo_green` (restores
+a `refine` transitional/green cell to its coarse parent, read verbatim from
+`coarse_path` — a two-mesh tool like `interpolate`; reports
+`num_groups_undone`/`num_cells_removed` — see
+[green-element undo](/undo_green)), `decimate`, `smooth`,
 `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
 `interpolate` (source → target field transfer), `gradient` (the gradient,

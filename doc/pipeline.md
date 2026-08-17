@@ -40,10 +40,11 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
   top-level key, or a mis-typed value is an error naming the offender — never
   silently ignored (the same rule `registry_write_ex` applies to `Output`
   options a format cannot honour).
-- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split` and `Diff`
-  need extra inputs or produce extra outputs, and a step naming one errors
-  pointing at the matching CLI verb. `Partition` as a step attaches the
-  `partition:part` labels (colour-by-part) rather than splitting into pieces.
+- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split`, `Diff` and
+  `UndoGreen` need extra inputs or produce extra outputs, and a step naming one errors
+  pointing at the matching CLI verb (`undo-green` for `UndoGreen`, which needs a second
+  coarse mesh exactly as `Interpolate` needs a second source mesh). `Partition` as a step
+  attaches the `partition:part` labels (colour-by-part) rather than splitting into pieces.
 - Steps are validated **before** the input is read — a typo in step 7 never
   costs reading a 10 GB mesh first.
 - The run returns a **report**: `{"steps": [{"op", ...counters}],
@@ -189,7 +190,7 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 
 ## Follow-ups (recorded, not implemented)
 
-- **Multi-mesh steps**: `Merge`/`Interpolate` would need per-step
+- **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step
   `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with
   `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these.
   (v9.12.0's [sequences](sequences.md) added the *input*-list and

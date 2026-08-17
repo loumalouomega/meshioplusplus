@@ -79,6 +79,7 @@ export default defineConfig({
           { text: "Polyhedral refinement (subdivide)", link: "/subdivide" },
           { text: "Polyhedral coarsening (agglomerate)", link: "/agglomerate" },
           { text: "Uniform refinement", link: "/refine" },
+          { text: "Green-element undo", link: "/undo_green" },
           { text: "Decimation (QEM edge collapse)", link: "/decimate" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
