@@ -8,6 +8,70 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.4.0 (2026-08-17)
+
+**Roadmap §1 closed for polyhedra** — the polyhedral-*coarsening* half of the
+"polyhedral refinement and coarsening" gap is closed, completing that gap in
+full alongside v10.3.0's `subdivide`; volume decimation and green-element
+undo remain open, and are the two entries left in §1.
+
+- **`agglomerate`** (`operations/agglomerate.hpp`, [`doc/agglomerate.md`](doc/agglomerate.md))
+  — polyhedral coarsening, the many-to-one counterpart to `subdivide`:
+  merges groups of cells into single larger polyhedral cells via greedy
+  seed-and-grow over the mesh's shared-face dual. Built on
+  `detail::build_global_faces`'s owner/neighbour pairing (genuine
+  face-adjacency in a compact volume-cell index space, deliberately **not**
+  `detail::cell_adjacency.hpp`'s node-adjacency, which is both the wrong
+  relation — node-sharing alone could fuse cells touching only at a
+  pinch-point vertex — and indexed in a different space entirely).
+  Seeds are chosen in ascending compact-cell order; each group repeatedly
+  absorbs the unclaimed face-neighbour with the largest *accumulated*
+  shared-face area (summed across every face the group's current members
+  already share with that candidate) until `target_group_size` (default 8)
+  is reached or the frontier empties — short groups at mesh boundaries and
+  pockets are expected, not errors. The emit step walks each member's own
+  face list and drops a face only when its other side is in the *same*
+  group (an internal face, hit from both sides and dropped from both), so
+  every merged cell's boundary is exactly the union of its members'
+  external faces, wound and signed by transcribing the CGNS `NFACE_n`
+  writer's own sign handling — **conserving volume exactly**, an identity of
+  surviving faces rather than a divergence-theorem coincidence. **One
+  polyhedron output block total, with genuinely mixed cell shapes inside**
+  — the same no-node-count-grouping simplification `subdivide` already
+  established, since `AddPolyhedronBlock` stores ragged CSR with no
+  same-shape constraint. Non-volume blocks (2D, the 3D Lagrange family) pass
+  through unchanged, and the merged block is emitted at the position the
+  first volume block originally occupied, so block order is otherwise
+  preserved. **No point compaction** — points are never pruned or
+  renumbered, following `subdivide`'s own precedent rather than a
+  `surface.cpp`-style used/remap pass; `clean(..., remove_orphans=True)` is
+  the documented follow-up for a minimal point set. Regions carry through
+  **`CellMapKind::Global`**, a single flat input-global-cell →
+  output-global-cell map built once and passed to one batch
+  `detail::remap_regions()` call — simpler than `merge`'s own usage of the
+  same map kind, which drives a per-input-mesh loop purely for
+  merge's region-name collision namespacing across N inputs, a concern
+  agglomerate's single input mesh never has. A region collapsed entirely
+  into one merged cell survives as a **named but empty** group (`Region::
+  Canonicalize`'s dedup + the "the name is information" convention
+  `region_remap.cpp` already documents elsewhere), not as a removed one. A
+  non-manifold input (a face shared by three or more cells) is refused by
+  name, mirroring `subdivide`'s throw-on-`Unorientable` precedent — the
+  owner/neighbour face filter is only well-defined on a 2-manifold face.
+  **C++-core only, with no numpy fallback at all** — the emit step depends
+  transitively on `orient_rings`-repaired faces, the same discrete-winding-
+  branch rationale `subdivide` and `_smooth.py`'s inversion guard already
+  document. Reachable as an `Agglomerate` settings-pipeline/
+  `convertSurfaceOps` step, and across every binding surface: C++ core,
+  pybind, the C API (`mio_agglomerate` → `mio_agglomerate_result`,
+  deliberately with **no `block` argument and no `_num_cell_maps`
+  accessor** on its cell-map accessor, since an agglomerated cell's output
+  index is a function of which group it joined rather than which input
+  block it came from — the one opaque-result type in this codebase whose
+  cell map is a single flat array rather than a per-block collection),
+  Fortran, Julia, R, WASM, both CLIs (`agglomerate`), and the MCP
+  `agglomerate` tool.
+
 ## v10.3.0 (2026-08-08)
 
 **Roadmap §1 narrowed further** — the polyhedral-*refinement* half of the

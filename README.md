@@ -331,6 +331,16 @@ Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-
 out = meshioplusplus.subdivide(mesh, record_parent_ids=True)
 ```
 
+#### Polyhedral coarsening (agglomerate)
+
+**`meshioplusplus.agglomerate`** merges groups of cells into single larger polyhedral cells — the many-to-one counterpart to `subdivide`. `decimate` raises by name on a polyhedron, pointing at `convert_cells(mode="simplexify")` — its fixed-template QEM edge collapse has no analogue for merging arbitrary polyhedral cells. `agglomerate` is a genuinely different algorithm: greedy seed-and-grow over the mesh's shared-face dual, absorbing face-adjacent neighbours by accumulated shared-face area until a target group size; each group emits one polyhedron whose faces are exactly its external boundary, conserving volume exactly. Non-volume blocks pass through unchanged; points are never pruned or renumbered (`clean(mesh, remove_orphans=True)` is the follow-up for a minimal point set). See `doc/agglomerate.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+coarse = meshioplusplus.agglomerate(mesh, target_group_size=8)
+```
+
 #### Refinement
 
 **`meshioplusplus.refine`** subdivides cells into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. Given a **selection** — a cell list, a region name, or a `cell_data` threshold — it refines only those cells and resolves the resulting hanging nodes, so the output is still conforming. See `doc/refine.md`.
@@ -467,7 +477,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -770,7 +780,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
