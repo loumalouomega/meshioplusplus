@@ -461,6 +461,8 @@ mapped = meshioplusplus.interpolate(coarse, fine, method="barycentric")
 meshioplusplus.write("mapped.vtu", mapped)
 ```
 
+**`meshioplusplus.conservative_interpolate`** is a separate, mass-preserving sibling: over the region the two meshes share, `sum(target value * target measure)` equals `sum(source value * source measure)`, a property `interpolate`'s pointwise sampling does not have. Both meshes are simplexified first (accepting ragged/polyhedron blocks for free), overlapping simplex pairs are measured with an exact geometric clip (Sutherland-Hodgman in 2D, a bounded tetrahedron-tetrahedron clip in 3D), and a target cell's value is the overlap-measure-weighted mean of every source cell it intersects. Unlike `interpolate`, an unset `arrays` transfers every source `point_data` **and** `cell_data` array. `point_data` is transferred by composition (`point_data_to_cell_data` → the same clip algorithm → `cell_data_to_point_data`), a layered approximation rather than exact nodal conservation. C++-core only, with no pure-Python fallback (the 3D clip's discrete branches could disagree near a degenerate overlap). See `doc/conservative_interpolate.md`.
+
 #### Slicing / cross-sections
 
 **`meshioplusplus.slice`** computes the planar cross-section of a mesh — the actual intersection of the mesh with a plane, one topological dimension below the cut cells: a 3D volume mesh yields a `triangle`/`quad` surface, a 2D surface mesh a `line` mesh. Unlike `crop` (plane mode), which keeps whole cells on one side, `slice` computes the intersection and lowers the dimension. It uses robust marching tetrahedra (the input is simplexified first, so each cell's cross-section is a well-defined convex primitive), deduping crossing points on shared edges into single nodes so the section is watertight, and winding every face consistently toward the `+normal` side. Each section cell inherits its parent's `cell_data`; `record_parent_ids=True` attaches `slice:parent_cell`, and `point_data` is interpolated at the cut. Output is byte-identical across backends, thread counts and the C++/numpy boundary. See `doc/slice.md`.
@@ -504,7 +506,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -807,7 +809,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.7.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

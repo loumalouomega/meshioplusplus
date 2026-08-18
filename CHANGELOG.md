@@ -8,6 +8,45 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.7.0 (2026-08-18)
+
+**Roadmap §1 advanced** — conservative interpolation was the section's
+largest item; field integration and second-derivative/Hessian support
+remain open.
+
+- **`conservative_interpolate`** (`operations/conservative_interpolate.hpp`,
+  [`doc/conservative_interpolate.md`](doc/conservative_interpolate.md)) —
+  mass-preserving cross-mesh field transfer: over the region two meshes
+  share, `sum(target value * target measure)` equals `sum(source value *
+  source measure)`, a property `interpolate`'s `Barycentric` mode does not
+  have. A separate sibling operation, not a third `InterpolateMethod`
+  (`InterpolateOptions`/`mio_interpolate` are untouched), mirroring the
+  `decimate`/`decimate_volume` split. Both meshes are simplexified first —
+  the same call `interpolate`'s own barycentric mode already makes — which
+  is what lets ragged and polyhedron blocks through for free, needing no
+  general polygon/polyhedron clipper. Overlapping simplex pairs are found via
+  a bucket-grid spatial hash (`detail/spatial_hash.hpp`, gaining a new
+  `ForEachInBox` query) and measured exactly: a Sutherland-Hodgman convex
+  polygon clip in 2D, and — since both operands are always tetrahedra — a
+  bounded convex-polytope clip in 3D (source tet faces clipped against the
+  target tet's four half-spaces, each cut capped by a fan-triangulated,
+  angle-sorted polygon). `cell_data` is remapped directly; `point_data` by
+  composition (`point_data_to_cell_data` → the same clip engine →
+  `cell_data_to_point_data`), a documented layered approximation rather than
+  exact nodal/FEM conservation. Unlike `interpolate`, an empty `arrays`
+  covers every source `point_data` **and** `cell_data` array — one algorithm
+  regardless of location — and there is deliberately no `extrapolate` flag,
+  since a silent uncovered-cell fallback would break the conservation
+  guarantee for exactly the cells most likely to need it. C++-core only, no
+  numpy fallback, the same reasoning `subdivide`/`agglomerate`/
+  `decimate_volume` already document (the 3D clip's discrete branches could
+  disagree with a second implementation near a degenerate overlap). Shipped
+  across every binding surface: pybind, the C API (`mio_conservative_interpolate`),
+  Fortran, Julia, R, WASM (`conservativeInterpolate`), both CLIs
+  (`conservative-interpolate`), and the MCP server; excluded from the
+  settings pipeline like `Interpolate`/`UndoGreen` (a two-mesh op). No ABI
+  change (`MESHIOPLUSPLUS_ABI_VERSION` stays at 7).
+
 ## v10.6.0 (2026-08-18)
 
 **Roadmap §1 closed in full** — volume decimation was the section's last
