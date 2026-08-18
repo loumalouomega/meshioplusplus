@@ -304,8 +304,12 @@ TEST(Subdivide, CellDataReplicatesToEveryChild) {
     ASSERT_TRUE(r.mMesh.HasCellData("mat"));
     const NDArray& out = r.mMesh.CellData("mat", 0);
     ASSERT_EQ(out.Shape()[0], 6u);
+    // Read via the dtype-agnostic accessor, not a hardcoded `.As<int32_t>()`:
+    // the NATIVE/KRATOS backends canonicalize integer cell_data to Int64 on
+    // ingest (documented uniform-API behaviour), so the array's actual dtype
+    // is backend-dependent even though it was constructed as Int32 here.
     for (std::size_t i = 0; i < 6u; ++i)
-        EXPECT_EQ(out.As<std::int32_t>()[i], 7);
+        EXPECT_EQ(meshioplusplus::detail::read_int(out, i), 7);
 }
 
 TEST(Subdivide, RecordParentIdsAttachesTheContiguousIndexArray) {

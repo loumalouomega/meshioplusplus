@@ -120,33 +120,40 @@ void assert_no_repeated_corners(const Mesh& rMesh) {
 // tets legitimately change volume as their corner is repositioned -- only
 // TOPOLOGY (manifoldness, no repeated corner) and the inversion guard's own
 // promise (no positively-oriented tet flips sign) are true invariants here.
-TEST(DecimateVolume, TopologyOracleSurvivesEveryCandidateCollapse) {
-    for (Mesh mesh : {cube6_mesh(), cube6x2_mesh()}) {
-        std::size_t guard = 0;
-        while (alive_tets(mesh) > 1 && guard++ < 64) {
-            DecimateVolumeOptions o;
-            o.mTargetCells = static_cast<std::int64_t>(alive_tets(mesh)) - 1;
-            o.mPreserveBoundary = false;
-            // Every vertex of these fixtures is a cube corner (a sharp
-            // geometric feature); the feature-preservation default would pin
-            // all of them and make the loop vacuous.
-            o.mPreserveFeatures = false;
-            DecimateVolumeResult r = decimate_volume(mesh, o);
-            if (alive_tets(r.mMesh) == alive_tets(mesh))
-                break;  // queue exhausted: no valid collapse left, not a bug
+// Takes `mesh` BY VALUE (move-constructed from the caller's temporary, never
+// copied): the KRATOS backend's `Mesh` is not copy-constructible, so an
+// `initializer_list<Mesh>`-based loop over the two fixtures does not compile
+// there -- two explicit calls below, each taking ownership of one temporary.
+void run_topology_oracle(Mesh mesh) {
+    std::size_t guard = 0;
+    while (alive_tets(mesh) > 1 && guard++ < 64) {
+        DecimateVolumeOptions o;
+        o.mTargetCells = static_cast<std::int64_t>(alive_tets(mesh)) - 1;
+        o.mPreserveBoundary = false;
+        // Every vertex of these fixtures is a cube corner (a sharp
+        // geometric feature); the feature-preservation default would pin
+        // all of them and make the loop vacuous.
+        o.mPreserveFeatures = false;
+        DecimateVolumeResult r = decimate_volume(mesh, o);
+        if (alive_tets(r.mMesh) == alive_tets(mesh))
+            break;  // queue exhausted: no valid collapse left, not a bug
 
-            assert_no_repeated_corners(r.mMesh);
-            const meshioplusplus::detail::GlobalFaces gf =
-                meshioplusplus::detail::build_global_faces(r.mMesh);
-            EXPECT_EQ(gf.mNumNonManifold, 0);
-            // Every input tet was positively oriented; the inversion guard's
-            // entire promise is that no surviving tet flips sign.
-            EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
-            EXPECT_EQ(alive_tets(r.mMesh), alive_tets(mesh) - r.mTetsRemoved);
+        assert_no_repeated_corners(r.mMesh);
+        const meshioplusplus::detail::GlobalFaces gf =
+            meshioplusplus::detail::build_global_faces(r.mMesh);
+        EXPECT_EQ(gf.mNumNonManifold, 0);
+        // Every input tet was positively oriented; the inversion guard's
+        // entire promise is that no surviving tet flips sign.
+        EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
+        EXPECT_EQ(alive_tets(r.mMesh), alive_tets(mesh) - r.mTetsRemoved);
 
-            mesh = std::move(r.mMesh);
-        }
+        mesh = std::move(r.mMesh);
     }
+}
+
+TEST(DecimateVolume, TopologyOracleSurvivesEveryCandidateCollapse) {
+    run_topology_oracle(cube6_mesh());
+    run_topology_oracle(cube6x2_mesh());
 }
 
 // --- validation --------------------------------------------------------------
