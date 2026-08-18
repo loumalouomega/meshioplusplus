@@ -81,6 +81,7 @@ export default defineConfig({
           { text: "Uniform refinement", link: "/refine" },
           { text: "Green-element undo", link: "/undo_green" },
           { text: "Decimation (QEM edge collapse)", link: "/decimate" },
+          { text: "Volume decimation (QEM tet-edge collapse)", link: "/decimate_volume" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Slicing / cross-sections", link: "/slice" },

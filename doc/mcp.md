@@ -128,7 +128,11 @@ resolves across the sequence of meshes it keeps — see
 a `refine` transitional/green cell to its coarse parent, read verbatim from
 `coarse_path` — a two-mesh tool like `interpolate`; reports
 `num_groups_undone`/`num_cells_removed` — see
-[green-element undo](/undo_green)), `decimate`, `smooth`,
+[green-element undo](/undo_green)), `decimate`, `decimate_volume` (the
+volume-mesh sibling of `decimate`: quadric-error tet-edge collapse;
+`preserve_boundary` defaults `False`, the opposite of `decimate`'s own
+default, since boundary vertices participate by real quadric error here —
+see [volume decimation](/decimate_volume)), `smooth`,
 `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
 `interpolate` (source → target field transfer), `gradient` (the gradient,
@@ -140,7 +144,7 @@ divergence or curl of a `point_data` field — see
 [error estimation](/error); reports `global_error`, `num_skipped` and
 `num_marked`).
 Parameters mirror the Python API / CLI one-to-one; operations that produce
-reports (`clean`, `decimate`, `smooth`, `gradient`, `estimate_error`) include
+reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `estimate_error`) include
 them in the response.
 
 ### Data operations

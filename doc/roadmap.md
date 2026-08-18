@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.5.0** — 42 formats, twenty-seven mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
+Status at time of writing: **v10.6.0** — 42 formats, twenty-eight mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -8,23 +8,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. Remaining refinement and coarsening gaps
-
-`refine` is adaptive (v9.5.0) and `decimate` exists, but the pair still has holes.
-
-- **Volume decimation** — `decimate` is surface-only by documented design; tet-collapse validity is the hard part. **L**
-
-**Closed in v10.2.0**: the error-estimator-helpers gap — `estimate_error` (`operations/error.hpp`, [`doc/error.md`](doc/error.md)) is the Zienkiewicz-Zhu recovery-based indicator, composed from `gradient` and the existing point↔cell averaging round trip, plus absolute/fraction/Dörfler marking into a `error:marked` array `refine`'s own `--where` selector consumes directly with no change to `refine` — closing the adaptive loop (estimate → mark → refine) end to end across every binding surface.
-
-**Closed in v10.3.0**: the polyhedral-*refinement* half of the former "polyhedral coarsening" gap — `subdivide` (`operations/subdivide.hpp`, [`doc/subdivide.md`](doc/subdivide.md)) splits every eligible 3D cell (tabulated or an existing polyhedron block, handled uniformly through `detail::cell_rings`/`orient_rings` — no per-type template table at all) into one polyhedral child per face, connected to a new interior point. Automatically conforming (a shared face is never touched, so there is no closure/hanging-node bookkeeping to do), and shipped across every binding surface.
-
-**Closed in v10.4.0**: the polyhedral-*coarsening* (agglomeration) half of that same gap, now closed in full — `agglomerate` (`operations/agglomerate.hpp`, [`doc/agglomerate.md`](doc/agglomerate.md)) merges groups of cells into single larger polyhedral cells via greedy seed-and-grow over the mesh's shared-face dual (`detail::build_global_faces`'s owner/neighbour pairing), absorbing face-adjacent neighbours by accumulated shared-face area until a target group size. Each group emits one polyhedron whose faces are exactly its external boundary, conserving volume exactly (an identity of surviving faces, not a divergence-theorem coincidence). Regions carry through `CellMapKind::Global`, a single flat input-cell→output-cell map — simpler than `merge`'s own per-input-mesh usage of the same map kind, since agglomerate has exactly one input mesh. Shipped across every binding surface.
-
-**Closed in v10.5.0**: green-element undo — `undo_green` (`operations/undo_green.hpp`, [`doc/undo_green.md`](doc/undo_green.md)) restores `refine`'s transitional (green) cells back to their coarse parent before a new selective pass, closing the quality-degradation issue this section had documented since v10.1.0. The originally-planned mechanism — inverting `refine_templates.cpp`'s subdivision tables against a sibling run — turned out to be unnecessary: since `refine()`'s point map is always the identity, a green parent's exact connectivity and cell_data are already sitting, byte-for-byte, in the caller-supplied **coarse** mesh (the mesh the `refine()` call that produced `fine` was run on), resolved via `refine:parent_id` against `coarse`'s own `refine:cell_id` (or its implicit id when absent). `undo_green(coarse, fine)` is therefore a lookup-and-substitution, not a reconstruction — no template inversion, no winding repair, no discrete sign branch — which is also what gives it a full numpy twin, unlike `subdivide`/`agglomerate`. Cell regions carry through the first genuinely non-injective `CellMapKind::Direct` use in the C++ core (several fine cells collapsing onto one output row), deduplicated by `Region`'s existing sort+unique. Shipped across every binding surface, as a two-mesh operation mirroring `interpolate`'s own shape (module-level Fortran, excluded from the settings pipeline like `Merge`/`Interpolate`/`Split`/`Diff`). `decimate` (surface QEM) and volume decimation, above, remain the one still-open piece of this document's refinement/coarsening section.
-
----
-
-## 2. Field capability beyond derivatives
+## 1. Field capability beyond derivatives
 
 - **Conservative (mass-preserving) interpolation** — `interpolate`'s barycentric mode is pointwise; CFD remapping needs conservation. **L**
 - **Field integration** — total, mean, and per-region reductions over cells as a `data` verb; the natural companion to `gradient`. **S**
@@ -32,7 +16,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 3. Dataset dashboard and training integration
+## 2. Dataset dashboard and training integration
 
 **The gap.** The browser dataset manager (`src/viewer/`, `dataset.html`, v9.29.0) curates a single `DatasetManifest` at a time — add/list/split/tag entries, stage one entry into MEMFS and preview it (per-entry quality summaries landed in v9.30.0). It has no aggregate view: there is no way to see many datasets, or many entries within one, at a glance, and once a dataset is curated there is no path from "manifest is ready" to "a PhysicsNeMo run is training against it" without leaving the browser entirely for the CLI/Python recipe in `example/physicsnemo/`. This is a UI/workflow gap, not a numerical one — the underlying capability (`edge_index`, `feature_matrix`, `write_dataset`, dataset manifests, the `physicsnemo.mesh` bridge) is complete as of v9.30.0; nothing surfaces it as one connected experience.
 
@@ -49,11 +33,11 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 - **Run-completion notifications** — a browser notification, or a webhook the companion process posts to, when a launched run finishes or fails, so the dashboard need not stay the active tab. **S**
 - **Visual/UX design pass** — once the layout above is functional, loop it through Claude Design (Claude in a design-iteration capacity — layout, spacing, colour, motion) rather than shipping the first working arrangement as the final one; the rest of the viewer already has a deliberate icon set and colour system (`doc/icons/`, the `dataviz` skill's palette) and this should read as one piece with it, not a bolted-on admin panel. **S**
 
-*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§7) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
+*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§6) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
 
 ---
 
-## 4. Scale
+## 3. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -63,7 +47,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 5. Ecosystem reach
+## 4. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -71,7 +55,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 6. Quality of implementation
+## 5. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -79,7 +63,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. NURBS and higher-order geometry (long run)
+## 6. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -92,7 +76,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 8. Mesh generation
+## 7. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -103,7 +87,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 9. CLI chatbot / conversational assistant (MCP-driven)
+## 8. CLI chatbot / conversational assistant (MCP-driven)
 
 **The gap.** The MCP server (`src/python/meshioplusplus/mcp/`, `doc/mcp.md`) exposes the whole Python surface to an AI *agent* — but only to one already speaking MCP over stdio (Claude Desktop, an IDE, a custom host). There is no way to have a natural-language conversation about a mesh **from the terminal itself**: a user with an LLM API key on hand cannot ask `meshioplusplus` "why does this file fail to convert" or "clean this mesh and tell me what changed" and get a tool-calling assistant that drives the existing operations for them. Every other surface (Python API, CLI verbs, MCP tools) is imperative-only; this is the one conversational entry point missing.
 
@@ -119,9 +103,10 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Primitive constructors (§8, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+1. **Primitive constructors (§7, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
 2. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
-3. **Fuzzing (§6)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-4. **NURBS spike (§7)** — a documented investigation, scheduled independently of the rest.
-5. **Dataset dashboard (§3)** — the non-training pieces (multi-dataset overview, drill-down, health summaries, diffing) can proceed any time; training launch/monitoring waits on its own design pass (server-side companion process) before implementation.
-6. **CLI chatbot (§9)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.
+3. **Remaining refinement and coarsening gaps** — shipped in full and removed from this document: v10.2.0 (error-estimator helpers — `estimate_error`), v10.3.0 (polyhedral refinement — `subdivide`), v10.4.0 (polyhedral coarsening — `agglomerate`), v10.5.0 (green-element undo — `undo_green`), v10.6.0 (volume decimation — `decimate_volume`, the section's last open item). See `doc/error.md`, `doc/subdivide.md`, `doc/agglomerate.md`, `doc/undo_green.md` and `doc/decimate_volume.md`.
+4. **Fuzzing (§5)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+5. **NURBS spike (§6)** — a documented investigation, scheduled independently of the rest.
+6. **Dataset dashboard (§2)** — the non-training pieces (multi-dataset overview, drill-down, health summaries, diffing) can proceed any time; training launch/monitoring waits on its own design pass (server-side companion process) before implementation.
+7. **CLI chatbot (§8)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.

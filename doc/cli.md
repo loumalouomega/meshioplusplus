@@ -722,6 +722,48 @@ meshioplusplus decimate open_patch.vtu out.vtu --ratio 0.1 --no-preserve-feature
 
 ---
 
+## meshioplusplus decimate-volume
+
+Reduce a tetrahedral mesh's cell count by quadric-error-metric **tet**-edge
+collapse — the volume-mesh sibling of `decimate`, a separate verb rather than
+a mode on it (see [volume decimation](/decimate_volume)).
+
+```
+meshioplusplus decimate-volume [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--ratio R` | Fraction of the tets to KEEP, in (0, 1] |
+| `--target-cells N` | Absolute tet count to stop at (within one collapse) |
+| `--max-error E` | Collapse only while the cheapest boundary-touching quadric error is at most `E` |
+| `--placement P` | `optimal` (default), `midpoint`, or `endpoint` |
+| `--preserve-boundary` | Pin every boundary vertex outright, reproducing `decimate`'s own default instead of letting boundary vertices participate |
+| `--no-preserve-features` | Allow sharp boundary corners/creases to collapse |
+| `--feature-angle A` | Degrees between boundary-triangle normals above which a vertex is a feature (default `30`) |
+| `--quiet` (`-q`) | Do not print the collapse summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Exactly one of `--ratio`, `--target-cells` and `--max-error` must be given.
+Tet meshes only: a non-tetra 3D block is an error — run
+`convert-cells --mode simplexify` first. Note `--preserve-boundary` is
+opt-**in** here, the mirror image of `decimate`'s opt-out
+`--no-preserve-boundary` — boundary vertices participate in decimation by
+real quadric error by default. Validity guards reject any collapse that
+would change topology, invert a tet, or (for boundary-touching collapses)
+fold the outer surface.
+
+**Examples:**
+
+```sh
+meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.25
+meshioplusplus decimate-volume solid.vtu coarse.vtu --target-cells 5000
+meshioplusplus decimate-volume solid.vtu coarse.vtu --max-error 1e-6 --placement midpoint
+meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-boundary -q
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element
