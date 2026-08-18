@@ -70,6 +70,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -451,6 +452,8 @@ void print_usage(std::ostream& os) {
           "                            parent, read verbatim from COARSE FINE OUTFILE\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
           "                            exactly one of --ratio/--target-faces/--max-error\n"
+          "  decimate-volume         Reduce a tet mesh's cell count (QEM tet-edge collapse)\n"
+          "                            exactly one of --ratio/--target-cells/--max-error\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1759,6 +1762,54 @@ int cmd_decimate(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"ratio", {}, true},
+                                  {"target-cells", {}, true},
+                                  {"max-error", {}, true},
+                                  {"placement", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"preserve-boundary", {}, false},
+                                  {"no-preserve-features", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("decimate-volume requires exactly INFILE and OUTFILE");
+    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-cells") ? 1 : 0) +
+                        (has_opt(p, "max-error") ? 1 : 0);
+    if (num_set != 1)
+        throw std::runtime_error(
+            "decimate-volume: give exactly one of --ratio, --target-cells or --max-error");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DecimateVolumeOptions options;
+    options.mTargetRatio = std::stod(opt_value(p, "ratio", "-1"));
+    options.mTargetCells = std::stoll(opt_value(p, "target-cells", "-1"));
+    options.mMaxError = std::stod(opt_value(p, "max-error", "-1"));
+    options.mPlacement =
+        meshioplusplus::decimate_placement_from_name(opt_value(p, "placement", "optimal"));
+    options.mFeatureAngleDeg = std::stod(opt_value(p, "feature-angle", "30"));
+    // Unlike decimate, boundary vertices participate by default here.
+    options.mPreserveBoundary = has_flag(p, "preserve-boundary");
+    options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+
+    auto r = meshioplusplus::decimate_volume(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::size_t tets_out = 0;
+        for (const auto cb : r.mMesh.CellRange())
+            tets_out += cb.NumCells();
+        std::cout << "decimated to " << tets_out << " tets\n";
+        std::cout << "  tets removed:             " << r.mTetsRemoved << "\n";
+        std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
+        std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
+        std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_smooth(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -2897,6 +2948,8 @@ int main(int argc, char** argv) {
             return cmd_undo_green(rest);
         if (cmd == "decimate")
             return cmd_decimate(rest);
+        if (cmd == "decimate-volume")
+            return cmd_decimate_volume(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")

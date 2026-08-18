@@ -14,6 +14,7 @@ from . import (
     _data,
     _dataset,
     _decimate,
+    _decimate_volume,
     _decompress,
     _diff,
     _extract_surface,
@@ -232,6 +233,13 @@ def main(argv=None):
     )
     _decimate.add_args(parser)
     parser.set_defaults(func=_decimate.decimate_cmd)
+
+    parser = subparsers.add_parser(
+        "decimate-volume",
+        help="Reduce a tet mesh's cell count by quadric tet-edge collapse",
+    )
+    _decimate_volume.add_args(parser)
+    parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
 
     parser = subparsers.add_parser(
         "partition",

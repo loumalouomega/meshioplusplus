@@ -47,6 +47,7 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
@@ -233,6 +234,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"DecimateVolume",
+         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
@@ -521,6 +525,25 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = decimate(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "DecimateVolume") {
+        DecimateVolumeOptions opts;
+        opts.mTargetRatio = pipe_number(rStep, "Ratio", -1.0);
+        const double cells = pipe_number(rStep, "TargetCells", -1.0);
+        opts.mTargetCells =
+            cells < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(cells);
+        opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetCells < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        auto result = decimate_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"TetsRemoved", static_cast<double>(result.mTetsRemoved)},
                         {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
         return std::move(result.mMesh);
     }

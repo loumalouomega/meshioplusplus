@@ -6198,6 +6198,392 @@ MESHIOPLUSPLUS_API double cell_measure(const NDArray& rPoints, std::size_t Point
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+/**
+ * @file decimate.hpp
+ * @brief Surface decimation by quadric-error-metric edge collapse: reduce a
+ * surface mesh's face count while preserving its shape, boundaries and
+ * features.
+ *
+ * This is the resolution-*reducing* inverse of `refine`, completing the pair.
+ * The algorithm is the classic Garland–Heckbert construction (quadric error
+ * metrics, SIGGRAPH '97): every vertex accumulates a 4x4 symmetric quadric —
+ * the sum of squared-distance-to-plane forms of its incident triangles,
+ * area-weighted — and every candidate edge collapse is scored by the summed
+ * endpoint quadric evaluated at the collapsed vertex's position. The cheapest
+ * edge is collapsed greedily, its quadrics are summed onto the survivor, the
+ * survivor's incident edges are re-scored, and the loop repeats until the
+ * stopping criterion is met.
+ *
+ * **Surface only, triangles out.** The operating type is `triangle`; `quad`
+ * and rectangular `polygon` blocks are triangulated first via
+ * `convert_cells(Simplexify)`, so the output is all-triangle even when the
+ * input was not. A mesh containing 3D volume cells throws by name pointing at
+ * `extract_surface` — QEM decimation of a *volume* mesh (tetra-collapse
+ * validity, no boundary-shape objective) is a different and much harder
+ * problem, deliberately out of scope rather than silently skinned. Higher-order
+ * cells (`triangle6`, ...; linearize first), ragged polygon/polyhedron blocks,
+ * and `line`/`vertex` blocks mixed in with the surface likewise throw by name.
+ *
+ * **What is pinned** (mirroring `smooth`'s vocabulary and defaults). A pinned
+ * vertex never moves and is never removed; an edge between two pinned vertices
+ * never enters the queue, and a collapse toward a pinned vertex keeps that
+ * vertex's own position regardless of `mPlacement`. Pinned are:
+ *  - boundary vertices under `mPreserveBoundary` (the classic once-used-edge
+ *    test: an edge used by exactly one triangle is boundary) — this is what
+ *    keeps a planar patch's outline exactly intact;
+ *  - feature vertices under `mPreserveFeatures`: vertices where two incident
+ *    face **normals** differ by more than `mFeatureAngleDeg` (the
+ *    `vtkFeatureEdges`/`smooth` convention), which is what keeps a cube's
+ *    corners and creases sharp. Conservative v1: crease vertices are fully
+ *    pinned rather than allowed to slide along the crease;
+ *  - the caller's `mFrozen` mask.
+ *
+ * **Validity guards.** Each guard *rejects* the individual collapse (counted in
+ * `mCollapsesRejected`) rather than aborting:
+ *  - the **link condition**: the vertices adjacent to both endpoints must be
+ *    exactly the opposite vertices of the faces on the edge, and an edge used
+ *    by more than two faces is non-manifold and never collapsible — so the
+ *    output cannot become non-manifold or change topology;
+ *  - **normal-flip rejection**: a surviving incident face whose unit normal
+ *    would turn by 90 degrees or more (`n_before . n_after <= 0`) rejects the
+ *    collapse. Like `smooth`'s inversion guard this is strictly "do no harm":
+ *    a face that is already degenerate (zero normal) imposes no constraint;
+ *  - **degenerate survivor rejection**: a surviving face collapsing to zero
+ *    area yields a zero `n_after`, hence `n_before . n_after = 0`, and is
+ *    rejected by the same test.
+ *
+ * **Placement** (`mPlacement`): `Optimal` places the survivor at the minimizer
+ * of the summed quadric (a 3x3 solve), falling back to the edge midpoint when
+ * the system is ill-conditioned — `|det| <= 1e-12 * max|A_ij|^3`, a
+ * scale-invariant Hadamard-style test. Note an exactly planar patch is
+ * singular *by construction* (the quadric is flat along the plane), so on flat
+ * geometry `Optimal` degenerates to midpoint placement; that is expected, not
+ * a bug. `Midpoint` always uses the edge midpoint; `Endpoint` keeps the
+ * endpoint with the lower quadric error (tie -> the lower vertex id).
+ *
+ * **Data.** Float-kind `point_data` at the surviving vertex is blended between
+ * the two endpoints at the parameter `t` obtained by projecting the placed
+ * point onto the edge, **clamped to [0, 1]**, and is carried in Float64 during
+ * the run with a single cast back to the source dtype at the end. That `t` is
+ * exact for `Midpoint`/`Endpoint` and an approximation for `Optimal` (the
+ * optimal point need not lie on the edge). **Integer** `point_data` keeps the
+ * survivor's own row — a blended material id is meaningless. Each surviving
+ * face keeps its own `cell_data` row (a parent's row was already replicated to
+ * its triangles by the simplexify step); `field_data` passes through verbatim.
+ * `mesh.info`, `point_sets`/`cell_sets` and `gmsh_periodic` never reach the
+ * C++ core (the Python shim remaps the sets through the returned maps).
+ *
+ * **Block structure is preserved 1:1**: the output has exactly
+ * `NumCellBlocks()` triangle blocks in input order (possibly with zero rows),
+ * which keeps the one-array-per-block `cell_data` invariant trivially correct
+ * and makes `mCellMaps` input-block-indexed.
+ *
+ * **Determinism.** Setup is parallel with fixed FP order: the per-face plane
+ * pass fills disjoint slots, and each vertex sums its quadric **in ascending
+ * incident-face index** (FP addition is not associative; the order is the
+ * pin). The greedy loop is **serial** — QEM is inherently sequential — driven
+ * by a priority queue with the total order (error, lower endpoint id, higher
+ * endpoint id, versions); stale entries are discarded lazily via per-vertex
+ * version counters. The pinned expressions (plane, quadric, 3x3 solve, error,
+ * blend parameter) are transcribed token for token into `_decimate.py`, so
+ * output is byte-identical across the three mesh backends, thread counts, and
+ * the C++/numpy-fallback boundary
+ * (`tests/python/test_decimate.py::test_cpp_matches_python`).
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format — it is deliberately not in
+ * the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How the surviving vertex of a collapsed edge is placed.
+enum class DecimatePlacement {
+    /// The minimizer of the summed quadric (3x3 solve); the edge midpoint when
+    /// the system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`).
+    Optimal,
+    /// The edge midpoint.
+    Midpoint,
+    /// The endpoint with the lower quadric error (tie -> the lower vertex id).
+    Endpoint,
+};
+
+/**
+ * @brief Parses a placement name.
+ * @param rName One of `"optimal"`, `"midpoint"`, `"endpoint"` (case-sensitive,
+ *        as elsewhere in the operations layer).
+ * @return The matching enumerator.
+ * @throws std::invalid_argument if the name is not recognised.
+ */
+MESHIOPLUSPLUS_API DecimatePlacement decimate_placement_from_name(const std::string& rName);
+
+/// Options for `decimate`. Exactly one of the three stopping criteria
+/// (`mTargetRatio`, `mTargetFaces`, `mMaxError`) must be set (non-negative).
+struct DecimateOptions {
+    /// Fraction of the (triangulated) faces to KEEP, in `(0, 1]`. Negative
+    /// means unset.
+    double mTargetRatio = -1.0;
+
+    /// Absolute number of faces to stop at (>= 0). Negative means unset. A
+    /// collapse removes one or two faces, so the result lands within one
+    /// collapse of the target (see `decimate`).
+    std::int64_t mTargetFaces = -1;
+
+    /// Collapse only while the cheapest candidate's quadric error is at most
+    /// this (squared mesh units). Negative means unset.
+    double mMaxError = -1.0;
+
+    /// Where the surviving vertex goes. Overridden to the pinned endpoint's own
+    /// position whenever one endpoint of the edge is pinned.
+    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
+
+    /// Pin boundary vertices (once-used-edge test on the triangulated mesh):
+    /// they never move and are never removed, and boundary–boundary edges never
+    /// enter the queue, so the outline of an open patch is preserved exactly.
+    bool mPreserveBoundary = true;
+
+    /// Pin vertices whose incident face normals pairwise differ by more than
+    /// `mFeatureAngleDeg`, so corners and creases survive.
+    bool mPreserveFeatures = true;
+
+    /// Angle **between two incident face normals**, in degrees, above which
+    /// their shared vertex is a feature and pinned. `0` = coplanar, `90` = the
+    /// edge of a box. Only read when `mPreserveFeatures` is set.
+    double mFeatureAngleDeg = 30.0;
+
+    /// Optional caller-supplied pin mask: either empty (no extra pins) or of
+    /// length `NumPoints()`, where a non-zero entry pins that vertex. Unioned
+    /// with the boundary/feature pins, never subtracted from them.
+    std::vector<std::uint8_t> mFrozen;
+};
+
+/// The result of `decimate`: the decimated mesh, the index maps, and what the
+/// run actually did.
+struct DecimateResult {
+    /// The decimated mesh: all-triangle blocks, 1:1 with the input blocks.
+    Mesh mMesh;
+
+    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
+    /// A collapsed point maps to its **survivor's** output index — which is
+    /// what makes the map usable for remapping external per-point arrays — and
+    /// is `-1` only when the surviving vertex itself ended up unreferenced and
+    /// was pruned.
+    NDArray mPointMap;
+
+    /// Per **input** block, Int64 shape `(num_cells_in_block,)`, input cell ->
+    /// the output index (within the corresponding output block) of its first
+    /// surviving triangle, or `-1` when none survived. For a `quad`/`polygon`
+    /// input cell this is composed through the simplexify step's child map.
+    std::vector<NDArray> mCellMaps;
+
+    /// Triangles removed, counted on the **triangulated** mesh.
+    std::int64_t mFacesRemoved = 0;
+
+    /// `num_points_in - num_points_out` (collapsed plus pruned-unreferenced).
+    std::int64_t mPointsRemoved = 0;
+
+    /// Guard-rejection **events** — an edge re-scored after a neighbouring
+    /// collapse and rejected again counts again (`smooth`'s
+    /// `mNumSkippedInversion` convention).
+    std::int64_t mCollapsesRejected = 0;
+
+    /// The largest quadric error among the committed collapses (`0.0` when
+    /// nothing collapsed).
+    double mMaxErrorApplied = 0.0;
+};
+
+/**
+ * @brief Decimates a surface mesh by greedy quadric-error-metric edge collapse.
+ * @param rMesh The surface mesh to decimate (never modified).
+ * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
+ * @return The decimated all-triangle mesh, the point/cell index maps, and the
+ *         collapse/rejection summary.
+ * @throws std::invalid_argument when not exactly one stopping criterion is
+ *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
+ *         on any block outside the surface scope: 3D volume cells (use
+ *         `extract_surface` first), higher-order cells (linearize first),
+ *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ */
+MESHIOPLUSPLUS_API DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/decimate_common.hpp =====
+/**
+ * @file detail/decimate_common.hpp
+ * @brief Quadric-error-metric machinery shared between surface `decimate`
+ * (`operations/decimate.cpp`) and volume `decimate_volume`
+ * (`operations/decimate_volume.cpp`), hoisted verbatim out of the former --
+ * the placement solve, the error form, the normal-flip check, and the
+ * vertex-ring link-condition primitives.
+ *
+ * The hoist exists so the boundary half of volume decimation reuses
+ * already-tested floating-point code instead of a second, silently-divergent
+ * transcription: the 3x3 cofactor solve and its ill-conditioning fallback in
+ * particular are exactly the kind of tricky arithmetic that drifts silently
+ * between two hand-written copies. `decimate.cpp`'s own 16-test suite is the
+ * regression guard that this relocation is behaviour-preserving -- every name
+ * here is identical to its pre-hoist counterpart, only the namespace and
+ * linkage changed.
+ *
+ * Also carries the generic flat-triangle-mesh plumbing (`DecimFaces`,
+ * `DecimCsr`, the vertex/face CSR builder, per-face plane quadrics, per-vertex
+ * quadric accumulation, feature-vertex marking): volume decimation's boundary
+ * vertices are, topologically, an ordinary triangle mesh (a tet mesh's own
+ * skin), so its quadric/feature setup reuses this unchanged rather than
+ * re-deriving it against the volume mesh's boundary faces. `decim_build_faces`
+ * (ties a `DecimFaces` to a *simplexified `Mesh`*'s own blocks) and
+ * `decim_build_edges` (the open-boundary-of-a-surface-PATCH edge test) stay
+ * private to `decimate.cpp` -- neither concept applies to a solid's closed
+ * outer skin, which is what `decimate_volume.cpp` builds its `DecimFaces`
+ * from instead (via `detail::build_global_faces`).
+ *
+ * Every floating-point expression here is transcribed token for token into
+ * `_decimate.py`/`_decimate_volume.py` (per each operation's own docs), and
+ * none of it may be contracted into FMAs across the C++/numpy boundary.
+ *
+ * Free functions in `meshioplusplus::detail`, built on plain flat buffers (no
+ * Mesh/uniform-API dependency), so both callers can build their own face/edge
+ * tables around it.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A flat triangle mesh's connectivity: 3 corners per face, block-major, plus
+/// each "block"'s first global face id (a single-entry `{0}` when the caller
+/// has no natural block subdivision, e.g. a volume mesh's boundary skin).
+struct DecimFaces {
+    std::vector<std::int64_t> mCorners;    // 3 * num_faces
+    std::vector<std::int64_t> mBlockBase;  // per block, global id of face 0
+    std::size_t mNumFaces = 0;
+};
+
+/// A vertex -> incident-face CSR (counting sort; rows ascend in face index).
+struct DecimCsr {
+    std::vector<std::int64_t> mXadj;
+    std::vector<std::int64_t> mAdj;
+};
+
+/// Builds `rFaces`' vertex -> face incidence over `n` points.
+MESHIOPLUSPLUS_API DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n);
+
+/**
+ * @brief Per-face area-weighted plane quadrics and unit normals.
+ *
+ * `rQuadK` gets 10 entries per face, in the fixed order
+ * `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]`; `rNormals` gets 3 (zero for a degenerate
+ * face). Area weighting (`w = |n|/2`) makes the accumulated per-vertex
+ * quadric independent of how a planar polygon was fanned into triangles.
+ */
+MESHIOPLUSPLUS_API void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
+                                          std::vector<double>& rQuadK,
+                                          std::vector<double>& rNormals);
+
+/**
+ * @brief Per-vertex quadric: the sum of the incident faces' quadrics in
+ * ascending face index (the CSR rows are face-ascending by construction).
+ *
+ * FP addition is not associative, so this fixed order is the pin across mesh
+ * backends, thread counts and the numpy fallback.
+ */
+MESHIOPLUSPLUS_API std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr,
+                                                                 std::size_t n,
+                                                                 const std::vector<double>& rQuadK);
+
+/**
+ * @brief Pins vertices whose incident face unit normals pairwise differ by
+ * more than the feature angle (`CosThreshold = cos(angle)`).
+ *
+ * Every face participates, not just boundary facets: the creases of a closed
+ * surface are interior. O(d^2) in the valence; each iteration writes only its
+ * own slot, so this is safe to call under `parallel_for`.
+ */
+MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
+                                            const std::vector<double>& rNormals,
+                                            double CosThreshold,
+                                            std::vector<std::uint8_t>& rPinned);
+
+/// x^T Q x for the homogeneous point (x, y, z, 1), `q` the 10-entry
+/// `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric. The literal parenthesization is
+/// the parity contract with the numpy twins.
+MESHIOPLUSPLUS_API double decim_quadric_error(const double* q, double x, double y, double z);
+
+/// A placement result: the surviving vertex's position and quadric error.
+struct DecimPlaced {
+    double mX[3] = {0.0, 0.0, 0.0};
+    double mErr = 0.0;
+};
+
+/// Read-only state a placement solve needs; shared by a parallel seeding pass
+/// and a serial greedy loop.
+struct DecimPlaceCtx {
+    const std::vector<double>* mpXyz = nullptr;
+    const std::vector<double>* mpQ = nullptr;
+    const std::vector<std::uint8_t>* mpPinned = nullptr;
+    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
+};
+
+/**
+ * @brief Position and quadric error of collapsing edge (a, b).
+ *
+ * A pinned endpoint forces its own position; otherwise the requested
+ * placement applies, with `Optimal` falling back to the midpoint when the 3x3
+ * system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`). A vertex whose
+ * quadric is exactly zero (no incident plane contributed anything -- the
+ * combined quadric of two purely-interior volume-decimation vertices, for
+ * instance) is a degenerate case of the SAME bound: it naturally routes to
+ * the midpoint fallback with no special-casing needed.
+ */
+MESHIOPLUSPLUS_API DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a,
+                                           std::int64_t b);
+
+/**
+ * @brief Unnormalized triangle normal, substituting `pSub` for any corner
+ * equal to `A` or `B` when given (the candidate survivor position).
+ *
+ * The sign of `n_before . n_after` is what a normal-flip guard branches on,
+ * so normalization would be pure extra rounding.
+ */
+MESHIOPLUSPLUS_API void decim_face_normal(const std::vector<double>& rXyz,
+                                          const std::int64_t* pCorners, std::int64_t A,
+                                          std::int64_t B, const double* pSub, double pOut[3]);
+
+/// Sorted unique vertex ring of `v`: the corners of its alive incident faces
+/// (from `rVFaces`, indices into the flat 3-per-face `rCorners`), minus `v`
+/// itself. Pure integer work, hence trivially deterministic.
+MESHIOPLUSPLUS_API std::vector<std::int64_t> decim_vertex_ring(
+    const std::vector<std::int64_t>& rVFaces, const std::vector<std::int64_t>& rCorners,
+    std::int64_t v);
+
+/// How many values two sorted vectors share (two-pointer sweep).
+MESHIOPLUSPLUS_API std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
+                                                  const std::vector<std::int64_t>& rB);
+
+/// Erase one value from a sorted vector, if present.
+MESHIOPLUSPLUS_API void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value);
+
+/// Insert one value into a sorted vector, keeping it sorted.
+MESHIOPLUSPLUS_API void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/decimate_common.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/projection.hpp =====
 /**
  * @file projection.hpp
@@ -16667,165 +17053,150 @@ MESHIOPLUSPLUS_API Mesh data_rename(const Mesh& rMesh, DataLocation Location, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
 /**
- * @file decimate.hpp
- * @brief Surface decimation by quadric-error-metric edge collapse: reduce a
- * surface mesh's face count while preserving its shape, boundaries and
- * features.
+ * @file decimate_volume.hpp
+ * @brief Volume decimation by quadric-error-metric tet-edge collapse: reduce a
+ * tetrahedral mesh's cell count while preserving its shape and boundary.
  *
- * This is the resolution-*reducing* inverse of `refine`, completing the pair.
- * The algorithm is the classic Garland–Heckbert construction (quadric error
- * metrics, SIGGRAPH '97): every vertex accumulates a 4x4 symmetric quadric —
- * the sum of squared-distance-to-plane forms of its incident triangles,
- * area-weighted — and every candidate edge collapse is scored by the summed
- * endpoint quadric evaluated at the collapsed vertex's position. The cheapest
- * edge is collapsed greedily, its quadrics are summed onto the survivor, the
- * survivor's incident edges are re-scored, and the loop repeats until the
- * stopping criterion is met.
+ * The resolution-*reducing* counterpart of `refine` on 3D cells, and the
+ * volume-mesh sibling of surface `decimate` -- a **separate operation**, not a
+ * mode on it: `DecimateOptions`/`mio_decimate` are untouched by this file, and
+ * `decimate()` keeps throwing by name on any 3D volume block, pointing here.
  *
- * **Surface only, triangles out.** The operating type is `triangle`; `quad`
- * and rectangular `polygon` blocks are triangulated first via
- * `convert_cells(Simplexify)`, so the output is all-triangle even when the
- * input was not. A mesh containing 3D volume cells throws by name pointing at
- * `extract_surface` — QEM decimation of a *volume* mesh (tetra-collapse
- * validity, no boundary-shape objective) is a different and much harder
- * problem, deliberately out of scope rather than silently skinned. Higher-order
- * cells (`triangle6`, ...; linearize first), ragged polygon/polyhedron blocks,
- * and `line`/`vertex` blocks mixed in with the surface likewise throw by name.
+ * **Tet-only in v1.** Any hexahedron/wedge/pyramid/polyhedron/ragged/
+ * higher-order 3D block, or any non-3D block mixed in, throws by name pointing
+ * at `convert_cells(Simplexify)`.
  *
- * **What is pinned** (mirroring `smooth`'s vocabulary and defaults). A pinned
- * vertex never moves and is never removed; an edge between two pinned vertices
- * never enters the queue, and a collapse toward a pinned vertex keeps that
- * vertex's own position regardless of `mPlacement`. Pinned are:
- *  - boundary vertices under `mPreserveBoundary` (the classic once-used-edge
- *    test: an edge used by exactly one triangle is boundary) — this is what
- *    keeps a planar patch's outline exactly intact;
- *  - feature vertices under `mPreserveFeatures`: vertices where two incident
- *    face **normals** differ by more than `mFeatureAngleDeg` (the
- *    `vtkFeatureEdges`/`smooth` convention), which is what keeps a cube's
- *    corners and creases sharp. Conservative v1: crease vertices are fully
- *    pinned rather than allowed to slide along the crease;
- *  - the caller's `mFrozen` mask.
+ * **Boundary vertices participate**, with a real quadric-error objective,
+ * rather than being pinned as `decimate`'s own `mPreserveBoundary` default
+ * does -- `mPreserveBoundary` defaults to `false` here; set it to reproduce
+ * the simpler pinned-boundary behaviour.
  *
- * **Validity guards.** Each guard *rejects* the individual collapse (counted in
- * `mCollapsesRejected`) rather than aborting:
- *  - the **link condition**: the vertices adjacent to both endpoints must be
- *    exactly the opposite vertices of the faces on the edge, and an edge used
- *    by more than two faces is non-manifold and never collapsible — so the
- *    output cannot become non-manifold or change topology;
- *  - **normal-flip rejection**: a surviving incident face whose unit normal
- *    would turn by 90 degrees or more (`n_before . n_after <= 0`) rejects the
- *    collapse. Like `smooth`'s inversion guard this is strictly "do no harm":
- *    a face that is already degenerate (zero normal) imposes no constraint;
- *  - **degenerate survivor rejection**: a surviving face collapsing to zero
- *    area yields a zero `n_after`, hence `n_before . n_after = 0`, and is
- *    rejected by the same test.
+ * ### Objective: one priority key, two regimes
  *
- * **Placement** (`mPlacement`): `Optimal` places the survivor at the minimizer
- * of the summed quadric (a 3x3 solve), falling back to the edge midpoint when
- * the system is ill-conditioned — `|det| <= 1e-12 * max|A_ij|^3`, a
- * scale-invariant Hadamard-style test. Note an exactly planar patch is
- * singular *by construction* (the quadric is flat along the plane), so on flat
- * geometry `Optimal` degenerates to midpoint placement; that is expected, not
- * a bug. `Midpoint` always uses the edge midpoint; `Endpoint` keeps the
- * endpoint with the lower quadric error (tie -> the lower vertex id).
+ * Every vertex accumulates a Garland-Heckbert plane quadric from its incident
+ * **boundary triangles only** (the mesh's own outer skin, from
+ * `detail::build_global_faces`'s faces with no neighbour) -- a purely interior
+ * vertex, by construction, accumulates nothing and its quadric is the exact
+ * zero matrix. For a candidate edge `(a, b)` the combined quadric `Q(a)+Q(b)`
+ * feeds the *same* placement solve `decimate` uses (`detail::decim_place`,
+ * hoisted into `detail/decimate_common.hpp`) whether the edge touches the
+ * boundary or not:
+ *  - at least one endpoint touches the boundary: `Q_ab` is non-degenerate (or
+ *    the solve's own ill-conditioning bound already routes it to the
+ *    midpoint) -- identical to `decimate`'s own code path;
+ *  - both endpoints are purely interior: `Q_ab` is exactly zero, which that
+ *    *same* `|det| <= 1e-12 * scale^3` bound classifies as degenerate and
+ *    falls back to the midpoint -- no interior-specific placement code is
+ *    needed at all.
  *
- * **Data.** Float-kind `point_data` at the surviving vertex is blended between
- * the two endpoints at the parameter `t` obtained by projecting the placed
- * point onto the edge, **clamped to [0, 1]**, and is carried in Float64 during
- * the run with a single cast back to the source dtype at the end. That `t` is
- * exact for `Midpoint`/`Endpoint` and an approximation for `Optimal` (the
- * optimal point need not lie on the edge). **Integer** `point_data` keeps the
- * survivor's own row — a blended material id is meaningless. Each surviving
- * face keeps its own `cell_data` row (a parent's row was already replicated to
- * its triangles by the simplexify step); `field_data` passes through verbatim.
- * `mesh.info`, `point_sets`/`cell_sets` and `gmsh_periodic` never reach the
- * C++ core (the Python shim remaps the sets through the returned maps).
+ * Scoring, however, needs an explicit split: `decim_quadric_error` against an
+ * exact-zero quadric is identically zero for every interior-interior edge,
+ * which would tie the whole interior of the mesh and fall through to id
+ * order. The priority key is therefore `(regime, score, ids...)`, `regime = 0`
+ * (`score` = quadric error) whenever `Q_ab` is non-degenerate, else `regime =
+ * 1` (`score` = squared edge length) -- every boundary-touching collapse is
+ * considered ahead of purely-interior ones. `mMaxError` is only really
+ * meaningful for `regime == 0` entries (real quadric-error units); comparing
+ * it directly against `regime == 1`'s squared length is a documented rough
+ * tool for mixed meshes, not a claimed exact criterion. `mTargetRatio`/
+ * `mTargetCells` are regime-agnostic and remain exactly well-defined.
+ *
+ * ### Validity guards
+ *
+ * Tet-only, so simpler than the general 3D case: a tet's *other* incident
+ * cells are exactly `T(ab) = vtets[a] & vtets[b]` (its shared tets). Each
+ * guard *rejects* the individual collapse (counted in `mCollapsesRejected`)
+ * rather than aborting:
+ *  - the **vertex-link condition**: the exact SET `Vlink(a) & Vlink(b)` (node
+ *    adjacency via each vertex's own incident tets) must equal `Vlink(ab)`
+ *    (the two "opposite" corners of each tet in `T(ab)`) -- pure integer set
+ *    equality, no floating point;
+ *  - the **duplicate-tet guard**: no surviving tet incident to `a` alone and
+ *    no surviving tet incident to `b` alone may share the same "opposite
+ *    triangle" (the collapse would otherwise produce two tets with identical
+ *    corners);
+ *  - **tet-inversion rejection** (`smooth`'s "do no harm"): a surviving tet
+ *    whose signed volume is non-zero must not change sign under the candidate
+ *    placement (`detail::cell_volume_from_corners`); an already-degenerate
+ *    tet imposes no constraint.
+ *
+ * **Boundary-touching collapses additionally run the existing 2D guards**
+ * (`decimate`'s own ring/shared-face link condition and normal-flip check,
+ * hoisted unchanged) over the mesh's boundary skin, so the outer surface
+ * cannot tear, pinch or fold independently of the interior guards above.
+ *
+ * **Placement stays on the boundary surface.** A boundary vertex's quadric is
+ * built from boundary-triangle planes only, so its minimizer naturally lies
+ * near the surface; a pinned endpoint (feature/frozen/`mPreserveBoundary`)
+ * forces its own position exactly as `decimate` does.
+ *
+ * **Data.** Same rules as `decimate`: float `point_data` is blended at the
+ * clamped edge-projection parameter; integer `point_data` keeps the
+ * survivor's row; each surviving tet keeps its own `cell_data` row;
+ * `field_data` passes through verbatim.
  *
  * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` triangle blocks in input order (possibly with zero rows),
- * which keeps the one-array-per-block `cell_data` invariant trivially correct
- * and makes `mCellMaps` input-block-indexed.
+ * `NumCellBlocks()` tetra blocks in input order (possibly with zero rows),
+ * exactly `decimate`'s own rule.
  *
- * **Determinism.** Setup is parallel with fixed FP order: the per-face plane
- * pass fills disjoint slots, and each vertex sums its quadric **in ascending
- * incident-face index** (FP addition is not associative; the order is the
- * pin). The greedy loop is **serial** — QEM is inherently sequential — driven
- * by a priority queue with the total order (error, lower endpoint id, higher
- * endpoint id, versions); stale entries are discarded lazily via per-vertex
- * version counters. The pinned expressions (plane, quadric, 3x3 solve, error,
- * blend parameter) are transcribed token for token into `_decimate.py`, so
- * output is byte-identical across the three mesh backends, thread counts, and
- * the C++/numpy-fallback boundary
- * (`tests/python/test_decimate.py::test_cpp_matches_python`).
+ * **Determinism.** Setup is parallel with fixed FP order (matching
+ * `decimate`'s); the greedy loop is serial, driven by a priority queue with
+ * lazy version-stamped deletion. Every floating-point expression is
+ * transcribed token for token into `_decimate_volume.py` (the arithmetic is
+ * either reused verbatim from `decimate`/`_decimate.py`, already twinned, or
+ * `detail::cell_volume_from_corners`'s corner-average fan, already twinned
+ * elsewhere), so output is byte-identical across the three mesh backends,
+ * thread counts, and the C++/numpy-fallback boundary.
  *
  * Standard C++ and the uniform mesh API only, so it compiles under every mesh
- * backend. This is an operation, not a file format — it is deliberately not in
- * the format registry.
+ * backend. This is an operation, not a file format.
  */
 
 // System includes
 #include <cstdint>
-#include <string>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
-/// How the surviving vertex of a collapsed edge is placed.
-enum class DecimatePlacement {
-    /// The minimizer of the summed quadric (3x3 solve); the edge midpoint when
-    /// the system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`).
-    Optimal,
-    /// The edge midpoint.
-    Midpoint,
-    /// The endpoint with the lower quadric error (tie -> the lower vertex id).
-    Endpoint,
-};
-
-/**
- * @brief Parses a placement name.
- * @param rName One of `"optimal"`, `"midpoint"`, `"endpoint"` (case-sensitive,
- *        as elsewhere in the operations layer).
- * @return The matching enumerator.
- * @throws std::invalid_argument if the name is not recognised.
- */
-MESHIOPLUSPLUS_API DecimatePlacement decimate_placement_from_name(const std::string& rName);
-
-/// Options for `decimate`. Exactly one of the three stopping criteria
-/// (`mTargetRatio`, `mTargetFaces`, `mMaxError`) must be set (non-negative).
-struct DecimateOptions {
-    /// Fraction of the (triangulated) faces to KEEP, in `(0, 1]`. Negative
-    /// means unset.
+/// Options for `decimate_volume`. Exactly one of the three stopping criteria
+/// (`mTargetRatio`, `mTargetCells`, `mMaxError`) must be set (non-negative).
+struct DecimateVolumeOptions {
+    /// Fraction of the tets to KEEP, in `(0, 1]`. Negative means unset.
     double mTargetRatio = -1.0;
 
-    /// Absolute number of faces to stop at (>= 0). Negative means unset. A
-    /// collapse removes one or two faces, so the result lands within one
-    /// collapse of the target (see `decimate`).
-    std::int64_t mTargetFaces = -1;
+    /// Absolute number of tets to stop at (>= 0). Negative means unset. A
+    /// collapse removes `T(ab).size()` tets, so the result lands within one
+    /// collapse of the target.
+    std::int64_t mTargetCells = -1;
 
-    /// Collapse only while the cheapest candidate's quadric error is at most
-    /// this (squared mesh units). Negative means unset.
+    /// Collapse only while the cheapest candidate's score is at most this.
+    /// Only strictly meaningful for `regime == 0` (boundary-touching, real
+    /// quadric-error units) entries -- see the file doc comment. Negative
+    /// means unset.
     double mMaxError = -1.0;
 
-    /// Where the surviving vertex goes. Overridden to the pinned endpoint's own
-    /// position whenever one endpoint of the edge is pinned.
+    /// Where the surviving vertex goes; reuses `decimate`'s enum unchanged.
+    /// Overridden to the pinned endpoint's own position whenever one endpoint
+    /// of the edge is pinned.
     DecimatePlacement mPlacement = DecimatePlacement::Optimal;
 
-    /// Pin boundary vertices (once-used-edge test on the triangulated mesh):
-    /// they never move and are never removed, and boundary–boundary edges never
-    /// enter the queue, so the outline of an open patch is preserved exactly.
-    bool mPreserveBoundary = true;
+    /// Pin every boundary vertex outright (the once-used-face test on the
+    /// mesh's own outer skin), reproducing `decimate`'s own default instead
+    /// of letting boundary vertices participate.
+    bool mPreserveBoundary = false;
 
-    /// Pin vertices whose incident face normals pairwise differ by more than
-    /// `mFeatureAngleDeg`, so corners and creases survive.
+    /// Pin boundary vertices whose incident boundary-triangle normals
+    /// pairwise differ by more than `mFeatureAngleDeg`, so corners and
+    /// creases of the outer surface survive.
     bool mPreserveFeatures = true;
 
-    /// Angle **between two incident face normals**, in degrees, above which
-    /// their shared vertex is a feature and pinned. `0` = coplanar, `90` = the
-    /// edge of a box. Only read when `mPreserveFeatures` is set.
+    /// Angle **between two incident boundary-triangle normals**, in degrees,
+    /// above which their shared vertex is a feature and pinned. Only read
+    /// when `mPreserveFeatures` is set.
     double mFeatureAngleDeg = 30.0;
 
     /// Optional caller-supplied pin mask: either empty (no extra pins) or of
@@ -16834,57 +17205,56 @@ struct DecimateOptions {
     std::vector<std::uint8_t> mFrozen;
 };
 
-/// The result of `decimate`: the decimated mesh, the index maps, and what the
-/// run actually did.
-struct DecimateResult {
-    /// The decimated mesh: all-triangle blocks, 1:1 with the input blocks.
+/// The result of `decimate_volume`: the decimated mesh, the index maps, and
+/// what the run actually did.
+struct DecimateVolumeResult {
+    /// The decimated mesh: all-tetra blocks, 1:1 with the input blocks.
     Mesh mMesh;
 
-    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
-    /// A collapsed point maps to its **survivor's** output index — which is
-    /// what makes the map usable for remapping external per-point arrays — and
-    /// is `-1` only when the surviving vertex itself ended up unreferenced and
-    /// was pruned.
+    /// Int64 shape `(num_points_in,)`, input point index -> output point
+    /// index. A collapsed point maps to its **survivor's** output index, and
+    /// is `-1` only when the surviving vertex itself ended up unreferenced
+    /// and was pruned.
     NDArray mPointMap;
 
-    /// Per **input** block, Int64 shape `(num_cells_in_block,)`, input cell ->
-    /// the output index (within the corresponding output block) of its first
-    /// surviving triangle, or `-1` when none survived. For a `quad`/`polygon`
-    /// input cell this is composed through the simplexify step's child map.
+    /// Per **input** tet block, Int64 shape `(num_cells_in_block,)`, input
+    /// cell -> its own output index, or `-1` when it did not survive.
     std::vector<NDArray> mCellMaps;
 
-    /// Triangles removed, counted on the **triangulated** mesh.
-    std::int64_t mFacesRemoved = 0;
+    /// Tets removed.
+    std::int64_t mTetsRemoved = 0;
 
     /// `num_points_in - num_points_out` (collapsed plus pruned-unreferenced).
     std::int64_t mPointsRemoved = 0;
 
-    /// Guard-rejection **events** — an edge re-scored after a neighbouring
-    /// collapse and rejected again counts again (`smooth`'s
-    /// `mNumSkippedInversion` convention).
+    /// Guard-rejection **events** (`decimate`'s own `mCollapsesRejected`
+    /// convention: a re-scored, re-rejected edge counts again).
     std::int64_t mCollapsesRejected = 0;
 
-    /// The largest quadric error among the committed collapses (`0.0` when
-    /// nothing collapsed).
+    /// The largest `regime == 0` (quadric-error) score among the committed
+    /// collapses (`0.0` when nothing collapsed, or when every collapse was
+    /// purely interior).
     double mMaxErrorApplied = 0.0;
 };
 
 /**
- * @brief Decimates a surface mesh by greedy quadric-error-metric edge collapse.
- * @param rMesh The surface mesh to decimate (never modified).
+ * @brief Decimates a tetrahedral mesh by greedy quadric-error-metric tet-edge
+ * collapse.
+ * @param rMesh The tet mesh to decimate (never modified).
  * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
- * @return The decimated all-triangle mesh, the point/cell index maps, and the
+ * @return The decimated all-tetra mesh, the point/cell index maps, and the
  *         collapse/rejection summary.
  * @throws std::invalid_argument when not exactly one stopping criterion is
- *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
- *         on any block outside the surface scope: 3D volume cells (use
- *         `extract_surface` first), higher-order cells (linearize first),
- *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, on
+ *         a non-manifold boundary face, and on any block outside the tet-only
+ *         scope: non-tetra 3D cells, ragged/polyhedron blocks, higher-order
+ *         tets, and any non-3D block.
  */
-MESHIOPLUSPLUS_API DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
+MESHIOPLUSPLUS_API DecimateVolumeResult decimate_volume(const Mesh& rMesh,
+                                                        const DecimateVolumeOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
@@ -20639,7 +21009,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 5
+#define MESHIOPLUSPLUS_VERSION_MINOR 6
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -20649,7 +21019,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.5.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.6.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -36537,6 +36907,287 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/data_ops.cpp =====
+// ===== begin src/cpp/src/detail/decimate_common.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
+    DecimCsr csr;
+    csr.mXadj.assign(n + 1, 0);
+    const std::size_t nf = rFaces.mNumFaces;
+    for (std::size_t i = 0; i < nf * 3; ++i)
+        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
+    for (std::size_t i = 0; i < n; ++i)
+        csr.mXadj[i + 1] += csr.mXadj[i];
+    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
+    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
+            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
+        }
+    return csr;
+}
+
+void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
+                       std::vector<double>& rQuadK, std::vector<double>& rNormals) {
+    const std::size_t nf = rFaces.mNumFaces;
+    rQuadK.assign(nf * 10, 0.0);
+    rNormals.assign(nf * 3, 0.0);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t* c = rFaces.mCorners.data() + f * 3;
+        const double* p0 = rXyz.data() + static_cast<std::size_t>(c[0]) * 3;
+        const double* p1 = rXyz.data() + static_cast<std::size_t>(c[1]) * 3;
+        const double* p2 = rXyz.data() + static_cast<std::size_t>(c[2]) * 3;
+        const double e1x = p1[0] - p0[0];
+        const double e1y = p1[1] - p0[1];
+        const double e1z = p1[2] - p0[2];
+        const double e2x = p2[0] - p0[0];
+        const double e2y = p2[1] - p0[1];
+        const double e2z = p2[2] - p0[2];
+        const double nx = e1y * e2z - e1z * e2y;
+        const double ny = e1z * e2x - e1x * e2z;
+        const double nz = e1x * e2y - e1y * e2x;
+        const double len2 = nx * nx + ny * ny + nz * nz;
+        if (len2 == 0.0)
+            return;  // degenerate: zero quadric, zero normal
+        const double len = std::sqrt(len2);
+        const double a = nx / len;
+        const double b = ny / len;
+        const double cc = nz / len;
+        const double d = -(a * p0[0] + b * p0[1] + cc * p0[2]);
+        const double w = 0.5 * len;
+        const double wa = w * a;
+        const double wb = w * b;
+        const double wc = w * cc;
+        const double wd = w * d;
+        double* k = rQuadK.data() + f * 10;
+        k[0] = wa * a;
+        k[1] = wa * b;
+        k[2] = wa * cc;
+        k[3] = wa * d;
+        k[4] = wb * b;
+        k[5] = wb * cc;
+        k[6] = wb * d;
+        k[7] = wc * cc;
+        k[8] = wc * d;
+        k[9] = wd * d;
+        double* nrm = rNormals.data() + f * 3;
+        nrm[0] = a;
+        nrm[1] = b;
+        nrm[2] = cc;
+    });
+}
+
+std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t n,
+                                              const std::vector<double>& rQuadK) {
+    std::vector<double> q(n * 10, 0.0);
+    parallel_for(n, [&](std::size_t v) {
+        double* qv = q.data() + v * 10;
+        for (std::int64_t k = rCsr.mXadj[v]; k < rCsr.mXadj[v + 1]; ++k) {
+            const double* kf =
+                rQuadK.data() +
+                static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(k)]) * 10;
+            for (int i = 0; i < 10; ++i)
+                qv[i] += kf[i];
+        }
+    });
+    return q;
+}
+
+void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
+                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
+    parallel_for(n, [&](std::size_t v) {
+        const std::int64_t b = rCsr.mXadj[v];
+        const std::int64_t e = rCsr.mXadj[v + 1];
+        for (std::int64_t p = b; p < e; ++p) {
+            const double* na = rNormals.data() +
+                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
+            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
+                continue;
+            for (std::int64_t q = p + 1; q < e; ++q) {
+                const double* nb =
+                    rNormals.data() +
+                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
+                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
+                    continue;
+                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
+                    rPinned[v] = 1;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+double decim_quadric_error(const double* q, double x, double y, double z) {
+    return q[0] * x * x + q[4] * y * y + q[7] * z * z +
+           2.0 * (q[1] * x * y + q[2] * x * z + q[5] * y * z) +
+           2.0 * (q[3] * x + q[6] * y + q[8] * z) + q[9];
+}
+
+DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t b) {
+    const std::vector<double>& xyz = *rCtx.mpXyz;
+    const std::vector<double>& quads = *rCtx.mpQ;
+    const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
+    const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
+    const double* qa = quads.data() + static_cast<std::size_t>(a) * 10;
+    const double* qb = quads.data() + static_cast<std::size_t>(b) * 10;
+    double q[10];
+    for (int i = 0; i < 10; ++i)
+        q[i] = qa[i] + qb[i];
+
+    DecimPlaced out;
+    const std::vector<std::uint8_t>& pinned = *rCtx.mpPinned;
+    if (pinned[static_cast<std::size_t>(a)]) {
+        out.mX[0] = xa[0];
+        out.mX[1] = xa[1];
+        out.mX[2] = xa[2];
+        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+        return out;
+    }
+    if (pinned[static_cast<std::size_t>(b)]) {
+        out.mX[0] = xb[0];
+        out.mX[1] = xb[1];
+        out.mX[2] = xb[2];
+        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+        return out;
+    }
+
+    if (rCtx.mPlacement == DecimatePlacement::Endpoint) {
+        const double err_a = decim_quadric_error(q, xa[0], xa[1], xa[2]);
+        const double err_b = decim_quadric_error(q, xb[0], xb[1], xb[2]);
+        if (err_b < err_a) {  // tie -> a, the lower id
+            out.mX[0] = xb[0];
+            out.mX[1] = xb[1];
+            out.mX[2] = xb[2];
+            out.mErr = err_b;
+        } else {
+            out.mX[0] = xa[0];
+            out.mX[1] = xa[1];
+            out.mX[2] = xa[2];
+            out.mErr = err_a;
+        }
+        return out;
+    }
+
+    bool solved = false;
+    if (rCtx.mPlacement == DecimatePlacement::Optimal) {
+        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
+        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
+        // planar patch A is singular by construction, so the midpoint fallback
+        // is the hot path there -- expected, not a defect.
+        const double c00 = q[4] * q[7] - q[5] * q[5];
+        const double c01 = q[2] * q[5] - q[1] * q[7];
+        const double c02 = q[1] * q[5] - q[2] * q[4];
+        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
+        double scale = std::abs(q[0]);
+        scale = std::max(scale, std::abs(q[1]));
+        scale = std::max(scale, std::abs(q[2]));
+        scale = std::max(scale, std::abs(q[4]));
+        scale = std::max(scale, std::abs(q[5]));
+        scale = std::max(scale, std::abs(q[7]));
+        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
+            const double c11 = q[0] * q[7] - q[2] * q[2];
+            const double c12 = q[1] * q[2] - q[0] * q[5];
+            const double c22 = q[0] * q[4] - q[1] * q[1];
+            const double inv = 1.0 / det;
+            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
+            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
+            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+            solved = true;
+        }
+    }
+    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
+        out.mX[0] = (xa[0] + xb[0]) * 0.5;
+        out.mX[1] = (xa[1] + xb[1]) * 0.5;
+        out.mX[2] = (xa[2] + xb[2]) * 0.5;
+    }
+    out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+    return out;
+}
+
+void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,
+                       std::int64_t A, std::int64_t B, const double* pSub, double pOut[3]) {
+    double p[3][3];
+    for (int k = 0; k < 3; ++k) {
+        const std::int64_t id = pCorners[k];
+        if (pSub != nullptr && (id == A || id == B)) {
+            p[k][0] = pSub[0];
+            p[k][1] = pSub[1];
+            p[k][2] = pSub[2];
+        } else {
+            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
+            p[k][0] = src[0];
+            p[k][1] = src[1];
+            p[k][2] = src[2];
+        }
+    }
+    const double e1x = p[1][0] - p[0][0];
+    const double e1y = p[1][1] - p[0][1];
+    const double e1z = p[1][2] - p[0][2];
+    const double e2x = p[2][0] - p[0][0];
+    const double e2y = p[2][1] - p[0][1];
+    const double e2z = p[2][2] - p[0][2];
+    pOut[0] = e1y * e2z - e1z * e2y;
+    pOut[1] = e1z * e2x - e1x * e2z;
+    pOut[2] = e1x * e2y - e1y * e2x;
+}
+
+std::vector<std::int64_t> decim_vertex_ring(const std::vector<std::int64_t>& rVFaces,
+                                            const std::vector<std::int64_t>& rCorners,
+                                            std::int64_t v) {
+    std::vector<std::int64_t> ring;
+    ring.reserve(rVFaces.size() * 2);
+    for (std::int64_t f : rVFaces) {
+        const std::int64_t* c = rCorners.data() + static_cast<std::size_t>(f) * 3;
+        for (int k = 0; k < 3; ++k)
+            if (c[k] != v)
+                ring.push_back(c[k]);
+    }
+    std::sort(ring.begin(), ring.end());
+    ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
+    return ring;
+}
+
+std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
+                               const std::vector<std::int64_t>& rB) {
+    std::size_t i = 0;
+    std::size_t j = 0;
+    std::size_t common = 0;
+    while (i < rA.size() && j < rB.size()) {
+        if (rA[i] < rB[j])
+            ++i;
+        else if (rB[j] < rA[i])
+            ++j;
+        else {
+            ++common;
+            ++i;
+            ++j;
+        }
+    }
+    return common;
+}
+
+void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value) {
+    auto it = std::lower_bound(rVec.begin(), rVec.end(), Value);
+    if (it != rVec.end() && *it == Value)
+        rVec.erase(it);
+}
+
+void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
+    rVec.insert(std::lower_bound(rVec.begin(), rVec.end(), Value), Value);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/decimate_common.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -69610,6 +70261,26 @@ namespace meshioplusplus {
 
 namespace {
 
+// The placement solve, error form, normal-flip check, and the vertex-ring
+// link-condition primitives are shared with volume decimation and live in
+// detail/decimate_common.{hpp,cpp} -- see that header for why this is a hoist
+// rather than a duplication.
+using detail::decim_accumulate_quadrics;
+using detail::decim_count_common;
+using detail::decim_face_normal;
+using detail::decim_face_planes;
+using detail::decim_mark_features;
+using detail::decim_place;
+using detail::decim_quadric_error;
+using detail::decim_sorted_erase;
+using detail::decim_sorted_insert;
+using detail::decim_vertex_faces_csr;
+using detail::decim_vertex_ring;
+using detail::DecimCsr;
+using detail::DecimFaces;
+using detail::DecimPlaceCtx;
+using detail::DecimPlaced;
+
 // --- validation --------------------------------------------------------------
 
 // The resolved stopping criterion. `mTargetFaces` is only meaningful when
@@ -69690,14 +70361,9 @@ void decim_check_blocks(const Mesh& rMesh) {
 }
 
 // --- flat face table ---------------------------------------------------------
-
-// The triangulated mesh's connectivity as one flat int64 buffer (3 corners per
-// face, block-major), plus each block's first global face id.
-struct DecimFaces {
-    std::vector<std::int64_t> mCorners;    // 3 * num_faces
-    std::vector<std::int64_t> mBlockBase;  // per block, global id of face 0
-    std::size_t mNumFaces = 0;
-};
+// DecimFaces/DecimCsr and the generic per-face/per-vertex quadric machinery
+// live in detail/decimate_common.hpp (brought into scope above); this file
+// keeps only what ties them to a *simplexified `Mesh`*'s own blocks.
 
 DecimFaces decim_build_faces(const Mesh& rSimp, std::size_t n) {
     DecimFaces t;
@@ -69726,31 +70392,6 @@ DecimFaces decim_build_faces(const Mesh& rSimp, std::size_t n) {
         t.mNumFaces += nc;
     }
     return t;
-}
-
-// --- vertex -> face CSR (counting sort; rows ascend in face index) -----------
-
-struct DecimCsr {
-    std::vector<std::int64_t> mXadj;
-    std::vector<std::int64_t> mAdj;
-};
-
-DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
-    DecimCsr csr;
-    csr.mXadj.assign(n + 1, 0);
-    const std::size_t nf = rFaces.mNumFaces;
-    for (std::size_t i = 0; i < nf * 3; ++i)
-        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
-    for (std::size_t i = 0; i < n; ++i)
-        csr.mXadj[i + 1] += csr.mXadj[i];
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
-    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
-    for (std::size_t f = 0; f < nf; ++f)
-        for (std::size_t k = 0; k < 3; ++k) {
-            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
-            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
-        }
-    return csr;
 }
 
 // --- edge table + boundary marks ---------------------------------------------
@@ -69807,310 +70448,8 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
     return edges;
 }
 
-// --- per-face planes and quadrics --------------------------------------------
-
-// Per face: the 10 entries of the area-weighted plane quadric, in the fixed
-// order [aa, ab, ac, ad, bb, bc, bd, cc, cd, dd], and the unit normal (zero for
-// a degenerate face) for the feature pass. The expressions below are pinned:
-// _decimate.py transcribes them token for token.
-void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
-                       std::vector<double>& rQuadK, std::vector<double>& rNormals) {
-    const std::size_t nf = rFaces.mNumFaces;
-    rQuadK.assign(nf * 10, 0.0);
-    rNormals.assign(nf * 3, 0.0);
-    parallel_for(nf, [&](std::size_t f) {
-        const std::int64_t* c = rFaces.mCorners.data() + f * 3;
-        const double* p0 = rXyz.data() + static_cast<std::size_t>(c[0]) * 3;
-        const double* p1 = rXyz.data() + static_cast<std::size_t>(c[1]) * 3;
-        const double* p2 = rXyz.data() + static_cast<std::size_t>(c[2]) * 3;
-        const double e1x = p1[0] - p0[0];
-        const double e1y = p1[1] - p0[1];
-        const double e1z = p1[2] - p0[2];
-        const double e2x = p2[0] - p0[0];
-        const double e2y = p2[1] - p0[1];
-        const double e2z = p2[2] - p0[2];
-        const double nx = e1y * e2z - e1z * e2y;
-        const double ny = e1z * e2x - e1x * e2z;
-        const double nz = e1x * e2y - e1y * e2x;
-        const double len2 = nx * nx + ny * ny + nz * nz;
-        if (len2 == 0.0)
-            return;  // degenerate: zero quadric, zero normal
-        const double len = std::sqrt(len2);
-        const double a = nx / len;
-        const double b = ny / len;
-        const double cc = nz / len;
-        const double d = -(a * p0[0] + b * p0[1] + cc * p0[2]);
-        // Area weighting (w = |n|/2) makes the accumulated quadric independent
-        // of how a planar polygon was fanned into triangles.
-        const double w = 0.5 * len;
-        const double wa = w * a;
-        const double wb = w * b;
-        const double wc = w * cc;
-        const double wd = w * d;
-        double* k = rQuadK.data() + f * 10;
-        k[0] = wa * a;
-        k[1] = wa * b;
-        k[2] = wa * cc;
-        k[3] = wa * d;
-        k[4] = wb * b;
-        k[5] = wb * cc;
-        k[6] = wb * d;
-        k[7] = wc * cc;
-        k[8] = wc * d;
-        k[9] = wd * d;
-        double* nrm = rNormals.data() + f * 3;
-        nrm[0] = a;
-        nrm[1] = b;
-        nrm[2] = cc;
-    });
-}
-
-// Per-vertex quadric: the sum of the incident faces' quadrics IN ASCENDING FACE
-// INDEX (the CSR rows are face-ascending by construction). FP addition is not
-// associative, so this fixed order is what pins the result across backends,
-// thread counts and the numpy fallback (whose np.add.at scatter accumulates in
-// the same face-major order).
-std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t n,
-                                              const std::vector<double>& rQuadK) {
-    std::vector<double> q(n * 10, 0.0);
-    parallel_for(n, [&](std::size_t v) {
-        double* qv = q.data() + v * 10;
-        for (std::int64_t k = rCsr.mXadj[v]; k < rCsr.mXadj[v + 1]; ++k) {
-            const double* kf =
-                rQuadK.data() +
-                static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(k)]) * 10;
-            for (int i = 0; i < 10; ++i)
-                qv[i] += kf[i];
-        }
-    });
-    return q;
-}
-
-// Pin vertices whose incident face unit normals pairwise differ by more than
-// the feature angle. Unlike smooth (whose features live on boundary facets),
-// every surface face participates: the creases of a closed surface are
-// interior. O(d^2) in the valence; each iteration writes only its own slot.
-void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
-                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
-    parallel_for(n, [&](std::size_t v) {
-        const std::int64_t b = rCsr.mXadj[v];
-        const std::int64_t e = rCsr.mXadj[v + 1];
-        for (std::int64_t p = b; p < e; ++p) {
-            const double* na = rNormals.data() +
-                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
-            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
-                continue;
-            for (std::int64_t q = p + 1; q < e; ++q) {
-                const double* nb =
-                    rNormals.data() +
-                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
-                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
-                    continue;
-                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
-                    rPinned[v] = 1;
-                    return;
-                }
-            }
-        }
-    });
-}
-
-// --- placement + error -------------------------------------------------------
-
-// x^T Q x for the homogeneous point (x, y, z, 1). One fixed expression: the
-// literal parenthesization is the parity contract with _decimate.py.
-double decim_quadric_error(const double* q, double x, double y, double z) {
-    return q[0] * x * x + q[4] * y * y + q[7] * z * z +
-           2.0 * (q[1] * x * y + q[2] * x * z + q[5] * y * z) +
-           2.0 * (q[3] * x + q[6] * y + q[8] * z) + q[9];
-}
-
-struct DecimPlaced {
-    double mX[3] = {0.0, 0.0, 0.0};
-    double mErr = 0.0;
-};
-
-// Read-only state the placement needs; shared by the parallel seeding pass and
-// the serial loop.
-struct DecimPlaceCtx {
-    const std::vector<double>* mpXyz = nullptr;
-    const std::vector<double>* mpQ = nullptr;
-    const std::vector<std::uint8_t>* mpPinned = nullptr;
-    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
-};
-
-// Position and quadric error of collapsing edge (a, b), a < b. A pinned
-// endpoint forces its own position (the survivor override); otherwise the
-// requested placement applies, with Optimal falling back to the midpoint when
-// the 3x3 system is ill-conditioned: |det| <= 1e-12 * max|A_ij|^3, a
-// scale-invariant Hadamard-style bound that costs six fabs and no sqrt.
-DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t b) {
-    const std::vector<double>& xyz = *rCtx.mpXyz;
-    const std::vector<double>& quads = *rCtx.mpQ;
-    const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
-    const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
-    const double* qa = quads.data() + static_cast<std::size_t>(a) * 10;
-    const double* qb = quads.data() + static_cast<std::size_t>(b) * 10;
-    double q[10];
-    for (int i = 0; i < 10; ++i)
-        q[i] = qa[i] + qb[i];
-
-    DecimPlaced out;
-    const std::vector<std::uint8_t>& pinned = *rCtx.mpPinned;
-    if (pinned[static_cast<std::size_t>(a)]) {
-        out.mX[0] = xa[0];
-        out.mX[1] = xa[1];
-        out.mX[2] = xa[2];
-        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-        return out;
-    }
-    if (pinned[static_cast<std::size_t>(b)]) {
-        out.mX[0] = xb[0];
-        out.mX[1] = xb[1];
-        out.mX[2] = xb[2];
-        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-        return out;
-    }
-
-    if (rCtx.mPlacement == DecimatePlacement::Endpoint) {
-        const double err_a = decim_quadric_error(q, xa[0], xa[1], xa[2]);
-        const double err_b = decim_quadric_error(q, xb[0], xb[1], xb[2]);
-        if (err_b < err_a) {  // tie -> a, the lower id
-            out.mX[0] = xb[0];
-            out.mX[1] = xb[1];
-            out.mX[2] = xb[2];
-            out.mErr = err_b;
-        } else {
-            out.mX[0] = xa[0];
-            out.mX[1] = xa[1];
-            out.mX[2] = xa[2];
-            out.mErr = err_a;
-        }
-        return out;
-    }
-
-    bool solved = false;
-    if (rCtx.mPlacement == DecimatePlacement::Optimal) {
-        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
-        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
-        // planar patch A is singular by construction, so the midpoint fallback
-        // is the hot path there -- expected, not a defect.
-        const double c00 = q[4] * q[7] - q[5] * q[5];
-        const double c01 = q[2] * q[5] - q[1] * q[7];
-        const double c02 = q[1] * q[5] - q[2] * q[4];
-        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-        double scale = std::abs(q[0]);
-        scale = std::max(scale, std::abs(q[1]));
-        scale = std::max(scale, std::abs(q[2]));
-        scale = std::max(scale, std::abs(q[4]));
-        scale = std::max(scale, std::abs(q[5]));
-        scale = std::max(scale, std::abs(q[7]));
-        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-            const double c11 = q[0] * q[7] - q[2] * q[2];
-            const double c12 = q[1] * q[2] - q[0] * q[5];
-            const double c22 = q[0] * q[4] - q[1] * q[1];
-            const double inv = 1.0 / det;
-            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
-            solved = true;
-        }
-    }
-    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
-        out.mX[0] = (xa[0] + xb[0]) * 0.5;
-        out.mX[1] = (xa[1] + xb[1]) * 0.5;
-        out.mX[2] = (xa[2] + xb[2]) * 0.5;
-    }
-    out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-    return out;
-}
-
-// --- normal-flip guard -------------------------------------------------------
-
-// Unnormalized triangle normal, with every corner equal to `A` or `B` read as
-// `pSub` when given (the candidate survivor position). The sign of
-// n_before . n_after is what the guard branches on, so normalization would be
-// pure extra rounding.
-void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,
-                       std::int64_t A, std::int64_t B, const double* pSub, double pOut[3]) {
-    double p[3][3];
-    for (int k = 0; k < 3; ++k) {
-        const std::int64_t id = pCorners[k];
-        if (pSub != nullptr && (id == A || id == B)) {
-            p[k][0] = pSub[0];
-            p[k][1] = pSub[1];
-            p[k][2] = pSub[2];
-        } else {
-            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
-            p[k][0] = src[0];
-            p[k][1] = src[1];
-            p[k][2] = src[2];
-        }
-    }
-    const double e1x = p[1][0] - p[0][0];
-    const double e1y = p[1][1] - p[0][1];
-    const double e1z = p[1][2] - p[0][2];
-    const double e2x = p[2][0] - p[0][0];
-    const double e2y = p[2][1] - p[0][1];
-    const double e2z = p[2][2] - p[0][2];
-    pOut[0] = e1y * e2z - e1z * e2y;
-    pOut[1] = e1z * e2x - e1x * e2z;
-    pOut[2] = e1x * e2y - e1y * e2x;
-}
-
-// --- small integer utilities -------------------------------------------------
-
-// Sorted unique vertex ring of `v`: the corners of its alive incident faces,
-// minus `v` itself. Pure integer work, hence trivially deterministic.
-std::vector<std::int64_t> decim_vertex_ring(const std::vector<std::int64_t>& rVFaces,
-                                            const std::vector<std::int64_t>& rCorners,
-                                            std::int64_t v) {
-    std::vector<std::int64_t> ring;
-    ring.reserve(rVFaces.size() * 2);
-    for (std::int64_t f : rVFaces) {
-        const std::int64_t* c = rCorners.data() + static_cast<std::size_t>(f) * 3;
-        for (int k = 0; k < 3; ++k)
-            if (c[k] != v)
-                ring.push_back(c[k]);
-    }
-    std::sort(ring.begin(), ring.end());
-    ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
-    return ring;
-}
-
-// How many values two sorted vectors share (two-pointer sweep).
-std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
-                               const std::vector<std::int64_t>& rB) {
-    std::size_t i = 0;
-    std::size_t j = 0;
-    std::size_t common = 0;
-    while (i < rA.size() && j < rB.size()) {
-        if (rA[i] < rB[j])
-            ++i;
-        else if (rB[j] < rA[i])
-            ++j;
-        else {
-            ++common;
-            ++i;
-            ++j;
-        }
-    }
-    return common;
-}
-
-// Erase one value from a sorted vector, if present.
-void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value) {
-    auto it = std::lower_bound(rVec.begin(), rVec.end(), Value);
-    if (it != rVec.end() && *it == Value)
-        rVec.erase(it);
-}
-
-// Insert one value into a sorted vector, keeping it sorted (no duplicates
-// arise: a face joins a survivor's list only once, at the collapse migrating
-// it).
-void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
-    rVec.insert(std::lower_bound(rVec.begin(), rVec.end(), Value), Value);
-}
+// --- placement, error, normal-flip and link-condition primitives -----------
+// Hoisted into detail/decimate_common.{hpp,cpp}; brought into scope above.
 
 // A vector of Int64 as a 1-D NDArray.
 NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
@@ -70672,6 +71011,887 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/decimate.cpp =====
+// ===== begin src/cpp/src/operations/decimate_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <iterator>
+#include <queue>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::decim_accumulate_quadrics;
+using detail::decim_count_common;
+using detail::decim_face_normal;
+using detail::decim_face_planes;
+using detail::decim_mark_features;
+using detail::decim_place;
+using detail::decim_quadric_error;
+using detail::decim_sorted_erase;
+using detail::decim_sorted_insert;
+using detail::decim_vertex_faces_csr;
+using detail::decim_vertex_ring;
+using detail::DecimCsr;
+using detail::DecimFaces;
+using detail::DecimPlaceCtx;
+using detail::DecimPlaced;
+using detail::Vec3;
+
+constexpr const char* kDvPrefix = "meshio++: decimate_volume: ";
+
+// --- validation --------------------------------------------------------------
+
+struct DvStop {
+    bool mUseTarget = false;
+    bool mUseMaxError = false;
+    std::int64_t mTargetCells = -1;
+    double mMaxError = -1.0;
+};
+
+DvStop dv_resolve_stop(const DecimateVolumeOptions& rOptions) {
+    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
+                        (rOptions.mTargetCells >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
+    if (num_set != 1)
+        throw std::invalid_argument(
+            std::string(kDvPrefix) +
+            "exactly one of target_ratio, target_cells, max_error must be set; got " +
+            std::to_string(num_set));
+    DvStop stop;
+    if (rOptions.mTargetRatio >= 0.0) {
+        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
+            throw std::invalid_argument(std::string(kDvPrefix) +
+                                        "target_ratio must lie in (0, 1]; got " +
+                                        std::to_string(rOptions.mTargetRatio));
+        stop.mUseTarget = true;  // filled in once T (tet count) is known
+    } else if (rOptions.mTargetCells >= 0) {
+        stop.mUseTarget = true;
+        stop.mTargetCells = rOptions.mTargetCells;
+    } else {
+        stop.mUseMaxError = true;
+        stop.mMaxError = rOptions.mMaxError;
+    }
+    return stop;
+}
+
+// Reject every construct outside the tet-only scope, by name, before any
+// other work.
+void dv_check_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                std::string(kDvPrefix) +
+                "mesh contains a polyhedron cell block; decimate_volume operates on tet-only "
+                "meshes -- run convert_cells(simplexify) first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                std::string(kDvPrefix) + "mesh contains ragged cell block '" +
+                std::string(cb.Type()) + "'; decimate_volume operates on tet-only meshes");
+        const CellType ct = cell_type_from_name(std::string(cb.Type()));
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                std::string(kDvPrefix) + "mesh contains 3D volume cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra; decimate_volume operates on tet-only meshes -- run "
+                "convert_cells(simplexify) first");
+        throw std::invalid_argument(
+            std::string(kDvPrefix) + "mesh contains non-3D cell block '" + std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle after the collapse; drop it first, "
+            "e.g. via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(std::string(kDvPrefix) + "mesh contains no tetra cell block");
+}
+
+// --- small utilities ----------------------------------------------------------
+
+NDArray dv_int64_vector(const std::vector<std::int64_t>& rValues) {
+    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
+    if (!rValues.empty())
+        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
+    return a;
+}
+
+// Sorted intersection of two sorted vectors (values present in both).
+std::vector<std::int64_t> dv_sorted_intersection(const std::vector<std::int64_t>& rA,
+                                                 const std::vector<std::int64_t>& rB) {
+    std::vector<std::int64_t> out;
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < rA.size() && j < rB.size()) {
+        if (rA[i] < rB[j])
+            ++i;
+        else if (rB[j] < rA[i])
+            ++j;
+        else {
+            out.push_back(rA[i]);
+            ++i;
+            ++j;
+        }
+    }
+    return out;
+}
+
+// Sorted vertex adjacency of `v` (all nodes co-occurring with `v` in one of
+// `rVTets`' rows), minus `v` itself.
+std::vector<std::int64_t> dv_vertex_link(const std::vector<std::int64_t>& rVTets,
+                                         const std::vector<std::int64_t>& rTetConn,
+                                         std::int64_t v) {
+    std::vector<std::int64_t> link;
+    link.reserve(rVTets.size() * 3);
+    for (std::int64_t t : rVTets) {
+        const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+        for (int k = 0; k < 4; ++k)
+            if (c[k] != v)
+                link.push_back(c[k]);
+    }
+    std::sort(link.begin(), link.end());
+    link.erase(std::unique(link.begin(), link.end()), link.end());
+    return link;
+}
+
+// The "opposite triple" of tet `t` after removing corner `v` (the tet's other
+// 3 corners, sorted). `t` must contain `v`.
+std::array<std::int64_t, 3> dv_opposite_triple(const std::vector<std::int64_t>& rTetConn,
+                                               std::int64_t t, std::int64_t v) {
+    std::array<std::int64_t, 3> tri{-1, -1, -1};
+    const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+    std::size_t w = 0;
+    for (int k = 0; k < 4; ++k)
+        if (c[k] != v)
+            tri[w++] = c[k];
+    std::sort(tri.begin(), tri.end());
+    return tri;
+}
+
+// `before` non-zero and `after` on the opposite side of zero (or exactly
+// zero): a sign flip or a degenerate result. An already-degenerate `before`
+// (exactly zero) imposes no constraint -- `smooth`'s "do no harm" rule.
+bool dv_tet_inverts(double before, double after) {
+    if (before == 0.0)
+        return false;
+    if (before > 0.0)
+        return after <= 0.0;
+    return after >= 0.0;
+}
+
+// Signed volume of tet `t`, substituting any corner equal to `A` or `B` with
+// `pSub` when given.
+double dv_tet_volume(const std::vector<double>& rXyz, const std::vector<std::int64_t>& rTetConn,
+                     std::int64_t t, std::int64_t A, std::int64_t B, const double* pSub) {
+    const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+    Vec3 coords[4];
+    for (int k = 0; k < 4; ++k) {
+        const std::int64_t id = c[k];
+        if (pSub != nullptr && (id == A || id == B)) {
+            coords[k] = {pSub[0], pSub[1], pSub[2]};
+        } else {
+            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
+            coords[k] = {src[0], src[1], src[2]};
+        }
+    }
+    return detail::cell_volume_from_corners(coords, CellType::Tetra);
+}
+
+// A Float64 working copy of a float-kind point_data array, blended in place
+// at each collapse commit (decimate.cpp's own DecimFloatData, duplicated
+// here since it is trivial plumbing rather than FP-sensitive arithmetic).
+struct DvFloatData {
+    std::string mName;
+    std::size_t mNumComponents = 0;
+    std::vector<double> mValues;
+};
+
+}  // namespace
+
+DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOptions& rOptions) {
+    DvStop stop = dv_resolve_stop(rOptions);
+
+    const std::size_t n = rMesh.NumPoints();
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument(std::string(kDvPrefix) + "frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+
+    dv_check_blocks(rMesh);
+
+    const std::size_t dim = rMesh.PointDim();
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t num_tets = static_cast<std::size_t>(detail::total_cells(bases));
+
+    // --- phase 1: flat buffers (parallel fills) -------------------------------
+    std::vector<double> xyz(n * 3, 0.0);
+    {
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+        });
+    }
+
+    std::vector<std::int64_t> tet_conn(num_tets * 4);
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& conn = cb.Conn();
+            const std::size_t nc = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            for (std::size_t c = 0; c < nc; ++c)
+                for (std::size_t k = 0; k < 4; ++k)
+                    tet_conn[(base + c) * 4 + k] = detail::read_int(conn, c * 4 + k);
+            ++bi;
+        }
+    }
+
+    // --- phase 2: the mesh's own outer skin -----------------------------------
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    if (gf.mNumNonManifold > 0)
+        throw std::invalid_argument(
+            std::string(kDvPrefix) + "mesh contains " + std::to_string(gf.mNumNonManifold) +
+            " face(s) shared by three or more tets (non-manifold); refusing rather than "
+            "guessing a boundary classification");
+
+    DecimFaces boundary;
+    boundary.mBlockBase.push_back(0);
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+        if (gf.mNeighbour[f] >= 0)
+            continue;  // interior face
+        const std::int64_t* ring = gf.Face(f);
+        const std::size_t fs = gf.FaceSize(f);
+        // A tet's faces are triangles; a non-triangular boundary face would
+        // mean a non-tet block contributed it, which dv_check_blocks already
+        // refused.
+        for (std::size_t k = 0; k < fs && k < 3; ++k)
+            boundary.mCorners.push_back(ring[k]);
+        ++boundary.mNumFaces;
+    }
+
+    const DecimCsr bcsr = decim_vertex_faces_csr(boundary, n);
+    std::vector<std::uint8_t> touches_boundary(n, 0);
+    for (std::size_t v = 0; v < n; ++v)
+        touches_boundary[v] = bcsr.mXadj[v + 1] > bcsr.mXadj[v] ? 1 : 0;
+
+    std::vector<double> bquad_k;
+    std::vector<double> bnormals;
+    decim_face_planes(boundary, xyz, bquad_k, bnormals);
+
+    // --- phase 3: the pin mask (caller | boundary | feature) -----------------
+    std::vector<std::uint8_t> pinned(n, 0);
+    if (!rOptions.mFrozen.empty())
+        for (std::size_t i = 0; i < n; ++i)
+            pinned[i] = rOptions.mFrozen[i] ? 1 : 0;
+    if (rOptions.mPreserveBoundary)
+        for (std::size_t i = 0; i < n; ++i)
+            if (touches_boundary[i])
+                pinned[i] = 1;
+    if (rOptions.mPreserveFeatures) {
+        const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
+        decim_mark_features(bcsr, n, bnormals, cos_thr, pinned);
+    }
+
+    // --- phase 4: per-vertex quadrics (boundary-only, fixed FP order) --------
+    std::vector<double> quads = decim_accumulate_quadrics(bcsr, n, bquad_k);
+    bquad_k.clear();
+    bquad_k.shrink_to_fit();
+
+    // --- phase 5: mutable collapse state ---------------------------------------
+    std::vector<std::uint8_t> tet_alive(num_tets, 1);
+    std::vector<std::int64_t> successor(n, -1);  // removed vertex -> survivor
+    std::vector<std::uint32_t> version(n, 0);
+
+    // vtets[v]: sorted, incident tet ids -- built by hand (no shared CSR
+    // builder: decim_vertex_faces_csr is hardcoded to 3 corners per face).
+    std::vector<std::vector<std::int64_t>> vtets(n);
+    {
+        std::vector<std::int64_t> counts(n, 0);
+        for (std::size_t t = 0; t < num_tets; ++t)
+            for (int k = 0; k < 4; ++k)
+                ++counts[static_cast<std::size_t>(tet_conn[t * 4 + k])];
+        for (std::size_t v = 0; v < n; ++v)
+            vtets[v].reserve(static_cast<std::size_t>(counts[v]));
+        for (std::size_t t = 0; t < num_tets; ++t)
+            for (int k = 0; k < 4; ++k)
+                vtets[static_cast<std::size_t>(tet_conn[t * 4 + k])].push_back(
+                    static_cast<std::int64_t>(t));
+        // Each tet contributes each of its 4 corners once, in tet-ascending
+        // order, so every row is already sorted -- no explicit sort needed.
+    }
+
+    // vboundary[v]: sorted, incident ALIVE boundary-face ids into `boundary`
+    // (mutated in lockstep with it, exactly `decimate.cpp`'s own `vfaces`
+    // applied to the mesh's own skin instead of a triangulated 2D input) --
+    // what lets a boundary-touching collapse reuse `decimate`'s own 2D
+    // ring/shared-face link condition and normal-flip check.
+    std::vector<std::uint8_t> boundary_alive(boundary.mNumFaces, 1);
+    std::vector<std::vector<std::int64_t>> vboundary(n);
+    for (std::size_t v = 0; v < n; ++v) {
+        std::vector<std::int64_t>& row = vboundary[v];
+        row.reserve(static_cast<std::size_t>(bcsr.mXadj[v + 1] - bcsr.mXadj[v]));
+        for (std::int64_t k = bcsr.mXadj[v]; k < bcsr.mXadj[v + 1]; ++k)
+            row.push_back(bcsr.mAdj[static_cast<std::size_t>(k)]);
+    }
+
+    std::vector<DvFloatData> float_data;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (!detail::is_float_dtype(a.Dtype()) || detail::rows(a) != n || n == 0)
+            continue;
+        DvFloatData fd;
+        fd.mName = name;
+        fd.mNumComponents = a.Size() / n;
+        fd.mValues.resize(a.Size());
+        parallel_for_bw(a.Size(),
+                        [&](std::size_t i) { fd.mValues[i] = detail::read_double(a, i); });
+        float_data.push_back(std::move(fd));
+    }
+
+    DecimPlaceCtx ctx;
+    ctx.mpXyz = &xyz;
+    ctx.mpQ = &quads;
+    ctx.mpPinned = &pinned;
+    ctx.mPlacement = rOptions.mPlacement;
+
+    if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
+        stop.mTargetCells = std::max<std::int64_t>(
+            1,
+            static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_tets) + 0.5));
+
+    // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
+    using DvEdgeKey = std::array<std::int64_t, 2>;
+    struct DvEdgeKeyHash {
+        std::size_t operator()(const DvEdgeKey& rKey) const {
+            std::size_t h = 0;
+            for (std::int64_t v : rKey)
+                h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    static constexpr int kTetEdgeCorners[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    std::vector<DvEdgeKey> edges;
+    {
+        std::unordered_map<DvEdgeKey, char, DvEdgeKeyHash> seen;
+        seen.reserve(num_tets * 6);
+        for (std::size_t t = 0; t < num_tets; ++t) {
+            const std::int64_t* c = tet_conn.data() + t * 4;
+            for (const auto& ec : kTetEdgeCorners) {
+                std::int64_t a = c[ec[0]];
+                std::int64_t b = c[ec[1]];
+                if (a > b)
+                    std::swap(a, b);
+                DvEdgeKey key{a, b};
+                if (seen.emplace(key, 0).second)
+                    edges.push_back(key);
+            }
+        }
+    }
+
+    // --- phase 7: seed the queue (parallel scoring, serial pushes) -----------
+    // Priority: (regime, score, lo, hi, version_lo, version_hi). regime 0
+    // (boundary-touching, real quadric error) sorts ahead of regime 1 (purely
+    // interior, squared edge length) -- see the header doc comment.
+    using DvHeapEntry =
+        std::tuple<int, double, std::int64_t, std::int64_t, std::uint32_t, std::uint32_t>;
+    std::priority_queue<DvHeapEntry, std::vector<DvHeapEntry>, std::greater<DvHeapEntry>> heap;
+
+    auto dv_score = [&](std::int64_t a, std::int64_t b) -> std::pair<int, double> {
+        if (touches_boundary[static_cast<std::size_t>(a)] ||
+            touches_boundary[static_cast<std::size_t>(b)]) {
+            return {0, decim_place(ctx, a, b).mErr};
+        }
+        const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
+        const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
+        const double dx = xa[0] - xb[0];
+        const double dy = xa[1] - xb[1];
+        const double dz = xa[2] - xb[2];
+        return {1, dx * dx + dy * dy + dz * dz};
+    };
+
+    {
+        std::vector<int> seed_regime(edges.size(), 0);
+        std::vector<double> seed_score(edges.size(), 0.0);
+        parallel_for(edges.size(), [&](std::size_t e) {
+            if (pinned[static_cast<std::size_t>(edges[e][0])] &&
+                pinned[static_cast<std::size_t>(edges[e][1])])
+                return;
+            const auto rs = dv_score(edges[e][0], edges[e][1]);
+            seed_regime[e] = rs.first;
+            seed_score[e] = rs.second;
+        });
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const std::int64_t a = edges[e][0];
+            const std::int64_t b = edges[e][1];
+            if (pinned[static_cast<std::size_t>(a)] && pinned[static_cast<std::size_t>(b)])
+                continue;
+            if (!std::isfinite(seed_score[e]))
+                continue;
+            heap.push({seed_regime[e], seed_score[e], a, b, 0, 0});
+        }
+    }
+
+    // --- phase 8: the SERIAL greedy loop --------------------------------------
+    DecimateVolumeResult result;
+    std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
+    while (true) {
+        if (stop.mUseTarget && alive_tets <= stop.mTargetCells)
+            break;
+        if (heap.empty()) {
+            if (stop.mUseTarget && alive_tets > stop.mTargetCells)
+                log::warn(
+                    "decimate_volume: queue exhausted at {} tets before reaching the target of "
+                    "{} (pinning and the validity guards left no collapsible edge)",
+                    alive_tets, stop.mTargetCells);
+            break;
+        }
+        const DvHeapEntry top = heap.top();
+        heap.pop();
+        const int regime = std::get<0>(top);
+        const double score = std::get<1>(top);
+        const std::int64_t a = std::get<2>(top);
+        const std::int64_t b = std::get<3>(top);
+        if (regime == 0 && stop.mUseMaxError && score > stop.mMaxError)
+            break;
+        if (std::get<4>(top) != version[static_cast<std::size_t>(a)] ||
+            std::get<5>(top) != version[static_cast<std::size_t>(b)])
+            continue;  // stale
+        if (pinned[static_cast<std::size_t>(a)] && pinned[static_cast<std::size_t>(b)])
+            continue;
+
+        // Guard 1: T(ab), the shared tets.
+        const std::vector<std::int64_t> shared = dv_sorted_intersection(
+            vtets[static_cast<std::size_t>(a)], vtets[static_cast<std::size_t>(b)]);
+        if (shared.empty() && vtets[static_cast<std::size_t>(a)].empty() &&
+            vtets[static_cast<std::size_t>(b)].empty())
+            continue;  // defensive: neither endpoint has any tet left
+
+        // Guard 2: the vertex-link condition, exact set equality.
+        {
+            const std::vector<std::int64_t> link_a =
+                dv_vertex_link(vtets[static_cast<std::size_t>(a)], tet_conn, a);
+            const std::vector<std::int64_t> link_b =
+                dv_vertex_link(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+            std::vector<std::int64_t> link_ab;
+            link_ab.reserve(shared.size() * 2);
+            for (std::int64_t t : shared) {
+                const std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+                for (int k = 0; k < 4; ++k)
+                    if (c[k] != a && c[k] != b)
+                        link_ab.push_back(c[k]);
+            }
+            std::sort(link_ab.begin(), link_ab.end());
+            link_ab.erase(std::unique(link_ab.begin(), link_ab.end()), link_ab.end());
+            const std::vector<std::int64_t> common = dv_sorted_intersection(link_a, link_b);
+            if (common != link_ab) {
+                ++result.mCollapsesRejected;
+                continue;
+            }
+        }
+
+        // Guard 3: the duplicate-tet guard -- no survivor tet of `a` may share
+        // its opposite triple with a survivor tet of `b`.
+        bool duplicate = false;
+        {
+            std::vector<std::array<std::int64_t, 3>> triples_a;
+            for (std::int64_t t : vtets[static_cast<std::size_t>(a)])
+                if (!std::binary_search(shared.begin(), shared.end(), t))
+                    triples_a.push_back(dv_opposite_triple(tet_conn, t, a));
+            std::vector<std::array<std::int64_t, 3>> triples_b;
+            for (std::int64_t t : vtets[static_cast<std::size_t>(b)])
+                if (!std::binary_search(shared.begin(), shared.end(), t))
+                    triples_b.push_back(dv_opposite_triple(tet_conn, t, b));
+            for (const auto& ta : triples_a)
+                for (const auto& tb : triples_b)
+                    if (ta == tb) {
+                        duplicate = true;
+                        break;
+                    }
+        }
+        if (duplicate) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // Guard 4: the mesh's own skin's link condition -- `decimate`'s own
+        // ring/shared-face check, applied over `vboundary`/`boundary` instead
+        // of a triangulated 2D input. `bshared` is the set of alive boundary
+        // faces containing BOTH endpoints (empty, and so trivially satisfied,
+        // when neither endpoint's boundary-face row has any overlap -- which
+        // is always true for a purely interior collapse, since an empty row
+        // intersects nothing).
+        const std::vector<std::int64_t> bshared = dv_sorted_intersection(
+            vboundary[static_cast<std::size_t>(a)], vboundary[static_cast<std::size_t>(b)]);
+        if (bshared.size() > 2) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+        {
+            const std::vector<std::int64_t> bring_a =
+                decim_vertex_ring(vboundary[static_cast<std::size_t>(a)], boundary.mCorners, a);
+            const std::vector<std::int64_t> bring_b =
+                decim_vertex_ring(vboundary[static_cast<std::size_t>(b)], boundary.mCorners, b);
+            if (decim_count_common(bring_a, bring_b) != bshared.size()) {
+                ++result.mCollapsesRejected;
+                continue;
+            }
+        }
+
+        // Placement (recomputed -- versions matched, so bit-identical to what
+        // was scored at push time).
+        const DecimPlaced placed = decim_place(ctx, a, b);
+
+        // Guard 5 (boundary-touching edges only): normal-flip over every
+        // surviving alive boundary face incident to `a` or `b`.
+        bool bflips = false;
+        if (!vboundary[static_cast<std::size_t>(a)].empty() ||
+            !vboundary[static_cast<std::size_t>(b)].empty()) {
+            std::vector<std::int64_t> bmerged;
+            std::merge(vboundary[static_cast<std::size_t>(a)].begin(),
+                       vboundary[static_cast<std::size_t>(a)].end(),
+                       vboundary[static_cast<std::size_t>(b)].begin(),
+                       vboundary[static_cast<std::size_t>(b)].end(), std::back_inserter(bmerged));
+            for (std::int64_t f : bmerged) {
+                if (std::binary_search(bshared.begin(), bshared.end(), f))
+                    continue;  // dies in the collapse: no constraint
+                const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+                double n0[3];
+                double n1[3];
+                decim_face_normal(xyz, c, a, b, nullptr, n0);
+                if (n0[0] == 0.0 && n0[1] == 0.0 && n0[2] == 0.0)
+                    continue;
+                decim_face_normal(xyz, c, a, b, placed.mX, n1);
+                if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.0) {
+                    bflips = true;
+                    break;
+                }
+            }
+        }
+        if (bflips) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // Guard 6: tet-inversion, over every ALIVE tet incident to `a` or `b`
+        // that dies in neither this collapse (i.e. not in `shared`).
+        bool flips = false;
+        for (std::int64_t t : vtets[static_cast<std::size_t>(a)]) {
+            if (std::binary_search(shared.begin(), shared.end(), t))
+                continue;
+            const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
+            if (dv_tet_inverts(before, after)) {
+                flips = true;
+                break;
+            }
+        }
+        if (!flips)
+            for (std::int64_t t : vtets[static_cast<std::size_t>(b)]) {
+                if (std::binary_search(shared.begin(), shared.end(), t))
+                    continue;
+                const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+                const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
+                if (dv_tet_inverts(before, after)) {
+                    flips = true;
+                    break;
+                }
+            }
+        if (flips) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // --- commit ------------------------------------------------------------
+        const std::int64_t s = pinned[static_cast<std::size_t>(b)] ? b : a;
+        const std::int64_t r = s == a ? b : a;
+
+        {
+            const double* xs = xyz.data() + static_cast<std::size_t>(s) * 3;
+            const double* xr = xyz.data() + static_cast<std::size_t>(r) * 3;
+            const double dx = xr[0] - xs[0];
+            const double dy = xr[1] - xs[1];
+            const double dz = xr[2] - xs[2];
+            const double den = dx * dx + dy * dy + dz * dz;
+            double t;
+            if (den == 0.0) {
+                t = 0.5;
+            } else {
+                t = ((placed.mX[0] - xs[0]) * dx + (placed.mX[1] - xs[1]) * dy +
+                     (placed.mX[2] - xs[2]) * dz) /
+                    den;
+                if (t < 0.0)
+                    t = 0.0;
+                if (t > 1.0)
+                    t = 1.0;
+            }
+            for (DvFloatData& fd : float_data) {
+                double* vals = fd.mValues.data();
+                const std::size_t so = static_cast<std::size_t>(s) * fd.mNumComponents;
+                const std::size_t ro = static_cast<std::size_t>(r) * fd.mNumComponents;
+                for (std::size_t k = 0; k < fd.mNumComponents; ++k)
+                    vals[so + k] = vals[so + k] + t * (vals[ro + k] - vals[so + k]);
+            }
+        }
+
+        xyz[static_cast<std::size_t>(s) * 3] = placed.mX[0];
+        xyz[static_cast<std::size_t>(s) * 3 + 1] = placed.mX[1];
+        xyz[static_cast<std::size_t>(s) * 3 + 2] = placed.mX[2];
+        {
+            double* qs = quads.data() + static_cast<std::size_t>(s) * 10;
+            const double* qr = quads.data() + static_cast<std::size_t>(r) * 10;
+            for (int i = 0; i < 10; ++i)
+                qs[i] += qr[i];
+        }
+
+        for (std::int64_t t : shared) {
+            tet_alive[static_cast<std::size_t>(t)] = 0;
+            --alive_tets;
+            ++result.mTetsRemoved;
+            const std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+            for (int k = 0; k < 4; ++k)
+                if (c[k] != s && c[k] != r)
+                    decim_sorted_erase(vtets[static_cast<std::size_t>(c[k])], t);
+            decim_sorted_erase(vtets[static_cast<std::size_t>(s)], t);
+        }
+        for (std::int64_t t : vtets[static_cast<std::size_t>(r)]) {
+            if (!tet_alive[static_cast<std::size_t>(t)])
+                continue;  // was in shared
+            std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+            for (int k = 0; k < 4; ++k)
+                if (c[k] == r)
+                    c[k] = s;
+            decim_sorted_insert(vtets[static_cast<std::size_t>(s)], t);
+        }
+        vtets[static_cast<std::size_t>(r)].clear();
+
+        // Kill the shared boundary faces, then migrate r's remaining alive
+        // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
+        // pattern, applied to the mesh's own skin).
+        for (std::int64_t f : bshared) {
+            boundary_alive[static_cast<std::size_t>(f)] = 0;
+            const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+            for (int k = 0; k < 3; ++k)
+                if (c[k] != s && c[k] != r)
+                    decim_sorted_erase(vboundary[static_cast<std::size_t>(c[k])], f);
+            decim_sorted_erase(vboundary[static_cast<std::size_t>(s)], f);
+        }
+        for (std::int64_t f : vboundary[static_cast<std::size_t>(r)]) {
+            if (!boundary_alive[static_cast<std::size_t>(f)])
+                continue;  // was in bshared
+            std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+            for (int k = 0; k < 3; ++k)
+                if (c[k] == r)
+                    c[k] = s;
+            decim_sorted_insert(vboundary[static_cast<std::size_t>(s)], f);
+        }
+        vboundary[static_cast<std::size_t>(r)].clear();
+
+        successor[static_cast<std::size_t>(r)] = s;
+        ++version[static_cast<std::size_t>(s)];
+        ++version[static_cast<std::size_t>(r)];
+        touches_boundary[static_cast<std::size_t>(s)] =
+            vboundary[static_cast<std::size_t>(s)].empty() ? 0 : 1;
+        if (regime == 0)
+            result.mMaxErrorApplied = std::max(result.mMaxErrorApplied, score);
+
+        // Re-score the survivor's remaining edges via its updated link.
+        const std::vector<std::int64_t> link_s =
+            dv_vertex_link(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+        for (std::int64_t w : link_s) {
+            if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
+                continue;
+            const std::int64_t lo = s < w ? s : w;
+            const std::int64_t hi = s < w ? w : s;
+            const auto rs = dv_score(lo, hi);
+            if (!std::isfinite(rs.second))
+                continue;
+            heap.push({rs.first, rs.second, lo, hi, version[static_cast<std::size_t>(lo)],
+                       version[static_cast<std::size_t>(hi)]});
+        }
+    }
+
+    // --- phase 9: emission ------------------------------------------------------
+    std::vector<char> used(n, 0);
+    for (std::size_t t = 0; t < num_tets; ++t)
+        if (tet_alive[t])
+            for (int k = 0; k < 4; ++k)
+                used[static_cast<std::size_t>(tet_conn[t * 4 + k])] = 1;
+    std::vector<std::int64_t> remap(n, -1);
+    std::size_t num_used = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (used[i])
+            remap[i] = static_cast<std::int64_t>(num_used++);
+
+    Mesh& out = result.mMesh;
+
+    {
+        const NDArray& points = rMesh.Points();
+        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            T* dst = new_points.As<T>();
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!used[i])
+                    continue;
+                for (std::size_t d = 0; d < dim && d < 3; ++d)
+                    dst[w * dim + d] = static_cast<T>(xyz[i * 3 + d]);
+                ++w;
+            }
+        });
+        out.AssignPoints(std::move(new_points));
+    }
+
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t nc = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            std::size_t alive_in_block = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    ++alive_in_block;
+            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 4});
+            std::int64_t* dst = block.As<std::int64_t>();
+            std::vector<std::int64_t> cell_map(nc, -1);
+            std::size_t w = 0;
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (!tet_alive[base + c])
+                    continue;
+                for (std::size_t k = 0; k < 4; ++k)
+                    dst[w * 4 + k] = remap[static_cast<std::size_t>(tet_conn[(base + c) * 4 + k])];
+                cell_map[c] = static_cast<std::int64_t>(w);
+                ++w;
+            }
+            out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
+            result.mCellMaps.push_back(dv_int64_vector(cell_map));
+            ++bi;
+        }
+    }
+
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(ndata);
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (bi >= ndata)
+                break;
+            const NDArray& a = rMesh.CellData(name, bi);
+            const std::size_t nc = cb.NumCells();
+            if (ndata != nblocks || detail::rows(a) != nc || nc == 0) {
+                blocks.push_back(detail::data_owned_copy(a));
+                ++bi;
+                continue;
+            }
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            std::size_t alive_in_block = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    ++alive_in_block;
+            std::vector<std::size_t> shape = a.Shape();
+            shape[0] = alive_in_block;
+            const std::size_t row_bytes = a.Nbytes() / nc;
+            NDArray sub = NDArray::Uninit(a.Dtype(), std::move(shape));
+            const std::byte* src = a.Data();
+            std::byte* dst = sub.Data();
+            std::size_t w = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    std::memcpy(dst + (w++) * row_bytes, src + c * row_bytes, row_bytes);
+            blocks.push_back(std::move(sub));
+            ++bi;
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != n) {
+            out.AddPointData(name, detail::data_owned_copy(a));
+            continue;
+        }
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = num_used;
+        if (detail::is_float_dtype(a.Dtype())) {
+            const DvFloatData* p_fd = nullptr;
+            for (const DvFloatData& fd : float_data)
+                if (fd.mName == name) {
+                    p_fd = &fd;
+                    break;
+                }
+            const std::size_t ncomp = p_fd != nullptr ? p_fd->mNumComponents : 0;
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            detail::dispatch_dtype(a.Dtype(), [&]<class T>() {
+                T* dst = b.As<T>();
+                std::size_t w = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (!used[i])
+                        continue;
+                    for (std::size_t k = 0; k < ncomp; ++k)
+                        dst[w * ncomp + k] = static_cast<T>(p_fd->mValues[i * ncomp + k]);
+                    ++w;
+                }
+            });
+            out.AddPointData(name, std::move(b));
+        } else {
+            const std::size_t row_bytes = n == 0 ? 0 : a.Nbytes() / n;
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            const std::byte* src = a.Data();
+            std::byte* dst = b.Data();
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                if (used[i])
+                    std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+            out.AddPointData(name, std::move(b));
+        }
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    {
+        NDArray pm = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* dst = pm.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i) {
+            std::int64_t v = static_cast<std::int64_t>(i);
+            while (successor[static_cast<std::size_t>(v)] >= 0)
+                v = successor[static_cast<std::size_t>(v)];
+            dst[i] = remap[static_cast<std::size_t>(v)];
+        }
+        result.mPointMap = std::move(pm);
+    }
+    result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
+
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &result.mCellMaps;
+        rmap.mOpName = "decimate_volume";
+        detail::remap_regions(rMesh, result.mMesh, rmap);
+    }
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/decimate_volume.cpp =====
 // ===== begin src/cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -74916,6 +76136,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
+        {"DecimateVolume",
+         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
@@ -75203,6 +76426,25 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = decimate(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "DecimateVolume") {
+        DecimateVolumeOptions opts;
+        opts.mTargetRatio = pipe_number(rStep, "Ratio", -1.0);
+        const double cells = pipe_number(rStep, "TargetCells", -1.0);
+        opts.mTargetCells =
+            cells < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(cells);
+        opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetCells < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        auto result = decimate_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"TetsRemoved", static_cast<double>(result.mTetsRemoved)},
                         {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
         return std::move(result.mMesh);
     }

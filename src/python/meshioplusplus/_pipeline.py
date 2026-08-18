@@ -35,6 +35,7 @@ from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
+from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
@@ -84,6 +85,15 @@ _OP_TABLE = {
     "Decimate": (
         "Ratio",
         "TargetFaces",
+        "MaxError",
+        "Placement",
+        "PreserveBoundary",
+        "PreserveFeatures",
+        "FeatureAngle",
+    ),
+    "DecimateVolume": (
+        "Ratio",
+        "TargetCells",
         "MaxError",
         "Placement",
         "PreserveBoundary",
@@ -398,6 +408,25 @@ def _apply_step(mesh, step, steps, warnings):
             return_report=True,
         )
         entry["FacesRemoved"] = report["faces_removed"]
+        entry["CollapsesRejected"] = report["collapses_rejected"]
+    elif op == "DecimateVolume":
+        ratio = _number(step, "Ratio", -1.0)
+        target_cells = _number(step, "TargetCells", -1.0)
+        max_error = _number(step, "MaxError", -1.0)
+        if ratio < 0.0 and target_cells < 0.0 and max_error < 0.0:
+            ratio = 0.5  # a usable pipeline default (the C++ engine's rule)
+        mesh, report = decimate_volume(
+            mesh,
+            ratio=ratio if ratio >= 0.0 else None,
+            target_cells=int(target_cells) if target_cells >= 0.0 else None,
+            max_error=max_error if max_error >= 0.0 else None,
+            placement=_text(step, "Placement", "optimal"),
+            preserve_boundary=_flag(step, "PreserveBoundary", False),
+            preserve_features=_flag(step, "PreserveFeatures", True),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            return_report=True,
+        )
+        entry["TetsRemoved"] = report["tets_removed"]
         entry["CollapsesRejected"] = report["collapses_rejected"]
     elif op == "Partition":
         nparts = int(_number(step, "Nparts", 2))

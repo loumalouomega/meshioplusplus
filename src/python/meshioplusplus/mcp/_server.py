@@ -898,6 +898,40 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def decimate_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        ratio: Optional[float] = None,
+        target_cells: Optional[int] = None,
+        max_error: Optional[float] = None,
+        placement: str = "optimal",
+        preserve_boundary: bool = False,
+        preserve_features: bool = True,
+        feature_angle: float = 30.0,
+    ) -> dict:
+        """Decimate a tetrahedral mesh by quadric-error tet-edge collapse. Give
+        exactly one stopping criterion: ratio (fraction of tets to KEEP),
+        target_cells, or max_error. Boundary vertices participate by default
+        (preserve_boundary=False, unlike surface decimate). Reports
+        tets/points removed and rejections."""
+        return _guard(
+            _tools.tool_decimate_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            ratio=ratio,
+            target_cells=target_cells,
+            max_error=max_error,
+            placement=placement,
+            preserve_boundary=preserve_boundary,
+            preserve_features=preserve_features,
+            feature_angle=feature_angle,
+        )
+
+    @server.tool()
     def smooth(
         input_path: str,
         output_path: str,

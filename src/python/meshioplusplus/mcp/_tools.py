@@ -51,6 +51,7 @@ from .. import (
     data_info,
     data_manage,
     decimate,
+    decimate_volume,
     diff,
     distance_to_surface,
     estimate_error,
@@ -1131,6 +1132,35 @@ def tool_decimate(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_decimate_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    ratio=None,
+    target_cells=None,
+    max_error=None,
+    placement="optimal",
+    preserve_boundary=False,
+    preserve_features=True,
+    feature_angle=30.0,
+):
+    """Reduce a tet mesh's cell count (exactly one stopping criterion)."""
+    mesh = _load(input_path, input_format)
+    out, report = decimate_volume(
+        mesh,
+        ratio=ratio,
+        target_cells=target_cells,
+        max_error=max_error,
+        placement=placement,
+        preserve_boundary=preserve_boundary,
+        preserve_features=preserve_features,
+        feature_angle=feature_angle,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_smooth(
     input_path,
     output_path,
@@ -1788,6 +1818,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_undo_green, "wraps": ("undo_green",), "gated": None},
         ),
         ("decimate", {"fn": tool_decimate, "wraps": ("decimate",), "gated": None}),
+        (
+            "decimate_volume",
+            {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
+        ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),
