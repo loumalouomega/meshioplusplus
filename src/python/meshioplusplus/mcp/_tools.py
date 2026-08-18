@@ -44,6 +44,7 @@ from .. import (
     compute_quality,
     compute_sdf,
     compute_stats,
+    conservative_interpolate,
     convert_cells,
     crop,
     data_calc,
@@ -1318,6 +1319,32 @@ def tool_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_conservative_interpolate(
+    source_path,
+    target_path,
+    output_path,
+    source_format=None,
+    target_format=None,
+    output_format=None,
+    arrays=None,
+    default_value=0.0,
+    on_conflict="error",
+):
+    """Mass-preservingly (overlap-measure weighted) sample the source mesh's
+    data arrays onto the target mesh's geometry -- unlike interpolate, this
+    conserves sum(value * measure) over the region the two meshes share."""
+    source = _load(source_path, source_format)
+    target = _load(target_path, target_format)
+    out = conservative_interpolate(
+        source,
+        target,
+        arrays=arrays,
+        default_value=default_value,
+        on_conflict=on_conflict,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_undo_green(
     coarse_path,
     fine_path,
@@ -1829,6 +1856,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "interpolate",
             {"fn": tool_interpolate, "wraps": ("interpolate",), "gated": None},
+        ),
+        (
+            "conservative_interpolate",
+            {
+                "fn": tool_conservative_interpolate,
+                "wraps": ("conservative_interpolate",),
+                "gated": None,
+            },
         ),
         (
             "data_manage",

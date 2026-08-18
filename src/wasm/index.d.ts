@@ -494,6 +494,10 @@ export type InterpolateMethod = 'nearest' | 'barycentric';
  *  target: throw, replace, or write to `name + '_interp'`. */
 export type InterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
 
+/** What `conservativeInterpolate` does when a transferred name already
+ *  exists on the target: throw, replace, or write to `name + '_interp'`. */
+export type ConservativeInterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
+
 /** Partitioning backend: SFC is always available; KaHIP is never compiled
  *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
 export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
@@ -1012,6 +1016,29 @@ export interface MeshioPlusPlusModule {
     extrapolate?: boolean,
     defaultValue?: number,
     onConflict?: InterpolateOnConflict,
+  ): Mesh;
+
+  /**
+   * Mass-preserving cross-mesh field transfer: an exact overlap-measure
+   * weighted remap, so that over the region the two meshes share,
+   * sum(target value * target measure) equals sum(source value * source
+   * measure) — the property `interpolate`'s `'barycentric'` mode does not
+   * have. Both meshes are simplexified first (accepting ragged/polyhedron
+   * blocks for free, unlike a restricted cell-type scope). Unlike
+   * `interpolate`, an empty `arrays` transfers every source point_data AND
+   * cell_data array — there is one algorithm regardless of location. Output
+   * arrays are always Float64.
+   * @throws {Error} on an unknown onConflict, an unknown array name, a name
+   *   collision under `'error'`, mismatched maximum topological dimensions
+   *   between the two meshes, or no triangle/tetrahedron cells on either
+   *   side after simplexification.
+   */
+  conservativeInterpolate(
+    source: Mesh,
+    target: Mesh,
+    arrays?: string[],
+    defaultValue?: number,
+    onConflict?: ConservativeInterpolateOnConflict,
   ): Mesh;
 
   /**

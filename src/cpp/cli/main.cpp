@@ -71,6 +71,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -460,6 +461,8 @@ void print_usage(std::ostream& os) {
           "  smooth                  Relax node positions (Laplacian / Taubin)\n"
           "  interpolate             Sample data arrays from a source mesh onto a target\n"
           "                            (nearest / barycentric; --arrays a,b names them)\n"
+          "  conservative-interpolate Mass-preserving (overlap-measure weighted) transfer\n"
+          "                            from a source mesh onto a target mesh\n"
           "  stats                   Print geometric statistics (bbox/area/volume)\n"
           "  view                    Open a mesh in an interactive viewer\n"
           "  screenshot              Render a mesh to a PNG without a window\n"
@@ -1890,6 +1893,42 @@ int cmd_interpolate(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_conservative_interpolate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"arrays", {}, true},
+                                  {"default-value", {}, true},
+                                  {"on-conflict", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 3)
+        throw std::runtime_error(
+            "conservative-interpolate requires exactly SOURCE TARGET and OUTFILE");
+    Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+
+    meshioplusplus::ConservativeInterpolateOptions options;
+    if (has_opt(p, "arrays"))
+        options.mArrays = data_split_names(opt_value(p, "arrays"));
+    // A negative value needs the --default-value=-1 form (the parser rule
+    // shared with --mu and --bbox).
+    options.mDefaultValue = std::stod(opt_value(p, "default-value", "0"));
+    options.mOnConflict = meshioplusplus::conservative_interpolate_conflict_from_name(
+        opt_value(p, "on-conflict", "error"));
+
+    Mesh out = meshioplusplus::conservative_interpolate(source, target, options);
+    if (!has_flag(p, "quiet")) {
+        const std::size_t n = options.mArrays.empty()
+                                  ? source.PointDataNames().size() + source.CellDataNames().size()
+                                  : options.mArrays.size();
+        std::cout << "conservatively interpolated " << n << " array(s) onto " << out.NumPoints()
+                  << " target points\n";
+    }
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
+    return 0;
+}
+
 // The {part} analogue of replace_key (kept separate so split stays untouched).
 std::string partition_replace_part(const std::string& rPattern, int part) {
     const std::string token = "{part}";
@@ -2954,6 +2993,8 @@ int main(int argc, char** argv) {
             return cmd_smooth(rest);
         if (cmd == "interpolate")
             return cmd_interpolate(rest);
+        if (cmd == "conservative-interpolate")
+            return cmd_conservative_interpolate(rest);
         if (cmd == "partition")
             return cmd_partition(rest);
         if (cmd == "data")

@@ -190,6 +190,9 @@ _EXCLUDED_OPS = {
     "`diff` CLI verb",
     "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
     "pipeline step; use the `undo-green` CLI verb",
+    "ConservativeInterpolate": "'ConservativeInterpolate' needs a second "
+    "(source) mesh and is not a pipeline step; use the "
+    "`conservative-interpolate` CLI verb",
 }
 
 

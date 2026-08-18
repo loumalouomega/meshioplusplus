@@ -49,6 +49,7 @@ from . import (
 from .__about__ import __version__
 from ._agglomerate import agglomerate
 from ._clean import clean
+from ._conservative_interpolate import conservative_interpolate
 from ._convert_cells import convert_cells
 from ._crop import crop
 from ._data_average import cell_data_to_point_data, point_data_to_cell_data
@@ -205,6 +206,7 @@ __all__ = [
     "meshes_equal",
     "merge",
     "interpolate",
+    "conservative_interpolate",
     "gradient",
     "estimate_error",
     "slice",

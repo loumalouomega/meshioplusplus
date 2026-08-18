@@ -355,6 +355,23 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 defaultValue,
                 onConflict,
             ),
+        // Mass-preserving cross-mesh field transfer: an exact overlap-measure
+        // weighted remap (unlike interpolate's pointwise sampling). An empty
+        // `arrays` = every source point_data AND cell_data array.
+        conservativeInterpolate: (
+            source,
+            target,
+            arrays = [],
+            defaultValue = 0,
+            onConflict = 'error',
+        ) =>
+            Module.conservativeInterpolate(
+                source,
+                target,
+                arrays,
+                defaultValue,
+                onConflict,
+            ),
         // Restore `fine`'s transitional (green) cells to their coarse parent,
         // read verbatim from `coarse` (a lookup, not a reconstruction).
         undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),

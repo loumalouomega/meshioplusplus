@@ -1077,6 +1077,34 @@ def _register_operations(server: FastMCP) -> None:
             on_conflict=on_conflict,
         )
 
+    @server.tool()
+    def conservative_interpolate(
+        source_path: str,
+        target_path: str,
+        output_path: str,
+        source_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+        default_value: float = 0.0,
+        on_conflict: str = "error",
+    ) -> dict:
+        """Mass-preservingly (overlap-measure weighted) sample the source
+        mesh's data arrays onto the target mesh's geometry; unlike
+        interpolate, conserves sum(value * measure) over the shared region."""
+        return _guard(
+            _tools.tool_conservative_interpolate,
+            source_path=source_path,
+            target_path=target_path,
+            output_path=output_path,
+            source_format=source_format,
+            target_format=target_format,
+            output_format=output_format,
+            arrays=arrays,
+            default_value=default_value,
+            on_conflict=on_conflict,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Data operations                                                             #

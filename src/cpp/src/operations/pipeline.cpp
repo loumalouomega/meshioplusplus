@@ -299,6 +299,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "UndoGreen")
         return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
                "step; use the `undo-green` CLI verb";
+    if (rOp == "ConservativeInterpolate")
+        return "'ConservativeInterpolate' needs a second (source) mesh and is not "
+               "a pipeline step; use the `conservative-interpolate` CLI verb";
     return nullptr;
 }
 
