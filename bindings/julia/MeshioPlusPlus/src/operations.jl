@@ -341,6 +341,47 @@ end
 _op_name(op) = String(op)
 _method_name(m) = replace(String(m), '_' => '-')
 
+"""
+    estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
+                   output="", marked="", overwrite=false)
+        -> (; mesh, global_error, num_skipped, num_marked)
+
+Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+**point-data** field, and optionally mark cells for refinement.
+
+A composition of [`gradient`](@ref) (Green-Gauss, cell location) with the
+measure-weighted point<->cell averaging round trip: the indicator is
+`sqrt(|measure| * sum((recovered - raw)^2))` per cell, attached as `output`
+(default `"error:zz"`). `marking` is `:none` (default), `:absolute`,
+`:fraction`, or `:dorfler`; when not `:none` a second Int64 0/1 array `marked`
+(default `"error:marked"`) is attached too, so [`refine`](@ref)'s own `where`
+selector needs no change at all — the intended use is
+`refine(mesh, where="error:marked > 0.5")`. `marking_value`'s meaning depends
+on `marking`: an absolute indicator threshold, a fraction in `(0, 1]` of
+cells, or the Dörfler bulk fraction theta in `(0, 1]`.
+
+Cells that cannot be evaluated read `NaN` in the indicator array and `0`
+(never `NaN`) in the marking array, and are counted in `num_skipped`
+(excluded from `global_error` and from `num_marked`).
+
+Naming a *cell-data* array fails by name, for the same reason `gradient` does.
+See `doc/gradient.md`.
+"""
+function estimate_error(m::Mesh, array::AbstractString; method=:zz, marking=:none,
+                        marking_value::Real=0.0, output::AbstractString="",
+                        marked::AbstractString="", overwrite::Bool=false)
+    global_error = Ref{Cdouble}(0.0)
+    skipped = Ref{Int64}(0)
+    nmarked = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_estimate_error), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cdouble, Cstring, Cstring, Cint,
+                 Ptr{Cdouble}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), array, String(method), String(marking), Cdouble(marking_value),
+                output, marked, overwrite ? Cint(1) : Cint(0), global_error, skipped, nmarked)
+    (mesh=Mesh(_check_ptr(ptr)), global_error=Float64(global_error[]),
+     num_skipped=Int(skipped[]), num_marked=Int(nmarked[]))
+end
+
 # --- combining / comparing ---------------------------------------------------
 
 """
@@ -367,6 +408,30 @@ function merge(meshes::AbstractVector{Mesh}; weld::Bool=false, atol::Real=1e-12,
         Float64(atol), source_tag ? Cint(1) : Cint(0), policy,
         drop_duplicate_cells ? Cint(1) : Cint(0))
     Mesh(_check_ptr(ptr))
+end
+
+"""
+    undo_green(coarse, fine) -> (; mesh, num_groups_undone, num_cells_removed)
+
+Green-element undo: restore `fine`'s transitional (closure-only) cells back to
+their original parent, read verbatim from `coarse` — a lookup, not a
+reconstruction, since `refine` never renumbers or prunes points. Undoes
+`refine`'s known quality-degradation issue with repeated selective passes over
+the same region ("restore the parent and re-split from scratch").
+
+`fine` must carry `refine:cell_id`/`refine:parent_id`/`refine:level` (i.e. it
+must come from `refine(coarse, ...; record_hierarchy=true,
+record_levels=true)`); `coarse` must be the exact mesh that call was run on.
+The six reserved `refine:*` arrays are dropped from the output. Only a
+single-pass (`levels=1`) hierarchy is supported. See `doc/undo_green.md`.
+"""
+function undo_green(coarse::Mesh, fine::Mesh)
+    ngroups = Ref{Int64}(0); nremoved = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_undo_green), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}),
+                _handle(coarse), _handle(fine), ngroups, nremoved)
+    (mesh=Mesh(_check_ptr(ptr)), num_groups_undone=Int(ngroups[]),
+     num_cells_removed=Int(nremoved[]))
 end
 
 """
@@ -594,6 +659,66 @@ function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=fa
     end
 end
 
+"""
+    subdivide(mesh; record_parent_ids=false) -> (; mesh, cell_maps)
+
+Polyhedrally refine: split every eligible 3-D cell into one polyhedral child
+per face, connected to a new interior point. Needs no per-type template
+table -- tabulated types (reduced to corners for a quadratic variant) and
+existing polyhedron blocks are handled uniformly. Automatically conforming,
+unlike [`refine`](@ref): a shared face between two input cells is never
+touched. Non-3-D blocks and the full-Lagrange family (no face table) pass
+through unchanged.
+
+Unlike [`convert_cells`](@ref), there is no `point_map` -- subdivide never
+prunes or renumbers an original point. Each `cell_maps[b]` is input cell →
+the index of its **first** child (one per face) in the corresponding output
+block. See `doc/subdivide.md`.
+"""
+function subdivide(m::Mesh; record_parent_ids::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_subdivide), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cint), _handle(m),
+                              record_parent_ids ? Cint(1) : Cint(0)))
+    try
+        cm = _result_cell_maps(result, :mio_subdivide_result_num_cell_maps,
+                               :mio_subdivide_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_subdivide_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, cell_maps=cm)
+    finally
+        ccall(_sym(:mio_subdivide_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    agglomerate(mesh; target_group_size=8) -> (; mesh, cell_map)
+
+Polyhedrally coarsen: merge groups of cells into single larger polyhedral
+cells via greedy seed-and-grow over the mesh's shared-face dual, absorbing
+face-adjacent neighbours into a group until it reaches `target_group_size`
+(a short group at a mesh boundary or pocket is expected, not an error).
+Non-volume blocks pass through unchanged; points are never pruned or
+renumbered ([`clean`](@ref) with `remove_orphans=true` is the follow-up for
+a minimal point set). `target_group_size=1` groups every cell by itself.
+
+Unlike [`subdivide`](@ref)'s per-block `cell_maps`, `cell_map` is a single
+**flat** 1-based array (input global cell → output global cell) -- an
+output cell's index is a function of which group it joined, not which
+input block it came from. See `doc/agglomerate.md`.
+"""
+function agglomerate(m::Mesh; target_group_size::Integer=8)
+    result = _check_ptr(ccall(_sym(:mio_agglomerate), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Int64), _handle(m), Int64(target_group_size)))
+    try
+        cm = _result_map(result, :mio_agglomerate_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_agglomerate_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, cell_map=cm)
+    finally
+        ccall(_sym(:mio_agglomerate_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
                               "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
                               "balanced" => Int32(2), "2:1" => Int32(2))
@@ -607,7 +732,7 @@ const _REFINE_COMPARES = Dict("<" => Int32(0), "lt" => Int32(0), "<=" => Int32(1
 """
     refine(mesh; levels=1, record_parent_ids=false, cells=nothing, region="",
            where_array="", where_op="<", where_value=0.0, closure="redgreen",
-           record_levels=false)
+           record_levels=false, record_hierarchy=false)
         -> (; mesh, point_map, cell_maps)
 
 Subdivide cells into same-type children (line → 2, triangle → 4, quad → 4,
@@ -628,12 +753,23 @@ nodes come back in `refine:hanging`).
 
 Higher-order cells, pyramids and ragged blocks have no same-type subdivision
 and fail by name. See `doc/refine.md`.
+
+`record_hierarchy` attaches the `refine:cell_id`/`refine:parent_id` `cell_data`
+arrays -- the persistent parent/child hierarchy a multigrid caller resolves
+across the sequence of meshes it keeps ("a link between two meshes, not a tree
+inside one"): an unsplit cell keeps its id and is its own parent; a split
+cell's children each get a fresh id and carry the parent's id. An input
+already carrying `refine:cell_id` is updated whatever this says. Also forces
+`refine:entity` to be attached even when the closure leaves no hanging node,
+since it already records the coarse corners each new fine node is the mean of
+-- the multigrid prolongation weights, which `"redgreen"`/`"propagate"` would
+otherwise never expose.
 """
 function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                 cells=nothing, region::AbstractString="",
                 where_array::AbstractString="", where_op::AbstractString="<",
                 where_value::Real=0.0, closure::AbstractString="redgreen",
-                record_levels::Bool=false)
+                record_levels::Bool=false, record_hierarchy::Bool=false)
     closure_code = get(_REFINE_CLOSURES, String(closure)) do
         throw(ArgumentError("refine: unknown closure '$closure' " *
                             "(expected 'redgreen'/'green', 'propagate' or 'balanced')"))
@@ -657,7 +793,8 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                             record_parent_ids ? Int32(1) : Int32(0),
                             record_levels ? Int32(1) : Int32(0),
                             closure_code, compare_code, Int32(0),
-                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                            record_hierarchy ? Int64(1) : Int64(0),
+                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
         _check_ptr(ccall(_sym(:mio_refine_ex), Ptr{Cvoid},
                          (Ptr{Cvoid}, Ref{_CRefineOpts}), _handle(m), Ref(opts)))
     end

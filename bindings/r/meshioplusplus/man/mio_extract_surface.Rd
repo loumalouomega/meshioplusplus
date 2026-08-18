@@ -12,9 +12,11 @@
 \alias{mio_crop_plane}
 \alias{mio_slice}
 \alias{mio_gradient}
+\alias{mio_estimate_error}
 \alias{mio_isosurface}
 \alias{mio_merge}
 \alias{mio_interpolate}
+\alias{mio_undo_green}
 \alias{mio_meshes_equal}
 \alias{mio_diff}
 \alias{mio_stats}
@@ -22,6 +24,8 @@
 \alias{mio_reorder}
 \alias{mio_split}
 \alias{mio_convert_cells}
+\alias{mio_subdivide}
+\alias{mio_agglomerate}
 \alias{mio_refine}
 \alias{mio_decimate}
 \alias{mio_partition}
@@ -84,6 +88,17 @@ mio_gradient(
   overwrite = FALSE
 )
 
+mio_estimate_error(
+  mesh,
+  array,
+  method = "zz",
+  marking = "none",
+  marking_value = 0,
+  output = "",
+  marked = "",
+  overwrite = FALSE
+)
+
 mio_merge(
   meshes,
   weld = FALSE,
@@ -103,6 +118,8 @@ mio_interpolate(
   on_conflict = "error"
 )
 
+mio_undo_green(coarse, fine)
+
 mio_meshes_equal(a, b, atol = 0, rtol = 0, unordered = FALSE)
 
 mio_diff(a, b, atol = 0, rtol = 0, unordered = FALSE)
@@ -116,6 +133,10 @@ mio_reorder(mesh, method = "rcm")
 mio_split(mesh, by = "type", tag_name = NULL)
 
 mio_convert_cells(mesh, convert_mode, record_parent_ids = FALSE)
+
+mio_subdivide(mesh, record_parent_ids = FALSE)
+
+mio_agglomerate(mesh, target_group_size = 8)
 
 mio_refine(mesh, levels = 1L, record_parent_ids = FALSE)
 
@@ -216,11 +237,24 @@ a negative value means the row magnitude; for \code{mio_gradient} it means
 
 \item{op}{For \code{mio_gradient}: \code{"gradient"}, \code{"divergence"} or \code{"curl"}.}
 
-\item{method}{For \code{mio_gradient}: \code{"green-gauss"} or \code{"least-squares"}.}
+\item{method}{For \code{mio_gradient}: \code{"green-gauss"} or \code{"least-squares"}. For
+\code{mio_estimate_error}: only \code{"zz"} exists today; \code{""} selects it.}
 
 \item{location}{For \code{mio_gradient}: \code{"cell"} or \code{"point"}.}
 
-\item{output}{Output array name; \code{""} uses \code{<array>:<op>}.}
+\item{output}{Output array name; \code{""} uses \code{<array>:<op>} for
+\code{mio_gradient}, \code{"error:zz"} for \code{mio_estimate_error}.}
+
+\item{marking}{For \code{mio_estimate_error}: \code{"none"} (default), \code{"absolute"},
+\code{"fraction"}, or \code{"dorfler"}.}
+
+\item{marking_value}{For \code{mio_estimate_error}: meaning depends on
+\code{marking} -- an absolute indicator threshold, a fraction in \code{(0, 1]} of
+cells, or the Doerfler bulk fraction theta in \code{(0, 1]}. Ignored for
+\code{"none"}.}
+
+\item{marked}{For \code{mio_estimate_error}: the marking array name; \code{""} uses
+\code{"error:marked"}. Ignored when \code{marking} is \code{"none"}.}
 
 \item{overwrite}{Replace an existing array of the output name instead of
 failing.}
@@ -242,6 +276,13 @@ source value instead of \code{default_value}.}
 
 \item{on_conflict}{\code{"error"}, \code{"overwrite"} or \code{"suffix"}.}
 
+\item{coarse}{For \code{mio_undo_green()}, the mesh a prior \code{mio_refine()} call
+was run on.}
+
+\item{fine}{For \code{mio_undo_green()}, that call's output; must carry
+\code{refine:cell_id}/\code{refine:parent_id}/\code{refine:level} (i.e. that call must
+have used \code{record_hierarchy = TRUE, record_levels = TRUE}).}
+
 \item{rtol}{Relative tolerance.}
 
 \item{unordered}{Match points by spatial proximity instead of by index.}
@@ -251,6 +292,9 @@ source value instead of \code{default_value}.}
 \item{tag_name}{For \code{by = "region"}, the integer cell-data array name.}
 
 \item{convert_mode}{\code{"linearize"}, \code{"simplexify"} or \code{"elevate"}.}
+
+\item{target_group_size}{Approximate member cells per \code{mio_agglomerate()}
+output group; must be at least 1 (\code{1} groups every cell by itself).}
 
 \item{levels}{How many times to apply the refinement templates.}
 

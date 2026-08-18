@@ -89,6 +89,19 @@ typedef struct mio_sequence mio_sequence;
  *  index maps. Destroy with mio_convert_cells_result_free(). */
 typedef struct mio_convert_cells_result mio_convert_cells_result;
 
+/** Opaque result of mio_subdivide(): the subdivided mesh plus the per-block
+ *  cell index maps. Unlike mio_convert_cells_result, there is no point map --
+ *  subdivide never prunes or renumbers an original point. Destroy with
+ *  mio_subdivide_result_free(). */
+typedef struct mio_subdivide_result mio_subdivide_result;
+
+/** Opaque result of mio_agglomerate(): the coarsened mesh plus a single FLAT
+ *  cell index map (unlike mio_subdivide_result's per-block one -- an output
+ *  cell's index is a function of which group it joined, not which input
+ *  block it came from). There is likewise no point map. Destroy with
+ *  mio_agglomerate_result_free(). */
+typedef struct mio_agglomerate_result mio_agglomerate_result;
+
 /** Opaque result of mio_refine(): the refined mesh plus the point/cell index
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
@@ -97,6 +110,12 @@ typedef struct mio_refine_result mio_refine_result;
  *  index maps and the collapse summary. Destroy with
  *  mio_decimate_result_free(). */
 typedef struct mio_decimate_result mio_decimate_result;
+
+/** Opaque result of mio_decimate_volume(): the decimated TET mesh plus the
+ *  point/cell index maps and the collapse summary. A separate result type
+ *  from mio_decimate_result -- decimate_volume is a separate operation, not a
+ *  mode on decimate. Destroy with mio_decimate_volume_result_free(). */
+typedef struct mio_decimate_volume_result mio_decimate_volume_result;
 
 /** Opaque result of mio_partition(): the pieces plus their point/cell index
  *  maps. Destroy with mio_partition_result_free(). */
@@ -216,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 0
+#define MIO_VERSION_MINOR 6
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -691,6 +710,43 @@ MIO_API mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int itera
                              double* max_displacement, int64_t* skipped_inversion);
 
 /**
+ * Green-element undo: restore `fine`'s transitional (closure-only) cells back
+ * to their original parent, read verbatim from `coarse` -- a lookup, not a
+ * reconstruction, since `mio_refine` never renumbers or prunes points. Undoes
+ * the known quality-degradation issue of repeated selective `mio_refine`
+ * passes over the same region ("restore the parent and re-split from
+ * scratch").
+ *
+ * `fine` must carry one int64 scalar cell_data array per block for each of
+ * "refine:cell_id", "refine:parent_id" and "refine:level" -- i.e. it must have
+ * come from an `mio_refine_ex` call with `record_hierarchy` AND
+ * `record_levels` both set; fails naming the missing array otherwise.
+ * `coarse` must be the exact mesh that `mio_refine_ex` call was run on (or an
+ * equally-shaped mesh sharing its point/id space); a `refine:parent_id` that
+ * does not resolve against `coarse` fails by name rather than guessing.
+ *
+ * The output keeps `fine`'s own block structure (same types, same order);
+ * some blocks' row counts shrink where a green sibling group collapsed to
+ * one substituted row. The six reserved refine:* arrays (four cell_data:
+ * parent_cell/level/cell_id/parent_id, two point_data: entity/hanging) are
+ * always dropped from the output -- they describe a hierarchy relationship
+ * that is now stale. Points are never pruned or renumbered. Only a
+ * single-pass (levels=1) hierarchy is supported; a multi-level `mio_refine_ex`
+ * call's deeper branches fail by name.
+ *
+ * Its per-block cell maps and the `mFrozen`-style extras are not exposed on
+ * the flat ABI, a documented gap like `mio_smooth`'s.
+ * @param coarse             the mesh a prior `mio_refine_ex` call was run on.
+ * @param fine               that call's output.
+ * @param num_groups_undone  out: number of green sibling groups substituted
+ *                            (nullable).
+ * @param num_cells_removed  out: total green child cells removed (nullable).
+ * @return the undone mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine,
+                                 int64_t* num_groups_undone, int64_t* num_cells_removed);
+
+/**
  * Sample data arrays from a source mesh onto a target mesh (cross-mesh field
  * transfer). Returns a copy of the target — geometry, connectivity and its own
  * data preserved exactly — with the requested source arrays sampled onto it:
@@ -818,6 +874,58 @@ MIO_API mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, con
                                const char* method, const char* location, const char* output_name,
                                int component, int overwrite, int64_t* num_skipped,
                                int64_t* num_fallback);
+
+/**
+ * Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+ * point_data field, and optionally mark cells for refinement.
+ *
+ * A composition of mio_gradient (Green-Gauss, cell location) with the
+ * measure-weighted point<->cell averaging round trip: the indicator is
+ * sqrt(|measure| * sum((recovered - raw)^2)) per cell. The result is a copy
+ * of the input carrying "<output_name>" (Float64, default "error:zz") and,
+ * when marking is not "none", "<marked_name>" (Int64 0/1, default
+ * "error:marked") -- so refine's own --where predicate needs no change at
+ * all: the intended use is `mio_refine_ex` with a "error:marked > 0.5"
+ * selector. Geometry, connectivity, regions and every existing array come
+ * through unchanged.
+ *
+ * A cell that cannot be evaluated (an unsupported/degenerate gradient cell, a
+ * recovery neighbourhood with no finite contribution, or an unmeasurable
+ * cell) reads NaN in the indicator array and 0 (never NaN) in the marking
+ * array, and is excluded from global_error and from every marking policy's
+ * cell count.
+ *
+ * @param mesh          input mesh.
+ * @param array_name    name of the point_data array to estimate the error
+ *                      of. A cell_data name is an error naming the fix, since
+ *                      a piecewise-constant field has no derivative to
+ *                      recover.
+ * @param method        estimator family; NULL, "" or "zz" selects the only
+ *                      one that exists today.
+ * @param marking       "none" (default; NULL or "" also selects it),
+ *                      "absolute", "fraction", or "dorfler".
+ * @param marking_value meaning depends on marking: ignored for "none"; an
+ *                      absolute indicator threshold for "absolute"; a
+ *                      fraction in (0, 1] of cells for "fraction"; the
+ *                      Doerfler bulk fraction theta in (0, 1] for "dorfler".
+ * @param output_name   indicator array name; NULL or "" selects "error:zz".
+ * @param marked_name   marking array name; NULL or "" selects
+ *                      "error:marked". Ignored when marking is "none".
+ * @param overwrite     nonzero to replace an existing array of an output
+ *                      name instead of failing.
+ * @param global_error  optional out: sqrt(sum of eta_K^2) over evaluable
+ *                      cells -- the estimated global error.
+ * @param num_skipped   optional out: cells that could not be evaluated.
+ * @param num_marked    optional out: cells marked; always 0 for "none".
+ * @return the mesh carrying the produced array(s) (free with mio_mesh_free),
+ *         or NULL on failure.
+ */
+MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name,
+                                     const char* method, const char* marking,
+                                     double marking_value, const char* output_name,
+                                     const char* marked_name, int overwrite,
+                                     double* global_error, int64_t* num_skipped,
+                                     int64_t* num_marked);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
@@ -975,6 +1083,109 @@ MIO_API mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_res
 /** Free a convert-cells result (and the mesh it still owns). */
 MIO_API void mio_convert_cells_result_free(mio_convert_cells_result* result);
 
+/**
+ * Polyhedrally refine a mesh: one polyhedral child per face of every eligible
+ * 3D cell, connected to a new interior point. Needs no per-type template
+ * table -- tabulated types (reduced to corners for a quadratic variant) and
+ * existing polyhedron blocks are handled uniformly. Automatically conforming:
+ * a shared face between two input cells is never touched. Non-3D blocks and
+ * the full-Lagrange family (no face table) pass through unchanged. Point/Cell
+ * regions survive; named Side regions do not (no facet correspondence).
+ * point_sets/cell_sets are not carried across the C ABI.
+ * @param record_parent_ids  nonzero to attach a subdivide:parent_cell
+ *                           cell_data array of per-block source cell indices.
+ * @return a result handle (free with mio_subdivide_result_free), or NULL on
+ *         failure -- a cell whose faces are not a closed orientable surface.
+ */
+MIO_API mio_subdivide_result* mio_subdivide(const mio_mesh* mesh, int record_parent_ids);
+
+/**
+ * Borrow the subdivided mesh. Owned by the result: valid until
+ * mio_subdivide_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the subdivided mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_subdivide_result_mesh(const mio_subdivide_result* result);
+
+/**
+ * Transfer ownership of the subdivided mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_subdivide_result_take_mesh(mio_subdivide_result* result);
+
+/** Number of per-block cell maps in a subdivide result, or -1 on error. */
+MIO_API int64_t mio_subdivide_result_num_cell_maps(const mio_subdivide_result* result);
+
+/**
+ * Zero-copy borrow of cell block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> the index of its FIRST child (one per
+ * face) in the corresponding output block). Any out-param may be NULL.
+ * @param result a subdivide result.
+ * @param block  cell-block index in [0, mio_subdivide_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int64_t block,
+                                                 const void** data, mio_dtype* dtype, int64_t* n);
+
+/** Free a subdivide result (and the mesh it still owns). */
+MIO_API void mio_subdivide_result_free(mio_subdivide_result* result);
+
+/**
+ * Polyhedrally coarsen a mesh: merge groups of cells into single larger
+ * polyhedral cells via greedy seed-and-grow over the mesh's shared-face
+ * dual, absorbing face-adjacent neighbours into a group until it reaches
+ * target_group_size (or no unclaimed neighbour remains -- a short group at a
+ * mesh boundary or pocket is expected, not an error). Non-volume blocks
+ * (2D/1D, or any 3D block with no face table) pass through unchanged.
+ * Points are never pruned or renumbered; mio_clean(..., remove_orphans=1) is
+ * the follow-up for a caller wanting a minimal point set. Point/Cell regions
+ * survive; named Side regions cannot (a many-to-one collapse has no facet
+ * correspondence to preserve). point_sets/cell_sets are not carried across
+ * the C ABI.
+ * @param target_group_size  approximate member cells per output group; must
+ *                           be at least 1 (1 means every cell is its own
+ *                           group).
+ * @return a result handle (free with mio_agglomerate_result_free), or NULL
+ *         on failure -- target_group_size == 0, or a face shared by three or
+ *         more cells (non-manifold), which the merge refuses rather than
+ *         guessing a boundary classification for.
+ */
+MIO_API mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_group_size);
+
+/**
+ * Borrow the coarsened mesh. Owned by the result: valid until
+ * mio_agglomerate_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the coarsened mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_agglomerate_result_mesh(const mio_agglomerate_result* result);
+
+/**
+ * Transfer ownership of the coarsened mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result);
+
+/**
+ * Zero-copy borrow of the FLAT cell map (int64, shape (total input cell
+ * count,), input global cell -> output global cell). Unlike
+ * mio_subdivide_result_cell_map, this takes no block argument -- an output
+ * cell's index is a function of which group it joined, not which input
+ * block it came from -- and there is correspondingly no
+ * mio_agglomerate_result_num_cell_maps (there is exactly one array). Any
+ * out-param may be NULL.
+ * @param result an agglomerate result.
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the input mesh's total cell count.
+ */
+MIO_API mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result,
+                                                   const void** data, mio_dtype* dtype,
+                                                   int64_t* n);
+
+/** Free an agglomerate result (and the mesh it still owns). */
+MIO_API void mio_agglomerate_result_free(mio_agglomerate_result* result);
+
 /** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
 typedef enum mio_refine_closure {
     MIO_REFINE_CLOSURE_REDGREEN = 0,  /**< promote to the smallest admissible mask (local) */
@@ -1039,7 +1250,20 @@ typedef struct mio_refine_opts {
     /** A mio_refine_compare. */
     int32_t predicate_op;
     int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
-    int64_t reserved[6];  /**< must be zero; room for additive growth */
+    /**
+     * Nonzero to attach the refine:cell_id/refine:parent_id cell_data arrays --
+     * the persistent parent/child hierarchy a multigrid caller resolves across
+     * the sequence of meshes it keeps ("a link between two meshes, not a tree
+     * inside one"). An input already carrying refine:cell_id is updated
+     * whatever this says. Also forces refine:entity to be attached even when
+     * the closure leaves no hanging node, since it already records the coarse
+     * corners each new fine node is the mean of -- the multigrid prolongation
+     * weights. Takes one of the former `reserved` slots, keeping the struct's
+     * size and every other field's offset unchanged -- the mio_read_opts
+     * `lenient` precedent.
+     */
+    int64_t record_hierarchy;
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_refine_opts;
 
 /** Zero-initialize refine options (every field its default). */
@@ -1224,6 +1448,113 @@ MIO_API double mio_decimate_result_max_error_applied(const mio_decimate_result* 
 
 /** Free a decimate result (and the mesh it still owns). */
 MIO_API void mio_decimate_result_free(mio_decimate_result* result);
+
+/**
+ * Decimate a TET mesh by greedy quadric-error-metric tet-edge collapse — the
+ * volume-mesh sibling of mio_decimate, a SEPARATE operation (mio_decimate
+ * keeps failing by name on any 3D volume block, pointing here). Tet-only:
+ * hexahedron/wedge/pyramid/polyhedron/ragged/higher-order 3D blocks, or any
+ * non-3D block mixed in, fail by name pointing at simplexify
+ * (mio_convert_cells). Unlike mio_decimate, boundary vertices PARTICIPATE by
+ * default (preserve_boundary defaults to pass 0) with a real quadric-error
+ * objective built from the mesh's own outer-skin triangles; purely interior
+ * edges (whose combined quadric is exactly zero) are scored by squared
+ * length instead and always rank behind boundary-touching ones. The link
+ * condition, a duplicate-tet guard and a tet-inversion guard reject any
+ * collapse that would change topology or invert a tet; boundary-touching
+ * collapses additionally run mio_decimate's own ring/shared-face link
+ * condition and normal-flip check over the mesh's own skin. The caller
+ * frozen mask is not exposed across the C ABI (a documented flat-ABI gap,
+ * like mio_smooth's).
+ * @param target_ratio      fraction of the tets to KEEP, in (0, 1];
+ *                          negative = unset.
+ * @param target_cells      absolute tet count to stop at (the result lands
+ *                          within one collapse of it); negative = unset.
+ * @param max_error         collapse only while the cheapest boundary-touching
+ *                          candidate's quadric error is at most this;
+ *                          negative = unset. Exactly one of the three
+ *                          criteria must be set.
+ * @param placement         "optimal" (quadric minimizer, midpoint when
+ *                          ill-conditioned or purely interior), "midpoint" or
+ *                          "endpoint"; NULL = "optimal".
+ * @param preserve_boundary nonzero to pin every boundary vertex outright,
+ *                          reproducing mio_decimate's own default instead of
+ *                          letting boundary vertices participate.
+ * @param preserve_features nonzero to pin boundary feature vertices.
+ * @param feature_angle     the feature angle in degrees (30 is the
+ *                          vtkFeatureEdges convention).
+ * @return a result handle (free with mio_decimate_volume_result_free), or
+ *         NULL on failure — a non-tet-only mesh, a non-manifold boundary
+ *         face, and a criterion count != 1 all fail by name.
+ */
+MIO_API mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double target_ratio,
+                                                         int64_t target_cells, double max_error,
+                                                         const char* placement,
+                                                         int preserve_boundary,
+                                                         int preserve_features,
+                                                         double feature_angle);
+
+/**
+ * Borrow the decimated mesh. Owned by the result: valid until
+ * mio_decimate_volume_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the decimated mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result);
+
+/**
+ * Transfer ownership of the decimated mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_decimate_volume_result_take_mesh(mio_decimate_volume_result* result);
+
+/**
+ * Zero-copy borrow of the point map (int64, shape (num_points_in,), input
+ * point index -> output index). A collapsed point maps to its SURVIVOR's
+ * output index, and is -1 only when the survivor itself ended up
+ * unreferenced. The pointer is valid until the result is freed. Any out-param
+ * may be NULL.
+ */
+MIO_API mio_status mio_decimate_volume_result_point_map(const mio_decimate_volume_result* result,
+                                                         const void** data, mio_dtype* dtype,
+                                                         int64_t* n);
+
+/** Number of per-block cell maps in a decimate_volume result, or -1 on error. */
+MIO_API int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volume_result* result);
+
+/**
+ * Zero-copy borrow of INPUT tet block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> its own output index, or -1 when it
+ * did not survive). Any out-param may be NULL.
+ * @param result a decimate_volume result.
+ * @param block  cell-block index in [0, mio_decimate_volume_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_decimate_volume_result_cell_map(const mio_decimate_volume_result* result,
+                                                        int64_t block, const void** data,
+                                                        mio_dtype* dtype, int64_t* n);
+
+/** Tets removed, or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result);
+
+/** Points removed (collapsed plus pruned-unreferenced), or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_points_removed(const mio_decimate_volume_result* result);
+
+/** Guard-rejection events during the run, or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_collapses_rejected(const mio_decimate_volume_result* result);
+
+/** The largest committed boundary-touching (regime 0) collapse error (0.0
+ *  when nothing collapsed, or every collapse was purely interior), or a
+ *  negative value on error. */
+MIO_API double
+mio_decimate_volume_result_max_error_applied(const mio_decimate_volume_result* result);
+
+/** Free a decimate_volume result (and the mesh it still owns). */
+MIO_API void mio_decimate_volume_result_free(mio_decimate_volume_result* result);
 
 /**
  * Decompose a mesh into `nparts` balanced pieces for domain decomposition (the

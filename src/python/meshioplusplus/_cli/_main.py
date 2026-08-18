@@ -3,6 +3,7 @@ from sys import version_info
 
 from ..__about__ import __version__
 from . import (
+    _agglomerate,
     _ascii,
     _binary,
     _clean,
@@ -13,6 +14,7 @@ from . import (
     _data,
     _dataset,
     _decimate,
+    _decimate_volume,
     _decompress,
     _diff,
     _extract_surface,
@@ -31,7 +33,9 @@ from . import (
     _smooth,
     _split,
     _stats,
+    _subdivide,
     _transform,
+    _undo_green,
     _view,
     _voxelize,
 )
@@ -184,6 +188,26 @@ def main(argv=None):
     parser.set_defaults(func=_convert_cells.convert_cells_cmd)
 
     parser = subparsers.add_parser(
+        "subdivide",
+        help=(
+            "Polyhedrally refine: split every eligible 3D cell into one "
+            "polyhedral child per face, connected to a new interior point"
+        ),
+    )
+    _subdivide.add_args(parser)
+    parser.set_defaults(func=_subdivide.subdivide_cmd)
+
+    parser = subparsers.add_parser(
+        "agglomerate",
+        help=(
+            "Polyhedrally coarsen: merge groups of cells into single larger "
+            "polyhedral cells via greedy seed-and-grow over the shared-face dual"
+        ),
+    )
+    _agglomerate.add_args(parser)
+    parser.set_defaults(func=_agglomerate.agglomerate_cmd)
+
+    parser = subparsers.add_parser(
         "refine",
         help=(
             "Refine (subdivide cells into same-type children), every cell or a "
@@ -194,11 +218,28 @@ def main(argv=None):
     parser.set_defaults(func=_refine.refine_cmd)
 
     parser = subparsers.add_parser(
+        "undo-green",
+        help=(
+            "Restore a transitional (green) cell to its coarse parent, read "
+            "verbatim from the coarse mesh"
+        ),
+    )
+    _undo_green.add_args(parser)
+    parser.set_defaults(func=_undo_green.undo_green_cmd)
+
+    parser = subparsers.add_parser(
         "decimate",
         help="Reduce a surface mesh's face count by quadric edge collapse",
     )
     _decimate.add_args(parser)
     parser.set_defaults(func=_decimate.decimate_cmd)
+
+    parser = subparsers.add_parser(
+        "decimate-volume",
+        help="Reduce a tet mesh's cell count by quadric tet-edge collapse",
+    )
+    _decimate_volume.add_args(parser)
+    parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
 
     parser = subparsers.add_parser(
         "partition",

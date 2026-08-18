@@ -73,7 +73,8 @@
  *  | 3   | v9.2.0 .. v9.4.1   | `KratosMesh`, `PropertySet`, `NativeMesh`, …   |
  *  | 4   | v9.5.0 .. v9.8.0   | `RefineOptions` gained selection/closure fields |
  *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
- *  | 6   | v9.20.0            | `OpenFoamInfo` gained `mPatchTypes`             |
+ *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
+ *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
  *
  * ### This is the ONE place the number is written
  *
@@ -92,7 +93,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 6
+#define MESHIOPLUSPLUS_ABI_VERSION 7
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -6197,6 +6198,392 @@ MESHIOPLUSPLUS_API double cell_measure(const NDArray& rPoints, std::size_t Point
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/data_ops.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+/**
+ * @file decimate.hpp
+ * @brief Surface decimation by quadric-error-metric edge collapse: reduce a
+ * surface mesh's face count while preserving its shape, boundaries and
+ * features.
+ *
+ * This is the resolution-*reducing* inverse of `refine`, completing the pair.
+ * The algorithm is the classic Garland–Heckbert construction (quadric error
+ * metrics, SIGGRAPH '97): every vertex accumulates a 4x4 symmetric quadric —
+ * the sum of squared-distance-to-plane forms of its incident triangles,
+ * area-weighted — and every candidate edge collapse is scored by the summed
+ * endpoint quadric evaluated at the collapsed vertex's position. The cheapest
+ * edge is collapsed greedily, its quadrics are summed onto the survivor, the
+ * survivor's incident edges are re-scored, and the loop repeats until the
+ * stopping criterion is met.
+ *
+ * **Surface only, triangles out.** The operating type is `triangle`; `quad`
+ * and rectangular `polygon` blocks are triangulated first via
+ * `convert_cells(Simplexify)`, so the output is all-triangle even when the
+ * input was not. A mesh containing 3D volume cells throws by name pointing at
+ * `extract_surface` — QEM decimation of a *volume* mesh (tetra-collapse
+ * validity, no boundary-shape objective) is a different and much harder
+ * problem, deliberately out of scope rather than silently skinned. Higher-order
+ * cells (`triangle6`, ...; linearize first), ragged polygon/polyhedron blocks,
+ * and `line`/`vertex` blocks mixed in with the surface likewise throw by name.
+ *
+ * **What is pinned** (mirroring `smooth`'s vocabulary and defaults). A pinned
+ * vertex never moves and is never removed; an edge between two pinned vertices
+ * never enters the queue, and a collapse toward a pinned vertex keeps that
+ * vertex's own position regardless of `mPlacement`. Pinned are:
+ *  - boundary vertices under `mPreserveBoundary` (the classic once-used-edge
+ *    test: an edge used by exactly one triangle is boundary) — this is what
+ *    keeps a planar patch's outline exactly intact;
+ *  - feature vertices under `mPreserveFeatures`: vertices where two incident
+ *    face **normals** differ by more than `mFeatureAngleDeg` (the
+ *    `vtkFeatureEdges`/`smooth` convention), which is what keeps a cube's
+ *    corners and creases sharp. Conservative v1: crease vertices are fully
+ *    pinned rather than allowed to slide along the crease;
+ *  - the caller's `mFrozen` mask.
+ *
+ * **Validity guards.** Each guard *rejects* the individual collapse (counted in
+ * `mCollapsesRejected`) rather than aborting:
+ *  - the **link condition**: the vertices adjacent to both endpoints must be
+ *    exactly the opposite vertices of the faces on the edge, and an edge used
+ *    by more than two faces is non-manifold and never collapsible — so the
+ *    output cannot become non-manifold or change topology;
+ *  - **normal-flip rejection**: a surviving incident face whose unit normal
+ *    would turn by 90 degrees or more (`n_before . n_after <= 0`) rejects the
+ *    collapse. Like `smooth`'s inversion guard this is strictly "do no harm":
+ *    a face that is already degenerate (zero normal) imposes no constraint;
+ *  - **degenerate survivor rejection**: a surviving face collapsing to zero
+ *    area yields a zero `n_after`, hence `n_before . n_after = 0`, and is
+ *    rejected by the same test.
+ *
+ * **Placement** (`mPlacement`): `Optimal` places the survivor at the minimizer
+ * of the summed quadric (a 3x3 solve), falling back to the edge midpoint when
+ * the system is ill-conditioned — `|det| <= 1e-12 * max|A_ij|^3`, a
+ * scale-invariant Hadamard-style test. Note an exactly planar patch is
+ * singular *by construction* (the quadric is flat along the plane), so on flat
+ * geometry `Optimal` degenerates to midpoint placement; that is expected, not
+ * a bug. `Midpoint` always uses the edge midpoint; `Endpoint` keeps the
+ * endpoint with the lower quadric error (tie -> the lower vertex id).
+ *
+ * **Data.** Float-kind `point_data` at the surviving vertex is blended between
+ * the two endpoints at the parameter `t` obtained by projecting the placed
+ * point onto the edge, **clamped to [0, 1]**, and is carried in Float64 during
+ * the run with a single cast back to the source dtype at the end. That `t` is
+ * exact for `Midpoint`/`Endpoint` and an approximation for `Optimal` (the
+ * optimal point need not lie on the edge). **Integer** `point_data` keeps the
+ * survivor's own row — a blended material id is meaningless. Each surviving
+ * face keeps its own `cell_data` row (a parent's row was already replicated to
+ * its triangles by the simplexify step); `field_data` passes through verbatim.
+ * `mesh.info`, `point_sets`/`cell_sets` and `gmsh_periodic` never reach the
+ * C++ core (the Python shim remaps the sets through the returned maps).
+ *
+ * **Block structure is preserved 1:1**: the output has exactly
+ * `NumCellBlocks()` triangle blocks in input order (possibly with zero rows),
+ * which keeps the one-array-per-block `cell_data` invariant trivially correct
+ * and makes `mCellMaps` input-block-indexed.
+ *
+ * **Determinism.** Setup is parallel with fixed FP order: the per-face plane
+ * pass fills disjoint slots, and each vertex sums its quadric **in ascending
+ * incident-face index** (FP addition is not associative; the order is the
+ * pin). The greedy loop is **serial** — QEM is inherently sequential — driven
+ * by a priority queue with the total order (error, lower endpoint id, higher
+ * endpoint id, versions); stale entries are discarded lazily via per-vertex
+ * version counters. The pinned expressions (plane, quadric, 3x3 solve, error,
+ * blend parameter) are transcribed token for token into `_decimate.py`, so
+ * output is byte-identical across the three mesh backends, thread counts, and
+ * the C++/numpy-fallback boundary
+ * (`tests/python/test_decimate.py::test_cpp_matches_python`).
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format — it is deliberately not in
+ * the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How the surviving vertex of a collapsed edge is placed.
+enum class DecimatePlacement {
+    /// The minimizer of the summed quadric (3x3 solve); the edge midpoint when
+    /// the system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`).
+    Optimal,
+    /// The edge midpoint.
+    Midpoint,
+    /// The endpoint with the lower quadric error (tie -> the lower vertex id).
+    Endpoint,
+};
+
+/**
+ * @brief Parses a placement name.
+ * @param rName One of `"optimal"`, `"midpoint"`, `"endpoint"` (case-sensitive,
+ *        as elsewhere in the operations layer).
+ * @return The matching enumerator.
+ * @throws std::invalid_argument if the name is not recognised.
+ */
+MESHIOPLUSPLUS_API DecimatePlacement decimate_placement_from_name(const std::string& rName);
+
+/// Options for `decimate`. Exactly one of the three stopping criteria
+/// (`mTargetRatio`, `mTargetFaces`, `mMaxError`) must be set (non-negative).
+struct DecimateOptions {
+    /// Fraction of the (triangulated) faces to KEEP, in `(0, 1]`. Negative
+    /// means unset.
+    double mTargetRatio = -1.0;
+
+    /// Absolute number of faces to stop at (>= 0). Negative means unset. A
+    /// collapse removes one or two faces, so the result lands within one
+    /// collapse of the target (see `decimate`).
+    std::int64_t mTargetFaces = -1;
+
+    /// Collapse only while the cheapest candidate's quadric error is at most
+    /// this (squared mesh units). Negative means unset.
+    double mMaxError = -1.0;
+
+    /// Where the surviving vertex goes. Overridden to the pinned endpoint's own
+    /// position whenever one endpoint of the edge is pinned.
+    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
+
+    /// Pin boundary vertices (once-used-edge test on the triangulated mesh):
+    /// they never move and are never removed, and boundary–boundary edges never
+    /// enter the queue, so the outline of an open patch is preserved exactly.
+    bool mPreserveBoundary = true;
+
+    /// Pin vertices whose incident face normals pairwise differ by more than
+    /// `mFeatureAngleDeg`, so corners and creases survive.
+    bool mPreserveFeatures = true;
+
+    /// Angle **between two incident face normals**, in degrees, above which
+    /// their shared vertex is a feature and pinned. `0` = coplanar, `90` = the
+    /// edge of a box. Only read when `mPreserveFeatures` is set.
+    double mFeatureAngleDeg = 30.0;
+
+    /// Optional caller-supplied pin mask: either empty (no extra pins) or of
+    /// length `NumPoints()`, where a non-zero entry pins that vertex. Unioned
+    /// with the boundary/feature pins, never subtracted from them.
+    std::vector<std::uint8_t> mFrozen;
+};
+
+/// The result of `decimate`: the decimated mesh, the index maps, and what the
+/// run actually did.
+struct DecimateResult {
+    /// The decimated mesh: all-triangle blocks, 1:1 with the input blocks.
+    Mesh mMesh;
+
+    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
+    /// A collapsed point maps to its **survivor's** output index — which is
+    /// what makes the map usable for remapping external per-point arrays — and
+    /// is `-1` only when the surviving vertex itself ended up unreferenced and
+    /// was pruned.
+    NDArray mPointMap;
+
+    /// Per **input** block, Int64 shape `(num_cells_in_block,)`, input cell ->
+    /// the output index (within the corresponding output block) of its first
+    /// surviving triangle, or `-1` when none survived. For a `quad`/`polygon`
+    /// input cell this is composed through the simplexify step's child map.
+    std::vector<NDArray> mCellMaps;
+
+    /// Triangles removed, counted on the **triangulated** mesh.
+    std::int64_t mFacesRemoved = 0;
+
+    /// `num_points_in - num_points_out` (collapsed plus pruned-unreferenced).
+    std::int64_t mPointsRemoved = 0;
+
+    /// Guard-rejection **events** — an edge re-scored after a neighbouring
+    /// collapse and rejected again counts again (`smooth`'s
+    /// `mNumSkippedInversion` convention).
+    std::int64_t mCollapsesRejected = 0;
+
+    /// The largest quadric error among the committed collapses (`0.0` when
+    /// nothing collapsed).
+    double mMaxErrorApplied = 0.0;
+};
+
+/**
+ * @brief Decimates a surface mesh by greedy quadric-error-metric edge collapse.
+ * @param rMesh The surface mesh to decimate (never modified).
+ * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
+ * @return The decimated all-triangle mesh, the point/cell index maps, and the
+ *         collapse/rejection summary.
+ * @throws std::invalid_argument when not exactly one stopping criterion is
+ *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
+ *         on any block outside the surface scope: 3D volume cells (use
+ *         `extract_surface` first), higher-order cells (linearize first),
+ *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ */
+MESHIOPLUSPLUS_API DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/decimate_common.hpp =====
+/**
+ * @file detail/decimate_common.hpp
+ * @brief Quadric-error-metric machinery shared between surface `decimate`
+ * (`operations/decimate.cpp`) and volume `decimate_volume`
+ * (`operations/decimate_volume.cpp`), hoisted verbatim out of the former --
+ * the placement solve, the error form, the normal-flip check, and the
+ * vertex-ring link-condition primitives.
+ *
+ * The hoist exists so the boundary half of volume decimation reuses
+ * already-tested floating-point code instead of a second, silently-divergent
+ * transcription: the 3x3 cofactor solve and its ill-conditioning fallback in
+ * particular are exactly the kind of tricky arithmetic that drifts silently
+ * between two hand-written copies. `decimate.cpp`'s own 16-test suite is the
+ * regression guard that this relocation is behaviour-preserving -- every name
+ * here is identical to its pre-hoist counterpart, only the namespace and
+ * linkage changed.
+ *
+ * Also carries the generic flat-triangle-mesh plumbing (`DecimFaces`,
+ * `DecimCsr`, the vertex/face CSR builder, per-face plane quadrics, per-vertex
+ * quadric accumulation, feature-vertex marking): volume decimation's boundary
+ * vertices are, topologically, an ordinary triangle mesh (a tet mesh's own
+ * skin), so its quadric/feature setup reuses this unchanged rather than
+ * re-deriving it against the volume mesh's boundary faces. `decim_build_faces`
+ * (ties a `DecimFaces` to a *simplexified `Mesh`*'s own blocks) and
+ * `decim_build_edges` (the open-boundary-of-a-surface-PATCH edge test) stay
+ * private to `decimate.cpp` -- neither concept applies to a solid's closed
+ * outer skin, which is what `decimate_volume.cpp` builds its `DecimFaces`
+ * from instead (via `detail::build_global_faces`).
+ *
+ * Every floating-point expression here is transcribed token for token into
+ * `_decimate.py`/`_decimate_volume.py` (per each operation's own docs), and
+ * none of it may be contracted into FMAs across the C++/numpy boundary.
+ *
+ * Free functions in `meshioplusplus::detail`, built on plain flat buffers (no
+ * Mesh/uniform-API dependency), so both callers can build their own face/edge
+ * tables around it.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A flat triangle mesh's connectivity: 3 corners per face, block-major, plus
+/// each "block"'s first global face id (a single-entry `{0}` when the caller
+/// has no natural block subdivision, e.g. a volume mesh's boundary skin).
+struct DecimFaces {
+    std::vector<std::int64_t> mCorners;    // 3 * num_faces
+    std::vector<std::int64_t> mBlockBase;  // per block, global id of face 0
+    std::size_t mNumFaces = 0;
+};
+
+/// A vertex -> incident-face CSR (counting sort; rows ascend in face index).
+struct DecimCsr {
+    std::vector<std::int64_t> mXadj;
+    std::vector<std::int64_t> mAdj;
+};
+
+/// Builds `rFaces`' vertex -> face incidence over `n` points.
+MESHIOPLUSPLUS_API DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n);
+
+/**
+ * @brief Per-face area-weighted plane quadrics and unit normals.
+ *
+ * `rQuadK` gets 10 entries per face, in the fixed order
+ * `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]`; `rNormals` gets 3 (zero for a degenerate
+ * face). Area weighting (`w = |n|/2`) makes the accumulated per-vertex
+ * quadric independent of how a planar polygon was fanned into triangles.
+ */
+MESHIOPLUSPLUS_API void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
+                                          std::vector<double>& rQuadK,
+                                          std::vector<double>& rNormals);
+
+/**
+ * @brief Per-vertex quadric: the sum of the incident faces' quadrics in
+ * ascending face index (the CSR rows are face-ascending by construction).
+ *
+ * FP addition is not associative, so this fixed order is the pin across mesh
+ * backends, thread counts and the numpy fallback.
+ */
+MESHIOPLUSPLUS_API std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr,
+                                                                 std::size_t n,
+                                                                 const std::vector<double>& rQuadK);
+
+/**
+ * @brief Pins vertices whose incident face unit normals pairwise differ by
+ * more than the feature angle (`CosThreshold = cos(angle)`).
+ *
+ * Every face participates, not just boundary facets: the creases of a closed
+ * surface are interior. O(d^2) in the valence; each iteration writes only its
+ * own slot, so this is safe to call under `parallel_for`.
+ */
+MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
+                                            const std::vector<double>& rNormals,
+                                            double CosThreshold,
+                                            std::vector<std::uint8_t>& rPinned);
+
+/// x^T Q x for the homogeneous point (x, y, z, 1), `q` the 10-entry
+/// `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric. The literal parenthesization is
+/// the parity contract with the numpy twins.
+MESHIOPLUSPLUS_API double decim_quadric_error(const double* q, double x, double y, double z);
+
+/// A placement result: the surviving vertex's position and quadric error.
+struct DecimPlaced {
+    double mX[3] = {0.0, 0.0, 0.0};
+    double mErr = 0.0;
+};
+
+/// Read-only state a placement solve needs; shared by a parallel seeding pass
+/// and a serial greedy loop.
+struct DecimPlaceCtx {
+    const std::vector<double>* mpXyz = nullptr;
+    const std::vector<double>* mpQ = nullptr;
+    const std::vector<std::uint8_t>* mpPinned = nullptr;
+    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
+};
+
+/**
+ * @brief Position and quadric error of collapsing edge (a, b).
+ *
+ * A pinned endpoint forces its own position; otherwise the requested
+ * placement applies, with `Optimal` falling back to the midpoint when the 3x3
+ * system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`). A vertex whose
+ * quadric is exactly zero (no incident plane contributed anything -- the
+ * combined quadric of two purely-interior volume-decimation vertices, for
+ * instance) is a degenerate case of the SAME bound: it naturally routes to
+ * the midpoint fallback with no special-casing needed.
+ */
+MESHIOPLUSPLUS_API DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a,
+                                           std::int64_t b);
+
+/**
+ * @brief Unnormalized triangle normal, substituting `pSub` for any corner
+ * equal to `A` or `B` when given (the candidate survivor position).
+ *
+ * The sign of `n_before . n_after` is what a normal-flip guard branches on,
+ * so normalization would be pure extra rounding.
+ */
+MESHIOPLUSPLUS_API void decim_face_normal(const std::vector<double>& rXyz,
+                                          const std::int64_t* pCorners, std::int64_t A,
+                                          std::int64_t B, const double* pSub, double pOut[3]);
+
+/// Sorted unique vertex ring of `v`: the corners of its alive incident faces
+/// (from `rVFaces`, indices into the flat 3-per-face `rCorners`), minus `v`
+/// itself. Pure integer work, hence trivially deterministic.
+MESHIOPLUSPLUS_API std::vector<std::int64_t> decim_vertex_ring(
+    const std::vector<std::int64_t>& rVFaces, const std::vector<std::int64_t>& rCorners,
+    std::int64_t v);
+
+/// How many values two sorted vectors share (two-pointer sweep).
+MESHIOPLUSPLUS_API std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
+                                                  const std::vector<std::int64_t>& rB);
+
+/// Erase one value from a sorted vector, if present.
+MESHIOPLUSPLUS_API void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value);
+
+/// Insert one value into a sorted vector, keeping it sorted.
+MESHIOPLUSPLUS_API void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/decimate_common.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/projection.hpp =====
 /**
  * @file projection.hpp
@@ -8533,6 +8920,64 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
+/**
+ * @file detail/refine_hierarchy.hpp
+ * @brief Shared reader for the `refine:cell_id`/`refine:parent_id` persistent
+ * hierarchy (`RefineOptions::mRecordHierarchy`, `refine.hpp`), hoisted verbatim
+ * out of `operations/refine.cpp` -- `refine_attach_hierarchy` (deciding whether
+ * to maintain an existing hierarchy or start a fresh one) and `undo_green`
+ * (resolving the coarse mesh's own id space) both need the identical
+ * Absent/Valid/Invalid read, and a second transcription would drift silently.
+ *
+ * Free function in `meshioplusplus::detail`, called once per operation (not per
+ * element), so its body lives in `src/cpp/src/detail/refine_hierarchy.cpp`
+ * rather than inline here. Built on the uniform mesh API only.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// How an existing `refine:cell_id`/`refine:parent_id` pair on a mesh relates to
+/// what a caller should do with it: `Absent` (no array at all), `Valid` (usable,
+/// hence maintained) or `Invalid` (malformed or non-unique, hence
+/// dropped-with-a-warning and treated like `Absent`).
+enum class RefineHierarchyState { Absent, Valid, Invalid };
+
+/**
+ * @brief Read a mesh's `refine:cell_id`/`refine:parent_id`, if any.
+ *
+ * On success `rIds` holds one id per global (block-major) cell and `rIdBase` is
+ * one past the largest id in use anywhere -- over BOTH arrays, since a cell's id
+ * can outlive its own row once the cell is split (the row is gone, but the id
+ * must never be reissued to a different cell).
+ *
+ * Uniqueness is the guard here, not staleness: these ids are *values*, not
+ * indices, so `reorder`/`crop`/`clean` carry them correctly with no coordinate
+ * check at all (unlike `refine:entity`). A repeated id means the mesh was
+ * `merge`d with another hierarchy, or a cell-splitting operation replicated the
+ * array without updating it -- either way the array is this operation's own
+ * bookkeeping, not user input, so it is warned-and-dropped rather than rejected
+ * outright.
+ * @param rMesh the mesh to read.
+ * @param rBases a `block_bases` table for @p rMesh.
+ * @param rIds out: one id per global cell (only meaningful on `Valid`).
+ * @param rIdBase out: one past the largest id in use (only meaningful on `Valid`).
+ * @return the hierarchy's state.
+ */
+MESHIOPLUSPLUS_API RefineHierarchyState
+refine_read_hierarchy(const Mesh& rMesh, const std::vector<std::int64_t>& rBases,
+                      std::vector<std::int64_t>& rIds, std::int64_t& rIdBase);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_templates.hpp =====
 /**
  * @file refine_templates.hpp
@@ -15359,6 +15804,137 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/agglomerate.hpp =====
+/**
+ * @file operations/agglomerate.hpp
+ * @brief Polyhedral coarsening: merge groups of cells into single larger
+ * polyhedral cells, the many-to-one counterpart to `subdivide`.
+ *
+ * `decimate` raises by name on a polyhedron, pointing at
+ * `convert_cells(Simplexify)` — its fixed-template QEM edge collapse has no
+ * analogue for merging arbitrary polyhedral cells. `agglomerate` is a
+ * genuinely different algorithm: greedy seed-and-grow over the mesh's
+ * shared-face dual (`detail::build_global_faces`), absorbing face-adjacent
+ * neighbours into a group until it reaches a target size, then emitting one
+ * polyhedron per group whose faces are exactly that group's *external*
+ * boundary — every face shared by two members of the same group cancels out
+ * of the result, by construction, never by a tolerance.
+ *
+ * ### The construction
+ *
+ * 1. `detail::build_global_faces(rMesh)` gives the mesh's volume cells as a
+ *    compact-space face dual (`mOwner`/`mNeighbour` per face). A mesh with any
+ *    non-manifold face (used by three or more cells) is **refused** — the
+ *    owner/neighbour classification below is only well-defined on a
+ *    2-manifold face, and guessing would silently misclassify a boundary.
+ * 2. Greedy seed-and-grow, serial and deterministic: cells are seeded in
+ *    ascending compact-id order; a group absorbs its unclaimed face-neighbour
+ *    with the largest *accumulated* shared-face area (summed over every face
+ *    the group's current members share with that neighbour), ties broken by
+ *    ascending compact id, until `mTargetGroupSize` is reached or no unclaimed
+ *    neighbour remains (a short group at a mesh boundary or pocket is
+ *    expected, not an error).
+ * 3. Each group emits **one** polyhedron cell: walk every member's faces:
+ *    a face whose *other* side is also in the group is internal and dropped
+ *    (this happens from both sides, so it is never emitted twice); every
+ *    other face is the group's own external boundary and is kept, wound
+ *    forward or reversed exactly as `detail::GlobalFaces::mCellFaces`' sign
+ *    already records for that member — no new orientation logic needed, since
+ *    the merged cell simply inherits each member's own local winding at its
+ *    surviving faces.
+ *
+ * This is deliberately face-adjacency (`build_global_faces`'s `mOwner`/
+ * `mNeighbour`), never `detail::cell_adjacency.hpp`'s node-adjacency (used by
+ * `partition`'s ghost layers and `gradient`'s stencil): merging on shared-node
+ * adjacency could fuse two cells touching only at a single pinch-point vertex,
+ * producing a non-manifold union, and the two headers key their cells in
+ * genuinely different index spaces (`cell_adjacency.hpp` global block-major,
+ * `GlobalFaces` compact volume-cell) that would silently misindex if mixed.
+ *
+ * ### Output structure
+ *
+ * Non-volume blocks (2D/1D boundary markers, and any 3D block with no
+ * `cell_faces` row) pass through unchanged, in their original relative
+ * position. Every volume cell is consumed into **one** new `polyhedron`
+ * block, emitted at the position the *first* original volume block occupied
+ * — so a mesh whose volume cells already form one contiguous run keeps its
+ * overall block order. Cells inside that block have whatever face/node count
+ * their own group boundary produces; `AddPolyhedronBlock` stores genuinely
+ * ragged CSR with no same-shape constraint, so there is no grouping-by-size
+ * step to do (the same simplification `subdivide` already established).
+ *
+ * ### Points and data
+ *
+ * Points are **not** compacted: a group can leave interior nodes unreferenced
+ * (a node shared only by the members' now-internal faces), the same
+ * never-prune-or-renumber precedent `subdivide` set for its own orphan case.
+ * `clean(remove_orphans=True)` is the documented follow-up for a caller who
+ * wants a minimal point set. `point_data` and `field_data` therefore need no
+ * remapping at all — they pass through unchanged.
+ *
+ * `cell_data` for a pass-through block is copied verbatim. For the merged
+ * block, each group's row is its **first member's** row (ascending compact
+ * id within the group) — the same keep-first convention `clean`'s point weld
+ * already uses, since there is no single principled value for an array like a
+ * material tag once several cells with (possibly) different values merge. An
+ * array whose block count does not match the input mesh is not per-cell data
+ * shaped this operation understands and is dropped with a warning rather than
+ * guessed at.
+ *
+ * ### What this does not do (yet)
+ *
+ * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
+ * the same plane into one larger polygon, rather than leaving the edge
+ * between them) and a shape-quality (e.g. sphericity) absorption gate are
+ * both deferred follow-ups, not shipped here — see the roadmap.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `agglomerate`.
+struct AgglomerateOptions {
+    /// Approximate number of member cells to absorb into each output group;
+    /// must be at least 1. `1` means every cell is its own group (an
+    /// identity transform in everything but representation).
+    std::size_t mTargetGroupSize = 8;
+};
+
+/// The result of `agglomerate`: the coarsened mesh plus the cell index map.
+struct AgglomerateResult {
+    /// The coarsened mesh.
+    Mesh mMesh;
+    /// Int64, **flat**, shape `(total input cell count,)` — input global
+    /// (block-major) cell index -> output global cell index. Unlike
+    /// `SubdivideResult`/`ConvertCellsResult`'s per-input-block
+    /// `std::vector<NDArray>`, this is a single array: an output cell's index
+    /// is a function of which group it joined, not which input block it came
+    /// from.
+    NDArray mCellMap;
+};
+
+/**
+ * @brief Merge groups of cells into single larger polyhedral cells.
+ * @param rMesh the mesh to coarsen.
+ * @param rOptions the target group size (defaults to 8).
+ * @return the coarsened mesh plus the flat cell index map.
+ * @throws std::invalid_argument when `mTargetGroupSize == 0`, or when the
+ *         mesh contains a face shared by three or more cells (non-manifold).
+ */
+MESHIOPLUSPLUS_API AgglomerateResult agglomerate(const Mesh& rMesh,
+                                                 const AgglomerateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/agglomerate.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -15643,6 +16219,60 @@ inline constexpr const char* kRefineHangingName = "refine:hanging";
 /// warns and ignores the array rather than trusting it.
 inline constexpr const char* kRefineEntityName = "refine:entity";
 
+/// The Int64 `cell_data` array `RefineOptions::mRecordHierarchy` attaches: a
+/// stable, never-reused id per cell. Together with `kRefineParentIdName` this is
+/// the persistent parent/child hierarchy `refine:level` alone cannot give --
+/// **a link between two meshes, not a tree inside one**. A multigrid or
+/// green-undo caller keeps every pass's output mesh; the fine mesh's
+/// `refine:parent_id` resolves against the coarse mesh's `refine:cell_id`, so no
+/// ancestry path or packed location code is needed. An untouched cell KEEPS its
+/// id (see `kRefineParentIdName`).
+///
+/// The name is **reserved**: an input that already carries it is *updated*
+/// rather than replicated whatever the flag says -- the `kRefineLevelName` rule
+/// -- so ids stay unique across repeated calls. When the input carries none,
+/// ids are implicit: a cell's id is its global block-major index (the same
+/// numbering `detail::block_bases`/`partition_labels` use). Computed once, in a
+/// single serial pass over the FINAL mesh after every internal level has run --
+/// like `kRefineParentCellName`, never per intermediate level -- so it costs
+/// nothing when `mLevels == 1` and needs no per-pass bookkeeping at all: an
+/// untouched original cell (one whose composed cell map run has length one) is
+/// its own parent, and every other cell in a split run gets one fresh id from a
+/// single counter walking the final mesh's own block/cell order.
+///
+/// A multigrid interpolation stencil rides alongside for free: setting this
+/// flag also forces `kRefineEntityName` to be attached even when no pass left a
+/// hanging node (the `redgreen`/`propagate` closures normally never attach it),
+/// since it already records exactly which coarse nodes each new fine node is
+/// the corner mean of -- the prolongation operator's weights.
+///
+/// **Interacts with `split`:** an unqualified `split(mesh, by="tag")` (no
+/// explicit array name) auto-picks the first sorted integer `cell_data` array,
+/// and `"refine:cell_id"` sorts ahead of ordinary material tags. On a mesh
+/// carrying this array, always name the array explicitly
+/// (`split(mesh, by="tag", tag="my_material")`).
+inline constexpr const char* kRefineCellIdName = "refine:cell_id";
+
+/// The Int64 `cell_data` array naming, per output cell, the `kRefineCellIdName`
+/// of the cell in the mesh **passed to this call** that it came from -- the
+/// same rule `kRefineParentCellName` follows: two `levels=1` calls give
+/// immediate parents (the mesh the caller passed to the second call), one
+/// `levels=n` call gives the original ancestor (the mesh the caller passed to
+/// that one call), because only the input actually named in the call is a mesh
+/// the caller could have kept. An untouched cell is its own parent
+/// (`parent_id == cell_id`); every cell of a split run carries the run's
+/// original-in-this-call ancestor's id.
+///
+/// Given both meshes, red/green/untouched classify with no further storage:
+/// untouched has `parent_id == cell_id`; a green (transitional) child has
+/// `parent_id != cell_id` and the same `refine:level` as its parent; a red
+/// child's `refine:level` is one more than its parent's. See `doc/refine.md`.
+///
+/// Attaching a duplicate `kRefineCellIdName` value (e.g. by `merge`-ing two
+/// hierarchied meshes) is detected and both reserved arrays are dropped with a
+/// warning, never trusted -- the `kRefineEntityName` staleness policy.
+inline constexpr const char* kRefineParentIdName = "refine:parent_id";
+
 /// How `refine` resolves the hanging nodes a partial refinement leaves behind.
 enum class RefineClosure {
     /// Promote a cell's split-edge mask to the smallest *admissible* superset,
@@ -15752,6 +16382,17 @@ struct RefineOptions {
     /// `kRefineLevelName`). An input that already carries it is updated
     /// whatever this flag says; the flag only controls *creating* it.
     bool mRecordLevels = false;
+    /// Attach the `refine:cell_id`/`refine:parent_id` `cell_data` arrays (see
+    /// `kRefineCellIdName`/`kRefineParentIdName`) -- the persistent parent/child
+    /// hierarchy a multigrid caller (or a future green-undo) resolves across
+    /// the sequence of meshes it keeps. An input that already carries
+    /// `refine:cell_id` is updated whatever this flag says; the flag only
+    /// controls *creating* it. Also forces `refine:entity` (`kRefineEntityName`)
+    /// to be attached even when the closure leaves no hanging node, since it
+    /// already records the coarse corners each new fine node is the mean of --
+    /// the prolongation operator's weights, which `redgreen`/`propagate` would
+    /// otherwise never expose.
+    bool mRecordHierarchy = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.
@@ -16412,165 +17053,150 @@ MESHIOPLUSPLUS_API Mesh data_rename(const Mesh& rMesh, DataLocation Location, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
 /**
- * @file decimate.hpp
- * @brief Surface decimation by quadric-error-metric edge collapse: reduce a
- * surface mesh's face count while preserving its shape, boundaries and
- * features.
+ * @file decimate_volume.hpp
+ * @brief Volume decimation by quadric-error-metric tet-edge collapse: reduce a
+ * tetrahedral mesh's cell count while preserving its shape and boundary.
  *
- * This is the resolution-*reducing* inverse of `refine`, completing the pair.
- * The algorithm is the classic Garland–Heckbert construction (quadric error
- * metrics, SIGGRAPH '97): every vertex accumulates a 4x4 symmetric quadric —
- * the sum of squared-distance-to-plane forms of its incident triangles,
- * area-weighted — and every candidate edge collapse is scored by the summed
- * endpoint quadric evaluated at the collapsed vertex's position. The cheapest
- * edge is collapsed greedily, its quadrics are summed onto the survivor, the
- * survivor's incident edges are re-scored, and the loop repeats until the
- * stopping criterion is met.
+ * The resolution-*reducing* counterpart of `refine` on 3D cells, and the
+ * volume-mesh sibling of surface `decimate` -- a **separate operation**, not a
+ * mode on it: `DecimateOptions`/`mio_decimate` are untouched by this file, and
+ * `decimate()` keeps throwing by name on any 3D volume block, pointing here.
  *
- * **Surface only, triangles out.** The operating type is `triangle`; `quad`
- * and rectangular `polygon` blocks are triangulated first via
- * `convert_cells(Simplexify)`, so the output is all-triangle even when the
- * input was not. A mesh containing 3D volume cells throws by name pointing at
- * `extract_surface` — QEM decimation of a *volume* mesh (tetra-collapse
- * validity, no boundary-shape objective) is a different and much harder
- * problem, deliberately out of scope rather than silently skinned. Higher-order
- * cells (`triangle6`, ...; linearize first), ragged polygon/polyhedron blocks,
- * and `line`/`vertex` blocks mixed in with the surface likewise throw by name.
+ * **Tet-only in v1.** Any hexahedron/wedge/pyramid/polyhedron/ragged/
+ * higher-order 3D block, or any non-3D block mixed in, throws by name pointing
+ * at `convert_cells(Simplexify)`.
  *
- * **What is pinned** (mirroring `smooth`'s vocabulary and defaults). A pinned
- * vertex never moves and is never removed; an edge between two pinned vertices
- * never enters the queue, and a collapse toward a pinned vertex keeps that
- * vertex's own position regardless of `mPlacement`. Pinned are:
- *  - boundary vertices under `mPreserveBoundary` (the classic once-used-edge
- *    test: an edge used by exactly one triangle is boundary) — this is what
- *    keeps a planar patch's outline exactly intact;
- *  - feature vertices under `mPreserveFeatures`: vertices where two incident
- *    face **normals** differ by more than `mFeatureAngleDeg` (the
- *    `vtkFeatureEdges`/`smooth` convention), which is what keeps a cube's
- *    corners and creases sharp. Conservative v1: crease vertices are fully
- *    pinned rather than allowed to slide along the crease;
- *  - the caller's `mFrozen` mask.
+ * **Boundary vertices participate**, with a real quadric-error objective,
+ * rather than being pinned as `decimate`'s own `mPreserveBoundary` default
+ * does -- `mPreserveBoundary` defaults to `false` here; set it to reproduce
+ * the simpler pinned-boundary behaviour.
  *
- * **Validity guards.** Each guard *rejects* the individual collapse (counted in
- * `mCollapsesRejected`) rather than aborting:
- *  - the **link condition**: the vertices adjacent to both endpoints must be
- *    exactly the opposite vertices of the faces on the edge, and an edge used
- *    by more than two faces is non-manifold and never collapsible — so the
- *    output cannot become non-manifold or change topology;
- *  - **normal-flip rejection**: a surviving incident face whose unit normal
- *    would turn by 90 degrees or more (`n_before . n_after <= 0`) rejects the
- *    collapse. Like `smooth`'s inversion guard this is strictly "do no harm":
- *    a face that is already degenerate (zero normal) imposes no constraint;
- *  - **degenerate survivor rejection**: a surviving face collapsing to zero
- *    area yields a zero `n_after`, hence `n_before . n_after = 0`, and is
- *    rejected by the same test.
+ * ### Objective: one priority key, two regimes
  *
- * **Placement** (`mPlacement`): `Optimal` places the survivor at the minimizer
- * of the summed quadric (a 3x3 solve), falling back to the edge midpoint when
- * the system is ill-conditioned — `|det| <= 1e-12 * max|A_ij|^3`, a
- * scale-invariant Hadamard-style test. Note an exactly planar patch is
- * singular *by construction* (the quadric is flat along the plane), so on flat
- * geometry `Optimal` degenerates to midpoint placement; that is expected, not
- * a bug. `Midpoint` always uses the edge midpoint; `Endpoint` keeps the
- * endpoint with the lower quadric error (tie -> the lower vertex id).
+ * Every vertex accumulates a Garland-Heckbert plane quadric from its incident
+ * **boundary triangles only** (the mesh's own outer skin, from
+ * `detail::build_global_faces`'s faces with no neighbour) -- a purely interior
+ * vertex, by construction, accumulates nothing and its quadric is the exact
+ * zero matrix. For a candidate edge `(a, b)` the combined quadric `Q(a)+Q(b)`
+ * feeds the *same* placement solve `decimate` uses (`detail::decim_place`,
+ * hoisted into `detail/decimate_common.hpp`) whether the edge touches the
+ * boundary or not:
+ *  - at least one endpoint touches the boundary: `Q_ab` is non-degenerate (or
+ *    the solve's own ill-conditioning bound already routes it to the
+ *    midpoint) -- identical to `decimate`'s own code path;
+ *  - both endpoints are purely interior: `Q_ab` is exactly zero, which that
+ *    *same* `|det| <= 1e-12 * scale^3` bound classifies as degenerate and
+ *    falls back to the midpoint -- no interior-specific placement code is
+ *    needed at all.
  *
- * **Data.** Float-kind `point_data` at the surviving vertex is blended between
- * the two endpoints at the parameter `t` obtained by projecting the placed
- * point onto the edge, **clamped to [0, 1]**, and is carried in Float64 during
- * the run with a single cast back to the source dtype at the end. That `t` is
- * exact for `Midpoint`/`Endpoint` and an approximation for `Optimal` (the
- * optimal point need not lie on the edge). **Integer** `point_data` keeps the
- * survivor's own row — a blended material id is meaningless. Each surviving
- * face keeps its own `cell_data` row (a parent's row was already replicated to
- * its triangles by the simplexify step); `field_data` passes through verbatim.
- * `mesh.info`, `point_sets`/`cell_sets` and `gmsh_periodic` never reach the
- * C++ core (the Python shim remaps the sets through the returned maps).
+ * Scoring, however, needs an explicit split: `decim_quadric_error` against an
+ * exact-zero quadric is identically zero for every interior-interior edge,
+ * which would tie the whole interior of the mesh and fall through to id
+ * order. The priority key is therefore `(regime, score, ids...)`, `regime = 0`
+ * (`score` = quadric error) whenever `Q_ab` is non-degenerate, else `regime =
+ * 1` (`score` = squared edge length) -- every boundary-touching collapse is
+ * considered ahead of purely-interior ones. `mMaxError` is only really
+ * meaningful for `regime == 0` entries (real quadric-error units); comparing
+ * it directly against `regime == 1`'s squared length is a documented rough
+ * tool for mixed meshes, not a claimed exact criterion. `mTargetRatio`/
+ * `mTargetCells` are regime-agnostic and remain exactly well-defined.
+ *
+ * ### Validity guards
+ *
+ * Tet-only, so simpler than the general 3D case: a tet's *other* incident
+ * cells are exactly `T(ab) = vtets[a] & vtets[b]` (its shared tets). Each
+ * guard *rejects* the individual collapse (counted in `mCollapsesRejected`)
+ * rather than aborting:
+ *  - the **vertex-link condition**: the exact SET `Vlink(a) & Vlink(b)` (node
+ *    adjacency via each vertex's own incident tets) must equal `Vlink(ab)`
+ *    (the two "opposite" corners of each tet in `T(ab)`) -- pure integer set
+ *    equality, no floating point;
+ *  - the **duplicate-tet guard**: no surviving tet incident to `a` alone and
+ *    no surviving tet incident to `b` alone may share the same "opposite
+ *    triangle" (the collapse would otherwise produce two tets with identical
+ *    corners);
+ *  - **tet-inversion rejection** (`smooth`'s "do no harm"): a surviving tet
+ *    whose signed volume is non-zero must not change sign under the candidate
+ *    placement (`detail::cell_volume_from_corners`); an already-degenerate
+ *    tet imposes no constraint.
+ *
+ * **Boundary-touching collapses additionally run the existing 2D guards**
+ * (`decimate`'s own ring/shared-face link condition and normal-flip check,
+ * hoisted unchanged) over the mesh's boundary skin, so the outer surface
+ * cannot tear, pinch or fold independently of the interior guards above.
+ *
+ * **Placement stays on the boundary surface.** A boundary vertex's quadric is
+ * built from boundary-triangle planes only, so its minimizer naturally lies
+ * near the surface; a pinned endpoint (feature/frozen/`mPreserveBoundary`)
+ * forces its own position exactly as `decimate` does.
+ *
+ * **Data.** Same rules as `decimate`: float `point_data` is blended at the
+ * clamped edge-projection parameter; integer `point_data` keeps the
+ * survivor's row; each surviving tet keeps its own `cell_data` row;
+ * `field_data` passes through verbatim.
  *
  * **Block structure is preserved 1:1**: the output has exactly
- * `NumCellBlocks()` triangle blocks in input order (possibly with zero rows),
- * which keeps the one-array-per-block `cell_data` invariant trivially correct
- * and makes `mCellMaps` input-block-indexed.
+ * `NumCellBlocks()` tetra blocks in input order (possibly with zero rows),
+ * exactly `decimate`'s own rule.
  *
- * **Determinism.** Setup is parallel with fixed FP order: the per-face plane
- * pass fills disjoint slots, and each vertex sums its quadric **in ascending
- * incident-face index** (FP addition is not associative; the order is the
- * pin). The greedy loop is **serial** — QEM is inherently sequential — driven
- * by a priority queue with the total order (error, lower endpoint id, higher
- * endpoint id, versions); stale entries are discarded lazily via per-vertex
- * version counters. The pinned expressions (plane, quadric, 3x3 solve, error,
- * blend parameter) are transcribed token for token into `_decimate.py`, so
- * output is byte-identical across the three mesh backends, thread counts, and
- * the C++/numpy-fallback boundary
- * (`tests/python/test_decimate.py::test_cpp_matches_python`).
+ * **Determinism.** Setup is parallel with fixed FP order (matching
+ * `decimate`'s); the greedy loop is serial, driven by a priority queue with
+ * lazy version-stamped deletion. Every floating-point expression is
+ * transcribed token for token into `_decimate_volume.py` (the arithmetic is
+ * either reused verbatim from `decimate`/`_decimate.py`, already twinned, or
+ * `detail::cell_volume_from_corners`'s corner-average fan, already twinned
+ * elsewhere), so output is byte-identical across the three mesh backends,
+ * thread counts, and the C++/numpy-fallback boundary.
  *
  * Standard C++ and the uniform mesh API only, so it compiles under every mesh
- * backend. This is an operation, not a file format — it is deliberately not in
- * the format registry.
+ * backend. This is an operation, not a file format.
  */
 
 // System includes
 #include <cstdint>
-#include <string>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
-/// How the surviving vertex of a collapsed edge is placed.
-enum class DecimatePlacement {
-    /// The minimizer of the summed quadric (3x3 solve); the edge midpoint when
-    /// the system is ill-conditioned (`|det| <= 1e-12 * max|A_ij|^3`).
-    Optimal,
-    /// The edge midpoint.
-    Midpoint,
-    /// The endpoint with the lower quadric error (tie -> the lower vertex id).
-    Endpoint,
-};
-
-/**
- * @brief Parses a placement name.
- * @param rName One of `"optimal"`, `"midpoint"`, `"endpoint"` (case-sensitive,
- *        as elsewhere in the operations layer).
- * @return The matching enumerator.
- * @throws std::invalid_argument if the name is not recognised.
- */
-MESHIOPLUSPLUS_API DecimatePlacement decimate_placement_from_name(const std::string& rName);
-
-/// Options for `decimate`. Exactly one of the three stopping criteria
-/// (`mTargetRatio`, `mTargetFaces`, `mMaxError`) must be set (non-negative).
-struct DecimateOptions {
-    /// Fraction of the (triangulated) faces to KEEP, in `(0, 1]`. Negative
-    /// means unset.
+/// Options for `decimate_volume`. Exactly one of the three stopping criteria
+/// (`mTargetRatio`, `mTargetCells`, `mMaxError`) must be set (non-negative).
+struct DecimateVolumeOptions {
+    /// Fraction of the tets to KEEP, in `(0, 1]`. Negative means unset.
     double mTargetRatio = -1.0;
 
-    /// Absolute number of faces to stop at (>= 0). Negative means unset. A
-    /// collapse removes one or two faces, so the result lands within one
-    /// collapse of the target (see `decimate`).
-    std::int64_t mTargetFaces = -1;
+    /// Absolute number of tets to stop at (>= 0). Negative means unset. A
+    /// collapse removes `T(ab).size()` tets, so the result lands within one
+    /// collapse of the target.
+    std::int64_t mTargetCells = -1;
 
-    /// Collapse only while the cheapest candidate's quadric error is at most
-    /// this (squared mesh units). Negative means unset.
+    /// Collapse only while the cheapest candidate's score is at most this.
+    /// Only strictly meaningful for `regime == 0` (boundary-touching, real
+    /// quadric-error units) entries -- see the file doc comment. Negative
+    /// means unset.
     double mMaxError = -1.0;
 
-    /// Where the surviving vertex goes. Overridden to the pinned endpoint's own
-    /// position whenever one endpoint of the edge is pinned.
+    /// Where the surviving vertex goes; reuses `decimate`'s enum unchanged.
+    /// Overridden to the pinned endpoint's own position whenever one endpoint
+    /// of the edge is pinned.
     DecimatePlacement mPlacement = DecimatePlacement::Optimal;
 
-    /// Pin boundary vertices (once-used-edge test on the triangulated mesh):
-    /// they never move and are never removed, and boundary–boundary edges never
-    /// enter the queue, so the outline of an open patch is preserved exactly.
-    bool mPreserveBoundary = true;
+    /// Pin every boundary vertex outright (the once-used-face test on the
+    /// mesh's own outer skin), reproducing `decimate`'s own default instead
+    /// of letting boundary vertices participate.
+    bool mPreserveBoundary = false;
 
-    /// Pin vertices whose incident face normals pairwise differ by more than
-    /// `mFeatureAngleDeg`, so corners and creases survive.
+    /// Pin boundary vertices whose incident boundary-triangle normals
+    /// pairwise differ by more than `mFeatureAngleDeg`, so corners and
+    /// creases of the outer surface survive.
     bool mPreserveFeatures = true;
 
-    /// Angle **between two incident face normals**, in degrees, above which
-    /// their shared vertex is a feature and pinned. `0` = coplanar, `90` = the
-    /// edge of a box. Only read when `mPreserveFeatures` is set.
+    /// Angle **between two incident boundary-triangle normals**, in degrees,
+    /// above which their shared vertex is a feature and pinned. Only read
+    /// when `mPreserveFeatures` is set.
     double mFeatureAngleDeg = 30.0;
 
     /// Optional caller-supplied pin mask: either empty (no extra pins) or of
@@ -16579,57 +17205,56 @@ struct DecimateOptions {
     std::vector<std::uint8_t> mFrozen;
 };
 
-/// The result of `decimate`: the decimated mesh, the index maps, and what the
-/// run actually did.
-struct DecimateResult {
-    /// The decimated mesh: all-triangle blocks, 1:1 with the input blocks.
+/// The result of `decimate_volume`: the decimated mesh, the index maps, and
+/// what the run actually did.
+struct DecimateVolumeResult {
+    /// The decimated mesh: all-tetra blocks, 1:1 with the input blocks.
     Mesh mMesh;
 
-    /// Int64 shape `(num_points_in,)`, input point index -> output point index.
-    /// A collapsed point maps to its **survivor's** output index — which is
-    /// what makes the map usable for remapping external per-point arrays — and
-    /// is `-1` only when the surviving vertex itself ended up unreferenced and
-    /// was pruned.
+    /// Int64 shape `(num_points_in,)`, input point index -> output point
+    /// index. A collapsed point maps to its **survivor's** output index, and
+    /// is `-1` only when the surviving vertex itself ended up unreferenced
+    /// and was pruned.
     NDArray mPointMap;
 
-    /// Per **input** block, Int64 shape `(num_cells_in_block,)`, input cell ->
-    /// the output index (within the corresponding output block) of its first
-    /// surviving triangle, or `-1` when none survived. For a `quad`/`polygon`
-    /// input cell this is composed through the simplexify step's child map.
+    /// Per **input** tet block, Int64 shape `(num_cells_in_block,)`, input
+    /// cell -> its own output index, or `-1` when it did not survive.
     std::vector<NDArray> mCellMaps;
 
-    /// Triangles removed, counted on the **triangulated** mesh.
-    std::int64_t mFacesRemoved = 0;
+    /// Tets removed.
+    std::int64_t mTetsRemoved = 0;
 
     /// `num_points_in - num_points_out` (collapsed plus pruned-unreferenced).
     std::int64_t mPointsRemoved = 0;
 
-    /// Guard-rejection **events** — an edge re-scored after a neighbouring
-    /// collapse and rejected again counts again (`smooth`'s
-    /// `mNumSkippedInversion` convention).
+    /// Guard-rejection **events** (`decimate`'s own `mCollapsesRejected`
+    /// convention: a re-scored, re-rejected edge counts again).
     std::int64_t mCollapsesRejected = 0;
 
-    /// The largest quadric error among the committed collapses (`0.0` when
-    /// nothing collapsed).
+    /// The largest `regime == 0` (quadric-error) score among the committed
+    /// collapses (`0.0` when nothing collapsed, or when every collapse was
+    /// purely interior).
     double mMaxErrorApplied = 0.0;
 };
 
 /**
- * @brief Decimates a surface mesh by greedy quadric-error-metric edge collapse.
- * @param rMesh The surface mesh to decimate (never modified).
+ * @brief Decimates a tetrahedral mesh by greedy quadric-error-metric tet-edge
+ * collapse.
+ * @param rMesh The tet mesh to decimate (never modified).
  * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
- * @return The decimated all-triangle mesh, the point/cell index maps, and the
+ * @return The decimated all-tetra mesh, the point/cell index maps, and the
  *         collapse/rejection summary.
  * @throws std::invalid_argument when not exactly one stopping criterion is
- *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
- *         on any block outside the surface scope: 3D volume cells (use
- *         `extract_surface` first), higher-order cells (linearize first),
- *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, on
+ *         a non-manifold boundary face, and on any block outside the tet-only
+ *         scope: non-tetra 3D cells, ragged/polyhedron blocks, higher-order
+ *         tets, and any non-3D block.
  */
-MESHIOPLUSPLUS_API DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions = {});
+MESHIOPLUSPLUS_API DecimateVolumeResult decimate_volume(const Mesh& rMesh,
+                                                        const DecimateVolumeOptions& rOptions = {});
 
 }  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/decimate.hpp =====
+// ===== end src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
@@ -16850,6 +17475,206 @@ MESHIOPLUSPLUS_API bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/diff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/error.hpp =====
+/**
+ * @file operations/error.hpp
+ * @brief A posteriori error estimation: a recovery-based indicator plus a
+ * marking pass — the piece that closes the adaptive loop. `gradient` already
+ * differentiates a field and selective `refine`'s `--where` already consumes
+ * any scalar `cell_data` predicate; this is what produces one.
+ *
+ * `estimate_error` implements the Zienkiewicz-Zhu (ZZ) superconvergent-patch
+ * recovery estimator: differentiate the field once per cell (`gradient`,
+ * Green-Gauss, `Cell` location), recover a smoothed nodal gradient by
+ * averaging onto the points and back onto the cells
+ * (`cell_data_to_point_data`/`point_data_to_cell_data`, `Measure`-weighted),
+ * and take the recovered-minus-raw difference as the local error in the
+ * gradient. **This is composition, not a new numerical kernel** — the
+ * recovery operator *is* the existing averaging round trip, reused rather
+ * than reimplemented, exactly as `gradient(mLocation=Point)` itself composes
+ * `cell_data_to_point_data`.
+ *
+ * ### The indicator
+ *
+ * For cell `K` with raw (unrecovered) gradient `g_K` and recovered gradient
+ * `G_K` (both possibly multi-component, over all `3 * nc` derivative
+ * components of the differentiated field):
+ * `eta_K = sqrt(|measure_K| * sum((G_K - g_K)^2))`. That is the standard ZZ
+ * local indicator in the energy-like (H1-seminorm) norm — a genuine per-cell
+ * error unit, not a bare gradient difference, which is what makes indicators
+ * from cells of very different size comparable. `measure_K` reuses
+ * `detail::cell_measure` (`detail/data_ops.hpp`) rather than recomputing a
+ * volume — the same primitive `data_average`'s `CellPointWeight::Measure`
+ * already uses for the recovery weighting, so the two agree by construction.
+ * `mGlobalError` is `sqrt(sum_K eta_K^2)` over the evaluable cells — the
+ * estimated global error in that same norm.
+ *
+ * ### Marking
+ *
+ * A marking pass turns the continuous indicator into a boolean `cell_data`
+ * array — `error:marked`, one array per block, Int64 0/1 — so that **`refine`
+ * needs no change at all**: the intended use is
+ * `refine --where "error:marked > 0.5"`. Three policies:
+ * - `Absolute`: mark every evaluable cell whose indicator exceeds
+ *   `mMarkingValue`.
+ * - `Fraction`: mark the `mMarkingValue` fraction (0, 1] of evaluable cells
+ *   with the largest indicator, `k = size_t(mMarkingValue * numEvaluable +
+ *   0.5)` truncated — the same `int64(ratio * F + 0.5)` convention `decimate`
+ *   uses for its own target-count rounding, never `llround`, whose tie rule a
+ *   numpy twin cannot match.
+ * - `Dorfler`: the Dörfler / bulk-chunk criterion — mark the smallest
+ *   descending-indicator prefix whose cumulative `eta_K^2` covers a
+ *   `mMarkingValue` fraction (0, 1] of the total.
+ *
+ * Ties in the `Fraction`/`Dorfler` descending sort break on ascending global
+ * cell index (`detail::block_bases`' numbering), for a result independent of
+ * how the per-cell work happened to schedule — a strict weak order, not a
+ * convenience.
+ *
+ * ### Contracts
+ *
+ * - **Input must be `point_data`** — the same restriction `gradient` states,
+ *   for the same reason: a `cell_data` field is piecewise constant and has no
+ *   derivative to recover.
+ * - **NaN, never a guess.** A cell `gradient` could not differentiate (an
+ *   unsupported type, wrong dimension, degenerate geometry), a cell whose
+ *   recovery neighbourhood contributed no finite value, or a cell whose
+ *   `measure_K` cannot be computed reads `NaN` in `error:zz` and **0** (never
+ *   NaN) in `error:marked`. Such cells are counted in `mNumSkipped` and
+ *   excluded from `mGlobalError` and from every marking policy's cell count.
+ * - **Output.** `error:zz` (Float64, one array per block) is always
+ *   attached; `error:marked` (Int64, one array per block) is attached only
+ *   when `mMarking != None`. Default names are fixed
+ *   (`kErrorZzName`/`kErrorMarkedName`); `mOutputName`/`mMarkedName`
+ *   override them.
+ * - Geometry, connectivity, regions, property sets and every existing data
+ *   array pass through bit-identically.
+ *
+ * Output is byte-identical across the three mesh backends and across thread
+ * counts. Across the C++/numpy boundary it matches the numpy twin in
+ * `_error.py` to within a numeric tolerance rather than bit-for-bit — the
+ * same, already-accepted precedent `data_average`'s own `Measure` weighting
+ * has (`test_data_location.py::test_cpp_matches_python` compares it with
+ * `np.allclose`, not exact equality), inherited here because the recovery
+ * step composes that exact weighting. The raw (pre-recovery) gradient stays
+ * bit-exact, since `gradient` itself needs no such tolerance. The twin raises
+ * `NotImplementedError` when the mesh has a ragged or polyhedral block,
+ * exactly as `_convert_cells.py`'s simplexify twin does, because
+ * `detail::cell_measure` runs `orient_rings`' winding repair (a discrete
+ * branch on a sign) for a closed 3D cell, tabulated or not, and the Python
+ * twin's `_cell_measures` does not attempt to replicate that repair — and,
+ * separately, when the mesh has a quadratic 3D cell type (`tetra10`,
+ * `hexahedron20`/`27`, `wedge15`), because `_cell_measures`' face table
+ * (shared with `data_average`'s own recovery weighting) only covers the four
+ * linear 3D types; `detail::cell_measure` handles the quadratic ones fine
+ * (via the same corner reduction `gradient` itself uses), so this is a gap in
+ * the *reference*, not the core, and is scoped as narrowly as that.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which error-estimator family to use. Only `Zz` exists today; the enum
+/// leaves room for a jump/Kelly estimator without an ABI-breaking rename.
+enum class ErrorMethod {
+    Zz,  ///< Zienkiewicz-Zhu superconvergent-patch gradient recovery.
+};
+
+/// How the continuous indicator is turned into a boolean `error:marked` array.
+enum class ErrorMarking {
+    None,      ///< Estimate only; `error:marked` is not attached.
+    Absolute,  ///< Mark cells whose indicator exceeds `mMarkingValue`.
+    Fraction,  ///< Mark the largest `mMarkingValue` fraction (0, 1] of cells.
+    Dorfler,   ///< Mark the smallest prefix covering `mMarkingValue` (0, 1]
+               ///< of the total squared error.
+};
+
+/// Default output array names.
+inline constexpr const char* kErrorZzName = "error:zz";
+inline constexpr const char* kErrorMarkedName = "error:marked";
+
+/// Options for `estimate_error`.
+struct ErrorOptions {
+    /// Name of the `point_data` array to estimate the recovered-gradient
+    /// error of. Required.
+    std::string mArrayName;
+    /// Which estimator family to use. Only `Zz` exists today.
+    ErrorMethod mMethod = ErrorMethod::Zz;
+    /// How to turn the indicator into `error:marked`. `None` skips marking.
+    ErrorMarking mMarking = ErrorMarking::None;
+    /// Meaning depends on `mMarking`: ignored for `None`; an absolute
+    /// indicator threshold for `Absolute`; a fraction in (0, 1] of cells for
+    /// `Fraction`; the Dörfler bulk fraction theta in (0, 1] for `Dorfler`.
+    double mMarkingValue = 0.0;
+    /// Indicator output name; empty selects `error:zz`.
+    std::string mOutputName;
+    /// Marking output name; empty selects `error:marked`. Ignored when
+    /// `mMarking == None`.
+    std::string mMarkedName;
+    /// When false, an output name that already exists is an error rather
+    /// than being overwritten.
+    bool mOverwrite = false;
+};
+
+/// The mesh with the produced arrays, plus what the estimate covers.
+struct ErrorResult {
+    /// The input mesh with `error:zz` (and, if marking, `error:marked`)
+    /// added; everything else unchanged.
+    Mesh mMesh;
+    /// `sqrt(sum of eta_K^2 over evaluable cells)` — the estimated global
+    /// error in the recovered-gradient norm. `0` when no cell is evaluable.
+    double mGlobalError = 0.0;
+    /// Cells that could not be evaluated: an unsupported/degenerate
+    /// `gradient` cell, a recovery neighbourhood with no finite
+    /// contribution, or an unmeasurable cell. `error:zz` reads NaN there.
+    std::int64_t mNumSkipped = 0;
+    /// Cells marked in `error:marked`. Always 0 when `mMarking == None`.
+    std::int64_t mNumMarked = 0;
+};
+
+/**
+ * @brief Estimates the per-cell recovered-gradient error of a `point_data`
+ * field and optionally marks cells for refinement.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOptions which array, method, marking policy and output names.
+ * @return the mesh with the produced array(s), the global error estimate and
+ *         the skip/mark counters.
+ * @throws std::invalid_argument on an empty or unknown array name, on a
+ *         `cell_data` name (message names the fix), on a mesh with no cell of
+ *         topological dimension 1 or more, on `mMarkingValue` outside (0, 1]
+ *         for `Fraction`/`Dorfler`, or on an output-name collision when
+ *         `mOverwrite` is false.
+ */
+MESHIOPLUSPLUS_API ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions);
+
+/**
+ * @brief Parses an estimator-method name.
+ * @param rName `zz` (or empty).
+ * @return the matching `ErrorMethod`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+MESHIOPLUSPLUS_API ErrorMethod error_method_from_name(const std::string& rName);
+
+/**
+ * @brief Parses a marking-policy name.
+ * @param rName one of `none` (or empty), `absolute`/`abs`, `fraction`/`frac`,
+ *        or `dorfler`/`bulk`.
+ * @return the matching `ErrorMarking`.
+ * @throws std::invalid_argument on an unknown name.
+ */
+MESHIOPLUSPLUS_API ErrorMarking error_marking_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/error.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/gradient.hpp =====
 /**
  * @file operations/gradient.hpp
@@ -18976,6 +19801,124 @@ MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
+/**
+ * @file operations/subdivide.hpp
+ * @brief Polyhedral refinement: split every 3D cell into one polyhedral child
+ * per face, by connecting each face's boundary to a new interior point.
+ *
+ * `refine` and `decimate` both raise by name on a polyhedron, pointing at
+ * `convert_cells(Simplexify)` — both are built on fixed same-type subdivision
+ * templates, and an arbitrary polyhedron has none. `subdivide` is the answer
+ * for polyhedral refinement specifically: rather than a per-type template
+ * table, it goes through `detail::cell_rings` — the same uniform face-ring
+ * abstraction `gradient` and `detail::cell_measure` already use — which treats
+ * a tabulated type (`tetra`, `hexahedron`, `wedge`, `pyramid`, and their
+ * quadratic variants, reduced to corners) and an existing `polyhedronN` block
+ * identically. So `subdivide` needs **no per-type table at all**: the same
+ * code handles every 3D cell type the mesh already supports.
+ *
+ * ### The construction
+ *
+ * For each eligible 3D cell:
+ *
+ * 1. `detail::cell_rings` gives the cell's faces as global node-id rings,
+ *    uniformly whether the cell is tabulated or already a polyhedron.
+ * 2. `detail::orient_rings` repairs winding so every face points outward;
+ *    a cell whose faces are not a closed orientable surface **throws**,
+ *    naming the cell — the same guard `convert_cells(Simplexify)` uses for
+ *    its own polyhedron branch.
+ * 3. One new point is added per cell: the plain arithmetic mean of the
+ *    cell's own corner node coordinates (`rings.mNodes`) — the same ad hoc
+ *    corner average `convert_cells.cpp`'s polyhedron branch already computes
+ *    inline. This is deliberately **not** `poly_measure().mCentroid`, the
+ *    volume centroid, a different point: the corner average is what makes
+ *    the children's total volume *literally the same sum* as the parent's
+ *    own `poly_measure` computation, rather than merely equal by the
+ *    divergence theorem (both true; only the former is checkable by exact
+ *    equality rather than a tolerance).
+ * 4. For each face, one polyhedron child is emitted whose boundary is that
+ *    face **unchanged** (original winding, so a neighbouring cell across it
+ *    still sees the identical face) plus one new triangle per face edge,
+ *    connecting that edge to the cell's new interior point.
+ *
+ * This makes the result **automatically conforming** — no closure, no 2:1
+ * balance, no `refine:hanging`/`refine:entity` analogue is needed, because a
+ * shared face between two input cells is never touched, only the interior of
+ * each cell is subdivided.
+ *
+ * ### Output structure
+ *
+ * **One polyhedron output block per input 3D block**, with genuinely mixed
+ * cell shapes inside — `AddPolyhedronBlock` stores cells as ragged CSR with
+ * no constraint that they share a node or face count, so there is no need to
+ * group children by distinct node count into `polyhedronN` blocks the way
+ * some *readers* (CGNS's `NFACE_n`, OpenFOAM, EnSight) do for their own
+ * format-compatibility reasons — that convention is not a requirement of the
+ * uniform mesh API. Keeping one output block per input block also keeps the
+ * block correspondence 1:1, which is exactly what `CellMapKind::FirstChild`
+ * needs to carry regions correctly (see `mCellMaps` below).
+ *
+ * Non-3D blocks (2D/1D boundary markers) and 3D blocks with no
+ * `detail::cell_faces` row (the 3D Lagrange family) pass through unchanged.
+ *
+ * ### Regions
+ *
+ * Point and Cell regions survive (via `CellMapKind::FirstChild`, the same
+ * shape `convert_cells` already uses for its own one-to-many splits — a
+ * parent's children occupy a contiguous run in the corresponding output
+ * block). Named **Side** regions do not: `FirstChild` drops them
+ * unconditionally, since a child's facets have no correspondence with the
+ * parent's — the same limitation `convert_cells(Simplexify)` already has and
+ * documents, not a new gap this operation introduces.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format — it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `subdivide`.
+struct SubdivideOptions {
+    /// Attach an Int64 `subdivide:parent_cell` `cell_data` array recording,
+    /// per output cell, the index of the input cell it came from *within its
+    /// own block* (blocks correspond 1:1).
+    bool mRecordParentIds = false;
+};
+
+/// The result of `subdivide`: the subdivided mesh plus the cell index map.
+struct SubdivideResult {
+    /// The subdivided mesh.
+    Mesh mMesh;
+    /// Per input block, Int64 shape `(num_cells_in_block,)`: input cell -> the
+    /// index of its **first** child in the corresponding output block
+    /// (`CellMapKind::FirstChild`; see the file docs). A non-3D or otherwise
+    /// ineligible block passes through unchanged, so its entries are the
+    /// identity. A cell whose rings could not be built at all (out-of-range
+    /// connectivity) contributes no children, giving it an empty run.
+    std::vector<NDArray> mCellMaps;
+};
+
+/**
+ * @brief Split every eligible 3D cell into one polyhedral child per face.
+ * @param rMesh the mesh to subdivide.
+ * @param rOptions whether to record parent ids (defaults to false).
+ * @return the subdivided mesh plus the per-block cell index map.
+ * @throws std::invalid_argument when a cell's faces are not a closed
+ *         orientable surface (naming the cell and block).
+ */
+MESHIOPLUSPLUS_API SubdivideResult subdivide(const Mesh& rMesh,
+                                             const SubdivideOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/surface.hpp =====
 /**
  * @file operations/surface.hpp
@@ -19158,6 +20101,124 @@ MESHIOPLUSPLUS_API Mesh transform(const Mesh& rMesh, const AffineTransform& rXfo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/transform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
+/**
+ * @file undo_green.hpp
+ * @brief Green-element undo: restore `refine`'s *transitional* (closure-only)
+ * cells back to their original parent, so a subsequent selective `refine` call
+ * re-splits the parent from scratch rather than compounding an already
+ * irregular shape. See `operations/refine.hpp`'s own doc comment for the
+ * red/green/untouched vocabulary this builds on.
+ *
+ * A TWO-MESH operation, `undo_green(coarse, fine)` — the "link between two
+ * meshes, not a tree inside one" framing `refine.hpp` already uses for its
+ * persistent hierarchy, taken literally: `coarse` is the mesh a prior
+ * `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was
+ * run on, `fine` is that call's output.
+ *
+ * **Design: lookup and substitution, not reconstruction.** `refine()` never
+ * renumbers or prunes points -- its point map is always the identity -- so a
+ * green parent's *exact* original connectivity and cell_data are already
+ * sitting, byte-for-byte, in `coarse` at the row `fine`'s `refine:parent_id`
+ * names (resolved against `coarse`'s own `refine:cell_id`, or its implicit
+ * global-block-major id when it carries none -- the same fallback
+ * `refine_attach_hierarchy` itself uses when starting a fresh id space). This
+ * needs no per-type subdivision-table inversion, no graph matching against
+ * `detail::refine_templates.hpp`'s admissible masks, and consequently no
+ * winding repair or other discrete sign branch -- unlike `subdivide` and
+ * `agglomerate`, this operation is pure array bookkeeping and byte copies, and
+ * so (unlike those two) it has a full numpy twin rather than being
+ * twin-exempt.
+ *
+ * A cell's mask -- and hence its red/green status -- is uniform across every
+ * one of its children (`refine_once` sets it once per parent), so
+ * classification is per SIBLING GROUP (cells sharing one `refine:parent_id`),
+ * not per cell: a singleton group (`refine:cell_id == refine:parent_id`) is
+ * **untouched**, kept verbatim; a group whose `refine:level` is one more than
+ * its coarse parent's own level is **red** (a genuine, wanted refinement --
+ * passed through unchanged); a group whose level equals its coarse parent's
+ * own level is **green** (a closure artefact -- the whole group is replaced
+ * by ONE cell copied verbatim from `coarse`).
+ *
+ * **Points are never pruned or renumbered** -- this is what makes the
+ * substitution a zero-translation byte copy: a coarse cell's node ids are
+ * valid indices into `fine`'s own point array with no offset, precisely
+ * because `refine`'s own point map is always the identity. `clean(mesh,
+ * remove_orphans=True)` is the documented follow-up for a caller wanting the
+ * orphaned mid-edge nodes (left behind by a substituted green group) pruned.
+ *
+ * The six reserved `refine:*` cell_data arrays (`parent_cell`, `level`,
+ * `hanging`, `entity`, `cell_id`, `parent_id`) are unconditionally dropped
+ * from the output -- they describe a hierarchy relationship that is now stale
+ * after the undo; a subsequent `refine(..., record_hierarchy=True)` call
+ * rebuilds them fresh. Every other `cell_data` array on `fine` is carried:
+ * untouched/red rows byte-copied from `fine` as usual, a green group's one
+ * output row byte-copied from the SAME-NAMED array on `coarse` -- if `coarse`
+ * lacks that array, or its shape doesn't match, the WHOLE array is dropped
+ * with a warning rather than guessing a value for the substituted row.
+ *
+ * **Named Side regions do not survive** (the `subdivide`/`agglomerate`
+ * precedent): a removed green child's local facet numbering has no
+ * correspondence to the substituted parent's own facets, even though the
+ * cell type is unchanged. Point and Cell regions do survive -- Cell regions
+ * through the first genuinely non-injective `CellMapKind::Direct` use in the
+ * repo (several fine cells collapsing onto one output row), relying on
+ * `Region::Canonicalize`'s existing sort+dedup.
+ *
+ * **Two honest limitations, not gaps**: it can only undo the LAST generation
+ * relative to the specific `coarse` mesh passed in (an untouched cell's
+ * `parent_id == cell_id`, so an older green closure becomes indistinguishable
+ * from an original once a later pass has run over it), and it needs the
+ * caller to hold both meshes -- there is no single-mesh fallback.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The result of `undo_green`.
+struct UndoGreenResult {
+    Mesh mMesh;
+    /// Per FINE input block, Int64 shape `(num_cells_in_block,)`,
+    /// `CellMapKind::Direct` shape: fine cell -> output cell within the
+    /// corresponding output block. Every member of a green sibling group maps
+    /// to the SAME output index (the group's one substituted row).
+    std::vector<NDArray> mCellMaps;
+    /// Number of green sibling groups substituted (i.e. number of NEW cells
+    /// created by this call).
+    std::int64_t mNumGroupsUndone = 0;
+    /// Total number of green child cells removed (mNumGroupsUndone counted
+    /// once each; this is the sum of each undone group's original size).
+    std::int64_t mNumCellsRemoved = 0;
+};
+
+/**
+ * @brief Restore `fine`'s transitional (green) cells back to their original
+ * parent, read verbatim from `coarse`.
+ * @param rCoarse the mesh a prior `refine(rCoarse, ...)` call was run on.
+ * @param rFine that call's output -- must carry one Int64 scalar `cell_data`
+ *        array per block for each of `refine:cell_id`, `refine:parent_id` and
+ *        `refine:level` (i.e. that call must have used
+ *        `record_hierarchy=True, record_levels=True`); throws by name
+ *        otherwise.
+ * @return the undone mesh (fine's own block structure, unchanged types and
+ *         order; some blocks' row counts shrink), plus the cell maps and
+ *         counters above.
+ * @throws std::invalid_argument if `rFine` lacks the required hierarchy
+ *         arrays, if a `refine:parent_id` value cannot be resolved against
+ *         `rCoarse`'s id space (the two meshes are not the input/output pair
+ *         of one `refine()` call), or if a sibling group's `refine:level`
+ *         matches neither the red nor the green relationship to its coarse
+ *         parent's own level.
+ */
+MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/voxelize.hpp =====
 /**
  * @file operations/voxelize.hpp
@@ -19948,7 +21009,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 0
+#define MESHIOPLUSPLUS_VERSION_MINOR 6
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -19958,7 +21019,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.6.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -35846,6 +36907,287 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/data_ops.cpp =====
+// ===== begin src/cpp/src/detail/decimate_common.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
+    DecimCsr csr;
+    csr.mXadj.assign(n + 1, 0);
+    const std::size_t nf = rFaces.mNumFaces;
+    for (std::size_t i = 0; i < nf * 3; ++i)
+        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
+    for (std::size_t i = 0; i < n; ++i)
+        csr.mXadj[i + 1] += csr.mXadj[i];
+    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
+    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
+            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
+        }
+    return csr;
+}
+
+void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
+                       std::vector<double>& rQuadK, std::vector<double>& rNormals) {
+    const std::size_t nf = rFaces.mNumFaces;
+    rQuadK.assign(nf * 10, 0.0);
+    rNormals.assign(nf * 3, 0.0);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t* c = rFaces.mCorners.data() + f * 3;
+        const double* p0 = rXyz.data() + static_cast<std::size_t>(c[0]) * 3;
+        const double* p1 = rXyz.data() + static_cast<std::size_t>(c[1]) * 3;
+        const double* p2 = rXyz.data() + static_cast<std::size_t>(c[2]) * 3;
+        const double e1x = p1[0] - p0[0];
+        const double e1y = p1[1] - p0[1];
+        const double e1z = p1[2] - p0[2];
+        const double e2x = p2[0] - p0[0];
+        const double e2y = p2[1] - p0[1];
+        const double e2z = p2[2] - p0[2];
+        const double nx = e1y * e2z - e1z * e2y;
+        const double ny = e1z * e2x - e1x * e2z;
+        const double nz = e1x * e2y - e1y * e2x;
+        const double len2 = nx * nx + ny * ny + nz * nz;
+        if (len2 == 0.0)
+            return;  // degenerate: zero quadric, zero normal
+        const double len = std::sqrt(len2);
+        const double a = nx / len;
+        const double b = ny / len;
+        const double cc = nz / len;
+        const double d = -(a * p0[0] + b * p0[1] + cc * p0[2]);
+        const double w = 0.5 * len;
+        const double wa = w * a;
+        const double wb = w * b;
+        const double wc = w * cc;
+        const double wd = w * d;
+        double* k = rQuadK.data() + f * 10;
+        k[0] = wa * a;
+        k[1] = wa * b;
+        k[2] = wa * cc;
+        k[3] = wa * d;
+        k[4] = wb * b;
+        k[5] = wb * cc;
+        k[6] = wb * d;
+        k[7] = wc * cc;
+        k[8] = wc * d;
+        k[9] = wd * d;
+        double* nrm = rNormals.data() + f * 3;
+        nrm[0] = a;
+        nrm[1] = b;
+        nrm[2] = cc;
+    });
+}
+
+std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t n,
+                                              const std::vector<double>& rQuadK) {
+    std::vector<double> q(n * 10, 0.0);
+    parallel_for(n, [&](std::size_t v) {
+        double* qv = q.data() + v * 10;
+        for (std::int64_t k = rCsr.mXadj[v]; k < rCsr.mXadj[v + 1]; ++k) {
+            const double* kf =
+                rQuadK.data() +
+                static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(k)]) * 10;
+            for (int i = 0; i < 10; ++i)
+                qv[i] += kf[i];
+        }
+    });
+    return q;
+}
+
+void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
+                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
+    parallel_for(n, [&](std::size_t v) {
+        const std::int64_t b = rCsr.mXadj[v];
+        const std::int64_t e = rCsr.mXadj[v + 1];
+        for (std::int64_t p = b; p < e; ++p) {
+            const double* na = rNormals.data() +
+                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
+            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
+                continue;
+            for (std::int64_t q = p + 1; q < e; ++q) {
+                const double* nb =
+                    rNormals.data() +
+                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
+                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
+                    continue;
+                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
+                    rPinned[v] = 1;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+double decim_quadric_error(const double* q, double x, double y, double z) {
+    return q[0] * x * x + q[4] * y * y + q[7] * z * z +
+           2.0 * (q[1] * x * y + q[2] * x * z + q[5] * y * z) +
+           2.0 * (q[3] * x + q[6] * y + q[8] * z) + q[9];
+}
+
+DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t b) {
+    const std::vector<double>& xyz = *rCtx.mpXyz;
+    const std::vector<double>& quads = *rCtx.mpQ;
+    const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
+    const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
+    const double* qa = quads.data() + static_cast<std::size_t>(a) * 10;
+    const double* qb = quads.data() + static_cast<std::size_t>(b) * 10;
+    double q[10];
+    for (int i = 0; i < 10; ++i)
+        q[i] = qa[i] + qb[i];
+
+    DecimPlaced out;
+    const std::vector<std::uint8_t>& pinned = *rCtx.mpPinned;
+    if (pinned[static_cast<std::size_t>(a)]) {
+        out.mX[0] = xa[0];
+        out.mX[1] = xa[1];
+        out.mX[2] = xa[2];
+        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+        return out;
+    }
+    if (pinned[static_cast<std::size_t>(b)]) {
+        out.mX[0] = xb[0];
+        out.mX[1] = xb[1];
+        out.mX[2] = xb[2];
+        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+        return out;
+    }
+
+    if (rCtx.mPlacement == DecimatePlacement::Endpoint) {
+        const double err_a = decim_quadric_error(q, xa[0], xa[1], xa[2]);
+        const double err_b = decim_quadric_error(q, xb[0], xb[1], xb[2]);
+        if (err_b < err_a) {  // tie -> a, the lower id
+            out.mX[0] = xb[0];
+            out.mX[1] = xb[1];
+            out.mX[2] = xb[2];
+            out.mErr = err_b;
+        } else {
+            out.mX[0] = xa[0];
+            out.mX[1] = xa[1];
+            out.mX[2] = xa[2];
+            out.mErr = err_a;
+        }
+        return out;
+    }
+
+    bool solved = false;
+    if (rCtx.mPlacement == DecimatePlacement::Optimal) {
+        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
+        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
+        // planar patch A is singular by construction, so the midpoint fallback
+        // is the hot path there -- expected, not a defect.
+        const double c00 = q[4] * q[7] - q[5] * q[5];
+        const double c01 = q[2] * q[5] - q[1] * q[7];
+        const double c02 = q[1] * q[5] - q[2] * q[4];
+        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
+        double scale = std::abs(q[0]);
+        scale = std::max(scale, std::abs(q[1]));
+        scale = std::max(scale, std::abs(q[2]));
+        scale = std::max(scale, std::abs(q[4]));
+        scale = std::max(scale, std::abs(q[5]));
+        scale = std::max(scale, std::abs(q[7]));
+        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
+            const double c11 = q[0] * q[7] - q[2] * q[2];
+            const double c12 = q[1] * q[2] - q[0] * q[5];
+            const double c22 = q[0] * q[4] - q[1] * q[1];
+            const double inv = 1.0 / det;
+            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
+            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
+            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+            solved = true;
+        }
+    }
+    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
+        out.mX[0] = (xa[0] + xb[0]) * 0.5;
+        out.mX[1] = (xa[1] + xb[1]) * 0.5;
+        out.mX[2] = (xa[2] + xb[2]) * 0.5;
+    }
+    out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
+    return out;
+}
+
+void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,
+                       std::int64_t A, std::int64_t B, const double* pSub, double pOut[3]) {
+    double p[3][3];
+    for (int k = 0; k < 3; ++k) {
+        const std::int64_t id = pCorners[k];
+        if (pSub != nullptr && (id == A || id == B)) {
+            p[k][0] = pSub[0];
+            p[k][1] = pSub[1];
+            p[k][2] = pSub[2];
+        } else {
+            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
+            p[k][0] = src[0];
+            p[k][1] = src[1];
+            p[k][2] = src[2];
+        }
+    }
+    const double e1x = p[1][0] - p[0][0];
+    const double e1y = p[1][1] - p[0][1];
+    const double e1z = p[1][2] - p[0][2];
+    const double e2x = p[2][0] - p[0][0];
+    const double e2y = p[2][1] - p[0][1];
+    const double e2z = p[2][2] - p[0][2];
+    pOut[0] = e1y * e2z - e1z * e2y;
+    pOut[1] = e1z * e2x - e1x * e2z;
+    pOut[2] = e1x * e2y - e1y * e2x;
+}
+
+std::vector<std::int64_t> decim_vertex_ring(const std::vector<std::int64_t>& rVFaces,
+                                            const std::vector<std::int64_t>& rCorners,
+                                            std::int64_t v) {
+    std::vector<std::int64_t> ring;
+    ring.reserve(rVFaces.size() * 2);
+    for (std::int64_t f : rVFaces) {
+        const std::int64_t* c = rCorners.data() + static_cast<std::size_t>(f) * 3;
+        for (int k = 0; k < 3; ++k)
+            if (c[k] != v)
+                ring.push_back(c[k]);
+    }
+    std::sort(ring.begin(), ring.end());
+    ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
+    return ring;
+}
+
+std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
+                               const std::vector<std::int64_t>& rB) {
+    std::size_t i = 0;
+    std::size_t j = 0;
+    std::size_t common = 0;
+    while (i < rA.size() && j < rB.size()) {
+        if (rA[i] < rB[j])
+            ++i;
+        else if (rB[j] < rA[i])
+            ++j;
+        else {
+            ++common;
+            ++i;
+            ++j;
+        }
+    }
+    return common;
+}
+
+void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value) {
+    auto it = std::lower_bound(rVec.begin(), rVec.end(), Value);
+    if (it != rVec.end() && *it == Value)
+        rVec.erase(it);
+}
+
+void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
+    rVec.insert(std::lower_bound(rVec.begin(), rVec.end(), Value), Value);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/decimate_common.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -38196,6 +39538,92 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/refine_hierarchy.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <unordered_map>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+RefineHierarchyState refine_read_hierarchy(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           std::vector<std::int64_t>& rIds, std::int64_t& rIdBase) {
+    if (!rMesh.HasCellData(kRefineCellIdName))
+        return RefineHierarchyState::Absent;
+
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const bool has_parent = rMesh.HasCellData(kRefineParentIdName);
+    if (rMesh.CellDataNumBlocks(kRefineCellIdName) != nblocks ||
+        (has_parent && rMesh.CellDataNumBlocks(kRefineParentIdName) != nblocks)) {
+        log::warn("refine: ignoring '{}'/'{}': they do not cover every cell block.",
+                  kRefineCellIdName, kRefineParentIdName);
+        return RefineHierarchyState::Invalid;
+    }
+
+    const std::int64_t total = total_cells(rBases);
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(total));
+    std::vector<std::int64_t> parent_ids;
+    if (has_parent)
+        parent_ids.resize(static_cast<std::size_t>(total));
+
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(kRefineCellIdName, bi);
+        if (rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1)) {
+            log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                      kRefineCellIdName, bi);
+            return RefineHierarchyState::Invalid;
+        }
+        for (std::size_t c = 0; c < ncells; ++c)
+            ids[base + c] = read_int(a, c);
+        if (has_parent) {
+            const NDArray& p = rMesh.CellData(kRefineParentIdName, bi);
+            if (rows(p) != ncells || (ncells != 0 && p.Size() / ncells != 1)) {
+                log::warn("refine: ignoring '{}': block {} is not one scalar value per cell.",
+                          kRefineParentIdName, bi);
+                return RefineHierarchyState::Invalid;
+            }
+            for (std::size_t c = 0; c < ncells; ++c)
+                parent_ids[base + c] = read_int(p, c);
+        }
+        ++bi;
+    }
+
+    std::int64_t max_id = -1;
+    std::unordered_map<std::int64_t, char> seen;
+    seen.reserve(ids.size() * 2);
+    for (std::int64_t id : ids) {
+        if (id < 0) {
+            log::warn("refine: ignoring '{}'/'{}': ids must be non-negative.", kRefineCellIdName,
+                      kRefineParentIdName);
+            return RefineHierarchyState::Invalid;
+        }
+        if (!seen.emplace(id, 0).second) {
+            log::warn(
+                "refine: ignoring '{}'/'{}': the id {} is not unique, so the mesh was merged or "
+                "the array was replicated by another operation.",
+                kRefineCellIdName, kRefineParentIdName, id);
+            return RefineHierarchyState::Invalid;
+        }
+        max_id = std::max(max_id, id);
+    }
+    for (std::int64_t id : parent_ids)
+        max_id = std::max(max_id, id);
+
+    rIds = std::move(ids);
+    rIdBase = max_id + 1;
+    return RefineHierarchyState::Valid;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/refine_hierarchy.cpp =====
 // ===== begin src/cpp/src/detail/refine_templates.cpp =====
 #include <algorithm>
 #include <array>
@@ -65198,6 +66626,356 @@ void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)() {}
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/mesh_backend_check.cpp =====
+// ===== begin src/cpp/src/operations/agglomerate.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kAggPrefix = "meshio++: agglomerate: ";
+
+/// A staged output block: either an unchanged copy of a pass-through input
+/// block (any of its three storage shapes), or the one merged polyhedron
+/// block. Mirrors subdivide.cpp's own staging shape; not shared with it,
+/// since that one is file-private there too.
+struct AggOutBlock {
+    std::string mType;
+    std::size_t mNodesPerCell = 0;  // rectangular pass-through only
+    std::vector<std::int64_t> mConn;
+    std::vector<std::vector<std::int64_t>> mPolygonRows;
+    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;
+    bool mIsRagged = false;
+    bool mIsPolyhedron = false;
+};
+
+AggOutBlock agg_stage_passthrough(const Mesh::CellView& rBlock) {
+    AggOutBlock out;
+    out.mType = std::string(rBlock.Type());
+    if (rBlock.IsPolyhedron()) {
+        out.mIsRagged = true;
+        out.mIsPolyhedron = true;
+        out.mPolyhedronCells.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+                const auto face = rBlock.Face(c, f);
+                out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
+            }
+        }
+    } else if (rBlock.IsRagged()) {
+        out.mIsRagged = true;
+        out.mPolygonRows.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+        }
+    } else {
+        const NDArray& conn = rBlock.Conn();
+        const std::size_t npc = rBlock.NodesPerCell();
+        out.mNodesPerCell = npc;
+        out.mConn.resize(rBlock.NumCells() * npc);
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
+            for (std::size_t k = 0; k < npc; ++k)
+                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+    }
+    return out;
+}
+
+void agg_emit_block(Mesh& rOut, AggOutBlock& rBlock) {
+    if (rBlock.mIsPolyhedron) {
+        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
+    } else if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
+    } else {
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
+            dst[i] = rBlock.mConn[i];
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+    }
+}
+
+/// Area of global face `f`, gathering its corner coordinates into a local
+/// buffer first -- GlobalFaces::Face() returns GLOBAL node ids, while
+/// polygon_area's ring-taking overload expects local indices, so the plain
+/// (no-ring) overload over a freshly gathered buffer is the fit.
+double agg_face_area(const detail::GlobalFaces& rFaces, std::size_t f, const NDArray& rPoints,
+                     std::size_t PointDim) {
+    const std::size_t n = rFaces.FaceSize(f);
+    const std::int64_t* ring = rFaces.Face(f);
+    std::vector<detail::Vec3> coords(n);
+    for (std::size_t k = 0; k < n; ++k) {
+        const auto pid = static_cast<std::size_t>(ring[k]);
+        for (std::size_t d = 0; d < 3; ++d)
+            coords[k][d] = d < PointDim ? detail::read_double(rPoints, pid * PointDim + d) : 0.0;
+    }
+    return detail::polygon_area(coords.data(), n);
+}
+
+/// Frontier entry ordered by DESCENDING accumulated shared-face area, ties
+/// broken by ASCENDING compact cell id -- storing the negated area keeps a
+/// plain ascending std::set a max-by-area, min-by-id priority structure.
+struct FrontierKey {
+    double mNegArea;
+    std::int64_t mId;
+    bool operator<(const FrontierKey& rOther) const {
+        if (mNegArea != rOther.mNegArea)
+            return mNegArea < rOther.mNegArea;
+        return mId < rOther.mId;
+    }
+};
+
+}  // namespace
+
+AgglomerateResult agglomerate(const Mesh& rMesh, const AgglomerateOptions& rOptions) {
+    if (rOptions.mTargetGroupSize == 0)
+        throw std::invalid_argument(std::string(kAggPrefix) + "mTargetGroupSize must be >= 1");
+
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    if (gf.mNumNonManifold > 0)
+        throw std::invalid_argument(
+            std::string(kAggPrefix) + "mesh contains " + std::to_string(gf.mNumNonManifold) +
+            " face(s) shared by three or more cells (non-manifold); refusing rather than "
+            "guessing a boundary classification");
+
+    const std::size_t n_compact = gf.NumCells();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // --- greedy seed-and-grow over the face dual --------------------------
+    std::vector<std::int64_t> group_of(n_compact, -1);
+    std::vector<std::vector<std::int64_t>> groups;
+
+    for (std::size_t seed = 0; seed < n_compact; ++seed) {
+        if (group_of[seed] != -1)
+            continue;
+        const auto gid = static_cast<std::int64_t>(groups.size());
+        std::vector<std::int64_t> members{static_cast<std::int64_t>(seed)};
+        group_of[seed] = gid;
+
+        std::unordered_map<std::int64_t, double> pending;
+        std::set<FrontierKey> frontier;
+
+        auto push_neighbours = [&](std::int64_t c) {
+            const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
+            const std::int64_t* row = gf.CellFaces(static_cast<std::size_t>(c));
+            for (std::size_t k = 0; k < nf; ++k) {
+                const std::int64_t sid = row[k];
+                const auto f = static_cast<std::size_t>((sid > 0 ? sid : -sid) - 1);
+                const std::int64_t owner = gf.mOwner[f];
+                const std::int64_t neigh = gf.mNeighbour[f];
+                const std::int64_t other = (owner == c) ? neigh : owner;
+                if (other < 0)
+                    continue;  // mesh boundary
+                if (group_of[static_cast<std::size_t>(other)] != -1)
+                    continue;  // already claimed (by this group or would be a bug otherwise)
+                const double a = agg_face_area(gf, f, points, pdim);
+                auto it = pending.find(other);
+                if (it != pending.end()) {
+                    frontier.erase(FrontierKey{-it->second, other});
+                    it->second += a;
+                } else {
+                    it = pending.emplace(other, a).first;
+                }
+                frontier.insert(FrontierKey{-it->second, other});
+            }
+        };
+
+        push_neighbours(static_cast<std::int64_t>(seed));
+
+        while (members.size() < rOptions.mTargetGroupSize && !frontier.empty()) {
+            const auto fit = frontier.begin();
+            const std::int64_t c = fit->mId;
+            frontier.erase(fit);
+            pending.erase(c);
+            if (group_of[static_cast<std::size_t>(c)] != -1)
+                continue;  // defensive; unreachable given the push-time check above
+            group_of[static_cast<std::size_t>(c)] = gid;
+            members.push_back(c);
+            push_neighbours(c);
+        }
+
+        std::sort(members.begin(), members.end());
+        groups.push_back(std::move(members));
+    }
+
+    // --- emit: one polyhedron cell per group, external faces only ---------
+    std::vector<std::vector<std::vector<std::int64_t>>> merged_cells(groups.size());
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        auto& faces_out = merged_cells[g];
+        for (std::int64_t c : groups[g]) {
+            const std::size_t nf = gf.NumCellFaces(static_cast<std::size_t>(c));
+            const std::int64_t* row = gf.CellFaces(static_cast<std::size_t>(c));
+            for (std::size_t k = 0; k < nf; ++k) {
+                const std::int64_t sid = row[k];
+                const auto f = static_cast<std::size_t>((sid > 0 ? sid : -sid) - 1);
+                const std::int64_t owner = gf.mOwner[f];
+                const std::int64_t neigh = gf.mNeighbour[f];
+                const std::int64_t other = (owner == c) ? neigh : owner;
+                if (other >= 0 && group_of[static_cast<std::size_t>(other)] ==
+                                      group_of[static_cast<std::size_t>(c)])
+                    continue;  // internal to the group: dropped from both sides
+                const std::size_t n = gf.FaceSize(f);
+                const std::int64_t* ring = gf.Face(f);
+                std::vector<std::int64_t> face_nodes(ring, ring + n);
+                if (sid < 0)
+                    std::reverse(face_nodes.begin(), face_nodes.end());
+                faces_out.push_back(std::move(face_nodes));
+            }
+        }
+    }
+
+    // --- which original blocks carry volume, and the compact<->global bridge
+    std::vector<bool> is_volume(rMesh.NumCellBlocks(), true);
+    for (std::size_t b : gf.mNonCellBlocks)
+        if (b < is_volume.size())
+            is_volume[b] = false;
+
+    const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+    std::unordered_map<std::int64_t, std::int64_t> global_to_compact;
+    global_to_compact.reserve(n_compact);
+    for (std::size_t c = 0; c < n_compact; ++c)
+        global_to_compact[gf.mCellToGlobal[c]] = static_cast<std::int64_t>(c);
+
+    // --- build the output mesh's blocks, tracking where each original block
+    // landed (pass-through) or whether it fed the merged block -----------
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(points));
+
+    const std::size_t nblocks_in = rMesh.NumCellBlocks();
+    std::vector<std::int64_t> pass_out_block(nblocks_in, -1);
+    std::int64_t merged_out_block = -1;
+    bool merged_emitted = false;
+    std::size_t bi = 0;
+    std::int64_t out_block_idx = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (is_volume[bi]) {
+            if (!merged_emitted) {
+                AggOutBlock mb;
+                mb.mType = "polyhedron";
+                mb.mIsRagged = true;
+                mb.mIsPolyhedron = true;
+                mb.mPolyhedronCells = std::move(merged_cells);
+                if (!mb.mPolyhedronCells.empty()) {
+                    agg_emit_block(out, mb);
+                    merged_out_block = out_block_idx++;
+                }
+                merged_emitted = true;
+            }
+        } else {
+            AggOutBlock pb = agg_stage_passthrough(cb);
+            agg_emit_block(out, pb);
+            pass_out_block[bi] = out_block_idx++;
+        }
+        ++bi;
+    }
+
+    const std::vector<std::int64_t> out_bases = detail::block_bases(out);
+
+    // --- the flat cell map --------------------------------------------------
+    NDArray cell_map =
+        NDArray::Uninit(DType::Int64, {static_cast<std::size_t>(detail::total_cells(in_bases))});
+    std::int64_t* cm = cell_map.As<std::int64_t>();
+    bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::int64_t base_in = in_bases[bi];
+        if (is_volume[bi]) {
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::int64_t global_in = base_in + static_cast<std::int64_t>(r);
+                const std::int64_t compact = global_to_compact.at(global_in);
+                cm[global_in] = merged_out_block < 0
+                                    ? -1
+                                    : out_bases[static_cast<std::size_t>(merged_out_block)] +
+                                          group_of[static_cast<std::size_t>(compact)];
+            }
+        } else {
+            const std::int64_t ob = pass_out_block[bi];
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::int64_t global_in = base_in + static_cast<std::int64_t>(r);
+                cm[global_in] =
+                    out_bases[static_cast<std::size_t>(ob)] + static_cast<std::int64_t>(r);
+            }
+        }
+        ++bi;
+    }
+
+    // --- point_data / field_data: unchanged, no new or pruned points -------
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    // --- cell_data: pass-through blocks copied verbatim; the merged block's
+    // row for group g is its first (ascending compact id) member's row -----
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
+        if (ndata != nblocks_in) {
+            log::warn(
+                "{}cell_data '{}' does not have one array per input block; dropped rather "
+                "than guessed at",
+                kAggPrefix, name);
+            continue;
+        }
+        std::vector<NDArray> out_blocks(static_cast<std::size_t>(out_block_idx));
+        bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            (void)cb;
+            if (!is_volume[bi] && pass_out_block[bi] >= 0)
+                out_blocks[static_cast<std::size_t>(pass_out_block[bi])] =
+                    detail::data_owned_copy(rMesh.CellData(name, bi));
+            ++bi;
+        }
+        if (merged_out_block >= 0) {
+            // Resolve each group's first member's (block, row) and gather.
+            const NDArray& first_src = rMesh.CellData(name, 0);
+            std::vector<std::size_t> shape = first_src.Shape();
+            shape[0] = groups.size();
+            NDArray dst = NDArray::Uninit(first_src.Dtype(), std::move(shape));
+            const std::size_t row_bytes =
+                first_src.Nbytes() / std::max<std::size_t>(1, detail::rows(first_src));
+            std::byte* p_dst = dst.Data();
+            for (std::size_t g = 0; g < groups.size(); ++g) {
+                const std::int64_t compact_first = groups[g].front();
+                const std::int64_t global =
+                    gf.mCellToGlobal[static_cast<std::size_t>(compact_first)];
+                const auto [blk, row] = detail::global_to_block_row(in_bases, global);
+                const NDArray& src = rMesh.CellData(name, blk);
+                const std::byte* p_src = src.Data();
+                std::memcpy(p_dst + g * row_bytes,
+                            p_src + static_cast<std::size_t>(row) * row_bytes, row_bytes);
+            }
+            out_blocks[static_cast<std::size_t>(merged_out_block)] = std::move(dst);
+        }
+        out.AddCellData(name, std::move(out_blocks));
+    }
+
+    AgglomerateResult res;
+    res.mMesh = std::move(out);
+    res.mCellMap = std::move(cell_map);
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::Global;
+    rmap.pGlobalCellMap = &res.mCellMap;
+    rmap.mOpName = "agglomerate";
+    detail::remap_regions(rMesh, res.mMesh, rmap);
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/agglomerate.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -68483,6 +70261,26 @@ namespace meshioplusplus {
 
 namespace {
 
+// The placement solve, error form, normal-flip check, and the vertex-ring
+// link-condition primitives are shared with volume decimation and live in
+// detail/decimate_common.{hpp,cpp} -- see that header for why this is a hoist
+// rather than a duplication.
+using detail::decim_accumulate_quadrics;
+using detail::decim_count_common;
+using detail::decim_face_normal;
+using detail::decim_face_planes;
+using detail::decim_mark_features;
+using detail::decim_place;
+using detail::decim_quadric_error;
+using detail::decim_sorted_erase;
+using detail::decim_sorted_insert;
+using detail::decim_vertex_faces_csr;
+using detail::decim_vertex_ring;
+using detail::DecimCsr;
+using detail::DecimFaces;
+using detail::DecimPlaceCtx;
+using detail::DecimPlaced;
+
 // --- validation --------------------------------------------------------------
 
 // The resolved stopping criterion. `mTargetFaces` is only meaningful when
@@ -68563,14 +70361,9 @@ void decim_check_blocks(const Mesh& rMesh) {
 }
 
 // --- flat face table ---------------------------------------------------------
-
-// The triangulated mesh's connectivity as one flat int64 buffer (3 corners per
-// face, block-major), plus each block's first global face id.
-struct DecimFaces {
-    std::vector<std::int64_t> mCorners;    // 3 * num_faces
-    std::vector<std::int64_t> mBlockBase;  // per block, global id of face 0
-    std::size_t mNumFaces = 0;
-};
+// DecimFaces/DecimCsr and the generic per-face/per-vertex quadric machinery
+// live in detail/decimate_common.hpp (brought into scope above); this file
+// keeps only what ties them to a *simplexified `Mesh`*'s own blocks.
 
 DecimFaces decim_build_faces(const Mesh& rSimp, std::size_t n) {
     DecimFaces t;
@@ -68599,31 +70392,6 @@ DecimFaces decim_build_faces(const Mesh& rSimp, std::size_t n) {
         t.mNumFaces += nc;
     }
     return t;
-}
-
-// --- vertex -> face CSR (counting sort; rows ascend in face index) -----------
-
-struct DecimCsr {
-    std::vector<std::int64_t> mXadj;
-    std::vector<std::int64_t> mAdj;
-};
-
-DecimCsr decim_vertex_faces_csr(const DecimFaces& rFaces, std::size_t n) {
-    DecimCsr csr;
-    csr.mXadj.assign(n + 1, 0);
-    const std::size_t nf = rFaces.mNumFaces;
-    for (std::size_t i = 0; i < nf * 3; ++i)
-        ++csr.mXadj[static_cast<std::size_t>(rFaces.mCorners[i]) + 1];
-    for (std::size_t i = 0; i < n; ++i)
-        csr.mXadj[i + 1] += csr.mXadj[i];
-    csr.mAdj.resize(static_cast<std::size_t>(csr.mXadj[n]));
-    std::vector<std::int64_t> cursor(csr.mXadj.begin(), csr.mXadj.end() - 1);
-    for (std::size_t f = 0; f < nf; ++f)
-        for (std::size_t k = 0; k < 3; ++k) {
-            const std::size_t v = static_cast<std::size_t>(rFaces.mCorners[f * 3 + k]);
-            csr.mAdj[static_cast<std::size_t>(cursor[v]++)] = static_cast<std::int64_t>(f);
-        }
-    return csr;
 }
 
 // --- edge table + boundary marks ---------------------------------------------
@@ -68680,310 +70448,8 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
     return edges;
 }
 
-// --- per-face planes and quadrics --------------------------------------------
-
-// Per face: the 10 entries of the area-weighted plane quadric, in the fixed
-// order [aa, ab, ac, ad, bb, bc, bd, cc, cd, dd], and the unit normal (zero for
-// a degenerate face) for the feature pass. The expressions below are pinned:
-// _decimate.py transcribes them token for token.
-void decim_face_planes(const DecimFaces& rFaces, const std::vector<double>& rXyz,
-                       std::vector<double>& rQuadK, std::vector<double>& rNormals) {
-    const std::size_t nf = rFaces.mNumFaces;
-    rQuadK.assign(nf * 10, 0.0);
-    rNormals.assign(nf * 3, 0.0);
-    parallel_for(nf, [&](std::size_t f) {
-        const std::int64_t* c = rFaces.mCorners.data() + f * 3;
-        const double* p0 = rXyz.data() + static_cast<std::size_t>(c[0]) * 3;
-        const double* p1 = rXyz.data() + static_cast<std::size_t>(c[1]) * 3;
-        const double* p2 = rXyz.data() + static_cast<std::size_t>(c[2]) * 3;
-        const double e1x = p1[0] - p0[0];
-        const double e1y = p1[1] - p0[1];
-        const double e1z = p1[2] - p0[2];
-        const double e2x = p2[0] - p0[0];
-        const double e2y = p2[1] - p0[1];
-        const double e2z = p2[2] - p0[2];
-        const double nx = e1y * e2z - e1z * e2y;
-        const double ny = e1z * e2x - e1x * e2z;
-        const double nz = e1x * e2y - e1y * e2x;
-        const double len2 = nx * nx + ny * ny + nz * nz;
-        if (len2 == 0.0)
-            return;  // degenerate: zero quadric, zero normal
-        const double len = std::sqrt(len2);
-        const double a = nx / len;
-        const double b = ny / len;
-        const double cc = nz / len;
-        const double d = -(a * p0[0] + b * p0[1] + cc * p0[2]);
-        // Area weighting (w = |n|/2) makes the accumulated quadric independent
-        // of how a planar polygon was fanned into triangles.
-        const double w = 0.5 * len;
-        const double wa = w * a;
-        const double wb = w * b;
-        const double wc = w * cc;
-        const double wd = w * d;
-        double* k = rQuadK.data() + f * 10;
-        k[0] = wa * a;
-        k[1] = wa * b;
-        k[2] = wa * cc;
-        k[3] = wa * d;
-        k[4] = wb * b;
-        k[5] = wb * cc;
-        k[6] = wb * d;
-        k[7] = wc * cc;
-        k[8] = wc * d;
-        k[9] = wd * d;
-        double* nrm = rNormals.data() + f * 3;
-        nrm[0] = a;
-        nrm[1] = b;
-        nrm[2] = cc;
-    });
-}
-
-// Per-vertex quadric: the sum of the incident faces' quadrics IN ASCENDING FACE
-// INDEX (the CSR rows are face-ascending by construction). FP addition is not
-// associative, so this fixed order is what pins the result across backends,
-// thread counts and the numpy fallback (whose np.add.at scatter accumulates in
-// the same face-major order).
-std::vector<double> decim_accumulate_quadrics(const DecimCsr& rCsr, std::size_t n,
-                                              const std::vector<double>& rQuadK) {
-    std::vector<double> q(n * 10, 0.0);
-    parallel_for(n, [&](std::size_t v) {
-        double* qv = q.data() + v * 10;
-        for (std::int64_t k = rCsr.mXadj[v]; k < rCsr.mXadj[v + 1]; ++k) {
-            const double* kf =
-                rQuadK.data() +
-                static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(k)]) * 10;
-            for (int i = 0; i < 10; ++i)
-                qv[i] += kf[i];
-        }
-    });
-    return q;
-}
-
-// Pin vertices whose incident face unit normals pairwise differ by more than
-// the feature angle. Unlike smooth (whose features live on boundary facets),
-// every surface face participates: the creases of a closed surface are
-// interior. O(d^2) in the valence; each iteration writes only its own slot.
-void decim_mark_features(const DecimCsr& rCsr, std::size_t n, const std::vector<double>& rNormals,
-                         double CosThreshold, std::vector<std::uint8_t>& rPinned) {
-    parallel_for(n, [&](std::size_t v) {
-        const std::int64_t b = rCsr.mXadj[v];
-        const std::int64_t e = rCsr.mXadj[v + 1];
-        for (std::int64_t p = b; p < e; ++p) {
-            const double* na = rNormals.data() +
-                               static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(p)]) * 3;
-            if (na[0] == 0.0 && na[1] == 0.0 && na[2] == 0.0)
-                continue;
-            for (std::int64_t q = p + 1; q < e; ++q) {
-                const double* nb =
-                    rNormals.data() +
-                    static_cast<std::size_t>(rCsr.mAdj[static_cast<std::size_t>(q)]) * 3;
-                if (nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0)
-                    continue;
-                if (na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2] < CosThreshold) {
-                    rPinned[v] = 1;
-                    return;
-                }
-            }
-        }
-    });
-}
-
-// --- placement + error -------------------------------------------------------
-
-// x^T Q x for the homogeneous point (x, y, z, 1). One fixed expression: the
-// literal parenthesization is the parity contract with _decimate.py.
-double decim_quadric_error(const double* q, double x, double y, double z) {
-    return q[0] * x * x + q[4] * y * y + q[7] * z * z +
-           2.0 * (q[1] * x * y + q[2] * x * z + q[5] * y * z) +
-           2.0 * (q[3] * x + q[6] * y + q[8] * z) + q[9];
-}
-
-struct DecimPlaced {
-    double mX[3] = {0.0, 0.0, 0.0};
-    double mErr = 0.0;
-};
-
-// Read-only state the placement needs; shared by the parallel seeding pass and
-// the serial loop.
-struct DecimPlaceCtx {
-    const std::vector<double>* mpXyz = nullptr;
-    const std::vector<double>* mpQ = nullptr;
-    const std::vector<std::uint8_t>* mpPinned = nullptr;
-    DecimatePlacement mPlacement = DecimatePlacement::Optimal;
-};
-
-// Position and quadric error of collapsing edge (a, b), a < b. A pinned
-// endpoint forces its own position (the survivor override); otherwise the
-// requested placement applies, with Optimal falling back to the midpoint when
-// the 3x3 system is ill-conditioned: |det| <= 1e-12 * max|A_ij|^3, a
-// scale-invariant Hadamard-style bound that costs six fabs and no sqrt.
-DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t b) {
-    const std::vector<double>& xyz = *rCtx.mpXyz;
-    const std::vector<double>& quads = *rCtx.mpQ;
-    const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
-    const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
-    const double* qa = quads.data() + static_cast<std::size_t>(a) * 10;
-    const double* qb = quads.data() + static_cast<std::size_t>(b) * 10;
-    double q[10];
-    for (int i = 0; i < 10; ++i)
-        q[i] = qa[i] + qb[i];
-
-    DecimPlaced out;
-    const std::vector<std::uint8_t>& pinned = *rCtx.mpPinned;
-    if (pinned[static_cast<std::size_t>(a)]) {
-        out.mX[0] = xa[0];
-        out.mX[1] = xa[1];
-        out.mX[2] = xa[2];
-        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-        return out;
-    }
-    if (pinned[static_cast<std::size_t>(b)]) {
-        out.mX[0] = xb[0];
-        out.mX[1] = xb[1];
-        out.mX[2] = xb[2];
-        out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-        return out;
-    }
-
-    if (rCtx.mPlacement == DecimatePlacement::Endpoint) {
-        const double err_a = decim_quadric_error(q, xa[0], xa[1], xa[2]);
-        const double err_b = decim_quadric_error(q, xb[0], xb[1], xb[2]);
-        if (err_b < err_a) {  // tie -> a, the lower id
-            out.mX[0] = xb[0];
-            out.mX[1] = xb[1];
-            out.mX[2] = xb[2];
-            out.mErr = err_b;
-        } else {
-            out.mX[0] = xa[0];
-            out.mX[1] = xa[1];
-            out.mX[2] = xa[2];
-            out.mErr = err_a;
-        }
-        return out;
-    }
-
-    bool solved = false;
-    if (rCtx.mPlacement == DecimatePlacement::Optimal) {
-        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
-        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
-        // planar patch A is singular by construction, so the midpoint fallback
-        // is the hot path there -- expected, not a defect.
-        const double c00 = q[4] * q[7] - q[5] * q[5];
-        const double c01 = q[2] * q[5] - q[1] * q[7];
-        const double c02 = q[1] * q[5] - q[2] * q[4];
-        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-        double scale = std::abs(q[0]);
-        scale = std::max(scale, std::abs(q[1]));
-        scale = std::max(scale, std::abs(q[2]));
-        scale = std::max(scale, std::abs(q[4]));
-        scale = std::max(scale, std::abs(q[5]));
-        scale = std::max(scale, std::abs(q[7]));
-        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-            const double c11 = q[0] * q[7] - q[2] * q[2];
-            const double c12 = q[1] * q[2] - q[0] * q[5];
-            const double c22 = q[0] * q[4] - q[1] * q[1];
-            const double inv = 1.0 / det;
-            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
-            solved = true;
-        }
-    }
-    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
-        out.mX[0] = (xa[0] + xb[0]) * 0.5;
-        out.mX[1] = (xa[1] + xb[1]) * 0.5;
-        out.mX[2] = (xa[2] + xb[2]) * 0.5;
-    }
-    out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
-    return out;
-}
-
-// --- normal-flip guard -------------------------------------------------------
-
-// Unnormalized triangle normal, with every corner equal to `A` or `B` read as
-// `pSub` when given (the candidate survivor position). The sign of
-// n_before . n_after is what the guard branches on, so normalization would be
-// pure extra rounding.
-void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,
-                       std::int64_t A, std::int64_t B, const double* pSub, double pOut[3]) {
-    double p[3][3];
-    for (int k = 0; k < 3; ++k) {
-        const std::int64_t id = pCorners[k];
-        if (pSub != nullptr && (id == A || id == B)) {
-            p[k][0] = pSub[0];
-            p[k][1] = pSub[1];
-            p[k][2] = pSub[2];
-        } else {
-            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
-            p[k][0] = src[0];
-            p[k][1] = src[1];
-            p[k][2] = src[2];
-        }
-    }
-    const double e1x = p[1][0] - p[0][0];
-    const double e1y = p[1][1] - p[0][1];
-    const double e1z = p[1][2] - p[0][2];
-    const double e2x = p[2][0] - p[0][0];
-    const double e2y = p[2][1] - p[0][1];
-    const double e2z = p[2][2] - p[0][2];
-    pOut[0] = e1y * e2z - e1z * e2y;
-    pOut[1] = e1z * e2x - e1x * e2z;
-    pOut[2] = e1x * e2y - e1y * e2x;
-}
-
-// --- small integer utilities -------------------------------------------------
-
-// Sorted unique vertex ring of `v`: the corners of its alive incident faces,
-// minus `v` itself. Pure integer work, hence trivially deterministic.
-std::vector<std::int64_t> decim_vertex_ring(const std::vector<std::int64_t>& rVFaces,
-                                            const std::vector<std::int64_t>& rCorners,
-                                            std::int64_t v) {
-    std::vector<std::int64_t> ring;
-    ring.reserve(rVFaces.size() * 2);
-    for (std::int64_t f : rVFaces) {
-        const std::int64_t* c = rCorners.data() + static_cast<std::size_t>(f) * 3;
-        for (int k = 0; k < 3; ++k)
-            if (c[k] != v)
-                ring.push_back(c[k]);
-    }
-    std::sort(ring.begin(), ring.end());
-    ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
-    return ring;
-}
-
-// How many values two sorted vectors share (two-pointer sweep).
-std::size_t decim_count_common(const std::vector<std::int64_t>& rA,
-                               const std::vector<std::int64_t>& rB) {
-    std::size_t i = 0;
-    std::size_t j = 0;
-    std::size_t common = 0;
-    while (i < rA.size() && j < rB.size()) {
-        if (rA[i] < rB[j])
-            ++i;
-        else if (rB[j] < rA[i])
-            ++j;
-        else {
-            ++common;
-            ++i;
-            ++j;
-        }
-    }
-    return common;
-}
-
-// Erase one value from a sorted vector, if present.
-void decim_sorted_erase(std::vector<std::int64_t>& rVec, std::int64_t Value) {
-    auto it = std::lower_bound(rVec.begin(), rVec.end(), Value);
-    if (it != rVec.end() && *it == Value)
-        rVec.erase(it);
-}
-
-// Insert one value into a sorted vector, keeping it sorted (no duplicates
-// arise: a face joins a survivor's list only once, at the collapse migrating
-// it).
-void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
-    rVec.insert(std::lower_bound(rVec.begin(), rVec.end(), Value), Value);
-}
+// --- placement, error, normal-flip and link-condition primitives -----------
+// Hoisted into detail/decimate_common.{hpp,cpp}; brought into scope above.
 
 // A vector of Int64 as a 1-D NDArray.
 NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
@@ -69545,6 +71011,887 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/decimate.cpp =====
+// ===== begin src/cpp/src/operations/decimate_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <iterator>
+#include <queue>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::decim_accumulate_quadrics;
+using detail::decim_count_common;
+using detail::decim_face_normal;
+using detail::decim_face_planes;
+using detail::decim_mark_features;
+using detail::decim_place;
+using detail::decim_quadric_error;
+using detail::decim_sorted_erase;
+using detail::decim_sorted_insert;
+using detail::decim_vertex_faces_csr;
+using detail::decim_vertex_ring;
+using detail::DecimCsr;
+using detail::DecimFaces;
+using detail::DecimPlaceCtx;
+using detail::DecimPlaced;
+using detail::Vec3;
+
+constexpr const char* kDvPrefix = "meshio++: decimate_volume: ";
+
+// --- validation --------------------------------------------------------------
+
+struct DvStop {
+    bool mUseTarget = false;
+    bool mUseMaxError = false;
+    std::int64_t mTargetCells = -1;
+    double mMaxError = -1.0;
+};
+
+DvStop dv_resolve_stop(const DecimateVolumeOptions& rOptions) {
+    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
+                        (rOptions.mTargetCells >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
+    if (num_set != 1)
+        throw std::invalid_argument(
+            std::string(kDvPrefix) +
+            "exactly one of target_ratio, target_cells, max_error must be set; got " +
+            std::to_string(num_set));
+    DvStop stop;
+    if (rOptions.mTargetRatio >= 0.0) {
+        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
+            throw std::invalid_argument(std::string(kDvPrefix) +
+                                        "target_ratio must lie in (0, 1]; got " +
+                                        std::to_string(rOptions.mTargetRatio));
+        stop.mUseTarget = true;  // filled in once T (tet count) is known
+    } else if (rOptions.mTargetCells >= 0) {
+        stop.mUseTarget = true;
+        stop.mTargetCells = rOptions.mTargetCells;
+    } else {
+        stop.mUseMaxError = true;
+        stop.mMaxError = rOptions.mMaxError;
+    }
+    return stop;
+}
+
+// Reject every construct outside the tet-only scope, by name, before any
+// other work.
+void dv_check_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                std::string(kDvPrefix) +
+                "mesh contains a polyhedron cell block; decimate_volume operates on tet-only "
+                "meshes -- run convert_cells(simplexify) first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                std::string(kDvPrefix) + "mesh contains ragged cell block '" +
+                std::string(cb.Type()) + "'; decimate_volume operates on tet-only meshes");
+        const CellType ct = cell_type_from_name(std::string(cb.Type()));
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                std::string(kDvPrefix) + "mesh contains 3D volume cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra; decimate_volume operates on tet-only meshes -- run "
+                "convert_cells(simplexify) first");
+        throw std::invalid_argument(
+            std::string(kDvPrefix) + "mesh contains non-3D cell block '" + std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle after the collapse; drop it first, "
+            "e.g. via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(std::string(kDvPrefix) + "mesh contains no tetra cell block");
+}
+
+// --- small utilities ----------------------------------------------------------
+
+NDArray dv_int64_vector(const std::vector<std::int64_t>& rValues) {
+    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
+    if (!rValues.empty())
+        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
+    return a;
+}
+
+// Sorted intersection of two sorted vectors (values present in both).
+std::vector<std::int64_t> dv_sorted_intersection(const std::vector<std::int64_t>& rA,
+                                                 const std::vector<std::int64_t>& rB) {
+    std::vector<std::int64_t> out;
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < rA.size() && j < rB.size()) {
+        if (rA[i] < rB[j])
+            ++i;
+        else if (rB[j] < rA[i])
+            ++j;
+        else {
+            out.push_back(rA[i]);
+            ++i;
+            ++j;
+        }
+    }
+    return out;
+}
+
+// Sorted vertex adjacency of `v` (all nodes co-occurring with `v` in one of
+// `rVTets`' rows), minus `v` itself.
+std::vector<std::int64_t> dv_vertex_link(const std::vector<std::int64_t>& rVTets,
+                                         const std::vector<std::int64_t>& rTetConn,
+                                         std::int64_t v) {
+    std::vector<std::int64_t> link;
+    link.reserve(rVTets.size() * 3);
+    for (std::int64_t t : rVTets) {
+        const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+        for (int k = 0; k < 4; ++k)
+            if (c[k] != v)
+                link.push_back(c[k]);
+    }
+    std::sort(link.begin(), link.end());
+    link.erase(std::unique(link.begin(), link.end()), link.end());
+    return link;
+}
+
+// The "opposite triple" of tet `t` after removing corner `v` (the tet's other
+// 3 corners, sorted). `t` must contain `v`.
+std::array<std::int64_t, 3> dv_opposite_triple(const std::vector<std::int64_t>& rTetConn,
+                                               std::int64_t t, std::int64_t v) {
+    std::array<std::int64_t, 3> tri{-1, -1, -1};
+    const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+    std::size_t w = 0;
+    for (int k = 0; k < 4; ++k)
+        if (c[k] != v)
+            tri[w++] = c[k];
+    std::sort(tri.begin(), tri.end());
+    return tri;
+}
+
+// `before` non-zero and `after` on the opposite side of zero (or exactly
+// zero): a sign flip or a degenerate result. An already-degenerate `before`
+// (exactly zero) imposes no constraint -- `smooth`'s "do no harm" rule.
+bool dv_tet_inverts(double before, double after) {
+    if (before == 0.0)
+        return false;
+    if (before > 0.0)
+        return after <= 0.0;
+    return after >= 0.0;
+}
+
+// Signed volume of tet `t`, substituting any corner equal to `A` or `B` with
+// `pSub` when given.
+double dv_tet_volume(const std::vector<double>& rXyz, const std::vector<std::int64_t>& rTetConn,
+                     std::int64_t t, std::int64_t A, std::int64_t B, const double* pSub) {
+    const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
+    Vec3 coords[4];
+    for (int k = 0; k < 4; ++k) {
+        const std::int64_t id = c[k];
+        if (pSub != nullptr && (id == A || id == B)) {
+            coords[k] = {pSub[0], pSub[1], pSub[2]};
+        } else {
+            const double* src = rXyz.data() + static_cast<std::size_t>(id) * 3;
+            coords[k] = {src[0], src[1], src[2]};
+        }
+    }
+    return detail::cell_volume_from_corners(coords, CellType::Tetra);
+}
+
+// A Float64 working copy of a float-kind point_data array, blended in place
+// at each collapse commit (decimate.cpp's own DecimFloatData, duplicated
+// here since it is trivial plumbing rather than FP-sensitive arithmetic).
+struct DvFloatData {
+    std::string mName;
+    std::size_t mNumComponents = 0;
+    std::vector<double> mValues;
+};
+
+}  // namespace
+
+DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOptions& rOptions) {
+    DvStop stop = dv_resolve_stop(rOptions);
+
+    const std::size_t n = rMesh.NumPoints();
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument(std::string(kDvPrefix) + "frozen mask has " +
+                                    std::to_string(rOptions.mFrozen.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+
+    dv_check_blocks(rMesh);
+
+    const std::size_t dim = rMesh.PointDim();
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t num_tets = static_cast<std::size_t>(detail::total_cells(bases));
+
+    // --- phase 1: flat buffers (parallel fills) -------------------------------
+    std::vector<double> xyz(n * 3, 0.0);
+    {
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+        });
+    }
+
+    std::vector<std::int64_t> tet_conn(num_tets * 4);
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& conn = cb.Conn();
+            const std::size_t nc = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            for (std::size_t c = 0; c < nc; ++c)
+                for (std::size_t k = 0; k < 4; ++k)
+                    tet_conn[(base + c) * 4 + k] = detail::read_int(conn, c * 4 + k);
+            ++bi;
+        }
+    }
+
+    // --- phase 2: the mesh's own outer skin -----------------------------------
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    if (gf.mNumNonManifold > 0)
+        throw std::invalid_argument(
+            std::string(kDvPrefix) + "mesh contains " + std::to_string(gf.mNumNonManifold) +
+            " face(s) shared by three or more tets (non-manifold); refusing rather than "
+            "guessing a boundary classification");
+
+    DecimFaces boundary;
+    boundary.mBlockBase.push_back(0);
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+        if (gf.mNeighbour[f] >= 0)
+            continue;  // interior face
+        const std::int64_t* ring = gf.Face(f);
+        const std::size_t fs = gf.FaceSize(f);
+        // A tet's faces are triangles; a non-triangular boundary face would
+        // mean a non-tet block contributed it, which dv_check_blocks already
+        // refused.
+        for (std::size_t k = 0; k < fs && k < 3; ++k)
+            boundary.mCorners.push_back(ring[k]);
+        ++boundary.mNumFaces;
+    }
+
+    const DecimCsr bcsr = decim_vertex_faces_csr(boundary, n);
+    std::vector<std::uint8_t> touches_boundary(n, 0);
+    for (std::size_t v = 0; v < n; ++v)
+        touches_boundary[v] = bcsr.mXadj[v + 1] > bcsr.mXadj[v] ? 1 : 0;
+
+    std::vector<double> bquad_k;
+    std::vector<double> bnormals;
+    decim_face_planes(boundary, xyz, bquad_k, bnormals);
+
+    // --- phase 3: the pin mask (caller | boundary | feature) -----------------
+    std::vector<std::uint8_t> pinned(n, 0);
+    if (!rOptions.mFrozen.empty())
+        for (std::size_t i = 0; i < n; ++i)
+            pinned[i] = rOptions.mFrozen[i] ? 1 : 0;
+    if (rOptions.mPreserveBoundary)
+        for (std::size_t i = 0; i < n; ++i)
+            if (touches_boundary[i])
+                pinned[i] = 1;
+    if (rOptions.mPreserveFeatures) {
+        const double cos_thr = std::cos(rOptions.mFeatureAngleDeg * 3.14159265358979323846 / 180.0);
+        decim_mark_features(bcsr, n, bnormals, cos_thr, pinned);
+    }
+
+    // --- phase 4: per-vertex quadrics (boundary-only, fixed FP order) --------
+    std::vector<double> quads = decim_accumulate_quadrics(bcsr, n, bquad_k);
+    bquad_k.clear();
+    bquad_k.shrink_to_fit();
+
+    // --- phase 5: mutable collapse state ---------------------------------------
+    std::vector<std::uint8_t> tet_alive(num_tets, 1);
+    std::vector<std::int64_t> successor(n, -1);  // removed vertex -> survivor
+    std::vector<std::uint32_t> version(n, 0);
+
+    // vtets[v]: sorted, incident tet ids -- built by hand (no shared CSR
+    // builder: decim_vertex_faces_csr is hardcoded to 3 corners per face).
+    std::vector<std::vector<std::int64_t>> vtets(n);
+    {
+        std::vector<std::int64_t> counts(n, 0);
+        for (std::size_t t = 0; t < num_tets; ++t)
+            for (int k = 0; k < 4; ++k)
+                ++counts[static_cast<std::size_t>(tet_conn[t * 4 + k])];
+        for (std::size_t v = 0; v < n; ++v)
+            vtets[v].reserve(static_cast<std::size_t>(counts[v]));
+        for (std::size_t t = 0; t < num_tets; ++t)
+            for (int k = 0; k < 4; ++k)
+                vtets[static_cast<std::size_t>(tet_conn[t * 4 + k])].push_back(
+                    static_cast<std::int64_t>(t));
+        // Each tet contributes each of its 4 corners once, in tet-ascending
+        // order, so every row is already sorted -- no explicit sort needed.
+    }
+
+    // vboundary[v]: sorted, incident ALIVE boundary-face ids into `boundary`
+    // (mutated in lockstep with it, exactly `decimate.cpp`'s own `vfaces`
+    // applied to the mesh's own skin instead of a triangulated 2D input) --
+    // what lets a boundary-touching collapse reuse `decimate`'s own 2D
+    // ring/shared-face link condition and normal-flip check.
+    std::vector<std::uint8_t> boundary_alive(boundary.mNumFaces, 1);
+    std::vector<std::vector<std::int64_t>> vboundary(n);
+    for (std::size_t v = 0; v < n; ++v) {
+        std::vector<std::int64_t>& row = vboundary[v];
+        row.reserve(static_cast<std::size_t>(bcsr.mXadj[v + 1] - bcsr.mXadj[v]));
+        for (std::int64_t k = bcsr.mXadj[v]; k < bcsr.mXadj[v + 1]; ++k)
+            row.push_back(bcsr.mAdj[static_cast<std::size_t>(k)]);
+    }
+
+    std::vector<DvFloatData> float_data;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (!detail::is_float_dtype(a.Dtype()) || detail::rows(a) != n || n == 0)
+            continue;
+        DvFloatData fd;
+        fd.mName = name;
+        fd.mNumComponents = a.Size() / n;
+        fd.mValues.resize(a.Size());
+        parallel_for_bw(a.Size(),
+                        [&](std::size_t i) { fd.mValues[i] = detail::read_double(a, i); });
+        float_data.push_back(std::move(fd));
+    }
+
+    DecimPlaceCtx ctx;
+    ctx.mpXyz = &xyz;
+    ctx.mpQ = &quads;
+    ctx.mpPinned = &pinned;
+    ctx.mPlacement = rOptions.mPlacement;
+
+    if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
+        stop.mTargetCells = std::max<std::int64_t>(
+            1,
+            static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_tets) + 0.5));
+
+    // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
+    using DvEdgeKey = std::array<std::int64_t, 2>;
+    struct DvEdgeKeyHash {
+        std::size_t operator()(const DvEdgeKey& rKey) const {
+            std::size_t h = 0;
+            for (std::int64_t v : rKey)
+                h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    static constexpr int kTetEdgeCorners[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    std::vector<DvEdgeKey> edges;
+    {
+        std::unordered_map<DvEdgeKey, char, DvEdgeKeyHash> seen;
+        seen.reserve(num_tets * 6);
+        for (std::size_t t = 0; t < num_tets; ++t) {
+            const std::int64_t* c = tet_conn.data() + t * 4;
+            for (const auto& ec : kTetEdgeCorners) {
+                std::int64_t a = c[ec[0]];
+                std::int64_t b = c[ec[1]];
+                if (a > b)
+                    std::swap(a, b);
+                DvEdgeKey key{a, b};
+                if (seen.emplace(key, 0).second)
+                    edges.push_back(key);
+            }
+        }
+    }
+
+    // --- phase 7: seed the queue (parallel scoring, serial pushes) -----------
+    // Priority: (regime, score, lo, hi, version_lo, version_hi). regime 0
+    // (boundary-touching, real quadric error) sorts ahead of regime 1 (purely
+    // interior, squared edge length) -- see the header doc comment.
+    using DvHeapEntry =
+        std::tuple<int, double, std::int64_t, std::int64_t, std::uint32_t, std::uint32_t>;
+    std::priority_queue<DvHeapEntry, std::vector<DvHeapEntry>, std::greater<DvHeapEntry>> heap;
+
+    auto dv_score = [&](std::int64_t a, std::int64_t b) -> std::pair<int, double> {
+        if (touches_boundary[static_cast<std::size_t>(a)] ||
+            touches_boundary[static_cast<std::size_t>(b)]) {
+            return {0, decim_place(ctx, a, b).mErr};
+        }
+        const double* xa = xyz.data() + static_cast<std::size_t>(a) * 3;
+        const double* xb = xyz.data() + static_cast<std::size_t>(b) * 3;
+        const double dx = xa[0] - xb[0];
+        const double dy = xa[1] - xb[1];
+        const double dz = xa[2] - xb[2];
+        return {1, dx * dx + dy * dy + dz * dz};
+    };
+
+    {
+        std::vector<int> seed_regime(edges.size(), 0);
+        std::vector<double> seed_score(edges.size(), 0.0);
+        parallel_for(edges.size(), [&](std::size_t e) {
+            if (pinned[static_cast<std::size_t>(edges[e][0])] &&
+                pinned[static_cast<std::size_t>(edges[e][1])])
+                return;
+            const auto rs = dv_score(edges[e][0], edges[e][1]);
+            seed_regime[e] = rs.first;
+            seed_score[e] = rs.second;
+        });
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const std::int64_t a = edges[e][0];
+            const std::int64_t b = edges[e][1];
+            if (pinned[static_cast<std::size_t>(a)] && pinned[static_cast<std::size_t>(b)])
+                continue;
+            if (!std::isfinite(seed_score[e]))
+                continue;
+            heap.push({seed_regime[e], seed_score[e], a, b, 0, 0});
+        }
+    }
+
+    // --- phase 8: the SERIAL greedy loop --------------------------------------
+    DecimateVolumeResult result;
+    std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
+    while (true) {
+        if (stop.mUseTarget && alive_tets <= stop.mTargetCells)
+            break;
+        if (heap.empty()) {
+            if (stop.mUseTarget && alive_tets > stop.mTargetCells)
+                log::warn(
+                    "decimate_volume: queue exhausted at {} tets before reaching the target of "
+                    "{} (pinning and the validity guards left no collapsible edge)",
+                    alive_tets, stop.mTargetCells);
+            break;
+        }
+        const DvHeapEntry top = heap.top();
+        heap.pop();
+        const int regime = std::get<0>(top);
+        const double score = std::get<1>(top);
+        const std::int64_t a = std::get<2>(top);
+        const std::int64_t b = std::get<3>(top);
+        if (regime == 0 && stop.mUseMaxError && score > stop.mMaxError)
+            break;
+        if (std::get<4>(top) != version[static_cast<std::size_t>(a)] ||
+            std::get<5>(top) != version[static_cast<std::size_t>(b)])
+            continue;  // stale
+        if (pinned[static_cast<std::size_t>(a)] && pinned[static_cast<std::size_t>(b)])
+            continue;
+
+        // Guard 1: T(ab), the shared tets.
+        const std::vector<std::int64_t> shared = dv_sorted_intersection(
+            vtets[static_cast<std::size_t>(a)], vtets[static_cast<std::size_t>(b)]);
+        if (shared.empty() && vtets[static_cast<std::size_t>(a)].empty() &&
+            vtets[static_cast<std::size_t>(b)].empty())
+            continue;  // defensive: neither endpoint has any tet left
+
+        // Guard 2: the vertex-link condition, exact set equality.
+        {
+            const std::vector<std::int64_t> link_a =
+                dv_vertex_link(vtets[static_cast<std::size_t>(a)], tet_conn, a);
+            const std::vector<std::int64_t> link_b =
+                dv_vertex_link(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+            std::vector<std::int64_t> link_ab;
+            link_ab.reserve(shared.size() * 2);
+            for (std::int64_t t : shared) {
+                const std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+                for (int k = 0; k < 4; ++k)
+                    if (c[k] != a && c[k] != b)
+                        link_ab.push_back(c[k]);
+            }
+            std::sort(link_ab.begin(), link_ab.end());
+            link_ab.erase(std::unique(link_ab.begin(), link_ab.end()), link_ab.end());
+            const std::vector<std::int64_t> common = dv_sorted_intersection(link_a, link_b);
+            if (common != link_ab) {
+                ++result.mCollapsesRejected;
+                continue;
+            }
+        }
+
+        // Guard 3: the duplicate-tet guard -- no survivor tet of `a` may share
+        // its opposite triple with a survivor tet of `b`.
+        bool duplicate = false;
+        {
+            std::vector<std::array<std::int64_t, 3>> triples_a;
+            for (std::int64_t t : vtets[static_cast<std::size_t>(a)])
+                if (!std::binary_search(shared.begin(), shared.end(), t))
+                    triples_a.push_back(dv_opposite_triple(tet_conn, t, a));
+            std::vector<std::array<std::int64_t, 3>> triples_b;
+            for (std::int64_t t : vtets[static_cast<std::size_t>(b)])
+                if (!std::binary_search(shared.begin(), shared.end(), t))
+                    triples_b.push_back(dv_opposite_triple(tet_conn, t, b));
+            for (const auto& ta : triples_a)
+                for (const auto& tb : triples_b)
+                    if (ta == tb) {
+                        duplicate = true;
+                        break;
+                    }
+        }
+        if (duplicate) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // Guard 4: the mesh's own skin's link condition -- `decimate`'s own
+        // ring/shared-face check, applied over `vboundary`/`boundary` instead
+        // of a triangulated 2D input. `bshared` is the set of alive boundary
+        // faces containing BOTH endpoints (empty, and so trivially satisfied,
+        // when neither endpoint's boundary-face row has any overlap -- which
+        // is always true for a purely interior collapse, since an empty row
+        // intersects nothing).
+        const std::vector<std::int64_t> bshared = dv_sorted_intersection(
+            vboundary[static_cast<std::size_t>(a)], vboundary[static_cast<std::size_t>(b)]);
+        if (bshared.size() > 2) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+        {
+            const std::vector<std::int64_t> bring_a =
+                decim_vertex_ring(vboundary[static_cast<std::size_t>(a)], boundary.mCorners, a);
+            const std::vector<std::int64_t> bring_b =
+                decim_vertex_ring(vboundary[static_cast<std::size_t>(b)], boundary.mCorners, b);
+            if (decim_count_common(bring_a, bring_b) != bshared.size()) {
+                ++result.mCollapsesRejected;
+                continue;
+            }
+        }
+
+        // Placement (recomputed -- versions matched, so bit-identical to what
+        // was scored at push time).
+        const DecimPlaced placed = decim_place(ctx, a, b);
+
+        // Guard 5 (boundary-touching edges only): normal-flip over every
+        // surviving alive boundary face incident to `a` or `b`.
+        bool bflips = false;
+        if (!vboundary[static_cast<std::size_t>(a)].empty() ||
+            !vboundary[static_cast<std::size_t>(b)].empty()) {
+            std::vector<std::int64_t> bmerged;
+            std::merge(vboundary[static_cast<std::size_t>(a)].begin(),
+                       vboundary[static_cast<std::size_t>(a)].end(),
+                       vboundary[static_cast<std::size_t>(b)].begin(),
+                       vboundary[static_cast<std::size_t>(b)].end(), std::back_inserter(bmerged));
+            for (std::int64_t f : bmerged) {
+                if (std::binary_search(bshared.begin(), bshared.end(), f))
+                    continue;  // dies in the collapse: no constraint
+                const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+                double n0[3];
+                double n1[3];
+                decim_face_normal(xyz, c, a, b, nullptr, n0);
+                if (n0[0] == 0.0 && n0[1] == 0.0 && n0[2] == 0.0)
+                    continue;
+                decim_face_normal(xyz, c, a, b, placed.mX, n1);
+                if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.0) {
+                    bflips = true;
+                    break;
+                }
+            }
+        }
+        if (bflips) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // Guard 6: tet-inversion, over every ALIVE tet incident to `a` or `b`
+        // that dies in neither this collapse (i.e. not in `shared`).
+        bool flips = false;
+        for (std::int64_t t : vtets[static_cast<std::size_t>(a)]) {
+            if (std::binary_search(shared.begin(), shared.end(), t))
+                continue;
+            const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
+            if (dv_tet_inverts(before, after)) {
+                flips = true;
+                break;
+            }
+        }
+        if (!flips)
+            for (std::int64_t t : vtets[static_cast<std::size_t>(b)]) {
+                if (std::binary_search(shared.begin(), shared.end(), t))
+                    continue;
+                const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+                const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
+                if (dv_tet_inverts(before, after)) {
+                    flips = true;
+                    break;
+                }
+            }
+        if (flips) {
+            ++result.mCollapsesRejected;
+            continue;
+        }
+
+        // --- commit ------------------------------------------------------------
+        const std::int64_t s = pinned[static_cast<std::size_t>(b)] ? b : a;
+        const std::int64_t r = s == a ? b : a;
+
+        {
+            const double* xs = xyz.data() + static_cast<std::size_t>(s) * 3;
+            const double* xr = xyz.data() + static_cast<std::size_t>(r) * 3;
+            const double dx = xr[0] - xs[0];
+            const double dy = xr[1] - xs[1];
+            const double dz = xr[2] - xs[2];
+            const double den = dx * dx + dy * dy + dz * dz;
+            double t;
+            if (den == 0.0) {
+                t = 0.5;
+            } else {
+                t = ((placed.mX[0] - xs[0]) * dx + (placed.mX[1] - xs[1]) * dy +
+                     (placed.mX[2] - xs[2]) * dz) /
+                    den;
+                if (t < 0.0)
+                    t = 0.0;
+                if (t > 1.0)
+                    t = 1.0;
+            }
+            for (DvFloatData& fd : float_data) {
+                double* vals = fd.mValues.data();
+                const std::size_t so = static_cast<std::size_t>(s) * fd.mNumComponents;
+                const std::size_t ro = static_cast<std::size_t>(r) * fd.mNumComponents;
+                for (std::size_t k = 0; k < fd.mNumComponents; ++k)
+                    vals[so + k] = vals[so + k] + t * (vals[ro + k] - vals[so + k]);
+            }
+        }
+
+        xyz[static_cast<std::size_t>(s) * 3] = placed.mX[0];
+        xyz[static_cast<std::size_t>(s) * 3 + 1] = placed.mX[1];
+        xyz[static_cast<std::size_t>(s) * 3 + 2] = placed.mX[2];
+        {
+            double* qs = quads.data() + static_cast<std::size_t>(s) * 10;
+            const double* qr = quads.data() + static_cast<std::size_t>(r) * 10;
+            for (int i = 0; i < 10; ++i)
+                qs[i] += qr[i];
+        }
+
+        for (std::int64_t t : shared) {
+            tet_alive[static_cast<std::size_t>(t)] = 0;
+            --alive_tets;
+            ++result.mTetsRemoved;
+            const std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+            for (int k = 0; k < 4; ++k)
+                if (c[k] != s && c[k] != r)
+                    decim_sorted_erase(vtets[static_cast<std::size_t>(c[k])], t);
+            decim_sorted_erase(vtets[static_cast<std::size_t>(s)], t);
+        }
+        for (std::int64_t t : vtets[static_cast<std::size_t>(r)]) {
+            if (!tet_alive[static_cast<std::size_t>(t)])
+                continue;  // was in shared
+            std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
+            for (int k = 0; k < 4; ++k)
+                if (c[k] == r)
+                    c[k] = s;
+            decim_sorted_insert(vtets[static_cast<std::size_t>(s)], t);
+        }
+        vtets[static_cast<std::size_t>(r)].clear();
+
+        // Kill the shared boundary faces, then migrate r's remaining alive
+        // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
+        // pattern, applied to the mesh's own skin).
+        for (std::int64_t f : bshared) {
+            boundary_alive[static_cast<std::size_t>(f)] = 0;
+            const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+            for (int k = 0; k < 3; ++k)
+                if (c[k] != s && c[k] != r)
+                    decim_sorted_erase(vboundary[static_cast<std::size_t>(c[k])], f);
+            decim_sorted_erase(vboundary[static_cast<std::size_t>(s)], f);
+        }
+        for (std::int64_t f : vboundary[static_cast<std::size_t>(r)]) {
+            if (!boundary_alive[static_cast<std::size_t>(f)])
+                continue;  // was in bshared
+            std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
+            for (int k = 0; k < 3; ++k)
+                if (c[k] == r)
+                    c[k] = s;
+            decim_sorted_insert(vboundary[static_cast<std::size_t>(s)], f);
+        }
+        vboundary[static_cast<std::size_t>(r)].clear();
+
+        successor[static_cast<std::size_t>(r)] = s;
+        ++version[static_cast<std::size_t>(s)];
+        ++version[static_cast<std::size_t>(r)];
+        touches_boundary[static_cast<std::size_t>(s)] =
+            vboundary[static_cast<std::size_t>(s)].empty() ? 0 : 1;
+        if (regime == 0)
+            result.mMaxErrorApplied = std::max(result.mMaxErrorApplied, score);
+
+        // Re-score the survivor's remaining edges via its updated link.
+        const std::vector<std::int64_t> link_s =
+            dv_vertex_link(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+        for (std::int64_t w : link_s) {
+            if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
+                continue;
+            const std::int64_t lo = s < w ? s : w;
+            const std::int64_t hi = s < w ? w : s;
+            const auto rs = dv_score(lo, hi);
+            if (!std::isfinite(rs.second))
+                continue;
+            heap.push({rs.first, rs.second, lo, hi, version[static_cast<std::size_t>(lo)],
+                       version[static_cast<std::size_t>(hi)]});
+        }
+    }
+
+    // --- phase 9: emission ------------------------------------------------------
+    std::vector<char> used(n, 0);
+    for (std::size_t t = 0; t < num_tets; ++t)
+        if (tet_alive[t])
+            for (int k = 0; k < 4; ++k)
+                used[static_cast<std::size_t>(tet_conn[t * 4 + k])] = 1;
+    std::vector<std::int64_t> remap(n, -1);
+    std::size_t num_used = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (used[i])
+            remap[i] = static_cast<std::int64_t>(num_used++);
+
+    Mesh& out = result.mMesh;
+
+    {
+        const NDArray& points = rMesh.Points();
+        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            T* dst = new_points.As<T>();
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!used[i])
+                    continue;
+                for (std::size_t d = 0; d < dim && d < 3; ++d)
+                    dst[w * dim + d] = static_cast<T>(xyz[i * 3 + d]);
+                ++w;
+            }
+        });
+        out.AssignPoints(std::move(new_points));
+    }
+
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t nc = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            std::size_t alive_in_block = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    ++alive_in_block;
+            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 4});
+            std::int64_t* dst = block.As<std::int64_t>();
+            std::vector<std::int64_t> cell_map(nc, -1);
+            std::size_t w = 0;
+            for (std::size_t c = 0; c < nc; ++c) {
+                if (!tet_alive[base + c])
+                    continue;
+                for (std::size_t k = 0; k < 4; ++k)
+                    dst[w * 4 + k] = remap[static_cast<std::size_t>(tet_conn[(base + c) * 4 + k])];
+                cell_map[c] = static_cast<std::int64_t>(w);
+                ++w;
+            }
+            out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
+            result.mCellMaps.push_back(dv_int64_vector(cell_map));
+            ++bi;
+        }
+    }
+
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(ndata);
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (bi >= ndata)
+                break;
+            const NDArray& a = rMesh.CellData(name, bi);
+            const std::size_t nc = cb.NumCells();
+            if (ndata != nblocks || detail::rows(a) != nc || nc == 0) {
+                blocks.push_back(detail::data_owned_copy(a));
+                ++bi;
+                continue;
+            }
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            std::size_t alive_in_block = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    ++alive_in_block;
+            std::vector<std::size_t> shape = a.Shape();
+            shape[0] = alive_in_block;
+            const std::size_t row_bytes = a.Nbytes() / nc;
+            NDArray sub = NDArray::Uninit(a.Dtype(), std::move(shape));
+            const std::byte* src = a.Data();
+            std::byte* dst = sub.Data();
+            std::size_t w = 0;
+            for (std::size_t c = 0; c < nc; ++c)
+                if (tet_alive[base + c])
+                    std::memcpy(dst + (w++) * row_bytes, src + c * row_bytes, row_bytes);
+            blocks.push_back(std::move(sub));
+            ++bi;
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != n) {
+            out.AddPointData(name, detail::data_owned_copy(a));
+            continue;
+        }
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = num_used;
+        if (detail::is_float_dtype(a.Dtype())) {
+            const DvFloatData* p_fd = nullptr;
+            for (const DvFloatData& fd : float_data)
+                if (fd.mName == name) {
+                    p_fd = &fd;
+                    break;
+                }
+            const std::size_t ncomp = p_fd != nullptr ? p_fd->mNumComponents : 0;
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            detail::dispatch_dtype(a.Dtype(), [&]<class T>() {
+                T* dst = b.As<T>();
+                std::size_t w = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (!used[i])
+                        continue;
+                    for (std::size_t k = 0; k < ncomp; ++k)
+                        dst[w * ncomp + k] = static_cast<T>(p_fd->mValues[i * ncomp + k]);
+                    ++w;
+                }
+            });
+            out.AddPointData(name, std::move(b));
+        } else {
+            const std::size_t row_bytes = n == 0 ? 0 : a.Nbytes() / n;
+            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+            const std::byte* src = a.Data();
+            std::byte* dst = b.Data();
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                if (used[i])
+                    std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
+            out.AddPointData(name, std::move(b));
+        }
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    {
+        NDArray pm = NDArray::Uninit(DType::Int64, {n});
+        std::int64_t* dst = pm.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i) {
+            std::int64_t v = static_cast<std::int64_t>(i);
+            while (successor[static_cast<std::size_t>(v)] >= 0)
+                v = successor[static_cast<std::size_t>(v)];
+            dst[i] = remap[static_cast<std::size_t>(v)];
+        }
+        result.mPointMap = std::move(pm);
+    }
+    result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
+
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::Direct;
+        rmap.pCellMaps = &result.mCellMaps;
+        rmap.mOpName = "decimate_volume";
+        detail::remap_regions(rMesh, result.mMesh, rmap);
+    }
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/decimate_volume.cpp =====
 // ===== begin src/cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -70094,6 +72441,270 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/diff.cpp =====
+// ===== begin src/cpp/src/operations/error.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kErrPrefix = "meshio++: estimate_error: ";
+// Private working names: never reach the returned mesh (see the header
+// comment above), so any clash with a user array only affects internal
+// intermediate copies, not the caller's data.
+constexpr const char* kErrRawName = "__estimate_error_raw__";
+constexpr const char* kErrRecSuffix = "_recovered";
+
+/// One evaluable cell's indicator plus its global (block-major) index, for the
+/// Fraction/Dorfler marking passes.
+struct ErrEntry {
+    double mValue;
+    std::int64_t mGlobal;
+};
+
+/// Descending by value, ascending by global index on a tie -- a strict weak
+/// order, so the result does not depend on how the per-cell work scheduled.
+bool err_greater(const ErrEntry& rA, const ErrEntry& rB) {
+    if (rA.mValue != rB.mValue)
+        return rA.mValue > rB.mValue;
+    return rA.mGlobal < rB.mGlobal;
+}
+
+}  // namespace
+
+ErrorMethod error_method_from_name(const std::string& rName) {
+    if (rName == "zz" || rName.empty())
+        return ErrorMethod::Zz;
+    throw std::invalid_argument(std::string(kErrPrefix) + "unknown method '" + rName +
+                                "' (expected 'zz')");
+}
+
+ErrorMarking error_marking_from_name(const std::string& rName) {
+    if (rName == "none" || rName.empty())
+        return ErrorMarking::None;
+    if (rName == "absolute" || rName == "abs")
+        return ErrorMarking::Absolute;
+    if (rName == "fraction" || rName == "frac")
+        return ErrorMarking::Fraction;
+    if (rName == "dorfler" || rName == "bulk")
+        return ErrorMarking::Dorfler;
+    throw std::invalid_argument(std::string(kErrPrefix) + "unknown marking policy '" + rName +
+                                "' (expected 'none', 'absolute', 'fraction', or 'dorfler')");
+}
+
+ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
+    // --- validation, all before any work -------------------------------------
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kErrPrefix) + "an array name is required");
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        // Same restriction gradient states, for the same reason.
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                std::string(kErrPrefix) + "'" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no derivative to recover; "
+                "convert it first with cell_data_to_point_data (CLI: meshioplusplus data "
+                "to-point)");
+        throw std::invalid_argument(
+            std::string(kErrPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
+    if (rOptions.mMarking == ErrorMarking::Fraction || rOptions.mMarking == ErrorMarking::Dorfler) {
+        if (!(rOptions.mMarkingValue > 0.0) || rOptions.mMarkingValue > 1.0)
+            throw std::invalid_argument(
+                std::string(kErrPrefix) +
+                "mMarkingValue must be in (0, 1] for the 'fraction'/'dorfler' marking policy");
+    }
+
+    const std::string zz_name = rOptions.mOutputName.empty() ? kErrorZzName : rOptions.mOutputName;
+    const std::string marked_name =
+        rOptions.mMarkedName.empty() ? kErrorMarkedName : rOptions.mMarkedName;
+    if (!rOptions.mOverwrite) {
+        if (rMesh.HasCellData(zz_name))
+            throw std::invalid_argument(std::string(kErrPrefix) + "'" + zz_name +
+                                        "' already exists in cell_data (pass overwrite=true to "
+                                        "replace it)");
+        if (rOptions.mMarking != ErrorMarking::None && rMesh.HasCellData(marked_name))
+            throw std::invalid_argument(std::string(kErrPrefix) + "'" + marked_name +
+                                        "' already exists in cell_data (pass overwrite=true to "
+                                        "replace it)");
+    }
+
+    // --- recovery: gradient -> cell_data_to_point_data -> point_data_to_cell_data ---
+    // The recovery operator IS this existing averaging round trip -- reused,
+    // not reimplemented, exactly as gradient(mLocation=Point) itself composes
+    // cell_data_to_point_data. Every intermediate mesh below is private working
+    // state (see the file comment); only `out`, built from a fresh clone of
+    // rMesh further down, is ever returned.
+    GradientOptions grad_opts;
+    grad_opts.mArrayName = rOptions.mArrayName;
+    grad_opts.mLocation = DataLocation::Cell;
+    grad_opts.mOutputName = kErrRawName;
+    grad_opts.mOverwrite = true;
+    const GradientResult raw = gradient(rMesh, grad_opts);
+
+    DataAverageOptions to_point;
+    to_point.names = {kErrRawName};
+    to_point.weight = CellPointWeight::Measure;
+    to_point.overwrite = true;
+    const Mesh recovered_pt = cell_data_to_point_data(raw.mMesh, to_point);
+
+    DataAverageOptions to_cell;
+    to_cell.names = {kErrRawName};
+    to_cell.suffix = kErrRecSuffix;
+    to_cell.overwrite = true;
+    const Mesh recovered = point_data_to_cell_data(recovered_pt, to_cell);
+    const std::string rec_name = std::string(kErrRawName) + kErrRecSuffix;
+
+    // --- per-cell indicator ----------------------------------------------------
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    Mesh out = detail::clone_mesh(rMesh);
+    if (nblocks == 0)
+        return ErrorResult{std::move(out), 0.0, 0, 0};
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t total = static_cast<std::size_t>(detail::total_cells(bases));
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // A flat, block-major buffer of every cell's indicator (NaN where
+    // unevaluable), used both as the per-block cell_data source and as the
+    // input to the deterministic FiniteStats reduction below.
+    NDArray global_zz(DType::Float64, {total});
+    double* p_global = global_zz.As<double>();
+
+    std::vector<NDArray> zz_blocks;
+    zz_blocks.reserve(nblocks);
+    std::int64_t skipped = 0;
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& raw_arr = recovered.CellData(kErrRawName, b);
+        const NDArray& rec_arr = recovered.CellData(rec_name, b);
+        const std::size_t comp = data_num_components(raw_arr);
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+
+        NDArray dst(DType::Float64, {ncells});
+        double* pdst = dst.As<double>();
+        // Per-cell flags reduced serially afterwards -- data_average's "apply
+        // the policy serially" idiom, so mNumSkipped does not depend on
+        // scheduling.
+        std::vector<std::uint8_t> flag_skipped(ncells, 0);
+
+        parallel_for(ncells, [&](std::size_t c) {
+            bool finite_pair = true;
+            double sumsq = 0.0;
+            for (std::size_t k = 0; k < comp; ++k) {
+                const double rv = detail::read_double(raw_arr, c * comp + k);
+                const double gv = detail::read_double(rec_arr, c * comp + k);
+                if (!std::isfinite(rv) || !std::isfinite(gv)) {
+                    finite_pair = false;
+                    break;
+                }
+                const double d = gv - rv;
+                sumsq += d * d;
+            }
+            double zz = std::nan("");
+            if (finite_pair) {
+                // The same primitive data_average's CellPointWeight::Measure
+                // just used for the recovery weighting, so the two agree by
+                // construction.
+                const double measure = std::fabs(detail::cell_measure(points, pdim, cb, c));
+                if (std::isfinite(measure))
+                    zz = std::sqrt(measure * sumsq);
+            }
+            if (!std::isfinite(zz))
+                flag_skipped[c] = 1;
+            pdst[c] = zz;
+            p_global[base + c] = zz;
+        });
+
+        for (std::size_t c = 0; c < ncells; ++c)
+            skipped += flag_skipped[c];
+        zz_blocks.push_back(std::move(dst));
+    }
+
+    out.AddCellData(zz_name, std::move(zz_blocks));
+
+    // --- global error, via the existing deterministic reduction ----------------
+    std::vector<detail::FiniteStats> stats;
+    detail::accumulate_stats(global_zz, 1, stats);
+    const detail::FiniteStats combined = detail::combine_components(stats);
+    const double global_error = combined.mNumFinite > 0 ? std::sqrt(combined.mSumSq) : 0.0;
+
+    // --- marking -----------------------------------------------------------
+    std::int64_t marked_count = 0;
+    if (rOptions.mMarking != ErrorMarking::None) {
+        std::vector<std::uint8_t> mark(total, 0);
+
+        if (rOptions.mMarking == ErrorMarking::Absolute) {
+            parallel_for_bw(total, [&](std::size_t i) {
+                const double v = p_global[i];
+                mark[i] = (std::isfinite(v) && v > rOptions.mMarkingValue) ? 1 : 0;
+            });
+        } else {
+            // Fraction / Dorfler both need the full ranking, so build it once.
+            std::vector<ErrEntry> entries;
+            entries.reserve(static_cast<std::size_t>(combined.mNumFinite));
+            for (std::size_t i = 0; i < total; ++i) {
+                const double v = p_global[i];
+                if (std::isfinite(v))
+                    entries.push_back(ErrEntry{v, static_cast<std::int64_t>(i)});
+            }
+            std::sort(entries.begin(), entries.end(), err_greater);
+
+            std::size_t take = 0;
+            if (rOptions.mMarking == ErrorMarking::Fraction) {
+                // int64(ratio * F + 0.5) truncation -- decimate's own
+                // target-count rounding convention, never llround.
+                take = static_cast<std::size_t>(
+                    rOptions.mMarkingValue * static_cast<double>(entries.size()) + 0.5);
+                take = std::min(take, entries.size());
+            } else {
+                // Dorfler: smallest prefix whose cumulative eta_K^2 (added
+                // BEFORE the check below fires) already covers the target.
+                const double target = rOptions.mMarkingValue * combined.mSumSq;
+                double cum = 0.0;
+                for (; take < entries.size(); ++take) {
+                    if (cum >= target)
+                        break;
+                    cum += entries[take].mValue * entries[take].mValue;
+                }
+            }
+            for (std::size_t i = 0; i < take; ++i)
+                mark[static_cast<std::size_t>(entries[i].mGlobal)] = 1;
+        }
+
+        std::vector<NDArray> marked_blocks;
+        marked_blocks.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t ncells = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[b]);
+            NDArray dst(DType::Int64, {ncells});
+            std::int64_t* pdst = dst.As<std::int64_t>();
+            parallel_for_bw(ncells, [&](std::size_t c) { pdst[c] = mark[base + c]; });
+            marked_blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(marked_name, std::move(marked_blocks));
+
+        for (std::uint8_t m : mark)
+            marked_count += m;
+    }
+
+    return ErrorResult{std::move(out), global_error, skipped, marked_count};
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/error.cpp =====
 // ===== begin src/cpp/src/operations/gradient.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -73520,14 +76131,19 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
           "GuardInversion"}},
         {"Refine",
-         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels"}},
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels",
+          "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"DecimateVolume",
+         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -73540,6 +76156,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Subdivide", {"RecordParentIds"}},
+        {"Agglomerate", {"TargetGroupSize"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -73579,6 +76197,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "Diff")
         return "'Diff' compares two meshes and is not a pipeline step; use the "
                "`diff` CLI verb";
+    if (rOp == "UndoGreen")
+        return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
+               "step; use the `undo-green` CLI verb";
     return nullptr;
 }
 
@@ -73775,6 +76396,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         RefineOptions opts;
         opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
         opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", false);
+        opts.mRecordHierarchy = pipe_flag(rStep, "RecordHierarchy", false);
         opts.mClosure = refine_closure_from_name(pipe_text(rStep, "Closure", ""));
         opts.mCells = pipe_ivec(rStep, "Cells");
         opts.mRegion = pipe_text(rStep, "Region", "");
@@ -73804,6 +76426,25 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = decimate(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "DecimateVolume") {
+        DecimateVolumeOptions opts;
+        opts.mTargetRatio = pipe_number(rStep, "Ratio", -1.0);
+        const double cells = pipe_number(rStep, "TargetCells", -1.0);
+        opts.mTargetCells =
+            cells < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(cells);
+        opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetCells < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        auto result = decimate_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"TetsRemoved", static_cast<double>(result.mTetsRemoved)},
                         {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
         return std::move(result.mMesh);
     }
@@ -73859,6 +76500,28 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
+    }
+    if (op == "EstimateError") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with the indicator (and, if requested, the
+        // marking) array attached.
+        ErrorOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mMethod = error_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mMarking = error_marking_from_name(pipe_text(rStep, "Marking", ""));
+        opts.mMarkingValue = pipe_number(rStep, "MarkingValue", 0.0);
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        opts.mMarkedName = pipe_text(rStep, "Marked", "");
+        opts.mOverwrite = true;
+        ErrorResult er = estimate_error(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"GlobalError", er.mGlobalError},
+                        {"NumSkipped", static_cast<double>(er.mNumSkipped)},
+                        {"NumMarked", static_cast<double>(er.mNumMarked)}});
+        if (er.mNumSkipped > 0)
+            rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
+                                        " cell(s) could not be evaluated and are NaN");
+        return std::move(er.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does
@@ -73947,6 +76610,21 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
         auto result = convert_cells(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Subdivide") {
+        SubdivideOptions opts;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = subdivide(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Agglomerate") {
+        AgglomerateOptions opts;
+        opts.mTargetGroupSize =
+            static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        auto result = agglomerate(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
     }
@@ -75469,6 +78147,15 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
     return levels;
 }
 
+// --- refine:cell_id / refine:parent_id ----------------------------------------
+//
+// RefineHierarchyState / refine_read_hierarchy live in
+// detail/refine_hierarchy.hpp now -- hoisted verbatim so undo_green.cpp can
+// share the identical Absent/Valid/Invalid read against the *coarse* mesh
+// rather than transcribing it a second time.
+using detail::refine_read_hierarchy;
+using detail::RefineHierarchyState;
+
 // --- refine:entity -----------------------------------------------------------
 
 // The per-point entity keys already recorded on a mesh, or an empty vector when
@@ -75535,9 +78222,12 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
 // to split fully; `nullptr` means every cell (the uniform path, which skips the
 // closure entirely). `pOutRedChildren`, when given, receives the same flag for
 // the OUTPUT cells -- set on the children of a fully-split parent -- which is
-// what the next level uses as its own seed.
+// what the next level uses as its own seed. `ForceEntity` attaches
+// `refine:entity` unconditionally (the caller asked for the persistent
+// hierarchy, whose node-level interpolation stencil this array already IS)
+// even when this particular pass leaves no hanging node.
 RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
-                         RefineClosure Closure, bool RecordLevels,
+                         RefineClosure Closure, bool RecordLevels, bool ForceEntity,
                          std::vector<char>* pOutRedChildren) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t num_points = rMesh.NumPoints();
@@ -76057,8 +78747,9 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // --- phase 8: cell_data gathered parent -> children ----------------------
     // base_levels was hoisted above: the Balanced closure compares levels.
     for (const std::string& name : rMesh.CellDataNames()) {
-        if (name == kRefineLevelName)
-            continue;  // recomputed below, never replicated
+        if (name == kRefineLevelName || name == kRefineCellIdName || name == kRefineParentIdName)
+            continue;  // this operation's own bookkeeping, rebuilt separately -- gathering
+                       // them here would replicate a split cell's id/parent to every child
         const std::size_t ndata = rMesh.CellDataNumBlocks(name);
         std::vector<NDArray> blocks;
         blocks.reserve(ndata);
@@ -76207,8 +78898,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // hanging nodes, and *maintained* thereafter once present, exactly as
     // refine:level is. A pass that leaves none and inherits none writes nothing,
     // which is what keeps every conforming closure's output byte-identical to
-    // what it was before the array existed.
-    if (num_hanging > 0 || !base_entity_keys.empty()) {
+    // what it was before the array existed -- UNLESS `ForceEntity`, which
+    // attaches it regardless: `mRecordHierarchy` wants it as the multigrid
+    // prolongation stencil, and `out_entity_keys` is already fully built above
+    // whether or not any node in it is hanging.
+    if (num_hanging > 0 || !base_entity_keys.empty() || ForceEntity) {
         NDArray keys_out = NDArray::Uninit(DType::Int64, {num_points_out, std::size_t{4}});
         std::int64_t* dst = keys_out.As<std::int64_t>();
         for (std::size_t p = 0; p < num_points_out; ++p)
@@ -76284,6 +78978,84 @@ void refine_attach_parent_ids(RefineResult& rResult) {
         blocks.push_back(std::move(a));
     }
     rResult.mMesh.AddCellData(kRefineParentCellName, std::move(blocks));
+}
+
+// Attach refine:cell_id/refine:parent_id from the FINAL composed cell maps --
+// one serial pass over the whole call's result, exactly parity with
+// refine_attach_parent_ids above and for the same reason: `rResult.mCellMaps`
+// already composes through every internal level (refine_compose_maps), so
+// there is no need to touch refine_once or thread anything through the levels
+// loop. A composed run of length one is a cell no level ever split -- it keeps
+// its own id and is its own parent; every other cell in a longer run gets one
+// fresh id from a single counter walking the mesh's own block/cell order, and
+// carries the run's original (in THIS call's input) ancestor as its parent.
+void refine_attach_hierarchy(const Mesh& rIn, RefineResult& rResult, bool RecordHierarchy) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rIn);
+    std::vector<std::int64_t> input_ids;
+    std::int64_t id_base = 0;
+    const RefineHierarchyState state = refine_read_hierarchy(rIn, bases, input_ids, id_base);
+    const bool maintained = state == RefineHierarchyState::Valid;
+    if (!maintained && !RecordHierarchy)
+        return;  // nothing valid to carry, and nothing asked for
+    if (!maintained) {
+        // Absent, or dropped as malformed/non-unique (warned inside
+        // refine_read_hierarchy already): start a fresh id space from the
+        // mesh's implicit global block-major ids.
+        const std::int64_t total = detail::total_cells(bases);
+        input_ids.assign(static_cast<std::size_t>(total), 0);
+        for (std::int64_t i = 0; i < total; ++i)
+            input_ids[static_cast<std::size_t>(i)] = i;
+        id_base = total;
+    }
+
+    const Mesh& mesh = rResult.mMesh;
+    const std::size_t nblocks = mesh.NumCellBlocks();
+    if (nblocks != rResult.mCellMaps.size() || nblocks == 0)
+        return;
+    std::vector<NDArray> id_blocks;
+    std::vector<NDArray> parent_blocks;
+    id_blocks.reserve(nblocks);
+    parent_blocks.reserve(nblocks);
+    std::int64_t next_id = id_base;
+    std::size_t bi = 0;
+    for (const auto cb : mesh.CellRange()) {
+        const NDArray& map = rResult.mCellMaps[bi];
+        const std::int64_t* first = map.As<std::int64_t>();
+        const std::size_t nparents = map.Size();
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = static_cast<std::size_t>(bases[bi]);
+        NDArray ids = NDArray::Uninit(DType::Int64, {ncells, 1});
+        NDArray parents = NDArray::Uninit(DType::Int64, {ncells, 1});
+        std::int64_t* id_dst = ids.As<std::int64_t>();
+        std::int64_t* parent_dst = parents.As<std::int64_t>();
+        for (std::size_t p = 0; p < nparents; ++p) {
+            if (first[p] < 0)
+                continue;
+            const std::size_t lo = static_cast<std::size_t>(first[p]);
+            const std::size_t hi = p + 1 < nparents && first[p + 1] >= 0
+                                       ? static_cast<std::size_t>(first[p + 1])
+                                       : ncells;
+            const std::int64_t original_id = input_ids[base + p];
+            if (hi - lo == 1 && lo < ncells) {
+                // A run of length one is a cell no level of this call ever
+                // split (every admissible non-empty mask yields more than one
+                // child -- see detail/refine_templates.hpp), so it keeps its
+                // own identity and is its own parent.
+                id_dst[lo] = original_id;
+                parent_dst[lo] = original_id;
+            } else {
+                for (std::size_t c = lo; c < hi && c < ncells; ++c) {
+                    id_dst[c] = next_id++;
+                    parent_dst[c] = original_id;
+                }
+            }
+        }
+        id_blocks.push_back(std::move(ids));
+        parent_blocks.push_back(std::move(parents));
+        ++bi;
+    }
+    rResult.mMesh.AddCellData(kRefineCellIdName, std::move(id_blocks));
+    rResult.mMesh.AddCellData(kRefineParentIdName, std::move(parent_blocks));
 }
 
 // Cells the next level would produce, for the pre-flight size warning.
@@ -76522,6 +79294,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
             res.mCellMaps.push_back(refine_identity_map(cb.NumCells()));
         if (rOptions.mRecordParentIds)
             refine_attach_parent_ids(res);
+        refine_attach_hierarchy(rMesh, res, rOptions.mRecordHierarchy);
         refine_carry_regions(rMesh, res);
         return res;
     }
@@ -76539,18 +79312,24 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
 
     std::vector<char> next_seed;
-    RefineResult acc = refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure,
-                                   rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+    RefineResult acc =
+        refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+                    rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
         const std::vector<char> current = std::move(next_seed);
-        RefineResult next =
-            refine_once(acc.mMesh, selective ? &current : nullptr, rOptions.mClosure,
-                        rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+        RefineResult next = refine_once(
+            acc.mMesh, selective ? &current : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+            rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
         refine_compose_maps(acc, next);     // reads next's maps first
         acc.mMesh = std::move(next.mMesh);  // sequenced after
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
+    // Reads the ORIGINAL rMesh, never an intermediate: refine_attach_hierarchy
+    // resolves entirely through acc.mCellMaps, which already composes through
+    // every internal level, so "the mesh passed to this call" is unambiguous
+    // regardless of mLevels.
+    refine_attach_hierarchy(rMesh, acc, rOptions.mRecordHierarchy);
     refine_carry_regions(rMesh, acc);
     return acc;
 }
@@ -79874,6 +82653,305 @@ StatsReport compute_stats(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/stats.cpp =====
+// ===== begin src/cpp/src/operations/subdivide.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSubPrefix = "meshio++: subdivide: ";
+constexpr const char* kSubParentName = "subdivide:parent_cell";
+
+/// A staged output block: either an unchanged copy of an input block (any of
+/// its three storage shapes), or a freshly built polyhedron block.
+struct SubOutBlock {
+    std::string mType;
+    std::size_t mNodesPerCell = 0;  // rectangular pass-through only
+    std::vector<std::int64_t> mConn;
+    std::vector<std::vector<std::int64_t>> mPolygonRows;
+    std::vector<std::vector<std::vector<std::int64_t>>> mPolyhedronCells;
+    bool mIsRagged = false;
+    bool mIsPolyhedron = false;
+};
+
+/// Stage an input block unchanged -- the pass-through case, one branch per
+/// existing storage shape. Mirrors convert_cells.cpp's own staging helper;
+/// not shared with it directly, since that one is file-private there too.
+SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
+    SubOutBlock out;
+    out.mType = std::string(rBlock.Type());
+    if (rBlock.IsPolyhedron()) {
+        out.mIsRagged = true;
+        out.mIsPolyhedron = true;
+        out.mPolyhedronCells.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            for (std::size_t f = 0; f < rBlock.NumFaces(c); ++f) {
+                const auto face = rBlock.Face(c, f);
+                out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
+            }
+        }
+    } else if (rBlock.IsRagged()) {
+        out.mIsRagged = true;
+        out.mPolygonRows.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+        }
+    } else {
+        const NDArray& conn = rBlock.Conn();
+        const std::size_t npc = rBlock.NodesPerCell();
+        out.mNodesPerCell = npc;
+        out.mConn.resize(rBlock.NumCells() * npc);
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
+            for (std::size_t k = 0; k < npc; ++k)
+                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+    }
+    return out;
+}
+
+/// Add a staged block to `rOut`.
+void sub_emit_block(Mesh& rOut, SubOutBlock& rBlock) {
+    if (rBlock.mIsPolyhedron) {
+        rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
+    } else if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
+    } else {
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
+            dst[i] = rBlock.mConn[i];
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+    }
+}
+
+/// Whether a block can be polyhedrally subdivided: a 3D type with a
+/// `cell_faces` row (reduces to corners for any quadratic variant), or an
+/// existing polyhedron block. 2D/1D blocks and the 3D Lagrange family (no
+/// `cell_faces` row) pass through unchanged instead.
+bool sub_eligible(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return true;
+    if (rBlock.IsRagged())
+        return false;  // a ragged (polygon) block has no volume to subdivide
+    const CellType t = cell_type_from_name(rBlock.Type());
+    if (cell_type_dimension(t) != 3)
+        return false;
+    return !detail::cell_faces(t).empty();
+}
+
+}  // namespace
+
+SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // Every new point's coordinates are the plain average of a list of
+    // existing node ids -- resolved in one batch pass after the main loop,
+    // exactly convert_cells.cpp's own polyhedron-branch convention.
+    std::vector<std::vector<std::int64_t>> new_point_src;
+
+    std::vector<SubOutBlock> staged;
+    staged.reserve(nblocks);
+    std::vector<std::vector<std::int64_t>> first_child(nblocks);
+    std::vector<std::vector<std::int64_t>> parent_of_child(nblocks);
+
+    detail::CellRings rings;
+    std::vector<detail::Vec3> coords;
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t ncells = cb.NumCells();
+        std::vector<std::int64_t>& firsts = first_child[b];
+        std::vector<std::int64_t>& parents = parent_of_child[b];
+        firsts.resize(ncells);
+
+        if (!sub_eligible(cb)) {
+            staged.push_back(sub_stage_passthrough(cb));
+            for (std::size_t c = 0; c < ncells; ++c) {
+                firsts[c] = static_cast<std::int64_t>(c);
+                parents.push_back(static_cast<std::int64_t>(c));
+            }
+            continue;
+        }
+
+        SubOutBlock out;
+        out.mType = "polyhedron";
+        out.mIsRagged = true;
+        out.mIsPolyhedron = true;
+        out.mPolyhedronCells.reserve(ncells);
+
+        for (std::size_t c = 0; c < ncells; ++c) {
+            firsts[c] = static_cast<std::int64_t>(out.mPolyhedronCells.size());
+            if (!detail::cell_rings(cb, c, points, pdim, rings, coords))
+                continue;  // no face topology at all: contributes nothing
+            if (detail::orient_rings(rings, coords.data()) == detail::RingOrientation::Unorientable)
+                throw std::invalid_argument(
+                    std::string(kSubPrefix) + "cannot subdivide cell " + std::to_string(c) +
+                    " of block '" + std::string(cb.Type()) +
+                    "': its faces are not a closed orientable surface, so it bounds no volume");
+
+            // One new interior point per cell: the plain average of the
+            // cell's own corner nodes -- deliberately not poly_measure()'s
+            // volume centroid, a different point. See the file docs.
+            const std::int64_t apex = static_cast<std::int64_t>(num_points + new_point_src.size());
+            new_point_src.push_back(rings.mNodes);
+
+            for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+                const std::uint32_t* ring = rings.Face(f);
+                const std::size_t m = rings.FaceSize(f);
+
+                std::vector<std::vector<std::int64_t>> child;
+                child.reserve(1 + m);
+                // The original face, unchanged (same global ids, same
+                // winding), so a neighbouring cell across it still sees the
+                // identical face -- this is what keeps the result conforming.
+                std::vector<std::int64_t> face_nodes(m);
+                for (std::size_t k = 0; k < m; ++k)
+                    face_nodes[k] = rings.mNodes[ring[k]];
+                child.push_back(std::move(face_nodes));
+                // One new triangle per face edge, back to the apex.
+                for (std::size_t k = 0; k < m; ++k) {
+                    const std::int64_t a = rings.mNodes[ring[k]];
+                    const std::int64_t nb = rings.mNodes[ring[(k + 1) % m]];
+                    child.push_back({apex, a, nb});
+                }
+                out.mPolyhedronCells.push_back(std::move(child));
+                parents.push_back(static_cast<std::int64_t>(c));
+            }
+        }
+        staged.push_back(std::move(out));
+    }
+
+    Mesh out;
+    if (new_point_src.empty()) {
+        out.AssignPoints(detail::data_owned_copy(points));
+    } else {
+        const std::size_t dim = pdim;
+        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + new_point_src.size(), dim});
+        std::memcpy(np.Data(), points.Data(), points.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t d = 0; d < dim; ++d) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(points, static_cast<std::size_t>(nid) * dim + d);
+                detail::write_double(np, (num_points + i) * dim + d,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AssignPoints(std::move(np));
+    }
+
+    for (SubOutBlock& block : staged)
+        sub_emit_block(out, block);
+
+    // point_data: originals copied verbatim; new (apex) points get the mean
+    // of their source nodes' values, the same convention as coordinates.
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (detail::rows(a) != num_points || new_point_src.empty()) {
+            out.AddPointData(name, detail::data_owned_copy(a));
+            continue;
+        }
+        const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = num_points + new_point_src.size();
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+        std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        parallel_for_bw(new_point_src.size(), [&](std::size_t i) {
+            const std::vector<std::int64_t>& src = new_point_src[i];
+            for (std::size_t k = 0; k < ncomp; ++k) {
+                double sum = 0.0;
+                for (std::int64_t nid : src)
+                    sum += detail::read_double(a, static_cast<std::size_t>(nid) * ncomp + k);
+                detail::write_double(b, (num_points + i) * ncomp + k,
+                                     sum / static_cast<double>(src.size()));
+            }
+        });
+        out.AddPointData(name, std::move(b));
+    }
+
+    // cell_data: replicate each parent's row to its children, by raw byte copy
+    // (dtype-agnostic, no precision loss) -- convert_cells.cpp's own pattern
+    // for the identical "each child inherits its parent's row" shape. An
+    // array whose block count does not match the mesh is not per-cell data,
+    // so it is copied verbatim rather than mangled.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(ndata);
+        for (std::size_t b = 0; b < ndata; ++b) {
+            const NDArray& src = rMesh.CellData(name, b);
+            const std::size_t in_rows = detail::rows(src);
+            if (ndata != nblocks || in_rows == 0 || parent_of_child[b].empty()) {
+                blocks.push_back(detail::data_owned_copy(src));
+                continue;
+            }
+            const std::vector<std::int64_t>& parents = parent_of_child[b];
+            std::vector<std::size_t> shape = src.Shape();
+            shape[0] = parents.size();
+            const std::size_t row_bytes = src.Nbytes() / in_rows;
+            NDArray dst = NDArray::Uninit(src.Dtype(), std::move(shape));
+            const std::byte* p_src = src.Data();
+            std::byte* p_dst = dst.Data();
+            parallel_for_bw(parents.size(), [&](std::size_t i) {
+                std::memcpy(p_dst + i * row_bytes,
+                            p_src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
+            });
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    if (rOptions.mRecordParentIds) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(nblocks);
+        for (const std::vector<std::int64_t>& parents : parent_of_child) {
+            NDArray dst(DType::Int64, {parents.size()});
+            std::int64_t* p = dst.As<std::int64_t>();
+            for (std::size_t i = 0; i < parents.size(); ++i)
+                p[i] = parents[i];
+            blocks.push_back(std::move(dst));
+        }
+        out.AddCellData(kSubParentName, std::move(blocks));
+    }
+
+    SubdivideResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps.reserve(nblocks);
+    for (std::vector<std::int64_t>& firsts : first_child) {
+        NDArray m(DType::Int64, {firsts.size()});
+        std::int64_t* p = m.As<std::int64_t>();
+        for (std::size_t i = 0; i < firsts.size(); ++i)
+            p[i] = firsts[i];
+        res.mCellMaps.push_back(std::move(m));
+    }
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = "subdivide";
+    detail::remap_regions(rMesh, res.mMesh, rmap);
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/subdivide.cpp =====
 // ===== begin src/cpp/src/operations/surface.cpp =====
 #include <algorithm>
 #include <array>
@@ -80337,8 +83415,18 @@ Mesh extract_skin(const Mesh& rMesh, bool linearize) {
 }
 
 bool has_skinnable_cells(const Mesh& rMesh) {
+    // A polyhedron block carries its own faces, so it is supported by
+    // construction -- there is no table for it to be missing from, the same
+    // exception `surface_extract`'s own pre-scan makes. This was missed here
+    // until v10.3.0: `surface_skin_block_supported` excludes every ragged
+    // block including polyhedra, so a mesh with ONLY a polyhedron block (e.g.
+    // `subdivide`'s output) reported false and every `has_skinnable_cells`
+    // consumer (convertSurfaceOps/convert_surface, and the `skin=true`
+    // default on the STL/PLY/SVG/TikZ writers) silently fell back to its
+    // unskinned path instead of actually skinning it.
     for (const auto cb : rMesh.CellRange()) {
-        if (surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
+        if (cb.IsPolyhedron() ||
+            surface_skin_block_supported(cell_type_from_name(cb.Type()), cb.IsRagged()))
             return true;
     }
     return false;
@@ -80662,6 +83750,405 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/transform.cpp =====
+// ===== begin src/cpp/src/operations/undo_green.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kUgPrefix = "meshio++: undo_green: ";
+
+// Read a required Int64 scalar cell_data array (one value per cell, covering
+// every block) into a flat global-cell-order vector. Throws by name on any
+// mismatch -- undo_green's fine-mesh preconditions are hard requirements,
+// unlike detail::refine_read_hierarchy's warn-and-fall-back contract.
+std::vector<std::int64_t> ug_read_required(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           const char* pName) {
+    if (!rMesh.HasCellData(pName))
+        throw std::invalid_argument(
+            std::string(kUgPrefix) + "the fine mesh has no '" + pName +
+            "' cell_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(pName) != nblocks)
+        throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName +
+                                    "' does not cover every cell block");
+    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(pName, bi);
+        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+            throw std::invalid_argument(std::string(kUgPrefix) + "'" + pName + "' block " +
+                                        std::to_string(bi) + " is not one scalar value per cell");
+        for (std::size_t c = 0; c < ncells; ++c)
+            out[base + c] = detail::read_int(a, c);
+        ++bi;
+    }
+    return out;
+}
+
+// Same shape check, but returns empty rather than throwing when `pName` is
+// absent or malformed -- used for the coarse mesh's OPTIONAL refine:level,
+// where absence means "never refined" (implicit level 0 for every cell).
+std::vector<std::int64_t> ug_read_optional(const Mesh& rMesh,
+                                           const std::vector<std::int64_t>& rBases,
+                                           const char* pName) {
+    if (!rMesh.HasCellData(pName))
+        return {};
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(pName) != nblocks)
+        return {};
+    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(rBases)));
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& a = rMesh.CellData(pName, bi);
+        if (detail::rows(a) != ncells || (ncells != 0 && a.Size() / ncells != 1))
+            return {};
+        for (std::size_t c = 0; c < ncells; ++c)
+            out[base + c] = detail::read_int(a, c);
+        ++bi;
+    }
+    return out;
+}
+
+// Whether a name is one of the six reserved refine:* arrays -- always
+// excluded from undo_green's output (stale hierarchy bookkeeping).
+bool ug_is_reserved(const std::string& rName) {
+    return rName == kRefineParentCellName || rName == kRefineLevelName ||
+           rName == kRefineHangingName || rName == kRefineEntityName ||
+           rName == kRefineCellIdName || rName == kRefineParentIdName;
+}
+
+// A cell's role in the output, decided once per sibling group.
+enum class UgRole { Keep, AnchorSubstitute, Suppressed };
+
+}  // namespace
+
+UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
+    if (rCoarse.NumPoints() > rFine.NumPoints())
+        throw std::invalid_argument(
+            std::string(kUgPrefix) +
+            "the coarse mesh has more points than the fine mesh, so they cannot be the "
+            "coarse/fine pair of one refine() call");
+
+    const std::vector<std::int64_t> fine_bases = detail::block_bases(rFine);
+    const std::vector<std::int64_t> coarse_bases = detail::block_bases(rCoarse);
+    const auto total_fine = static_cast<std::size_t>(detail::total_cells(fine_bases));
+
+    const std::vector<std::int64_t> fine_id =
+        ug_read_required(rFine, fine_bases, kRefineCellIdName);
+    const std::vector<std::int64_t> fine_parent =
+        ug_read_required(rFine, fine_bases, kRefineParentIdName);
+    const std::vector<std::int64_t> fine_level =
+        ug_read_required(rFine, fine_bases, kRefineLevelName);
+
+    // --- resolve the coarse mesh's id space: its own recorded ids if valid,
+    // else the implicit global-block-major ids -- refine_attach_hierarchy's
+    // own "start fresh" fallback. --------------------------------------------
+    std::vector<std::int64_t> coarse_ids;
+    std::int64_t coarse_id_base = 0;
+    const detail::RefineHierarchyState state =
+        detail::refine_read_hierarchy(rCoarse, coarse_bases, coarse_ids, coarse_id_base);
+    if (state != detail::RefineHierarchyState::Valid) {
+        const auto total_coarse = static_cast<std::size_t>(detail::total_cells(coarse_bases));
+        coarse_ids.resize(total_coarse);
+        for (std::size_t i = 0; i < total_coarse; ++i)
+            coarse_ids[i] = static_cast<std::int64_t>(i);
+    }
+    std::unordered_map<std::int64_t, std::int64_t> id_to_coarse_row;
+    id_to_coarse_row.reserve(coarse_ids.size());
+    for (std::size_t i = 0; i < coarse_ids.size(); ++i)
+        id_to_coarse_row[coarse_ids[i]] = static_cast<std::int64_t>(i);
+
+    const std::vector<std::int64_t> coarse_level =
+        ug_read_optional(rCoarse, coarse_bases, kRefineLevelName);
+    auto coarse_level_at = [&](std::int64_t row) -> std::int64_t {
+        return coarse_level.empty() ? 0 : coarse_level[static_cast<std::size_t>(row)];
+    };
+
+    // --- group fine cells by parent_id --------------------------------------
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> groups_by_parent;
+    for (std::size_t g = 0; g < total_fine; ++g)
+        groups_by_parent[fine_parent[g]].push_back(static_cast<std::int64_t>(g));
+
+    // --- classify every global fine cell's role; for green groups, resolve
+    // the substitution source once ------------------------------------------
+    std::vector<UgRole> role(total_fine, UgRole::Keep);
+    std::vector<std::int64_t> group_id_of(total_fine, -1);
+    std::vector<std::int64_t> group_coarse_row;  // indexed by green group id
+    std::vector<std::int64_t> group_size;        // indexed by green group id
+    std::int64_t next_group_id = 0;
+
+    for (auto& entry : groups_by_parent) {
+        const std::int64_t parent_id = entry.first;
+        std::vector<std::int64_t>& members = entry.second;
+        std::sort(members.begin(), members.end());
+
+        if (members.size() == 1) {
+            const std::int64_t g = members.front();
+            if (fine_id[static_cast<std::size_t>(g)] != parent_id)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) +
+                    "malformed hierarchy: a singleton sibling group's refine:cell_id does not "
+                    "equal its refine:parent_id (cell " +
+                    std::to_string(g) + ")");
+            continue;  // untouched: role stays Keep
+        }
+
+        const auto it = id_to_coarse_row.find(parent_id);
+        if (it == id_to_coarse_row.end())
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "refine:parent_id " + std::to_string(parent_id) +
+                " does not resolve in the coarse mesh's id space -- these two meshes are not "
+                "the coarse/fine pair of one refine() call");
+        const std::int64_t coarse_row = it->second;
+        const std::int64_t clevel = coarse_level_at(coarse_row);
+
+        const std::int64_t flevel = fine_level[static_cast<std::size_t>(members.front())];
+        for (std::int64_t g : members)
+            if (fine_level[static_cast<std::size_t>(g)] != flevel)
+                throw std::invalid_argument(
+                    std::string(kUgPrefix) +
+                    "malformed hierarchy: the sibling group under refine:parent_id " +
+                    std::to_string(parent_id) + " does not agree on refine:level");
+
+        if (flevel == clevel + 1)
+            continue;  // red: a genuine refinement, kept unchanged (role stays Keep)
+
+        if (flevel > clevel + 1)
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                ", more than one deeper than its coarse parent's own level (" +
+                std::to_string(clevel) +
+                "); undo_green only supports a single-pass (levels=1) hierarchy");
+
+        if (flevel != clevel)
+            throw std::invalid_argument(
+                std::string(kUgPrefix) + "the sibling group under refine:parent_id " +
+                std::to_string(parent_id) + " has refine:level " + std::to_string(flevel) +
+                ", which is neither its coarse parent's own level (" + std::to_string(clevel) +
+                ", green) nor one more (" + std::to_string(clevel + 1) + ", red)");
+
+        // green: substitute the whole group with one row from the coarse mesh
+        const std::int64_t gid = next_group_id++;
+        group_coarse_row.push_back(coarse_row);
+        group_size.push_back(static_cast<std::int64_t>(members.size()));
+        role[static_cast<std::size_t>(members.front())] = UgRole::AnchorSubstitute;
+        group_id_of[static_cast<std::size_t>(members.front())] = gid;
+        for (std::size_t k = 1; k < members.size(); ++k) {
+            role[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] =
+                UgRole::Suppressed;
+            group_id_of[static_cast<std::size_t>(members[static_cast<std::ptrdiff_t>(k)])] = gid;
+        }
+    }
+
+    // --- build the output mesh: fine's own block structure, unchanged types
+    // and order, rows compacted/substituted -----------------------------------
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rFine.Points()));
+
+    const std::size_t nblocks = rFine.NumCellBlocks();
+    std::vector<std::size_t> out_ncells(nblocks, 0);
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] != UgRole::Suppressed)
+                    ++out_ncells[bi];
+            }
+            ++bi;
+        }
+    }
+
+    std::vector<NDArray> cell_maps(nblocks);
+    std::vector<NDArray> out_conn(nblocks);
+    std::vector<std::int64_t> group_output_global(static_cast<std::size_t>(next_group_id), -1);
+    std::vector<std::size_t> group_fine_block(static_cast<std::size_t>(next_group_id), 0);
+
+    {
+        std::size_t bi = 0;
+        std::int64_t out_block_base = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const std::size_t npc = cb.NodesPerCell();
+            NDArray conn = NDArray::Uninit(DType::Int64, {out_ncells[bi], npc});
+            std::int64_t* dst = conn.As<std::int64_t>();
+            NDArray cmap = NDArray::Uninit(DType::Int64, {cb.NumCells()});
+            std::int64_t* cm = cmap.As<std::int64_t>();
+
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgRole::Suppressed) {
+                    const std::int64_t gid = group_id_of[g];
+                    cm[r] = group_output_global[static_cast<std::size_t>(gid)];
+                    continue;
+                }
+                if (role[g] == UgRole::Keep) {
+                    const NDArray& src = cb.Conn();
+                    for (std::size_t k = 0; k < npc; ++k)
+                        dst[out_row * npc + k] = detail::read_int(src, r * npc + k);
+                } else {  // AnchorSubstitute
+                    const std::int64_t gid = group_id_of[g];
+                    const std::int64_t coarse_row = group_coarse_row[static_cast<std::size_t>(gid)];
+                    const auto blk_row = detail::global_to_block_row(coarse_bases, coarse_row);
+                    const auto ccb = rCoarse.Cells(blk_row.first);
+                    const NDArray& csrc = ccb.Conn();
+                    for (std::size_t k = 0; k < npc; ++k)
+                        dst[out_row * npc + k] = detail::read_int(
+                            csrc, static_cast<std::size_t>(blk_row.second) * npc + k);
+                    group_output_global[static_cast<std::size_t>(gid)] =
+                        out_block_base + static_cast<std::int64_t>(out_row);
+                    group_fine_block[static_cast<std::size_t>(gid)] = bi;
+                }
+                cm[r] = out_block_base + static_cast<std::int64_t>(out_row);
+                ++out_row;
+            }
+
+            out_conn[bi] = std::move(conn);
+            cell_maps[bi] = std::move(cmap);
+            out_block_base += static_cast<std::int64_t>(out_ncells[bi]);
+            ++bi;
+        }
+    }
+
+    {
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            out.AddCellBlock(std::string(cb.Type()), std::move(out_conn[bi]));
+            ++bi;
+        }
+    }
+
+    // --- point_data / field_data: unchanged, no new or pruned points --------
+    // (refine:entity / refine:hanging are POINT data, not cell_data, but are
+    // just as much stale hierarchy bookkeeping as the four cell_data ones --
+    // ug_is_reserved covers all six, so this loop must consult it too)
+    for (const std::string& name : rFine.PointDataNames()) {
+        if (ug_is_reserved(name))
+            continue;
+        out.AddPointData(name, detail::data_owned_copy(rFine.PointData(name)));
+    }
+    for (const std::string& name : rFine.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rFine.FieldData(name)));
+
+    // --- cell_data: reserved refine:* arrays dropped; everything else kept
+    // (fine's own row for Keep, coarse's for AnchorSubstitute) ---------------
+    for (const std::string& name : rFine.CellDataNames()) {
+        if (ug_is_reserved(name))
+            continue;
+        if (rFine.CellDataNumBlocks(name) != nblocks) {
+            log::warn(
+                "{}cell_data '{}' does not have one array per fine block; dropped rather than "
+                "guessed at",
+                kUgPrefix, name);
+            continue;
+        }
+
+        // Pre-check every green group's substitution source before touching
+        // anything, so a bad array is dropped whole rather than half-built.
+        bool ok = true;
+        if (next_group_id > 0) {
+            if (!rCoarse.HasCellData(name) ||
+                rCoarse.CellDataNumBlocks(name) != rCoarse.NumCellBlocks()) {
+                ok = false;
+            } else {
+                for (std::int64_t gid = 0; ok && gid < next_group_id; ++gid) {
+                    const auto ug = static_cast<std::size_t>(gid);
+                    const auto blk_row =
+                        detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
+                    const NDArray& fsrc = rFine.CellData(name, group_fine_block[ug]);
+                    const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
+                    const std::size_t f_row_bytes =
+                        fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+                    const std::size_t c_row_bytes =
+                        csrc.Nbytes() / std::max<std::size_t>(1, detail::rows(csrc));
+                    if (fsrc.Dtype() != csrc.Dtype() || f_row_bytes != c_row_bytes)
+                        ok = false;
+                }
+            }
+        }
+        if (!ok) {
+            log::warn(
+                "{}cell_data '{}' cannot be honestly restored for a substituted cell (missing, "
+                "incomplete or a different shape/dtype on the coarse mesh); dropped",
+                kUgPrefix, name);
+            continue;
+        }
+
+        std::vector<NDArray> out_blocks(nblocks);
+        std::size_t bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const NDArray& fsrc = rFine.CellData(name, bi);
+            std::vector<std::size_t> shape = fsrc.Shape();
+            shape[0] = out_ncells[bi];
+            NDArray dst = NDArray::Uninit(fsrc.Dtype(), shape);
+            const std::size_t row_bytes =
+                fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+            std::byte* p_dst = dst.Data();
+            const std::byte* p_fsrc = fsrc.Data();
+
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgRole::Suppressed)
+                    continue;
+                if (role[g] == UgRole::Keep) {
+                    std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
+                } else {  // AnchorSubstitute
+                    const std::int64_t gid = group_id_of[g];
+                    const auto ug = static_cast<std::size_t>(gid);
+                    const auto blk_row =
+                        detail::global_to_block_row(coarse_bases, group_coarse_row[ug]);
+                    const NDArray& csrc = rCoarse.CellData(name, blk_row.first);
+                    std::memcpy(p_dst + out_row * row_bytes,
+                                csrc.Data() + static_cast<std::size_t>(blk_row.second) * row_bytes,
+                                row_bytes);
+                }
+                ++out_row;
+            }
+            out_blocks[bi] = std::move(dst);
+            ++bi;
+        }
+        out.AddCellData(name, std::move(out_blocks));
+    }
+
+    UndoGreenResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps = std::move(cell_maps);
+    res.mNumGroupsUndone = next_group_id;
+    std::int64_t removed = 0;
+    for (std::int64_t sz : group_size)
+        removed += sz - 1;
+    res.mNumCellsRemoved = removed;
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mDropSideRegions = true;
+    rmap.mOpName = "undo_green";
+    detail::remap_regions(rFine, res.mMesh, rmap);
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/undo_green.cpp =====
 // ===== begin src/cpp/src/operations/voxelize.cpp =====
 #include <algorithm>
 #include <array>

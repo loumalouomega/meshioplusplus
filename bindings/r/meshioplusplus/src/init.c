@@ -67,6 +67,7 @@ extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -76,6 +77,7 @@ extern SEXP R_mio_sample_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_distance_to_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_undo_green(SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_stats(SEXP);
@@ -83,7 +85,9 @@ extern SEXP R_mio_compute_bandwidth(SEXP);
 extern SEXP R_mio_reorder(SEXP, SEXP);
 extern SEXP R_mio_split(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
-extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_subdivide(SEXP, SEXP);
+extern SEXP R_mio_agglomerate(SEXP, SEXP);
+extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -181,6 +185,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_slice, 4),
     CALLDEF(R_mio_isosurface, 5),
     CALLDEF(R_mio_gradient, 8),
+    CALLDEF(R_mio_estimate_error, 8),
     CALLDEF(R_mio_grid, 4),
     CALLDEF(R_mio_voxelize, 11),
     CALLDEF(R_mio_compute_sdf, 16),
@@ -189,6 +194,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_distance_to_surface, 7),
     CALLDEF(R_mio_merge, 6),
     CALLDEF(R_mio_interpolate, 7),
+    CALLDEF(R_mio_undo_green, 2),
     CALLDEF(R_mio_meshes_equal, 5),
     CALLDEF(R_mio_diff, 5),
     CALLDEF(R_mio_stats, 1),
@@ -196,7 +202,9 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_reorder, 2),
     CALLDEF(R_mio_split, 3),
     CALLDEF(R_mio_convert_cells, 3),
-    CALLDEF(R_mio_refine, 10),
+    CALLDEF(R_mio_subdivide, 2),
+    CALLDEF(R_mio_agglomerate, 2),
+    CALLDEF(R_mio_refine, 11),
     CALLDEF(R_mio_decimate, 8),
     CALLDEF(R_mio_partition, 9),
     CALLDEF(R_mio_partition_labels, 8),

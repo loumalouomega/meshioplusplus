@@ -160,8 +160,11 @@ function resolveVariant(variant) {
  *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
  *   computeSdf: (surface: Mesh, structure?: string, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, rootResolution?: number, maxDepth?: number, bandCells?: number, recordLevels?: boolean, maxCells?: number, sign?: string, location?: string, band?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], maxDepth: number, numBanded: number, quality: object},
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
+ *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
+ *   subdivide: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
+ *   agglomerate: (mesh: Mesh, targetGroupSize?: number) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object) => Mesh,
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
@@ -352,6 +355,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 defaultValue,
                 onConflict,
             ),
+        // Restore `fine`'s transitional (green) cells to their coarse parent,
+        // read verbatim from `coarse` (a lookup, not a reconstruction).
+        undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),
         cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
             Module.cropBbox(mesh, lo, hi, mode, recordIds),
         cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>
@@ -431,9 +437,31 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             overwrite = false,
         ) =>
             Module.gradient(mesh, array, operator, method, location, output, component, overwrite),
+        estimateError: (
+            mesh,
+            array,
+            method = 'zz',
+            marking = 'none',
+            markingValue = 0.0,
+            output = '',
+            marked = '',
+            overwrite = false,
+        ) =>
+            Module.estimateError(
+                mesh,
+                array,
+                method,
+                marking,
+                markingValue,
+                output,
+                marked,
+                overwrite,
+            ),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
             Module.convertCells(mesh, mode, recordParentIds),
+        subdivide: (mesh, recordParentIds = false) => Module.subdivide(mesh, recordParentIds),
+        agglomerate: (mesh, targetGroupSize = 8) => Module.agglomerate(mesh, targetGroupSize),
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined) =>
             Module.refine(mesh, levels, recordParentIds, options),
         // Exactly one of ratio / targetFaces / maxError must be non-negative;

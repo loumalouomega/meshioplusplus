@@ -36,6 +36,7 @@ from collections import OrderedDict
 import numpy as np
 
 from .. import (
+    agglomerate,
     attach_quality,
     cell_data_to_point_data,
     clean,
@@ -50,8 +51,10 @@ from .. import (
     data_info,
     data_manage,
     decimate,
+    decimate_volume,
     diff,
     distance_to_surface,
+    estimate_error,
     extract_skin,
     extract_surface,
     gradient,
@@ -74,8 +77,10 @@ from .. import (
     smooth,
     sniff_format,
     split,
+    subdivide,
     surface_watertight_check,
     transform,
+    undo_green,
     voxelize,
     write,
 )
@@ -958,6 +963,42 @@ def tool_gradient(
     )
 
 
+def tool_estimate_error(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    method="zz",
+    marking="none",
+    marking_value=0.0,
+    output=None,
+    marked=None,
+    overwrite=False,
+):
+    """ZZ recovery-based error indicator of a point_data field, plus optional
+    marking (absolute/fraction/dorfler) of cells for refinement."""
+    mesh = _load(input_path, input_format)
+    out, report = estimate_error(
+        mesh,
+        array,
+        method=method,
+        marking=marking,
+        marking_value=marking_value,
+        output=output,
+        marked_name=marked,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        global_error=float(report["global_error"]),
+        num_skipped=int(report["num_skipped"]),
+        num_marked=int(report["num_marked"]),
+    )
+
+
 def tool_transform(
     input_path,
     output_path,
@@ -1006,6 +1047,32 @@ def tool_convert_cells(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_subdivide(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    record_parent_ids=False,
+):
+    """Polyhedrally refine: one polyhedral child per 3D cell face."""
+    mesh = _load(input_path, input_format)
+    out = subdivide(mesh, record_parent_ids=record_parent_ids)
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_agglomerate(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    target_group_size=8,
+):
+    """Polyhedrally coarsen: merge groups of cells into larger polyhedra."""
+    mesh = _load(input_path, input_format)
+    out = agglomerate(mesh, target_group_size=target_group_size)
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_refine(
     input_path,
     output_path,
@@ -1018,6 +1085,7 @@ def tool_refine(
     where=None,
     closure="redgreen",
     record_levels=False,
+    record_hierarchy=False,
 ):
     """Subdivide cells into same-type children, all or a selected subset."""
     mesh = _load(input_path, input_format)
@@ -1030,6 +1098,7 @@ def tool_refine(
         where=where,
         closure=closure,
         record_levels=record_levels,
+        record_hierarchy=record_hierarchy,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1053,6 +1122,35 @@ def tool_decimate(
         mesh,
         ratio=ratio,
         target_faces=target_faces,
+        max_error=max_error,
+        placement=placement,
+        preserve_boundary=preserve_boundary,
+        preserve_features=preserve_features,
+        feature_angle=feature_angle,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_decimate_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    ratio=None,
+    target_cells=None,
+    max_error=None,
+    placement="optimal",
+    preserve_boundary=False,
+    preserve_features=True,
+    feature_angle=30.0,
+):
+    """Reduce a tet mesh's cell count (exactly one stopping criterion)."""
+    mesh = _load(input_path, input_format)
+    out, report = decimate_volume(
+        mesh,
+        ratio=ratio,
+        target_cells=target_cells,
         max_error=max_error,
         placement=placement,
         preserve_boundary=preserve_boundary,
@@ -1218,6 +1316,23 @@ def tool_interpolate(
         on_conflict=on_conflict,
     )
     return _result(_store(out, output_path, output_format), out)
+
+
+def tool_undo_green(
+    coarse_path,
+    fine_path,
+    output_path,
+    coarse_format=None,
+    fine_format=None,
+    output_format=None,
+):
+    """Restore the fine mesh's transitional (green) cells to their original
+    parent, read verbatim from the coarse mesh (a prior refine() input).
+    Returns num_groups_undone/num_cells_removed alongside the mesh summary."""
+    coarse = _load(coarse_path, coarse_format)
+    fine = _load(fine_path, fine_format)
+    out, report = undo_green(coarse, fine, return_report=True)
+    return _result(_store(out, output_path, output_format), out, **report)
 
 
 # --------------------------------------------------------------------------- #
@@ -1654,6 +1769,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
+        (
+            "estimate_error",
+            {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
+        ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
         (
@@ -1685,8 +1804,24 @@ TOOL_REGISTRY = OrderedDict(
             "convert_cells",
             {"fn": tool_convert_cells, "wraps": ("convert_cells",), "gated": None},
         ),
+        (
+            "subdivide",
+            {"fn": tool_subdivide, "wraps": ("subdivide",), "gated": None},
+        ),
+        (
+            "agglomerate",
+            {"fn": tool_agglomerate, "wraps": ("agglomerate",), "gated": None},
+        ),
         ("refine", {"fn": tool_refine, "wraps": ("refine",), "gated": None}),
+        (
+            "undo_green",
+            {"fn": tool_undo_green, "wraps": ("undo_green",), "gated": None},
+        ),
         ("decimate", {"fn": tool_decimate, "wraps": ("decimate",), "gated": None}),
+        (
+            "decimate_volume",
+            {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
+        ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),

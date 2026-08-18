@@ -10,11 +10,14 @@ mesh format**: it does not round-trip geometry, and pyarrow is an optional
 extra, so its import stays inside the handler. It has no counterpart in the
 native C++ CLI.
 
-The eleventh, ``gradient``, is a slight departure: it is a **mesh** operation
-(``operations/gradient.hpp``), not one of the ``data_*`` family, because it
-reads geometry and topology rather than only data arrays. It lives here anyway
-because it consumes and produces data arrays, which is where a user looks for
-it. See ``doc/gradient.md``.
+``gradient`` and ``estimate-error`` are a slight departure: both are **mesh**
+operations (``operations/gradient.hpp``, ``operations/error.hpp``), not part of
+the ``data_*`` family, because they read geometry and topology rather than
+only data arrays. They live here anyway because they consume and produce data
+arrays, which is where a user looks for them. ``estimate-error`` composes
+``gradient`` with the point↔cell averaging round trip to produce the ZZ
+recovery-based error indicator ``refine``'s own ``--where`` selector consumes,
+closing the adaptive loop. See ``doc/gradient.md`` / ``doc/error.md``.
 
 This is the repository's first two-level subcommand. It needs no change to
 ``_main.py``'s dispatch because ``set_defaults(func=...)`` on the *inner*
@@ -29,6 +32,7 @@ from .._data_calc import data_calc
 from .._data_condition import data_condition
 from .._data_info import data_info
 from .._data_manage import data_drop, data_keep, data_rename
+from .._error import estimate_error
 from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
 
@@ -643,6 +647,94 @@ def gradient_cmd(args):
     return 0
 
 
+# --- data estimate-error ----------------------------------------------------
+
+
+def add_estimate_error_args(parser):
+    _add_io_args(parser)
+    parser.add_argument(
+        "--array",
+        type=str,
+        required=True,
+        metavar="NAME",
+        help="point_data array to estimate the recovered-gradient error of "
+        "(cell_data has no derivative to recover)",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="zz",
+        choices=("zz",),
+        help="estimator family (default: zz, the only one that exists today)",
+    )
+    parser.add_argument(
+        "--marking",
+        type=str,
+        default="none",
+        choices=("none", "absolute", "fraction", "dorfler"),
+        help="how to turn the indicator into a boolean error:marked array "
+        "(default: none)",
+    )
+    parser.add_argument(
+        "--marking-value",
+        type=float,
+        default=0.0,
+        metavar="V",
+        help="meaning depends on --marking: an absolute threshold, a "
+        "fraction in (0, 1] of cells, or the Doerfler bulk fraction theta "
+        "in (0, 1] (ignored for 'none')",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="indicator array name (default: error:zz)",
+    )
+    parser.add_argument(
+        "--marked",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="marking array name (default: error:marked; ignored when "
+        "--marking is 'none')",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing array of an output name instead of failing",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def estimate_error_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = estimate_error(
+        mesh,
+        args.array,
+        method=args.method,
+        marking=args.marking,
+        marking_value=args.marking_value,
+        output=args.output,
+        marked_name=args.marked,
+        overwrite=args.overwrite,
+        return_report=True,
+    )
+    if not args.quiet:
+        name = args.output or "error:zz"
+        print(f"wrote cell_data '{name}' ({args.method})")
+        print(f"  global error:             {report['global_error']:.6g}")
+        print(f"  cells skipped (NaN):      {report['num_skipped']}")
+        if args.marking != "none":
+            marked_name = args.marked or "error:marked"
+            print(f"  wrote cell_data '{marked_name}' ({args.marking})")
+            print(f"  cells marked:             {report['num_marked']}")
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
 # --- group wiring ----------------------------------------------------------
 
 _VERBS = (
@@ -669,6 +761,13 @@ _VERBS = (
         "Differentiate a point_data field (gradient / divergence / curl)",
         add_gradient_args,
         gradient_cmd,
+    ),
+    (
+        "estimate-error",
+        "Estimate the ZZ recovery-based error of a point_data field, and "
+        "optionally mark cells for refinement",
+        add_estimate_error_args,
+        estimate_error_cmd,
     ),
     (
         "normalize",

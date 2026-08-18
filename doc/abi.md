@@ -104,7 +104,8 @@ CMake package can never disagree.
 | 3 | v9.2.0 – v9.4.1 | `KratosMesh`, `MeshioMesh`, `NativeMesh`, `PropertySet`, `mesh_api.hpp`, `XdmfTimeSeriesWriter` |
 | 4 | v9.5.0 | `RefineOptions` gained the selective-refinement fields (a cell list, a region name, a `cell_data` predicate, the closure mode and the level flag) |
 | 5 | v9.9.0 – v9.19.0 | `MedInfo` gained four members (`mFieldUnits`, `mStepMeta`, `mFieldTimeValues`, `mSkippedConstructs`) for the lenient-read surface |
-| 6 | v9.20.0 | `OpenFoamInfo` gained `mPatchTypes`, so the OpenFOAM writer can round-trip a patch's `type` |
+| 6 | v9.20.0 – v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`, so the OpenFOAM writer can round-trip a patch's `type` |
+| 7 | v10.1.0 | `RefineOptions` gained `mRecordHierarchy`, the persistent `refine:cell_id`/`refine:parent_id` parent/child hierarchy |
 
 It reaches consumers three ways:
 

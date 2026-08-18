@@ -197,6 +197,29 @@ SEXP R_mio_gradient(SEXP mesh, SEXP array, SEXP op, SEXP method, SEXP location, 
     return res;
 }
 
+SEXP R_mio_estimate_error(SEXP mesh, SEXP array, SEXP method, SEXP marking, SEXP marking_value,
+                          SEXP output, SEXP marked, SEXP overwrite) {
+    double global_error = 0.0;
+    int64_t skipped = 0, nmarked = 0;
+    mio_mesh *out = mio_estimate_error(
+        mio_r_mesh(mesh), mio_r_string(array, "array"), mio_r_opt_string(method),
+        mio_r_opt_string(marking), mio_r_double(marking_value, "marking_value"),
+        mio_r_opt_string(output), mio_r_opt_string(marked),
+        mio_r_bool(overwrite, "overwrite"), &global_error, &skipped, &nmarked);
+    if (out == NULL) mio_r_fail("estimate_error");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    /* R has no native int64, so the counters come back as doubles (exact well
+       past any plausible cell count) -- the mio_gradient wrapper's rule. */
+    SEXP ge = PROTECT(Rf_ScalarReal(global_error));
+    SEXP sk = PROTECT(Rf_ScalarReal((double)skipped));
+    SEXP mk = PROTECT(Rf_ScalarReal((double)nmarked));
+    const char *names[] = {"mesh", "global_error", "num_skipped", "num_marked"};
+    SEXP values[] = {mo, ge, sk, mk};
+    SEXP res = PROTECT(mio_r_named_list(4, names, values));
+    UNPROTECT(5);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,
@@ -233,6 +256,21 @@ SEXP R_mio_interpolate(SEXP source, SEXP target, SEXP method, SEXP arrays, SEXP 
     UNPROTECT(1); /* shelter */
     if (out == NULL) mio_r_fail("interpolate");
     return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_undo_green(SEXP coarse, SEXP fine) {
+    int64_t ngroups = 0, nremoved = 0;
+    mio_mesh *out =
+        mio_undo_green(mio_r_mesh(coarse), mio_r_mesh(fine), &ngroups, &nremoved);
+    if (out == NULL) mio_r_fail("undo_green");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)ngroups));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nremoved));
+    const char *names[] = {"mesh", "num_groups_undone", "num_cells_removed"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(4);
+    return res;
 }
 
 SEXP R_mio_meshes_equal(SEXP a, SEXP b, SEXP atol, SEXP rtol, SEXP unordered) {
@@ -481,6 +519,84 @@ static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
     return *cell_maps; /* non-NULL marker; two PROTECTs are outstanding */
 }
 
+/* subdivide's cell maps only -- unlike convert_cells/refine/decimate, there
+ * is no point map to read first (subdivide never prunes or renumbers a
+ * point), so this does not share result_maps() above. Leaves one PROTECT
+ * outstanding on success (the returned list), matching result_maps()'s own
+ * convention of leaving its caller to UNPROTECT. */
+static SEXP subdivide_cell_maps(mio_subdivide_result *r) {
+    int64_t nmaps = mio_subdivide_result_num_cell_maps(r);
+    if (nmaps < 0) nmaps = 0;
+    SEXP cell_maps = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nmaps));
+    for (int64_t b = 0; b < nmaps; ++b) {
+        const void *d = NULL;
+        mio_dtype dt;
+        int64_t len = 0;
+        mio_status st = mio_subdivide_result_cell_map(r, b, &d, &dt, &len);
+        if (st != MIO_OK) {
+            UNPROTECT(1);
+            return NULL;
+        }
+        SEXP p = PROTECT(mio_r_shift_map((const int64_t *)d, len));
+        SET_VECTOR_ELT(cell_maps, (R_xlen_t)b, p);
+        UNPROTECT(1);
+    }
+    return cell_maps; /* one PROTECT outstanding */
+}
+
+SEXP R_mio_subdivide(SEXP mesh, SEXP record_parent_ids) {
+    mio_subdivide_result *r =
+        mio_subdivide(mio_r_mesh(mesh), mio_r_bool(record_parent_ids, "record_parent_ids"));
+    if (r == NULL) mio_r_fail("subdivide");
+    SEXP cm = subdivide_cell_maps(r);
+    if (cm == NULL) {
+        mio_subdivide_result_free(r);
+        mio_r_fail("subdivide maps");
+    }
+    mio_mesh *out = mio_subdivide_result_take_mesh(r);
+    mio_subdivide_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("subdivide take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "cell_maps"};
+    SEXP values[] = {mo, cm};
+    SEXP res = PROTECT(mio_r_named_list(2, names, values));
+    UNPROTECT(3);
+    return res;
+}
+
+/* agglomerate's cell map is a single FLAT array (unlike subdivide's
+ * per-block cell_maps), so it needs no per-block loop at all -- just one
+ * mio_r_shift_map() call. */
+SEXP R_mio_agglomerate(SEXP mesh, SEXP target_group_size) {
+    mio_agglomerate_result *r =
+        mio_agglomerate(mio_r_mesh(mesh), mio_r_int64(target_group_size, "target_group_size"));
+    if (r == NULL) mio_r_fail("agglomerate");
+    const void *d = NULL;
+    mio_dtype dt;
+    int64_t len = 0;
+    mio_status st = mio_agglomerate_result_cell_map(r, &d, &dt, &len);
+    if (st != MIO_OK) {
+        mio_agglomerate_result_free(r);
+        mio_r_fail("agglomerate cell_map");
+    }
+    SEXP cm = PROTECT(mio_r_shift_map((const int64_t *)d, len));
+    mio_mesh *out = mio_agglomerate_result_take_mesh(r);
+    mio_agglomerate_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("agglomerate take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "cell_map"};
+    SEXP values[] = {mo, cm};
+    SEXP res = PROTECT(mio_r_named_list(2, names, values));
+    UNPROTECT(3);
+    return res;
+}
+
 SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
     mio_convert_cells_result *r =
         mio_convert_cells(mio_r_mesh(mesh), mio_r_string(mode, "mode"),
@@ -532,7 +648,7 @@ static int refine_compare_code(const char *name) {
 
 SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SEXP region,
                   SEXP where_array, SEXP where_op, SEXP where_value, SEXP closure,
-                  SEXP record_levels) {
+                  SEXP record_levels, SEXP record_hierarchy) {
     mio_refine_opts opts;
     int64_t *ids = NULL;
     R_xlen_t n_ids = 0;
@@ -542,6 +658,7 @@ SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SE
     opts.levels = (int32_t)mio_r_int(levels, "levels");
     opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
     opts.record_levels = mio_r_bool(record_levels, "record_levels");
+    opts.record_hierarchy = mio_r_bool(record_hierarchy, "record_hierarchy");
     opts.region = mio_r_opt_string(region);
     opts.predicate_array = mio_r_opt_string(where_array);
     if (where_value != R_NilValue && Rf_length(where_value) > 0)

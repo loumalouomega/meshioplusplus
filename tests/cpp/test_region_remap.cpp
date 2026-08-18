@@ -172,6 +172,37 @@ TEST(RegionRemap, DirectMapKeepsSurvivorsAndDropsTheRest) {
               (std::vector<std::int64_t>{1, static_cast<std::int64_t>(ntri)}));
 }
 
+// Every current Direct-map caller (crop, split, clean, partition, reorder) is
+// injective by construction -- confirmed by reading each one -- so a
+// genuinely non-injective map (several input cells collapsing to the SAME
+// output index, the shape undo_green needs) is an untested code path until
+// this test. The mechanism needs no change: rremap_children's Direct branch
+// is a plain per-entry lookup with no uniqueness assumption anywhere, and
+// duplicate entries are collapsed by Region::Canonicalize's sort+unique,
+// which RegionList::Add runs unconditionally on every stored region.
+TEST(RegionRemap, ANonInjectiveDirectMapCollapsesDuplicateRegionEntries) {
+    Mesh in = mt::tri_mesh();
+    Mesh out = mt::tri_mesh();
+    const std::size_t ntri = in.Cells(0).NumCells();
+    ASSERT_GE(ntri, 2u);
+
+    in.AddRegion(Region("pair", RegionKind::Cell, i64({0, 1})));
+
+    std::vector<NDArray> cell_maps;
+    std::vector<std::int64_t> tri_map(ntri, -1);
+    tri_map[0] = 0;  // both cells 0 and 1 collapse onto the SAME output cell 0
+    tri_map[1] = 0;
+    cell_maps.push_back(i64(tri_map));
+
+    RegionRemap maps;
+    maps.mCellMapKind = CellMapKind::Direct;
+    maps.pCellMaps = &cell_maps;
+    meshioplusplus::detail::remap_regions(in, out, maps);
+
+    // Two entries collapsing onto the same output index dedup to one.
+    EXPECT_EQ(got(out, "pair", RegionKind::Cell), (std::vector<std::int64_t>{0}));
+}
+
 TEST(RegionRemap, FirstChildMapExpandsAParentToItsChildren) {
     // One input triangle block of 2 cells; each cell becomes 3 output cells.
     Mesh in = mt::tri_mesh();

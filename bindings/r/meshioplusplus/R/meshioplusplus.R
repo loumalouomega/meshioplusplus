@@ -595,9 +595,19 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #'   a negative value means the row magnitude; for `mio_gradient` it means
 #'   **every** component -- deliberately the opposite sentinel.
 #' @param op For `mio_gradient`: `"gradient"`, `"divergence"` or `"curl"`.
-#' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`.
+#' @param method For `mio_gradient`: `"green-gauss"` or `"least-squares"`. For
+#'   `mio_estimate_error`: only `"zz"` exists today; `""` selects it.
 #' @param location For `mio_gradient`: `"cell"` or `"point"`.
-#' @param output Output array name; `""` uses `<array>:<op>`.
+#' @param output Output array name; `""` uses `<array>:<op>` for
+#'   `mio_gradient`, `"error:zz"` for `mio_estimate_error`.
+#' @param marking For `mio_estimate_error`: `"none"` (default), `"absolute"`,
+#'   `"fraction"`, or `"dorfler"`.
+#' @param marking_value For `mio_estimate_error`: meaning depends on
+#'   `marking` -- an absolute indicator threshold, a fraction in `(0, 1]` of
+#'   cells, or the Doerfler bulk fraction theta in `(0, 1]`. Ignored for
+#'   `"none"`.
+#' @param marked For `mio_estimate_error`: the marking array name; `""` uses
+#'   `"error:marked"`. Ignored when `marking` is `"none"`.
 #' @param dims Cell counts `c(nx, ny, nz)` for `mio_grid()`.
 #' @param origin Lattice lo corner.
 #' @param spacing Cell size per axis.
@@ -632,6 +642,8 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param by `"type"`, `"component"`, or `"region"`/`"tag"`.
 #' @param tag_name For `by = "region"`, the integer cell-data array name.
 #' @param convert_mode `"linearize"`, `"simplexify"` or `"elevate"`.
+#' @param target_group_size Approximate member cells per `mio_agglomerate()`
+#'   output group; must be at least 1 (`1` groups every cell by itself).
 #' @param levels How many times to apply the refinement templates.
 #' @param ratio Fraction of faces to KEEP, in (0, 1]; negative = unset.
 #' @param target_faces Absolute face count to stop at; negative = unset.
@@ -754,6 +766,18 @@ mio_gradient <- function(mesh, array, op = "gradient", method = "green-gauss",
 
 #' @rdname mio_extract_surface
 #' @export
+mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
+                               marking_value = 0.0, output = "", marked = "",
+                               overwrite = FALSE) {
+  .Call(
+    R_mio_estimate_error, mesh, as.character(array), as.character(method),
+    as.character(marking), as.numeric(marking_value), as.character(output),
+    as.character(marked), isTRUE(overwrite)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
 mio_merge <- function(meshes, weld = FALSE, atol = 1e-12, source_tag = TRUE,
                       data_policy = "intersection", drop_duplicate_cells = FALSE) {
   policy <- switch(data_policy,
@@ -776,6 +800,12 @@ mio_interpolate <- function(source, target, method = "nearest", arrays = NULL,
     if (is.null(arrays)) NULL else as.character(arrays), isTRUE(extrapolate),
     as.numeric(default_value), as.character(on_conflict)
   )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_undo_green <- function(coarse, fine) {
+  .Call(R_mio_undo_green, coarse, fine)
 }
 
 #' @rdname mio_extract_surface
@@ -820,6 +850,18 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 }
 
 #' @rdname mio_extract_surface
+#' @export
+mio_subdivide <- function(mesh, record_parent_ids = FALSE) {
+  .Call(R_mio_subdivide, mesh, isTRUE(record_parent_ids))
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_agglomerate <- function(mesh, target_group_size = 8) {
+  .Call(R_mio_agglomerate, mesh, as.numeric(target_group_size))
+}
+
+#' @rdname mio_extract_surface
 #' @param cells global (block-major) **1-based** cell indices to refine. At most
 #'   one of `cells`, `region` and `where_array` may be given; with none, every
 #'   cell is refined.
@@ -837,15 +879,26 @@ mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
 #'   enforces 2:1 balance (the output is then **not** conforming; the constrained
 #'   nodes come back in `refine:hanging`).
 #' @param record_levels attach the `refine:level` `cell_data` array.
+#' @param record_hierarchy attach the `refine:cell_id`/`refine:parent_id`
+#'   `cell_data` arrays -- the persistent parent/child hierarchy a multigrid
+#'   caller resolves across the sequence of meshes it keeps ("a link between
+#'   two meshes, not a tree inside one"): an unsplit cell keeps its id and is
+#'   its own parent; a split cell's children each get a fresh id and carry the
+#'   parent's id. An input already carrying `refine:cell_id` is updated
+#'   whatever this says. Also forces `refine:entity` to be attached even when
+#'   the closure leaves no hanging node, since it already records the coarse
+#'   corners each new fine node is the mean of -- the multigrid prolongation
+#'   weights, which `"redgreen"`/`"propagate"` would otherwise never expose.
 #' @export
 mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
                        cells = NULL, region = NULL, where_array = NULL,
                        where_op = "<", where_value = 0,
-                       closure = "redgreen", record_levels = FALSE) {
+                       closure = "redgreen", record_levels = FALSE,
+                       record_hierarchy = FALSE) {
   .Call(
     R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids),
     cells, region, where_array, where_op, as.numeric(where_value),
-    closure, isTRUE(record_levels)
+    closure, isTRUE(record_levels), isTRUE(record_hierarchy)
   )
 }
 

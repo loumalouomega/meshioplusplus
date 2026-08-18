@@ -321,6 +321,46 @@ test_that("refine reports 1-based maps with a 0 sentinel", {
   mio_release(cc$mesh)
 })
 
+test_that("subdivide polyhedrally refines with no point map", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  s <- mio_subdivide(m, record_parent_ids = TRUE)
+  expect_equal(mio_num_cell_blocks(s$mesh), 1)
+  expect_equal(mio_cell_block_type(s$mesh, 1), "polyhedron")
+  info <- mio_cell_block_info(s$mesh, 1)
+  expect_true(info$is_polyhedron)
+  expect_equal(info$num_cells, 8) # 2 tetra, 4 faces each -> 8 children
+  expect_equal(mio_num_points(s$mesh), mio_num_points(m) + 2) # one apex each
+
+  # No point_map (subdivide never prunes/renumbers a point); cell_maps is
+  # per-block, first-child, 1-based.
+  expect_null(s$point_map)
+  expect_length(s$cell_maps, 1)
+  expect_equal(s$cell_maps[[1]], c(1, 5))
+  expect_true("subdivide:parent_cell" %in% mio_cell_data_names(s$mesh))
+  mio_release(s$mesh)
+})
+
+test_that("agglomerate polyhedrally coarsens with a flat cell map", {
+  m <- fixture()  # 2 tetra sharing one face
+  on.exit(mio_release(m))
+
+  a <- mio_agglomerate(m, target_group_size = 2)
+  expect_equal(mio_num_cell_blocks(a$mesh), 1)
+  expect_equal(mio_cell_block_type(a$mesh, 1), "polyhedron")
+  info <- mio_cell_block_info(a$mesh, 1)
+  expect_true(info$is_polyhedron)
+  expect_equal(info$num_cells, 1) # both tetra merge into one cell
+  expect_equal(mio_num_points(a$mesh), mio_num_points(m)) # never pruned
+
+  # cell_map is a single FLAT array (unlike subdivide's per-block
+  # cell_maps): both input cells land in the one merged output cell.
+  expect_length(a$cell_map, 2)
+  expect_equal(a$cell_map[1], a$cell_map[2])
+  mio_release(a$mesh)
+})
+
 test_that("selective refine closes up conformingly", {
   m <- fixture()
   on.exit(mio_release(m))
@@ -343,6 +383,62 @@ test_that("selective refine closes up conformingly", {
   expect_error(mio_refine(m, cells = c(1), region = "anything"))
   expect_error(mio_refine(m, closure = "blue"))
   expect_error(mio_refine(m, where_array = "q", where_op = "~="))
+})
+
+test_that("refine's persistent parent/child hierarchy is opt-in and maintained", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  plain <- mio_refine(m, cells = c(1))
+  expect_false("refine:cell_id" %in% mio_cell_data_names(plain$mesh))
+  mio_release(plain$mesh)
+
+  hier <- mio_refine(m, cells = c(1), record_hierarchy = TRUE)
+  expect_true("refine:cell_id" %in% mio_cell_data_names(hier$mesh))
+  expect_true("refine:parent_id" %in% mio_cell_data_names(hier$mesh))
+  ids <- mio_cell_data(hier$mesh, "refine:cell_id", 1)
+  parents <- mio_cell_data(hier$mesh, "refine:parent_id", 1)
+  # Ids/parent-ids are stable IDENTIFIERS, not the 1-based index maps this
+  # binding otherwise shifts -- they ride the raw C-side numbering unchanged,
+  # like mio_partition_labels' part ids.
+  expect_equal(length(unique(ids)), length(ids))
+  # The coarse mesh (m) has 2 cells, implicitly numbered 0 and 1; every
+  # parent_id must resolve to one of them.
+  expect_true(all(parents %in% c(0, 1)))
+  # Also proves the multigrid-stencil fix: this call used the default
+  # redgreen closure, which leaves no hanging nodes, so refine:entity would
+  # normally never be attached at all.
+  expect_true("refine:entity" %in% mio_point_data_names(hier$mesh))
+
+  # An existing hierarchy is maintained without the flag.
+  again <- mio_refine(hier$mesh, cells = c(1))
+  expect_true("refine:cell_id" %in% mio_cell_data_names(again$mesh))
+  mio_release(again$mesh)
+  mio_release(hier$mesh)
+})
+
+test_that("undo_green restores the coarse parent verbatim", {
+  m <- fixture()  # 2 tetrahedra sharing a whole face
+  on.exit(mio_release(m))
+
+  fine <- mio_refine(m, cells = c(1), record_hierarchy = TRUE, record_levels = TRUE)
+  fine_n <- mio_cell_block_info(fine$mesh, 1)$num_cells
+  coarse_n <- mio_cell_block_info(m, 1)$num_cells
+
+  undone <- mio_undo_green(m, fine$mesh)
+  expect_gt(undone$num_groups_undone, 0)
+  expect_gt(undone$num_cells_removed, 0)
+  undone_n <- mio_cell_block_info(undone$mesh, 1)$num_cells
+  expect_lt(undone_n, fine_n)
+  expect_gt(undone_n, coarse_n)
+  expect_false("refine:cell_id" %in% mio_cell_data_names(undone$mesh))
+  expect_false("refine:entity" %in% mio_point_data_names(undone$mesh))
+
+  # Fails by name rather than guessing: no hierarchy at all on "fine" here.
+  expect_error(mio_undo_green(m, m))
+
+  mio_release(undone$mesh)
+  mio_release(fine$mesh)
 })
 
 test_that("split and partition pieces own their handles", {
@@ -455,6 +551,31 @@ test_that("gradient differentiates a point-data field", {
   # no divergence. Both must fail by name.
   expect_error(mio_gradient(m, "material"))
   expect_error(mio_gradient(m, "temperature", op = "divergence"))
+})
+
+test_that("estimate_error estimates a recovery-based indicator and marks", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  e <- mio_estimate_error(m, "temperature")
+  expect_equal(e$num_skipped, 0)
+  expect_gte(e$global_error, 0)
+  expect_equal(e$num_marked, 0)
+  expect_true("error:zz" %in% mio_cell_data_names(e$mesh))
+  expect_false("error:marked" %in% mio_cell_data_names(e$mesh))
+  mio_release(e$mesh)
+
+  f <- mio_estimate_error(m, "temperature", marking = "absolute", marking_value = 1e-9,
+                          output = "ind", marked = "flag")
+  expect_true("ind" %in% mio_cell_data_names(f$mesh))
+  expect_true("flag" %in% mio_cell_data_names(f$mesh))
+  expect_gte(f$num_marked, 0)
+  mio_release(f$mesh)
+
+  # A cell_data array has no derivative to recover, and an out-of-range
+  # marking_value for "fraction" is rejected. Both must fail by name.
+  expect_error(mio_estimate_error(m, "material"))
+  expect_error(mio_estimate_error(m, "temperature", marking = "fraction", marking_value = 1.5))
 })
 
 test_that("merge and interpolate work", {

@@ -66,6 +66,7 @@ module meshioplusplus
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
     public :: mio_interpolate
+    public :: mio_undo_green
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
     public :: STRBUF_LEN
@@ -277,7 +278,13 @@ module meshioplusplus
         integer(c_int32_t) :: closure = 0
         integer(c_int32_t) :: predicate_op = 0
         integer(c_int32_t) :: reserved_pad = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        !> Nonzero to attach refine:cell_id/refine:parent_id -- the persistent
+        !> parent/child hierarchy a multigrid caller resolves across the
+        !> sequence of meshes it keeps. Also forces refine:entity to be
+        !> attached even when the closure leaves no hanging node. Takes one of
+        !> the former `reserved` slots; size unchanged.
+        integer(c_int64_t) :: record_hierarchy = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
@@ -355,8 +362,11 @@ module meshioplusplus
         procedure :: slice => mesh_slice
         procedure :: isosurface => mesh_isosurface
         procedure :: gradient => mesh_gradient
+        procedure :: estimate_error => mesh_estimate_error
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
+        procedure :: subdivide => mesh_subdivide
+        procedure :: agglomerate => mesh_agglomerate
         procedure :: refine => mesh_refine
         procedure :: decimate => mesh_decimate
         procedure :: partition => mesh_partition
@@ -887,6 +897,14 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        function c_mio_undo_green(coarse, fine, ngroups, nremoved) &
+                bind(c, name="mio_undo_green") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: coarse, fine
+            integer(c_int64_t), intent(out) :: ngroups, nremoved
+            type(c_ptr) :: r
+        end function
+
         function c_mio_reorder(h, method) bind(c, name="mio_reorder") result(r)
             import :: c_ptr, c_char
             type(c_ptr), value :: h
@@ -974,6 +992,21 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        function c_mio_estimate_error(h, array_name, method, marking, marking_value, &
+                                      output_name, marked_name, overwrite, global_error, &
+                                      n_skipped, n_marked) &
+                bind(c, name="mio_estimate_error") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array_name, method, marking
+            character(kind=c_char), dimension(*), intent(in) :: output_name, marked_name
+            real(c_double), value :: marking_value
+            integer(c_int), value :: overwrite
+            real(c_double), intent(out) :: global_error
+            integer(c_int64_t), intent(out) :: n_skipped, n_marked
+            type(c_ptr) :: r
+        end function
+
         function c_mio_split(h, by, tag_name) bind(c, name="mio_split") result(r)
             import :: c_ptr, c_char
             type(c_ptr), value :: h
@@ -1037,6 +1070,48 @@ module meshioplusplus
 
         subroutine c_mio_convert_cells_result_free(r) &
                 bind(c, name="mio_convert_cells_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_subdivide(h, record_parent_ids) &
+                bind(c, name="mio_subdivide") result(r)
+            import :: c_ptr, c_int
+            type(c_ptr), value :: h
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_subdivide_result_take_mesh(r) &
+                bind(c, name="mio_subdivide_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_subdivide_result_free(r) &
+                bind(c, name="mio_subdivide_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_agglomerate(h, target_group_size) &
+                bind(c, name="mio_agglomerate") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: target_group_size
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_agglomerate_result_take_mesh(r) &
+                bind(c, name="mio_agglomerate_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        subroutine c_mio_agglomerate_result_free(r) &
+                bind(c, name="mio_agglomerate_result_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -2442,6 +2517,32 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> Green-element undo: restore `fine`'s transitional (closure-only) cells
+    !> back to their original parent, read verbatim from `coarse` -- a lookup,
+    !> not a reconstruction, since refine() never renumbers or prunes points.
+    !> `fine` must carry refine:cell_id/refine:parent_id/refine:level (i.e. it
+    !> must come from a refine() call with record_hierarchy=.true.,
+    !> record_levels=.true.); `coarse` must be the mesh that call was run on.
+    !> The optional num_groups_undone/num_cells_removed report how many green
+    !> sibling groups were substituted and how many cells that removed.
+    function mio_undo_green(coarse, fine, num_groups_undone, num_cells_removed, &
+                            stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: coarse, fine
+        integer(int64), intent(out), optional :: num_groups_undone, num_cells_removed
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: ngroups, nremoved
+        out%handle = c_mio_undo_green(coarse%handle, fine%handle, ngroups, nremoved)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('undo_green', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_groups_undone)) num_groups_undone = int(ngroups, int64)
+        if (present(num_cells_removed)) num_cells_removed = int(nremoved, int64)
+        call clear_status(stat, errmsg)
+    end function
+
     !> Renumber the mesh (method: "rcm", "morton", or "hilbert") as a pure
     !> permutation. Returns the renumbered mesh; the optional `node_perm`
     !> receives the node permutation (1-based old index -> 1-based new index).
@@ -2789,6 +2890,70 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
+    !> point_data field, and optionally mark cells for refinement.
+    !>
+    !> A composition of `gradient` (Green-Gauss, cell location) with the
+    !> measure-weighted point<->cell averaging round trip: the indicator is
+    !> `sqrt(|measure| * sum((recovered - raw)^2))` per cell, attached as
+    !> `output` (default "error:zz"). `marking` is "none" (default), "absolute",
+    !> "fraction", or "dorfler"; when not "none" a second Int64 0/1 array
+    !> `marked` (default "error:marked") is attached too, so `refine`'s own
+    !> `where` selector needs no change at all -- the intended use is
+    !> `refine(where="error:marked > 0.5")`. `marking_value`'s meaning depends
+    !> on `marking`: an absolute indicator threshold, a fraction in (0, 1] of
+    !> cells, or the Doerfler bulk fraction theta in (0, 1].
+    !>
+    !> Cells that cannot be evaluated read NaN in the indicator array and 0
+    !> (never NaN) in the marking array, and are reported in `num_skipped`
+    !> (excluded from `global_error` and from `num_marked`).
+    function mesh_estimate_error(self, array, method, marking, marking_value, output, &
+                                 marked, overwrite, global_error, num_skipped, num_marked, &
+                                 stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        character(*), intent(in), optional :: method, marking, output, marked
+        real(real64), intent(in), optional :: marking_value
+        logical, intent(in), optional :: overwrite
+        real(real64), intent(out), optional :: global_error
+        integer(int64), intent(out), optional :: num_skipped, num_marked
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cover
+        real(c_double) :: cvalue, cerror
+        integer(c_int64_t) :: nskip, nmark
+        character(:), allocatable :: cmethod, cmarking, cout, cmarked
+        cmethod = ''
+        if (present(method)) cmethod = method
+        cmarking = ''
+        if (present(marking)) cmarking = marking
+        cvalue = 0.0_c_double
+        if (present(marking_value)) cvalue = real(marking_value, c_double)
+        cout = ''
+        if (present(output)) cout = output
+        cmarked = ''
+        if (present(marked)) cmarked = marked
+        cover = 0
+        if (present(overwrite)) then
+            if (overwrite) cover = 1
+        end if
+        cerror = 0.0_c_double
+        nskip = 0
+        nmark = 0
+        out%handle = c_mio_estimate_error(self%handle, c_str(array), c_str(cmethod), &
+                                          c_str(cmarking), cvalue, c_str(cout), c_str(cmarked), &
+                                          cover, cerror, nskip, nmark)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('estimate_error', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(global_error)) global_error = real(cerror, real64)
+        if (present(num_skipped)) num_skipped = int(nskip, int64)
+        if (present(num_marked)) num_marked = int(nmark, int64)
+        call clear_status(stat, errmsg)
+    end function
+
     !> Convert the element representation of the mesh. `mode` is "linearize"
     !> (higher-order cells -> their linear base, pruning the orphaned nodes),
     !> "simplexify" (decompose into same-dimension simplices), or "elevate"
@@ -2834,6 +2999,74 @@ contains
         call c_mio_convert_cells_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('convert_cells', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Polyhedrally refine the mesh: one polyhedral child per face of every
+    !> eligible 3D cell, connected to a new interior point. Needs no per-type
+    !> template table -- tabulated types (reduced to corners for a quadratic
+    !> variant) and existing polyhedron blocks are handled uniformly.
+    !> Automatically conforming, unlike `refine`. Non-3D blocks and the
+    !> full-Lagrange family (no face table) pass through unchanged.
+    !> `record_parent_ids` (default .false.) attaches a
+    !> subdivide:parent_cell cell_data array. Unlike `convert_cells`, there is
+    !> no point map to request -- subdivide never prunes or renumbers an
+    !> original point.
+    function mesh_subdivide(self, record_parent_ids, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int) :: crec
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        res = c_mio_subdivide(self%handle, crec)
+        if (.not. c_associated(res)) then
+            call handle_failure('subdivide', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = c_mio_subdivide_result_take_mesh(res)
+        call c_mio_subdivide_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('subdivide', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Polyhedrally coarsen the mesh: merge groups of cells into single
+    !> larger polyhedral cells via greedy seed-and-grow over the shared-face
+    !> dual, absorbing face-adjacent neighbours until a group reaches
+    !> `target_group_size` (default 8; a short group at a mesh boundary or
+    !> pocket is expected, not an error). Non-volume blocks pass through
+    !> unchanged; points are never pruned or renumbered (`clean` with
+    !> `remove_orphans=.true.` is the follow-up for a minimal point set).
+    !> `target_group_size=1` groups every cell by itself.
+    function mesh_agglomerate(self, target_group_size, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: target_group_size
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int64_t) :: tgs
+        tgs = 8_c_int64_t
+        if (present(target_group_size)) tgs = int(target_group_size, c_int64_t)
+        res = c_mio_agglomerate(self%handle, tgs)
+        if (.not. c_associated(res)) then
+            call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = c_mio_agglomerate_result_take_mesh(res)
+        call c_mio_agglomerate_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)
@@ -3335,9 +3568,28 @@ contains
         end select
     end function
 
+    !> One-time ABI layout guard for mio_refine_opts_t, the Julia
+    !> `_check_abi_layout()` precedent applied to Fortran. The C header pins
+    !> `sizeof(mio_refine_opts) == 112` with a `static_assert`, and Julia
+    !> checks its own mirror at load time, but Fortran has no compile-time
+    !> equivalent -- without this, a field added to one side and not the
+    !> other silently corrupts every call rather than failing loudly. Runs
+    !> once per process (a SAVE'd flag), not on every refine() call.
+    subroutine check_refine_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_refine_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 112_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_refine_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
     function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg, &
                          cells, region, where_array, where_op, where_value, closure, &
-                         record_levels) result(out)
+                         record_levels, record_hierarchy) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: levels
         logical, intent(in), optional :: record_parent_ids
@@ -3362,6 +3614,12 @@ contains
         character(*), intent(in), optional :: closure
         !> Attach the refine:level cell_data array.
         logical, intent(in), optional :: record_levels
+        !> Attach refine:cell_id/refine:parent_id -- the persistent parent/
+        !> child hierarchy a multigrid caller resolves across the sequence of
+        !> meshes it keeps. An input already carrying refine:cell_id is
+        !> updated whatever this says. Also forces refine:entity to be
+        !> attached even when the closure leaves no hanging node.
+        logical, intent(in), optional :: record_hierarchy
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
         integer(c_int) :: s, dt
@@ -3373,6 +3631,7 @@ contains
         character(kind=c_char, len=STRBUF_LEN), target :: region_buf, array_buf
         integer(c_int64_t), allocatable, target :: cell_ids(:)
 
+        call check_refine_opts_layout()
         call c_mio_refine_opts_init(opts)
         if (present(levels)) opts%levels = int(levels, c_int32_t)
         if (present(record_parent_ids)) then
@@ -3380,6 +3639,9 @@ contains
         end if
         if (present(record_levels)) then
             if (record_levels) opts%record_levels = 1
+        end if
+        if (present(record_hierarchy)) then
+            if (record_hierarchy) opts%record_hierarchy = 1_c_int64_t
         end if
         if (present(cells)) then
             allocate (cell_ids(max(size(cells), 1)))

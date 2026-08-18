@@ -40,10 +40,11 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
   top-level key, or a mis-typed value is an error naming the offender — never
   silently ignored (the same rule `registry_write_ex` applies to `Output`
   options a format cannot honour).
-- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split` and `Diff`
-  need extra inputs or produce extra outputs, and a step naming one errors
-  pointing at the matching CLI verb. `Partition` as a step attaches the
-  `partition:part` labels (colour-by-part) rather than splitting into pieces.
+- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split`, `Diff` and
+  `UndoGreen` need extra inputs or produce extra outputs, and a step naming one errors
+  pointing at the matching CLI verb (`undo-green` for `UndoGreen`, which needs a second
+  coarse mesh exactly as `Interpolate` needs a second source mesh). `Partition` as a step
+  attaches the `partition:part` labels (colour-by-part) rather than splitting into pieces.
 - Steps are validated **before** the input is read — a typo in step 7 never
   costs reading a 10 GB mesh first.
 - The run returns a **report**: `{"steps": [{"op", ...counters}],
@@ -75,14 +76,18 @@ An option the output format cannot honour is an error.
 | `Quality` | — | attaches `quality:*` cell data |
 | `Clean` | `Weld` (false), `Atol` (1e-8), `RemoveOrphans` (true), `DropDegenerate` (true), `DropDuplicateCells` (true) | counters `PointsWelded`, `PointsRemovedOrphan`, `CellsDroppedDegenerate`, `CellsDroppedDuplicate` |
 | `Smooth` | `Method` ("taubin"), `Iterations` (10), `Lambda` (method default), `Mu` (−0.34), `FixBoundary` (true), `PreserveFeatures` (true), `FeatureAngle` (30), `GuardInversion` (true) | counters `NumNodesMoved`, `MaxDisplacement`, `NumSkippedInversion` |
-| `Refine` | `Levels` (1), `Cells`, `Region`, `Array` + `Compare` ("<") + `Value` (0), `Closure` ("redgreen"), `RecordLevels` (false) | at most one selector; `Compare`, not `Op` |
+| `Refine` | `Levels` (1), `Cells`, `Region`, `Array` + `Compare` ("<") + `Value` (0), `Closure` ("redgreen"), `RecordLevels` (false), `RecordHierarchy` (false) | at most one selector; `Compare`, not `Op`; `RecordHierarchy` attaches `refine:cell_id`/`refine:parent_id` and forces `refine:entity` |
 | `Decimate` | `Ratio` \| `TargetFaces` \| `MaxError` (none → `Ratio` 0.5), `Placement` ("optimal"), `PreserveBoundary` (true), `PreserveFeatures` (true), `FeatureAngle` (30) | counters `FacesRemoved`, `CollapsesRejected` |
+| `DecimateVolume` | `Ratio` \| `TargetCells` \| `MaxError` (none → `Ratio` 0.5), `Placement` ("optimal"), `PreserveBoundary` (**false**, unlike `Decimate`), `PreserveFeatures` (true), `FeatureAngle` (30) | counters `TetsRemoved`, `CollapsesRejected` |
 | `Partition` | `Nparts` (2), `Method` ("auto"), `Imbalance` (0.03), `Mode` ("eco"), `Seed` (0), `WeightsKey` | attaches `partition:part`; counter `Nparts` |
 | `Slice` (alias `Section`) | `Point`, `Normal` (required), `RecordParentIds` (false) | counter `SectionFaces`; warns when the plane misses |
 | `Gradient` | `Array` (required), `Operator` ("gradient"), `Method` ("green-gauss"), `Location` ("cell"), `Output`, `Component` | counters `NumSkipped`, `NumFallback`; warns on skipped cells |
+| `EstimateError` | `Array` (required), `Method` ("zz"), `Marking` ("none" \| "absolute" \| "fraction" \| "dorfler"), `MarkingValue` (0), `Output`, `Marked` | attaches `error:zz` (and `error:marked` when `Marking` isn't "none"); counters `GlobalError`, `NumSkipped`, `NumMarked`; warns on skipped cells |
 | `Isosurface` | `Array` (required), `Isovalue` (0) or `Isovalues`, `Component`, `RecordParentIds` (false) | counter `ContourCells`; warns when empty |
 | `Transform` | exactly one of `Translate[3]`, `Scale` (number or `[3]`), `RotateAxis[3]`+`RotateDegrees`, `Matrix[16]` (row-major), `ScaleUnits` (a factor, e.g. `0.001` for mm→m); plus `RotateData` (false) | |
 | `ConvertCells` | `Mode` ("linearize" \| "simplexify" \| "elevate"), `RecordParentIds` (false) | |
+| `Subdivide` | `RecordParentIds` (false) | one polyhedral child per 3D cell face, connected to a new interior point; no per-type template table |
+| `Agglomerate` | `TargetGroupSize` (8) | greedy seed-and-grow over the shared-face dual, merging face-adjacent cells into one polyhedron per group; the many-to-one counterpart to `Subdivide` |
 | `Crop` | one of `Bbox[6]` (`[xmin,ymin,zmin,xmax,ymax,zmax]`), `Point[3]`+`Normal[3]`, or `Where` (a scalar `cell_data` name) + `Compare` ("<") + `Value` (0); `Mode` ("all" \| "any", **not** with `Where`), `RecordIds` (false) | counter `CellsKept` |
 | `ExtractSurface` | `RecordParentIds` (false) | |
 | `ExtractSkin` | `Linearize` (false) | |
@@ -186,7 +191,7 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 
 ## Follow-ups (recorded, not implemented)
 
-- **Multi-mesh steps**: `Merge`/`Interpolate` would need per-step
+- **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step
   `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with
   `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these.
   (v9.12.0's [sequences](sequences.md) added the *input*-list and

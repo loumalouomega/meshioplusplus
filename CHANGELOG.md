@@ -8,6 +8,281 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.6.0 (2026-08-18)
+
+**Roadmap §1 closed in full** — volume decimation was the section's last
+open item.
+
+- **`decimate_volume`** (`operations/decimate_volume.hpp`,
+  [`doc/decimate_volume.md`](doc/decimate_volume.md)) — the volume-mesh
+  sibling of surface `decimate`: reduces a tetrahedral mesh's cell count by
+  greedy quadric-error-metric **tet**-edge collapse. A separate operation,
+  not a mode on `decimate` (`DecimateOptions`/`mio_decimate` are untouched).
+  Boundary vertices **participate** in decimation with a real quadric-error
+  objective by default (`preserve_boundary=False`), unlike `decimate`'s own
+  pinned-boundary default — every vertex's quadric is built from its
+  incident boundary-triangle planes only, so a purely interior vertex's
+  quadric is exactly zero and interior-only edges are scored by squared
+  length instead, always ranking behind boundary-touching collapses in the
+  greedy queue. Tet-only: any non-tetra 3D block raises pointing at
+  `convert_cells(mode="simplexify")`. Validity is guarded by an exact
+  vertex-link set-equality condition, a duplicate-tet check, and a
+  tet-inversion guard, plus — for boundary-touching collapses — `decimate`'s
+  own ring/shared-face link condition and normal-flip check, reused over the
+  mesh's own outer skin via machinery hoisted into a new shared
+  `detail/decimate_common.hpp` (`decimate.cpp` itself is otherwise
+  byte-identical; its own test suite is the regression guard for the hoist).
+  C++-core only, no numpy fallback, the same reasoning `subdivide`/
+  `agglomerate` already document. Shipped across pybind, the C API
+  (`mio_decimate_volume`, its own opaque result type), both CLIs
+  (`decimate-volume`), the settings pipeline (`DecimateVolume` step, both
+  engines), and the MCP server. No ABI change (`MESHIOPLUSPLUS_ABI_VERSION`
+  stays at 7). Fortran/Julia/R/WASM bindings are a recorded follow-up.
+
+## v10.5.0 (2026-08-17)
+
+**Roadmap §1 closed further** — green-element undo is closed; volume
+decimation remains as the section's one open item.
+
+- **`undo_green`** (`operations/undo_green.hpp`, [`doc/undo_green.md`](doc/undo_green.md))
+  — restores `refine`'s transitional (green) cells back to their original
+  parent, the missing half of the standard selective-refinement rule
+  ("restore a transitional cell to its parent and re-split from scratch
+  before a new refinement pass"); `refine` refines the transitional
+  children directly instead, so repeated selective passes over the same
+  region degrade element quality without bound. A **two-mesh** operation,
+  the repo's second after `interpolate`: `coarse` is the mesh a prior
+  `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was
+  run on, `fine` is that call's output. **Design: lookup and substitution,
+  not reconstruction** — the originally-planned mechanism (inverting
+  `refine`'s per-type subdivision tables against a green group's children,
+  a genuinely hard graph-isomorphism-style match) turns out to be
+  unnecessary: since `refine()`'s point map is always the identity, a green
+  parent's exact connectivity and cell_data are already sitting,
+  byte-for-byte, in `coarse` at the row `fine`'s `refine:parent_id` names.
+  Classification is per sibling group (cells sharing one `parent_id`, since
+  a parent's red/green status is uniform across every child): a singleton
+  group is untouched; a group one level deeper than its coarse parent is
+  red (kept unchanged); a group at the same level is green (substituted
+  with one row read verbatim from `coarse`); a group more than one level
+  deeper is refused by name (only a single-pass, `levels=1`, hierarchy is
+  supported). The six reserved `refine:*` arrays are unconditionally
+  dropped from the output. Points are never pruned or renumbered. Cell
+  regions carry through the first genuinely non-injective
+  `CellMapKind::Direct` use in the C++ core (several fine cells collapsing
+  onto one output row), deduplicated by `Region`'s existing sort+unique;
+  named Side regions do not survive. **Has a full numpy twin**, unlike
+  `subdivide`/`agglomerate` — there is no winding repair or other discrete
+  sign branch anywhere in the algorithm, just array bookkeeping and row
+  copies. Reachable as `undo-green` on both CLIs and as an MCP tool;
+  deliberately **not** reachable as a settings-pipeline/`convertSurfaceOps`
+  step, the same exclusion `Merge`/`Interpolate`/`Split`/`Diff` already
+  have, since a two-mesh op does not fit the single-mesh chain. Shipped
+  across every binding surface: C++ core, pybind, the C API
+  (`mio_undo_green`, a plain `mio_mesh*` with nullable counters like
+  `mio_smooth`, not an opaque result handle), Fortran (module-level, like
+  `mio_interpolate`), Julia, R, WASM. **No ABI change** — corrects the
+  original plan, which assumed a new `RefineOptions` flag (Tier A, a bump
+  to 8); the two-mesh substitution design needs no `RefineOptions` change
+  at all, so `MESHIOPLUSPLUS_ABI_VERSION` stays at 7.
+- Hoisted `RefineHierarchyState`/`refine_read_hierarchy` out of
+  `refine.cpp`'s private scope into `detail/refine_hierarchy.{hpp,cpp}` so
+  `undo_green` can share the identical Absent/Valid/Invalid hierarchy read
+  against a coarse mesh rather than a second transcription; `refine.cpp`'s
+  own behaviour is unchanged (verified by its existing test suite).
+
+## v10.4.0 (2026-08-17)
+
+**Roadmap §1 closed for polyhedra** — the polyhedral-*coarsening* half of the
+"polyhedral refinement and coarsening" gap is closed, completing that gap in
+full alongside v10.3.0's `subdivide`; volume decimation and green-element
+undo remain open, and are the two entries left in §1.
+
+- **`agglomerate`** (`operations/agglomerate.hpp`, [`doc/agglomerate.md`](doc/agglomerate.md))
+  — polyhedral coarsening, the many-to-one counterpart to `subdivide`:
+  merges groups of cells into single larger polyhedral cells via greedy
+  seed-and-grow over the mesh's shared-face dual. Built on
+  `detail::build_global_faces`'s owner/neighbour pairing (genuine
+  face-adjacency in a compact volume-cell index space, deliberately **not**
+  `detail::cell_adjacency.hpp`'s node-adjacency, which is both the wrong
+  relation — node-sharing alone could fuse cells touching only at a
+  pinch-point vertex — and indexed in a different space entirely).
+  Seeds are chosen in ascending compact-cell order; each group repeatedly
+  absorbs the unclaimed face-neighbour with the largest *accumulated*
+  shared-face area (summed across every face the group's current members
+  already share with that candidate) until `target_group_size` (default 8)
+  is reached or the frontier empties — short groups at mesh boundaries and
+  pockets are expected, not errors. The emit step walks each member's own
+  face list and drops a face only when its other side is in the *same*
+  group (an internal face, hit from both sides and dropped from both), so
+  every merged cell's boundary is exactly the union of its members'
+  external faces, wound and signed by transcribing the CGNS `NFACE_n`
+  writer's own sign handling — **conserving volume exactly**, an identity of
+  surviving faces rather than a divergence-theorem coincidence. **One
+  polyhedron output block total, with genuinely mixed cell shapes inside**
+  — the same no-node-count-grouping simplification `subdivide` already
+  established, since `AddPolyhedronBlock` stores ragged CSR with no
+  same-shape constraint. Non-volume blocks (2D, the 3D Lagrange family) pass
+  through unchanged, and the merged block is emitted at the position the
+  first volume block originally occupied, so block order is otherwise
+  preserved. **No point compaction** — points are never pruned or
+  renumbered, following `subdivide`'s own precedent rather than a
+  `surface.cpp`-style used/remap pass; `clean(..., remove_orphans=True)` is
+  the documented follow-up for a minimal point set. Regions carry through
+  **`CellMapKind::Global`**, a single flat input-global-cell →
+  output-global-cell map built once and passed to one batch
+  `detail::remap_regions()` call — simpler than `merge`'s own usage of the
+  same map kind, which drives a per-input-mesh loop purely for
+  merge's region-name collision namespacing across N inputs, a concern
+  agglomerate's single input mesh never has. A region collapsed entirely
+  into one merged cell survives as a **named but empty** group (`Region::
+  Canonicalize`'s dedup + the "the name is information" convention
+  `region_remap.cpp` already documents elsewhere), not as a removed one. A
+  non-manifold input (a face shared by three or more cells) is refused by
+  name, mirroring `subdivide`'s throw-on-`Unorientable` precedent — the
+  owner/neighbour face filter is only well-defined on a 2-manifold face.
+  **C++-core only, with no numpy fallback at all** — the emit step depends
+  transitively on `orient_rings`-repaired faces, the same discrete-winding-
+  branch rationale `subdivide` and `_smooth.py`'s inversion guard already
+  document. Reachable as an `Agglomerate` settings-pipeline/
+  `convertSurfaceOps` step, and across every binding surface: C++ core,
+  pybind, the C API (`mio_agglomerate` → `mio_agglomerate_result`,
+  deliberately with **no `block` argument and no `_num_cell_maps`
+  accessor** on its cell-map accessor, since an agglomerated cell's output
+  index is a function of which group it joined rather than which input
+  block it came from — the one opaque-result type in this codebase whose
+  cell map is a single flat array rather than a per-block collection),
+  Fortran, Julia, R, WASM, both CLIs (`agglomerate`), and the MCP
+  `agglomerate` tool.
+
+## v10.3.0 (2026-08-08)
+
+**Roadmap §1 narrowed further** — the polyhedral-*refinement* half of the
+"polyhedral refinement and coarsening" gap is closed; polyhedral coarsening
+(agglomeration), volume decimation and green-element undo remain open.
+
+- **`subdivide`** (`operations/subdivide.hpp`, [`doc/subdivide.md`](doc/subdivide.md))
+  — polyhedral refinement: splits every eligible 3D cell into one polyhedral
+  child per face, connected to a new interior point. `refine` and `decimate`
+  both raise by name on a polyhedron, pointing at `convert_cells(mode=
+  "simplexify")` — both are built on fixed same-type subdivision templates,
+  and an arbitrary polyhedron has none. `subdivide` needs **no per-type
+  table at all**: it goes through the same uniform face-ring machinery
+  `gradient`/`compute_quality` already use (`detail::cell_rings`/
+  `orient_rings`), which treats a tabulated type and an existing polyhedron
+  block identically. Each child's interior apex is the plain corner average
+  of the parent's own nodes (deliberately **not** the volume centroid),
+  which is what makes the children's total volume conserve to a tight
+  tolerance rather than merely by the divergence theorem's abstract
+  equality. **Automatically conforming** — a shared face between two input
+  cells is never touched, so unlike `refine` there is no closure, no 2:1
+  balance, no hanging-node bookkeeping. **One polyhedron output block per
+  input block, with genuinely mixed cell shapes inside** — `AddPolyhedronBlock`
+  stores cells as ragged CSR with no same-shape constraint, so there is no
+  need to group children by node count the way some *readers* (CGNS's
+  `NFACE_n`, OpenFOAM, EnSight) do for their own format-compatibility
+  reasons. Point and Cell regions survive (`CellMapKind::FirstChild`, the
+  same shape `convert_cells` already uses for its own one-to-many splits,
+  and with **no point map at all** — subdivide never prunes or renumbers a
+  point); named Side regions do not, the same limitation
+  `convert_cells(mode="simplexify")` already has. **C++-core only, with no
+  numpy fallback** — the winding repair is a discrete branch a second
+  implementation could disagree with near-degenerate cells, the same
+  reasoning `_convert_cells.py`'s polyhedron branch and `_smooth.py`'s
+  inversion guard already document. Reachable as a `Subdivide`
+  settings-pipeline/`convertSurfaceOps` step, and across every binding
+  surface: C++ core, pybind, the C API (`mio_subdivide`), Fortran, Julia, R,
+  WASM, both CLIs (`subdivide`), and the MCP `subdivide` tool.
+- **Fixed a real, independently-discovered bug**: `has_skinnable_cells`
+  (`surface.cpp`, gating `convertSurfaceOps`/`convert_surface` and the
+  `skin=true` default on the STL/PLY/SVG/TikZ writers) excluded *every*
+  ragged block including polyhedra, even though `extract_surface`/
+  `extract_skin` have supported polyhedron blocks since v9.16.0 — so a mesh
+  with only a polyhedron block (`subdivide`'s own output being the first
+  thing in the repo to construct one) silently took the unskinned fallback
+  path everywhere `has_skinnable_cells` gates. Fixed by recognizing a
+  polyhedron block the same way `extract_surface`'s own pre-scan already
+  does; pinned by `Skin.HasSkinnableCellsRecognizesAPolyhedronOnlyMesh`.
+
+## v10.2.0 (2026-08-07)
+
+**Roadmap §1 narrowed further** — the error-estimator-helpers gap is closed;
+volume decimation, polyhedral refinement/coarsening and green-element undo
+remain open.
+
+- **`estimate_error`** (`operations/error.hpp`, [`doc/error.md`](doc/error.md))
+  — the Zienkiewicz-Zhu (ZZ) recovery-based error indicator of a `point_data`
+  field, plus optional marking, the piece that closes the adaptive loop:
+  `gradient` already differentiates a field and selective `refine`'s
+  `--where` already consumes any scalar `cell_data` predicate; this produces
+  one. Deliberately a **composition, not a new numerical kernel**:
+  `gradient(location="cell")` (raw per-cell gradient) → the existing
+  measure-weighted point↔cell averaging round trip (recovery) → the
+  recovered-minus-raw difference is the local indicator
+  `eta_K = sqrt(|measure_K| · sum((recovered − raw)²))`, reported globally as
+  `sqrt(sum eta_K²)`. `marking="absolute"|"fraction"|"dorfler"` turns the
+  indicator into a boolean `error:marked` array (`refine`'s own `--where`
+  selector needs no change at all to consume it — the Dörfler bulk-fraction
+  criterion is the usual AMR choice). Cells that cannot be evaluated read NaN
+  in `error:zz` and `0` (never NaN) in `error:marked`, counted and excluded
+  from the global error and every marking policy's count. Reachable as `data
+  estimate-error` in both CLIs alongside `gradient`, for the same reason.
+  Reaches every binding surface: C++ core, pybind, the C API
+  (`mio_estimate_error`), Fortran, Julia, R, WASM (`estimateError()` plus an
+  `EstimateError` `convertSurfaceOps`/settings-pipeline step), both CLIs, and
+  the MCP `estimate_error` tool.
+- **Fixed a real, independently-discovered bug**: `_data_average.py`'s
+  `_FACES` table (the numpy twin's tabulated-cell fan-volume formula, used by
+  `cell_data_to_point_data(weighted=True)`, and now also by
+  `estimate_error`'s recovery step) had inconsistent face winding for all
+  four linear 3D cell types (tetra/hexahedron/wedge/pyramid) — exactly one
+  inward-wound face per type — which silently made the reported "volume" of
+  a cell depend on how far it sat from the coordinate origin rather than on
+  its shape, corrupting `Measure`-weighted recovery for any mesh not
+  centred near the origin. Fixed by transcribing
+  `detail/cell_faces.cpp`'s Newell-normal-gtested windings verbatim; pinned
+  by `test_data_location.py::test_cell_measures_are_translation_invariant`.
+
+## v10.1.0 (2026-08-07)
+
+**Roadmap §1 narrowed** — `refine` gains a persistent parent/child hierarchy
+across passes, closing the first half of that bullet (green-element undo
+remains open).
+
+- **`refine`'s persistent hierarchy** (`record_hierarchy=True` /
+  `--record-hierarchy` / `RefineOptions::mRecordHierarchy`) — two new
+  reserved `cell_data` arrays, `refine:cell_id` and `refine:parent_id`, on
+  the same reserved-and-maintained pattern as `refine:level`: a cell no pass
+  ever split keeps its own id and is its own parent; a split cell's children
+  each get a fresh id and carry the parent's id. **The hierarchy is a link
+  between two meshes, not a tree inside one** — a multigrid or green-undo
+  caller keeps every pass's output mesh, and the fine mesh's `parent_id`
+  resolves against the coarse mesh's `cell_id` (implicit, as its global
+  block-major index, when the coarse mesh carries none of its own). An input
+  already carrying `refine:cell_id` is updated whatever the flag says.
+  Setting the flag also forces `refine:entity` to be attached even when the
+  closure leaves no hanging node (the normal `redgreen`/`propagate` case),
+  since it already records the coarse corners each new fine node is the mean
+  of — the multigrid prolongation stencil, which was otherwise unreachable
+  outside `balanced`. Reaches every binding surface: C++ core, pybind,
+  the C API (`mio_refine_opts::record_hierarchy`, appended into the struct's
+  reserved tail so `sizeof(mio_refine_opts)` is unchanged), Fortran, Julia,
+  R, WASM (`recordHierarchy` on `refine()` and the `convertSurfaceOps`
+  pipeline step), both CLIs' `refine --record-hierarchy`, the MCP `refine`
+  tool, and the settings-pipeline `Refine` step's `RecordHierarchy` key.
+  See [`doc/refine.md`](doc/refine.md#refinecell_id-and-refineparent_id).
+- Closed the two ABI-guard gaps `doc/roadmap.md`'s note flagged:
+  `RefineOptions` is now pinned in `tests/cpp/test_abi_layout.cpp`, and the
+  Fortran `mio_refine_opts_t` mirror gained a runtime `sizeof` check
+  (`check_refine_opts_layout`, the Julia `_check_abi_layout()` precedent) —
+  previously the only guard on that struct was C's `static_assert` and
+  Julia's own load-time check.
+- **Breaking (ABI):** `RefineOptions` gained a member, so
+  `MESHIOPLUSPLUS_ABI_VERSION` moves 6 → 7 and the installed C++ variants'
+  `SOVERSION` moves with it; the C and Fortran libraries stay at
+  `SOVERSION 0` (the flat ABI's own append-only-`reserved` contract is
+  unaffected). See [`doc/abi.md`](doc/abi.md).
+
 ## v10.0.0 (2026-08-06)
 
 Version-number bump only (9.30.0 → 10.0.0) — no API, behavior or ABI change;

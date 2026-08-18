@@ -341,6 +341,41 @@ program test_fortran_api
         call check(st /= 0, 'convert_cells rejects an unknown mode')
     end block
 
+    ! -- subdivide: one polyhedral child per face, no per-type table needed --
+    block
+        type(mio_mesh) :: sub
+        integer :: st
+
+        sub = m%subdivide(record_parent_ids=.true., stat=st)
+        call check(st == 0, 'subdivide succeeded')
+        call check(sub%num_cell_blocks() == 1, 'subdivide kept one block')
+        call check(sub%cell_block_type(1) == 'polyhedron', 'subdivide produced polyhedron cells')
+        call check(sub%cell_block_is_polyhedron(1), 'subdivide block is 2-level ragged')
+        ! Two tetra parents, 4 faces each -> 8 children.
+        call check(sub%cell_block_num_cells(1) == 8_int64, 'subdivide made 4 children per tetra')
+        call check(sub%num_points() == m%num_points() + 2_int64, &
+                   'subdivide added one interior point per parent cell')
+
+        call sub%free()
+    end block
+
+    ! -- agglomerate: merge face-adjacent cells into one polyhedron --------
+    block
+        type(mio_mesh) :: agg
+        integer :: st
+
+        ! The two tetra share a face (nodes 2,3,4 1-based), so target=2
+        ! merges them into one polyhedron.
+        agg = m%agglomerate(target_group_size=2_int64, stat=st)
+        call check(st == 0, 'agglomerate succeeded')
+        call check(agg%num_cell_blocks() == 1, 'agglomerate kept one block')
+        call check(agg%cell_block_type(1) == 'polyhedron', 'agglomerate produced polyhedron cells')
+        call check(agg%cell_block_num_cells(1) == 1_int64, 'agglomerate merged both tetra')
+        call check(agg%num_points() == m%num_points(), 'agglomerate never prunes points')
+
+        call agg%free()
+    end block
+
     ! -- smooth: relax coordinates, leaving topology and data intact --
     block
         type(mio_mesh) :: relaxed, bad
@@ -463,6 +498,74 @@ program test_fortran_api
 
         call sel%free()
         call prop%free()
+    end block
+
+    ! -- refine: the persistent parent/child hierarchy --
+    block
+        type(mio_mesh) :: hier
+        real(real64), allocatable :: entity(:, :)
+        integer :: st
+
+        ! record_hierarchy is opt-in ('quality' was attached to m earlier and
+        ! is carried through regardless -- only the two new reserved names are
+        ! gated on the flag).
+        hier = m%refine(cells=[1_int64], stat=st)
+        call check(st == 0, 'plain selective refine succeeded')
+        call check(hier%cell_data_num_blocks('refine:cell_id') < 0_int64, &
+                   'refine:cell_id is not recorded unless asked')
+        call hier%free()
+
+        hier = m%refine(cells=[1_int64], record_hierarchy=.true., stat=st)
+        call check(st == 0, 'record_hierarchy refine succeeded')
+        call check(hier%cell_data_num_blocks('refine:cell_id') == 1_int64, &
+                   'refine:cell_id attached')
+        call check(hier%cell_data_num_blocks('refine:parent_id') == 1_int64, &
+                   'refine:parent_id attached')
+        ! Both arrays are (n, 1)-shaped (one component per cell), and the
+        ! rank-1 get_cell_data getter refuses anything but a true rank-1
+        ! array -- a pre-existing Fortran-binding limitation unrelated to this
+        ! feature (there is no rank-2 cell_data getter, unlike point_data), so
+        ! presence/coverage is what this binding can check; value-level parity
+        ! is covered by the C++ and Python test suites.
+        !
+        ! Also proves the multigrid-stencil fix: this call used the redgreen
+        ! closure, which leaves no hanging nodes, so refine:entity would
+        ! normally never be attached at all.
+        call hier%get_point_data('refine:entity', entity)
+        call check(size(entity, 1) == 4, 'refine:entity is 4 values per point')
+        call hier%free()
+    end block
+
+    ! -- undo_green: restore a transitional cell to its coarse parent --
+    block
+        type(mio_mesh) :: fine, undone, bad
+        integer(int64) :: ngroups, nremoved, fine_n, undone_n, coarse_n
+        integer :: st
+
+        ! m's two tetrahedra share a whole face; refining cell 1 forces cell
+        ! 2's shared-face edges to close up as one green group.
+        fine = m%refine(cells=[1_int64], record_hierarchy=.true., record_levels=.true., stat=st)
+        call check(st == 0, 'refine for undo_green succeeded')
+        fine_n = fine%cell_block_num_cells(1)
+        coarse_n = m%cell_block_num_cells(1)
+
+        undone = mio_undo_green(m, fine, num_groups_undone=ngroups, &
+                                num_cells_removed=nremoved, stat=st)
+        call check(st == 0, 'undo_green succeeded')
+        call check(ngroups > 0_int64, 'undo_green undid at least one green group')
+        call check(nremoved > 0_int64, 'undo_green removed at least one cell')
+        undone_n = undone%cell_block_num_cells(1)
+        call check(undone_n < fine_n, 'undo_green produced fewer cells than fine')
+        call check(undone_n > coarse_n, 'undo_green kept the genuine (red) refinement')
+        call check(undone%cell_data_num_blocks('refine:cell_id') < 0_int64, &
+                   'the reserved refine:* arrays are dropped')
+
+        ! Fails by name rather than guessing: "fine" here has no hierarchy at all.
+        bad = mio_undo_green(m, m, stat=st)
+        call check(st /= 0, 'undo_green rejects a mesh with no hierarchy')
+
+        call undone%free()
+        call fine%free()
     end block
 
     ! -- decimate: QEM edge collapse of a surface mesh --
@@ -628,6 +731,38 @@ program test_fortran_api
         ! A scalar has no divergence.
         g = m%gradient('temperature', op='divergence', stat=st)
         call check(st /= 0, 'gradient rejects a scalar divergence')
+    end block
+
+    ! ---- estimate_error (ZZ recovery-based error indicator) ---------------
+    block
+        type(mio_mesh) :: e
+        real(real64) :: gerr
+        integer(int64) :: nskip, nmark
+        integer :: st
+
+        e = m%estimate_error('temperature', stat=st, global_error=gerr, num_skipped=nskip)
+        call check(st == 0, 'estimate_error succeeded')
+        call check(e%cell_data_num_blocks('error:zz') >= 1_int64, &
+                   'estimate_error attaches error:zz')
+        call check(e%cell_data_num_blocks('error:marked') <= 0_int64, &
+                   'no marking requested by default')
+        call check(gerr >= 0.0_real64, 'global_error is reported')
+        call e%free()
+
+        e = m%estimate_error('temperature', marking='absolute', marking_value=1.0d-9, &
+                             output='ind', marked='flag', stat=st, num_marked=nmark)
+        call check(st == 0, 'estimate_error with marking succeeded')
+        call check(e%cell_data_num_blocks('ind') >= 1_int64, 'custom indicator name honoured')
+        call check(e%cell_data_num_blocks('flag') >= 1_int64, 'custom marked name honoured')
+        call check(nmark >= 0_int64, 'num_marked is reported')
+        call e%free()
+
+        ! A cell_data field has no derivative to recover: fails through stat.
+        e = m%estimate_error('quality', stat=st)
+        call check(st /= 0, 'estimate_error rejects a cell_data field')
+        ! An out-of-range marking_value for "fraction" fails through stat too.
+        e = m%estimate_error('temperature', marking='fraction', marking_value=1.5d0, stat=st)
+        call check(st /= 0, 'estimate_error rejects an out-of-range marking_value')
     end block
 
     ! --- named regions (doc/regions.md) ---------------------------------------

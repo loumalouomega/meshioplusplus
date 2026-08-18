@@ -47,6 +47,7 @@ from . import (
     xdmf,
 )
 from .__about__ import __version__
+from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -57,7 +58,9 @@ from ._data_info import data_info
 from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
+from ._decimate_volume import decimate_volume
 from ._diff import diff, meshes_equal
+from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
 from ._gpu import (
     from_cupy,
@@ -130,8 +133,10 @@ from ._smooth import smooth
 from ._sniff import sniff_format
 from ._split import split
 from ._stats import compute_stats
+from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._transform import transform
+from ._undo_green import undo_green
 from ._viewer import has_viewer, screenshot, view
 from ._voxelize import voxelize
 
@@ -201,6 +206,7 @@ __all__ = [
     "merge",
     "interpolate",
     "gradient",
+    "estimate_error",
     "slice",
     "isosurface",
     "transform",
@@ -208,8 +214,12 @@ __all__ = [
     "crop",
     "split",
     "convert_cells",
+    "subdivide",
+    "agglomerate",
     "refine",
+    "undo_green",
     "decimate",
+    "decimate_volume",
     "grid",
     "voxelize",
     "sample_distance",

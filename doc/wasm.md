@@ -205,18 +205,57 @@ array of `{ key, mesh }`; and `stats(mesh)` → an object of geometric measures
 conversion is exposed as `convertCells(mesh, mode, recordParentIds)` with `mode`
 `"linearize"`, `"simplexify"`, or `"elevate"`, returning a new mesh; a
 polyhedron block under `"simplexify"` and the full-Lagrange targets
-(`quad9`/`hexahedron27`) under `"elevate"` throw a catchable `Error`. Uniform
+(`quad9`/`hexahedron27`) under `"elevate"` throw a catchable `Error`.
+**Polyhedral refinement** is exposed as `subdivide(mesh, recordParentIds)`:
+one polyhedral child per face of every eligible 3D cell, connected to a new
+interior point, with no per-type template table — tabulated types (reduced
+to corners for a quadratic variant) and existing polyhedron blocks are
+handled uniformly, and the result is automatically conforming, unlike
+`refine`. There is no point map, unlike `convertCells` (subdivide never
+prunes or renumbers a point); a cell whose faces are not a closed orientable
+surface throws a catchable `Error`. See [subdivide](/subdivide).
+**Polyhedral coarsening**, the many-to-one counterpart, is exposed as
+`agglomerate(mesh, targetGroupSize)`: greedy seed-and-grow over the mesh's
+shared-face dual, absorbing face-adjacent neighbours by accumulated
+shared-face area until each group reaches `targetGroupSize` (default 8)
+members, then emitting one polyhedron per group whose faces are exactly its
+external boundary — conserving volume exactly, since internal faces are
+simply dropped rather than re-triangulated. Like `subdivide` there is no
+point map (points are never pruned or renumbered — `clean(mesh, ...,
+removeOrphans: true)` is the follow-up for a minimal point set), and a
+non-manifold input (a face shared by three or more cells) throws a catchable
+`Error` naming the face. It is also a `convertSurfaceOps`/`runPipeline`
+pipeline step (`{op: 'agglomerate', targetGroupSize}`), reached through the
+same generic `pipe_op_table()` dispatch every other step goes through with no
+extra WASM code. See [agglomerate](/agglomerate). Uniform
 refinement is exposed as `refine(mesh, levels, recordParentIds, options)`, subdividing
 every cell into same-type children (`triangle`/`quad` into 4,
 `tetra`/`wedge`/`hexahedron` into 8) with shared mid-entity nodes, so the result
 has no hanging nodes; a higher-order cell, a `pyramid`, or a ragged block throws
 a catchable `Error`. The optional fourth argument selects a **subset** to refine
-— `{cells, region, array, compare, value, closure, recordLevels}`, at most one
-selector — in which case the hanging nodes that leaves are resolved by the
+— `{cells, region, array, compare, value, closure, recordLevels, recordHierarchy}`,
+at most one selector — in which case the hanging nodes that leaves are resolved by the
 closure and, for `'redgreen'` and `'propagate'`, the output is still conforming
 (`'balanced'` deliberately keeps them and reports each in `refine:hanging`); the `convertSurfaceOps` pipeline op
 `{op: 'refine', ...}` takes the same fields, where the comparison is spelled
-`compare` because `op` is the step's own discriminant. Partitioning is exposed as `partition(mesh, nparts, method,
+`compare` because `op` is the step's own discriminant. `recordHierarchy`
+attaches the persistent `refine:cell_id`/`refine:parent_id` cell_data — a
+link between the meshes a multigrid caller keeps across passes, not a tree
+inside one — and forces `refine:entity` (the prolongation stencil) even when
+the closure leaves no hanging node; see
+[refine](/refine#refinecell_id-and-refineparent_id). **Green-element undo**,
+the two-mesh op restoring `refine`'s transitional cells to their coarse
+parent, is exposed as `undoGreen(coarse, fine)` → `{ mesh, numGroupsUndone,
+numCellsRemoved }` — a lookup and substitution read verbatim from `coarse`
+(no template inversion, no winding repair), needing `fine` to carry
+`refine:cell_id`/`refine:parent_id`/`refine:level` (i.e. it must come from a
+`refine(coarse, ..., {recordHierarchy: true, recordLevels: true})` call).
+The six reserved `refine:*` arrays are dropped from the output. Being a
+two-mesh op it is deliberately **not** reachable as a `convertSurfaceOps`
+pipeline step — `{op: 'undoGreen'}` throws the same "unknown operation" catchable
+`Error` `Merge`/`Interpolate`/`Split`/`Diff` already throw there, since none
+of the two-mesh ops ever reach `pipeline_op_table()`. See
+[green-element undo](/undo_green). Partitioning is exposed as `partition(mesh, nparts, method,
 imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of
 `{ partId, mesh }` (exactly `nparts` entries, blocks kept 1:1 with the input,
 unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,
@@ -251,11 +290,24 @@ geometry: it attaches one array and hands the mesh back. **Its result is an
 must carry them, or the array re-enters C++ flattened. Note that `component` is
 negative for **every** component here, deliberately the opposite of
 `isosurface`'s sentinel. It is also a `convertSurfaceOps` pipeline step
-(`{op: 'gradient', array, operator, method, location, output}`). See
+(`{op: 'gradient', array, operator, method, location, output}`).
+
+`estimateError(mesh, array, method, marking, markingValue, output, marked,
+overwrite)` returns `{ mesh, globalError, numSkipped, numMarked }` — the
+Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field, a
+composition of `gradient` with the measure-weighted point↔cell averaging round
+trip, not a new kernel. Like `gradient` it changes no geometry: `error:zz`
+(Float64) is always attached, and `error:marked` (Int64 0/1) too when `marking`
+is not `"none"` — so `refine`'s own `where` selector needs no change at all.
+Cells that cannot be evaluated read NaN in `error:zz` and `0` (never NaN) in
+`error:marked`, counted in `numSkipped`. It is also a `convertSurfaceOps`
+pipeline step (`{op: 'estimateError', array, method, marking, markingValue,
+output, marked}`). See [error estimation](./error.md),
 [field derivatives](./gradient.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
-[cell conversion](./convert_cells.md), [refine](./refine.md),
+[cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [polyhedral coarsening](./agglomerate.md), [refine](./refine.md),
+[green-element undo](./undo_green.md),
 [partitioning](./partition.md), [smoothing](./smooth.md),
 [slicing](./slice.md), and [isosurfaces](./isosurface.md).
 
@@ -264,11 +316,13 @@ Before v7.4.0 the geometry operations above were bound in the WASM module but
 **not forwarded by the package wrapper**, so they were unreachable through
 `loadMeshioPlusPlus()` (only file I/O and the `data_*` operations were). They are
 all forwarded now. The index maps the C++ core returns for
-`cropBbox`/`cropPlane`/`split`/`convertCells`/`refine`/`partition` are still not
+`cropBbox`/`cropPlane`/`split`/`convertCells`/`subdivide`/`agglomerate`/`refine`/`partition` are still not
 carried across the JS boundary — use the `recordIds`/`recordParentIds` flags,
 which attach the same provenance as ordinary data arrays (or `partitionLabels`
 for the raw assignment). `smooth` needs none of that — it never adds, removes or
-renumbers a node or a cell.
+renumbers a node or a cell. `undoGreen`'s per-block cell maps are likewise not
+exposed here — a documented flat-binding gap shared with its C API/Fortran
+counterparts.
 :::
 
 The [data operations](./data_operations.md) — which act on `point_data` /

@@ -47,6 +47,7 @@
 #include <cstring>
 #include <exception>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -68,6 +69,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -78,6 +80,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -85,9 +88,12 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -155,6 +161,16 @@ struct mio_convert_cells_result {
     std::vector<meshioplusplus::NDArray> mCellMaps;
 };
 
+struct mio_subdivide_result {
+    mio_mesh mMesh;  // owns the subdivided mesh; borrowed via _result_mesh
+    std::vector<meshioplusplus::NDArray> mCellMaps;
+};
+
+struct mio_agglomerate_result {
+    mio_mesh mMesh;                    // owns the coarsened mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mCellMap;  // flat, unlike mio_subdivide_result's per-block vector
+};
+
 struct mio_refine_result {
     mio_mesh mMesh;  // owns the refined mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mPointMap;
@@ -166,6 +182,16 @@ struct mio_decimate_result {
     meshioplusplus::NDArray mPointMap;
     std::vector<meshioplusplus::NDArray> mCellMaps;
     int64_t mFacesRemoved = 0;
+    int64_t mPointsRemoved = 0;
+    int64_t mCollapsesRejected = 0;
+    double mMaxErrorApplied = 0.0;
+};
+
+struct mio_decimate_volume_result {
+    mio_mesh mMesh;  // owns the decimated mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mPointMap;
+    std::vector<meshioplusplus::NDArray> mCellMaps;
+    int64_t mTetsRemoved = 0;
     int64_t mPointsRemoved = 0;
     int64_t mCollapsesRejected = 0;
     double mMaxErrorApplied = 0.0;
@@ -1015,6 +1041,22 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
     });
 }
 
+mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine, int64_t* num_groups_undone,
+                         int64_t* num_cells_removed) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!coarse)
+            throw meshioplusplus::ReadError("meshio++: coarse mesh is NULL");
+        if (!fine)
+            throw meshioplusplus::ReadError("meshio++: fine mesh is NULL");
+        meshioplusplus::UndoGreenResult r = meshioplusplus::undo_green(coarse->mMesh, fine->mMesh);
+        if (num_groups_undone)
+            *num_groups_undone = r.mNumGroupsUndone;
+        if (num_cells_removed)
+            *num_cells_removed = r.mNumCellsRemoved;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target, const char* method,
                           const char* const* arrays, int64_t arrays_count, int extrapolate,
                           double default_value, const char* on_conflict) {
@@ -1099,6 +1141,34 @@ mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char*
             *num_skipped = r.mNumSkipped;
         if (num_fallback)
             *num_fallback = r.mNumFallback;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const char* method,
+                             const char* marking, double marking_value, const char* output_name,
+                             const char* marked_name, int overwrite, double* global_error,
+                             int64_t* num_skipped, int64_t* num_marked) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
+        meshioplusplus::ErrorOptions opts;
+        opts.mArrayName = array_name;
+        opts.mMethod = meshioplusplus::error_method_from_name(method ? method : "");
+        opts.mMarking = meshioplusplus::error_marking_from_name(marking ? marking : "");
+        opts.mMarkingValue = marking_value;
+        if (output_name)
+            opts.mOutputName = output_name;
+        if (marked_name)
+            opts.mMarkedName = marked_name;
+        opts.mOverwrite = overwrite != 0;
+        meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(mesh->mMesh, opts);
+        if (global_error)
+            *global_error = r.mGlobalError;
+        if (num_skipped)
+            *num_skipped = r.mNumSkipped;
+        if (num_marked)
+            *num_marked = r.mNumMarked;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }
@@ -1280,6 +1350,120 @@ void mio_convert_cells_result_free(mio_convert_cells_result* result) {
     delete result;
 }
 
+mio_subdivide_result* mio_subdivide(const mio_mesh* mesh, int record_parent_ids) {
+    return guarded_ptr(static_cast<mio_subdivide_result*>(nullptr), [&]() -> mio_subdivide_result* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::SubdivideOptions options;
+        options.mRecordParentIds = record_parent_ids != 0;
+        meshioplusplus::SubdivideResult r = meshioplusplus::subdivide(mesh->mMesh, options);
+        auto* out = new mio_subdivide_result{};
+        out->mMesh = mio_mesh{std::move(r.mMesh)};
+        out->mCellMaps = std::move(r.mCellMaps);
+        return out;
+    });
+}
+
+const mio_mesh* mio_subdivide_result_mesh(const mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_subdivide_result_take_mesh(mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+int64_t mio_subdivide_result_num_cell_maps(const mio_subdivide_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellMaps.size());
+    });
+}
+
+mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int64_t block,
+                                         const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_subdivide_result_free(mio_subdivide_result* result) {
+    delete result;
+}
+
+mio_agglomerate_result* mio_agglomerate(const mio_mesh* mesh, int64_t target_group_size) {
+    return guarded_ptr(
+        static_cast<mio_agglomerate_result*>(nullptr), [&]() -> mio_agglomerate_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            if (target_group_size < 0)
+                throw std::invalid_argument(
+                    "meshio++: agglomerate: target_group_size must be >= 1");
+            meshioplusplus::AgglomerateOptions options;
+            options.mTargetGroupSize = static_cast<std::size_t>(target_group_size);
+            meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(mesh->mMesh, options);
+            auto* out = new mio_agglomerate_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mCellMap = std::move(r.mCellMap);
+            return out;
+        });
+}
+
+const mio_mesh* mio_agglomerate_result_mesh(const mio_agglomerate_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result, const void** data,
+                                           mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mCellMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+void mio_agglomerate_result_free(mio_agglomerate_result* result) {
+    delete result;
+}
+
 // The two flat enums duplicate the C++ ones across the ABI, so drift is a
 // compile error rather than a wrong answer -- the mio_region_kind pattern.
 static_assert(static_cast<int>(meshioplusplus::RefineClosure::RedGreen) ==
@@ -1319,6 +1503,7 @@ meshioplusplus::RefineOptions capi_refine_options(const mio_refine_opts& rOpts) 
     options.mLevels = rOpts.levels;
     options.mRecordParentIds = rOpts.record_parent_ids != 0;
     options.mRecordLevels = rOpts.record_levels != 0;
+    options.mRecordHierarchy = rOpts.record_hierarchy != 0;
     if (rOpts.cells != nullptr && rOpts.num_cells > 0)
         options.mCells.assign(rOpts.cells, rOpts.cells + rOpts.num_cells);
     if (rOpts.region != nullptr)
@@ -1549,6 +1734,132 @@ double mio_decimate_result_max_error_applied(const mio_decimate_result* result) 
 }
 
 void mio_decimate_result_free(mio_decimate_result* result) {
+    delete result;
+}
+
+mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double target_ratio,
+                                                int64_t target_cells, double max_error,
+                                                const char* placement, int preserve_boundary,
+                                                int preserve_features, double feature_angle) {
+    return guarded_ptr(
+        static_cast<mio_decimate_volume_result*>(nullptr), [&]() -> mio_decimate_volume_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            meshioplusplus::DecimateVolumeOptions options;
+            options.mTargetRatio = target_ratio;
+            options.mTargetCells = target_cells;
+            options.mMaxError = max_error;
+            options.mPlacement =
+                meshioplusplus::decimate_placement_from_name(placement ? placement : "optimal");
+            options.mPreserveBoundary = preserve_boundary != 0;
+            options.mPreserveFeatures = preserve_features != 0;
+            options.mFeatureAngleDeg = feature_angle;
+            meshioplusplus::DecimateVolumeResult r =
+                meshioplusplus::decimate_volume(mesh->mMesh, options);
+            auto* out = new mio_decimate_volume_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mPointMap = std::move(r.mPointMap);
+            out->mCellMaps = std::move(r.mCellMaps);
+            out->mTetsRemoved = r.mTetsRemoved;
+            out->mPointsRemoved = r.mPointsRemoved;
+            out->mCollapsesRejected = r.mCollapsesRejected;
+            out->mMaxErrorApplied = r.mMaxErrorApplied;
+            return out;
+        });
+}
+
+const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_decimate_volume_result_take_mesh(mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_decimate_volume_result_point_map(const mio_decimate_volume_result* result,
+                                                const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mPointMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mCellMaps.size());
+    });
+}
+
+mio_status mio_decimate_volume_result_cell_map(const mio_decimate_volume_result* result,
+                                               int64_t block, const void** data, mio_dtype* dtype,
+                                               int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mTetsRemoved;
+    });
+}
+
+int64_t mio_decimate_volume_result_points_removed(const mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mPointsRemoved;
+    });
+}
+
+int64_t mio_decimate_volume_result_collapses_rejected(const mio_decimate_volume_result* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mCollapsesRejected;
+    });
+}
+
+double mio_decimate_volume_result_max_error_applied(const mio_decimate_volume_result* result) {
+    return guarded_ptr(-1.0, [&]() -> double {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return result->mMaxErrorApplied;
+    });
+}
+
+void mio_decimate_volume_result_free(mio_decimate_volume_result* result) {
     delete result;
 }
 

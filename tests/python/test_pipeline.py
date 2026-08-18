@@ -90,6 +90,128 @@ def test_run_pipeline_chains_and_reports(settings_env):
     assert "quality:scaled_jacobian" in out.cell_data
 
 
+def test_refine_record_hierarchy_step(settings_env):
+    """RecordHierarchy round-trips through a pipeline document -- both the
+    pure-Python runner and (when available) the C++ engine, since the op is
+    dispatched generically off the same _OP_TABLE/pipeline_op_table pair
+    test_op_table_matches_core pins."""
+    settings = make_settings(settings_env, [{"Op": "Refine", "RecordHierarchy": True}])
+    meshioplusplus.run_pipeline(settings)
+    out = meshioplusplus.read(settings_env["out"])
+    assert "refine:cell_id" in out.cell_data
+    assert "refine:parent_id" in out.cell_data
+    assert "refine:entity" in out.point_data  # the multigrid-stencil fix
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert "refine:cell_id" in out_cpp.cell_data
+        assert "refine:parent_id" in out_cpp.cell_data
+
+
+def test_subdivide_pipeline_step(settings_env):
+    """Subdivide dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair test_op_table_matches_core pins. Since subdivide
+    has no numpy fallback, both the Python runner and the C++ engine call the
+    same underlying `_core.subdivide` -- so, unlike EstimateError, the two
+    engines' output is bit-for-bit comparable, not merely within tolerance."""
+    settings = make_settings(
+        settings_env, [{"Op": "Subdivide", "RecordParentIds": True}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Subdivide"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two tetra cells, 4 faces each -> 8 children.
+    assert len(out.cells[0].data) == 8
+    assert "subdivide:parent_cell" in out.cell_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
+def test_agglomerate_pipeline_step(settings_env):
+    """Agglomerate dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair, and like Subdivide has no numpy fallback, so both
+    engines call the same underlying `_core.agglomerate`."""
+    settings = make_settings(
+        settings_env, [{"Op": "Agglomerate", "TargetGroupSize": 2}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Agglomerate"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two face-adjacent tetra cells -> one merged cell.
+    assert len(out.cells[0].data) == 1
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
+def test_decimate_volume_pipeline_step(settings_env):
+    """DecimateVolume dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair, and like Subdivide/Agglomerate has no numpy
+    fallback, so both engines call the same underlying
+    `_core.decimate_volume`."""
+    settings = make_settings(
+        settings_env,
+        [{"Op": "DecimateVolume", "TargetCells": 1, "PreserveFeatures": False}],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "DecimateVolume"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two face-adjacent tetra cells -> collapses to one.
+    assert len(out.cells[0].data) <= 1
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
+def test_estimate_error_pipeline_step(settings_env):
+    """EstimateError dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair test_op_table_matches_core pins. Unlike
+    test_refine_record_hierarchy_step this does NOT assert cross-engine
+    equality of the produced arrays -- estimate_error's own
+    test_cpp_matches_python (test_error.py) already established that the two
+    engines only agree to within a numeric tolerance (the same,
+    already-accepted precedent data_average's own measure weighting has), not
+    bit-for-bit, so this only checks that both engines run and attach the
+    right arrays."""
+    settings = make_settings(
+        settings_env,
+        [
+            {
+                "Op": "EstimateError",
+                "Array": "temperature",
+                "Marking": "absolute",
+                "MarkingValue": 1e-9,
+            }
+        ],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "EstimateError"
+    assert "GlobalError" in report["steps"][0]
+    out = meshioplusplus.read(settings_env["out"])
+    assert "error:zz" in out.cell_data
+    assert "error:marked" in out.cell_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "EstimateError"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert "error:zz" in out_cpp.cell_data
+        assert "error:marked" in out_cpp.cell_data
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict

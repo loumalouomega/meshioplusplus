@@ -653,6 +653,51 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def estimate_error(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "zz",
+        marking: str = "none",
+        marking_value: float = 0.0,
+        output: Optional[str] = None,
+        marked: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """ZZ recovery-based error indicator of a point_data field, plus
+        optional marking of cells for refinement.
+
+        A composition of `gradient` (Green-Gauss, cell location) with the
+        measure-weighted point<->cell averaging round trip: the indicator is
+        sqrt(|measure| * sum((recovered - raw)^2)) per cell, attached as
+        `output` (default "error:zz"). marking: none|absolute|fraction|dorfler;
+        when not "none" a second Int64 0/1 array `marked` (default
+        "error:marked") is attached too, so refine's own `where` selector
+        needs no change at all -- the intended use is
+        `refine(..., where="error:marked > 0.5")`. marking_value's meaning
+        depends on marking: an absolute indicator threshold, a fraction in
+        (0, 1] of cells, or the Doerfler bulk fraction theta in (0, 1].
+        Cells that cannot be evaluated read NaN in the indicator array and 0
+        (never NaN) in the marking array, and are reported in num_skipped
+        (excluded from global_error and from num_marked)."""
+        return _guard(
+            _tools.tool_estimate_error,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            marking=marking,
+            marking_value=marking_value,
+            output=output,
+            marked=marked,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def transform(
         input_path: str,
         output_path: str,
@@ -708,6 +753,49 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def subdivide(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Polyhedrally refine: split every eligible 3D cell into one
+        polyhedral child per face, connected to a new interior point. No
+        per-type template table is needed -- it handles tabulated types and
+        existing polyhedron blocks uniformly. Automatically conforming."""
+        return _guard(
+            _tools.tool_subdivide,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
+    def agglomerate(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        target_group_size: int = 8,
+    ) -> dict:
+        """Polyhedrally coarsen: merge groups of cells into single larger
+        polyhedral cells via greedy seed-and-grow over the shared-face dual.
+        Non-volume blocks pass through unchanged; points are never pruned or
+        renumbered (clean with remove_orphans=True is the follow-up for
+        that)."""
+        return _guard(
+            _tools.tool_agglomerate,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            target_group_size=target_group_size,
+        )
+
+    @server.tool()
     def refine(
         input_path: str,
         output_path: str,
@@ -720,6 +808,7 @@ def _register_operations(server: FastMCP) -> None:
         where: Optional[str] = None,
         closure: str = "redgreen",
         record_levels: bool = False,
+        record_hierarchy: bool = False,
     ) -> dict:
         """Refine: subdivide cells into congruent same-type children, `levels`
         times. With no selector every cell is refined; give at most one of
@@ -730,7 +819,11 @@ def _register_operations(server: FastMCP) -> None:
         "redgreen" keeps that local, "propagate" reaches the whole connected
         component, and "balanced" keeps the hanging nodes and only enforces 2:1
         balance (the output is then NOT conforming; the constrained nodes are
-        reported in refine:hanging). `record_levels` attaches refine:level."""
+        reported in refine:hanging). `record_levels` attaches refine:level.
+        `record_hierarchy` attaches refine:cell_id/refine:parent_id -- the
+        persistent parent/child hierarchy a multigrid caller resolves across
+        the sequence of meshes it keeps; also forces refine:entity to be
+        attached even when the closure leaves no hanging node."""
         return _guard(
             _tools.tool_refine,
             input_path=input_path,
@@ -744,6 +837,32 @@ def _register_operations(server: FastMCP) -> None:
             where=where,
             closure=closure,
             record_levels=record_levels,
+            record_hierarchy=record_hierarchy,
+        )
+
+    @server.tool()
+    def undo_green(
+        coarse_path: str,
+        fine_path: str,
+        output_path: str,
+        coarse_format: Optional[str] = None,
+        fine_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Restore fine's transitional (green) cells to their original
+        parent, read verbatim from coarse (the mesh a prior refine() call
+        with record_hierarchy=True, record_levels=True was run on) --
+        undoes refine's known quality-degradation issue with repeated
+        selective passes over the same region. Reports
+        num_groups_undone/num_cells_removed."""
+        return _guard(
+            _tools.tool_undo_green,
+            coarse_path=coarse_path,
+            fine_path=fine_path,
+            output_path=output_path,
+            coarse_format=coarse_format,
+            fine_format=fine_format,
+            output_format=output_format,
         )
 
     @server.tool()
@@ -771,6 +890,40 @@ def _register_operations(server: FastMCP) -> None:
             output_format=output_format,
             ratio=ratio,
             target_faces=target_faces,
+            max_error=max_error,
+            placement=placement,
+            preserve_boundary=preserve_boundary,
+            preserve_features=preserve_features,
+            feature_angle=feature_angle,
+        )
+
+    @server.tool()
+    def decimate_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        ratio: Optional[float] = None,
+        target_cells: Optional[int] = None,
+        max_error: Optional[float] = None,
+        placement: str = "optimal",
+        preserve_boundary: bool = False,
+        preserve_features: bool = True,
+        feature_angle: float = 30.0,
+    ) -> dict:
+        """Decimate a tetrahedral mesh by quadric-error tet-edge collapse. Give
+        exactly one stopping criterion: ratio (fraction of tets to KEEP),
+        target_cells, or max_error. Boundary vertices participate by default
+        (preserve_boundary=False, unlike surface decimate). Reports
+        tets/points removed and rejections."""
+        return _guard(
+            _tools.tool_decimate_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            ratio=ratio,
+            target_cells=target_cells,
             max_error=max_error,
             placement=placement,
             preserve_boundary=preserve_boundary,

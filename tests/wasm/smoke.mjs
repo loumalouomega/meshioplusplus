@@ -551,6 +551,111 @@ step('convertCells rejects a full-Lagrange elevate target', () => {
     assert.throws(() => m.convertCells(quad9, 'elevate'));
 });
 
+step('subdivide: one hexahedron -> 6 polyhedral children, one apex point', () => {
+    // subdivide has no per-type template table: cell_rings/orient_rings
+    // handle a tabulated type and a polyhedron block uniformly. One
+    // polyhedral child per face (that face unfaned, plus one new triangle
+    // per face edge back to a new interior point) -- automatically
+    // conforming, unlike refine.
+    const out = m.subdivide(cube);
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'polyhedron');
+    // cellOffsets is per-OUTPUT-cell (one per face) -- 6 children -> 7 entries.
+    assert.equal(out.cells[0].cellOffsets.length, 7);
+    // Each child: 1 original quad face + 4 new triangles = 5 faces;
+    // 6 children x 5 faces = 30 faces -> 31 offsets.
+    assert.equal(out.cells[0].faceOffsets.length, 31);
+    // One new interior point (the apex) added, nothing pruned.
+    assert.equal(out.points.length, cube.points.length + 3);
+});
+
+step('subdivide: recordParentIds attaches subdivide:parent_cell', () => {
+    const out = m.subdivide(cube, true);
+    assert.ok('subdivide:parent_cell' in out.cell_data);
+    assert.deepEqual(Array.from(out.cell_data['subdivide:parent_cell'][0]), [0, 0, 0, 0, 0, 0]);
+});
+
+step('subdivide: non-3D blocks pass through unchanged', () => {
+    const flatTri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const out = m.subdivide(flatTri);
+    assert.equal(out.cells[0].type, 'triangle');
+    assert.deepEqual(Array.from(out.cells[0].data), Array.from(flatTri.cells[0].data));
+    assert.equal(out.points.length, flatTri.points.length);
+});
+
+// Two unit hexahedra sharing one face (x=1 plane) -- the fixture agglomerate
+// needs a real (non-identity) merge to exercise.
+const twoHexes = {
+    points: new Float64Array([
+        0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 2, 0, 0, 2, 1, 0,
+        2, 1, 1, 2, 0, 1,
+    ]),
+    dim: 3,
+    cells: [
+        {
+            type: 'hexahedron',
+            data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11]),
+            nodesPerCell: 8,
+        },
+    ],
+    point_data: {},
+    cell_data: {},
+    field_data: {},
+};
+
+step('agglomerate: two adjacent hexes merge into one polyhedron', () => {
+    const out = m.agglomerate(twoHexes, 2);
+    assert.equal(out.cells.length, 1);
+    assert.equal(out.cells[0].type, 'polyhedron');
+    // cellOffsets is per-OUTPUT-cell -- one merged cell -> 2 entries.
+    assert.equal(out.cells[0].cellOffsets.length, 2);
+    // 12 total face-references (6 per hex) minus the 2 references to the 1
+    // shared, now-internal face.
+    assert.equal(out.cells[0].faceOffsets.length, 11);
+    // Points are never pruned.
+    assert.equal(out.points.length, twoHexes.points.length);
+});
+
+step('agglomerate: targetGroupSize=1 is an identity grouping', () => {
+    const out = m.agglomerate(twoHexes, 1);
+    assert.equal(out.cells[0].cellOffsets.length, 3);  // 2 singleton groups
+});
+
+step('agglomerate rejects a non-manifold mesh', () => {
+    const tets = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1, 1, 1, 1]),
+        dim: 3,
+        cells: [
+            {
+                type: 'tetra',
+                data: new Int32Array([0, 1, 2, 3, 0, 2, 1, 4, 0, 1, 2, 5]),
+                nodesPerCell: 4,
+            },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    assert.throws(() => m.agglomerate(tets));
+});
+
+step('agglomerate is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/agg.vtu', twoHexes);
+    const out = m.convertSurfaceOps('/agg.vtu', '/agg.vtp', [
+        { op: 'agglomerate', targetGroupSize: 2 },
+    ]);
+    assert.equal(out.steps[0].op, 'agglomerate');
+    const rendered = m.readMesh('/agg.vtp');
+    assert.ok(rendered.cells[0].data.length > 0);
+});
+
 step('refine: one hexahedron -> 8 hexahedra with 27 nodes', () => {
     const out = m.refine(cube);
     assert.equal(out.cells.length, 1);
@@ -622,6 +727,88 @@ step('refine: a selection is closed up conformingly, not propagated', () => {
     assert.ok(back.cells[0].data.length > 0);
 });
 
+step('refine: recordHierarchy attaches the persistent parent/child ids', () => {
+    const plain = m.refine(cube, 1, false, { recordHierarchy: false });
+    assert.ok(!('refine:cell_id' in plain.cell_data), 'not recorded unless asked');
+
+    const hier = m.refine(cube, 1, false, { recordHierarchy: true });
+    assert.ok('refine:cell_id' in hier.cell_data);
+    assert.ok('refine:parent_id' in hier.cell_data);
+    const ids = Array.from(hier.cell_data['refine:cell_id'][0]);
+    const parents = Array.from(hier.cell_data['refine:parent_id'][0]);
+    assert.equal(new Set(ids).size, ids.length, 'ids are unique');
+    // The whole cube is one cell, uniformly refined into 8 -- every child
+    // therefore shares parent 0, none can be self-parented (untouched).
+    assert.ok(parents.every((p) => p === 0));
+    assert.ok(ids.every((id, i) => id !== parents[i]));
+    // Also proves the multigrid-stencil fix: redgreen leaves no hanging
+    // nodes, so refine:entity would normally never be attached at all.
+    assert.ok('refine:entity' in hier.point_data);
+
+    // And through the pipeline (PascalCase keys, generic dispatch).
+    m.writeMesh('/cube.vtu', cube);
+    const piped = m.convertSurfaceOps('/cube.vtu', '/cube-hier.vtu', [
+        { op: 'refine', recordHierarchy: true },
+    ]);
+    assert.equal(piped.steps.length, 1);
+    const backHier = m.readMesh('/cube-hier.vtu');
+    assert.ok('refine:cell_id' in backHier.cell_data);
+});
+
+step('undoGreen: restores the coarse parent verbatim, read from coarse', () => {
+    // A 4 x 4 grid of quadrilaterals; refine one cell selectively so its
+    // neighbours pick up transitional (green) closures.
+    const n = 4;
+    const points = [];
+    for (let j = 0; j <= n; ++j)
+        for (let i = 0; i <= n; ++i) points.push(i, j, 0);
+    const conn = [];
+    for (let j = 0; j < n; ++j)
+        for (let i = 0; i < n; ++i) {
+            const a = j * (n + 1) + i;
+            conn.push(a, a + 1, a + n + 2, a + n + 1);
+        }
+    const coarse = {
+        points: Float64Array.from(points),
+        dim: 3,
+        cells: [{ type: 'quad', data: Int32Array.from(conn), nodesPerCell: 4 }],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+
+    const fine = m.refine(coarse, 1, false, {
+        cells: [5],
+        recordHierarchy: true,
+        recordLevels: true,
+    });
+    const fineCells = fine.cells[0].data.length / 4;
+    const coarseCells = coarse.cells[0].data.length / 4;
+
+    const undone = m.undoGreen(coarse, fine);
+    assert.ok(undone.numGroupsUndone > 0, 'at least one green group was undone');
+    assert.ok(undone.numCellsRemoved > 0);
+    const undoneCells = undone.mesh.cells[0].data.length / 4;
+    assert.ok(undoneCells < fineCells, 'fewer cells than the fine mesh');
+    assert.ok(undoneCells > coarseCells, 'more cells than the coarse mesh (red kept)');
+    assert.ok(!('refine:cell_id' in undone.mesh.cell_data), 'reserved arrays are dropped');
+    assert.ok(!('refine:entity' in undone.mesh.point_data), 'reserved arrays are dropped');
+
+    // Fails by name rather than guessing: no hierarchy at all here.
+    assert.throws(() => m.undoGreen(coarse, coarse));
+
+    // It is a two-mesh op, so it is deliberately NOT reachable as a pipeline
+    // step -- the same exclusion Merge/Interpolate/Split/Diff already have
+    // (it never reaches pipeline_op_table(), so this is the same generic
+    // "unknown operation" message those get here, not the C++ engine's more
+    // specific excluded-hint text).
+    m.writeMesh('/ug-coarse.vtu', coarse);
+    assert.throws(
+        () => m.convertSurfaceOps('/ug-coarse.vtu', '/ug-out.vtu', [{ op: 'undoGreen' }]),
+        /unknown operation 'undoGreen'/,
+    );
+});
+
 step('decimate: collapses a refined cube skin, pinning its creases', () => {
     // The skin of a refined cube: 24 quads -> 48 triangles, with every cube
     // edge/corner vertex a pinned feature; only face-interior vertices go.
@@ -650,6 +837,19 @@ step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     assert.equal(out.steps[0].op, 'decimate');
     assert.equal(typeof out.steps[0].facesRemoved, 'number');
     assert.ok(m.readMesh('/dec.vtp').cells[0].data.length / 3 < 48);
+});
+
+step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/sub.vtu', cube);
+    const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
+    assert.equal(out.steps[0].op, 'subdivide');
+    // Every internal face subdivide adds is shared by exactly two children
+    // and cancels out of the boundary, so the rendered surface is geometrically
+    // the same box as the input -- this asserts the pipeline step actually ran
+    // (a genuinely different, non-empty cell block came back), not a specific
+    // facet count.
+    const rendered = m.readMesh('/sub.vtp');
+    assert.ok(rendered.cells[0].data.length > 0);
 });
 
 step('smooth: relaxes an interior node while pinning the boundary', () => {
@@ -901,6 +1101,52 @@ step('gradient: a linear field is differentiated exactly, and the (n,3) shape su
     assert.throws(() => m.gradient(field, 'f', 'divergence'));
 });
 
+step('estimateError: zero on a linear field, nonzero and markable on a quadratic one', () => {
+    // Two unit-cube hexahedra stacked along z, sharing the z=1 face -- a
+    // single-cell mesh cannot show a nonzero indicator at all, since
+    // averaging one cell's own value back onto itself is a no-op.
+    const pts = new Float64Array([
+        0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1,
+        0, 0, 2, 1, 0, 2, 1, 1, 2, 0, 1, 2,
+    ]);
+    const conn = new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11]);
+    const twoCells = {
+        points: pts, dim: 3,
+        cells: [{ type: 'hexahedron', data: conn, nodesPerCell: 8 }],
+        point_data: {}, cell_data: {}, field_data: {},
+    };
+
+    // Linear field: raw == recovered everywhere, so the indicator is zero.
+    const lin = new Float64Array(12);
+    for (let i = 0; i < 12; ++i) lin[i] = 2 * pts[i * 3] - 3 * pts[i * 3 + 1] + 0.5 * pts[i * 3 + 2];
+    const linField = { ...twoCells, point_data: { f: lin } };
+    const e0 = m.estimateError(linField, 'f');
+    assert.equal(e0.numSkipped, 0);
+    assert.ok(e0.globalError < 1e-9, `global_error ${e0.globalError} should be ~0 on a linear field`);
+    assert.ok(e0.mesh.cell_data['error:zz'][0].every((v) => Math.abs(v) < 1e-9));
+    assert.equal(e0.mesh.cell_data['error:marked'], undefined, 'no marking requested');
+
+    // Quadratic field: the two cells' raw gradients genuinely differ, so
+    // recovery (averaging across the shared face) gives a nonzero indicator.
+    const quad = new Float64Array(12);
+    for (let i = 0; i < 12; ++i) {
+        const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        quad[i] = x * x + y * y + z * z;
+    }
+    const quadField = { ...twoCells, point_data: { f: quad } };
+    const e1 = m.estimateError(quadField, 'f', 'zz', 'absolute', 1e-9, '', '', true);
+    assert.equal(e1.numSkipped, 0);
+    assert.ok(e1.globalError > 0, 'a quadratic field must give a nonzero global error');
+    assert.equal(e1.mesh.cell_data['error:marked'].length, 1, 'one marked block per cell block');
+    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => v === 0 || v === 1));
+
+    // A cell_data field has no derivative to recover; an out-of-range
+    // marking_value for "fraction" is rejected.
+    assert.throws(() => m.estimateError(e1.mesh, 'error:zz'));
+    assert.throws(() => m.estimateError(quadField, 'f', 'zz', 'fraction', 1.5));
+});
+
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
     // The pipeline is path-based and re-skins at the end, so a POINT-located
     // gradient is the one that survives to the written surface.
@@ -1106,14 +1352,18 @@ step('every binding is reachable through the wrapper', () => {
         'clean',
         'smooth',
         'interpolate',
+        'undoGreen',
         'slice',
         'isosurface',
         'gradient',
+        'estimateError',
         'cropBbox',
         'cropPlane',
         'cropPredicate',
         'split',
         'convertCells',
+        'subdivide',
+        'agglomerate',
         'refine',
         'decimate',
         'partition',

@@ -71,11 +71,13 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
@@ -92,14 +94,17 @@
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -722,6 +727,76 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
 
+    // Polyhedral coarsening: merge groups of cells into single larger
+    // polyhedral cells. Returns a dict {mesh, cell_map} -- a single FLAT
+    // array (unlike subdivide's per-block cell_maps), since an output cell's
+    // index is a function of which group it joined, not which input block it
+    // came from. See operations/agglomerate.hpp.
+    m.def(
+        "agglomerate",
+        [](py::object pymesh, std::size_t target_group_size) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::AgglomerateOptions options;
+            options.mTargetGroupSize = target_group_size;
+            meshioplusplus::AgglomerateResult r = meshioplusplus::agglomerate(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["cell_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mCellMap));
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_group_size") = 8);
+
+    // Polyhedral refinement: one polyhedral child per face, connected to a new
+    // interior point. Returns a dict {mesh, cell_maps} -- no point_map, since
+    // this never prunes or renumbers an original point. See
+    // operations/subdivide.hpp.
+    m.def(
+        "subdivide",
+        [](py::object pymesh, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::SubdivideOptions options;
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::SubdivideResult r = meshioplusplus::subdivide(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("record_parent_ids") = false);
+
+    // Green-element undo: restore `fine`'s transitional (closure-only) cells
+    // back to their original parent, read verbatim from `coarse` (never
+    // reconstructed). Returns a dict {mesh, cell_maps, num_groups_undone,
+    // num_cells_removed}. See operations/undo_green.hpp.
+    m.def(
+        "undo_green",
+        [](py::object pycoarse, py::object pyfine) {
+            meshioplusplus_py::PyMeshRefs refs_coarse;
+            meshioplusplus_py::PyMeshRefs refs_fine;
+            meshioplusplus::Mesh coarse = meshioplusplus_py::py_to_mesh(
+                pycoarse, refs_coarse, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh fine = meshioplusplus_py::py_to_mesh(
+                pyfine, refs_fine, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::UndoGreenResult r = meshioplusplus::undo_green(coarse, fine);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["num_groups_undone"] = r.mNumGroupsUndone;
+            out["num_cells_removed"] = r.mNumCellsRemoved;
+            return out;
+        },
+        py::arg("coarse"), py::arg("fine"));
+
     // Refinement: subdivide every cell (uniform) or a selected subset with a
     // conforming closure (selective) into same-type children. Returns a dict
     // {mesh, point_map, cell_maps}. See operations/refine.hpp.
@@ -730,7 +805,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, int levels, bool record_parent_ids, py::object cells,
            const std::string& region, const std::string& predicate_array,
            const std::string& predicate_op, double predicate_value, const std::string& closure,
-           bool record_levels) {
+           bool record_levels, bool record_hierarchy) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -748,6 +823,7 @@ PYBIND11_MODULE(_core, m) {
             options.mPredicateValue = predicate_value;
             options.mClosure = meshioplusplus::refine_closure_from_name(closure);
             options.mRecordLevels = record_levels;
+            options.mRecordHierarchy = record_hierarchy;
             meshioplusplus::RefineResult r = meshioplusplus::refine(cpp, options);
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
@@ -761,7 +837,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("levels") = 1, py::arg("record_parent_ids") = false,
         py::arg("cells") = py::none(), py::arg("region") = "", py::arg("predicate_array") = "",
         py::arg("predicate_op") = "<", py::arg("predicate_value") = 0.0,
-        py::arg("closure") = "redgreen", py::arg("record_levels") = false);
+        py::arg("closure") = "redgreen", py::arg("record_levels") = false,
+        py::arg("record_hierarchy") = false);
 
     // The selective-refinement subdivision table for one cell type, as
     // {mask: [[child node ids], ...]} plus the tie-break metadata. Exported so
@@ -860,6 +937,59 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_faces") = -1,
         py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
         py::arg("preserve_boundary") = true, py::arg("preserve_features") = true,
+        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
+
+    // Quadric-error-metric tet-edge collapse volume decimation. Returns a dict
+    // {mesh, point_map, cell_maps, tets_removed, points_removed,
+    // collapses_rejected, max_error_applied}. See operations/decimate_volume.hpp.
+    // A separate operation from `decimate` -- boundary vertices participate by
+    // default (`preserve_boundary` defaults False here, unlike `decimate`'s True).
+    m.def(
+        "decimate_volume",
+        [](py::object pymesh, double target_ratio, std::int64_t target_cells, double max_error,
+           const std::string& placement, bool preserve_boundary, bool preserve_features,
+           double feature_angle, py::object frozen) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DecimateVolumeOptions options;
+            options.mTargetRatio = target_ratio;
+            options.mTargetCells = target_cells;
+            options.mMaxError = max_error;
+            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
+            options.mPreserveBoundary = preserve_boundary;
+            options.mPreserveFeatures = preserve_features;
+            options.mFeatureAngleDeg = feature_angle;
+            if (!frozen.is_none()) {
+                py::array_t<std::int64_t> ids =
+                    py::cast<py::array_t<std::int64_t>>(py::array::ensure(frozen));
+                options.mFrozen.assign(cpp.NumPoints(), 0);
+                auto v = ids.unchecked<1>();
+                for (py::ssize_t k = 0; k < v.shape(0); ++k) {
+                    const std::int64_t id = v(k);
+                    if (id < 0 || static_cast<std::size_t>(id) >= cpp.NumPoints())
+                        throw std::invalid_argument("meshio++: decimate_volume: frozen node id " +
+                                                    std::to_string(id) + " is out of range");
+                    options.mFrozen[static_cast<std::size_t>(id)] = 1;
+                }
+            }
+            meshioplusplus::DecimateVolumeResult r = meshioplusplus::decimate_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["tets_removed"] = r.mTetsRemoved;
+            out["points_removed"] = r.mPointsRemoved;
+            out["collapses_rejected"] = r.mCollapsesRejected;
+            out["max_error_applied"] = r.mMaxErrorApplied;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_cells") = -1,
+        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
+        py::arg("preserve_boundary") = false, py::arg("preserve_features") = true,
         py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
 
     // Laplacian / Taubin smoothing. Returns a dict with the smoothed mesh and
@@ -1223,6 +1353,37 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
         py::arg("method") = "green-gauss", py::arg("location") = "cell", py::arg("output") = "",
         py::arg("component") = -1, py::arg("overwrite") = false);
+
+    // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
+    // entirely as a composition of `gradient` + the two `data_average`
+    // directions. See operations/error.hpp for the indicator/marking contract.
+    m.def(
+        "estimate_error",
+        [](py::object pymesh, const std::string& array, const std::string& method,
+           const std::string& marking, double marking_value, const std::string& output,
+           const std::string& marked_name, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ErrorOptions options;
+            options.mArrayName = array;
+            options.mMethod = meshioplusplus::error_method_from_name(method);
+            options.mMarking = meshioplusplus::error_marking_from_name(marking);
+            options.mMarkingValue = marking_value;
+            options.mOutputName = output;
+            options.mMarkedName = marked_name;
+            options.mOverwrite = overwrite;
+            meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["global_error"] = r.mGlobalError;
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_marked"] = r.mNumMarked;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("method") = "zz", py::arg("marking") = "none",
+        py::arg("marking_value") = 0.0, py::arg("output") = "", py::arg("marked_name") = "",
+        py::arg("overwrite") = false);
 
     // The settings.json pipeline (read -> operation chain -> write), run
     // entirely in C++ against file paths. Bound for parity tests and for

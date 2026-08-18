@@ -102,9 +102,9 @@ Region entries are 1-based with one further exception (see [`doc/regions.md`](/r
 
 A mesh handle is an **external pointer** (`R_MakeExternalPtr`) with a registered finalizer calling `mio_mesh_free`, so it is released when garbage-collected. `mio_release()` frees it immediately and is idempotent; using a released handle raises a clean R error rather than crashing, and so does passing something that is not a mesh handle at all.
 
-`mio_refine()` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. See [refine](/refine). Note that R's data setters always write `Float64`, so a predicate over an array built fresh in R still works — the comparison is numeric — but `mio_split(by = "region")`'s integer-tag restriction does not apply here.
+`mio_refine()` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id). Note that R's data setters always write `Float64`, so a predicate over an array built fresh in R still works — the comparison is numeric — but `mio_split(by = "region")`'s integer-tag restriction does not apply here.
 
-Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
+Operations producing an opaque C result (`mio_split()`, `mio_partition()`, `mio_reorder()`, `mio_refine()`, `mio_decimate()`, `mio_convert_cells()`, `mio_subdivide()`, `mio_agglomerate()`) always **transfer ownership** of the mesh out of that result rather than returning a borrow into it, so a piece stays valid after the result is gone.
 
 ## Error handling
 
@@ -212,6 +212,85 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 ```
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
+
+## v10.5.0 additions
+
+- `mio_undo_green(coarse, fine)` — green-element undo: restores `fine`'s
+  transitional (closure-only) cells back to their original parent, read
+  verbatim from `coarse` — a **lookup, not a reconstruction**, since
+  `mio_refine()` never renumbers or prunes points, so a green parent's exact
+  connectivity and cell_data are already sitting, byte-for-byte, in `coarse`
+  at the row `fine`'s `refine:parent_id` names. Returns a list of `mesh`,
+  `num_groups_undone` and `num_cells_removed`. See
+  [`doc/undo_green.md`](undo_green.md).
+
+  A **two-mesh** operation, like `mio_interpolate()`: `coarse` is the mesh a
+  prior `mio_refine(coarse, ..., record_hierarchy = TRUE, record_levels =
+  TRUE)` call was run on, `fine` is that call's output — both flags are
+  required, `record_hierarchy` alone does not imply `record_levels`. The six
+  reserved `refine:*` arrays are always dropped from the output; only a
+  single-pass (`levels = 1`) hierarchy is supported, a deeper multi-level
+  hierarchy being refused by name. Unlike `mio_subdivide()`/
+  `mio_agglomerate()`, this operation has no winding repair or discrete sign
+  branch anywhere in it — pure array bookkeeping, which on the Python side
+  means a full numpy reference implementation rather than C++-core-only
+  (this binding always calls the installed C library either way).
+
+## v10.4.0 additions
+
+- `mio_agglomerate(mesh, target_group_size = 8)` — polyhedral coarsening, the
+  many-to-one counterpart to `mio_subdivide()`: greedy seed-and-grow over the
+  mesh's shared-face dual, absorbing face-adjacent neighbours by accumulated
+  shared-face area until each group reaches `target_group_size` members, then
+  emitting one polyhedron per group whose faces are exactly its external
+  boundary — conserving volume exactly, since internal faces are simply
+  dropped rather than re-triangulated. Returns a list of `mesh` and
+  `cell_map`. See [`doc/agglomerate.md`](agglomerate.md).
+
+  Unlike every other opaque-result operation here, `cell_map` is a **single
+  flat**, not per-block, 1-based vector — an agglomerated cell's output index
+  is a function of which group it joined, not which input block it came
+  from — so there is no `subdivide_cell_maps()`-style per-block helper here,
+  only the same single-array shift `mio_split()`'s node map already uses.
+  Like `mio_subdivide()`, there is **no `point_map`**: points are never
+  pruned or renumbered, so `mio_clean(mesh, remove_orphans = TRUE)` is the
+  documented follow-up for a minimal point set. A non-manifold input (a face
+  shared by three or more cells) raises an R error naming the face rather
+  than guessing.
+
+## v10.3.0 additions
+
+- `mio_subdivide(mesh, record_parent_ids = FALSE)` — polyhedral refinement:
+  one polyhedral child per face of every eligible 3D cell, connected to a new
+  interior point, returning a list of `mesh` and `cell_maps`. Needs no
+  per-type template table — tabulated types (reduced to corners for a
+  quadratic variant) and existing polyhedron blocks are handled uniformly —
+  and is automatically conforming, unlike `mio_refine()`. See
+  [`doc/subdivide.md`](subdivide.md).
+
+  Unlike `mio_convert_cells()`, there is **no `point_map`**: subdivide never
+  prunes or renumbers an original point. `cell_maps[[b]]` is 1-based input
+  cell → the index of its **first** child (one per face) in the
+  corresponding output block, the same shape `mio_convert_cells()` already
+  uses for its own one-to-many splits.
+
+## v10.2.0 additions
+
+- `mio_estimate_error(mesh, array, method = "zz", marking = "none",
+  marking_value = 0.0, output = "", marked = "", overwrite = FALSE)` — the
+  Zienkiewicz-Zhu recovery-based error indicator of a **point-data** field,
+  plus optional marking, returning a list of `mesh`, `global_error`,
+  `num_skipped` and `num_marked`. A composition of `mio_gradient` with the
+  point↔cell averaging round trip, not a new kernel. See
+  [`doc/error.md`](error.md).
+
+  `error:zz` is always attached; `error:marked` too when `marking` is not
+  `"none"`, so `mio_refine`'s own predicate needs no change to consume it.
+  Cells that cannot be evaluated read `NaN` in `error:zz` and `0` (never
+  `NaN`) in `error:marked`, counted in `num_skipped` and excluded from
+  `global_error`/`num_marked`. The three counters come back as `double`, like
+  every other 64-bit integer in this binding (see
+  [64-bit integers](#bit-integers)).
 
 ## v9.11.0 additions
 

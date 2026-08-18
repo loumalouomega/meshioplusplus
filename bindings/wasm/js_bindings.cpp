@@ -87,6 +87,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -109,14 +110,17 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2018,6 +2022,38 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
 }
 
 /**
+ * @brief The ZZ recovery-based error indicator plus marking.
+ *
+ * A composition of `gradient_js` with the measure-weighted point<->cell
+ * averaging round trip; see operations/error.hpp for the indicator/marking
+ * contract. `marking` "none" (default) attaches only the Float64 `error:zz`
+ * indicator; any other policy also attaches an Int64 0/1 `error:marked`
+ * array, so `refine`'s own `--where` selector needs no change at all.
+ */
+val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std::string& rMethod,
+                      const std::string& rMarking, double markingValue, const std::string& rOutput,
+                      const std::string& rMarked, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ErrorOptions options;
+        options.mArrayName = rArray;
+        options.mMethod = meshioplusplus::error_method_from_name(rMethod);
+        options.mMarking = meshioplusplus::error_marking_from_name(rMarking);
+        options.mMarkingValue = markingValue;
+        options.mOutputName = rOutput;
+        options.mMarkedName = rMarked;
+        options.mOverwrite = overwrite;
+        meshioplusplus::ErrorResult r =
+            meshioplusplus::estimate_error(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("globalError", r.mGlobalError);
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numMarked", static_cast<double>(r.mNumMarked));
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -2053,15 +2089,58 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
 }
 
 /**
+ * @brief Polyhedrally refine a mesh: one polyhedral child per face of every
+ * eligible 3D cell, connected to a new interior point. Needs no per-type
+ * template table -- tabulated types (reduced to corners for a quadratic
+ * variant) and existing polyhedron blocks are handled uniformly.
+ * Automatically conforming, unlike `refine`. Returns the subdivided mesh; the
+ * cell maps are not carried across the JS boundary (use `recordParentIds` for
+ * the `subdivide:parent_cell` cell_data instead) -- and unlike
+ * `convertCells`, there is no point map at all, since subdivide never prunes
+ * or renumbers an original point.
+ */
+val subdivide_js(const val& rMeshObj, bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SubdivideOptions options;
+        options.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::subdivide(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
+ * @brief Polyhedrally coarsen a mesh: merge groups of cells into single
+ * larger polyhedral cells via greedy seed-and-grow over the shared-face
+ * dual. Non-volume blocks pass through unchanged; points are never pruned or
+ * renumbered (`clean(mesh, ..., true)` is the follow-up for a minimal point
+ * set). Returns the coarsened mesh; the flat cell map is not carried across
+ * the JS boundary.
+ */
+val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AgglomerateOptions options;
+        options.mTargetGroupSize = static_cast<std::size_t>(targetGroupSize);
+        return mesh_to_val(meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options).mMesh);
+    });
+}
+
+/**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
  * the refined mesh; the index maps are not carried across the JS boundary (use
  * `recordParentIds` for the `refine:parent_cell` cell_data instead).
  *
  * `options` is an optional object selecting a SUBSET of the cells to refine —
- * `{cells, region, array/op/value, closure, recordLevels}`, at most one
- * selector — in which case the hanging nodes that leaves are resolved by the
- * closure and the output is still conforming. Omit it to refine every cell.
+ * `{cells, region, array/op/value, closure, recordLevels, recordHierarchy}`,
+ * at most one selector — in which case the hanging nodes that leaves are
+ * resolved by the closure and the output is still conforming. Omit it to
+ * refine every cell.
+ *
+ * `recordHierarchy` attaches the `refine:cell_id`/`refine:parent_id`
+ * cell_data arrays -- the persistent parent/child hierarchy a multigrid
+ * caller resolves across the sequence of meshes it keeps. Also forces
+ * `refine:entity` to be attached even when the closure leaves no hanging
+ * node, since it already records the coarse corners each new fine node is
+ * the mean of -- the multigrid prolongation weights.
  */
 val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions) {
     return with_js_errors([&]() -> val {
@@ -2093,6 +2172,9 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
             val levels_flag = rOptions["recordLevels"];
             options.mRecordLevels =
                 !levels_flag.isUndefined() && !levels_flag.isNull() && levels_flag.as<bool>();
+            val hierarchy_flag = rOptions["recordHierarchy"];
+            options.mRecordHierarchy = !hierarchy_flag.isUndefined() && !hierarchy_flag.isNull() &&
+                                       hierarchy_flag.as<bool>();
         }
         return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
     });
@@ -2503,6 +2585,27 @@ val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::stri
     });
 }
 
+/**
+ * @brief Green-element undo: restore `fine`'s transitional (closure-only)
+ * cells back to their original parent, read verbatim from `coarse` -- a
+ * lookup, not a reconstruction, since `refine` never renumbers or prunes
+ * points. `fine` must carry `refine:cell_id`/`refine:parent_id`/
+ * `refine:level` (i.e. must come from `refine(coarse, {recordHierarchy:
+ * true, recordLevels: true})`); `coarse` must be the mesh that call was run
+ * on. Returns `{ mesh, numGroupsUndone, numCellsRemoved }`.
+ */
+val undo_green_js(const val& rCoarseObj, const val& rFineObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::UndoGreenResult r =
+            meshioplusplus::undo_green(val_to_mesh(rCoarseObj), val_to_mesh(rFineObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numGroupsUndone", static_cast<double>(r.mNumGroupsUndone));
+        out.set("numCellsRemoved", static_cast<double>(r.mNumCellsRemoved));
+        return out;
+    });
+}
+
 // ---------------------------------------------------------------------
 // Transient (time-series) XDMF -- the one *stateful* binding in this file.
 //
@@ -2701,6 +2804,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
+    emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
@@ -2710,11 +2814,14 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("distanceToSurface", &distance_to_surface_js);
     emscripten::function("computeSdf", &compute_sdf_js);
     emscripten::function("gradient", &gradient_js);
+    emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);
     emscripten::function("split", &split_js);
     emscripten::function("convertCells", &convert_cells_js);
+    emscripten::function("subdivide", &subdivide_js);
+    emscripten::function("agglomerate", &agglomerate_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
     emscripten::function("partition", &partition_js);

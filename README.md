@@ -98,6 +98,7 @@ meshioplusplus crop       in.vtu out.vtu --where "d<0"       # ... or by a data 
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterion
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
+meshioplusplus subdivide  in.vtu out.vtu                      # polyhedral refinement, any 3D cell
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
 meshioplusplus refine     in.vtu out.vtu --where "q<0.3"     # adaptive, closed conformingly
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
@@ -107,6 +108,7 @@ meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-sect
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
 meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
+meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6  # ZZ error indicator + marking
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -319,11 +321,33 @@ quadratic = meshioplusplus.convert_cells(mesh, mode="elevate")
 
 Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-order mesh, and output is byte-identical across mesh backends and thread counts.
 
+#### Polyhedral refinement (subdivide)
+
+**`meshioplusplus.subdivide`** splits every eligible 3D cell into one polyhedral child per face, connected to a new interior point. `refine` and `decimate` both raise by name on a polyhedron, pointing at `convert_cells(mode="simplexify")` — both are built on fixed same-type subdivision templates, and an arbitrary polyhedron has none. `subdivide` needs no per-type table at all: tabulated types (reduced to corners for a quadratic variant) and existing polyhedron blocks are handled uniformly, so the same code covers every 3D cell type the mesh already supports. Automatically conforming (no closure, no hanging nodes), unlike `refine`. See `doc/subdivide.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.subdivide(mesh, record_parent_ids=True)
+```
+
+#### Polyhedral coarsening (agglomerate)
+
+**`meshioplusplus.agglomerate`** merges groups of cells into single larger polyhedral cells — the many-to-one counterpart to `subdivide`. `decimate` raises by name on a polyhedron, pointing at `convert_cells(mode="simplexify")` — its fixed-template QEM edge collapse has no analogue for merging arbitrary polyhedral cells. `agglomerate` is a genuinely different algorithm: greedy seed-and-grow over the mesh's shared-face dual, absorbing face-adjacent neighbours by accumulated shared-face area until a target group size; each group emits one polyhedron whose faces are exactly its external boundary, conserving volume exactly. Non-volume blocks pass through unchanged; points are never pruned or renumbered (`clean(mesh, remove_orphans=True)` is the follow-up for a minimal point set). See `doc/agglomerate.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+coarse = meshioplusplus.agglomerate(mesh, target_group_size=8)
+```
+
 #### Refinement
 
 **`meshioplusplus.refine`** subdivides cells into congruent children of the *same* cell type, increasing a mesh's resolution: `line` → 2, `triangle` → 4, `quad` → 4, `tetra` → 8, `wedge` → 8, `hexahedron` → 8, with `levels=n` applying the templates `n` times. Given a **selection** — a cell list, a region name, or a `cell_data` threshold — it refines only those cells and resolves the resulting hanging nodes, so the output is still conforming. See `doc/refine.md`.
 
 New nodes sit at the midpoints of the parent's edges, quad faces and (hexahedron only) body, and carry the mean of that entity's corner values for every `point_data` array — so a linear field is interpolated exactly. Mid-edge and quad-face-centre nodes are **shared** between every cell touching the entity, so the refined mesh has no hanging nodes; each parent's `cell_data` row is replicated to its children.
+
+`record_hierarchy=True` attaches two persistent `cell_data` arrays, `refine:cell_id`/`refine:parent_id`: a stable identity that survives across separate `refine` calls — **a link between two meshes, not a tree inside one**, resolved by a multigrid caller against the sequence of meshes it keeps.
 
 <!--pytest-codeblocks:skip-->
 
@@ -338,9 +362,25 @@ graded = meshioplusplus.refine(
     where="quality:scaled_jacobian < 0.3",
     record_levels=True,                                 # colour by refine:level
 )
+
+# multigrid: keep the coarse mesh, resolve the fine mesh's parent ids against it
+fine = meshioplusplus.refine(coarse, cells=[4, 8], record_hierarchy=True)
 ```
 
 Children inherit the parent's orientation (zero newly-inverted cells for a well-oriented input), and volume is conserved — exactly for `tetra` always, and for `wedge`/`hexahedron` when the parent is affine. Higher-order cells, `pyramid`, and ragged blocks have no same-type subdivision and raise by name.
+
+#### Green-element undo
+
+**`meshioplusplus.undo_green(coarse, fine)`** restores `refine`'s transitional ("green") cells back to their original parent — the standard rule for selective refinement: before a new pass touches a region a prior pass already closed up, restore the transitional cell to its parent and re-split from scratch, rather than refining the transitional children directly (which degrades element quality without bound over repeated passes). It is a **two-mesh** operation, like `interpolate`: `coarse` is the mesh a prior `refine(coarse, ..., record_hierarchy=True, record_levels=True)` call was run on, `fine` is that call's output. Since `refine`'s point map is always the identity, a green parent's exact connectivity and cell_data are already sitting, byte-for-byte, in `coarse` — so this is a lookup and substitution, not a reconstruction. See `doc/undo_green.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+fine = meshioplusplus.refine(coarse, cells=[4, 8], record_hierarchy=True, record_levels=True)
+# ... later, decide to refine a different region ...
+undone = meshioplusplus.undo_green(coarse, fine)
+redone = meshioplusplus.refine(undone, cells=[12, 19], record_hierarchy=True, record_levels=True)
+```
 
 #### Decimation
 
@@ -359,6 +399,20 @@ coarse, report = meshioplusplus.decimate(mesh, max_error=1e-6, return_report=Tru
 ```
 
 Boundary vertices (once-used-edge test) and feature vertices (face normals differing by more than `feature_angle`, default 30°) are pinned by default, so an open patch keeps its outline exactly and a cube keeps its corners; the link condition and a normal-flip guard reject any collapse that would change topology, create a non-manifold edge, or fold the surface. Float `point_data` blends along the collapsed edge; integer arrays keep the survivor's value. Volume meshes raise by name — run `extract_surface` first, then decimate the skin.
+
+#### Volume decimation
+
+**`meshioplusplus.decimate_volume`** is `decimate`'s volume-mesh sibling — a separate operation, not a mode on it — reducing a **tetrahedral** mesh's cell count by greedy quadric-error-metric **tet**-edge collapse. Unlike `decimate`, boundary vertices *participate* by default (`preserve_boundary=False`): every vertex accumulates a quadric from its incident boundary-triangle planes only, so a purely interior vertex's quadric is exactly zero and interior-only edges are scored by squared length instead, always ranking behind boundary-touching collapses. See `doc/decimate_volume.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+coarse = meshioplusplus.decimate_volume(mesh, ratio=0.25)             # keep 25% of the tets
+coarse = meshioplusplus.decimate_volume(mesh, target_cells=5000)      # absolute tet budget
+coarse, report = meshioplusplus.decimate_volume(mesh, max_error=1e-6, return_report=True)
+```
+
+Validity is guarded by an exact vertex-link set-equality condition, a duplicate-tet check, and a tet-inversion guard, plus — for boundary-touching collapses — `decimate`'s own ring/shared-face link condition and normal-flip check reused over the mesh's own outer skin. Tet-only: any non-tetra 3D block raises by name pointing at `convert_cells(mode="simplexify")`.
 
 #### Partitioning
 
@@ -450,7 +504,19 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus refine`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, which is a mesh operation grouped under `data` because that is where a user looks for it).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+
+#### Error estimation (Zienkiewicz-Zhu recovery + marking)
+
+**`meshioplusplus.estimate_error`** estimates the per-cell recovered-gradient error of a `point_data` field, and can mark cells for refinement — the piece that closes the adaptive loop: `gradient` differentiates and selective `refine`'s `--where` consumes any scalar `cell_data` predicate; this produces one, so estimate → mark → refine is three verbs and no new numerical code. It is a **composition**, not a new kernel: `gradient` (Green-Gauss, cell location) → the measure-weighted point↔cell averaging round trip recovers a smoothed gradient, and `eta_K = sqrt(|measure| · sum((recovered − raw)²))` per cell is the standard ZZ indicator. `marking` turns it into a boolean `error:marked` array: `"absolute"` (threshold), `"fraction"` (top N by indicator), or `"dorfler"` (the smallest indicator-descending prefix covering a bulk fraction of the total — the usual AMR criterion). Cells that cannot be evaluated read NaN in the indicator and 0 (never NaN) in the marking array, counted and excluded from the global error. See `doc/error.md`.
+
+```python
+out, report = meshioplusplus.estimate_error(
+    vol, "T", marking="dorfler", marking_value=0.6, return_report=True,
+)
+print(report["global_error"], report["num_marked"])
+adapted = meshioplusplus.refine(out, where="error:marked > 0.5")
+```
 
 #### Data operations (rename / average / calc / condition / summarize)
 
@@ -741,7 +807,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

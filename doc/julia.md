@@ -69,7 +69,7 @@ so nothing is ever transposed — exactly the reasoning the Fortran module docum
 
 A borrow cannot be shifted without copying it, which is the whole point of a borrow — hence the two names. `point_data_ptr`, `cell_data_ptr` and `field_data_ptr` follow the same pattern.
 
-Index maps and permutations (`refine`, `convert_cells`, `decimate`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
+Index maps and permutations (`refine`, `convert_cells`, `subdivide`, `agglomerate`, `decimate`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
 
 `partition_labels` is the exception: those are part **ids**, not indices, so they stay in `0:nparts-1`.
 
@@ -92,9 +92,9 @@ It also holds a reference to the owning `Mesh`, so the mesh cannot be garbage-co
 
 A `Mesh` releases its handle through a **finalizer** — the one real difference from the Fortran module, where meshes are freed explicitly with `call m%free()`. `close(m)` releases one deterministically and is idempotent.
 
-`refine` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. See [refine](/refine).
+`refine` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps, riding the raw C-side numbering unshifted like `partition_labels`' part ids — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id).
 
-Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `convert_cells`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
+Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `convert_cells`, `subdivide`, `agglomerate`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
 
 ```julia
 for (key, piece) in mio.split(m; by="type")
@@ -227,6 +227,94 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 ```
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
+
+## v10.5.0 additions
+
+- `undo_green(coarse, fine)` — green-element undo: restores `fine`'s
+  transitional (closure-only) cells back to their original parent, read
+  verbatim from `coarse` — a **lookup, not a reconstruction**, since
+  [`refine`](@ref) never renumbers or prunes points, so a green parent's
+  exact connectivity and cell_data are already sitting, byte-for-byte, in
+  `coarse` at the row `fine`'s `refine:parent_id` names. Returns
+  `(; mesh, num_groups_undone, num_cells_removed)`. See
+  [`doc/undo_green.md`](undo_green.md).
+
+  A **two-mesh** operation, like [`interpolate`](@ref): `coarse` is the mesh
+  a prior `refine(coarse, ...; record_hierarchy=true, record_levels=true)`
+  call was run on, `fine` is that call's output — both flags are required,
+  `record_hierarchy` alone does not imply `record_levels`. The six reserved
+  `refine:*` arrays are always dropped from the output; only a single-pass
+  (`levels=1`) hierarchy is supported, a deeper multi-level hierarchy being
+  refused by name. Unlike `subdivide`/`agglomerate`, this operation has **no
+  winding repair or discrete sign branch anywhere in it** — it is pure array
+  bookkeeping, which on the Python side means it has a full numpy reference
+  implementation rather than being C++-core-only (this binding always calls
+  the installed C library either way).
+
+  `undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
+
+## v10.4.0 additions
+
+- `agglomerate(mesh; target_group_size=8)` — polyhedral coarsening, the
+  many-to-one counterpart to [`subdivide`](@ref): greedy seed-and-grow over
+  the mesh's shared-face dual, absorbing face-adjacent neighbours by
+  accumulated shared-face area until each group reaches `target_group_size`
+  members, then emitting one polyhedron per group whose faces are exactly its
+  external boundary — conserving volume exactly, since internal faces are
+  simply dropped rather than re-triangulated. Returns `(; mesh, cell_map)`.
+  See [`doc/agglomerate.md`](agglomerate.md).
+
+  Unlike every other opaque-result operation here, `cell_map` is a **single
+  flat**, not block-indexed, 1-based array: an agglomerated cell's output
+  index is a function of which group it joined, not which input block it
+  came from, so `_result_map` (the same single-array reader `split`'s node
+  map uses) reads it rather than `_result_cell_maps`. Like `subdivide`, there
+  is no `point_map` — points are never pruned or renumbered, so `clean(mesh;
+  remove_orphans=true)` is the documented follow-up for a minimal point set.
+  A non-manifold input (a face shared by three or more cells) raises a
+  `MeshioError` naming the face rather than guessing.
+
+  `agglomerate` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
+
+## v10.3.0 additions
+
+- `subdivide(mesh; record_parent_ids=false)` — polyhedral refinement: one
+  polyhedral child per face of every eligible 3D cell, connected to a new
+  interior point, returning `(; mesh, cell_maps)`. Needs no per-type template
+  table — tabulated types (reduced to corners for a quadratic variant) and
+  existing polyhedron blocks are handled uniformly through the same
+  `detail::cell_rings`/`orient_rings` machinery `gradient` uses — and is
+  automatically conforming, unlike [`refine`](@ref). See
+  [`doc/subdivide.md`](subdivide.md).
+
+  Unlike [`convert_cells`](@ref), there is no `point_map`: `subdivide` never
+  prunes or renumbers an original point. `cell_maps[b]` is 1-based input cell
+  → the index of its **first** child (one per face) in the corresponding
+  output block, the same `FirstChild` shape `convert_cells` already uses for
+  its own one-to-many splits.
+
+  `subdivide` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
+  is exported.
+
+## v10.2.0 additions
+
+- `estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
+  output="", marked="", overwrite=false)` — the Zienkiewicz-Zhu recovery-based
+  error indicator of a **point-data** field, plus optional marking, returning
+  `(; mesh, global_error, num_skipped, num_marked)`. A composition of
+  `gradient` with the point↔cell averaging round trip, not a new kernel. See
+  [`doc/error.md`](error.md).
+
+  `error:zz` is always attached; `error:marked` too when `marking` is not
+  `:none`, so `refine`'s own `where` selector needs no change to consume it —
+  `refine(mesh, where="error:marked > 0.5")`. Cells that cannot be evaluated
+  read `NaN` in `error:zz` and `0` (never `NaN`) in `error:marked`, counted in
+  `num_skipped` and excluded from `global_error`/`num_marked`.
+
+  `estimate_error` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
 
 ## v9.11.0 additions
 

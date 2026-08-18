@@ -236,6 +236,13 @@ export type OpSpec =
       value?: number;
       closure?: RefineClosure;
       recordLevels?: boolean;
+      /**
+       * Attach `refine:cell_id`/`refine:parent_id` -- the persistent
+       * parent/child hierarchy a multigrid caller resolves across the
+       * sequence of meshes it keeps. Also forces `refine:entity` to be
+       * attached even when the closure leaves no hanging node.
+       */
+      recordHierarchy?: boolean;
     }
   | {
       /**
@@ -294,6 +301,21 @@ export type OpSpec =
       location?: 'point' | 'cell';
       output?: string;
       component?: number;
+    }
+  | {
+      /**
+       * The ZZ recovery-based error indicator of a `point_data` field, plus
+       * optional marking. A pure data step: geometry is untouched and the
+       * indicator (and, when `marking` is not `"none"`, the marking) array
+       * is attached.
+       */
+      op: 'estimateError';
+      array: string;
+      method?: ErrorMethod;
+      marking?: ErrorMarking;
+      markingValue?: number;
+      output?: string;
+      marked?: string;
     }
   | {
       /**
@@ -362,6 +384,12 @@ export type SdfWatertightCheck = 'off' | 'warn' | 'error';
 
 /** `gradient`'s reconstruction method. See doc/gradient.md. */
 export type GradientMethod = 'green-gauss' | 'least-squares';
+
+/** `estimateError`'s estimator family. Only `"zz"` exists today. */
+export type ErrorMethod = 'zz';
+
+/** `estimateError`'s marking policy. See doc/error.md. */
+export type ErrorMarking = 'none' | 'absolute' | 'fraction' | 'dorfler';
 
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
@@ -438,6 +466,19 @@ export interface RefineOptions {
   closure?: RefineClosure;
   /** Attach the `refine:level` `cell_data` array. */
   recordLevels?: boolean;
+  /**
+   * Attach the `refine:cell_id`/`refine:parent_id` `cell_data` arrays -- the
+   * persistent parent/child hierarchy a multigrid caller resolves across the
+   * sequence of meshes it keeps ("a link between two meshes, not a tree
+   * inside one"): an unsplit cell keeps its id and is its own parent; a
+   * split cell's children each get a fresh id and carry the parent's id. An
+   * input already carrying `refine:cell_id` is updated whatever this says.
+   * Also forces `refine:entity` to be attached even when the closure leaves
+   * no hanging node, since it already records the coarse corners each new
+   * fine node is the mean of -- the multigrid prolongation weights, which
+   * `'redgreen'`/`'propagate'` would otherwise never expose.
+   */
+  recordHierarchy?: boolean;
 }
 
 /** Where `decimate` places the surviving vertex of a collapsed edge. */
@@ -973,6 +1014,25 @@ export interface MeshioPlusPlusModule {
     onConflict?: InterpolateOnConflict,
   ): Mesh;
 
+  /**
+   * Green-element undo: restore `fine`'s transitional (closure-only) cells
+   * back to their original parent, read verbatim from `coarse` — a lookup,
+   * not a reconstruction, since `refine` never renumbers or prunes points.
+   * `fine` must carry `refine:cell_id`/`refine:parent_id`/`refine:level`
+   * (i.e. must come from `refine(coarse, ..., {recordHierarchy: true,
+   * recordLevels: true})`); `coarse` must be the mesh that call was run on.
+   * The six reserved `refine:*` arrays are dropped from the output. Only a
+   * single-pass (`levels=1`) hierarchy is supported.
+   * @throws {Error} when `fine` lacks the required hierarchy arrays, when a
+   *   `refine:parent_id` value does not resolve against `coarse`'s id space,
+   *   or when a sibling group's level matches neither the red nor the green
+   *   relationship to its coarse parent's own level.
+   */
+  undoGreen(
+    coarse: Mesh,
+    fine: Mesh,
+  ): { mesh: Mesh; numGroupsUndone: number; numCellsRemoved: number };
+
   /** Subset a mesh to an axis-aligned bounding box. */
   cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
 
@@ -1188,6 +1248,41 @@ export interface MeshioPlusPlusModule {
     overwrite?: boolean,
   ): { mesh: Mesh; numSkipped: number; numFallback: number };
 
+  /**
+   * The Zienkiewicz-Zhu (ZZ) recovery-based error indicator of a `point_data`
+   * field, plus optional marking. A composition of `gradient` (Green-Gauss,
+   * cell location) with the measure-weighted point↔cell averaging round
+   * trip: the indicator is `sqrt(|measure| * sum((recovered - raw)^2))` per
+   * cell, attached as `output` (default `"error:zz"`, Float64).
+   *
+   * `marking` is `"none"` (default), `"absolute"`, `"fraction"`, or
+   * `"dorfler"`; when not `"none"` a second Int64 0/1 array `marked`
+   * (default `"error:marked"`) is attached too, so `refine`'s own `where`/
+   * `--where` selector needs no change at all — the intended use is
+   * `refine(mesh, {compare: '>', value: 0.5, array: 'error:marked'})`.
+   * `markingValue`'s meaning depends on `marking`: an absolute indicator
+   * threshold, a fraction in `(0, 1]` of cells, or the Doerfler bulk fraction
+   * theta in `(0, 1]`.
+   *
+   * Cells that cannot be evaluated read NaN in the indicator array and 0
+   * (never NaN) in the marking array, and are counted in `numSkipped`
+   * (excluded from `globalError` and from `numMarked`).
+   * @throws {Error} when `array` names a `cell_data` array (piecewise
+   *   constant, so it has no derivative to recover), an unknown array, an
+   *   unknown method/marking policy, or an out-of-range `markingValue` for
+   *   `"fraction"`/`"dorfler"`.
+   */
+  estimateError(
+    mesh: Mesh,
+    array: string,
+    method?: ErrorMethod,
+    marking?: ErrorMarking,
+    markingValue?: number,
+    output?: string,
+    marked?: string,
+    overwrite?: boolean,
+  ): { mesh: Mesh; globalError: number; numSkipped: number; numMarked: number };
+
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
 
@@ -1199,6 +1294,33 @@ export interface MeshioPlusPlusModule {
    *   full-Lagrange target (quad9/hexahedron27) under `"elevate"`.
    */
   convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
+
+  /**
+   * Polyhedrally refine a mesh: one polyhedral child per face of every
+   * eligible 3D cell, connected to a new interior point. Needs no per-type
+   * template table -- tabulated types (reduced to corners for a quadratic
+   * variant) and existing polyhedron blocks are handled uniformly.
+   * Automatically conforming, unlike `refine`. Non-3D blocks and the
+   * full-Lagrange family (no face table) pass through unchanged. Unlike
+   * `convertCells`, there is no point map -- subdivide never prunes or
+   * renumbers an original point.
+   * @throws {Error} when a cell's faces are not a closed orientable surface.
+   */
+  subdivide(mesh: Mesh, recordParentIds?: boolean): Mesh;
+
+  /**
+   * Polyhedrally coarsen a mesh: merge groups of cells into single larger
+   * polyhedral cells via greedy seed-and-grow over the mesh's shared-face
+   * dual, absorbing face-adjacent neighbours into a group until it reaches
+   * `targetGroupSize` (default 8; a short group at a mesh boundary or
+   * pocket is expected, not an error). `targetGroupSize=1` groups every
+   * cell by itself. Non-volume blocks pass through unchanged; points are
+   * never pruned or renumbered (`clean(mesh, ..., true)` is the follow-up
+   * for a minimal point set).
+   * @throws {Error} when targetGroupSize is 0, or the mesh contains a face
+   *   shared by three or more cells (non-manifold).
+   */
+  agglomerate(mesh: Mesh, targetGroupSize?: number): Mesh;
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,

@@ -368,6 +368,44 @@ end
     close(m)
 end
 
+@testset "operations: subdivide (polyhedral refinement)" begin
+    m = fixture()
+    s = subdivide(m; record_parent_ids=true)
+    @test num_cell_blocks(s.mesh) == 1
+    @test cell_block_type(s.mesh, 1) == "polyhedron"
+    info = cell_block_info(s.mesh, 1)
+    @test info.is_polyhedron
+    @test info.num_cells == 8                # 2 tetra, 4 faces each -> 8 children
+    @test num_points(s.mesh) == num_points(m) + 2  # one interior apex per parent
+
+    # No point map (subdivide never prunes/renumbers a point); cell_maps is
+    # per-block, first-child, 1-based -- the second parent's children start
+    # right after the first parent's 4.
+    @test length(s.cell_maps) == 1
+    @test s.cell_maps[1] == [1, 5]
+    @test "subdivide:parent_cell" in cell_data_names(s.mesh)
+    close(s.mesh)
+    close(m)
+end
+
+@testset "operations: agglomerate (polyhedral coarsening)" begin
+    m = fixture()  # 2 tetra sharing one face
+    a = agglomerate(m; target_group_size=2)
+    @test num_cell_blocks(a.mesh) == 1
+    @test cell_block_type(a.mesh, 1) == "polyhedron"
+    info = cell_block_info(a.mesh, 1)
+    @test info.is_polyhedron
+    @test info.num_cells == 1                # both tetra merge into one cell
+    @test num_points(a.mesh) == num_points(m)  # points never pruned/renumbered
+
+    # cell_map is a single FLAT array (unlike subdivide's per-block
+    # cell_maps): both input cells land in the one merged output cell.
+    @test length(a.cell_map) == 2
+    @test a.cell_map[1] == a.cell_map[2] == 1
+    close(a.mesh)
+    close(m)
+end
+
 @testset "operations: selective refine with a conforming closure" begin
     m = fixture()
 
@@ -389,6 +427,63 @@ end
     @test_throws Exception refine(m; cells=[1], region="anything")
     @test_throws ArgumentError refine(m; closure="blue")
     @test_throws ArgumentError refine(m; where_array="q", where_op="~=")
+    close(m)
+end
+
+@testset "operations: refine's persistent hierarchy" begin
+    m = fixture()
+
+    # Opt-in.
+    plain = refine(m; cells=[1])
+    @test !("refine:cell_id" in cell_data_names(plain.mesh))
+    close(plain.mesh)
+
+    hier = refine(m; cells=[1], record_hierarchy=true)
+    @test "refine:cell_id" in cell_data_names(hier.mesh)
+    @test "refine:parent_id" in cell_data_names(hier.mesh)
+    ids = vec(cell_data(hier.mesh, "refine:cell_id", 1))
+    parents = vec(cell_data(hier.mesh, "refine:parent_id", 1))
+    # Ids/parent-ids are stable IDENTIFIERS, not index maps into a Julia
+    # array -- the partition_labels precedent (returns part *ids*,
+    # deliberately unshifted). They ride the raw C-side numbering unchanged.
+    @test length(unique(ids)) == length(ids)  # every id unique
+    # The coarse mesh (m) has 2 cells, implicitly numbered 0 and 1; every
+    # parent_id must resolve to one of them.
+    @test all(p -> p in (0, 1), parents)
+    # Also proves the multigrid-stencil fix: this call used the redgreen
+    # closure, which leaves no hanging nodes, so refine:entity would
+    # normally never be attached at all.
+    @test "refine:entity" in point_data_names(hier.mesh)
+
+    # An existing hierarchy is maintained without the flag.
+    again = refine(hier.mesh; cells=[1])
+    @test "refine:cell_id" in cell_data_names(again.mesh)
+    close(again.mesh)
+    close(hier.mesh)
+    close(m)
+end
+
+@testset "operations: undo_green restores the coarse parent" begin
+    m = fixture()  # 2 tetrahedra sharing a whole face
+
+    fine = refine(m; cells=[1], record_hierarchy=true, record_levels=true)
+    fine_n = num_cells(fine.mesh)
+    coarse_n = num_cells(m)
+
+    undone = undo_green(m, fine.mesh)
+    @test undone.num_groups_undone > 0
+    @test undone.num_cells_removed > 0
+    @test num_cells(undone.mesh) < fine_n
+    @test num_cells(undone.mesh) > coarse_n
+    # The reserved refine:* arrays are dropped entirely.
+    @test !("refine:cell_id" in cell_data_names(undone.mesh))
+    @test !("refine:entity" in point_data_names(undone.mesh))
+
+    # Fails by name rather than guessing: no hierarchy on the "fine" argument.
+    @test_throws MeshioError undo_green(m, m)
+
+    close(undone.mesh)
+    close(fine.mesh)
     close(m)
 end
 
@@ -501,6 +596,32 @@ end
     # scalar has no divergence: both must fail by name.
     @test_throws MeshioError gradient(m, "material")
     @test_throws MeshioError gradient(m, "temperature"; operator=:divergence)
+    close(m)
+end
+
+@testset "operations: estimate_error" begin
+    m = fixture()
+
+    e = estimate_error(m, "temperature")
+    @test e.num_skipped == 0
+    @test e.global_error >= 0.0
+    @test e.num_marked == 0
+    @test "error:zz" in cell_data_names(e.mesh)
+    @test !("error:marked" in cell_data_names(e.mesh))
+    close(e.mesh)
+
+    f = estimate_error(m, "temperature"; marking=:absolute, marking_value=1e-9,
+                       output="ind", marked="flag")
+    @test "ind" in cell_data_names(f.mesh)
+    @test "flag" in cell_data_names(f.mesh)
+    @test f.num_marked >= 0
+    close(f.mesh)
+
+    # A cell_data array has no derivative to recover, and an out-of-range
+    # marking_value for "fraction" is rejected: both must fail by name.
+    @test_throws MeshioError estimate_error(m, "material")
+    @test_throws MeshioError estimate_error(m, "temperature"; marking=:fraction,
+                                            marking_value=1.5)
     close(m)
 end
 

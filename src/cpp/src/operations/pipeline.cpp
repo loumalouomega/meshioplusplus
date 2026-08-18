@@ -37,6 +37,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -46,6 +47,8 @@
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
@@ -58,6 +61,7 @@
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 
@@ -226,14 +230,19 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
           "GuardInversion"}},
         {"Refine",
-         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels"}},
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels",
+          "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"DecimateVolume",
+         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -246,6 +255,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
           "RotateData"}},
         {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Subdivide", {"RecordParentIds"}},
+        {"Agglomerate", {"TargetGroupSize"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -285,6 +296,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "Diff")
         return "'Diff' compares two meshes and is not a pipeline step; use the "
                "`diff` CLI verb";
+    if (rOp == "UndoGreen")
+        return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
+               "step; use the `undo-green` CLI verb";
     return nullptr;
 }
 
@@ -481,6 +495,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         RefineOptions opts;
         opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
         opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", false);
+        opts.mRecordHierarchy = pipe_flag(rStep, "RecordHierarchy", false);
         opts.mClosure = refine_closure_from_name(pipe_text(rStep, "Closure", ""));
         opts.mCells = pipe_ivec(rStep, "Cells");
         opts.mRegion = pipe_text(rStep, "Region", "");
@@ -510,6 +525,25 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         auto result = decimate(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "DecimateVolume") {
+        DecimateVolumeOptions opts;
+        opts.mTargetRatio = pipe_number(rStep, "Ratio", -1.0);
+        const double cells = pipe_number(rStep, "TargetCells", -1.0);
+        opts.mTargetCells =
+            cells < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(cells);
+        opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
+        if (opts.mTargetRatio < 0.0 && opts.mTargetCells < 0 && opts.mMaxError < 0.0)
+            opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
+        opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        auto result = decimate_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"TetsRemoved", static_cast<double>(result.mTetsRemoved)},
                         {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
         return std::move(result.mMesh);
     }
@@ -565,6 +599,28 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
+    }
+    if (op == "EstimateError") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with the indicator (and, if requested, the
+        // marking) array attached.
+        ErrorOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mMethod = error_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mMarking = error_marking_from_name(pipe_text(rStep, "Marking", ""));
+        opts.mMarkingValue = pipe_number(rStep, "MarkingValue", 0.0);
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        opts.mMarkedName = pipe_text(rStep, "Marked", "");
+        opts.mOverwrite = true;
+        ErrorResult er = estimate_error(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"GlobalError", er.mGlobalError},
+                        {"NumSkipped", static_cast<double>(er.mNumSkipped)},
+                        {"NumMarked", static_cast<double>(er.mNumMarked)}});
+        if (er.mNumSkipped > 0)
+            rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
+                                        " cell(s) could not be evaluated and are NaN");
+        return std::move(er.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does
@@ -653,6 +709,21 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
         auto result = convert_cells(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Subdivide") {
+        SubdivideOptions opts;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = subdivide(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return std::move(result.mMesh);
+    }
+    if (op == "Agglomerate") {
+        AgglomerateOptions opts;
+        opts.mTargetGroupSize =
+            static_cast<std::size_t>(pipe_number(rStep, "TargetGroupSize", 8.0));
+        auto result = agglomerate(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
     }

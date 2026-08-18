@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-45 tools; the two marked *gated* need a further extra and return a named
+50 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -114,15 +114,38 @@ report.
 `clean`, `crop` (bbox, half-space, or a `where_array`/`where_compare`/`where_value`
 `cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a
 surface, filled — `structure` `voxel`/`octree`), `transform`,
-`convert_cells`, `refine` (uniform, or a subset via `cells`/`region`/`where`
-with a conforming `closure`), `decimate`, `smooth`, `merge` (N inputs), `split`
+`convert_cells`, `subdivide` (polyhedral refinement: one polyhedral child per
+3D cell face, connected to a new interior point — no per-type template table,
+unlike `refine`; see [subdivide](/subdivide)), `agglomerate` (polyhedral
+coarsening: merge groups of cells into single larger polyhedral cells via
+greedy seed-and-grow over the shared-face dual; see
+[agglomerate](/agglomerate)),
+`refine` (uniform, or a subset via `cells`/`region`/`where`
+with a conforming `closure`; `record_hierarchy` attaches the persistent
+`refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller
+resolves across the sequence of meshes it keeps — see
+[refine](/refine#refinecell_id-and-refineparent_id)), `undo_green` (restores
+a `refine` transitional/green cell to its coarse parent, read verbatim from
+`coarse_path` — a two-mesh tool like `interpolate`; reports
+`num_groups_undone`/`num_cells_removed` — see
+[green-element undo](/undo_green)), `decimate`, `decimate_volume` (the
+volume-mesh sibling of `decimate`: quadric-error tet-edge collapse;
+`preserve_boundary` defaults `False`, the opposite of `decimate`'s own
+default, since boundary vertices participate by real quadric error here —
+see [volume decimation](/decimate_volume)), `smooth`,
+`merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
 `interpolate` (source → target field transfer), `gradient` (the gradient,
 divergence or curl of a `point_data` field — see
-[field derivatives](/gradient); reports `num_skipped` and `num_fallback`).
+[field derivatives](/gradient); reports `num_skipped` and `num_fallback`),
+`estimate_error` (the Zienkiewicz-Zhu recovery-based error indicator of a
+`point_data` field, plus optional `absolute`/`fraction`/`dorfler` marking into
+`error:marked` for `refine`'s own `where` selector — see
+[error estimation](/error); reports `global_error`, `num_skipped` and
+`num_marked`).
 Parameters mirror the Python API / CLI one-to-one; operations that produce
-reports (`clean`, `decimate`, `smooth`, `gradient`) include them in the
-response.
+reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `estimate_error`) include
+them in the response.
 
 ### Data operations
 

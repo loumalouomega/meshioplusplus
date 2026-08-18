@@ -234,6 +234,60 @@ inline constexpr const char* kRefineHangingName = "refine:hanging";
 /// warns and ignores the array rather than trusting it.
 inline constexpr const char* kRefineEntityName = "refine:entity";
 
+/// The Int64 `cell_data` array `RefineOptions::mRecordHierarchy` attaches: a
+/// stable, never-reused id per cell. Together with `kRefineParentIdName` this is
+/// the persistent parent/child hierarchy `refine:level` alone cannot give --
+/// **a link between two meshes, not a tree inside one**. A multigrid or
+/// green-undo caller keeps every pass's output mesh; the fine mesh's
+/// `refine:parent_id` resolves against the coarse mesh's `refine:cell_id`, so no
+/// ancestry path or packed location code is needed. An untouched cell KEEPS its
+/// id (see `kRefineParentIdName`).
+///
+/// The name is **reserved**: an input that already carries it is *updated*
+/// rather than replicated whatever the flag says -- the `kRefineLevelName` rule
+/// -- so ids stay unique across repeated calls. When the input carries none,
+/// ids are implicit: a cell's id is its global block-major index (the same
+/// numbering `detail::block_bases`/`partition_labels` use). Computed once, in a
+/// single serial pass over the FINAL mesh after every internal level has run --
+/// like `kRefineParentCellName`, never per intermediate level -- so it costs
+/// nothing when `mLevels == 1` and needs no per-pass bookkeeping at all: an
+/// untouched original cell (one whose composed cell map run has length one) is
+/// its own parent, and every other cell in a split run gets one fresh id from a
+/// single counter walking the final mesh's own block/cell order.
+///
+/// A multigrid interpolation stencil rides alongside for free: setting this
+/// flag also forces `kRefineEntityName` to be attached even when no pass left a
+/// hanging node (the `redgreen`/`propagate` closures normally never attach it),
+/// since it already records exactly which coarse nodes each new fine node is
+/// the corner mean of -- the prolongation operator's weights.
+///
+/// **Interacts with `split`:** an unqualified `split(mesh, by="tag")` (no
+/// explicit array name) auto-picks the first sorted integer `cell_data` array,
+/// and `"refine:cell_id"` sorts ahead of ordinary material tags. On a mesh
+/// carrying this array, always name the array explicitly
+/// (`split(mesh, by="tag", tag="my_material")`).
+inline constexpr const char* kRefineCellIdName = "refine:cell_id";
+
+/// The Int64 `cell_data` array naming, per output cell, the `kRefineCellIdName`
+/// of the cell in the mesh **passed to this call** that it came from -- the
+/// same rule `kRefineParentCellName` follows: two `levels=1` calls give
+/// immediate parents (the mesh the caller passed to the second call), one
+/// `levels=n` call gives the original ancestor (the mesh the caller passed to
+/// that one call), because only the input actually named in the call is a mesh
+/// the caller could have kept. An untouched cell is its own parent
+/// (`parent_id == cell_id`); every cell of a split run carries the run's
+/// original-in-this-call ancestor's id.
+///
+/// Given both meshes, red/green/untouched classify with no further storage:
+/// untouched has `parent_id == cell_id`; a green (transitional) child has
+/// `parent_id != cell_id` and the same `refine:level` as its parent; a red
+/// child's `refine:level` is one more than its parent's. See `doc/refine.md`.
+///
+/// Attaching a duplicate `kRefineCellIdName` value (e.g. by `merge`-ing two
+/// hierarchied meshes) is detected and both reserved arrays are dropped with a
+/// warning, never trusted -- the `kRefineEntityName` staleness policy.
+inline constexpr const char* kRefineParentIdName = "refine:parent_id";
+
 /// How `refine` resolves the hanging nodes a partial refinement leaves behind.
 enum class RefineClosure {
     /// Promote a cell's split-edge mask to the smallest *admissible* superset,
@@ -343,6 +397,17 @@ struct RefineOptions {
     /// `kRefineLevelName`). An input that already carries it is updated
     /// whatever this flag says; the flag only controls *creating* it.
     bool mRecordLevels = false;
+    /// Attach the `refine:cell_id`/`refine:parent_id` `cell_data` arrays (see
+    /// `kRefineCellIdName`/`kRefineParentIdName`) -- the persistent parent/child
+    /// hierarchy a multigrid caller (or a future green-undo) resolves across
+    /// the sequence of meshes it keeps. An input that already carries
+    /// `refine:cell_id` is updated whatever this flag says; the flag only
+    /// controls *creating* it. Also forces `refine:entity` (`kRefineEntityName`)
+    /// to be attached even when the closure leaves no hanging node, since it
+    /// already records the coarse corners each new fine node is the mean of --
+    /// the prolongation operator's weights, which `redgreen`/`propagate` would
+    /// otherwise never expose.
+    bool mRecordHierarchy = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.

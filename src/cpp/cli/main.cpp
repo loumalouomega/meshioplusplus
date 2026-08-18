@@ -70,11 +70,13 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
+#include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -86,6 +88,9 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/agglomerate.hpp"
+#include "meshioplusplus/operations/subdivide.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
 #include "meshioplusplus/formats/ansys.hpp"
@@ -437,10 +442,18 @@ void print_usage(std::ostream& os) {
           "                            (not a partition -- overlapping regions overlap)\n"
           "  regions                 List a mesh's named regions (name/kind/dim/tag/entries)\n"
           "  convert-cells           Convert elements (linearize/simplexify/elevate)\n"
+          "  subdivide               Polyhedrally refine: one polyhedral child per 3D\n"
+          "                            cell face, connected to a new interior point\n"
+          "  agglomerate             Polyhedrally coarsen: merge groups of cells into\n"
+          "                            single larger polyhedral cells\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
           "                          selected subset with a conforming closure)\n"
+          "  undo-green              Restore a transitional (green) cell to its coarse\n"
+          "                            parent, read verbatim from COARSE FINE OUTFILE\n"
           "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"
           "                            exactly one of --ratio/--target-faces/--max-error\n"
+          "  decimate-volume         Reduce a tet mesh's cell count (QEM tet-edge collapse)\n"
+          "                            exactly one of --ratio/--target-cells/--max-error\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1570,6 +1583,43 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_subdivide(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"record-parent-ids", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("subdivide requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::SubdivideOptions options;
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+
+    auto result = meshioplusplus::subdivide(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_agglomerate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"target-group-size", {}, true},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("agglomerate requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::AgglomerateOptions options;
+    options.mTargetGroupSize =
+        static_cast<std::size_t>(std::stoull(opt_value(p, "target-group-size", "8")));
+
+    auto result = meshioplusplus::agglomerate(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 // The comma-separated Int64 list `--cells` takes; parse_doubles' twin.
 std::vector<std::int64_t> refine_parse_int64s(const std::string& rText) {
     std::vector<std::int64_t> out;
@@ -1605,6 +1655,7 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
                                   {"where", {}, true},
                                   {"closure", {}, true},
                                   {"record-levels", {}, false},
+                                  {"record-hierarchy", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
@@ -1614,6 +1665,7 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     options.mLevels = std::stoi(opt_value(p, "levels", "1"));
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
     options.mRecordLevels = has_flag(p, "record-levels");
+    options.mRecordHierarchy = has_flag(p, "record-hierarchy");
     options.mClosure = meshioplusplus::refine_closure_from_name(opt_value(p, "closure"));
     if (has_opt(p, "cells"))
         options.mCells = refine_parse_int64s(opt_value(p, "cells"));
@@ -1640,6 +1692,25 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
 
     auto result = meshioplusplus::refine(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_undo_green(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("undo-green requires exactly COARSE FINE and OUTFILE");
+    Mesh coarse = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    Mesh fine = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+
+    auto result = meshioplusplus::undo_green(coarse, fine);
+    if (!has_flag(p, "quiet"))
+        std::cout << "undid " << result.mNumGroupsUndone << " green group(s), removing "
+                  << result.mNumCellsRemoved << " cell(s)\n";
+    write_mesh_cli(p.positionals[2], result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -1683,6 +1754,54 @@ int cmd_decimate(const std::vector<std::string>& rArgs) {
             faces_out += cb.NumCells();
         std::cout << "decimated to " << faces_out << " faces\n";
         std::cout << "  faces removed:            " << r.mFacesRemoved << "\n";
+        std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
+        std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
+        std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"ratio", {}, true},
+                                  {"target-cells", {}, true},
+                                  {"max-error", {}, true},
+                                  {"placement", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"preserve-boundary", {}, false},
+                                  {"no-preserve-features", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("decimate-volume requires exactly INFILE and OUTFILE");
+    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-cells") ? 1 : 0) +
+                        (has_opt(p, "max-error") ? 1 : 0);
+    if (num_set != 1)
+        throw std::runtime_error(
+            "decimate-volume: give exactly one of --ratio, --target-cells or --max-error");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DecimateVolumeOptions options;
+    options.mTargetRatio = std::stod(opt_value(p, "ratio", "-1"));
+    options.mTargetCells = std::stoll(opt_value(p, "target-cells", "-1"));
+    options.mMaxError = std::stod(opt_value(p, "max-error", "-1"));
+    options.mPlacement =
+        meshioplusplus::decimate_placement_from_name(opt_value(p, "placement", "optimal"));
+    options.mFeatureAngleDeg = std::stod(opt_value(p, "feature-angle", "30"));
+    // Unlike decimate, boundary vertices participate by default here.
+    options.mPreserveBoundary = has_flag(p, "preserve-boundary");
+    options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+
+    auto r = meshioplusplus::decimate_volume(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::size_t tets_out = 0;
+        for (const auto cb : r.mMesh.CellRange())
+            tets_out += cb.NumCells();
+        std::cout << "decimated to " << tets_out << " tets\n";
+        std::cout << "  tets removed:             " << r.mTetsRemoved << "\n";
         std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
         std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
         std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
@@ -2373,6 +2492,58 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `data estimate-error` is a slight departure from the rest of this group too,
+// for the same reason `data gradient` is: a mesh operation (it reads geometry
+// and topology), living here because it consumes and produces data arrays. It
+// composes `gradient` with the point<->cell averaging round trip to produce
+// the ZZ recovery-based error indicator `refine`'s own `--where` consumes. See
+// doc/error.md.
+int cmd_data_estimate_error(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"method", {}, true});
+    specs.push_back({"marking", {}, true});
+    specs.push_back({"marking-value", {}, true});
+    specs.push_back({"output", {}, true});
+    specs.push_back({"marked", {}, true});
+    specs.push_back({"overwrite", {}, false});
+    specs.push_back({"quiet", {"-q"}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data estimate-error requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("data estimate-error requires --array NAME");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::ErrorOptions opts;
+    opts.mArrayName = opt_value(p, "array");
+    // The defaults here must stay string-identical to the Python CLI's.
+    opts.mMethod = meshioplusplus::error_method_from_name(opt_value(p, "method", "zz"));
+    opts.mMarking = meshioplusplus::error_marking_from_name(opt_value(p, "marking", "none"));
+    if (has_opt(p, "marking-value"))
+        opts.mMarkingValue = std::stod(opt_value(p, "marking-value"));
+    opts.mOutputName = opt_value(p, "output");
+    opts.mMarkedName = opt_value(p, "marked");
+    opts.mOverwrite = has_flag(p, "overwrite");
+
+    meshioplusplus::ErrorResult r = meshioplusplus::estimate_error(mesh, opts);
+    if (!has_flag(p, "quiet")) {
+        const std::string name = opts.mOutputName.empty() ? "error:zz" : opts.mOutputName;
+        std::cout << "wrote cell_data '" << name << "' (" << opt_value(p, "method", "zz") << ")\n";
+        std::cout << "  global error:             " << r.mGlobalError << "\n";
+        std::cout << "  cells skipped (NaN):      " << r.mNumSkipped << "\n";
+        const std::string marking = opt_value(p, "marking", "none");
+        if (marking != "none") {
+            const std::string marked_name =
+                opts.mMarkedName.empty() ? "error:marked" : opts.mMarkedName;
+            std::cout << "  wrote cell_data '" << marked_name << "' (" << marking << ")\n";
+            std::cout << "  cells marked:             " << r.mNumMarked << "\n";
+        }
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 /// One report counter, printed as an integer when it is one (most are counts;
 /// only e.g. Smooth's MaxDisplacement is genuinely fractional).
 void pipeline_print_counter(std::ostream& rOut, double value) {
@@ -2456,7 +2627,9 @@ void print_data_usage(std::ostream& rOut) {
             "  clamp       Clamp values into [--min, --max]\n"
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
-            "gradient|divergence|curl)\n\n";
+            "gradient|divergence|curl)\n"
+            "  estimate-error  ZZ recovery-based error indicator (--array NAME "
+            "--marking none|absolute|fraction|dorfler)\n\n";
 }
 
 int cmd_data(const std::vector<std::string>& rArgs) {
@@ -2490,6 +2663,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_normalize(rest);
     if (sub == "gradient")
         return cmd_data_gradient(rest);
+    if (sub == "estimate-error")
+        return cmd_data_estimate_error(rest);
     std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";
     print_data_usage(std::cerr);
     return 2;
@@ -2763,10 +2938,18 @@ int main(int argc, char** argv) {
             return cmd_regions(rest);
         if (cmd == "convert-cells")
             return cmd_convert_cells(rest);
+        if (cmd == "subdivide")
+            return cmd_subdivide(rest);
+        if (cmd == "agglomerate")
+            return cmd_agglomerate(rest);
         if (cmd == "refine")
             return cmd_refine(rest);
+        if (cmd == "undo-green")
+            return cmd_undo_green(rest);
         if (cmd == "decimate")
             return cmd_decimate(rest);
+        if (cmd == "decimate-volume")
+            return cmd_decimate_volume(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")

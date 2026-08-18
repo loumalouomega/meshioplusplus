@@ -245,7 +245,7 @@ TEST(Pipeline, ValidateRejectsUnknownOpAndKey) {
 }
 
 TEST(Pipeline, ExcludedOpsNameTheCliVerb) {
-    for (const char* op : {"Merge", "Interpolate", "Split", "Diff"}) {
+    for (const char* op : {"Merge", "Interpolate", "Split", "Diff", "UndoGreen"}) {
         try {
             meshioplusplus::validate_pipeline_step(step(op));
             FAIL() << "expected invalid_argument for " << op;

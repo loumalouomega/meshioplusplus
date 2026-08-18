@@ -26,6 +26,7 @@ import json
 import os
 import pathlib
 
+from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -34,6 +35,8 @@ from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
+from ._decimate_volume import decimate_volume
+from ._error import estimate_error
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
 from ._isosurface import isosurface
@@ -45,6 +48,7 @@ from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
+from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._transform import transform
 from ._voxelize import voxelize
@@ -76,6 +80,7 @@ _OP_TABLE = {
         "Value",
         "Closure",
         "RecordLevels",
+        "RecordHierarchy",
     ),
     "Decimate": (
         "Ratio",
@@ -86,10 +91,20 @@ _OP_TABLE = {
         "PreserveFeatures",
         "FeatureAngle",
     ),
+    "DecimateVolume": (
+        "Ratio",
+        "TargetCells",
+        "MaxError",
+        "Placement",
+        "PreserveBoundary",
+        "PreserveFeatures",
+        "FeatureAngle",
+    ),
     "Partition": ("Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"),
     "Slice": ("Point", "Normal", "RecordParentIds"),
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
+    "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
         "Resolution",
@@ -128,6 +143,8 @@ _OP_TABLE = {
         "RotateData",
     ),
     "ConvertCells": ("Mode", "RecordParentIds"),
+    "Subdivide": ("RecordParentIds",),
+    "Agglomerate": ("TargetGroupSize",),
     "Crop": (
         "Bbox",
         "Point",
@@ -171,6 +188,8 @@ _EXCLUDED_OPS = {
     "step; use the `split` CLI verb",
     "Diff": "'Diff' compares two meshes and is not a pipeline step; use the "
     "`diff` CLI verb",
+    "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
+    "pipeline step; use the `undo-green` CLI verb",
 }
 
 
@@ -369,6 +388,7 @@ def _apply_step(mesh, step, steps, warnings):
             where=where,
             closure=_text(step, "Closure", "redgreen"),
             record_levels=_flag(step, "RecordLevels", False),
+            record_hierarchy=_flag(step, "RecordHierarchy", False),
         )
     elif op == "Decimate":
         ratio = _number(step, "Ratio", -1.0)
@@ -388,6 +408,25 @@ def _apply_step(mesh, step, steps, warnings):
             return_report=True,
         )
         entry["FacesRemoved"] = report["faces_removed"]
+        entry["CollapsesRejected"] = report["collapses_rejected"]
+    elif op == "DecimateVolume":
+        ratio = _number(step, "Ratio", -1.0)
+        target_cells = _number(step, "TargetCells", -1.0)
+        max_error = _number(step, "MaxError", -1.0)
+        if ratio < 0.0 and target_cells < 0.0 and max_error < 0.0:
+            ratio = 0.5  # a usable pipeline default (the C++ engine's rule)
+        mesh, report = decimate_volume(
+            mesh,
+            ratio=ratio if ratio >= 0.0 else None,
+            target_cells=int(target_cells) if target_cells >= 0.0 else None,
+            max_error=max_error if max_error >= 0.0 else None,
+            placement=_text(step, "Placement", "optimal"),
+            preserve_boundary=_flag(step, "PreserveBoundary", False),
+            preserve_features=_flag(step, "PreserveFeatures", True),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            return_report=True,
+        )
+        entry["TetsRemoved"] = report["tets_removed"]
         entry["CollapsesRejected"] = report["collapses_rejected"]
     elif op == "Partition":
         nparts = int(_number(step, "Nparts", 2))
@@ -433,6 +472,26 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 f"gradient: {report['num_skipped']} cell(s) could not be "
                 "differentiated and are NaN"
+            )
+    elif op == "EstimateError":
+        mesh, report = estimate_error(
+            mesh,
+            _text(step, "Array", ""),
+            method=_text(step, "Method", "zz"),
+            marking=_text(step, "Marking", "none"),
+            marking_value=_number(step, "MarkingValue", 0.0),
+            output=_text(step, "Output", "") or None,
+            marked_name=_text(step, "Marked", "") or None,
+            overwrite=True,
+            return_report=True,
+        )
+        entry["GlobalError"] = report["global_error"]
+        entry["NumSkipped"] = report["num_skipped"]
+        entry["NumMarked"] = report["num_marked"]
+        if report["num_skipped"] > 0:
+            warnings.append(
+                f"estimate_error: {report['num_skipped']} cell(s) could not be "
+                "evaluated and are NaN"
             )
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")
@@ -504,6 +563,16 @@ def _apply_step(mesh, step, steps, warnings):
             mesh,
             mode=_text(step, "Mode", "linearize"),
             record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+    elif op == "Subdivide":
+        mesh = subdivide(
+            mesh,
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+    elif op == "Agglomerate":
+        mesh = agglomerate(
+            mesh,
+            target_group_size=int(_number(step, "TargetGroupSize", 8.0)),
         )
     elif op == "Crop":
         has_bbox = "Bbox" in step

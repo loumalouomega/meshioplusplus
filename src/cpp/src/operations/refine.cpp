@@ -59,6 +59,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/refine_hierarchy.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -208,6 +209,15 @@ std::vector<std::int64_t> refine_read_levels(const Mesh& rMesh,
     return levels;
 }
 
+// --- refine:cell_id / refine:parent_id ----------------------------------------
+//
+// RefineHierarchyState / refine_read_hierarchy live in
+// detail/refine_hierarchy.hpp now -- hoisted verbatim so undo_green.cpp can
+// share the identical Absent/Valid/Invalid read against the *coarse* mesh
+// rather than transcribing it a second time.
+using detail::refine_read_hierarchy;
+using detail::RefineHierarchyState;
+
 // --- refine:entity -----------------------------------------------------------
 
 // The per-point entity keys already recorded on a mesh, or an empty vector when
@@ -274,9 +284,12 @@ std::vector<RefineNodeKey> refine_read_entity_keys(const Mesh& rMesh) {
 // to split fully; `nullptr` means every cell (the uniform path, which skips the
 // closure entirely). `pOutRedChildren`, when given, receives the same flag for
 // the OUTPUT cells -- set on the children of a fully-split parent -- which is
-// what the next level uses as its own seed.
+// what the next level uses as its own seed. `ForceEntity` attaches
+// `refine:entity` unconditionally (the caller asked for the persistent
+// hierarchy, whose node-level interpolation stencil this array already IS)
+// even when this particular pass leaves no hanging node.
 RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
-                         RefineClosure Closure, bool RecordLevels,
+                         RefineClosure Closure, bool RecordLevels, bool ForceEntity,
                          std::vector<char>* pOutRedChildren) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t num_points = rMesh.NumPoints();
@@ -796,8 +809,9 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // --- phase 8: cell_data gathered parent -> children ----------------------
     // base_levels was hoisted above: the Balanced closure compares levels.
     for (const std::string& name : rMesh.CellDataNames()) {
-        if (name == kRefineLevelName)
-            continue;  // recomputed below, never replicated
+        if (name == kRefineLevelName || name == kRefineCellIdName || name == kRefineParentIdName)
+            continue;  // this operation's own bookkeeping, rebuilt separately -- gathering
+                       // them here would replicate a split cell's id/parent to every child
         const std::size_t ndata = rMesh.CellDataNumBlocks(name);
         std::vector<NDArray> blocks;
         blocks.reserve(ndata);
@@ -946,8 +960,11 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
     // hanging nodes, and *maintained* thereafter once present, exactly as
     // refine:level is. A pass that leaves none and inherits none writes nothing,
     // which is what keeps every conforming closure's output byte-identical to
-    // what it was before the array existed.
-    if (num_hanging > 0 || !base_entity_keys.empty()) {
+    // what it was before the array existed -- UNLESS `ForceEntity`, which
+    // attaches it regardless: `mRecordHierarchy` wants it as the multigrid
+    // prolongation stencil, and `out_entity_keys` is already fully built above
+    // whether or not any node in it is hanging.
+    if (num_hanging > 0 || !base_entity_keys.empty() || ForceEntity) {
         NDArray keys_out = NDArray::Uninit(DType::Int64, {num_points_out, std::size_t{4}});
         std::int64_t* dst = keys_out.As<std::int64_t>();
         for (std::size_t p = 0; p < num_points_out; ++p)
@@ -1023,6 +1040,84 @@ void refine_attach_parent_ids(RefineResult& rResult) {
         blocks.push_back(std::move(a));
     }
     rResult.mMesh.AddCellData(kRefineParentCellName, std::move(blocks));
+}
+
+// Attach refine:cell_id/refine:parent_id from the FINAL composed cell maps --
+// one serial pass over the whole call's result, exactly parity with
+// refine_attach_parent_ids above and for the same reason: `rResult.mCellMaps`
+// already composes through every internal level (refine_compose_maps), so
+// there is no need to touch refine_once or thread anything through the levels
+// loop. A composed run of length one is a cell no level ever split -- it keeps
+// its own id and is its own parent; every other cell in a longer run gets one
+// fresh id from a single counter walking the mesh's own block/cell order, and
+// carries the run's original (in THIS call's input) ancestor as its parent.
+void refine_attach_hierarchy(const Mesh& rIn, RefineResult& rResult, bool RecordHierarchy) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rIn);
+    std::vector<std::int64_t> input_ids;
+    std::int64_t id_base = 0;
+    const RefineHierarchyState state = refine_read_hierarchy(rIn, bases, input_ids, id_base);
+    const bool maintained = state == RefineHierarchyState::Valid;
+    if (!maintained && !RecordHierarchy)
+        return;  // nothing valid to carry, and nothing asked for
+    if (!maintained) {
+        // Absent, or dropped as malformed/non-unique (warned inside
+        // refine_read_hierarchy already): start a fresh id space from the
+        // mesh's implicit global block-major ids.
+        const std::int64_t total = detail::total_cells(bases);
+        input_ids.assign(static_cast<std::size_t>(total), 0);
+        for (std::int64_t i = 0; i < total; ++i)
+            input_ids[static_cast<std::size_t>(i)] = i;
+        id_base = total;
+    }
+
+    const Mesh& mesh = rResult.mMesh;
+    const std::size_t nblocks = mesh.NumCellBlocks();
+    if (nblocks != rResult.mCellMaps.size() || nblocks == 0)
+        return;
+    std::vector<NDArray> id_blocks;
+    std::vector<NDArray> parent_blocks;
+    id_blocks.reserve(nblocks);
+    parent_blocks.reserve(nblocks);
+    std::int64_t next_id = id_base;
+    std::size_t bi = 0;
+    for (const auto cb : mesh.CellRange()) {
+        const NDArray& map = rResult.mCellMaps[bi];
+        const std::int64_t* first = map.As<std::int64_t>();
+        const std::size_t nparents = map.Size();
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t base = static_cast<std::size_t>(bases[bi]);
+        NDArray ids = NDArray::Uninit(DType::Int64, {ncells, 1});
+        NDArray parents = NDArray::Uninit(DType::Int64, {ncells, 1});
+        std::int64_t* id_dst = ids.As<std::int64_t>();
+        std::int64_t* parent_dst = parents.As<std::int64_t>();
+        for (std::size_t p = 0; p < nparents; ++p) {
+            if (first[p] < 0)
+                continue;
+            const std::size_t lo = static_cast<std::size_t>(first[p]);
+            const std::size_t hi = p + 1 < nparents && first[p + 1] >= 0
+                                       ? static_cast<std::size_t>(first[p + 1])
+                                       : ncells;
+            const std::int64_t original_id = input_ids[base + p];
+            if (hi - lo == 1 && lo < ncells) {
+                // A run of length one is a cell no level of this call ever
+                // split (every admissible non-empty mask yields more than one
+                // child -- see detail/refine_templates.hpp), so it keeps its
+                // own identity and is its own parent.
+                id_dst[lo] = original_id;
+                parent_dst[lo] = original_id;
+            } else {
+                for (std::size_t c = lo; c < hi && c < ncells; ++c) {
+                    id_dst[c] = next_id++;
+                    parent_dst[c] = original_id;
+                }
+            }
+        }
+        id_blocks.push_back(std::move(ids));
+        parent_blocks.push_back(std::move(parents));
+        ++bi;
+    }
+    rResult.mMesh.AddCellData(kRefineCellIdName, std::move(id_blocks));
+    rResult.mMesh.AddCellData(kRefineParentIdName, std::move(parent_blocks));
 }
 
 // Cells the next level would produce, for the pre-flight size warning.
@@ -1261,6 +1356,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
             res.mCellMaps.push_back(refine_identity_map(cb.NumCells()));
         if (rOptions.mRecordParentIds)
             refine_attach_parent_ids(res);
+        refine_attach_hierarchy(rMesh, res, rOptions.mRecordHierarchy);
         refine_carry_regions(rMesh, res);
         return res;
     }
@@ -1278,18 +1374,24 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     }
 
     std::vector<char> next_seed;
-    RefineResult acc = refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure,
-                                   rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+    RefineResult acc =
+        refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+                    rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
         const std::vector<char> current = std::move(next_seed);
-        RefineResult next =
-            refine_once(acc.mMesh, selective ? &current : nullptr, rOptions.mClosure,
-                        rOptions.mRecordLevels, selective ? &next_seed : nullptr);
+        RefineResult next = refine_once(
+            acc.mMesh, selective ? &current : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+            rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
         refine_compose_maps(acc, next);     // reads next's maps first
         acc.mMesh = std::move(next.mMesh);  // sequenced after
     }
     if (rOptions.mRecordParentIds)
         refine_attach_parent_ids(acc);
+    // Reads the ORIGINAL rMesh, never an intermediate: refine_attach_hierarchy
+    // resolves entirely through acc.mCellMaps, which already composes through
+    // every internal level, so "the mesh passed to this call" is unambiguous
+    // regardless of mLevels.
+    refine_attach_hierarchy(rMesh, acc, rOptions.mRecordHierarchy);
     refine_carry_regions(rMesh, acc);
     return acc;
 }

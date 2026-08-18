@@ -538,6 +538,64 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ---
 
+## meshioplusplus subdivide
+
+Polyhedrally refine a mesh: split every eligible 3D cell into one polyhedral
+child per face, connected to a new interior point (see [subdivide](/subdivide)).
+Distinct from `refine`, which is built on fixed same-type templates and raises
+by name on a polyhedron.
+
+```
+meshioplusplus subdivide [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--record-parent-ids` | Attach `subdivide:parent_cell` cell_data of the source cell indices |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+No per-type template table is needed: tabulated types (reduced to corners for
+a quadratic variant) and existing polyhedron blocks are handled uniformly.
+Automatically conforming — no closure flag, unlike `refine`. Non-3D blocks and
+the full-Lagrange family (no face table) pass through unchanged.
+
+**Example:**
+
+```sh
+meshioplusplus subdivide bracket.msh bracket_subdivided.vtu --record-parent-ids
+```
+
+---
+
+## meshioplusplus agglomerate
+
+Polyhedrally coarsen a mesh: merge groups of cells into single larger
+polyhedral cells via greedy seed-and-grow over the shared-face dual (see
+[agglomerate](/agglomerate)). Distinct from `decimate`, whose fixed-template
+QEM edge collapse has no analogue for merging arbitrary polyhedral cells.
+
+```
+meshioplusplus agglomerate [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--target-group-size N` | Approximate member cells per output group (default `8`) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Non-volume blocks pass through unchanged; points are never pruned or
+renumbered (`clean --remove-orphans` is the follow-up for a minimal point
+set). Conserves volume exactly. `--target-group-size 1` groups every cell by
+itself.
+
+**Example:**
+
+```sh
+meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
+```
+
+---
+
 ## meshioplusplus refine
 
 Refine a mesh, subdividing cells into same-type children — every cell, or a
@@ -556,6 +614,7 @@ meshioplusplus refine [options] INFILE OUTFILE
 | `--where "EXPR"` | Refine the cells satisfying a threshold on a scalar cell_data array, e.g. `"quality:scaled_jacobian < 0.3"` |
 | `--closure redgreen\|propagate\|balanced` | How to resolve hanging nodes (default `redgreen`) |
 | `--record-levels` | Attach `refine:level` cell_data of each cell's refinement depth |
+| `--record-hierarchy` | Attach `refine:cell_id`/`refine:parent_id` cell_data — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps; also forces `refine:entity` to be attached even when the closure leaves no hanging node |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 At most one of `--cells`, `--region` and `--where` may be given; with none, every
@@ -586,6 +645,40 @@ meshioplusplus refine in.msh out.vtu --levels 2
 meshioplusplus refine coarse.vtu fine.vtu --levels 2 --record-parent-ids
 meshioplusplus refine coarse.vtu graded.vtu --cells 12,13,44 --record-levels
 meshioplusplus refine coarse.vtu graded.vtu --where "quality:scaled_jacobian < 0.3"
+meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy
+```
+
+---
+
+## meshioplusplus undo-green
+
+Restore a transitional (green) cell back to its coarse parent, read verbatim
+from the COARSE mesh — the standard "restore and re-split from scratch" rule
+for a selective refinement pass over a region a prior pass already closed up
+(see [green-element undo](/undo_green)). A two-mesh verb, like `interpolate`.
+
+```
+meshioplusplus undo-green [options] COARSE FINE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--quiet` (`-q`) | Suppress the undo summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input (both files) / output format |
+
+`FINE` must be the output of a prior `refine COARSE FINE --record-hierarchy
+--record-levels` call (both flags — `--record-hierarchy` alone does not
+imply `--record-levels`); it fails by name otherwise, or when a
+`refine:parent_id` cannot be resolved against `COARSE`'s id space. The six
+reserved `refine:*` arrays are dropped from the output. Only a single-pass
+(`--levels 1`) hierarchy is supported.
+
+**Examples:**
+
+```sh
+meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy --record-levels
+meshioplusplus undo-green coarse.vtu fine.vtu restored.vtu
+meshioplusplus refine restored.vtu regraded.vtu --cells 44,58 --record-hierarchy --record-levels
 ```
 
 ---
@@ -625,6 +718,48 @@ meshioplusplus decimate scan.stl coarse.stl --ratio 0.25
 meshioplusplus decimate skin.vtu coarse.vtu --target-faces 5000
 meshioplusplus decimate skin.vtu coarse.vtu --max-error 1e-6 --placement midpoint
 meshioplusplus decimate open_patch.vtu out.vtu --ratio 0.1 --no-preserve-features -q
+```
+
+---
+
+## meshioplusplus decimate-volume
+
+Reduce a tetrahedral mesh's cell count by quadric-error-metric **tet**-edge
+collapse — the volume-mesh sibling of `decimate`, a separate verb rather than
+a mode on it (see [volume decimation](/decimate_volume)).
+
+```
+meshioplusplus decimate-volume [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--ratio R` | Fraction of the tets to KEEP, in (0, 1] |
+| `--target-cells N` | Absolute tet count to stop at (within one collapse) |
+| `--max-error E` | Collapse only while the cheapest boundary-touching quadric error is at most `E` |
+| `--placement P` | `optimal` (default), `midpoint`, or `endpoint` |
+| `--preserve-boundary` | Pin every boundary vertex outright, reproducing `decimate`'s own default instead of letting boundary vertices participate |
+| `--no-preserve-features` | Allow sharp boundary corners/creases to collapse |
+| `--feature-angle A` | Degrees between boundary-triangle normals above which a vertex is a feature (default `30`) |
+| `--quiet` (`-q`) | Do not print the collapse summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Exactly one of `--ratio`, `--target-cells` and `--max-error` must be given.
+Tet meshes only: a non-tetra 3D block is an error — run
+`convert-cells --mode simplexify` first. Note `--preserve-boundary` is
+opt-**in** here, the mirror image of `decimate`'s opt-out
+`--no-preserve-boundary` — boundary vertices participate in decimation by
+real quadric error by default. Validity guards reject any collapse that
+would change topology, invert a tet, or (for boundary-touching collapses)
+fold the outer surface.
+
+**Examples:**
+
+```sh
+meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.25
+meshioplusplus decimate-volume solid.vtu coarse.vtu --target-cells 5000
+meshioplusplus decimate-volume solid.vtu coarse.vtu --max-error 1e-6 --placement midpoint
+meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-boundary -q
 ```
 
 ---
@@ -774,6 +909,7 @@ meshioplusplus data <subcommand> [options]
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
+| `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 
@@ -785,12 +921,13 @@ instead, plus `--mesh-id stem|index`, and its input is several paths, one
 quoted glob, or one multi-step file — the sequence source language). Both are
 **Python CLI only**; both need the matching optional extra.
 
-::: tip `data gradient` is a mesh operation
+::: tip `data gradient` and `data estimate-error` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by
 definition never touches geometry. `gradient` consumes and produces data arrays
 but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
-so it lives in the mesh-operations layer. It is grouped here because that is
-where a user looks for it. See [field derivatives](/gradient).
+so it lives in the mesh-operations layer; `estimate-error` composes `gradient`
+itself. Both are grouped here because that is where a user looks for them. See
+[field derivatives](/gradient) and [error estimation](/error).
 :::
 
 ::: warning `data export` is not a mesh conversion
@@ -889,6 +1026,31 @@ field. Cells that cannot be differentiated are reported as `cells skipped
 Green-Gauss and are reported separately. See
 [field derivatives](/gradient) for the exactness guarantees and caveats.
 
+### data estimate-error
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The `point_data` array to estimate the error of (**required**) |
+| `--method` | `zz` (default; the only estimator family today) |
+| `--marking` | `none` (default), `absolute`, `fraction` or `dorfler` |
+| `--marking-value V` | Meaning depends on `--marking`: an absolute threshold, a fraction in `(0, 1]` of cells, or the Dörfler bulk fraction theta in `(0, 1]` (ignored for `none`) |
+| `--output NAME` | Indicator array name (default `error:zz`) |
+| `--marked NAME` | Marking array name (default `error:marked`; ignored when `--marking none`) |
+| `--overwrite` | Replace an existing array of an output name instead of failing |
+| `--quiet`, `-q` | Suppress the summary |
+
+The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a
+composition of `gradient` and the point↔cell averaging round trip, not a new
+kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for
+the same reason `data gradient` rejects one. Cells that cannot be evaluated are
+reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in
+`error:marked`. With `--marking` not `none`, a second `cell_data` array is
+attached so [`refine`](/refine)'s own `--where` selector needs no change at
+all — the intended use is
+`meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`.
+See [error estimation](/error) for the composition, the marking policies and
+the byte-identity tolerance.
+
 **Examples:**
 
 ```sh
@@ -898,6 +1060,9 @@ meshioplusplus data info mesh.vtu --json
 meshioplusplus data gradient in.vtu out.vtu --array T
 meshioplusplus data gradient in.vtu out.vtu --array u --op curl --location point
 meshioplusplus data gradient in.vtu out.vtu --array T --method least-squares --output dT
+
+meshioplusplus data estimate-error in.vtu out.vtu --array T
+meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6
 
 meshioplusplus data rename in.vtu out.vtu --point T:temperature
 meshioplusplus data drop   in.vtu out.vtu --point a,b --cell c

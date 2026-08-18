@@ -420,6 +420,39 @@ def test_data_keep(data_infile, tmp_path):
     assert "mat" in mesh.cell_data
 
 
+def test_data_estimate_error(data_infile, tmp_path, capsys):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "estimate-error",
+            str(data_infile),
+            str(out),
+            "--array",
+            "T",
+            "--marking",
+            "absolute",
+            "--marking-value",
+            "1e-9",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert "error:zz" in mesh.cell_data
+    assert "error:marked" in mesh.cell_data
+    out_text = capsys.readouterr().out
+    assert "global error" in out_text
+    assert "cells marked" in out_text
+
+
+def test_data_estimate_error_rejects_cell_data(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    with pytest.raises(ValueError, match="cell_data_to_point_data"):
+        meshioplusplus._cli.main(
+            ["data", "estimate-error", str(data_infile), str(out), "--array", "mat"]
+        )
+
+
 def test_data_without_a_verb_exits_2():
     with pytest.raises(SystemExit) as exc:
         meshioplusplus._cli.main(["data"])

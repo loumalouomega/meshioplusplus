@@ -406,6 +406,73 @@ TEST(CApi, Decimate) {
     mio_mesh_free(tet);
 }
 
+TEST(CApi, DecimateVolume) {
+    // A unit cube split into 6 positively-oriented tets sharing the main
+    // diagonal 0-6 (the same fixture as test_decimate_volume.cpp).
+    const std::array<double, 24> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::array<std::int64_t, 24> conn = {0, 1, 2, 6, 0, 2, 3, 6, 0, 3, 7, 6,
+                                               0, 7, 4, 6, 0, 4, 5, 6, 0, 5, 1, 6};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 6, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_decimate_volume_result* res =
+        mio_decimate_volume(m, /*target_ratio=*/-1.0, /*target_cells=*/1, /*max_error=*/-1.0,
+                            /*placement=*/nullptr, /*preserve_boundary=*/0, /*preserve_features=*/0,
+                            /*feature_angle=*/30.0);
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    const mio_mesh* dm = mio_decimate_volume_result_mesh(res);
+    ASSERT_NE(dm, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(dm), 1);
+    EXPECT_EQ(block_type(dm, 0), "tetra");
+    EXPECT_GT(mio_decimate_volume_result_tets_removed(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_points_removed(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_collapses_rejected(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_max_error_applied(res), 0.0);
+
+    const void* pm = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_decimate_volume_result_point_map(res, &pm, &dt, &n), MIO_OK) << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 8);
+
+    ASSERT_EQ(mio_decimate_volume_result_num_cell_maps(res), 1);
+    const void* cm = nullptr;
+    ASSERT_EQ(mio_decimate_volume_result_cell_map(res, 0, &cm, &dt, &n), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 6);
+    EXPECT_EQ(mio_decimate_volume_result_cell_map(res, 7, &cm, &dt, &n), MIO_ERR_NOT_FOUND);
+
+    mio_mesh* taken = mio_decimate_volume_result_take_mesh(res);
+    ASSERT_NE(taken, nullptr) << mio_last_error();
+    mio_decimate_volume_result_free(res);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(taken), 1);
+    mio_mesh_free(taken);
+
+    // Error paths fail cleanly: no criterion, and decimate() itself still
+    // refuses a tet mesh, pointing here.
+    EXPECT_EQ(mio_decimate_volume(m, -1.0, -1, -1.0, nullptr, 0, 1, 30.0), nullptr);
+    EXPECT_EQ(mio_decimate(m, -1.0, 1, -1.0, nullptr, 1, 1, 30.0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("extract_surface"), std::string::npos);
+    mio_mesh_free(m);
+
+    // A non-tet 3D block is refused by name.
+    mio_mesh* hex = mio_mesh_create();
+    ASSERT_NE(hex, nullptr);
+    const std::array<double, 24> hpts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                         0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::array<std::int64_t, 8> hconn = {0, 1, 2, 3, 4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_set_points(hex, MIO_FLOAT64, 8, 3, hpts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(hex, "hexahedron", 1, 8, MIO_INT64, hconn.data()), MIO_OK);
+    EXPECT_EQ(mio_decimate_volume(hex, -1.0, 1, -1.0, nullptr, 0, 1, 30.0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("tet-only"), std::string::npos);
+    mio_mesh_free(hex);
+}
+
 TEST(CApi, Merge) {
     mio_mesh* a = build_tet_mesh();  // 5 points, 2 tetra
     mio_mesh* b = build_tet_mesh();
@@ -1392,6 +1459,112 @@ TEST(CApi, ConvertCellsErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SubdivideHexahedronThroughTheAbi) {
+    // One unit-cube hexahedron -> 6 polyhedral children, one per face.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_subdivide_result* r = mio_subdivide(m, /*record_parent_ids=*/1);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_subdivide_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(out), 9);  // one new interior point (apex)
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "polyhedron");
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(out, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 6);
+    EXPECT_EQ(info.is_ragged, 1);
+    EXPECT_EQ(info.is_polyhedron, 1);
+
+    // Zero-copy borrow of the cell map -- there is no point map (subdivide
+    // never prunes or renumbers an original point).
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_subdivide_result_num_cell_maps(r), 1);
+    ASSERT_EQ(mio_subdivide_result_cell_map(r, 0, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 1);
+    EXPECT_EQ(static_cast<const std::int64_t*>(data)[0], 0);
+
+    mio_mesh* owned = mio_subdivide_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(owned), 9);
+    mio_mesh_free(owned);
+    mio_subdivide_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, SubdivideErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    EXPECT_EQ(mio_subdivide(nullptr, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_subdivide_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_subdivide_result_num_cell_maps(nullptr), -1);
+    EXPECT_EQ(mio_subdivide_result_cell_map(nullptr, 0, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_subdivide_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}
+
+TEST(CApi, AgglomerateTwoHexesThroughTheAbi) {
+    // Two unit hexahedra sharing one face (x=1 plane).
+    const std::vector<double> pts = {0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0,
+                                     1, 1, 1, 1, 0, 1, 2, 0, 0, 2, 1, 0, 2, 1, 1, 2, 0, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7, 4, 5, 6, 7, 8, 9, 10, 11};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_agglomerate_result* r = mio_agglomerate(m, /*target_group_size=*/2);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_agglomerate_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "polyhedron");
+
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(out, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 1);
+    EXPECT_EQ(info.is_polyhedron, 1);
+
+    // Zero-copy borrow of the FLAT cell map -- both hexes land in the one
+    // merged cell.
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_agglomerate_result_cell_map(r, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 2);
+    const auto* cm = static_cast<const std::int64_t*>(data);
+    EXPECT_EQ(cm[0], cm[1]);
+
+    mio_mesh* owned = mio_agglomerate_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(owned), 1);
+    mio_mesh_free(owned);
+    mio_agglomerate_result_free(r);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, AgglomerateErrorsAreGuardedNotThrown) {
+    mio_mesh* m = build_tet_mesh();
+    EXPECT_EQ(mio_agglomerate(nullptr, 8), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_agglomerate(m, -1), nullptr);
+    EXPECT_EQ(mio_agglomerate_result_mesh(nullptr), nullptr);
+    EXPECT_EQ(mio_agglomerate_result_cell_map(nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    mio_agglomerate_result_free(nullptr);  // NULL-safe
+    mio_mesh_free(m);
+}
+
 TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
     // A 3x3 grid of quads: only the centre node is interior, so it is the only
     // one free to move -- which makes both halves of the assertion sharp.
@@ -1541,6 +1714,41 @@ TEST(CApi, RefineExWithDefaultsMatchesMioRefine) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RefineExRecordHierarchyAttachesCellIdAndParentId) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.record_hierarchy = 1;
+    mio_refine_result* r = mio_refine_ex(m, &opts);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_refine_result_mesh(r);
+
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "refine:cell_id", 0, &data, &dt, &ndim, shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(shape[0], 8);  // one hexahedron -> 8 children, uniform refinement
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "refine:parent_id", 0, &data, &dt, &ndim, shape), MIO_OK);
+    const std::int64_t* parents = static_cast<const std::int64_t*>(data);
+    for (int64_t i = 0; i < shape[0]; ++i)
+        EXPECT_EQ(parents[i], 0) << "every child of the sole input cell shares parent 0";
+
+    // Also proves the multigrid-stencil fix: RedGreen leaves no hanging nodes,
+    // so refine:entity would normally never be attached at all.
+    EXPECT_EQ(mio_mesh_get_point_data(out, "refine:entity", &data, &dt, &ndim, shape), MIO_OK);
+
+    mio_refine_result_free(r);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
     // A 3 x 3 grid of quadrilaterals; refine the middle one only.
     std::vector<double> pts;
@@ -1582,6 +1790,91 @@ TEST(CApi, RefineExSelectsASubsetAndClosesUp) {
     EXPECT_EQ(mio_refine_ex(m, &opts), nullptr);
     EXPECT_NE(mio_last_error(), nullptr);
     mio_mesh_free(m);
+}
+
+TEST(CApi, UndoGreenRestoresTheCoarseParentThroughTheAbi) {
+    // A 3 x 3 grid of quadrilaterals; refine the middle one only, so the
+    // neighbours around it get transitional (green) closures.
+    std::vector<double> pts;
+    for (int j = 0; j <= 3; ++j)
+        for (int i = 0; i <= 3; ++i) {
+            pts.push_back(i);
+            pts.push_back(j);
+            pts.push_back(0);
+        }
+    std::vector<std::int64_t> conn;
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            const std::int64_t a = j * 4 + i;
+            conn.insert(conn.end(), {a, a + 1, a + 5, a + 4});
+        }
+    mio_mesh* coarse = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(coarse, MIO_FLOAT64, 16, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(coarse, "quad", 9, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    const std::int64_t selected[] = {4};
+    mio_refine_opts opts;
+    mio_refine_opts_init(&opts);
+    opts.cells = selected;
+    opts.num_cells = 1;
+    opts.record_hierarchy = 1;
+    opts.record_levels = 1;
+    mio_refine_result* r = mio_refine_ex(coarse, &opts);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* fine = mio_refine_result_mesh(r);
+
+    std::int64_t fine_cells = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(fine, 0, &fine_cells, nullptr, nullptr), MIO_OK);
+
+    std::int64_t num_groups_undone = -1, num_cells_removed = -1;
+    mio_mesh* undone = mio_undo_green(coarse, fine, &num_groups_undone, &num_cells_removed);
+    ASSERT_NE(undone, nullptr);
+    EXPECT_GT(num_groups_undone, 0);
+    EXPECT_GT(num_cells_removed, 0);
+
+    std::int64_t undone_cells = 0, coarse_cells = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(undone, 0, &undone_cells, nullptr, nullptr), MIO_OK);
+    ASSERT_EQ(mio_mesh_cell_block_info(coarse, 0, &coarse_cells, nullptr, nullptr), MIO_OK);
+    EXPECT_LT(undone_cells, fine_cells);
+    EXPECT_GT(undone_cells, coarse_cells);
+
+    // The reserved refine:* arrays are dropped entirely.
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    EXPECT_NE(mio_mesh_get_cell_data(undone, "refine:cell_id", 0, &data, &dt, &ndim, shape),
+              MIO_OK);
+    EXPECT_NE(mio_mesh_get_point_data(undone, "refine:entity", &data, &dt, &ndim, shape), MIO_OK);
+
+    // Nullable counters really are nullable.
+    mio_mesh* undone2 = mio_undo_green(coarse, fine, nullptr, nullptr);
+    ASSERT_NE(undone2, nullptr);
+    mio_mesh_free(undone2);
+
+    mio_mesh_free(undone);
+    mio_refine_result_free(r);
+    mio_mesh_free(coarse);
+}
+
+TEST(CApi, UndoGreenErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    mio_mesh* coarse = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(coarse, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(coarse, "quad", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // No hierarchy at all on "fine" (here just the coarse mesh itself).
+    EXPECT_EQ(mio_undo_green(coarse, coarse, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    // NULL meshes never let an exception cross the ABI.
+    EXPECT_EQ(mio_undo_green(nullptr, coarse, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_undo_green(coarse, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(coarse);
 }
 
 TEST(CApi, RefineChainsOnABorrowedMesh) {
@@ -1900,6 +2193,90 @@ TEST(CApi, GradientErrorsAreGuardedNotThrown) {
         mio_gradient(nullptr, "h", nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
         nullptr);
     EXPECT_EQ(mio_gradient(m, nullptr, nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
+              nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, EstimateError) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8);
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double x = pts[i * 3 + 0], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        f[i] = 3.0 * x - 2.0 * y + 5.0 * z + 7.0;
+    }
+    const std::int64_t sshape[1] = {8};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    double global_error = -1.0;
+    std::int64_t skipped = -1, marked = -1;
+    mio_mesh* out = mio_estimate_error(m, "f", nullptr, nullptr, 0.0, nullptr, nullptr, 0,
+                                       &global_error, &skipped, &marked);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(skipped, 0);
+    EXPECT_EQ(marked, 0);
+    EXPECT_NEAR(global_error, 0.0, 1e-9);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "error:zz", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    EXPECT_LE(mio_mesh_cell_data_num_blocks(out, "error:marked"), 0)
+        << "no marking requested, so no marked array";
+    mio_mesh_free(out);
+
+    // Custom names + marking.
+    double ge2 = -1.0;
+    std::int64_t sk2 = -1, mk2 = -1;
+    mio_mesh* out2 =
+        mio_estimate_error(m, "f", "zz", "absolute", 1e-6, "ind", "flag", 1, &ge2, &sk2, &mk2);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    EXPECT_EQ(mk2, 0);
+    ASSERT_EQ(mio_mesh_get_cell_data(out2, "ind", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    ASSERT_EQ(mio_mesh_get_cell_data(out2, "flag", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_INT64);
+    mio_mesh_free(out2);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, EstimateErrorErrorsAreGuardedNotThrown) {
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8, 1.0);
+    const std::int64_t sshape[1] = {8};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    EXPECT_EQ(mio_estimate_error(m, "nope", nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_estimate_error(m, "f", "kelly", nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, "f", nullptr, "median", 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, "f", nullptr, "fraction", 1.5, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr)
+        << "out-of-range marking_value";
+    EXPECT_EQ(mio_estimate_error(nullptr, "f", nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
+              nullptr);
+    EXPECT_EQ(mio_estimate_error(m, nullptr, nullptr, nullptr, 0.0, nullptr, nullptr, 0, nullptr,
+                                 nullptr, nullptr),
               nullptr);
     mio_mesh_free(m);
 }
