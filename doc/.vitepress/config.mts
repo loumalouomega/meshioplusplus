@@ -84,6 +84,7 @@ export default defineConfig({
           { text: "Volume decimation (QEM tet-edge collapse)", link: "/decimate_volume" },
           { text: "Smoothing (Laplacian / Taubin)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
+          { text: "Conservative interpolation (mass-preserving)", link: "/conservative_interpolate" },
           { text: "Slicing / cross-sections", link: "/slice" },
           { text: "Isosurfaces / contours", link: "/isosurface" },
           { text: "Regular grids / voxelize", link: "/voxelize" },

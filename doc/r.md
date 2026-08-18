@@ -236,6 +236,21 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
   means a full numpy reference implementation rather than C++-core-only
   (this binding always calls the installed C library either way).
 
+- `mio_conservative_interpolate(source, target, arrays = NULL,
+  default_value = 0, on_conflict = "error")` — mass-preserving field
+  transfer, `mio_interpolate()`'s sibling: conserves `sum(target value *
+  target measure) == sum(source value * source measure)` over the region
+  the two meshes share, a property `mio_interpolate()`'s pointwise sampling
+  does not have. Both meshes are simplexified first, accepting
+  ragged/polyhedron blocks for free. Unlike `mio_interpolate()`, a `NULL`
+  `arrays` means every source point_data **and** cell_data array. Output
+  arrays are always Float64. Like `mio_undo_green()`, a **two-mesh**
+  operation, and like `mio_subdivide()`/`mio_agglomerate()` this is
+  C++-core only — the 3D clip kernel's discrete branches could disagree
+  with a second implementation near a degenerate overlap, so there is no
+  pure-R fallback either; the installed C library is always called. See
+  [`doc/conservative_interpolate.md`](conservative_interpolate.md).
+
 ## v10.4.0 additions
 
 - `mio_agglomerate(mesh, target_group_size = 8)` — polyhedral coarsening, the

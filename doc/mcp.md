@@ -135,7 +135,10 @@ default, since boundary vertices participate by real quadric error here —
 see [volume decimation](/decimate_volume)), `smooth`,
 `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
-`interpolate` (source → target field transfer), `gradient` (the gradient,
+`interpolate` (source → target field transfer), `conservative_interpolate`
+(mass-preserving overlap-measure weighted transfer — unlike `interpolate`,
+an unset `arrays` covers every source point_data AND cell_data array; see
+[conservative interpolation](/conservative_interpolate)), `gradient` (the gradient,
 divergence or curl of a `point_data` field — see
 [field derivatives](/gradient); reports `num_skipped` and `num_fallback`),
 `estimate_error` (the Zienkiewicz-Zhu recovery-based error indicator of a

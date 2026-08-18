@@ -437,6 +437,29 @@ program test_fortran_api
         call check(st /= 0, 'interpolate rejects an unknown method')
     end block
 
+    ! -- conservative_interpolate: mass-preserving cross-mesh field transfer --
+    block
+        type(mio_mesh) :: sampled, bad
+        real(real64), allocatable :: cdata(:)
+        integer :: st
+
+        ! Self-remap of cell_data 'quality' onto the identical mesh exactly
+        ! reproduces every value (100% coverage, no clipping loss).
+        sampled = mio_conservative_interpolate(m, m, &
+                                               arrays=[character(len=16) :: 'quality'], &
+                                               on_conflict='suffix', stat=st)
+        call check(st == 0, 'conservative_interpolate succeeded')
+        call sampled%get_cell_data('quality_interp', 1, cdata)
+        call check(size(cdata) == 2, 'conservative_interpolate has one row per target cell')
+        call check(maxval(abs(cdata - [0.5_real64, 0.75_real64])) < 1.0e-9_real64, &
+                   'self-remap reproduces the field exactly')
+        call sampled%free()
+
+        ! A name collision under the default 'error' fails through stat.
+        bad = mio_conservative_interpolate(m, m, stat=st)
+        call check(st /= 0, 'conservative_interpolate rejects a name collision under error')
+    end block
+
     ! -- refine: uniform subdivision into same-type children --
     block
         type(mio_mesh) :: one, two, quadratic, bad

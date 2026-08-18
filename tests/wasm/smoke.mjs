@@ -948,6 +948,23 @@ step('interpolate: transfers fields onto a target mesh', () => {
     assert.throws(() => m.interpolate(src, tgt, 'nearest', ['nope']));
 });
 
+step('conservativeInterpolate: mass-preservingly transfers cell_data', () => {
+    // Self-remap of cell_data onto the identical triangle exactly recovers
+    // the source value (100% coverage, no clipping loss).
+    const tri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+        point_data: {},
+        cell_data: { f: [new Float64Array([7])] },
+        field_data: {},
+    };
+    const out = m.conservativeInterpolate(tri, tri, ['f'], 0, 'suffix');
+    assert.deepEqual(Array.from(out.cell_data.f_interp[0]), [7]);
+
+    assert.throws(() => m.conservativeInterpolate(tri, tri, ['nope']));
+});
+
 step('slice: the mid-plane cross-section of the unit cube has area 1', () => {
     const sectioned = m.slice(cube, [0, 0, 0.5], [0, 0, 1], true);
     // A volume mesh sections into surface faces (triangles here).
@@ -1352,6 +1369,7 @@ step('every binding is reachable through the wrapper', () => {
         'clean',
         'smooth',
         'interpolate',
+        'conservativeInterpolate',
         'undoGreen',
         'slice',
         'isosurface',

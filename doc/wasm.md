@@ -255,7 +255,17 @@ two-mesh op it is deliberately **not** reachable as a `convertSurfaceOps`
 pipeline step — `{op: 'undoGreen'}` throws the same "unknown operation" catchable
 `Error` `Merge`/`Interpolate`/`Split`/`Diff` already throw there, since none
 of the two-mesh ops ever reach `pipeline_op_table()`. See
-[green-element undo](/undo_green). Partitioning is exposed as `partition(mesh, nparts, method,
+[green-element undo](/undo_green). **Mass-preserving field transfer**, the
+sibling of `interpolate` that conserves `sum(value * measure)` over the
+region two meshes share rather than sampling pointwise, is exposed as
+`conservativeInterpolate(source, target, arrays, defaultValue, onConflict)` →
+mesh (always Float64 arrays). Both meshes are simplexified first, accepting
+ragged/polyhedron blocks for free; unlike `interpolate`, an empty `arrays`
+means every source point_data **and** cell_data array. Like `interpolate` it
+is a two-mesh op and so is **not** reachable as a `convertSurfaceOps`
+pipeline step (`{op: 'conservativeInterpolate'}` throws the same "unknown
+operation" catchable `Error`). See
+[conservative interpolation](/conservative_interpolate). Partitioning is exposed as `partition(mesh, nparts, method,
 imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of
 `{ partId, mesh }` (exactly `nparts` entries, blocks kept 1:1 with the input,
 unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,

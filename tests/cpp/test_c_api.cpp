@@ -544,6 +544,47 @@ TEST(CApi, Interpolate) {
     mio_mesh_free(tgt);
 }
 
+TEST(CApi, ConservativeInterpolate) {
+    // Two identical single-triangle meshes: the full-value-recovery oracle.
+    mio_mesh* src = mio_mesh_create();
+    const std::vector<double> spts = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(src, MIO_FLOAT64, 3, 3, spts.data()), MIO_OK);
+    const std::vector<std::int64_t> sconn = {0, 1, 2};
+    ASSERT_EQ(mio_mesh_add_cell_block(src, "triangle", 1, 3, MIO_INT64, sconn.data()), MIO_OK);
+    const std::vector<double> f = {7.0};
+    const std::int64_t shapec[] = {1};
+    ASSERT_EQ(mio_mesh_append_cell_data(src, "f", MIO_FLOAT64, 1, shapec, f.data()), MIO_OK);
+
+    mio_mesh* tgt = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(tgt, MIO_FLOAT64, 3, 3, spts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(tgt, "triangle", 1, 3, MIO_INT64, sconn.data()), MIO_OK);
+
+    mio_mesh* out = mio_conservative_interpolate(src, tgt, nullptr, 0, 0.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT32;
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "f", 0, &data, &dt, nullptr, nullptr), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[0], 7.0);
+    mio_mesh_free(out);
+
+    // An explicit name list goes through the char** + count convention.
+    const char* names[] = {"f"};
+    out = mio_conservative_interpolate(src, tgt, names, 1, 0.0, "error");
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+
+    // Error paths: unknown array / NULL meshes.
+    const char* bad[] = {"nope"};
+    EXPECT_EQ(mio_conservative_interpolate(src, tgt, bad, 1, 0.0, nullptr), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    EXPECT_EQ(mio_conservative_interpolate(nullptr, tgt, nullptr, 0, 0.0, nullptr), nullptr);
+    EXPECT_EQ(mio_conservative_interpolate(src, nullptr, nullptr, 0, 0.0, nullptr), nullptr);
+
+    mio_mesh_free(src);
+    mio_mesh_free(tgt);
+}
+
 TEST(CApi, Diff) {
     mio_mesh* a = build_tet_mesh();
     mio_mesh* b = build_tet_mesh();

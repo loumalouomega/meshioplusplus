@@ -254,6 +254,20 @@ The suite uses the same deliberately non-square fixture as [`tests/fortran/test_
   `undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split`
   it is exported.
 
+- `conservative_interpolate(source, target; arrays=String[], default_value=0.0,
+  on_conflict="error")` — mass-preserving field transfer, [`interpolate`](@ref)'s
+  sibling: conserves `sum(target value * target measure) ==
+  sum(source value * source measure)` over the region the two meshes share,
+  a property `interpolate`'s pointwise sampling does not have. Both meshes
+  are simplexified first, accepting ragged/polyhedron blocks for free.
+  Unlike `interpolate`, an empty `arrays` means every source point_data
+  **and** cell_data array. Output arrays are always Float64. Like
+  `undo_green`, a **two-mesh** operation, and like `subdivide`/`agglomerate`
+  this is C++-core only — the 3D clip kernel's discrete branches could
+  disagree with a second implementation near a degenerate overlap, so there
+  is no pure-Julia fallback either; the installed C library is always
+  called. See [`doc/conservative_interpolate.md`](conservative_interpolate.md).
+
 ## v10.4.0 additions
 
 - `agglomerate(mesh; target_group_size=8)` — polyhedral coarsening, the
