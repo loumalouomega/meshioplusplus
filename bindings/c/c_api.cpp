@@ -70,6 +70,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -1084,6 +1085,35 @@ mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target, const 
         opts.mOnConflict =
             meshioplusplus::interpolate_conflict_from_name(on_conflict ? on_conflict : "error");
         return new mio_mesh{meshioplusplus::interpolate(source->mMesh, target->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_conservative_interpolate(const mio_mesh* source, const mio_mesh* target,
+                                       const char* const* arrays, int64_t arrays_count,
+                                       double default_value, const char* on_conflict) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!source)
+            throw meshioplusplus::ReadError("meshio++: source mesh is NULL");
+        if (!target)
+            throw meshioplusplus::ReadError("meshio++: target mesh is NULL");
+        meshioplusplus::ConservativeInterpolateOptions opts;
+        // NULL or a non-positive count means "every source point_data and
+        // cell_data array" (the interpolate convention, extended: there is
+        // one algorithm regardless of location here).
+        if (arrays && arrays_count > 0) {
+            opts.mArrays.reserve(static_cast<std::size_t>(arrays_count));
+            for (int64_t i = 0; i < arrays_count; ++i) {
+                if (!arrays[i])
+                    throw meshioplusplus::ReadError("meshio++: arrays[" + std::to_string(i) +
+                                                    "] is NULL");
+                opts.mArrays.emplace_back(arrays[i]);
+            }
+        }
+        opts.mDefaultValue = default_value;
+        opts.mOnConflict = meshioplusplus::conservative_interpolate_conflict_from_name(
+            on_conflict ? on_conflict : "error");
+        return new mio_mesh{
+            meshioplusplus::conservative_interpolate(source->mMesh, target->mMesh, opts)};
     });
 }
 

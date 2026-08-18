@@ -73,6 +73,7 @@
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -1085,6 +1086,32 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"),
         py::arg("record_parent_ids") = false);
+
+    // Mass-preserving cross-mesh field transfer: exact overlap-measure
+    // weighted remap (as opposed to interpolate's pointwise sampling).
+    // Returns the target copy as a plain mesh (no maps/counters). See
+    // operations/conservative_interpolate.hpp.
+    m.def(
+        "conservative_interpolate",
+        [](py::object pysource, py::object pytarget, py::object arrays, double default_value,
+           const std::string& on_conflict) {
+            meshioplusplus_py::PyMeshRefs refs_src;
+            meshioplusplus_py::PyMeshRefs refs_tgt;
+            meshioplusplus::Mesh src = meshioplusplus_py::py_to_mesh(
+                pysource, refs_src, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh tgt = meshioplusplus_py::py_to_mesh(
+                pytarget, refs_tgt, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ConservativeInterpolateOptions options;
+            if (!arrays.is_none())
+                options.mArrays = py::cast<std::vector<std::string>>(arrays);
+            options.mDefaultValue = default_value;
+            options.mOnConflict =
+                meshioplusplus::conservative_interpolate_conflict_from_name(on_conflict);
+            meshioplusplus::Mesh out = meshioplusplus::conservative_interpolate(src, tgt, options);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("source"), py::arg("target"), py::arg("arrays") = py::none(),
+        py::arg("default_value") = 0.0, py::arg("on_conflict") = "error");
 
     // Isosurfaces / contours: the level set of a scalar point_data field, cut
     // with the same marching tetrahedra as slice. `component` is negative for

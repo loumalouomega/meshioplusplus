@@ -258,6 +258,19 @@ SEXP R_mio_interpolate(SEXP source, SEXP target, SEXP method, SEXP arrays, SEXP 
     return mio_r_wrap_mesh(out);
 }
 
+SEXP R_mio_conservative_interpolate(SEXP source, SEXP target, SEXP arrays, SEXP default_value,
+                                    SEXP on_conflict) {
+    SEXP shelter;
+    int64_t count = 0;
+    const char *const *names = mio_r_names(arrays, &count, &shelter);
+    mio_mesh *out = mio_conservative_interpolate(mio_r_mesh(source), mio_r_mesh(target), names,
+                                                 count, mio_r_double(default_value, "default_value"),
+                                                 mio_r_opt_string(on_conflict));
+    UNPROTECT(1); /* shelter */
+    if (out == NULL) mio_r_fail("conservative_interpolate");
+    return mio_r_wrap_mesh(out);
+}
+
 SEXP R_mio_undo_green(SEXP coarse, SEXP fine) {
     int64_t ngroups = 0, nremoved = 0;
     mio_mesh *out =

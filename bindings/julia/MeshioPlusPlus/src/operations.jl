@@ -461,6 +461,33 @@ function interpolate(source::Mesh, target::Mesh; method::AbstractString="nearest
 end
 
 """
+    conservative_interpolate(source, target; arrays=String[],
+                             default_value=0.0, on_conflict="error") -> Mesh
+
+Mass-preserving cross-mesh field transfer: an exact overlap-measure weighted
+remap, so that over the region the two meshes share, `sum(target value *
+target measure)` equals `sum(source value * source measure)` — the property
+[`interpolate`](@ref)'s `"barycentric"` mode does not have. Both meshes are
+simplexified first (accepting ragged/polyhedron blocks for free).
+
+Unlike `interpolate`, an empty `arrays` means every source point_data AND
+cell_data array — there is one algorithm regardless of location. Output
+arrays are always Float64. `on_conflict` is `"error"`, `"overwrite"` or
+`"suffix"`. See `doc/conservative_interpolate.md`.
+"""
+function conservative_interpolate(source::Mesh, target::Mesh; arrays=String[],
+                                   default_value::Real=0.0,
+                                   on_conflict::AbstractString="error")
+    sh = _handle(source); th = _handle(target)
+    ptr = _with_names(arrays) do names_ptr, count
+        ccall(_sym(:mio_conservative_interpolate), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cstring}, Int64, Cdouble, Cstring),
+              sh, th, names_ptr, count, Float64(default_value), on_conflict)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
     meshes_equal(a, b; atol=0.0, rtol=0.0, unordered=false) -> Bool
 
 Are two meshes equal within tolerance (i.e. the diff verdict is not

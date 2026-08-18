@@ -66,6 +66,7 @@ module meshioplusplus
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
     public :: mio_interpolate
+    public :: mio_conservative_interpolate
     public :: mio_undo_green
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
@@ -892,6 +893,18 @@ module meshioplusplus
             type(c_ptr), value :: arrays
             integer(c_int64_t), value :: count
             integer(c_int), value :: extrapolate
+            real(c_double), value :: default_value
+            character(kind=c_char), dimension(*), intent(in) :: on_conflict
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_conservative_interpolate(source, target, arrays, count, &
+                                                default_value, on_conflict) &
+                bind(c, name="mio_conservative_interpolate") result(r)
+            import :: c_ptr, c_char, c_int64_t, c_double
+            type(c_ptr), value :: source, target
+            type(c_ptr), value :: arrays
+            integer(c_int64_t), value :: count
             real(c_double), value :: default_value
             character(kind=c_char), dimension(*), intent(in) :: on_conflict
             type(c_ptr) :: r
@@ -2512,6 +2525,49 @@ contains
                                        count, cextrap, cdefault, c_str(cconflict))
         if (.not. c_associated(out%handle)) then
             call handle_failure('interpolate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Mass-preserving cross-mesh field transfer: an exact overlap-measure
+    !> weighted remap, so sum(target value * target measure) equals
+    !> sum(source value * source measure) over the shared region -- the
+    !> property mio_interpolate's 'barycentric' mode does not have. Both
+    !> meshes are simplexified (accepting ragged/polyhedron blocks for free).
+    !> `arrays` omitted or zero-sized means every source point_data AND
+    !> cell_data array (one algorithm regardless of location, unlike
+    !> mio_interpolate). `on_conflict` is 'error' (default), 'overwrite' or
+    !> 'suffix' (name + '_interp'). Output arrays are always Float64.
+    function mio_conservative_interpolate(source, target, arrays, default_value, &
+                                          on_conflict, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: source, target
+        character(*), intent(in), optional :: on_conflict
+        character(*), intent(in), optional :: arrays(:)
+        real(real64), intent(in), optional :: default_value
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        real(c_double) :: cdefault
+        character(:), allocatable :: cconflict
+        cconflict = 'error'
+        if (present(on_conflict)) cconflict = trim(on_conflict)
+        cdefault = 0.0_c_double
+        if (present(default_value)) cdefault = real(default_value, c_double)
+        if (present(arrays)) then
+            call c_str_array(arrays, storage, cptrs, arr, count)
+        else
+            arr = c_null_ptr
+            count = 0_c_int64_t
+        end if
+        out%handle = c_mio_conservative_interpolate(source%handle, target%handle, arr, &
+                                                     count, cdefault, c_str(cconflict))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('conservative_interpolate', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

@@ -804,6 +804,17 @@ mio_interpolate <- function(source, target, method = "nearest", arrays = NULL,
 
 #' @rdname mio_extract_surface
 #' @export
+mio_conservative_interpolate <- function(source, target, arrays = NULL,
+                                         default_value = 0, on_conflict = "error") {
+  .Call(
+    R_mio_conservative_interpolate, source, target,
+    if (is.null(arrays)) NULL else as.character(arrays),
+    as.numeric(default_value), as.character(on_conflict)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
 mio_undo_green <- function(coarse, fine) {
   .Call(R_mio_undo_green, coarse, fine)
 }

@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 6
+#define MIO_VERSION_MINOR 7
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -779,6 +779,36 @@ MIO_API mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target
                                   const char* method, const char* const* arrays,
                                   int64_t arrays_count, int extrapolate, double default_value,
                                   const char* on_conflict);
+
+/**
+ * Mass-preserving cross-mesh field transfer: an exact overlap-measure
+ * weighted remap, so that over the region the two meshes share,
+ * sum(target value * target measure) equals sum(source value * source
+ * measure) — the property mio_interpolate's "barycentric" mode does not
+ * have. Both meshes are simplexified (accepting ragged/polyhedron blocks for
+ * free); every overlapping simplex pair is measured with an exact geometric
+ * clip. Unlike mio_interpolate, a NULL/empty arrays list means every source
+ * point_data AND cell_data array (one algorithm regardless of location).
+ * Output arrays are always Float64.
+ * @param source        the mesh whose data is sampled.
+ * @param target        the mesh receiving the samples.
+ * @param arrays        source array names to transfer, as an array of C
+ *                      strings with an explicit count. NULL or
+ *                      arrays_count <= 0 means every source point_data and
+ *                      cell_data array.
+ * @param arrays_count  number of entries in arrays (see above).
+ * @param default_value the fill value (every component) for a target cell
+ *                      whose covered fraction of source overlap is below the
+ *                      coverage tolerance.
+ * @param on_conflict   what to do when a transferred name already exists on
+ *                      the target: "error", "overwrite" or "suffix" (writes
+ *                      to name + "_interp"); NULL means "error".
+ * @return the target copy with the remapped arrays (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_conservative_interpolate(const mio_mesh* source, const mio_mesh* target,
+                                               const char* const* arrays, int64_t arrays_count,
+                                               double default_value, const char* on_conflict);
 
 /**
  * Planar cross-section of a mesh: the intersection with a plane, one topological

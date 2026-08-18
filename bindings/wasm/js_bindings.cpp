@@ -89,6 +89,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -2586,6 +2587,30 @@ val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::stri
 }
 
 /**
+ * @brief Mass-preserving cross-mesh field transfer: an exact overlap-measure
+ * weighted remap, so sum(target value * target measure) equals sum(source
+ * value * source measure) over the shared region -- the property
+ * `interpolate`'s "barycentric" mode does not have. Both meshes are
+ * simplexified (accepting ragged/polyhedron blocks for free). Unlike
+ * `interpolate`, `arrays` undefined/null/empty means every source
+ * point_data AND cell_data array (one algorithm regardless of location).
+ * `onConflict` is "error", "overwrite" or "suffix" (name + "_interp").
+ * Returns the target copy as a plain mesh object (always Float64 arrays).
+ */
+val conservative_interpolate_js(const val& rSourceObj, const val& rTargetObj, const val& rArrays,
+                                double defaultValue, const std::string& rOnConflict) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConservativeInterpolateOptions options;
+        options.mArrays = val_to_string_vector(rArrays);
+        options.mDefaultValue = defaultValue;
+        options.mOnConflict =
+            meshioplusplus::conservative_interpolate_conflict_from_name(rOnConflict);
+        return mesh_to_val(meshioplusplus::conservative_interpolate(
+            val_to_mesh(rSourceObj), val_to_mesh(rTargetObj), options));
+    });
+}
+
+/**
  * @brief Green-element undo: restore `fine`'s transitional (closure-only)
  * cells back to their original parent, read verbatim from `coarse` -- a
  * lookup, not a reconstruction, since `refine` never renumbers or prunes
@@ -2804,6 +2829,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
+    emscripten::function("conservativeInterpolate", &conservative_interpolate_js);
     emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);

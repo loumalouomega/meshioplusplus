@@ -16,6 +16,7 @@
 \alias{mio_isosurface}
 \alias{mio_merge}
 \alias{mio_interpolate}
+\alias{mio_conservative_interpolate}
 \alias{mio_undo_green}
 \alias{mio_meshes_equal}
 \alias{mio_diff}
@@ -114,6 +115,14 @@ mio_interpolate(
   method = "nearest",
   arrays = NULL,
   extrapolate = FALSE,
+  default_value = 0,
+  on_conflict = "error"
+)
+
+mio_conservative_interpolate(
+  source,
+  target,
+  arrays = NULL,
   default_value = 0,
   on_conflict = "error"
 )
