@@ -406,6 +406,73 @@ TEST(CApi, Decimate) {
     mio_mesh_free(tet);
 }
 
+TEST(CApi, DecimateVolume) {
+    // A unit cube split into 6 positively-oriented tets sharing the main
+    // diagonal 0-6 (the same fixture as test_decimate_volume.cpp).
+    const std::array<double, 24> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::array<std::int64_t, 24> conn = {0, 1, 2, 6, 0, 2, 3, 6, 0, 3, 7, 6,
+                                               0, 7, 4, 6, 0, 4, 5, 6, 0, 5, 1, 6};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_NE(m, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 6, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_decimate_volume_result* res =
+        mio_decimate_volume(m, /*target_ratio=*/-1.0, /*target_cells=*/1, /*max_error=*/-1.0,
+                            /*placement=*/nullptr, /*preserve_boundary=*/0, /*preserve_features=*/0,
+                            /*feature_angle=*/30.0);
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    const mio_mesh* dm = mio_decimate_volume_result_mesh(res);
+    ASSERT_NE(dm, nullptr);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(dm), 1);
+    EXPECT_EQ(block_type(dm, 0), "tetra");
+    EXPECT_GT(mio_decimate_volume_result_tets_removed(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_points_removed(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_collapses_rejected(res), 0);
+    EXPECT_GE(mio_decimate_volume_result_max_error_applied(res), 0.0);
+
+    const void* pm = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_decimate_volume_result_point_map(res, &pm, &dt, &n), MIO_OK) << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 8);
+
+    ASSERT_EQ(mio_decimate_volume_result_num_cell_maps(res), 1);
+    const void* cm = nullptr;
+    ASSERT_EQ(mio_decimate_volume_result_cell_map(res, 0, &cm, &dt, &n), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dt, MIO_INT64);
+    EXPECT_EQ(n, 6);
+    EXPECT_EQ(mio_decimate_volume_result_cell_map(res, 7, &cm, &dt, &n), MIO_ERR_NOT_FOUND);
+
+    mio_mesh* taken = mio_decimate_volume_result_take_mesh(res);
+    ASSERT_NE(taken, nullptr) << mio_last_error();
+    mio_decimate_volume_result_free(res);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(taken), 1);
+    mio_mesh_free(taken);
+
+    // Error paths fail cleanly: no criterion, and decimate() itself still
+    // refuses a tet mesh, pointing here.
+    EXPECT_EQ(mio_decimate_volume(m, -1.0, -1, -1.0, nullptr, 0, 1, 30.0), nullptr);
+    EXPECT_EQ(mio_decimate(m, -1.0, 1, -1.0, nullptr, 1, 1, 30.0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("extract_surface"), std::string::npos);
+    mio_mesh_free(m);
+
+    // A non-tet 3D block is refused by name.
+    mio_mesh* hex = mio_mesh_create();
+    ASSERT_NE(hex, nullptr);
+    const std::array<double, 24> hpts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                         0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::array<std::int64_t, 8> hconn = {0, 1, 2, 3, 4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_set_points(hex, MIO_FLOAT64, 8, 3, hpts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(hex, "hexahedron", 1, 8, MIO_INT64, hconn.data()), MIO_OK);
+    EXPECT_EQ(mio_decimate_volume(hex, -1.0, 1, -1.0, nullptr, 0, 1, 30.0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("tet-only"), std::string::npos);
+    mio_mesh_free(hex);
+}
+
 TEST(CApi, Merge) {
     mio_mesh* a = build_tet_mesh();  // 5 points, 2 tetra
     mio_mesh* b = build_tet_mesh();

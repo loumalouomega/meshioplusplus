@@ -153,6 +153,28 @@ def test_agglomerate_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_decimate_volume_pipeline_step(settings_env):
+    """DecimateVolume dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair, and like Subdivide/Agglomerate has no numpy
+    fallback, so both engines call the same underlying
+    `_core.decimate_volume`."""
+    settings = make_settings(
+        settings_env,
+        [{"Op": "DecimateVolume", "TargetCells": 1, "PreserveFeatures": False}],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "DecimateVolume"
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh has two face-adjacent tetra cells -> collapses to one.
+    assert len(out.cells[0].data) <= 1
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_estimate_error_pipeline_step(settings_env):
     """EstimateError dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike
