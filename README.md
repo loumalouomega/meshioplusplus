@@ -400,6 +400,20 @@ coarse, report = meshioplusplus.decimate(mesh, max_error=1e-6, return_report=Tru
 
 Boundary vertices (once-used-edge test) and feature vertices (face normals differing by more than `feature_angle`, default 30°) are pinned by default, so an open patch keeps its outline exactly and a cube keeps its corners; the link condition and a normal-flip guard reject any collapse that would change topology, create a non-manifold edge, or fold the surface. Float `point_data` blends along the collapsed edge; integer arrays keep the survivor's value. Volume meshes raise by name — run `extract_surface` first, then decimate the skin.
 
+#### Volume decimation
+
+**`meshioplusplus.decimate_volume`** is `decimate`'s volume-mesh sibling — a separate operation, not a mode on it — reducing a **tetrahedral** mesh's cell count by greedy quadric-error-metric **tet**-edge collapse. Unlike `decimate`, boundary vertices *participate* by default (`preserve_boundary=False`): every vertex accumulates a quadric from its incident boundary-triangle planes only, so a purely interior vertex's quadric is exactly zero and interior-only edges are scored by squared length instead, always ranking behind boundary-touching collapses. See `doc/decimate_volume.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+coarse = meshioplusplus.decimate_volume(mesh, ratio=0.25)             # keep 25% of the tets
+coarse = meshioplusplus.decimate_volume(mesh, target_cells=5000)      # absolute tet budget
+coarse, report = meshioplusplus.decimate_volume(mesh, max_error=1e-6, return_report=True)
+```
+
+Validity is guarded by an exact vertex-link set-equality condition, a duplicate-tet check, and a tet-inversion guard, plus — for boundary-touching collapses — `decimate`'s own ring/shared-face link condition and normal-flip check reused over the mesh's own outer skin. Tet-only: any non-tetra 3D block raises by name pointing at `convert_cells(mode="simplexify")`.
+
 #### Partitioning
 
 **`meshioplusplus.partition`** decomposes a mesh into exactly N balanced pieces for domain decomposition — the count-driven complement to the criterion-driven `split`. See `doc/partition.md`.
@@ -793,7 +807,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

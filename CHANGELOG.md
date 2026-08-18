@@ -8,6 +8,37 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.6.0 (2026-08-18)
+
+**Roadmap §1 closed in full** — volume decimation was the section's last
+open item.
+
+- **`decimate_volume`** (`operations/decimate_volume.hpp`,
+  [`doc/decimate_volume.md`](doc/decimate_volume.md)) — the volume-mesh
+  sibling of surface `decimate`: reduces a tetrahedral mesh's cell count by
+  greedy quadric-error-metric **tet**-edge collapse. A separate operation,
+  not a mode on `decimate` (`DecimateOptions`/`mio_decimate` are untouched).
+  Boundary vertices **participate** in decimation with a real quadric-error
+  objective by default (`preserve_boundary=False`), unlike `decimate`'s own
+  pinned-boundary default — every vertex's quadric is built from its
+  incident boundary-triangle planes only, so a purely interior vertex's
+  quadric is exactly zero and interior-only edges are scored by squared
+  length instead, always ranking behind boundary-touching collapses in the
+  greedy queue. Tet-only: any non-tetra 3D block raises pointing at
+  `convert_cells(mode="simplexify")`. Validity is guarded by an exact
+  vertex-link set-equality condition, a duplicate-tet check, and a
+  tet-inversion guard, plus — for boundary-touching collapses — `decimate`'s
+  own ring/shared-face link condition and normal-flip check, reused over the
+  mesh's own outer skin via machinery hoisted into a new shared
+  `detail/decimate_common.hpp` (`decimate.cpp` itself is otherwise
+  byte-identical; its own test suite is the regression guard for the hoist).
+  C++-core only, no numpy fallback, the same reasoning `subdivide`/
+  `agglomerate` already document. Shipped across pybind, the C API
+  (`mio_decimate_volume`, its own opaque result type), both CLIs
+  (`decimate-volume`), the settings pipeline (`DecimateVolume` step, both
+  engines), and the MCP server. No ABI change (`MESHIOPLUSPLUS_ABI_VERSION`
+  stays at 7). Fortran/Julia/R/WASM bindings are a recorded follow-up.
+
 ## v10.5.0 (2026-08-17)
 
 **Roadmap §1 closed further** — green-element undo is closed; volume
