@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
@@ -936,6 +937,59 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_faces") = -1,
         py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
         py::arg("preserve_boundary") = true, py::arg("preserve_features") = true,
+        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
+
+    // Quadric-error-metric tet-edge collapse volume decimation. Returns a dict
+    // {mesh, point_map, cell_maps, tets_removed, points_removed,
+    // collapses_rejected, max_error_applied}. See operations/decimate_volume.hpp.
+    // A separate operation from `decimate` -- boundary vertices participate by
+    // default (`preserve_boundary` defaults False here, unlike `decimate`'s True).
+    m.def(
+        "decimate_volume",
+        [](py::object pymesh, double target_ratio, std::int64_t target_cells, double max_error,
+           const std::string& placement, bool preserve_boundary, bool preserve_features,
+           double feature_angle, py::object frozen) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DecimateVolumeOptions options;
+            options.mTargetRatio = target_ratio;
+            options.mTargetCells = target_cells;
+            options.mMaxError = max_error;
+            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
+            options.mPreserveBoundary = preserve_boundary;
+            options.mPreserveFeatures = preserve_features;
+            options.mFeatureAngleDeg = feature_angle;
+            if (!frozen.is_none()) {
+                py::array_t<std::int64_t> ids =
+                    py::cast<py::array_t<std::int64_t>>(py::array::ensure(frozen));
+                options.mFrozen.assign(cpp.NumPoints(), 0);
+                auto v = ids.unchecked<1>();
+                for (py::ssize_t k = 0; k < v.shape(0); ++k) {
+                    const std::int64_t id = v(k);
+                    if (id < 0 || static_cast<std::size_t>(id) >= cpp.NumPoints())
+                        throw std::invalid_argument("meshio++: decimate_volume: frozen node id " +
+                                                    std::to_string(id) + " is out of range");
+                    options.mFrozen[static_cast<std::size_t>(id)] = 1;
+                }
+            }
+            meshioplusplus::DecimateVolumeResult r = meshioplusplus::decimate_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["tets_removed"] = r.mTetsRemoved;
+            out["points_removed"] = r.mPointsRemoved;
+            out["collapses_rejected"] = r.mCollapsesRejected;
+            out["max_error_applied"] = r.mMaxErrorApplied;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_cells") = -1,
+        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
+        py::arg("preserve_boundary") = false, py::arg("preserve_features") = true,
         py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
 
     // Laplacian / Taubin smoothing. Returns a dict with the smoothed mesh and

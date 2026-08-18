@@ -111,6 +111,12 @@ typedef struct mio_refine_result mio_refine_result;
  *  mio_decimate_result_free(). */
 typedef struct mio_decimate_result mio_decimate_result;
 
+/** Opaque result of mio_decimate_volume(): the decimated TET mesh plus the
+ *  point/cell index maps and the collapse summary. A separate result type
+ *  from mio_decimate_result -- decimate_volume is a separate operation, not a
+ *  mode on decimate. Destroy with mio_decimate_volume_result_free(). */
+typedef struct mio_decimate_volume_result mio_decimate_volume_result;
+
 /** Opaque result of mio_partition(): the pieces plus their point/cell index
  *  maps. Destroy with mio_partition_result_free(). */
 typedef struct mio_partition_result mio_partition_result;
@@ -229,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 5
+#define MIO_VERSION_MINOR 6
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1442,6 +1448,113 @@ MIO_API double mio_decimate_result_max_error_applied(const mio_decimate_result* 
 
 /** Free a decimate result (and the mesh it still owns). */
 MIO_API void mio_decimate_result_free(mio_decimate_result* result);
+
+/**
+ * Decimate a TET mesh by greedy quadric-error-metric tet-edge collapse — the
+ * volume-mesh sibling of mio_decimate, a SEPARATE operation (mio_decimate
+ * keeps failing by name on any 3D volume block, pointing here). Tet-only:
+ * hexahedron/wedge/pyramid/polyhedron/ragged/higher-order 3D blocks, or any
+ * non-3D block mixed in, fail by name pointing at simplexify
+ * (mio_convert_cells). Unlike mio_decimate, boundary vertices PARTICIPATE by
+ * default (preserve_boundary defaults to pass 0) with a real quadric-error
+ * objective built from the mesh's own outer-skin triangles; purely interior
+ * edges (whose combined quadric is exactly zero) are scored by squared
+ * length instead and always rank behind boundary-touching ones. The link
+ * condition, a duplicate-tet guard and a tet-inversion guard reject any
+ * collapse that would change topology or invert a tet; boundary-touching
+ * collapses additionally run mio_decimate's own ring/shared-face link
+ * condition and normal-flip check over the mesh's own skin. The caller
+ * frozen mask is not exposed across the C ABI (a documented flat-ABI gap,
+ * like mio_smooth's).
+ * @param target_ratio      fraction of the tets to KEEP, in (0, 1];
+ *                          negative = unset.
+ * @param target_cells      absolute tet count to stop at (the result lands
+ *                          within one collapse of it); negative = unset.
+ * @param max_error         collapse only while the cheapest boundary-touching
+ *                          candidate's quadric error is at most this;
+ *                          negative = unset. Exactly one of the three
+ *                          criteria must be set.
+ * @param placement         "optimal" (quadric minimizer, midpoint when
+ *                          ill-conditioned or purely interior), "midpoint" or
+ *                          "endpoint"; NULL = "optimal".
+ * @param preserve_boundary nonzero to pin every boundary vertex outright,
+ *                          reproducing mio_decimate's own default instead of
+ *                          letting boundary vertices participate.
+ * @param preserve_features nonzero to pin boundary feature vertices.
+ * @param feature_angle     the feature angle in degrees (30 is the
+ *                          vtkFeatureEdges convention).
+ * @return a result handle (free with mio_decimate_volume_result_free), or
+ *         NULL on failure — a non-tet-only mesh, a non-manifold boundary
+ *         face, and a criterion count != 1 all fail by name.
+ */
+MIO_API mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double target_ratio,
+                                                         int64_t target_cells, double max_error,
+                                                         const char* placement,
+                                                         int preserve_boundary,
+                                                         int preserve_features,
+                                                         double feature_angle);
+
+/**
+ * Borrow the decimated mesh. Owned by the result: valid until
+ * mio_decimate_volume_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the decimated mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result);
+
+/**
+ * Transfer ownership of the decimated mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_decimate_volume_result_take_mesh(mio_decimate_volume_result* result);
+
+/**
+ * Zero-copy borrow of the point map (int64, shape (num_points_in,), input
+ * point index -> output index). A collapsed point maps to its SURVIVOR's
+ * output index, and is -1 only when the survivor itself ended up
+ * unreferenced. The pointer is valid until the result is freed. Any out-param
+ * may be NULL.
+ */
+MIO_API mio_status mio_decimate_volume_result_point_map(const mio_decimate_volume_result* result,
+                                                         const void** data, mio_dtype* dtype,
+                                                         int64_t* n);
+
+/** Number of per-block cell maps in a decimate_volume result, or -1 on error. */
+MIO_API int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volume_result* result);
+
+/**
+ * Zero-copy borrow of INPUT tet block `block`'s cell map (int64, shape
+ * (num_cells_in_block,), input cell -> its own output index, or -1 when it
+ * did not survive). Any out-param may be NULL.
+ * @param result a decimate_volume result.
+ * @param block  cell-block index in [0, mio_decimate_volume_result_num_cell_maps).
+ * @param data   receives a pointer into result-owned int64 memory.
+ * @param dtype  receives MIO_INT64.
+ * @param n      receives the block's input cell count.
+ */
+MIO_API mio_status mio_decimate_volume_result_cell_map(const mio_decimate_volume_result* result,
+                                                        int64_t block, const void** data,
+                                                        mio_dtype* dtype, int64_t* n);
+
+/** Tets removed, or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result);
+
+/** Points removed (collapsed plus pruned-unreferenced), or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_points_removed(const mio_decimate_volume_result* result);
+
+/** Guard-rejection events during the run, or -1 on error. */
+MIO_API int64_t
+mio_decimate_volume_result_collapses_rejected(const mio_decimate_volume_result* result);
+
+/** The largest committed boundary-touching (regime 0) collapse error (0.0
+ *  when nothing collapsed, or every collapse was purely interior), or a
+ *  negative value on error. */
+MIO_API double
+mio_decimate_volume_result_max_error_applied(const mio_decimate_volume_result* result);
+
+/** Free a decimate_volume result (and the mesh it still owns). */
+MIO_API void mio_decimate_volume_result_free(mio_decimate_volume_result* result);
 
 /**
  * Decompose a mesh into `nparts` balanced pieces for domain decomposition (the
