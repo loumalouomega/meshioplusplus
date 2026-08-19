@@ -883,10 +883,15 @@ step('remesh: produces the requested cluster count on a closed surface', () => {
     assert.ok(out.subdivideApplied > 0, 'the cube skin cannot support 40 clusters unsubdivided');
     assert.ok(out.numIterations >= 0);
     assert.equal(out.numIsolatedClusters, 0);
+    assert.ok(out.numNonManifoldVertices >= 0);
 
     // The quadric ("feature-preserving") metric is accepted too.
     const outQ = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'quadric');
     assert.equal(outQ.numClusters, 40);
+
+    // gradation/preserveBoundary reach the C++ core and are honoured.
+    const outG = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'isotropic', 1.5, false);
+    assert.equal(outG.numClusters, 40);
 });
 
 step('remesh rejects a volume mesh and a too-small cluster count', () => {
@@ -898,7 +903,7 @@ step('remesh rejects a volume mesh and a too-small cluster count', () => {
 step('remesh is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/remesh.vtu', m.extractSkin(cube, true));
     const out = m.convertSurfaceOps('/remesh.vtu', '/remesh.vtp', [
-        { op: 'remesh', numClusters: 30, metric: 'quadric' },
+        { op: 'remesh', numClusters: 30, metric: 'quadric', gradation: 1.0 },
     ]);
     assert.equal(out.steps[0].op, 'remesh');
     assert.equal(out.steps[0].numClusters, 30);

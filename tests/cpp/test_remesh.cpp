@@ -111,6 +111,10 @@ Mesh cube_mesh(int per_edge) {
 std::map<std::pair<std::int64_t, std::int64_t>, int> edge_uses(const Mesh& rM) {
     std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
     for (const auto cb : rM.CellRange()) {
+        // Boundary-preserving remesh may attach a second, 2-noded `line`
+        // block alongside the triangles; this oracle is triangle-only.
+        if (cb.Type() != "triangle")
+            continue;
         const NDArray& conn = cb.Conn();
         for (std::size_t c = 0; c < cb.NumCells(); ++c)
             for (int k = 0; k < 3; ++k) {
@@ -134,6 +138,10 @@ double min_angle_deg(const Mesh& rM) {
         return detail::read_double(pts, static_cast<std::size_t>(i) * dim + d);
     };
     for (const auto cb : rM.CellRange()) {
+        // Same reasoning as edge_uses: skip the optional boundary `line`
+        // block, which has 2 nodes per cell rather than 3.
+        if (cb.Type() != "triangle")
+            continue;
         const NDArray& conn = cb.Conn();
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             std::array<std::int64_t, 3> v = {detail::read_int(conn, c * 3),
@@ -417,4 +425,115 @@ TEST(Remesh, QuadricMetricPreservesSharpCornersBetterThanIsotropic) {
     // ratio, which would be fragile to unrelated tie-break changes.
     EXPECT_LT(quad_dev, iso_dev * 0.7)
         << "quadric max deviation " << quad_dev << " vs isotropic " << iso_dev;
+}
+
+/// A Gaussian bump on a flat square: curvature is large near the centre and
+/// ~0 near the flat edges -- a spatially *varying* curvature fixture the
+/// constant-curvature icosahedron/cube fixtures above cannot discriminate.
+Mesh gaussian_bump(int n, double half, double amplitude, double sigma) {
+    std::vector<std::vector<double>> p;
+    for (int j = 0; j <= n; ++j)
+        for (int i = 0; i <= n; ++i) {
+            const double x = -half + 2.0 * half * i / n;
+            const double y = -half + 2.0 * half * j / n;
+            const double r2 = x * x + y * y;
+            p.push_back({x, y, amplitude * std::exp(-r2 / (sigma * sigma))});
+        }
+    std::vector<std::vector<std::int64_t>> f;
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i) {
+            const std::int64_t b = j * (n + 1) + i;
+            f.push_back({b, b + 1, b + n + 2});
+            f.push_back({b, b + n + 2, b + n + 1});
+        }
+    return mt::make_mesh(p, "triangle", f);
+}
+
+TEST(Remesh, CurvatureGradationConcentratesClustersNearHighCurvature) {
+    const Mesh bump = gaussian_bump(40, 1.0, 0.6, 0.25);
+
+    auto count_near_center = [](const Mesh& m, double radius) {
+        const NDArray& pts = m.Points();
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+            const double x = detail::read_double(pts, i * 3);
+            const double y = detail::read_double(pts, i * 3 + 1);
+            if (x * x + y * y < radius * radius)
+                ++count;
+        }
+        return count;
+    };
+
+    RemeshOptions flat;
+    flat.mNumClusters = 150;
+    flat.mSubdivide = 0;  // the grid is already dense enough; keep positions exact
+    flat.mGradation = 0.0;
+    const RemeshResult uniform = remesh(bump, flat);
+
+    RemeshOptions graded = flat;
+    graded.mGradation = 2.0;
+    const RemeshResult curved = remesh(bump, graded);
+
+    // A fixed central disk covering the bulk of the bump's curvature; with
+    // gradation weighting each item by area * kappa^gamma, more of the same
+    // fixed cluster budget lands inside it than under plain area weighting.
+    const double radius = 0.4;
+    const std::size_t n_uniform = count_near_center(uniform.mMesh, radius);
+    const std::size_t n_curved = count_near_center(curved.mMesh, radius);
+    EXPECT_GT(n_curved, n_uniform)
+        << "gradation did not concentrate clusters near the curved region: " << n_curved
+        << " vs " << n_uniform << " (uniform)";
+}
+
+TEST(Remesh, PreservesBoundaryOfAnOpenPatch) {
+    // A flat, open square patch: unlike a closed surface, remesh must not
+    // silently drop the boundary into whichever interior cluster reaches it
+    // first.
+    const int n = 24;
+    const double half = 1.0;
+    std::vector<std::vector<double>> p;
+    for (int j = 0; j <= n; ++j)
+        for (int i = 0; i <= n; ++i)
+            p.push_back({-half + 2.0 * half * i / n, -half + 2.0 * half * j / n, 0.0});
+    std::vector<std::vector<std::int64_t>> f;
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i) {
+            const std::int64_t b = j * (n + 1) + i;
+            f.push_back({b, b + 1, b + n + 2});
+            f.push_back({b, b + n + 2, b + n + 1});
+        }
+    const Mesh patch = mt::make_mesh(p, "triangle", f);
+
+    RemeshOptions o;
+    o.mNumClusters = 80;
+    o.mSubdivide = 0;
+    const RemeshResult r = remesh(patch, o);
+
+    ASSERT_EQ(r.mMesh.NumCellBlocks(), 2u)
+        << "an open input should leave a second, boundary `line` block behind";
+    EXPECT_EQ(r.mMesh.Cells(0).Type(), "triangle");
+    ASSERT_EQ(r.mMesh.Cells(1).Type(), "line");
+    ASSERT_GT(r.mMesh.Cells(1).NumCells(), 0u);
+
+    // The dual boundary polyline should roughly track the true perimeter
+    // (4 * 2 * half = 8), not be empty or wildly larger.
+    const NDArray& lconn = r.mMesh.Cells(1).Conn();
+    const NDArray& pts = r.mMesh.Points();
+    double total_length = 0.0;
+    for (std::size_t c = 0; c < r.mMesh.Cells(1).NumCells(); ++c) {
+        const std::int64_t a = detail::read_int(lconn, c * 2);
+        const std::int64_t b = detail::read_int(lconn, c * 2 + 1);
+        double d2 = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            const double diff = detail::read_double(pts, static_cast<std::size_t>(a) * 3 + k) -
+                                detail::read_double(pts, static_cast<std::size_t>(b) * 3 + k);
+            d2 += diff * diff;
+        }
+        total_length += std::sqrt(d2);
+    }
+    const double true_perimeter = 4.0 * 2.0 * half;
+    EXPECT_GT(total_length, true_perimeter * 0.5)
+        << "boundary polyline length " << total_length << " vs perimeter " << true_perimeter;
+    EXPECT_LT(total_length, true_perimeter * 1.5)
+        << "boundary polyline length " << total_length << " vs perimeter " << true_perimeter;
 }

@@ -128,3 +128,82 @@ def test_subdivide_zero_disables_refinement():
     out, report = remesh(_icosahedron(), 10, subdivide=0, return_report=True)
     assert report["subdivide_applied"] == 0
 
+
+def _gaussian_bump(n=40, half=1.0, amplitude=0.6, sigma=0.25):
+    i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1))
+    x = -half + 2.0 * half * i / n
+    y = -half + 2.0 * half * j / n
+    z = amplitude * np.exp(-(x * x + y * y) / (sigma * sigma))
+    pts = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+
+    def vid(ii, jj):
+        return jj * (n + 1) + ii
+
+    faces = []
+    for jj in range(n):
+        for ii in range(n):
+            b = vid(ii, jj)
+            faces.append([b, b + 1, b + n + 2])
+            faces.append([b, b + n + 2, b + n + 1])
+    return meshioplusplus.Mesh(pts, [("triangle", np.array(faces, dtype=np.int64))])
+
+
+@needs_core
+def test_curvature_gradation_concentrates_clusters_near_high_curvature():
+    bump = _gaussian_bump()
+
+    def count_near_center(mesh, radius):
+        x, y = mesh.points[:, 0], mesh.points[:, 1]
+        return int(np.count_nonzero(x * x + y * y < radius * radius))
+
+    uniform = remesh(bump, 150, subdivide=0, gradation=0.0)
+    curved = remesh(bump, 150, subdivide=0, gradation=2.0)
+
+    radius = 0.4
+    n_uniform = count_near_center(uniform, radius)
+    n_curved = count_near_center(curved, radius)
+    assert n_curved > n_uniform, f"{n_curved} vs {n_uniform} (uniform)"
+
+
+def _open_square_patch(n=24, half=1.0):
+    i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1))
+    x = -half + 2.0 * half * i / n
+    y = -half + 2.0 * half * j / n
+    pts = np.column_stack([x.ravel(), y.ravel(), np.zeros(x.size)])
+
+    def vid(ii, jj):
+        return jj * (n + 1) + ii
+
+    faces = []
+    for jj in range(n):
+        for ii in range(n):
+            b = vid(ii, jj)
+            faces.append([b, b + 1, b + n + 2])
+            faces.append([b, b + n + 2, b + n + 1])
+    return meshioplusplus.Mesh(pts, [("triangle", np.array(faces, dtype=np.int64))])
+
+
+@needs_core
+def test_preserves_boundary_of_an_open_patch():
+    patch = _open_square_patch()
+    out, report = remesh(patch, 80, subdivide=0, return_report=True)
+
+    assert len(out.cells) == 2, "an open input should leave a second, boundary line block"
+    assert out.cells[0].type == "triangle"
+    assert out.cells[1].type == "line"
+    assert out.cells[1].data.shape[0] > 0
+    assert report["num_non_manifold_vertices"] >= 0
+
+    total_length = 0.0
+    for a, b in out.cells[1].data:
+        total_length += float(np.linalg.norm(out.points[a] - out.points[b]))
+    true_perimeter = 4.0 * 2.0 * 1.0
+    assert true_perimeter * 0.5 < total_length < true_perimeter * 1.5
+
+
+@needs_core
+def test_no_preserve_boundary_still_runs():
+    patch = _open_square_patch()
+    out = remesh(patch, 80, subdivide=0, preserve_boundary=False)
+    assert out.cells[0].type == "triangle"
+

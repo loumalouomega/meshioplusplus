@@ -2470,19 +2470,22 @@ mio_mesh* c_api_octahedron() {
 TEST(CApi, RemeshProducesTheRequestedNumberOfClusters) {
     mio_mesh* m = c_api_octahedron();
 
-    std::int64_t num_clusters = -1, num_iterations = -1, num_isolated = -1;
+    std::int64_t num_clusters = -1, num_iterations = -1, num_isolated = -1, num_nonmanifold = -1;
     int subdivide_applied = -1;
-    mio_mesh* out = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "isotropic", &num_clusters,
-                               &num_iterations, &subdivide_applied, &num_isolated);
+    mio_mesh* out =
+        mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "isotropic", 0.0, 1, &num_clusters,
+                   &num_iterations, &subdivide_applied, &num_isolated, &num_nonmanifold);
     ASSERT_NE(out, nullptr) << mio_last_error();
     EXPECT_EQ(num_clusters, 30);
     EXPECT_GT(subdivide_applied, 0) << "6 vertices cannot support 30 clusters without subdividing";
     EXPECT_EQ(mio_mesh_num_points(out), 30);
+    EXPECT_GE(num_nonmanifold, 0);
     mio_mesh_free(out);
 
-    // The quadric ("feature-preserving") metric is accepted too.
-    mio_mesh* out2 = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "quadric", nullptr, nullptr, nullptr,
-                                nullptr);
+    // The quadric ("feature-preserving") metric, gradation and boundary
+    // preservation are all accepted too.
+    mio_mesh* out2 = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "quadric", 1.5, 0, nullptr, nullptr,
+                                nullptr, nullptr, nullptr);
     ASSERT_NE(out2, nullptr) << mio_last_error();
     mio_mesh_free(out2);
 
@@ -2492,16 +2495,17 @@ TEST(CApi, RemeshProducesTheRequestedNumberOfClusters) {
 TEST(CApi, RemeshErrorsAreGuardedNotThrown) {
     mio_mesh* m = c_api_octahedron();
 
-    EXPECT_EQ(mio_remesh(m, 3, -1, 10.0, 4, 100, 10, nullptr, nullptr, nullptr, nullptr, nullptr),
+    EXPECT_EQ(mio_remesh(m, 3, -1, 10.0, 4, 100, 10, nullptr, 0.0, 1, nullptr, nullptr, nullptr,
+                         nullptr, nullptr),
               nullptr)
         << "too few clusters";
     EXPECT_NE(std::string(mio_last_error()), "");
-    EXPECT_EQ(
-        mio_remesh(m, 10, -1, 10.0, 4, 100, 10, "bogus", nullptr, nullptr, nullptr, nullptr),
-        nullptr)
+    EXPECT_EQ(mio_remesh(m, 10, -1, 10.0, 4, 100, 10, "bogus", 0.0, 1, nullptr, nullptr, nullptr,
+                         nullptr, nullptr),
+              nullptr)
         << "unknown metric";
-    EXPECT_EQ(mio_remesh(nullptr, 10, -1, 10.0, 4, 100, 10, nullptr, nullptr, nullptr, nullptr,
-                         nullptr),
+    EXPECT_EQ(mio_remesh(nullptr, 10, -1, 10.0, 4, 100, 10, nullptr, 0.0, 1, nullptr, nullptr,
+                         nullptr, nullptr, nullptr),
               nullptr);
 
     mio_mesh_free(m);
