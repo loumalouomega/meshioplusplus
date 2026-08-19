@@ -65,6 +65,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 
 namespace meshioplusplus {
 
@@ -245,6 +246,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"Remesh",
+         {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
+          "MaxRepairPasses", "Metric"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -644,6 +648,30 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(er.mMesh);
+    }
+    if (op == "Remesh") {
+        // Unlike every other step, the output has NO correspondence to the
+        // input: new points, new connectivity. point_data/cell_data/regions
+        // are dropped (remesh's own contract), field_data carries through.
+        RemeshOptions opts;
+        opts.mNumClusters = static_cast<std::int64_t>(pipe_number(rStep, "NumClusters", 0));
+        opts.mSubdivide = static_cast<int>(pipe_number(rStep, "Subdivide", -1));
+        opts.mSubsampleRatio = pipe_number(rStep, "SubsampleRatio", 10.0);
+        opts.mMaxSubdivide = static_cast<int>(pipe_number(rStep, "MaxSubdivide", 4));
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 100));
+        opts.mMaxRepairPasses = static_cast<int>(pipe_number(rStep, "MaxRepairPasses", 10));
+        opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
+        RemeshResult rr = remesh(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumClusters", static_cast<double>(rr.mNumClusters)},
+                        {"NumIterations", static_cast<double>(rr.mNumIterations)},
+                        {"SubdivideApplied", static_cast<double>(rr.mSubdivideApplied)},
+                        {"NumIsolatedClusters", static_cast<double>(rr.mNumIsolatedClusters)}});
+        if (rr.mNumIsolatedClusters > 0)
+            rReport.mWarnings.push_back("remesh: " + std::to_string(rr.mNumIsolatedClusters) +
+                                        " cluster(s) could not be repaired; output may be "
+                                        "non-manifold near them");
+        return std::move(rr.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does

@@ -28,6 +28,7 @@ from . import (
     _quality,
     _refine,
     _regions,
+    _remesh,
     _reorder,
     _sdf,
     _slice,
@@ -241,6 +242,13 @@ def main(argv=None):
     )
     _decimate_volume.add_args(parser)
     parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "remesh",
+        help="Replace a surface's triangulation with a new, well-shaped one (ACVD)",
+    )
+    _remesh.add_args(parser)
+    parser.set_defaults(func=_remesh.remesh_cmd)
 
     parser = subparsers.add_parser(
         "partition",

@@ -44,6 +44,7 @@ from ._isosurface import isosurface
 from ._partition import partition_labels
 from ._quality import attach_quality
 from ._refine import refine
+from ._remesh import remesh
 from ._reorder import reorder
 from ._sdf import compute_sdf
 from ._skin import extract_skin
@@ -107,6 +108,15 @@ _OP_TABLE = {
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
     "Hessian": ("Array", "Method", "Location", "Output"),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
+    "Remesh": (
+        "NumClusters",
+        "Subdivide",
+        "SubsampleRatio",
+        "MaxSubdivide",
+        "MaxIterations",
+        "MaxRepairPasses",
+        "Metric",
+    ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
         "Resolution",
@@ -514,6 +524,31 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 f"estimate_error: {report['num_skipped']} cell(s) could not be "
                 "evaluated and are NaN"
+            )
+    elif op == "Remesh":
+        # Unlike every other step, the output has NO correspondence to the
+        # input: new points, new connectivity. point_data/cell_data/regions
+        # are dropped (remesh's own contract), field_data carries through.
+        n_subdivide = _number(step, "Subdivide", -1)
+        mesh, report = remesh(
+            mesh,
+            int(_number(step, "NumClusters", 0)),
+            subdivide=None if n_subdivide < 0 else int(n_subdivide),
+            subsample_ratio=_number(step, "SubsampleRatio", 10.0),
+            max_subdivide=int(_number(step, "MaxSubdivide", 4)),
+            max_iterations=int(_number(step, "MaxIterations", 100)),
+            max_repair_passes=int(_number(step, "MaxRepairPasses", 10)),
+            metric=_text(step, "Metric", "isotropic"),
+            return_report=True,
+        )
+        entry["NumClusters"] = float(report["num_clusters"])
+        entry["NumIterations"] = float(report["num_iterations"])
+        entry["SubdivideApplied"] = float(report["subdivide_applied"])
+        entry["NumIsolatedClusters"] = float(report["num_isolated_clusters"])
+        if report["num_isolated_clusters"] > 0:
+            warnings.append(
+                f"remesh: {report['num_isolated_clusters']} cluster(s) could not "
+                "be repaired; output may be non-manifold near them"
             )
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")

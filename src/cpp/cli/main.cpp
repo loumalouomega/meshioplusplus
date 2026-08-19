@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -457,6 +458,9 @@ void print_usage(std::ostream& os) {
           "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  decimate-volume         Reduce a tet mesh's cell count (QEM tet-edge collapse)\n"
           "                            exactly one of --ratio/--target-cells/--max-error\n"
+          "  remesh                  Replace a surface's triangulation with a new,\n"
+          "                            well-shaped one (ACVD clustering); --num-clusters\n"
+          "                            is required, --metric isotropic|quadric\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1815,6 +1819,45 @@ int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_remesh(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"num-clusters", {}, true},
+                                  {"subdivide", {}, true},
+                                  {"subsample-ratio", {}, true},
+                                  {"max-subdivide", {}, true},
+                                  {"iterations", {}, true},
+                                  {"repair-passes", {}, true},
+                                  {"metric", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remesh requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "num-clusters"))
+        throw std::runtime_error("remesh: --num-clusters is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::RemeshOptions options;
+    options.mNumClusters = std::stoll(opt_value(p, "num-clusters"));
+    options.mSubdivide = std::stoi(opt_value(p, "subdivide", "-1"));
+    options.mSubsampleRatio = std::stod(opt_value(p, "subsample-ratio", "10"));
+    options.mMaxSubdivide = std::stoi(opt_value(p, "max-subdivide", "4"));
+    options.mMaxIterations = std::stoi(opt_value(p, "iterations", "100"));
+    options.mMaxRepairPasses = std::stoi(opt_value(p, "repair-passes", "10"));
+    options.mMetric = meshioplusplus::remesh_metric_from_name(opt_value(p, "metric", "isotropic"));
+
+    auto r = meshioplusplus::remesh(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::cout << "remeshed to " << r.mNumClusters << " clusters\n";
+        std::cout << "  iterations:               " << r.mNumIterations << "\n";
+        std::cout << "  subdivide passes applied: " << r.mSubdivideApplied << "\n";
+        std::cout << "  isolated clusters:        " << r.mNumIsolatedClusters << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_smooth(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -3125,6 +3168,8 @@ int main(int argc, char** argv) {
             return cmd_decimate(rest);
         if (cmd == "decimate-volume")
             return cmd_decimate_volume(rest);
+        if (cmd == "remesh")
+            return cmd_remesh(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")

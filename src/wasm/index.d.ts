@@ -404,6 +404,9 @@ export type ErrorMethod = 'zz';
 /** `estimateError`'s marking policy. See doc/error.md. */
 export type ErrorMarking = 'none' | 'absolute' | 'fraction' | 'dorfler';
 
+/** `remesh`'s clustering objective. See doc/remesh.md. */
+export type RemeshMetric = 'isotropic' | 'quadric';
+
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
 
@@ -1392,6 +1395,43 @@ export interface MeshioPlusPlusModule {
     marked?: string,
     overwrite?: boolean,
   ): { mesh: Mesh; globalError: number; numSkipped: number; numMarked: number };
+
+  /**
+   * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+   * clustering: replace its triangulation with a new, near-uniformly-sized,
+   * well-shaped one at `numClusters` vertices. Unlike every other
+   * resolution-changing operation, the output has NEW points and NEW
+   * connectivity with no correspondence to the input — `point_data`,
+   * `cell_data` and named regions are dropped, `field_data` is carried.
+   *
+   * `metric` is `"isotropic"` (default; area-weighted centroidal distance,
+   * fast, rounds sharp features) or `"quadric"` (Garland-Heckbert quadric
+   * error, preserves sharp edges/corners at extra cost per candidate move).
+   * `subdivide` defaults to automatic (`-1`): the smallest count of uniform
+   * `refine` passes reaching `subsampleRatio` items per cluster, capped at
+   * `maxSubdivide`; `0` disables subdivision. `numIsolatedClusters` non-zero
+   * means some clusters could not be repaired into a single connected piece,
+   * so the output may be non-manifold near them.
+   * @throws {Error} on a cluster count below 4 or above the subdivided
+   *   input's vertex count, or on any block outside the surface scope (3D
+   *   volume cells, higher-order cells, ragged polygon/polyhedron blocks).
+   */
+  remesh(
+    mesh: Mesh,
+    numClusters: number,
+    subdivide?: number,
+    subsampleRatio?: number,
+    maxSubdivide?: number,
+    maxIterations?: number,
+    maxRepairPasses?: number,
+    metric?: RemeshMetric,
+  ): {
+    mesh: Mesh;
+    numClusters: number;
+    numIterations: number;
+    subdivideApplied: number;
+    numIsolatedClusters: number;
+  };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];

@@ -61,6 +61,7 @@ from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
+from ._remesh import remesh
 from ._diff import diff, meshes_equal
 from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
@@ -226,6 +227,7 @@ __all__ = [
     "undo_green",
     "decimate",
     "decimate_volume",
+    "remesh",
     "grid",
     "voxelize",
     "sample_distance",

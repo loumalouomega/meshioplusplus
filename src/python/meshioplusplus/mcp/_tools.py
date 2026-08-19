@@ -70,6 +70,7 @@ from .. import (
     read,
     read_metadata,
     refine,
+    remesh,
     reorder,
     run_pipeline,
     sample_distance,
@@ -1203,6 +1204,37 @@ def tool_decimate_volume(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_remesh(
+    input_path,
+    output_path,
+    num_clusters,
+    input_format=None,
+    output_format=None,
+    subdivide=None,
+    subsample_ratio=10.0,
+    max_subdivide=4,
+    max_iterations=100,
+    max_repair_passes=10,
+    metric="isotropic",
+):
+    """Replace a surface's triangulation with a new, well-shaped one (ACVD
+    clustering). The output has NO correspondence to the input -- point/cell
+    data and named regions are dropped, field data is carried."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh(
+        mesh,
+        num_clusters,
+        subdivide=subdivide,
+        subsample_ratio=subsample_ratio,
+        max_subdivide=max_subdivide,
+        max_iterations=max_iterations,
+        max_repair_passes=max_repair_passes,
+        metric=metric,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_smooth(
     input_path,
     output_path,
@@ -1895,6 +1927,7 @@ TOOL_REGISTRY = OrderedDict(
             "decimate_volume",
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
         ),
+        ("remesh", {"fn": tool_remesh, "wraps": ("remesh",), "gated": None}),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),

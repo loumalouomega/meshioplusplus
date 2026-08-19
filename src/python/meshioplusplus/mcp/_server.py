@@ -995,6 +995,44 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def remesh(
+        input_path: str,
+        output_path: str,
+        num_clusters: int,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        subdivide: Optional[int] = None,
+        subsample_ratio: float = 10.0,
+        max_subdivide: int = 4,
+        max_iterations: int = 100,
+        max_repair_passes: int = 10,
+        metric: str = "isotropic",
+    ) -> dict:
+        """Replace a surface mesh's triangulation with a new,
+        near-uniformly-sized, well-shaped one at num_clusters vertices
+        (approximated centroidal Voronoi diagram clustering). Unlike every
+        other resolution-changing tool, the output has NO correspondence to
+        the input -- point_data/cell_data/named regions are dropped,
+        field_data is carried; use interpolate/conservative_interpolate to
+        transfer a field onto the result. metric is "isotropic" (default,
+        fast, rounds sharp features) or "quadric" (Garland-Heckbert error,
+        preserves sharp edges/corners)."""
+        return _guard(
+            _tools.tool_remesh,
+            input_path=input_path,
+            output_path=output_path,
+            num_clusters=num_clusters,
+            input_format=input_format,
+            output_format=output_format,
+            subdivide=subdivide,
+            subsample_ratio=subsample_ratio,
+            max_subdivide=max_subdivide,
+            max_iterations=max_iterations,
+            max_repair_passes=max_repair_passes,
+            metric=metric,
+        )
+
+    @server.tool()
     def smooth(
         input_path: str,
         output_path: str,
