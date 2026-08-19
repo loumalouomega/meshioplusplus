@@ -63,9 +63,15 @@ The operating type is `triangle`; `quad` and rectangular `polygon` blocks are tr
 
 The output is a brand-new mesh with new points and new connectivity, so — unlike every other operation in this layer — there is **no meaningful point or cell map**, and `point_data`, `cell_data` and named regions are **dropped**. Transfer a field onto the result with [`interpolate`](/interpolate) or [`conservative_interpolate`](/conservative_interpolate), which is exactly the composition those operations exist for. `field_data` passes through verbatim.
 
-## Boundaries are not specially protected
+## Curvature gradation
 
-An open surface's boundary vertices are ordinary items with no extra pinning or dual-edge insertion. `remesh` runs on an open mesh without error (matching the reference method's own default), but the outline near an open edge is not guaranteed preserved — boundary/manifoldness protection remains a documented, still-open item on `doc/roadmap.md`.
+`gradation` (the exponent `gamma` in the item weight `area * kappa**gamma`) concentrates clusters where the surface bends more sharply, instead of spreading them by area alone. `kappa` is a per-vertex curvature magnitude from a local osculating-paraboloid fit over the vertex's 1-ring: fit `h = a*u**2 + b*u*w + c*w**2` in a local tangent frame, then `kappa = max(|kappa1|, |kappa2|)` from the eigenvalues of `[[2a, b], [b, 2c]]`. A near-singular fit (low valence, near-collinear neighbourhood) falls back to `kappa = 0`. `gradation = 0.0` (the default) means `kappa**0 == 1` identically, so curvature is not even computed and every weight reproduces plain area weighting byte-for-byte — every pre-existing test and every closed-mesh example in this repo is unaffected. Positive `gradation` pulls resolution toward high-curvature regions (a bump, a fillet, a sharp bend); it applies identically under both `metric="isotropic"` and `metric="quadric"` — gradation is orthogonal to the metric choice, not a third one.
+
+## Boundaries and output manifoldness
+
+`preserve_boundary` (default `True`, and so free on the closed meshes most examples and every pre-existing test use) detects the input's open boundary, if any, via a plain edge-use-count pass — a triangle edge used by exactly one face is a boundary edge. Boundary vertices are then seeded **before** the interior BFS, so a cluster's boundary segment stays anchored to a contiguous stretch of the outline rather than being absorbed piecemeal by whichever interior cluster reaches it first. The dual gains a companion pass: every boundary edge whose two endpoints land in different clusters emits one `line` cell between those clusters' representative points, so the output gains a **second, optional `line` cell block** carrying the boundary polyline alongside the `triangle` block. Without this, a boundary-adjacent triangle simply has no "third neighbour" across the missing side and is silently dropped from the triangle dual, leaving no coherent output boundary at all.
+
+This is a clean-room design achieving the roadmap's stated boundary goals (built from this project's own existing conventions — the pinning idiom `decimate`/`smooth` already use, the dual-edge dedup idiom the triangle dual already uses), not a reproduction of ACVD's own boundary-fixing algorithm, whose CeCILL-B source this project does not read (see the licence reasoning above).
 
 ## Topology is not preserved
 
@@ -73,7 +79,7 @@ Two surface sheets closer together than a cluster can merge, and the genus can c
 
 ## Output manifoldness is best-effort
 
-The dual of a discrete Voronoi partition need not be 2-manifold. Repair removes the common cause (disconnected clusters), and the report's `num_isolated_clusters` names what could not be fixed — check it rather than assuming; a non-zero value means the output may be non-manifold near those clusters.
+The dual of a discrete Voronoi partition need not be 2-manifold, for two distinct reasons, reported separately. Disconnected clusters are `num_isolated_clusters`' concern, unchanged since the operation's first release. Non-manifold **output vertices** — a vertex whose incident dual-triangle fan does not form a single loop (interior) or open chain (boundary), i.e. a "bowtie" — are `num_non_manifold_vertices`'s concern; both are folded into the same repair loop (regrow the implicated clusters, minimise again, up to `max_repair_passes`) rather than two separate loops. Either counter non-zero means a pathological input still produced non-manifold output — check both rather than assuming.
 
 ## Determinism, and no numpy fallback
 
@@ -81,11 +87,11 @@ Seeding is RNG-free, the energy sweep visits edges in a fixed order and is **ser
 
 ## Other language surfaces
 
-- **C API** — `mio_remesh(mesh, num_clusters, subdivide, subsample_ratio, max_subdivide, max_iterations, max_repair_passes, metric, &num_clusters_out, &num_iterations, &subdivide_applied, &num_isolated_clusters)` → a plain `mio_mesh*` (the counter out-params are all nullable, `mio_smooth`'s shape — no opaque result handle, since there are no maps to hand back).
-- **Fortran** — `m%remesh(num_clusters, ...)`, the same optional-argument shape as `m%estimate_error`.
-- **Julia** — `remesh(mesh, num_clusters; subdivide=-1, metric=:isotropic, ...)` → a `(; mesh, num_clusters, num_iterations, subdivide_applied, num_isolated_clusters)` NamedTuple.
-- **R** — `mio_remesh(mesh, num_clusters, ...)` → a named list of the same five fields (counters as `double`, R having no native int64).
-- **WASM** — `remesh(mesh, numClusters, subdivide, subsampleRatio, maxSubdivide, maxIterations, maxRepairPasses, metric)`, and reachable as a `{op: 'remesh', numClusters: ...}` `convertSurfaceOps`/pipeline step.
-- **CLI** — the `remesh` verb in both the Python and the native CLI (see [CLI](/cli)): `--num-clusters` (required), `--subdivide`, `--subsample-ratio`, `--max-subdivide`, `--iterations`, `--repair-passes`, `--metric isotropic|quadric`.
+- **C API** — `mio_remesh(mesh, num_clusters, subdivide, subsample_ratio, max_subdivide, max_iterations, max_repair_passes, metric, gradation, preserve_boundary, &num_clusters_out, &num_iterations, &subdivide_applied, &num_isolated_clusters, &num_non_manifold_vertices)` → a plain `mio_mesh*` (the counter out-params are all nullable, `mio_smooth`'s shape — no opaque result handle, since there are no maps to hand back).
+- **Fortran** — `m%remesh(num_clusters, ..., gradation=..., preserve_boundary=..., num_non_manifold_vertices=...)`, the same optional-argument shape as `m%estimate_error`.
+- **Julia** — `remesh(mesh, num_clusters; subdivide=-1, metric=:isotropic, gradation=0.0, preserve_boundary=true, ...)` → a `(; mesh, num_clusters, num_iterations, subdivide_applied, num_isolated_clusters, num_non_manifold_vertices)` NamedTuple.
+- **R** — `mio_remesh(mesh, num_clusters, ..., gradation = 0.0, preserve_boundary = TRUE)` → a named list of the same six fields (counters as `double`, R having no native int64).
+- **WASM** — `remesh(mesh, numClusters, subdivide, subsampleRatio, maxSubdivide, maxIterations, maxRepairPasses, metric, gradation, preserveBoundary)`, and reachable as a `{op: 'remesh', numClusters: ...}` `convertSurfaceOps`/pipeline step (`Gradation`/`PreserveBoundary` join that step's param list).
+- **CLI** — the `remesh` verb in both the Python and the native CLI (see [CLI](/cli)): `--num-clusters` (required), `--subdivide`, `--subsample-ratio`, `--max-subdivide`, `--iterations`, `--repair-passes`, `--metric isotropic|quadric`, `--gradation`, `--no-preserve-boundary`.
 - **Pipeline** — a `Remesh` step (`{NumClusters, Subdivide, SubsampleRatio, MaxSubdivide, MaxIterations, MaxRepairPasses, Metric}`), dispatched generically off the shared op table — the one step whose output has no correspondence to its input, exactly like a fresh mesh from `Voxelize`.
 - **MCP** — the `remesh` tool.
