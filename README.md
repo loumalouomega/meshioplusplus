@@ -109,6 +109,7 @@ meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of 
 meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6  # ZZ error indicator + marking
+meshioplusplus data integrate in.vtu --array density            # total / mean, per region
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -506,7 +507,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -518,6 +519,16 @@ out, report = meshioplusplus.estimate_error(
 )
 print(report["global_error"], report["num_marked"])
 adapted = meshioplusplus.refine(out, where="error:marked > 0.5")
+```
+
+#### Field integration (total / mean, per-region)
+
+**`meshioplusplus.data_integrate`** computes a cell-measure-weighted total and mean of one or more `cell_data` arrays — `gradient`'s integration counterpart (`gradient` differentiates a field, this integrates one), for a density field's total mass, a heat-flux field's total power, or an occupied volume. Every sum is weighted by `|measure(cell)|` (the cell's own length/area/volume); a cell whose measure is not computable, or a component whose value is non-finite, is excluded from that component's numerator **and** denominator — never given a fallback weight of 1, unlike `cell_data_to_point_data`'s own measure weighting, since a silent unit-weight substitution would corrupt a physical total. Reported for the whole mesh and independently for every named `Cell` region — regions are **not a partition**, so a cell in two regions contributes fully to both. A `point_data`-only name raises by name, pointing at `point_data_to_cell_data`. The mesh is never modified; this is a read-only report, like `data_info` and `compute_stats`. See `doc/field_integration.md`.
+
+```python
+report = meshioplusplus.data_integrate(mesh, arrays=["density"])
+report[0]["domain"]["total_per_component"]   # sum(value * |measure|) -- total mass
+report[0]["regions"]                         # the same, independently, per named Cell region
 ```
 
 #### Data operations (rename / average / calc / condition / summarize)
@@ -809,7 +820,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.7.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.8.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

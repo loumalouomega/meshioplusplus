@@ -8,6 +8,30 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.8.0 (2026-08-19)
+
+**Roadmap §1 advanced** — field integration closes the section's smaller
+remaining item; second-derivative/Hessian support remains open.
+
+- **`data_integrate`** (`operations/data_integrate.hpp`,
+  [`doc/field_integration.md`](doc/field_integration.md)) — a
+  cell-measure-weighted total and mean of one or more `cell_data` arrays,
+  reachable as `meshioplusplus data integrate` in both CLIs: `gradient`'s
+  integration counterpart (`gradient` differentiates a field, this
+  integrates one), for a density field's total mass, a heat-flux field's
+  total power, or an occupied volume. Every sum is weighted by the cell's
+  own length/area/volume; a cell whose measure is not computable, or a
+  component whose value is non-finite, is excluded from that component's
+  numerator **and** denominator — never given a fallback weight of 1.
+  Reported for the whole mesh and independently for every named `Cell`
+  region (regions are not a partition: a cell in two regions contributes
+  fully to both). A `point_data`-only name raises by name, pointing at
+  `point_data_to_cell_data`. Read-only, like `data_info`/`compute_stats` —
+  the mesh is never modified. Ships on every binding surface: Python (with
+  a full numpy fallback), the C API (opaque `mio_data_integrate` handle),
+  Fortran (`data_integrate`/`data_integrate_region`), Julia, R, WASM
+  (`dataIntegrate`), both CLIs, and an MCP tool.
+
 ## v10.7.0 (2026-08-18)
 
 **Roadmap §1 advanced** — conservative interpolation was the section's
