@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.7.0** — 42 formats, thirty mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
+Status at time of writing: **v10.9.0** — 42 formats, thirty-one mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 7).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -8,13 +8,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. Field capability beyond derivatives
-
-- **Second derivatives / Hessian**, for curvature-based adaptivity. **M**
-
----
-
-## 2. Dataset dashboard and training integration
+## 1. Dataset dashboard and training integration
 
 **The gap.** The browser dataset manager (`src/viewer/`, `dataset.html`, v9.29.0) curates a single `DatasetManifest` at a time — add/list/split/tag entries, stage one entry into MEMFS and preview it (per-entry quality summaries landed in v9.30.0). It has no aggregate view: there is no way to see many datasets, or many entries within one, at a glance, and once a dataset is curated there is no path from "manifest is ready" to "a PhysicsNeMo run is training against it" without leaving the browser entirely for the CLI/Python recipe in `example/physicsnemo/`. This is a UI/workflow gap, not a numerical one — the underlying capability (`edge_index`, `feature_matrix`, `write_dataset`, dataset manifests, the `physicsnemo.mesh` bridge) is complete as of v9.30.0; nothing surfaces it as one connected experience.
 
@@ -31,11 +25,11 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 - **Run-completion notifications** — a browser notification, or a webhook the companion process posts to, when a launched run finishes or fails, so the dashboard need not stay the active tab. **S**
 - **Visual/UX design pass** — once the layout above is functional, loop it through Claude Design (Claude in a design-iteration capacity — layout, spacing, colour, motion) rather than shipping the first working arrangement as the final one; the rest of the viewer already has a deliberate icon set and colour system (`doc/icons/`, the `dataviz` skill's palette) and this should read as one piece with it, not a bolted-on admin panel. **S**
 
-*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§6) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
+*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§5) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
 
 ---
 
-## 3. Scale
+## 2. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -45,7 +39,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 4. Ecosystem reach
+## 3. Ecosystem reach
 
 - **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
@@ -53,7 +47,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 5. Quality of implementation
+## 4. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -61,7 +55,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 6. NURBS and higher-order geometry (long run)
+## 5. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -74,7 +68,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. Mesh generation
+## 6. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer.
 
@@ -85,7 +79,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 8. CLI chatbot / conversational assistant (MCP-driven)
+## 7. CLI chatbot / conversational assistant (MCP-driven)
 
 **The gap.** The MCP server (`src/python/meshioplusplus/mcp/`, `doc/mcp.md`) exposes the whole Python surface to an AI *agent* — but only to one already speaking MCP over stdio (Claude Desktop, an IDE, a custom host). There is no way to have a natural-language conversation about a mesh **from the terminal itself**: a user with an LLM API key on hand cannot ask `meshioplusplus` "why does this file fail to convert" or "clean this mesh and tell me what changed" and get a tool-calling assistant that drives the existing operations for them. Every other surface (Python API, CLI verbs, MCP tools) is imperative-only; this is the one conversational entry point missing.
 
@@ -101,10 +95,11 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## Suggested sequencing
 
-1. **Primitive constructors (§7, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+1. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
 2. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
 3. **Remaining refinement and coarsening gaps** — shipped in full and removed from this document: v10.2.0 (error-estimator helpers — `estimate_error`), v10.3.0 (polyhedral refinement — `subdivide`), v10.4.0 (polyhedral coarsening — `agglomerate`), v10.5.0 (green-element undo — `undo_green`), v10.6.0 (volume decimation — `decimate_volume`, the section's last open item). See `doc/error.md`, `doc/subdivide.md`, `doc/agglomerate.md`, `doc/undo_green.md` and `doc/decimate_volume.md`.
-4. **Fuzzing (§5)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-5. **NURBS spike (§6)** — a documented investigation, scheduled independently of the rest.
-6. **Dataset dashboard (§2)** — the non-training pieces (multi-dataset overview, drill-down, health summaries, diffing) can proceed any time; training launch/monitoring waits on its own design pass (server-side companion process) before implementation.
-7. **CLI chatbot (§8)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.
+4. **Field capability beyond derivatives** — shipped in full and removed from this document: v10.8.0 (field integration — `data_integrate`, a cell-measure-weighted total/mean over cells, whole-mesh and per named Cell region), v10.9.0 (second derivatives — `hessian`, a composition of two `gradient` calls, exact for a linear field everywhere and for a quadratic field away from a structured mesh's own boundary, closing the section's last open item). See `doc/field_integration.md` and `doc/hessian.md`.
+5. **Fuzzing (§4)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+6. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
+7. **Dataset dashboard (§1)** — the non-training pieces (multi-dataset overview, drill-down, health summaries, diffing) can proceed any time; training launch/monitoring waits on its own design pass (server-side companion process) before implementation.
+8. **CLI chatbot (§7)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.

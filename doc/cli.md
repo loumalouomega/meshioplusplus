@@ -909,6 +909,7 @@ meshioplusplus data <subcommand> [options]
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
+| `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
 | `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
@@ -924,15 +925,16 @@ instead, plus `--mesh-id stem|index`, and its input is several paths, one
 quoted glob, or one multi-step file — the sequence source language). Both are
 **Python CLI only**; both need the matching optional extra.
 
-::: tip `data gradient`, `data estimate-error` and `data integrate` are mesh operations
+::: tip `data gradient`, `data hessian`, `data estimate-error` and `data integrate` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by
 definition never touches geometry. `gradient` consumes and produces data arrays
 but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
-so it lives in the mesh-operations layer; `estimate-error` composes `gradient`
-itself; `integrate` reads the same cell measures to weight its totals. All
-three are grouped here because that is where a user looks for them. See
-[field derivatives](/gradient), [error estimation](/error) and
-[field integration](/field_integration).
+so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion
+one order further, a composition of two `gradient` calls; `estimate-error`
+composes `gradient` itself; `integrate` reads the same cell measures to weight
+its totals. All four are grouped here because that is where a user looks for
+them. See [field derivatives](/gradient), [second derivatives](/hessian),
+[error estimation](/error) and [field integration](/field_integration).
 :::
 
 ::: warning `data export` is not a mesh conversion
@@ -1031,6 +1033,26 @@ field. Cells that cannot be differentiated are reported as `cells skipped
 Green-Gauss and are reported separately. See
 [field derivatives](/gradient) for the exactness guarantees and caveats.
 
+### data hessian
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The scalar `point_data` array to differentiate twice (**required**) |
+| `--method` | `green-gauss` (default) or `least-squares`, forwarded to both internal `gradient` passes |
+| `--location` | `cell` (default) or `point` |
+| `--output NAME` | Output array name (default `<array>:hessian`) |
+| `--overwrite` | Replace an existing array of the output name instead of failing |
+| `--quiet`, `-q` | Suppress the summary |
+
+The Hessian (second derivative) of a scalar `point_data` field — `gradient`'s
+companion one order further, a composition of two `gradient` calls, not a new
+kernel. Naming a `cell_data` array is an error pointing at `data to-point`,
+for the same reason `data gradient` rejects one; a multi-component array is
+an error naming the per-component workaround (Hessian is scalar-only). Cells
+that cannot be evaluated are reported as `cells skipped (NaN)`. See
+[second derivatives](/hessian) for the exactness guarantees and the
+curvature-driven refinement composition.
+
 ### data estimate-error
 
 | Option | Description |
@@ -1083,6 +1105,9 @@ meshioplusplus data info mesh.vtu --json
 meshioplusplus data gradient in.vtu out.vtu --array T
 meshioplusplus data gradient in.vtu out.vtu --array u --op curl --location point
 meshioplusplus data gradient in.vtu out.vtu --array T --method least-squares --output dT
+
+meshioplusplus data hessian in.vtu out.vtu --array T
+meshioplusplus data hessian in.vtu out.vtu --array T --location point
 
 meshioplusplus data estimate-error in.vtu out.vtu --array T
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6

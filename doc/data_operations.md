@@ -21,13 +21,14 @@ binding surface. All nine CLI verbs live under the `meshioplusplus data` group �
 see the [CLI reference](/cli#meshioplusplus-data).
 
 ::: tip Near neighbours that are *not* one of these
-[`gradient`](/gradient) and its companion [`data_integrate`](/field_integration)
-also consume and produce data arrays, and are reachable as `meshioplusplus data
-gradient` / `meshioplusplus data integrate` — but they **read geometry and
-topology** (face areas, cell volumes, cell adjacency), so they are mesh
-operations and none of the rules on this page (the NaN policy, the dtype table)
-describe them. They are grouped under `data` in the CLI because that is where a
-user looks for them.
+[`gradient`](/gradient), its companion [`hessian`](/hessian) one order
+further, and [`data_integrate`](/field_integration) also consume and produce
+data arrays, and are reachable as `meshioplusplus data gradient` /
+`meshioplusplus data hessian` / `meshioplusplus data integrate` — but they
+**read geometry and topology** (face areas, cell volumes, cell adjacency), so
+they are mesh operations and none of the rules on this page (the NaN policy,
+the dtype table) describe them. They are grouped under `data` in the CLI
+because that is where a user looks for them.
 :::
 
 ## Non-finite values {#nan-policy}

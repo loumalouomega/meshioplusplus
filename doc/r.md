@@ -213,6 +213,30 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v10.9.0 additions
+
+- `mio_hessian(mesh, array, method = "green-gauss", location = "cell",
+  output = "", overwrite = FALSE)` — the Hessian (second derivative) of a
+  **scalar point-data** field, `mio_gradient()`'s companion one order
+  further. A composition of TWO `mio_gradient()` calls, not a new numerical
+  kernel: the field is differentiated once (point location), then that
+  `(n, 3)` gradient is differentiated again with the default `"gradient"`
+  operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian,
+  `H[i,j]` at index `i*3+j`. `method` is forwarded to BOTH internal passes.
+  Returns a list of `mesh`, `num_skipped` and `num_fallback`. See
+  [`doc/hessian.md`](hessian.md).
+
+  A field that is at most LINEAR has an exactly zero Hessian everywhere —
+  the one mesh-shape-independent guarantee. For a genuinely quadratic field
+  the composition is exact on a structured/symmetric mesh away from its own
+  boundary and a good, standard, but genuinely approximate curvature
+  estimate on an irregular mesh. Input must have exactly one component — a
+  vector field's Hessian is a separate quantity per component.
+
+  A curvature-driven refinement indicator needs no new function: `norm(...)`
+  in `mio_data_calc()` on the 9-component output is exactly its Frobenius
+  norm, ready for `mio_refine()`'s `where` selector.
+
 ## v10.8.0 additions
 
 - `mio_data_integrate(mesh, names = NULL)` — cell-measure-weighted

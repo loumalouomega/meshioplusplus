@@ -228,6 +228,32 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v10.9.0 additions
+
+- `hessian(mesh, array; method=:green_gauss, location=:cell, output="",
+  overwrite=false) -> (; mesh, num_skipped, num_fallback)` — the Hessian
+  (second derivative) of a **scalar point-data** field,
+  [`gradient`](@ref)'s companion one order further. A composition of TWO
+  `gradient` calls, not a new numerical kernel: the field is differentiated
+  once (point location), then that `(n, 3)` gradient is differentiated
+  again with the default `:gradient` operator, producing `(n, 9)` — the
+  flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is
+  forwarded to BOTH internal passes. See [`doc/hessian.md`](hessian.md).
+
+  A field that is at most LINEAR has an exactly zero Hessian everywhere —
+  the one mesh-shape-independent guarantee. For a genuinely quadratic field
+  the composition is exact on a structured/symmetric mesh away from its own
+  boundary and a good, standard, but genuinely approximate curvature
+  estimate on an irregular mesh. Input must have exactly one component — a
+  vector field's Hessian is a separate quantity per component.
+
+  A curvature-driven refinement indicator needs no new function: `norm(...)`
+  in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius
+  norm, ready for [`refine`](@ref)'s `where` selector.
+
+  `hessian` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
+  is exported.
+
 ## v10.8.0 additions
 
 - `data_integrate(mesh, names=String[])` — cell-measure-weighted total/mean

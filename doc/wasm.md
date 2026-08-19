@@ -302,6 +302,23 @@ negative for **every** component here, deliberately the opposite of
 `isosurface`'s sentinel. It is also a `convertSurfaceOps` pipeline step
 (`{op: 'gradient', array, operator, method, location, output}`).
 
+`hessian(mesh, array, method, location, output, overwrite)` returns
+`{ mesh, numSkipped, numFallback }` — the Hessian (second derivative) of a
+**scalar** `point_data` field, `gradient`'s companion one order further. A
+composition of TWO `gradient` calls, not a new numerical kernel: the field
+is differentiated once (point location, regardless of the caller's own
+`location`), then that `(n, 3)` gradient is differentiated again with the
+default gradient operator, producing `(n, 9)` — the flattened row-major 3x3
+Hessian. `method` is forwarded to BOTH internal passes. Like `gradient`, the
+result's `(n, 9)` width travels in the returned mesh's
+`point_data_components` / `cell_data_components` sibling maps. A field that
+is at most linear has an exactly zero Hessian everywhere — the one
+mesh-shape-independent guarantee; a genuinely quadratic field's composition
+is exact on a structured/symmetric mesh away from its own boundary and
+approximate on an irregular mesh (see [second derivatives](./hessian.md)).
+Input must have exactly one component. It is also a `convertSurfaceOps`
+pipeline step (`{op: 'hessian', array, method, location, output}`).
+
 `estimateError(mesh, array, method, marking, markingValue, output, marked,
 overwrite)` returns `{ mesh, globalError, numSkipped, numMarked }` — the
 Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field, a
@@ -313,7 +330,7 @@ Cells that cannot be evaluated read NaN in `error:zz` and `0` (never NaN) in
 `error:marked`, counted in `numSkipped`. It is also a `convertSurfaceOps`
 pipeline step (`{op: 'estimateError', array, method, marking, markingValue,
 output, marked}`). See [error estimation](./error.md),
-[field derivatives](./gradient.md),
+[field derivatives](./gradient.md), [second derivatives](./hessian.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
 [cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [polyhedral coarsening](./agglomerate.md), [refine](./refine.md),
