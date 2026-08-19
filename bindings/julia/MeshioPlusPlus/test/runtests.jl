@@ -599,6 +599,29 @@ end
     close(m)
 end
 
+@testset "operations: hessian" begin
+    m = fixture()
+
+    h = hessian(m, "temperature")
+    @test h.num_skipped == 0
+    @test "temperature:hessian" in cell_data_names(h.mesh)
+    close(h.mesh)
+
+    l = hessian(m, "temperature"; method=:least_squares)
+    @test l.num_fallback >= 0
+    close(l.mesh)
+
+    p = hessian(m, "temperature"; location=:point, output="H2")
+    @test "H2" in point_data_names(p.mesh)
+    close(p.mesh)
+
+    # A cell_data array has no derivative, and a vector field is scalar-only:
+    # both must fail by name.
+    @test_throws MeshioError hessian(m, "material")
+    @test_throws MeshioError hessian(m, "displacement")
+    close(m)
+end
+
 @testset "operations: estimate_error" begin
     m = fixture()
 
@@ -723,6 +746,38 @@ end
     @test temp.mean ≈ 3.0
     @test temp.num_nan == 0
     @test length(temp.components) == 1
+    close(m)
+end
+
+@testset "field integration (data_integrate)" begin
+    m = fixture()
+    add_region!(m, "solid", :cell, [1]; dim=3, tag=17)
+
+    report = data_integrate(m, ["material"])
+    @test length(report) == 1
+    arr = only(report)
+    @test arr.name == "material"
+    @test arr.num_components == 1
+    @test arr.domain.num_cells == 2
+    @test arr.domain.num_skipped == 0
+    dc = only(arr.domain.components)
+    @test dc.domain_measure > 0
+    @test dc.mean ≈ dc.total / dc.domain_measure
+    @test dc.num_nan == 0
+
+    @test length(arr.regions) == 1
+    reg = only(arr.regions)
+    @test reg.name == "solid"
+    @test reg.num_cells == 1
+    rc = only(reg.components)
+    @test rc.total < dc.total   # one cell contributes less than both
+
+    # Empty names means every cell_data array (there's exactly one).
+    @test length(data_integrate(m)) == 1
+
+    # A point_data-only name throws naming the fix.
+    @test_throws MeshioError data_integrate(m, ["temperature"])
+
     close(m)
 end
 

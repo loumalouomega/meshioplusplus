@@ -243,5 +243,60 @@ MESHIOPLUSPLUS_API FiniteStats combine_components(const std::vector<FiniteStats>
 MESHIOPLUSPLUS_API double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index);
 
+/**
+ * @brief A per-component weighted-sum accumulator: `sum(value * weight)`,
+ * `sum(weight)`, and a count of rows excluded because the *value* at this
+ * component was non-finite (`Add` is only ever called for a row whose
+ * weight is already known finite and positive -- geometric exclusion, e.g.
+ * an unmeasurable cell, is the caller's job, exactly as `FiniteStats`
+ * assumes nothing about where its own values came from).
+ */
+struct WeightedSum {
+    double mSumVW = 0.0;           ///< sum(value * weight) over finite values.
+    double mSumW = 0.0;            ///< sum(weight) over rows with a finite value.
+    std::int64_t mNumNan = 0;      ///< Rows skipped because the value was non-finite.
+
+    /// Folds one (value, weight) pair in; `weight` must already be finite and > 0.
+    void Add(double Value, double Weight) {
+        if (!std::isfinite(Value)) {
+            ++mNumNan;
+            return;
+        }
+        mSumVW += Value * Weight;
+        mSumW += Weight;
+    }
+
+    /// Folds another (independently accumulated) instance in.
+    void Merge(const WeightedSum& rOther) {
+        mSumVW += rOther.mSumVW;
+        mSumW += rOther.mSumW;
+        mNumNan += rOther.mNumNan;
+    }
+
+    /// The weighted mean, or NaN when nothing finite contributed.
+    double Mean() const { return mSumW > 0.0 ? mSumVW / mSumW : std::nan(""); }
+};
+
+/**
+ * @brief Reduces @p rArray into per-component `WeightedSum`, weighting row
+ * `r` by @p rWeights[r].
+ *
+ * A row whose weight is not finite and positive contributes to no component
+ * at all (silently skipped here -- callers that need to count such rows,
+ * e.g. as "geometrically unmeasurable", do so once themselves, since that
+ * count is the same for every component and every array sharing the same
+ * weights).
+ *
+ * Chunked with `parallel_for` and combined serially, mirroring
+ * `accumulate_stats`, so the result does not depend on the thread count.
+ * @param rArray the array to reduce; row count must equal `rWeights.size()`.
+ * @param NumComponents its component count (see `data_num_components`).
+ * @param rWeights one weight per row.
+ * @param rStats per-component accumulators, resized to @p NumComponents and
+ *        *folded into* (not reset), so several arrays can share one reduction.
+ */
+MESHIOPLUSPLUS_API void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
+                        const std::vector<double>& rWeights, std::vector<WeightedSum>& rStats);
+
 }  // namespace detail
 }  // namespace meshioplusplus

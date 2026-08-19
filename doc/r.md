@@ -213,6 +213,49 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v10.9.0 additions
+
+- `mio_hessian(mesh, array, method = "green-gauss", location = "cell",
+  output = "", overwrite = FALSE)` — the Hessian (second derivative) of a
+  **scalar point-data** field, `mio_gradient()`'s companion one order
+  further. A composition of TWO `mio_gradient()` calls, not a new numerical
+  kernel: the field is differentiated once (point location), then that
+  `(n, 3)` gradient is differentiated again with the default `"gradient"`
+  operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian,
+  `H[i,j]` at index `i*3+j`. `method` is forwarded to BOTH internal passes.
+  Returns a list of `mesh`, `num_skipped` and `num_fallback`. See
+  [`doc/hessian.md`](hessian.md).
+
+  A field that is at most LINEAR has an exactly zero Hessian everywhere —
+  the one mesh-shape-independent guarantee. For a genuinely quadratic field
+  the composition is exact on a structured/symmetric mesh away from its own
+  boundary and a good, standard, but genuinely approximate curvature
+  estimate on an irregular mesh. Input must have exactly one component — a
+  vector field's Hessian is a separate quantity per component.
+
+  A curvature-driven refinement indicator needs no new function: `norm(...)`
+  in `mio_data_calc()` on the 9-component output is exactly its Frobenius
+  norm, ready for `mio_refine()`'s `where` selector.
+
+## v10.8.0 additions
+
+- `mio_data_integrate(mesh, names = NULL)` — cell-measure-weighted
+  total/mean of one or more `cell_data` arrays, `mio_gradient()`'s
+  integration counterpart (`mio_gradient` differentiates a field, this
+  integrates one), returning a list of per-array summaries — each with
+  `name`, `num_components`, `domain` (`num_cells`, `num_skipped`, and a
+  `num_components x 4` `total`/`mean`/`domain_measure`/`num_nan`
+  `components` matrix) and `regions` (a list of the same shape, one per
+  named Cell region present). See
+  [`doc/field_integration.md`](field_integration.md).
+
+  Every sum is weighted by `|measure(cell)|`; a cell whose measure is not
+  computable, or a component whose value is non-finite, is excluded from
+  that component's numerator **and** denominator, never given a fallback
+  weight of 1. Regions are not a partition: a cell in two regions
+  contributes fully to both. A `point_data`-only name fails, naming
+  `mio_data_point_to_cell()` as the fix.
+
 ## v10.5.0 additions
 
 - `mio_undo_green(coarse, fine)` — green-element undo: restores `fine`'s
@@ -235,6 +278,21 @@ with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The 
   branch anywhere in it — pure array bookkeeping, which on the Python side
   means a full numpy reference implementation rather than C++-core-only
   (this binding always calls the installed C library either way).
+
+- `mio_conservative_interpolate(source, target, arrays = NULL,
+  default_value = 0, on_conflict = "error")` — mass-preserving field
+  transfer, `mio_interpolate()`'s sibling: conserves `sum(target value *
+  target measure) == sum(source value * source measure)` over the region
+  the two meshes share, a property `mio_interpolate()`'s pointwise sampling
+  does not have. Both meshes are simplexified first, accepting
+  ragged/polyhedron blocks for free. Unlike `mio_interpolate()`, a `NULL`
+  `arrays` means every source point_data **and** cell_data array. Output
+  arrays are always Float64. Like `mio_undo_green()`, a **two-mesh**
+  operation, and like `mio_subdivide()`/`mio_agglomerate()` this is
+  C++-core only — the 3D clip kernel's discrete branches could disagree
+  with a second implementation near a degenerate overlap, so there is no
+  pure-R fallback either; the installed C library is always called. See
+  [`doc/conservative_interpolate.md`](conservative_interpolate.md).
 
 ## v10.4.0 additions
 

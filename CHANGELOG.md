@@ -8,6 +8,96 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.9.0 (2026-08-19)
+
+**Roadmap §1 closed** — second derivatives / Hessian was the section's last
+open item; "Field capability beyond derivatives" is now fully shipped.
+
+- **`hessian`** (`operations/hessian.hpp`, [`doc/hessian.md`](doc/hessian.md))
+  — the Hessian (second derivative) of a scalar `point_data` field, reachable
+  as `meshioplusplus data hessian` in both CLIs: `gradient`'s companion one
+  order further. A composition of two `gradient` calls, not a new numerical
+  kernel — the field is differentiated once (point location), and that
+  `(n, 3)` gradient is differentiated again with the default gradient
+  operator, producing `(n, 9)`, the flattened row-major 3x3 Hessian. A field
+  that is at most linear has an exactly zero Hessian everywhere — the one
+  mesh-shape-independent guarantee, verified rather than assumed. For a
+  genuinely quadratic field the composition is exact on a
+  structured/symmetric mesh away from its own boundary (also measured) and
+  a good, standard, but genuinely approximate curvature estimate on an
+  irregular mesh — stated honestly rather than oversold. Input must have
+  exactly one component; a vector field's Hessian is a separate quantity
+  per component, computed by calling `hessian` once per component. No new
+  marking subsystem is needed for curvature-driven adaptive refinement:
+  `data_calc`'s `norm(...)` on the 9-component output is exactly its
+  Frobenius norm, ready for `refine`'s `where` selector. Ships on every
+  binding surface: Python (with a pure-Python composition fallback), the C
+  API, Fortran, Julia, R, WASM (`hessian`, reachable as a `convertSurfaceOps`
+  pipeline step too), both CLIs, and an MCP tool.
+
+## v10.8.0 (2026-08-19)
+
+**Roadmap §1 advanced** — field integration closes the section's smaller
+remaining item; second-derivative/Hessian support remains open.
+
+- **`data_integrate`** (`operations/data_integrate.hpp`,
+  [`doc/field_integration.md`](doc/field_integration.md)) — a
+  cell-measure-weighted total and mean of one or more `cell_data` arrays,
+  reachable as `meshioplusplus data integrate` in both CLIs: `gradient`'s
+  integration counterpart (`gradient` differentiates a field, this
+  integrates one), for a density field's total mass, a heat-flux field's
+  total power, or an occupied volume. Every sum is weighted by the cell's
+  own length/area/volume; a cell whose measure is not computable, or a
+  component whose value is non-finite, is excluded from that component's
+  numerator **and** denominator — never given a fallback weight of 1.
+  Reported for the whole mesh and independently for every named `Cell`
+  region (regions are not a partition: a cell in two regions contributes
+  fully to both). A `point_data`-only name raises by name, pointing at
+  `point_data_to_cell_data`. Read-only, like `data_info`/`compute_stats` —
+  the mesh is never modified. Ships on every binding surface: Python (with
+  a full numpy fallback), the C API (opaque `mio_data_integrate` handle),
+  Fortran (`data_integrate`/`data_integrate_region`), Julia, R, WASM
+  (`dataIntegrate`), both CLIs, and an MCP tool.
+
+## v10.7.0 (2026-08-18)
+
+**Roadmap §1 advanced** — conservative interpolation was the section's
+largest item; field integration and second-derivative/Hessian support
+remain open.
+
+- **`conservative_interpolate`** (`operations/conservative_interpolate.hpp`,
+  [`doc/conservative_interpolate.md`](doc/conservative_interpolate.md)) —
+  mass-preserving cross-mesh field transfer: over the region two meshes
+  share, `sum(target value * target measure)` equals `sum(source value *
+  source measure)`, a property `interpolate`'s `Barycentric` mode does not
+  have. A separate sibling operation, not a third `InterpolateMethod`
+  (`InterpolateOptions`/`mio_interpolate` are untouched), mirroring the
+  `decimate`/`decimate_volume` split. Both meshes are simplexified first —
+  the same call `interpolate`'s own barycentric mode already makes — which
+  is what lets ragged and polyhedron blocks through for free, needing no
+  general polygon/polyhedron clipper. Overlapping simplex pairs are found via
+  a bucket-grid spatial hash (`detail/spatial_hash.hpp`, gaining a new
+  `ForEachInBox` query) and measured exactly: a Sutherland-Hodgman convex
+  polygon clip in 2D, and — since both operands are always tetrahedra — a
+  bounded convex-polytope clip in 3D (source tet faces clipped against the
+  target tet's four half-spaces, each cut capped by a fan-triangulated,
+  angle-sorted polygon). `cell_data` is remapped directly; `point_data` by
+  composition (`point_data_to_cell_data` → the same clip engine →
+  `cell_data_to_point_data`), a documented layered approximation rather than
+  exact nodal/FEM conservation. Unlike `interpolate`, an empty `arrays`
+  covers every source `point_data` **and** `cell_data` array — one algorithm
+  regardless of location — and there is deliberately no `extrapolate` flag,
+  since a silent uncovered-cell fallback would break the conservation
+  guarantee for exactly the cells most likely to need it. C++-core only, no
+  numpy fallback, the same reasoning `subdivide`/`agglomerate`/
+  `decimate_volume` already document (the 3D clip's discrete branches could
+  disagree with a second implementation near a degenerate overlap). Shipped
+  across every binding surface: pybind, the C API (`mio_conservative_interpolate`),
+  Fortran, Julia, R, WASM (`conservativeInterpolate`), both CLIs
+  (`conservative-interpolate`), and the MCP server; excluded from the
+  settings pipeline like `Interpolate`/`UndoGreen` (a two-mesh op). No ABI
+  change (`MESHIOPLUSPLUS_ABI_VERSION` stays at 7).
+
 ## v10.6.0 (2026-08-18)
 
 **Roadmap §1 closed in full** — volume decimation was the section's last

@@ -39,6 +39,7 @@ from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
+from ._hessian import hessian
 from ._isosurface import isosurface
 from ._partition import partition_labels
 from ._quality import attach_quality
@@ -104,6 +105,7 @@ _OP_TABLE = {
     "Slice": ("Point", "Normal", "RecordParentIds"),
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
+    "Hessian": ("Array", "Method", "Location", "Output"),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -190,6 +192,9 @@ _EXCLUDED_OPS = {
     "`diff` CLI verb",
     "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
     "pipeline step; use the `undo-green` CLI verb",
+    "ConservativeInterpolate": "'ConservativeInterpolate' needs a second "
+    "(source) mesh and is not a pipeline step; use the "
+    "`conservative-interpolate` CLI verb",
 }
 
 
@@ -472,6 +477,23 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 f"gradient: {report['num_skipped']} cell(s) could not be "
                 "differentiated and are NaN"
+            )
+    elif op == "Hessian":
+        mesh, report = hessian(
+            mesh,
+            _text(step, "Array", ""),
+            method=_text(step, "Method", "green-gauss"),
+            location=_text(step, "Location", "cell"),
+            output=_text(step, "Output", "") or None,
+            overwrite=True,
+            return_report=True,
+        )
+        entry["NumSkipped"] = report["num_skipped"]
+        entry["NumFallback"] = report["num_fallback"]
+        if report["num_skipped"] > 0:
+            warnings.append(
+                f"hessian: {report['num_skipped']} cell(s) could not be "
+                "evaluated and are NaN"
             )
     elif op == "EstimateError":
         mesh, report = estimate_error(

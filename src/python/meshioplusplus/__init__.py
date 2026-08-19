@@ -49,12 +49,14 @@ from . import (
 from .__about__ import __version__
 from ._agglomerate import agglomerate
 from ._clean import clean
+from ._conservative_interpolate import conservative_interpolate
 from ._convert_cells import convert_cells
 from ._crop import crop
 from ._data_average import cell_data_to_point_data, point_data_to_cell_data
 from ._data_calc import data_calc
 from ._data_condition import data_condition
 from ._data_info import data_info
+from ._data_integrate import data_integrate
 from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
@@ -84,6 +86,7 @@ from ._helpers import (
     write,
     write_points_cells,
 )
+from ._hessian import hessian
 from ._interop import (
     from_arrow,
     from_pyvista,
@@ -205,7 +208,10 @@ __all__ = [
     "meshes_equal",
     "merge",
     "interpolate",
+    "conservative_interpolate",
     "gradient",
+    "hessian",
+    "data_integrate",
     "estimate_error",
     "slice",
     "isosurface",

@@ -20,12 +20,15 @@ C++/numpy, so they run under every mesh backend and are reachable from every
 binding surface. All nine CLI verbs live under the `meshioplusplus data` group —
 see the [CLI reference](/cli#meshioplusplus-data).
 
-::: tip A near neighbour that is *not* one of these
-[`gradient`](/gradient) also consumes and produces data arrays, and is reachable
-as `meshioplusplus data gradient` — but it **reads geometry and topology** (face
-areas, cell volumes, cell adjacency), so it is a mesh operation and none of the
-rules on this page (the NaN policy, the dtype table) describe it. It is grouped
-under `data` in the CLI because that is where a user looks for it.
+::: tip Near neighbours that are *not* one of these
+[`gradient`](/gradient), its companion [`hessian`](/hessian) one order
+further, and [`data_integrate`](/field_integration) also consume and produce
+data arrays, and are reachable as `meshioplusplus data gradient` /
+`meshioplusplus data hessian` / `meshioplusplus data integrate` — but they
+**read geometry and topology** (face areas, cell volumes, cell adjacency), so
+they are mesh operations and none of the rules on this page (the NaN policy,
+the dtype table) describe them. They are grouped under `data` in the CLI
+because that is where a user looks for them.
 :::
 
 ## Non-finite values {#nan-policy}

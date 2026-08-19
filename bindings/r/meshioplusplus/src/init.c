@@ -67,6 +67,7 @@ extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -77,6 +78,7 @@ extern SEXP R_mio_sample_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_distance_to_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_conservative_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_undo_green(SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -99,6 +101,7 @@ extern SEXP R_mio_data_cell_to_point(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_calc(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_info(SEXP);
+extern SEXP R_mio_data_integrate(SEXP, SEXP);
 extern SEXP R_mio_pipeline_run_file(SEXP);
 extern SEXP R_mio_sequence_open(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_open_list(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -185,6 +188,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_slice, 4),
     CALLDEF(R_mio_isosurface, 5),
     CALLDEF(R_mio_gradient, 8),
+    CALLDEF(R_mio_hessian, 6),
     CALLDEF(R_mio_estimate_error, 8),
     CALLDEF(R_mio_grid, 4),
     CALLDEF(R_mio_voxelize, 11),
@@ -194,6 +198,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_distance_to_surface, 7),
     CALLDEF(R_mio_merge, 6),
     CALLDEF(R_mio_interpolate, 7),
+    CALLDEF(R_mio_conservative_interpolate, 5),
     CALLDEF(R_mio_undo_green, 2),
     CALLDEF(R_mio_meshes_equal, 5),
     CALLDEF(R_mio_diff, 5),
@@ -216,6 +221,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_data_calc, 5),
     CALLDEF(R_mio_data_condition, 10),
     CALLDEF(R_mio_data_info, 1),
+    CALLDEF(R_mio_data_integrate, 2),
     CALLDEF(R_mio_pipeline_run_file, 1),
     CALLDEF(R_mio_sequence_open, 5),
     CALLDEF(R_mio_sequence_open_list, 5),

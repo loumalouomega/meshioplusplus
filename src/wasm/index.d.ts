@@ -304,6 +304,19 @@ export type OpSpec =
     }
   | {
       /**
+       * The Hessian (second derivative) of a scalar `point_data` field --
+       * `gradient`'s companion one order further, for curvature-based
+       * adaptive refinement. A pure data step: geometry is untouched and
+       * one new (n,9) array is attached.
+       */
+      op: 'hessian';
+      array: string;
+      method?: GradientMethod;
+      location?: 'point' | 'cell';
+      output?: string;
+    }
+  | {
+      /**
        * The ZZ recovery-based error indicator of a `point_data` field, plus
        * optional marking. A pure data step: geometry is untouched and the
        * indicator (and, when `marking` is not `"none"`, the marking) array
@@ -494,6 +507,10 @@ export type InterpolateMethod = 'nearest' | 'barycentric';
  *  target: throw, replace, or write to `name + '_interp'`. */
 export type InterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
 
+/** What `conservativeInterpolate` does when a transferred name already
+ *  exists on the target: throw, replace, or write to `name + '_interp'`. */
+export type ConservativeInterpolateOnConflict = 'error' | 'overwrite' | 'suffix';
+
 /** Partitioning backend: SFC is always available; KaHIP is never compiled
  *  into the WASM build, so `'kahip'` always throws and `'auto'` = `'sfc'`. */
 export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
@@ -525,6 +542,41 @@ export interface DataArrayInfo {
   numFinite: number;
   /** cell_data whose blocks disagree in component count. */
   inconsistentBlocks: boolean;
+}
+
+/** Cell-measure-weighted reduction of one array over one set of cells (the
+ *  whole mesh, or one named Cell region) -- see `dataIntegrate`. */
+export interface FieldIntegralRegion {
+  /** The region's name; absent on the whole-mesh `domain` entry. */
+  name?: string;
+  /** Cells with a computable measure. */
+  numCells: number;
+  /** Cells excluded: unmeasurable geometry (ragged, unsupported type, or
+   *  degenerate). */
+  numSkipped: number;
+  /** `sum(value * |measure|)` over cells finite in component k. */
+  totalPerComponent: number[];
+  /** `totalPerComponent[k] / domainMeasurePerComponent[k]`, or NaN when that
+   *  denominator is zero. */
+  meanPerComponent: number[];
+  /** `sum(|measure|)` over cells finite in component k. */
+  domainMeasurePerComponent: number[];
+  /** Measurable cells excluded from component k because its value was
+   *  non-finite there. */
+  numNanPerComponent: number[];
+}
+
+/** One array's field integral, returned by `dataIntegrate` --
+ *  `gradient`'s integration counterpart. See doc/field_integration.md. */
+export interface FieldIntegralArray {
+  name: string;
+  numComponents: number;
+  /** The whole-mesh reduction. */
+  domain: FieldIntegralRegion;
+  /** One independent entry per named Cell region present on the mesh -- a
+   *  cell in two regions contributes fully to both, one in none contributes
+   *  to neither. */
+  regions: FieldIntegralRegion[];
 }
 
 /** Heavy-data layout of a transient XDMF series. */
@@ -1015,6 +1067,29 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Mass-preserving cross-mesh field transfer: an exact overlap-measure
+   * weighted remap, so that over the region the two meshes share,
+   * sum(target value * target measure) equals sum(source value * source
+   * measure) — the property `interpolate`'s `'barycentric'` mode does not
+   * have. Both meshes are simplexified first (accepting ragged/polyhedron
+   * blocks for free, unlike a restricted cell-type scope). Unlike
+   * `interpolate`, an empty `arrays` transfers every source point_data AND
+   * cell_data array — there is one algorithm regardless of location. Output
+   * arrays are always Float64.
+   * @throws {Error} on an unknown onConflict, an unknown array name, a name
+   *   collision under `'error'`, mismatched maximum topological dimensions
+   *   between the two meshes, or no triangle/tetrahedron cells on either
+   *   side after simplexification.
+   */
+  conservativeInterpolate(
+    source: Mesh,
+    target: Mesh,
+    arrays?: string[],
+    defaultValue?: number,
+    onConflict?: ConservativeInterpolateOnConflict,
+  ): Mesh;
+
+  /**
    * Green-element undo: restore `fine`'s transitional (closure-only) cells
    * back to their original parent, read verbatim from `coarse` — a lookup,
    * not a reconstruction, since `refine` never renumbers or prunes points.
@@ -1249,6 +1324,41 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; numSkipped: number; numFallback: number };
 
   /**
+   * The Hessian (second derivative) of a **scalar** `point_data` field --
+   * `gradient`'s companion one order further, for curvature-based adaptive
+   * refinement.
+   *
+   * A composition of TWO `gradient` calls, not a new numerical kernel: the
+   * field is differentiated once (point location), then that `(n, 3)`
+   * gradient is differentiated again with the default gradient operator,
+   * producing `(n, 9)` -- the flattened row-major 3x3 Hessian, `H[i][j]` at
+   * index `i*3+j`. `method` is forwarded to BOTH internal passes. The width
+   * travels with the array in the returned mesh's `point_data_components` /
+   * `cell_data_components` maps, exactly as `gradient`'s own output does.
+   *
+   * A field that is at most LINEAR has an exactly zero Hessian everywhere --
+   * the one mesh-shape-independent guarantee. For a genuinely quadratic
+   * field the composition is exact on a structured/symmetric mesh away from
+   * its own boundary and a good, standard, but genuinely approximate
+   * curvature estimate on an irregular mesh (see doc/hessian.md).
+   *
+   * A curvature-driven refinement indicator needs no new API: `norm(...)`
+   * in `dataCalc` on the 9-component output is exactly its Frobenius norm,
+   * ready for `refine`'s `where` selector.
+   * @throws {Error} when `array` names a `cell_data` array (piecewise
+   *   constant, so it has no derivative), an unknown array, or an array
+   *   with more than one component (hessian is scalar-only).
+   */
+  hessian(
+    mesh: Mesh,
+    array: string,
+    method?: GradientMethod,
+    location?: 'point' | 'cell',
+    output?: string,
+    overwrite?: boolean,
+  ): { mesh: Mesh; numSkipped: number; numFallback: number };
+
+  /**
    * The Zienkiewicz-Zhu (ZZ) recovery-based error indicator of a `point_data`
    * field, plus optional marking. A composition of `gradient` (Green-Gauss,
    * cell location) with the measure-weighted point↔cell averaging round
@@ -1471,6 +1581,14 @@ export interface MeshioPlusPlusModule {
 
   /** Read-only per-array summary of every data array the mesh carries. */
   dataInfo(mesh: Mesh): DataArrayInfo[];
+
+  /**
+   * Cell-measure-weighted total/mean of one or more cell_data arrays --
+   * gradient's integration counterpart. `arrays` empty/undefined means
+   * every cell_data array. A point_data-only name throws naming
+   * dataPointToCell as the fix. See doc/field_integration.md.
+   */
+  dataIntegrate(mesh: Mesh, arrays?: string[]): FieldIntegralArray[];
 
   /**
    * Open a transient (time-series) XDMF writer on the virtual filesystem --

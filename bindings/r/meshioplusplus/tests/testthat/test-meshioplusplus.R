@@ -553,6 +553,29 @@ test_that("gradient differentiates a point-data field", {
   expect_error(mio_gradient(m, "temperature", op = "divergence"))
 })
 
+test_that("hessian computes the second derivative of a scalar field", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  h <- mio_hessian(m, "temperature")
+  expect_equal(h$num_skipped, 0)
+  expect_true("temperature:hessian" %in% mio_cell_data_names(h$mesh))
+  mio_release(h$mesh)
+
+  l <- mio_hessian(m, "temperature", method = "least-squares")
+  expect_gte(l$num_fallback, 0)
+  mio_release(l$mesh)
+
+  p <- mio_hessian(m, "temperature", location = "point", output = "H2")
+  expect_true("H2" %in% mio_point_data_names(p$mesh))
+  mio_release(p$mesh)
+
+  # A cell_data array has no derivative, and a vector field is scalar-only.
+  # Both must fail by name.
+  expect_error(mio_hessian(m, "material"))
+  expect_error(mio_hessian(m, "displacement"))
+})
+
 test_that("estimate_error estimates a recovery-based indicator and marks", {
   m <- fixture()
   on.exit(mio_release(m))
@@ -678,6 +701,38 @@ test_that("data operations never touch geometry", {
   expect_equal(temp$max, 5)
   expect_equal(temp$mean, 3)
   expect_equal(temp$num_nan, 0)
+})
+
+test_that("field integration (mio_data_integrate) totals/means over cells", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  mio_add_region(m, "solid", "cell", 1L, dim = 3L, tag = 17)
+
+  report <- mio_data_integrate(m, "material")
+  expect_length(report, 1)
+  arr <- report[[1]]
+  expect_equal(arr$name, "material")
+  expect_equal(arr$num_components, 1)
+  expect_equal(arr$domain$num_cells, 2)
+  expect_equal(arr$domain$num_skipped, 0)
+  dcomp <- arr$domain$components
+  expect_gt(unname(dcomp[1, "domain_measure"]), 0)
+  expect_equal(
+    unname(dcomp[1, "mean"]), unname(dcomp[1, "total"] / dcomp[1, "domain_measure"])
+  )
+  expect_equal(unname(dcomp[1, "num_nan"]), 0)
+
+  expect_length(arr$regions, 1)
+  region <- arr$regions[[1]]
+  expect_equal(region$name, "solid")
+  expect_equal(region$num_cells, 1)
+  expect_lt(unname(region$components[1, "total"]), unname(dcomp[1, "total"])) # one cell < both
+
+  # NULL names means every cell_data array (there's exactly one: material).
+  expect_length(mio_data_integrate(m), 1)
+
+  # A point_data-only name fails, naming the fix.
+  expect_error(mio_data_integrate(m, "temperature"), "point_data_to_cell_data")
 })
 
 test_that("the settings pipeline runs (or fails naming the flag)", {

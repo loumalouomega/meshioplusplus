@@ -108,7 +108,9 @@ meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-sect
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
 meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
+meshioplusplus data hessian  in.vtu out.vtu --array T           # second derivative, gradient's companion
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6  # ZZ error indicator + marking
+meshioplusplus data integrate in.vtu --array density            # total / mean, per region
 
 meshioplusplus data info  mesh.vtu                           # summarize data arrays
 meshioplusplus data calc  in.vtu out.vtu --point "s = norm(v)"   # derive a field
@@ -461,6 +463,8 @@ mapped = meshioplusplus.interpolate(coarse, fine, method="barycentric")
 meshioplusplus.write("mapped.vtu", mapped)
 ```
 
+**`meshioplusplus.conservative_interpolate`** is a separate, mass-preserving sibling: over the region the two meshes share, `sum(target value * target measure)` equals `sum(source value * source measure)`, a property `interpolate`'s pointwise sampling does not have. Both meshes are simplexified first (accepting ragged/polyhedron blocks for free), overlapping simplex pairs are measured with an exact geometric clip (Sutherland-Hodgman in 2D, a bounded tetrahedron-tetrahedron clip in 3D), and a target cell's value is the overlap-measure-weighted mean of every source cell it intersects. Unlike `interpolate`, an unset `arrays` transfers every source `point_data` **and** `cell_data` array. `point_data` is transferred by composition (`point_data_to_cell_data` → the same clip algorithm → `cell_data_to_point_data`), a layered approximation rather than exact nodal conservation. C++-core only, with no pure-Python fallback (the 3D clip's discrete branches could disagree near a degenerate overlap). See `doc/conservative_interpolate.md`.
+
 #### Slicing / cross-sections
 
 **`meshioplusplus.slice`** computes the planar cross-section of a mesh — the actual intersection of the mesh with a plane, one topological dimension below the cut cells: a 3D volume mesh yields a `triangle`/`quad` surface, a 2D surface mesh a `line` mesh. Unlike `crop` (plane mode), which keeps whole cells on one side, `slice` computes the intersection and lowers the dimension. It uses robust marching tetrahedra (the input is simplexified first, so each cell's cross-section is a well-defined convex primitive), deduping crossing points on shared edges into single nodes so the section is watertight, and winding every face consistently toward the `+normal` side. Each section cell inherits its parent's `cell_data`; `record_parent_ids=True` attaches `slice:parent_cell`, and `point_data` is interpolated at the cut. Output is byte-identical across backends, thread counts and the C++/numpy boundary. See `doc/slice.md`.
@@ -504,7 +508,17 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient` and `meshioplusplus data estimate-error`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
+
+#### Second derivatives (Hessian)
+
+**`meshioplusplus.hessian`** computes the Hessian (second derivative) of a **scalar** `point_data` field — `gradient`'s companion one order further, for curvature-based adaptive refinement. A **composition** of two `gradient` calls, not a new numerical kernel: the field is differentiated once (point location), then that `(n, 3)` gradient is differentiated again with the default gradient operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian. `method` forwards to both internal passes. A field that is at most linear has an exactly zero Hessian everywhere — the one mesh-shape-independent guarantee; a genuinely quadratic field's composition is exact on a structured/symmetric mesh away from its own boundary and a good, standard, but genuinely approximate curvature estimate on an irregular mesh. Input must have exactly one component. A curvature-driven refinement indicator needs no new code: `data_calc`'s `norm(...)` on the 9-component output is exactly its Frobenius norm, ready for `refine`'s `where` selector. See `doc/hessian.md`.
+
+```python
+h = meshioplusplus.hessian(vol, "T")                            # cell_data["T:hessian"], (n, 9)
+curv = meshioplusplus.data_calc(h, "norm(`T:hessian`)", location="cell", output="curv")
+adapted = meshioplusplus.refine(curv, where="curv > 3.0")       # refine where curvature is largest
+```
 
 #### Error estimation (Zienkiewicz-Zhu recovery + marking)
 
@@ -516,6 +530,16 @@ out, report = meshioplusplus.estimate_error(
 )
 print(report["global_error"], report["num_marked"])
 adapted = meshioplusplus.refine(out, where="error:marked > 0.5")
+```
+
+#### Field integration (total / mean, per-region)
+
+**`meshioplusplus.data_integrate`** computes a cell-measure-weighted total and mean of one or more `cell_data` arrays — `gradient`'s integration counterpart (`gradient` differentiates a field, this integrates one), for a density field's total mass, a heat-flux field's total power, or an occupied volume. Every sum is weighted by `|measure(cell)|` (the cell's own length/area/volume); a cell whose measure is not computable, or a component whose value is non-finite, is excluded from that component's numerator **and** denominator — never given a fallback weight of 1, unlike `cell_data_to_point_data`'s own measure weighting, since a silent unit-weight substitution would corrupt a physical total. Reported for the whole mesh and independently for every named `Cell` region — regions are **not a partition**, so a cell in two regions contributes fully to both. A `point_data`-only name raises by name, pointing at `point_data_to_cell_data`. The mesh is never modified; this is a read-only report, like `data_info` and `compute_stats`. See `doc/field_integration.md`.
+
+```python
+report = meshioplusplus.data_integrate(mesh, arrays=["density"])
+report[0]["domain"]["total_per_component"]   # sum(value * |measure|) -- total mass
+report[0]["regions"]                         # the same, independently, per named Cell region
 ```
 
 #### Data operations (rename / average / calc / condition / summarize)
@@ -807,7 +831,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.9.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

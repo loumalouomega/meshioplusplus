@@ -94,13 +94,14 @@ export regions, add_region!
 export extract_surface, extract_skin, attach_quality, quality_counts
 export transform, clean, smooth, crop_bbox, crop_plane, crop_predicate, slice, isosurface
 export gradient
+export hessian
 export estimate_error
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
-export interpolate, meshes_equal, stats, compute_bandwidth
+export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
-export data_calc, data_condition, data_info
+export data_calc, data_condition, data_info, data_integrate
 export run_pipeline_file, run_pipeline_json, pipeline_has_json
 # Sequences (multi-file / transient datasets). `read`/`step`/`time`/`path` and
 # friends would shadow Base, so only the non-colliding names are exported;

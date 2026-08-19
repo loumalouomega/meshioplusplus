@@ -544,6 +544,47 @@ TEST(CApi, Interpolate) {
     mio_mesh_free(tgt);
 }
 
+TEST(CApi, ConservativeInterpolate) {
+    // Two identical single-triangle meshes: the full-value-recovery oracle.
+    mio_mesh* src = mio_mesh_create();
+    const std::vector<double> spts = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(src, MIO_FLOAT64, 3, 3, spts.data()), MIO_OK);
+    const std::vector<std::int64_t> sconn = {0, 1, 2};
+    ASSERT_EQ(mio_mesh_add_cell_block(src, "triangle", 1, 3, MIO_INT64, sconn.data()), MIO_OK);
+    const std::vector<double> f = {7.0};
+    const std::int64_t shapec[] = {1};
+    ASSERT_EQ(mio_mesh_append_cell_data(src, "f", MIO_FLOAT64, 1, shapec, f.data()), MIO_OK);
+
+    mio_mesh* tgt = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(tgt, MIO_FLOAT64, 3, 3, spts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(tgt, "triangle", 1, 3, MIO_INT64, sconn.data()), MIO_OK);
+
+    mio_mesh* out = mio_conservative_interpolate(src, tgt, nullptr, 0, 0.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT32;
+    ASSERT_EQ(mio_mesh_get_cell_data(out, "f", 0, &data, &dt, nullptr, nullptr), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    EXPECT_DOUBLE_EQ(static_cast<const double*>(data)[0], 7.0);
+    mio_mesh_free(out);
+
+    // An explicit name list goes through the char** + count convention.
+    const char* names[] = {"f"};
+    out = mio_conservative_interpolate(src, tgt, names, 1, 0.0, "error");
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+
+    // Error paths: unknown array / NULL meshes.
+    const char* bad[] = {"nope"};
+    EXPECT_EQ(mio_conservative_interpolate(src, tgt, bad, 1, 0.0, nullptr), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+    EXPECT_EQ(mio_conservative_interpolate(nullptr, tgt, nullptr, 0, 0.0, nullptr), nullptr);
+    EXPECT_EQ(mio_conservative_interpolate(src, nullptr, nullptr, 0, 0.0, nullptr), nullptr);
+
+    mio_mesh_free(src);
+    mio_mesh_free(tgt);
+}
+
 TEST(CApi, Diff) {
     mio_mesh* a = build_tet_mesh();
     mio_mesh* b = build_tet_mesh();
@@ -1137,6 +1178,74 @@ TEST(CApi, DataNullArgumentsAreRejected) {
     // A NULL names array with a positive count must be caught, not dereferenced.
     EXPECT_EQ(mio_data_drop(m, MIO_DATA_POINT, nullptr, 3, 0), nullptr);
     EXPECT_STRNE(mio_last_error(), "");
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DataIntegrateHandle) {
+    mio_mesh* m = build_data_mesh();  // cell_data "mat" = {10.0, 20.0} over 2 tets
+    const int64_t region_cells[1] = {0};
+    ASSERT_EQ(mio_mesh_add_region(m, "one_cell", MIO_REGION_CELL, -1, -1, region_cells, 1),
+              MIO_OK);
+
+    const char* names[] = {"mat"};
+    mio_data_integrate* result = mio_data_integrate_create(m, names, 1);
+    ASSERT_NE(result, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_data_integrate_count(result), 1);
+
+    char buf[64] = {};
+    const std::int64_t len = mio_data_integrate_name(result, 0, buf, sizeof(buf));
+    EXPECT_GE(len, 0);
+    EXPECT_STREQ(buf, "mat");
+
+    mio_field_integral_info entry;
+    ASSERT_EQ(mio_data_integrate_entry(result, 0, &entry), MIO_OK);
+    EXPECT_EQ(entry.num_components, 1);
+    EXPECT_EQ(entry.num_cells, 2);
+    EXPECT_EQ(entry.num_skipped, 0);
+
+    double total = 0, mean = 0, domain_measure = 0;
+    std::int64_t num_nan = 0;
+    ASSERT_EQ(mio_data_integrate_component(result, 0, 0, &total, &mean, &domain_measure, &num_nan),
+              MIO_OK);
+    EXPECT_GT(total, 0.0);
+    EXPECT_GT(domain_measure, 0.0);
+    EXPECT_NEAR(mean, total / domain_measure, 1e-9);
+    EXPECT_EQ(num_nan, 0);
+    // Every out pointer is optional.
+    EXPECT_EQ(mio_data_integrate_component(result, 0, 0, nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+
+    ASSERT_EQ(mio_data_integrate_region_count(result, 0), 1);
+    char rbuf[64] = {};
+    EXPECT_GE(mio_data_integrate_region_name(result, 0, 0, rbuf, sizeof(rbuf)), 0);
+    EXPECT_STREQ(rbuf, "one_cell");
+    mio_field_integral_info rentry;
+    ASSERT_EQ(mio_data_integrate_region_entry(result, 0, 0, &rentry), MIO_OK);
+    EXPECT_EQ(rentry.num_cells, 1);
+    double rtotal = 0;
+    ASSERT_EQ(mio_data_integrate_region_component(result, 0, 0, 0, &rtotal, nullptr, nullptr,
+                                                   nullptr),
+              MIO_OK);
+    EXPECT_LT(rtotal, total);  // one cell contributes less than both
+
+    // Out-of-range indices are rejected, not dereferenced.
+    EXPECT_NE(mio_data_integrate_entry(result, 1, &entry), MIO_OK);
+    EXPECT_EQ(mio_data_integrate_name(result, -1, nullptr, 0), -1);
+    EXPECT_NE(mio_data_integrate_component(result, 0, 999, nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_data_integrate_region_entry(result, 0, 1, &rentry), MIO_OK);
+
+    mio_data_integrate_free(result);
+    mio_data_integrate_free(nullptr);  // must tolerate NULL
+
+    // A point_data-only name fails, naming the fix.
+    const char* point_only[] = {"T"};
+    EXPECT_EQ(mio_data_integrate_create(m, point_only, 1), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+
+    EXPECT_EQ(mio_data_integrate_create(nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_data_integrate_count(nullptr), -1);
+
     mio_mesh_free(m);
 }
 
@@ -2194,6 +2303,69 @@ TEST(CApi, GradientErrorsAreGuardedNotThrown) {
         nullptr);
     EXPECT_EQ(mio_gradient(m, nullptr, nullptr, nullptr, nullptr, nullptr, -1, 0, nullptr, nullptr),
               nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, HessianCarriesCountersAndShape) {
+    // A single hexahedron; a linear field has an exactly zero Hessian
+    // regardless of mesh shape (see hessian.hpp), so this needs no
+    // structured-grid fixture the way the C++ gtest suite's own
+    // interior-exactness test does.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8);
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double x = pts[i * 3 + 0], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        f[i] = 3.0 * x - 2.0 * y + 5.0 * z + 7.0;
+    }
+    const std::int64_t sshape[1] = {8};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+
+    std::int64_t skipped = -1, fallback = -1;
+    mio_mesh* h =
+        mio_hessian(m, "f", nullptr, nullptr, nullptr, 0, &skipped, &fallback);
+    ASSERT_NE(h, nullptr) << mio_last_error();
+    EXPECT_EQ(skipped, 0);
+    EXPECT_EQ(fallback, 0);
+    ASSERT_EQ(mio_mesh_get_cell_data(h, "f:hessian", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(got_shape[1], 9);
+    const double* v = static_cast<const double*>(data);
+    for (int i = 0; i < 9; ++i)
+        EXPECT_NEAR(v[i], 0.0, 1e-9) << "entry " << i;
+    mio_mesh_free(h);
+
+    // Point location moves the array to point_data and drops the intermediate.
+    mio_mesh* p = mio_hessian(m, "f", "green-gauss", "point", nullptr, 0, nullptr, nullptr);
+    ASSERT_NE(p, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_get_point_data(p, "f:hessian", &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_LE(mio_mesh_cell_data_num_blocks(p, "f:hessian"), 0)
+        << "the intermediate cell array must be dropped";
+    mio_mesh_free(p);
+
+    // Unknown array, a vector (multi-component) input, and NULL arguments:
+    // NULL + last_error, never an exception across the ABI.
+    EXPECT_EQ(mio_hessian(m, "nope", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    const std::vector<double> u(24, 0.0);
+    const std::int64_t vshape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 2, vshape, u.data()), MIO_OK);
+    EXPECT_EQ(mio_hessian(m, "u", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr)
+        << "hessian is scalar-only";
+    EXPECT_EQ(mio_hessian(nullptr, "f", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_hessian(m, nullptr, nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+
     mio_mesh_free(m);
 }
 

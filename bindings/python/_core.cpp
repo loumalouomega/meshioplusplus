@@ -73,6 +73,7 @@
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -82,6 +83,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -96,6 +98,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -1086,6 +1089,32 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("origin"), py::arg("normal"),
         py::arg("record_parent_ids") = false);
 
+    // Mass-preserving cross-mesh field transfer: exact overlap-measure
+    // weighted remap (as opposed to interpolate's pointwise sampling).
+    // Returns the target copy as a plain mesh (no maps/counters). See
+    // operations/conservative_interpolate.hpp.
+    m.def(
+        "conservative_interpolate",
+        [](py::object pysource, py::object pytarget, py::object arrays, double default_value,
+           const std::string& on_conflict) {
+            meshioplusplus_py::PyMeshRefs refs_src;
+            meshioplusplus_py::PyMeshRefs refs_tgt;
+            meshioplusplus::Mesh src = meshioplusplus_py::py_to_mesh(
+                pysource, refs_src, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh tgt = meshioplusplus_py::py_to_mesh(
+                pytarget, refs_tgt, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ConservativeInterpolateOptions options;
+            if (!arrays.is_none())
+                options.mArrays = py::cast<std::vector<std::string>>(arrays);
+            options.mDefaultValue = default_value;
+            options.mOnConflict =
+                meshioplusplus::conservative_interpolate_conflict_from_name(on_conflict);
+            meshioplusplus::Mesh out = meshioplusplus::conservative_interpolate(src, tgt, options);
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("source"), py::arg("target"), py::arg("arrays") = py::none(),
+        py::arg("default_value") = 0.0, py::arg("on_conflict") = "error");
+
     // Isosurfaces / contours: the level set of a scalar point_data field, cut
     // with the same marching tetrahedra as slice. `component` is negative for
     // the row magnitude. See operations/isosurface.hpp.
@@ -1353,6 +1382,33 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
         py::arg("method") = "green-gauss", py::arg("location") = "cell", py::arg("output") = "",
         py::arg("component") = -1, py::arg("overwrite") = false);
+
+    // The Hessian (second derivative) of a scalar point_data field, built
+    // entirely as a composition of two `gradient` calls. See
+    // operations/hessian.hpp for the exactness argument and the scalar-only
+    // scope.
+    m.def(
+        "hessian",
+        [](py::object pymesh, const std::string& array, const std::string& method,
+           const std::string& location, const std::string& output, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::HessianOptions options;
+            options.mArrayName = array;
+            options.mMethod = meshioplusplus::gradient_method_from_name(method);
+            options.mLocation = meshioplusplus::data_location_from_name(location);
+            options.mOutputName = output;
+            options.mOverwrite = overwrite;
+            meshioplusplus::HessianResult r = meshioplusplus::hessian(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_fallback"] = r.mNumFallback;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("method") = "green-gauss",
+        py::arg("location") = "cell", py::arg("output") = "", py::arg("overwrite") = false);
 
     // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
     // entirely as a composition of `gradient` + the two `data_average`
@@ -1759,6 +1815,48 @@ PYBIND11_MODULE(_core, m) {
             return arrays;
         },
         py::arg("mesh"));
+
+    // Cell-measure-weighted field integration (total/mean, whole mesh and
+    // per named Cell region). Returns a list of dicts, one per array. See
+    // operations/data_integrate.hpp.
+    m.def(
+        "data_integrate",
+        [](py::object pymesh, py::object arrays) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataIntegrateOptions opts;
+            if (!arrays.is_none())
+                opts.mArrayNames = py::cast<std::vector<std::string>>(arrays);
+            meshioplusplus::DataIntegrateReport r = meshioplusplus::data_integrate(cpp, opts);
+
+            auto region_dict = [](const meshioplusplus::FieldIntegralRegion& reg) {
+                py::dict d;
+                d["name"] = reg.mName;
+                d["num_cells"] = reg.mNumCells;
+                d["num_skipped"] = reg.mNumSkipped;
+                d["domain_measure_per_component"] = py::cast(reg.mDomainMeasurePerComponent);
+                d["total_per_component"] = py::cast(reg.mTotalPerComponent);
+                d["mean_per_component"] = py::cast(reg.mMeanPerComponent);
+                d["num_nan_per_component"] = py::cast(reg.mNumNanPerComponent);
+                return d;
+            };
+
+            py::list out;
+            for (const meshioplusplus::FieldIntegralArray& a : r.mArrays) {
+                py::dict d;
+                d["name"] = a.mName;
+                d["num_components"] = a.mNumComponents;
+                d["domain"] = region_dict(a.mDomain);
+                py::list regions;
+                for (const meshioplusplus::FieldIntegralRegion& reg : a.mRegions)
+                    regions.append(region_dict(reg));
+                d["regions"] = regions;
+                out.append(d);
+            }
+            return out;
+        },
+        py::arg("mesh"), py::arg("arrays") = py::none());
 
     // Mesh comparison ("diff"). Returns a nested dict mirroring DiffReport, with
     // an overall verdict string. See operations/diff.hpp.

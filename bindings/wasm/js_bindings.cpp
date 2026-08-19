@@ -89,6 +89,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -96,6 +97,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
@@ -112,6 +114,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -2022,6 +2025,47 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
 }
 
 /**
+ * @brief The Hessian (second derivative) of a scalar point_data field --
+ * gradient_js's companion one order further, for curvature-based adaptive
+ * refinement.
+ *
+ * A composition of TWO gradient() calls, not a new numerical kernel: the
+ * field is differentiated once (Point location), then that (n,3) gradient
+ * is differentiated again with the default "gradient" operator, producing
+ * (n,9) -- the flattened row-major 3x3 Hessian. `method` is forwarded to
+ * BOTH internal passes. An empty `output` selects `<array>:hessian`.
+ *
+ * A field that is at most LINEAR has an exactly zero Hessian everywhere --
+ * the one mesh-shape-independent guarantee. For a genuinely quadratic field
+ * the composition is exact on a structured/symmetric mesh away from its own
+ * boundary and a good, standard, but genuinely approximate curvature
+ * estimate on an irregular mesh (see doc/hessian.md). Input must have
+ * exactly one component.
+ *
+ * Like gradient_js, the result's (n,9) width travels in the
+ * point_data_components/cell_data_components sibling maps mesh_to_val
+ * emits.
+ */
+val hessian_js(const val& rMeshObj, const std::string& rArray, const std::string& rMethod,
+              const std::string& rLocation, const std::string& rOutput, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::HessianOptions options;
+        options.mArrayName = rArray;
+        options.mMethod = meshioplusplus::gradient_method_from_name(rMethod);
+        options.mLocation =
+            meshioplusplus::data_location_from_name(rLocation.empty() ? "cell" : rLocation);
+        options.mOutputName = rOutput;
+        options.mOverwrite = overwrite;
+        meshioplusplus::HessianResult r = meshioplusplus::hessian(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numFallback", static_cast<double>(r.mNumFallback));
+        return out;
+    });
+}
+
+/**
  * @brief The ZZ recovery-based error indicator plus marking.
  *
  * A composition of `gradient_js` with the measure-weighted point<->cell
@@ -2561,6 +2605,66 @@ val data_info_js(const val& rMeshObj) {
     });
 }
 
+/** @brief Cell-measure-weighted total/mean of one or more cell_data arrays --
+ *  gradient's integration counterpart (gradient differentiates a field, this
+ *  integrates one). `arrays` is a JS array of names (undefined/null/empty =
+ *  every cell_data array). Every sum is weighted by the cell's own
+ *  length/area/volume, excluding both a cell with unmeasurable geometry and
+ *  a component with a non-finite value from that component's numerator and
+ *  denominator. Returns a JS array of objects with `name`, `numComponents`,
+ *  `domain` (`numCells`, `numSkipped`, `totalPerComponent`,
+ *  `meanPerComponent`, `domainMeasurePerComponent`, `numNanPerComponent`)
+ *  and `regions` (the same shape plus `name`, one per named Cell region
+ *  present -- a cell in two regions contributes fully to both, one in none
+ *  contributes to neither). A point_data-only name throws naming
+ *  pointDataToCellData as the fix. */
+val data_integrate_js(const val& rMeshObj, const val& rArrays) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataIntegrateOptions opts;
+        opts.mArrayNames = val_to_string_vector(rArrays);
+        meshioplusplus::DataIntegrateReport r =
+            meshioplusplus::data_integrate(val_to_mesh(rMeshObj), opts);
+        auto to_array_d = [](const std::vector<double>& rValues) {
+            val a = val::array();
+            for (double v : rValues)
+                a.call<void>("push", v);
+            return a;
+        };
+        auto to_array_i = [](const std::vector<std::int64_t>& rValues) {
+            val a = val::array();
+            for (std::int64_t v : rValues)
+                a.call<void>("push", static_cast<double>(v));
+            return a;
+        };
+        auto region_to_val = [&](const meshioplusplus::FieldIntegralRegion& rRegion) {
+            val o = val::object();
+            o.set("numCells", static_cast<double>(rRegion.mNumCells));
+            o.set("numSkipped", static_cast<double>(rRegion.mNumSkipped));
+            o.set("totalPerComponent", to_array_d(rRegion.mTotalPerComponent));
+            o.set("meanPerComponent", to_array_d(rRegion.mMeanPerComponent));
+            o.set("domainMeasurePerComponent", to_array_d(rRegion.mDomainMeasurePerComponent));
+            o.set("numNanPerComponent", to_array_i(rRegion.mNumNanPerComponent));
+            return o;
+        };
+        val out = val::array();
+        for (const meshioplusplus::FieldIntegralArray& a : r.mArrays) {
+            val o = val::object();
+            o.set("name", a.mName);
+            o.set("numComponents", static_cast<double>(a.mNumComponents));
+            o.set("domain", region_to_val(a.mDomain));
+            val regions = val::array();
+            for (const meshioplusplus::FieldIntegralRegion& rr : a.mRegions) {
+                val ro = region_to_val(rr);
+                ro.set("name", rr.mName);
+                regions.call<void>("push", ro);
+            }
+            o.set("regions", regions);
+            out.call<void>("push", o);
+        }
+        return out;
+    });
+}
+
 /**
  * @brief Cross-mesh field transfer: sample the source's data arrays onto the
  * target (source point_data at the target's points, source cell_data by
@@ -2582,6 +2686,30 @@ val interpolate_js(const val& rSourceObj, const val& rTargetObj, const std::stri
         options.mOnConflict = meshioplusplus::interpolate_conflict_from_name(rOnConflict);
         return mesh_to_val(
             meshioplusplus::interpolate(val_to_mesh(rSourceObj), val_to_mesh(rTargetObj), options));
+    });
+}
+
+/**
+ * @brief Mass-preserving cross-mesh field transfer: an exact overlap-measure
+ * weighted remap, so sum(target value * target measure) equals sum(source
+ * value * source measure) over the shared region -- the property
+ * `interpolate`'s "barycentric" mode does not have. Both meshes are
+ * simplexified (accepting ragged/polyhedron blocks for free). Unlike
+ * `interpolate`, `arrays` undefined/null/empty means every source
+ * point_data AND cell_data array (one algorithm regardless of location).
+ * `onConflict` is "error", "overwrite" or "suffix" (name + "_interp").
+ * Returns the target copy as a plain mesh object (always Float64 arrays).
+ */
+val conservative_interpolate_js(const val& rSourceObj, const val& rTargetObj, const val& rArrays,
+                                double defaultValue, const std::string& rOnConflict) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConservativeInterpolateOptions options;
+        options.mArrays = val_to_string_vector(rArrays);
+        options.mDefaultValue = defaultValue;
+        options.mOnConflict =
+            meshioplusplus::conservative_interpolate_conflict_from_name(rOnConflict);
+        return mesh_to_val(meshioplusplus::conservative_interpolate(
+            val_to_mesh(rSourceObj), val_to_mesh(rTargetObj), options));
     });
 }
 
@@ -2804,6 +2932,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("clean", &clean_js);
     emscripten::function("smooth", &smooth_js);
     emscripten::function("interpolate", &interpolate_js);
+    emscripten::function("conservativeInterpolate", &conservative_interpolate_js);
     emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("isosurface", &isosurface_js);
@@ -2814,6 +2943,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("distanceToSurface", &distance_to_surface_js);
     emscripten::function("computeSdf", &compute_sdf_js);
     emscripten::function("gradient", &gradient_js);
+    emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
@@ -2835,6 +2965,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("dataCalc", &data_calc_js);
     emscripten::function("dataCondition", &data_condition_js);
     emscripten::function("dataInfo", &data_info_js);
+    emscripten::function("dataIntegrate", &data_integrate_js);
     // Transient XDMF: the one stateful surface -- an opaque handle plus these
     // seven calls (see the block comment above their definitions for why it is
     // not an embind class_).

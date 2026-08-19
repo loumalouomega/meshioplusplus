@@ -764,6 +764,52 @@ mio_gradient <- function(mesh, array, op = "gradient", method = "green-gauss",
   )
 }
 
+#' Hessian (second derivative) of a scalar field
+#'
+#' The Hessian of a **scalar point-data** field -- [mio_gradient()]'s
+#' companion one order further, for curvature-based adaptive refinement.
+#'
+#' A composition of TWO [mio_gradient()] calls, not a new numerical kernel:
+#' the field is differentiated once (point location), then that `(n, 3)`
+#' gradient is differentiated again with the default `"gradient"` operator,
+#' producing `(n, 9)` -- the flattened row-major 3x3 Hessian, `H[i,j]` at
+#' index `i*3+j`. `method` is forwarded to BOTH internal passes. The result
+#' is named `"<array>:hessian"` unless `output` overrides it.
+#'
+#' A field that is at most LINEAR has an exactly zero Hessian everywhere --
+#' the one mesh-shape-independent guarantee. For a genuinely quadratic field
+#' the composition is exact on a structured/symmetric mesh away from its own
+#' boundary and a good, standard, but genuinely approximate curvature
+#' estimate on an irregular mesh (see `doc/hessian.md`). Input must have
+#' exactly one component -- a vector field's Hessian is a separate quantity
+#' per component.
+#'
+#' Cells that cannot be evaluated yield `NaN` and are counted in
+#' `num_skipped`; least-squares cells with a degenerate neighbourhood in
+#' either internal pass fall back to Green-Gauss and are counted in
+#' `num_fallback` (summed over both passes). A curvature-driven refinement
+#' indicator needs no new function: `norm(...)` in [mio_data_calc()] on the
+#' 9-component output is exactly its Frobenius norm, ready for
+#' [mio_refine()]'s `where` selector.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param array Name of the scalar `point_data` array to differentiate
+#'   twice.
+#' @param method `"green-gauss"` (default) or `"least-squares"`, forwarded
+#'   to both internal `mio_gradient` passes.
+#' @param location `"cell"` (default) or `"point"` for the result.
+#' @param output Output array name; empty selects `"<array>:hessian"`.
+#' @param overwrite Allow replacing an existing array of the output name.
+#' @return A list of `mesh`, `num_skipped` and `num_fallback`.
+#' @export
+mio_hessian <- function(mesh, array, method = "green-gauss", location = "cell",
+                        output = "", overwrite = FALSE) {
+  .Call(
+    R_mio_hessian, mesh, as.character(array), as.character(method),
+    as.character(location), as.character(output), isTRUE(overwrite)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
@@ -798,6 +844,17 @@ mio_interpolate <- function(source, target, method = "nearest", arrays = NULL,
   .Call(
     R_mio_interpolate, source, target, as.character(method),
     if (is.null(arrays)) NULL else as.character(arrays), isTRUE(extrapolate),
+    as.numeric(default_value), as.character(on_conflict)
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_conservative_interpolate <- function(source, target, arrays = NULL,
+                                         default_value = 0, on_conflict = "error") {
+  .Call(
+    R_mio_conservative_interpolate, source, target,
+    if (is.null(arrays)) NULL else as.character(arrays),
     as.numeric(default_value), as.character(on_conflict)
   )
 }
@@ -1059,6 +1116,32 @@ mio_data_condition <- function(mesh, location, names = NULL, cond_mode = "clamp"
 #' @rdname mio_data_drop
 #' @export
 mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
+
+#' Cell-measure-weighted field integration
+#'
+#' Total/mean of one or more `cell_data` arrays, weighted by each cell's own
+#' length/area/volume -- [mio_gradient()]'s integration counterpart
+#' (`mio_gradient` differentiates a field, this integrates one). A cell whose
+#' measure is not computable (ragged, unsupported type, or degenerate), or
+#' whose value is non-finite in a given component, is excluded from that
+#' component's numerator *and* denominator, never given a fallback weight.
+#' Reported for the whole mesh (`domain`) and independently for every named
+#' Cell region (`regions`) -- a cell in two regions contributes fully to
+#' both, one in none contributes to neither. A `point_data`-only name fails,
+#' naming [mio_data_point_to_cell()] as the fix. See
+#' `doc/field_integration.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param names `cell_data` array names to integrate, or `NULL` for every
+#'   `cell_data` array.
+#' @return A list of per-array summaries, each with `name`, `num_components`,
+#'   `domain` (`num_cells`, `num_skipped`, and a `num_components x 4`
+#'   `total`/`mean`/`domain_measure`/`num_nan` `components` matrix) and
+#'   `regions` (a list of the same shape, one per named Cell region present).
+#' @export
+mio_data_integrate <- function(mesh, names = NULL) {
+  .Call(R_mio_data_integrate, mesh, if (is.null(names)) NULL else as.character(names))
+}
 
 # --- transient (time-series) XDMF writing -------------------------------------
 

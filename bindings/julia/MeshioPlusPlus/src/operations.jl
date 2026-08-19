@@ -342,6 +342,48 @@ _op_name(op) = String(op)
 _method_name(m) = replace(String(m), '_' => '-')
 
 """
+    hessian(mesh, array; method=:green_gauss, location=:cell, output="",
+            overwrite=false) -> (; mesh, num_skipped, num_fallback)
+
+The Hessian (second derivative) of a **scalar point-data** field —
+[`gradient`](@ref)'s companion one order further, for curvature-based
+adaptive refinement.
+
+A composition of TWO `gradient` calls, not a new numerical kernel: the field
+is differentiated once (point location), then that `(n, 3)` gradient is
+differentiated again with the default `:gradient` operator, producing
+`(n, 9)` — the flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`.
+`method` is forwarded to BOTH internal passes. The result is named
+`"<array>:hessian"` unless `output` overrides it.
+
+A field that is at most LINEAR has an exactly zero Hessian everywhere — the
+one mesh-shape-independent guarantee. For a genuinely quadratic field the
+composition is exact on a structured/symmetric mesh away from its own
+boundary and a good, standard, but genuinely approximate curvature estimate
+on an irregular mesh (see `doc/hessian.md`). Input must have exactly one
+component — a vector field's Hessian is a separate quantity per component.
+
+Cells that cannot be evaluated yield `NaN` and are counted in `num_skipped`;
+least-squares cells with a degenerate neighbourhood in either internal pass
+fall back to Green-Gauss and are counted in `num_fallback` (summed over both
+passes).
+
+A curvature-driven refinement indicator needs no new function: `norm(...)`
+in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius
+norm, ready for [`refine`](@ref)'s `where` selector.
+"""
+function hessian(m::Mesh, array::AbstractString; method=:green_gauss, location=:cell,
+                 output::AbstractString="", overwrite::Bool=false)
+    skipped = Ref{Int64}(0)
+    fallback = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_hessian), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring, Cint, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), array, _method_name(method), String(location), output,
+                overwrite ? Cint(1) : Cint(0), skipped, fallback)
+    (mesh=Mesh(_check_ptr(ptr)), num_skipped=Int(skipped[]), num_fallback=Int(fallback[]))
+end
+
+"""
     estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
                    output="", marked="", overwrite=false)
         -> (; mesh, global_error, num_skipped, num_marked)
@@ -456,6 +498,33 @@ function interpolate(source::Mesh, target::Mesh; method::AbstractString="nearest
               (Ptr{Cvoid}, Ptr{Cvoid}, Cstring, Ptr{Cstring}, Int64, Cint, Cdouble, Cstring),
               sh, th, method, names_ptr, count, extrapolate ? Cint(1) : Cint(0),
               Float64(default_value), on_conflict)
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    conservative_interpolate(source, target; arrays=String[],
+                             default_value=0.0, on_conflict="error") -> Mesh
+
+Mass-preserving cross-mesh field transfer: an exact overlap-measure weighted
+remap, so that over the region the two meshes share, `sum(target value *
+target measure)` equals `sum(source value * source measure)` — the property
+[`interpolate`](@ref)'s `"barycentric"` mode does not have. Both meshes are
+simplexified first (accepting ragged/polyhedron blocks for free).
+
+Unlike `interpolate`, an empty `arrays` means every source point_data AND
+cell_data array — there is one algorithm regardless of location. Output
+arrays are always Float64. `on_conflict` is `"error"`, `"overwrite"` or
+`"suffix"`. See `doc/conservative_interpolate.md`.
+"""
+function conservative_interpolate(source::Mesh, target::Mesh; arrays=String[],
+                                   default_value::Real=0.0,
+                                   on_conflict::AbstractString="error")
+    sh = _handle(source); th = _handle(target)
+    ptr = _with_names(arrays) do names_ptr, count
+        ccall(_sym(:mio_conservative_interpolate), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cstring}, Int64, Cdouble, Cstring),
+              sh, th, names_ptr, count, Float64(default_value), on_conflict)
     end
     Mesh(_check_ptr(ptr))
 end
@@ -1134,6 +1203,89 @@ function data_info(m::Mesh)
         out
     finally
         ccall(_sym(:mio_data_info_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
+function _field_integral_components(handle, i::Int64, region, nc::Int64)
+    comps = NamedTuple{(:total, :mean, :domain_measure, :num_nan),
+                        Tuple{Float64,Float64,Float64,Int64}}[]
+    for c in 0:(nc - 1)
+        total = Ref{Cdouble}(0.0); mean = Ref{Cdouble}(0.0)
+        dm = Ref{Cdouble}(0.0); nnan = Ref{Int64}(0)
+        if region === nothing
+            _check(ccall(_sym(:mio_data_integrate_component), Cint,
+                         (Ptr{Cvoid}, Int64, Int64, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble},
+                          Ptr{Int64}), handle, i, c, total, mean, dm, nnan))
+        else
+            _check(ccall(_sym(:mio_data_integrate_region_component), Cint,
+                         (Ptr{Cvoid}, Int64, Int64, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                          Ptr{Cdouble}, Ptr{Int64}), handle, i, region, c, total, mean, dm, nnan))
+        end
+        push!(comps, (total=total[], mean=mean[], domain_measure=dm[], num_nan=Int(nnan[])))
+    end
+    comps
+end
+
+"""
+    data_integrate(mesh, names=String[]) -> Vector{NamedTuple}
+
+Cell-measure-weighted total/mean of one or more `cell_data` arrays --
+`gradient`'s integration counterpart (`gradient` differentiates a field, this
+integrates one). Every sum is weighted by the cell's own length/area/volume,
+excluding both a cell with unmeasurable geometry and a component with a
+non-finite value from that component's numerator *and* denominator. `names`
+empty means every `cell_data` array. Reported for the whole mesh (`domain`)
+and independently for every named Cell region (`regions`) -- a cell in two
+regions contributes fully to both, one in none contributes to neither. A
+`point_data`-only name throws naming `data_point_to_cell` as the fix. See
+`doc/field_integration.md`.
+"""
+function data_integrate(m::Mesh, names=String[])
+    h = _handle(m)
+    handle = _with_names(names) do p, c
+        _check_ptr(ccall(_sym(:mio_data_integrate_create), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Ptr{Cstring}, Int64), h, p, c))
+    end
+    try
+        n = _check_count(ccall(_sym(:mio_data_integrate_count), Int64, (Ptr{Cvoid},), handle),
+                         "mio_data_integrate_count")
+        out = []
+        for i in 0:(n - 1)
+            name = _getstring() do buf, len
+                ccall(_sym(:mio_data_integrate_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), handle, i, buf, len)
+            end
+            entry = Ref{_CFieldIntegralInfo}()
+            _check(ccall(_sym(:mio_data_integrate_entry), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{_CFieldIntegralInfo}), handle, i, entry))
+            e = entry[]
+            domain = (num_cells=Int(e.num_cells), num_skipped=Int(e.num_skipped),
+                      components=_field_integral_components(handle, i, nothing, e.num_components))
+
+            nregions = _check_count(ccall(_sym(:mio_data_integrate_region_count), Int64,
+                                          (Ptr{Cvoid}, Int64), handle, i),
+                                    "mio_data_integrate_region_count")
+            regions = []
+            for r in 0:(nregions - 1)
+                rname = _getstring() do buf, len
+                    ccall(_sym(:mio_data_integrate_region_name), Int64,
+                          (Ptr{Cvoid}, Int64, Int64, Ptr{UInt8}, Int64), handle, i, r, buf, len)
+                end
+                rentry = Ref{_CFieldIntegralInfo}()
+                _check(ccall(_sym(:mio_data_integrate_region_entry), Cint,
+                             (Ptr{Cvoid}, Int64, Int64, Ptr{_CFieldIntegralInfo}), handle, i, r,
+                             rentry))
+                re = rentry[]
+                push!(regions,
+                      (name=rname, num_cells=Int(re.num_cells), num_skipped=Int(re.num_skipped),
+                       components=_field_integral_components(handle, i, r, re.num_components)))
+            end
+            push!(out, (name=name, num_components=Int(e.num_components), domain=domain,
+                        regions=regions))
+        end
+        out
+    finally
+        ccall(_sym(:mio_data_integrate_free), Cvoid, (Ptr{Cvoid},), handle)
     end
 end
 

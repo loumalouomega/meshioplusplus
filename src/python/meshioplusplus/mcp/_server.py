@@ -116,6 +116,22 @@ def _register_inspection(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def data_integrate(
+        input_path: str,
+        file_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+    ) -> dict:
+        """Cell-measure-weighted total/mean of cell_data arrays (whole mesh,
+        and independently for every named Cell region) -- gradient's
+        integration companion. arrays defaults to every cell_data array."""
+        return _guard(
+            _tools.tool_data_integrate,
+            input_path=input_path,
+            file_format=file_format,
+            arrays=arrays,
+        )
+
+    @server.tool()
     def regions(input_path: str, file_format: Optional[str] = None) -> dict:
         """List named regions (point/cell/side groups: gmsh physical groups,
         Exodus sets, Abaqus NSET/ELSET, ...) with kind, dim, tag and size."""
@@ -653,6 +669,53 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def hessian(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "green-gauss",
+        location: str = "cell",
+        output: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """Hessian (second derivative) of a scalar point_data field --
+        gradient's companion one order further, for curvature-based adaptive
+        refinement.
+
+        A composition of TWO gradient calls, not a new numerical kernel: the
+        field is differentiated once (point location), then that (n,3)
+        gradient is differentiated again with the default gradient operator,
+        producing (n,9) -- the flattened row-major 3x3 Hessian. method is
+        forwarded to BOTH internal passes. The result is named
+        <array>:hessian unless `output` overrides it. Input must have exactly
+        one component -- a vector field's Hessian is a separate quantity per
+        component, call this once per component. A field that is at most
+        linear has an exactly zero Hessian everywhere; for a genuinely
+        quadratic field the composition is exact on a structured/symmetric
+        mesh away from its own boundary and a good, standard, but genuinely
+        approximate curvature estimate on an irregular mesh. Cells that
+        cannot be evaluated yield NaN and are reported in num_skipped;
+        least-squares cells with a degenerate neighbourhood in either
+        internal pass fall back to Green-Gauss and are reported in
+        num_fallback. A curvature-driven refinement indicator needs no new
+        tool: `norm(...)` in data_calc on the 9-component output is exactly
+        its Frobenius norm, ready for refine's where selector."""
+        return _guard(
+            _tools.tool_hessian,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            location=location,
+            output=output,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def estimate_error(
         input_path: str,
         output_path: str,
@@ -1073,6 +1136,34 @@ def _register_operations(server: FastMCP) -> None:
             method=method,
             arrays=arrays,
             extrapolate=extrapolate,
+            default_value=default_value,
+            on_conflict=on_conflict,
+        )
+
+    @server.tool()
+    def conservative_interpolate(
+        source_path: str,
+        target_path: str,
+        output_path: str,
+        source_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+        default_value: float = 0.0,
+        on_conflict: str = "error",
+    ) -> dict:
+        """Mass-preservingly (overlap-measure weighted) sample the source
+        mesh's data arrays onto the target mesh's geometry; unlike
+        interpolate, conserves sum(value * measure) over the shared region."""
+        return _guard(
+            _tools.tool_conservative_interpolate,
+            source_path=source_path,
+            target_path=target_path,
+            output_path=output_path,
+            source_format=source_format,
+            target_format=target_format,
+            output_format=output_format,
+            arrays=arrays,
             default_value=default_value,
             on_conflict=on_conflict,
         )

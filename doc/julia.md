@@ -228,6 +228,53 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v10.9.0 additions
+
+- `hessian(mesh, array; method=:green_gauss, location=:cell, output="",
+  overwrite=false) -> (; mesh, num_skipped, num_fallback)` — the Hessian
+  (second derivative) of a **scalar point-data** field,
+  [`gradient`](@ref)'s companion one order further. A composition of TWO
+  `gradient` calls, not a new numerical kernel: the field is differentiated
+  once (point location), then that `(n, 3)` gradient is differentiated
+  again with the default `:gradient` operator, producing `(n, 9)` — the
+  flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is
+  forwarded to BOTH internal passes. See [`doc/hessian.md`](hessian.md).
+
+  A field that is at most LINEAR has an exactly zero Hessian everywhere —
+  the one mesh-shape-independent guarantee. For a genuinely quadratic field
+  the composition is exact on a structured/symmetric mesh away from its own
+  boundary and a good, standard, but genuinely approximate curvature
+  estimate on an irregular mesh. Input must have exactly one component — a
+  vector field's Hessian is a separate quantity per component.
+
+  A curvature-driven refinement indicator needs no new function: `norm(...)`
+  in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius
+  norm, ready for [`refine`](@ref)'s `where` selector.
+
+  `hessian` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
+  is exported.
+
+## v10.8.0 additions
+
+- `data_integrate(mesh, names=String[])` — cell-measure-weighted total/mean
+  of one or more `cell_data` arrays, [`gradient`](@ref)'s integration
+  counterpart (`gradient` differentiates a field, this integrates one),
+  returning a `Vector{NamedTuple}` with `name`, `num_components`, `domain`
+  (`num_cells`, `num_skipped`, `components` — a vector of
+  `(total, mean, domain_measure, num_nan)` NamedTuples) and `regions` (the
+  same shape, one per named Cell region present). See
+  [`doc/field_integration.md`](field_integration.md).
+
+  Every sum is weighted by `|measure(cell)|`; a cell whose measure is not
+  computable, or a component whose value is non-finite, is excluded from
+  that component's numerator **and** denominator, never given a fallback
+  weight of 1. Regions are not a partition: a cell in two regions
+  contributes fully to both. A `point_data`-only name throws a
+  `MeshioError` naming `data_point_to_cell` as the fix.
+
+  `data_integrate` shadows nothing in `Base`, so unlike `read`/`write`/`split`
+  it is exported.
+
 ## v10.5.0 additions
 
 - `undo_green(coarse, fine)` — green-element undo: restores `fine`'s
@@ -253,6 +300,20 @@ The suite uses the same deliberately non-square fixture as [`tests/fortran/test_
 
   `undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split`
   it is exported.
+
+- `conservative_interpolate(source, target; arrays=String[], default_value=0.0,
+  on_conflict="error")` — mass-preserving field transfer, [`interpolate`](@ref)'s
+  sibling: conserves `sum(target value * target measure) ==
+  sum(source value * source measure)` over the region the two meshes share,
+  a property `interpolate`'s pointwise sampling does not have. Both meshes
+  are simplexified first, accepting ragged/polyhedron blocks for free.
+  Unlike `interpolate`, an empty `arrays` means every source point_data
+  **and** cell_data array. Output arrays are always Float64. Like
+  `undo_green`, a **two-mesh** operation, and like `subdivide`/`agglomerate`
+  this is C++-core only — the 3D clip kernel's discrete branches could
+  disagree with a second implementation near a degenerate overlap, so there
+  is no pure-Julia fallback either; the installed C library is always
+  called. See [`doc/conservative_interpolate.md`](conservative_interpolate.md).
 
 ## v10.4.0 additions
 

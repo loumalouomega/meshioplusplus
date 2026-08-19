@@ -111,6 +111,38 @@ FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
     return all;
 }
 
+void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
+                         const std::vector<double>& rWeights, std::vector<WeightedSum>& rStats) {
+    if (rStats.size() < NumComponents)
+        rStats.resize(NumComponents);
+    const std::size_t nrows = rWeights.size();
+    if (nrows == 0 || NumComponents == 0)
+        return;
+
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (nrows + grain - 1) / grain;
+    std::vector<std::vector<WeightedSum>> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::vector<WeightedSum> local(NumComponents);
+            const std::size_t begin = ci * grain;
+            const std::size_t end = std::min(begin + grain, nrows);
+            for (std::size_t r = begin; r < end; ++r) {
+                const double w = rWeights[r];
+                if (!(w > 0.0) || !std::isfinite(w))
+                    continue;
+                for (std::size_t k = 0; k < NumComponents; ++k)
+                    local[k].Add(read_double(rArray, r * NumComponents + k), w);
+            }
+            partial[ci] = std::move(local);
+        },
+        1);
+    for (const std::vector<WeightedSum>& chunk : partial)
+        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+            rStats[k].Merge(chunk[k]);
+}
+
 double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index) {
     // 3D first, via the shared polyhedral kernel: it serves a tabulated

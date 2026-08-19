@@ -44,11 +44,13 @@ from .. import (
     compute_quality,
     compute_sdf,
     compute_stats,
+    conservative_interpolate,
     convert_cells,
     crop,
     data_calc,
     data_condition,
     data_info,
+    data_integrate,
     data_manage,
     decimate,
     decimate_volume,
@@ -59,6 +61,7 @@ from .. import (
     extract_surface,
     gradient,
     grid,
+    hessian,
     interpolate,
     isosurface,
     merge,
@@ -282,6 +285,13 @@ def tool_data_info(input_path, file_format=None):
     """Describe every data array: dtype, shape, ranges, NaN/Inf counts."""
     mesh = _load(input_path, file_format)
     return _json_safe({"arrays": data_info(mesh)})
+
+
+def tool_data_integrate(input_path, file_format=None, arrays=None):
+    """Cell-measure-weighted total/mean of cell_data arrays, whole mesh and
+    per named Cell region."""
+    mesh = _load(input_path, file_format)
+    return _json_safe({"arrays": data_integrate(mesh, arrays=arrays)})
 
 
 def tool_regions(input_path, file_format=None):
@@ -963,6 +973,38 @@ def tool_gradient(
     )
 
 
+def tool_hessian(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    method="green-gauss",
+    location="cell",
+    output=None,
+    overwrite=False,
+):
+    """Hessian (second derivative) of a scalar point_data field --
+    gradient's companion one order further, a composition of two gradient
+    calls."""
+    mesh = _load(input_path, input_format)
+    out, report = hessian(
+        mesh,
+        array,
+        method=method,
+        location=location,
+        output=output,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_skipped=int(report["num_skipped"]),
+        num_fallback=int(report["num_fallback"]),
+    )
+
+
 def tool_estimate_error(
     input_path,
     output_path,
@@ -1312,6 +1354,32 @@ def tool_interpolate(
         method=method,
         arrays=arrays,
         extrapolate=extrapolate,
+        default_value=default_value,
+        on_conflict=on_conflict,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_conservative_interpolate(
+    source_path,
+    target_path,
+    output_path,
+    source_format=None,
+    target_format=None,
+    output_format=None,
+    arrays=None,
+    default_value=0.0,
+    on_conflict="error",
+):
+    """Mass-preservingly (overlap-measure weighted) sample the source mesh's
+    data arrays onto the target mesh's geometry -- unlike interpolate, this
+    conserves sum(value * measure) over the region the two meshes share."""
+    source = _load(source_path, source_format)
+    target = _load(target_path, target_format)
+    out = conservative_interpolate(
+        source,
+        target,
+        arrays=arrays,
         default_value=default_value,
         on_conflict=on_conflict,
     )
@@ -1728,6 +1796,10 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         ("data_info", {"fn": tool_data_info, "wraps": ("data_info",), "gated": None}),
+        (
+            "data_integrate",
+            {"fn": tool_data_integrate, "wraps": ("data_integrate",), "gated": None},
+        ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (
             "bandwidth",
@@ -1769,6 +1841,7 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
+        ("hessian", {"fn": tool_hessian, "wraps": ("hessian",), "gated": None}),
         (
             "estimate_error",
             {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
@@ -1829,6 +1902,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "interpolate",
             {"fn": tool_interpolate, "wraps": ("interpolate",), "gated": None},
+        ),
+        (
+            "conservative_interpolate",
+            {
+                "fn": tool_conservative_interpolate,
+                "wraps": ("conservative_interpolate",),
+                "gated": None,
+            },
         ),
         (
             "data_manage",

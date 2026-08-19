@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-50 tools; the two marked *gated* need a further extra and return a named
+54 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -95,6 +95,7 @@ report.
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |
 | `data_info` | every data array's dtype/shape/ranges/NaN counts |
+| `data_integrate` | cell-measure-weighted total/mean of one or more `cell_data` arrays, whole-mesh and per named Cell region |
 | `regions` | named point/cell/side groups with kind/dim/tag and an entries preview |
 | `bandwidth` | node-numbering bandwidth |
 | `data_preview` | a bounded window (`offset`/`limit`) of one data array's values |
@@ -135,16 +136,23 @@ default, since boundary vertices participate by real quadric error here —
 see [volume decimation](/decimate_volume)), `smooth`,
 `merge` (N inputs), `split`
 (one file per piece, `name_template`), `partition` (one file per part),
-`interpolate` (source → target field transfer), `gradient` (the gradient,
+`interpolate` (source → target field transfer), `conservative_interpolate`
+(mass-preserving overlap-measure weighted transfer — unlike `interpolate`,
+an unset `arrays` covers every source point_data AND cell_data array; see
+[conservative interpolation](/conservative_interpolate)), `gradient` (the gradient,
 divergence or curl of a `point_data` field — see
 [field derivatives](/gradient); reports `num_skipped` and `num_fallback`),
+`hessian` (the Hessian, second derivative, of a **scalar** `point_data`
+field — a composition of two `gradient` calls, `gradient`'s companion one
+order further; see [second derivatives](/hessian); reports `num_skipped` and
+`num_fallback`),
 `estimate_error` (the Zienkiewicz-Zhu recovery-based error indicator of a
 `point_data` field, plus optional `absolute`/`fraction`/`dorfler` marking into
 `error:marked` for `refine`'s own `where` selector — see
 [error estimation](/error); reports `global_error`, `num_skipped` and
 `num_marked`).
 Parameters mirror the Python API / CLI one-to-one; operations that produce
-reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `estimate_error`) include
+reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `hessian`, `estimate_error`) include
 them in the response.
 
 ### Data operations

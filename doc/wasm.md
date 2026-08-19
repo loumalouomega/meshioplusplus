@@ -255,7 +255,17 @@ two-mesh op it is deliberately **not** reachable as a `convertSurfaceOps`
 pipeline step — `{op: 'undoGreen'}` throws the same "unknown operation" catchable
 `Error` `Merge`/`Interpolate`/`Split`/`Diff` already throw there, since none
 of the two-mesh ops ever reach `pipeline_op_table()`. See
-[green-element undo](/undo_green). Partitioning is exposed as `partition(mesh, nparts, method,
+[green-element undo](/undo_green). **Mass-preserving field transfer**, the
+sibling of `interpolate` that conserves `sum(value * measure)` over the
+region two meshes share rather than sampling pointwise, is exposed as
+`conservativeInterpolate(source, target, arrays, defaultValue, onConflict)` →
+mesh (always Float64 arrays). Both meshes are simplexified first, accepting
+ragged/polyhedron blocks for free; unlike `interpolate`, an empty `arrays`
+means every source point_data **and** cell_data array. Like `interpolate` it
+is a two-mesh op and so is **not** reachable as a `convertSurfaceOps`
+pipeline step (`{op: 'conservativeInterpolate'}` throws the same "unknown
+operation" catchable `Error`). See
+[conservative interpolation](/conservative_interpolate). Partitioning is exposed as `partition(mesh, nparts, method,
 imbalance, mode, seed, recordIds, ghostLayers, weightsKey)` → an array of
 `{ partId, mesh }` (exactly `nparts` entries, blocks kept 1:1 with the input,
 unlike `split`) and `partitionLabels(mesh, nparts, method, imbalance, mode,
@@ -292,6 +302,23 @@ negative for **every** component here, deliberately the opposite of
 `isosurface`'s sentinel. It is also a `convertSurfaceOps` pipeline step
 (`{op: 'gradient', array, operator, method, location, output}`).
 
+`hessian(mesh, array, method, location, output, overwrite)` returns
+`{ mesh, numSkipped, numFallback }` — the Hessian (second derivative) of a
+**scalar** `point_data` field, `gradient`'s companion one order further. A
+composition of TWO `gradient` calls, not a new numerical kernel: the field
+is differentiated once (point location, regardless of the caller's own
+`location`), then that `(n, 3)` gradient is differentiated again with the
+default gradient operator, producing `(n, 9)` — the flattened row-major 3x3
+Hessian. `method` is forwarded to BOTH internal passes. Like `gradient`, the
+result's `(n, 9)` width travels in the returned mesh's
+`point_data_components` / `cell_data_components` sibling maps. A field that
+is at most linear has an exactly zero Hessian everywhere — the one
+mesh-shape-independent guarantee; a genuinely quadratic field's composition
+is exact on a structured/symmetric mesh away from its own boundary and
+approximate on an irregular mesh (see [second derivatives](./hessian.md)).
+Input must have exactly one component. It is also a `convertSurfaceOps`
+pipeline step (`{op: 'hessian', array, method, location, output}`).
+
 `estimateError(mesh, array, method, marking, markingValue, output, marked,
 overwrite)` returns `{ mesh, globalError, numSkipped, numMarked }` — the
 Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field, a
@@ -303,7 +330,7 @@ Cells that cannot be evaluated read NaN in `error:zz` and `0` (never NaN) in
 `error:marked`, counted in `numSkipped`. It is also a `convertSurfaceOps`
 pipeline step (`{op: 'estimateError', array, method, marking, markingValue,
 output, marked}`). See [error estimation](./error.md),
-[field derivatives](./gradient.md),
+[field derivatives](./gradient.md), [second derivatives](./hessian.md),
 [transform](./transform.md), [clean](./clean.md),
 [crop](./crop.md), [split](./split.md), [stats](./stats.md),
 [cell conversion](./convert_cells.md), [polyhedral refinement](./subdivide.md), [polyhedral coarsening](./agglomerate.md), [refine](./refine.md),
@@ -346,6 +373,20 @@ catchable `Error`. See [data operations](./data_operations.md),
 [array management](./data_manage.md), [averaging](./data_average.md),
 [expressions](./data_calc.md), [conditioning](./data_condition.md) and
 [data summary](./data_info.md).
+
+`dataIntegrate(mesh, arrays)` returns an array of per-array field-integral
+objects (`name`, `numComponents`, `domain`, `regions`) — a cell-measure-weighted
+total/mean of one or more `cell_data` arrays, `gradient`'s integration
+counterpart. `domain` and each entry in `regions` share one shape (`numCells`,
+`numSkipped`, and parallel `totalPerComponent`/`meanPerComponent`/
+`domainMeasurePerComponent`/`numNanPerComponent` arrays — the `dataInfo`
+`*PerComponent` convention), `regions` carrying one entry per named Cell region
+present on the mesh (not a partition: a cell in two regions contributes fully
+to both). `arrays` empty/undefined means every `cell_data` array. Unlike
+`gradient`/`estimateError` it is **read-only** — like `dataInfo`, it changes no
+geometry and is not a `convertSurfaceOps`/pipeline step. A `point_data`-only
+name throws a catchable `Error` naming `dataPointToCell` as the fix. See
+[field integration](./field_integration.md).
 
 ## Transient (time-series) XDMF
 

@@ -67,9 +67,11 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -82,6 +84,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -208,6 +211,10 @@ struct mio_partition_result {
 
 struct mio_data_info {
     meshioplusplus::DataInfoReport mReport;
+};
+
+struct mio_data_integrate {
+    meshioplusplus::DataIntegrateReport mReport;
 };
 
 /// Opaque handle behind mio_read_metadata_*; modelled on mio_data_info above,
@@ -1087,6 +1094,35 @@ mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target, const 
     });
 }
 
+mio_mesh* mio_conservative_interpolate(const mio_mesh* source, const mio_mesh* target,
+                                       const char* const* arrays, int64_t arrays_count,
+                                       double default_value, const char* on_conflict) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!source)
+            throw meshioplusplus::ReadError("meshio++: source mesh is NULL");
+        if (!target)
+            throw meshioplusplus::ReadError("meshio++: target mesh is NULL");
+        meshioplusplus::ConservativeInterpolateOptions opts;
+        // NULL or a non-positive count means "every source point_data and
+        // cell_data array" (the interpolate convention, extended: there is
+        // one algorithm regardless of location here).
+        if (arrays && arrays_count > 0) {
+            opts.mArrays.reserve(static_cast<std::size_t>(arrays_count));
+            for (int64_t i = 0; i < arrays_count; ++i) {
+                if (!arrays[i])
+                    throw meshioplusplus::ReadError("meshio++: arrays[" + std::to_string(i) +
+                                                    "] is NULL");
+                opts.mArrays.emplace_back(arrays[i]);
+            }
+        }
+        opts.mDefaultValue = default_value;
+        opts.mOnConflict = meshioplusplus::conservative_interpolate_conflict_from_name(
+            on_conflict ? on_conflict : "error");
+        return new mio_mesh{
+            meshioplusplus::conservative_interpolate(source->mMesh, target->mMesh, opts)};
+    });
+}
+
 mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const double* normal,
                     int record_parent_ids) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
@@ -1137,6 +1173,29 @@ mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char*
             opts.mComponent = component;
         opts.mOverwrite = overwrite != 0;
         meshioplusplus::GradientResult r = meshioplusplus::gradient(mesh->mMesh, opts);
+        if (num_skipped)
+            *num_skipped = r.mNumSkipped;
+        if (num_fallback)
+            *num_fallback = r.mNumFallback;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_hessian(const mio_mesh* mesh, const char* array_name, const char* method,
+                      const char* location, const char* output_name, int overwrite,
+                      int64_t* num_skipped, int64_t* num_fallback) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
+        meshioplusplus::HessianOptions opts;
+        opts.mArrayName = array_name;
+        opts.mMethod = meshioplusplus::gradient_method_from_name(method ? method : "");
+        opts.mLocation =
+            meshioplusplus::data_location_from_name((location && *location) ? location : "cell");
+        if (output_name)
+            opts.mOutputName = output_name;
+        opts.mOverwrite = overwrite != 0;
+        meshioplusplus::HessianResult r = meshioplusplus::hessian(mesh->mMesh, opts);
         if (num_skipped)
             *num_skipped = r.mNumSkipped;
         if (num_fallback)
@@ -2281,6 +2340,155 @@ mio_status mio_data_info_component(const mio_data_info* info, int64_t index, int
 
 void mio_data_info_free(mio_data_info* info) {
     delete info;
+}
+
+mio_data_integrate* mio_data_integrate_create(const mio_mesh* mesh, const char* const* names,
+                                              int64_t count) {
+    return guarded_ptr(static_cast<mio_data_integrate*>(nullptr), [&]() -> mio_data_integrate* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DataIntegrateOptions opts;
+        if (names) {
+            for (int64_t i = 0; i < count; ++i)
+                opts.mArrayNames.emplace_back(names[i] ? names[i] : "");
+        }
+        return new mio_data_integrate{meshioplusplus::data_integrate(mesh->mMesh, opts)};
+    });
+}
+
+int64_t mio_data_integrate_count(const mio_data_integrate* result) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return static_cast<int64_t>(result->mReport.mArrays.size());
+    });
+}
+
+int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index, char* buf,
+                                int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            throw meshioplusplus::ReadError("meshio++: array index out of range");
+        return copy_string(result->mReport.mArrays[static_cast<std::size_t>(index)].mName, buf,
+                           buflen);
+    });
+}
+
+namespace {
+mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& rRegion,
+                                     mio_field_integral_info* out) {
+    if (!out)
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+    out->num_components = static_cast<int64_t>(rRegion.mTotalPerComponent.size());
+    out->num_cells = rRegion.mNumCells;
+    out->num_skipped = rRegion.mNumSkipped;
+    return MIO_OK;
+}
+
+mio_status fill_field_integral_component(const meshioplusplus::FieldIntegralRegion& rRegion,
+                                          int64_t comp, double* total, double* mean,
+                                          double* domain_measure, int64_t* num_nan) {
+    if (comp < 0 || static_cast<std::size_t>(comp) >= rRegion.mTotalPerComponent.size())
+        return fail(MIO_ERR_INVALID_ARG, "meshio++: component index out of range");
+    const std::size_t k = static_cast<std::size_t>(comp);
+    if (total)
+        *total = rRegion.mTotalPerComponent[k];
+    if (mean)
+        *mean = rRegion.mMeanPerComponent[k];
+    if (domain_measure)
+        *domain_measure = rRegion.mDomainMeasurePerComponent[k];
+    if (num_nan)
+        *num_nan = rRegion.mNumNanPerComponent[k];
+    return MIO_OK;
+}
+}  // namespace
+
+mio_status mio_data_integrate_entry(const mio_data_integrate* result, int64_t index,
+                                    mio_field_integral_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
+        return fill_field_integral_info(
+            result->mReport.mArrays[static_cast<std::size_t>(index)].mDomain, out);
+    });
+}
+
+mio_status mio_data_integrate_component(const mio_data_integrate* result, int64_t index,
+                                        int64_t comp, double* total, double* mean,
+                                        double* domain_measure, int64_t* num_nan) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
+        return fill_field_integral_component(
+            result->mReport.mArrays[static_cast<std::size_t>(index)].mDomain, comp, total, mean,
+            domain_measure, num_nan);
+    });
+}
+
+int64_t mio_data_integrate_region_count(const mio_data_integrate* result, int64_t index) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            throw meshioplusplus::ReadError("meshio++: array index out of range");
+        return static_cast<int64_t>(
+            result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions.size());
+    });
+}
+
+int64_t mio_data_integrate_region_name(const mio_data_integrate* result, int64_t index,
+                                       int64_t region, char* buf, int64_t buflen) {
+    return guarded_ptr(static_cast<int64_t>(-1), [&]() -> int64_t {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            throw meshioplusplus::ReadError("meshio++: array index out of range");
+        const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
+        if (region < 0 || static_cast<std::size_t>(region) >= regions.size())
+            throw meshioplusplus::ReadError("meshio++: region index out of range");
+        return copy_string(regions[static_cast<std::size_t>(region)].mName, buf, buflen);
+    });
+}
+
+mio_status mio_data_integrate_region_entry(const mio_data_integrate* result, int64_t index,
+                                           int64_t region, mio_field_integral_info* out) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
+        const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
+        if (region < 0 || static_cast<std::size_t>(region) >= regions.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
+        return fill_field_integral_info(regions[static_cast<std::size_t>(region)], out);
+    });
+}
+
+mio_status mio_data_integrate_region_component(const mio_data_integrate* result, int64_t index,
+                                               int64_t region, int64_t comp, double* total,
+                                               double* mean, double* domain_measure,
+                                               int64_t* num_nan) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
+        const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
+        if (region < 0 || static_cast<std::size_t>(region) >= regions.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
+        return fill_field_integral_component(regions[static_cast<std::size_t>(region)], comp,
+                                             total, mean, domain_measure, num_nan);
+    });
+}
+
+void mio_data_integrate_free(mio_data_integrate* result) {
+    delete result;
 }
 
 mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells, int64_t* num_inverted,

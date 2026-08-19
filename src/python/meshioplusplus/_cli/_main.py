@@ -8,6 +8,7 @@ from . import (
     _binary,
     _clean,
     _compress,
+    _conservative_interpolate,
     _convert,
     _convert_cells,
     _crop,
@@ -269,6 +270,14 @@ def main(argv=None):
     )
     _interpolate.add_args(parser)
     parser.set_defaults(func=_interpolate.interpolate_cmd)
+
+    parser = subparsers.add_parser(
+        "conservative-interpolate",
+        help="Mass-preserving cross-mesh field transfer (overlap-measure "
+        "weighted, not pointwise)",
+    )
+    _conservative_interpolate.add_args(parser)
+    parser.set_defaults(func=_conservative_interpolate.conservative_interpolate_cmd)
 
     parser = subparsers.add_parser(
         "stats",

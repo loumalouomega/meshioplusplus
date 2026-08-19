@@ -43,6 +43,17 @@
  * query's cell lies at least `(r - 1) * cell` away from the query, which is
  * the search's stopping rule.
  *
+ * `operations/conservative_interpolate.cpp` is a third consumer, and adds
+ * `ForEachInBox`: unlike a point query (one cell) or a shell (a fixed
+ * Chebyshev ring), it needs every id inserted anywhere inside a *query box*
+ * (a target simplex's own quantized bbox) — the read-side twin of
+ * `InsertBox`, whose nested loop it mirrors exactly. Because `InsertBox`
+ * inserts a source simplex's id into *every* cell its bbox spans, and the
+ * query box can itself span several cells, `ForEachInBox` will yield the same
+ * id more than once whenever the two multi-cell boxes share more than one
+ * grid cell — callers must sort-and-deduplicate before treating the result as
+ * a candidate set, exactly as `conservative_interpolate.cpp` does.
+ *
  * `detail/` header: exempt from the operations layer's anon-namespace prefix
  * rule. `clean.cpp` keeps its own (serial, any-dtype, FNV-hashed) welder —
  * structurally different enough that sharing would only relocate code.
@@ -183,6 +194,24 @@ public:
                 }
             }
         }
+    }
+
+    /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
+    /// calling `fn(bucket)` for each — the read-side twin of `InsertBox`, same
+    /// ascending z -> y -> x traversal. A bucket may be visited once per
+    /// id-in-that-bucket occurrence from the *inserting* side, so an id
+    /// inserted via `InsertBox` over a multi-cell box can surface more than
+    /// once here when the query box shares several cells with it; callers must
+    /// deduplicate (see the file doc comment).
+    template <class F>
+    void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
+        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
+            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
+                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
+                    const std::vector<std::int64_t>* p_ids = Find(GridKey{x, y, z});
+                    if (p_ids != nullptr)
+                        fn(*p_ids);
+                }
     }
 
     bool Empty() const { return mCells.empty(); }

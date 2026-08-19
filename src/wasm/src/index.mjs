@@ -160,6 +160,7 @@ function resolveVariant(variant) {
  *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
  *   computeSdf: (surface: Mesh, structure?: string, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, rootResolution?: number, maxDepth?: number, bandCells?: number, recordLevels?: boolean, maxCells?: number, sign?: string, location?: string, band?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], maxDepth: number, numBanded: number, quality: object},
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
+ *   hessian: (mesh: Mesh, array: string, method?: string, location?: string, output?: string, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
@@ -177,6 +178,7 @@ function resolveVariant(variant) {
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
  *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
  *   dataInfo: (mesh: Mesh) => object[],
+ *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
  * }>}
  */
@@ -355,6 +357,23 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 defaultValue,
                 onConflict,
             ),
+        // Mass-preserving cross-mesh field transfer: an exact overlap-measure
+        // weighted remap (unlike interpolate's pointwise sampling). An empty
+        // `arrays` = every source point_data AND cell_data array.
+        conservativeInterpolate: (
+            source,
+            target,
+            arrays = [],
+            defaultValue = 0,
+            onConflict = 'error',
+        ) =>
+            Module.conservativeInterpolate(
+                source,
+                target,
+                arrays,
+                defaultValue,
+                onConflict,
+            ),
         // Restore `fine`'s transitional (green) cells to their coarse parent,
         // read verbatim from `coarse` (a lookup, not a reconstruction).
         undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),
@@ -437,6 +456,14 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             overwrite = false,
         ) =>
             Module.gradient(mesh, array, operator, method, location, output, component, overwrite),
+        hessian: (
+            mesh,
+            array,
+            method = 'green-gauss',
+            location = 'cell',
+            output = '',
+            overwrite = false,
+        ) => Module.hessian(mesh, array, method, location, output, overwrite),
         estimateError: (
             mesh,
             array,
@@ -547,6 +574,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix,
             ),
         dataInfo: (mesh) => Module.dataInfo(mesh),
+        dataIntegrate: (mesh, arrays = []) => Module.dataIntegrate(mesh, arrays),
         // Transient (time-series) XDMF -- the one *stateful* thing in this API.
         // The raw binding is an opaque integer handle plus seven free
         // functions (see bindings/wasm/js_bindings.cpp for why it is not an

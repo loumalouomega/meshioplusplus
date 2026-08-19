@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 6
+#define MIO_VERSION_MINOR 9
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -781,6 +781,36 @@ MIO_API mio_mesh* mio_interpolate(const mio_mesh* source, const mio_mesh* target
                                   const char* on_conflict);
 
 /**
+ * Mass-preserving cross-mesh field transfer: an exact overlap-measure
+ * weighted remap, so that over the region the two meshes share,
+ * sum(target value * target measure) equals sum(source value * source
+ * measure) — the property mio_interpolate's "barycentric" mode does not
+ * have. Both meshes are simplexified (accepting ragged/polyhedron blocks for
+ * free); every overlapping simplex pair is measured with an exact geometric
+ * clip. Unlike mio_interpolate, a NULL/empty arrays list means every source
+ * point_data AND cell_data array (one algorithm regardless of location).
+ * Output arrays are always Float64.
+ * @param source        the mesh whose data is sampled.
+ * @param target        the mesh receiving the samples.
+ * @param arrays        source array names to transfer, as an array of C
+ *                      strings with an explicit count. NULL or
+ *                      arrays_count <= 0 means every source point_data and
+ *                      cell_data array.
+ * @param arrays_count  number of entries in arrays (see above).
+ * @param default_value the fill value (every component) for a target cell
+ *                      whose covered fraction of source overlap is below the
+ *                      coverage tolerance.
+ * @param on_conflict   what to do when a transferred name already exists on
+ *                      the target: "error", "overwrite" or "suffix" (writes
+ *                      to name + "_interp"); NULL means "error".
+ * @return the target copy with the remapped arrays (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_conservative_interpolate(const mio_mesh* source, const mio_mesh* target,
+                                               const char* const* arrays, int64_t arrays_count,
+                                               double default_value, const char* on_conflict);
+
+/**
  * Planar cross-section of a mesh: the intersection with a plane, one topological
  * dimension below the cut cells (a volume mesh yields a triangle/quad surface, a
  * 2D surface mesh yields a line mesh). The input is simplexified first
@@ -874,6 +904,70 @@ MIO_API mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, con
                                const char* method, const char* location, const char* output_name,
                                int component, int overwrite, int64_t* num_skipped,
                                int64_t* num_fallback);
+
+/**
+ * The Hessian (second derivative) of a scalar point_data field --
+ * mio_gradient's companion one order further, for curvature-based adaptive
+ * refinement.
+ *
+ * A composition of TWO mio_gradient calls, not a new numerical kernel: the
+ * field is differentiated once (Point location, so the result is a genuine
+ * point_data array), then that (n,3) gradient is differentiated again with
+ * the default "gradient" operator, which is generic over its input's own
+ * component count and so produces (n,9) -- the flattened row-major 3x3
+ * Hessian, H[i][j] at index i*3+j. The result is a copy of the input
+ * carrying one new array; geometry, connectivity, regions and every
+ * existing array come through unchanged.
+ *
+ * A field that is at most LINEAR has an exactly zero Hessian everywhere
+ * (its gradient is a constant, and Green-Gauss of a constant field is
+ * trivially exact) -- the one mesh-shape-independent guarantee. For a
+ * genuinely QUADRATIC field the composition is exact on a
+ * structured/symmetric mesh away from its own boundary (measured, not
+ * assumed) and a good, standard, but genuinely approximate curvature
+ * estimate on an irregular mesh, because the mandatory intermediate
+ * Uniform-weighted point-averaging step between the two passes is only
+ * exact for a field that is constant over the averaged neighbourhood.
+ *
+ * Input must have exactly one component -- a vector field's Hessian is a
+ * separate quantity per component; call this once per component instead of
+ * passing a multi-component array.
+ *
+ * Cells that cannot be evaluated (the same reasons mio_gradient's own
+ * num_skipped covers, structurally identical between the two internal
+ * passes) yield NaN in the Hessian and are counted in num_skipped. With
+ * "least-squares", a cell whose neighbourhood is degenerate in either pass
+ * falls back to Green-Gauss and is counted in num_fallback (summed over
+ * both passes).
+ *
+ * A curvature-driven refinement indicator needs no new API here: a scalar
+ * Frobenius-norm indicator over the 9-component output is
+ * `mio_data_calc(mesh, "curv = norm(`<array>:hessian`)", ...)`, ready for
+ * `mio_refine_ex`'s predicate selector.
+ *
+ * @param mesh         input mesh.
+ * @param array_name   name of the scalar point_data array to differentiate
+ *                     twice. A cell_data name is an error naming the fix; a
+ *                     name with more than one component is an error naming
+ *                     the per-component workaround.
+ * @param method       "green-gauss" (default) or "least-squares"; NULL or ""
+ *                     selects the default. Forwarded to BOTH internal
+ *                     mio_gradient calls.
+ * @param location     "cell" (default) or "point"; NULL or "" selects the
+ *                     default.
+ * @param output_name  name for the produced array; NULL or "" uses
+ *                     "<array_name>:hessian".
+ * @param overwrite    nonzero to replace an existing array of the output name
+ *                     instead of failing.
+ * @param num_skipped  optional out: cells that produced a NaN row.
+ * @param num_fallback optional out: least-squares cells that fell back, in
+ *                     either internal pass.
+ * @return the mesh carrying the produced array (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_hessian(const mio_mesh* mesh, const char* array_name, const char* method,
+                              const char* location, const char* output_name, int overwrite,
+                              int64_t* num_skipped, int64_t* num_fallback);
 
 /**
  * Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a
@@ -2150,6 +2244,80 @@ MIO_API mio_status mio_data_info_component(const mio_data_info* info, int64_t in
 
 /** Destroy a summary handle. Safe to call with NULL. */
 MIO_API void mio_data_info_free(mio_data_info* info);
+
+/** Opaque cell-measure-weighted field-integration report. Destroy with
+ *  mio_data_integrate_free(). See meshioplusplus::data_integrate. */
+typedef struct mio_data_integrate mio_data_integrate;
+
+/** Fixed-size summary of one array's or one region's reduction (see
+ *  mio_data_integrate_entry / mio_data_integrate_region_entry). Per-component
+ *  totals are retrieved separately with mio_data_integrate_component /
+ *  mio_data_integrate_region_component. */
+typedef struct mio_field_integral_info {
+    int64_t num_components; /**< product of the trailing dimensions */
+    int64_t num_cells;      /**< cells with a computable measure */
+    int64_t num_skipped;    /**< cells excluded: unmeasurable geometry */
+} mio_field_integral_info;
+
+/**
+ * Cell-measure-weighted total/mean of one or more cell_data arrays, for the
+ * whole mesh and independently for every named Cell region -- gradient's
+ * integration counterpart. A point_data-only name fails, naming
+ * point_data_to_cell_data (CLI `data to-cell`) as the fix.
+ * @param names array names to integrate, or NULL for every cell_data array.
+ * @param count length of names; ignored when names is NULL.
+ * @return a result handle (free with mio_data_integrate_free), or NULL on
+ *         failure.
+ */
+MIO_API mio_data_integrate* mio_data_integrate_create(const mio_mesh* mesh,
+                                                       const char* const* names, int64_t count);
+
+/** @return the number of arrays described, or -1 on error. */
+MIO_API int64_t mio_data_integrate_count(const mio_data_integrate* result);
+
+/**
+ * Copy the `index`-th array's name into `buf`.
+ * @return the required length excluding the NUL (so a value >= buflen means the
+ *         name was truncated), or -1 on error.
+ */
+MIO_API int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
+                                        char* buf, int64_t buflen);
+
+/** Fill `out` with the `index`-th array's whole-mesh summary. */
+MIO_API mio_status mio_data_integrate_entry(const mio_data_integrate* result, int64_t index,
+                                            mio_field_integral_info* out);
+
+/**
+ * Per-component whole-mesh totals of the `index`-th array. Any out pointer
+ * may be NULL.
+ * @param comp component index, in [0, num_components).
+ */
+MIO_API mio_status mio_data_integrate_component(const mio_data_integrate* result, int64_t index,
+                                                int64_t comp, double* total, double* mean,
+                                                double* domain_measure, int64_t* num_nan);
+
+/** @return the number of named Cell regions reported for the `index`-th
+ *          array, or -1 on error. */
+MIO_API int64_t mio_data_integrate_region_count(const mio_data_integrate* result, int64_t index);
+
+/** Copy the `index`-th array's `region`-th region name into `buf`.
+ * @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_data_integrate_region_name(const mio_data_integrate* result, int64_t index,
+                                               int64_t region, char* buf, int64_t buflen);
+
+/** Fill `out` with the `index`-th array's `region`-th region summary. */
+MIO_API mio_status mio_data_integrate_region_entry(const mio_data_integrate* result, int64_t index,
+                                                   int64_t region, mio_field_integral_info* out);
+
+/** Per-component totals of the `index`-th array's `region`-th region. Any out
+ *  pointer may be NULL. */
+MIO_API mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
+                                                        int64_t index, int64_t region,
+                                                        int64_t comp, double* total, double* mean,
+                                                        double* domain_measure, int64_t* num_nan);
+
+/** Destroy a result handle. Safe to call with NULL. */
+MIO_API void mio_data_integrate_free(mio_data_integrate* result);
 
 /**
  * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and
