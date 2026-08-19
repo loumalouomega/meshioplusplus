@@ -531,6 +531,41 @@ export interface DataArrayInfo {
   inconsistentBlocks: boolean;
 }
 
+/** Cell-measure-weighted reduction of one array over one set of cells (the
+ *  whole mesh, or one named Cell region) -- see `dataIntegrate`. */
+export interface FieldIntegralRegion {
+  /** The region's name; absent on the whole-mesh `domain` entry. */
+  name?: string;
+  /** Cells with a computable measure. */
+  numCells: number;
+  /** Cells excluded: unmeasurable geometry (ragged, unsupported type, or
+   *  degenerate). */
+  numSkipped: number;
+  /** `sum(value * |measure|)` over cells finite in component k. */
+  totalPerComponent: number[];
+  /** `totalPerComponent[k] / domainMeasurePerComponent[k]`, or NaN when that
+   *  denominator is zero. */
+  meanPerComponent: number[];
+  /** `sum(|measure|)` over cells finite in component k. */
+  domainMeasurePerComponent: number[];
+  /** Measurable cells excluded from component k because its value was
+   *  non-finite there. */
+  numNanPerComponent: number[];
+}
+
+/** One array's field integral, returned by `dataIntegrate` --
+ *  `gradient`'s integration counterpart. See doc/field_integration.md. */
+export interface FieldIntegralArray {
+  name: string;
+  numComponents: number;
+  /** The whole-mesh reduction. */
+  domain: FieldIntegralRegion;
+  /** One independent entry per named Cell region present on the mesh -- a
+   *  cell in two regions contributes fully to both, one in none contributes
+   *  to neither. */
+  regions: FieldIntegralRegion[];
+}
+
 /** Heavy-data layout of a transient XDMF series. */
 export type XdmfDataFormat = 'HDF' | 'XML' | 'Binary';
 
@@ -1498,6 +1533,14 @@ export interface MeshioPlusPlusModule {
 
   /** Read-only per-array summary of every data array the mesh carries. */
   dataInfo(mesh: Mesh): DataArrayInfo[];
+
+  /**
+   * Cell-measure-weighted total/mean of one or more cell_data arrays --
+   * gradient's integration counterpart. `arrays` empty/undefined means
+   * every cell_data array. A point_data-only name throws naming
+   * dataPointToCell as the fix. See doc/field_integration.md.
+   */
+  dataIntegrate(mesh: Mesh, arrays?: string[]): FieldIntegralArray[];
 
   /**
    * Open a transient (time-series) XDMF writer on the virtual filesystem --

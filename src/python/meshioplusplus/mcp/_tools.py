@@ -50,6 +50,7 @@ from .. import (
     data_calc,
     data_condition,
     data_info,
+    data_integrate,
     data_manage,
     decimate,
     decimate_volume,
@@ -283,6 +284,13 @@ def tool_data_info(input_path, file_format=None):
     """Describe every data array: dtype, shape, ranges, NaN/Inf counts."""
     mesh = _load(input_path, file_format)
     return _json_safe({"arrays": data_info(mesh)})
+
+
+def tool_data_integrate(input_path, file_format=None, arrays=None):
+    """Cell-measure-weighted total/mean of cell_data arrays, whole mesh and
+    per named Cell region."""
+    mesh = _load(input_path, file_format)
+    return _json_safe({"arrays": data_integrate(mesh, arrays=arrays)})
 
 
 def tool_regions(input_path, file_format=None):
@@ -1755,6 +1763,10 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         ("data_info", {"fn": tool_data_info, "wraps": ("data_info",), "gated": None}),
+        (
+            "data_integrate",
+            {"fn": tool_data_integrate, "wraps": ("data_integrate",), "gated": None},
+        ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (
             "bandwidth",

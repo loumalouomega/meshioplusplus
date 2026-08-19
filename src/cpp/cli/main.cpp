@@ -67,6 +67,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
@@ -2531,6 +2532,92 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `data integrate` is `data gradient`'s companion the other direction: a
+// **mesh** operation (it reads cell measures), living here because it reduces
+// data arrays, not because it belongs to the no-geometry data_* bundle. See
+// doc/field_integration.md.
+int cmd_data_integrate(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(false);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"json", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("data integrate requires exactly INFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::DataIntegrateOptions opts;
+    opts.mArrayNames = opt_values(p, "array");
+    meshioplusplus::DataIntegrateReport r = meshioplusplus::data_integrate(mesh, opts);
+
+    auto print_region = [](const meshioplusplus::FieldIntegralRegion& reg) {
+        const std::string label = reg.mName.empty() ? "(whole mesh)" : reg.mName;
+        char line[128];
+        std::snprintf(line, sizeof(line), "    %-20s cells=%-6lld skipped=%-4lld", label.c_str(),
+                      static_cast<long long>(reg.mNumCells), static_cast<long long>(reg.mNumSkipped));
+        std::cout << line << " total=[";
+        for (std::size_t k = 0; k < reg.mTotalPerComponent.size(); ++k)
+            std::cout << (k ? ", " : "") << data_g6(reg.mTotalPerComponent[k]);
+        std::cout << "] mean=[";
+        for (std::size_t k = 0; k < reg.mMeanPerComponent.size(); ++k)
+            std::cout << (k ? ", " : "") << data_g6(reg.mMeanPerComponent[k]);
+        std::cout << "]\n";
+    };
+
+    if (has_flag(p, "json")) {
+        std::cout << "[\n";
+        for (std::size_t i = 0; i < r.mArrays.size(); ++i) {
+            const auto& a = r.mArrays[i];
+            auto print_region_json = [](const meshioplusplus::FieldIntegralRegion& reg,
+                                        const char* indent) {
+                std::cout << indent << "{\n";
+                std::cout << indent << "  \"name\": \"" << reg.mName << "\",\n";
+                std::cout << indent << "  \"num_cells\": " << reg.mNumCells << ",\n";
+                std::cout << indent << "  \"num_skipped\": " << reg.mNumSkipped << ",\n";
+                auto print_vec = [&](const char* key, const std::vector<double>& v) {
+                    std::cout << indent << "  \"" << key << "\": [";
+                    for (std::size_t k = 0; k < v.size(); ++k)
+                        std::cout << (k ? ", " : "") << data_g6(v[k]);
+                    std::cout << "],\n";
+                };
+                print_vec("domain_measure_per_component", reg.mDomainMeasurePerComponent);
+                print_vec("total_per_component", reg.mTotalPerComponent);
+                print_vec("mean_per_component", reg.mMeanPerComponent);
+                std::cout << indent << "  \"num_nan_per_component\": [";
+                for (std::size_t k = 0; k < reg.mNumNanPerComponent.size(); ++k)
+                    std::cout << (k ? ", " : "") << reg.mNumNanPerComponent[k];
+                std::cout << "]\n" << indent << "}";
+            };
+            std::cout << "  {\n";
+            std::cout << "    \"name\": \"" << a.mName << "\",\n";
+            std::cout << "    \"num_components\": " << a.mNumComponents << ",\n";
+            std::cout << "    \"domain\": ";
+            print_region_json(a.mDomain, "    ");
+            std::cout << ",\n    \"regions\": [\n";
+            for (std::size_t j = 0; j < a.mRegions.size(); ++j) {
+                print_region_json(a.mRegions[j], "      ");
+                std::cout << (j + 1 < a.mRegions.size() ? ",\n" : "\n");
+            }
+            std::cout << "    ]\n";
+            std::cout << "  }" << (i + 1 < r.mArrays.size() ? "," : "") << "\n";
+        }
+        std::cout << "]\n";
+        return 0;
+    }
+
+    std::cout << "<meshio++ field integration>\n";
+    if (r.mArrays.empty()) {
+        std::cout << "  (the mesh carries no cell_data arrays)\n";
+        return 0;
+    }
+    for (const auto& a : r.mArrays) {
+        std::cout << "  " << a.mName << " (" << a.mNumComponents << " component(s))\n";
+        print_region(a.mDomain);
+        for (const auto& reg : a.mRegions)
+            print_region(reg);
+    }
+    return 0;
+}
+
 // `data estimate-error` is a slight departure from the rest of this group too,
 // for the same reason `data gradient` is: a mesh operation (it reads geometry
 // and topology), living here because it consumes and produces data arrays. It
@@ -2667,6 +2754,8 @@ void print_data_usage(std::ostream& rOut) {
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
             "gradient|divergence|curl)\n"
+            "  integrate   Cell-measure-weighted total/mean of a cell_data field, "
+            "whole mesh and per named Cell region (--array NAME, repeatable)\n"
             "  estimate-error  ZZ recovery-based error indicator (--array NAME "
             "--marking none|absolute|fraction|dorfler)\n\n";
 }
@@ -2702,6 +2791,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_normalize(rest);
     if (sub == "gradient")
         return cmd_data_gradient(rest);
+    if (sub == "integrate")
+        return cmd_data_integrate(rest);
     if (sub == "estimate-error")
         return cmd_data_estimate_error(rest);
     std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";

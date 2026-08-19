@@ -116,6 +116,22 @@ def _register_inspection(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def data_integrate(
+        input_path: str,
+        file_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+    ) -> dict:
+        """Cell-measure-weighted total/mean of cell_data arrays (whole mesh,
+        and independently for every named Cell region) -- gradient's
+        integration companion. arrays defaults to every cell_data array."""
+        return _guard(
+            _tools.tool_data_integrate,
+            input_path=input_path,
+            file_format=file_format,
+            arrays=arrays,
+        )
+
+    @server.tool()
     def regions(input_path: str, file_format: Optional[str] = None) -> dict:
         """List named regions (point/cell/side groups: gmsh physical groups,
         Exodus sets, Abaqus NSET/ELSET, ...) with kind, dim, tag and size."""

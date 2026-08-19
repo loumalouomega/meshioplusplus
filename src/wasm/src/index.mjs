@@ -177,6 +177,7 @@ function resolveVariant(variant) {
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
  *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
  *   dataInfo: (mesh: Mesh) => object[],
+ *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
  * }>}
  */
@@ -564,6 +565,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix,
             ),
         dataInfo: (mesh) => Module.dataInfo(mesh),
+        dataIntegrate: (mesh, arrays = []) => Module.dataIntegrate(mesh, arrays),
         // Transient (time-series) XDMF -- the one *stateful* thing in this API.
         // The raw binding is an opaque integer handle plus seven free
         // functions (see bindings/wasm/js_bindings.cpp for why it is not an

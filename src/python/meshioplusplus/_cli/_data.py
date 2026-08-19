@@ -1,23 +1,27 @@
 """The nested ``meshioplusplus data <verb>`` command group.
 
-Nine of the eleven verbs are thin front-ends over the five data operations:
+Nine of the fourteen verbs are thin front-ends over the five data operations:
 ``rename``/``drop``/``keep`` call ``data_manage``, ``to-cell``/``to-point``
 call the two averaging entry points, ``clamp``/``normalize`` call
 ``data_condition`` with a preset mode, and ``calc``/``info`` map one-to-one.
-The tenth, ``export``, writes the arrays to Parquet through
-:mod:`meshioplusplus._interop` — a **tabular data export for analytics, not a
-mesh format**: it does not round-trip geometry, and pyarrow is an optional
-extra, so its import stays inside the handler. It has no counterpart in the
-native C++ CLI.
+``export``/``export-dataset`` write the arrays to Parquet/zarr/hdf5 through
+:mod:`meshioplusplus._interop`/:mod:`meshioplusplus._ml` — **tabular data
+exports for analytics, not mesh formats**: neither round-trips geometry, and
+pyarrow/zarr are optional extras, so their imports stay inside the handlers.
+Neither has a counterpart in the native C++ CLI.
 
-``gradient`` and ``estimate-error`` are a slight departure: both are **mesh**
-operations (``operations/gradient.hpp``, ``operations/error.hpp``), not part of
-the ``data_*`` family, because they read geometry and topology rather than
-only data arrays. They live here anyway because they consume and produce data
-arrays, which is where a user looks for them. ``estimate-error`` composes
-``gradient`` with the point↔cell averaging round trip to produce the ZZ
-recovery-based error indicator ``refine``'s own ``--where`` selector consumes,
-closing the adaptive loop. See ``doc/gradient.md`` / ``doc/error.md``.
+``gradient``, ``integrate`` and ``estimate-error`` are a slight departure: all
+three are **mesh** operations (``operations/gradient.hpp``,
+``operations/data_integrate.hpp``, ``operations/error.hpp``), not part of the
+``data_*`` family, because they read geometry (cell measures, face tables)
+rather than only data arrays. They live here anyway because they consume and
+produce data arrays, which is where a user looks for them. ``estimate-error``
+composes ``gradient`` with the point↔cell averaging round trip to produce the
+ZZ recovery-based error indicator ``refine``'s own ``--where`` selector
+consumes, closing the adaptive loop; ``integrate`` is ``gradient``'s
+companion the other direction, reducing a ``cell_data`` field to a physical
+total/mean instead of differentiating it. See ``doc/gradient.md`` /
+``doc/field_integration.md`` / ``doc/error.md``.
 
 This is the repository's first two-level subcommand. It needs no change to
 ``_main.py``'s dispatch because ``set_defaults(func=...)`` on the *inner*
@@ -31,6 +35,7 @@ from .._data_average import cell_data_to_point_data, point_data_to_cell_data
 from .._data_calc import data_calc
 from .._data_condition import data_condition
 from .._data_info import data_info
+from .._data_integrate import data_integrate
 from .._data_manage import data_drop, data_keep, data_rename
 from .._error import estimate_error
 from .._gradient import gradient
@@ -647,6 +652,45 @@ def gradient_cmd(args):
     return 0
 
 
+# --- data integrate ----------------------------------------------------------
+
+
+def add_integrate_args(parser):
+    _add_io_args(parser, with_output=False)
+    parser.add_argument(
+        "--array",
+        action="append",
+        metavar="NAME",
+        dest="arrays",
+        help="cell_data array to integrate (repeatable; default: every "
+        "cell_data array)",
+    )
+    parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+
+
+def integrate_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    report = data_integrate(mesh, arrays=args.arrays)
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+    print("<meshio++ field integration>")
+    if not report:
+        print("  (the mesh carries no cell_data arrays)")
+        return 0
+    for arr in report:
+        print(f"  {arr['name']} ({arr['num_components']} component(s))")
+        for region in [arr["domain"]] + arr["regions"]:
+            label = region["name"] or "(whole mesh)"
+            totals = ", ".join(f"{v:.6g}" for v in region["total_per_component"])
+            means = ", ".join(f"{v:.6g}" for v in region["mean_per_component"])
+            print(
+                f"    {label:<20} cells={region['num_cells']:<6} "
+                f"skipped={region['num_skipped']:<4} total=[{totals}] mean=[{means}]"
+            )
+    return 0
+
+
 # --- data estimate-error ----------------------------------------------------
 
 
@@ -761,6 +805,13 @@ _VERBS = (
         "Differentiate a point_data field (gradient / divergence / curl)",
         add_gradient_args,
         gradient_cmd,
+    ),
+    (
+        "integrate",
+        "Cell-measure-weighted total/mean of a cell_data field, whole mesh "
+        "and per named Cell region",
+        add_integrate_args,
+        integrate_cmd,
     ),
     (
         "estimate-error",

@@ -6195,6 +6195,61 @@ MESHIOPLUSPLUS_API FiniteStats combine_components(const std::vector<FiniteStats>
 MESHIOPLUSPLUS_API double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
                     std::size_t Index);
 
+/**
+ * @brief A per-component weighted-sum accumulator: `sum(value * weight)`,
+ * `sum(weight)`, and a count of rows excluded because the *value* at this
+ * component was non-finite (`Add` is only ever called for a row whose
+ * weight is already known finite and positive -- geometric exclusion, e.g.
+ * an unmeasurable cell, is the caller's job, exactly as `FiniteStats`
+ * assumes nothing about where its own values came from).
+ */
+struct WeightedSum {
+    double mSumVW = 0.0;           ///< sum(value * weight) over finite values.
+    double mSumW = 0.0;            ///< sum(weight) over rows with a finite value.
+    std::int64_t mNumNan = 0;      ///< Rows skipped because the value was non-finite.
+
+    /// Folds one (value, weight) pair in; `weight` must already be finite and > 0.
+    void Add(double Value, double Weight) {
+        if (!std::isfinite(Value)) {
+            ++mNumNan;
+            return;
+        }
+        mSumVW += Value * Weight;
+        mSumW += Weight;
+    }
+
+    /// Folds another (independently accumulated) instance in.
+    void Merge(const WeightedSum& rOther) {
+        mSumVW += rOther.mSumVW;
+        mSumW += rOther.mSumW;
+        mNumNan += rOther.mNumNan;
+    }
+
+    /// The weighted mean, or NaN when nothing finite contributed.
+    double Mean() const { return mSumW > 0.0 ? mSumVW / mSumW : std::nan(""); }
+};
+
+/**
+ * @brief Reduces @p rArray into per-component `WeightedSum`, weighting row
+ * `r` by @p rWeights[r].
+ *
+ * A row whose weight is not finite and positive contributes to no component
+ * at all (silently skipped here -- callers that need to count such rows,
+ * e.g. as "geometrically unmeasurable", do so once themselves, since that
+ * count is the same for every component and every array sharing the same
+ * weights).
+ *
+ * Chunked with `parallel_for` and combined serially, mirroring
+ * `accumulate_stats`, so the result does not depend on the thread count.
+ * @param rArray the array to reduce; row count must equal `rWeights.size()`.
+ * @param NumComponents its component count (see `data_num_components`).
+ * @param rWeights one weight per row.
+ * @param rStats per-component accumulators, resized to @p NumComponents and
+ *        *folded into* (not reset), so several arrays can share one reduction.
+ */
+MESHIOPLUSPLUS_API void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
+                        const std::vector<double>& rWeights, std::vector<WeightedSum>& rStats);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/data_ops.hpp =====
@@ -17121,6 +17176,146 @@ MESHIOPLUSPLUS_API DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/data_info.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/data_integrate.hpp =====
+/**
+ * @file operations/data_integrate.hpp
+ * @brief Cell-measure-weighted reductions of a `cell_data` field: a physical
+ * total (`sum(value * measure)`), the measure-weighted mean that total
+ * implies, and both computed independently for every named `Cell` region --
+ * `gradient`'s natural companion (`gradient` differentiates a field; this
+ * integrates one).
+ *
+ * **Why it lives in the mesh-operations layer rather than the `data_*`
+ * bundle.** The five `data_*` operations are *defined* by never touching
+ * geometry (`operations/data_common.hpp`, `doc/data_operations.md`); this one
+ * reads `detail::cell_measure` (face/volume tables), so it belongs here, with
+ * the `mPascalCase` option fields the geometry operations use -- the exact
+ * reasoning `gradient.hpp`'s own file doc comment states for itself. It is
+ * still *reachable* as `meshioplusplus data integrate` in both CLIs, because
+ * that is where a user looks for it.
+ *
+ * ### Contract
+ *
+ * - **`cell_data` only.** A `point_data` name throws by name, pointing at
+ *   `point_data_to_cell_data` (CLI `data to-cell`) -- the mirror image of
+ *   `gradient`'s own `point_data`-only contract, which throws on `cell_data`
+ *   pointing at `data to-point`. Proper `point_data` integration needs
+ *   shape-function quadrature, a separate and larger job.
+ * - **Weighting.** Every sum is weighted by `|detail::cell_measure(...)|`
+ *   (length / area / volume by the cell's own topological dimension). A cell
+ *   whose measure is not computable (a ragged or unsupported-type block, or a
+ *   degenerate one) is excluded from **both** the numerator and the
+ *   denominator -- never given a fallback weight of 1, unlike
+ *   `cell_data_to_point_data`'s own `Measure` weighting, because a silent
+ *   unit-weight substitution would corrupt a physical total in a way it only
+ *   softens an average. Excluded cells are counted in
+ *   `FieldIntegralRegion::mNumSkipped`.
+ * - **Non-finite values** exclude a cell from that *component's* numerator
+ *   **and** denominator (not just zeroed into the numerator, or the mean
+ *   would be silently biased), counted per component in
+ *   `FieldIntegralRegion::mNumNanPerComponent`. This mirrors the geometric
+ *   exclusion rule applied one level down, component by component.
+ * - **Per component only** -- there is no whole-array (cross-component)
+ *   total or mean, unlike `DataArrayInfo`'s collapsed statistics. Summing a
+ *   vector field's components into one number has no general physical
+ *   meaning, unlike a flattened numeric mean, which needs only "these are
+ *   numbers".
+ * - **No `NanPolicy`.** Like `gradient` and `data_info`, this is a reduction
+ *   with nothing to exclude a value *from*; non-finite values are always
+ *   excluded and always counted, with no configurable policy.
+ * - **Regions are not filtered, and not a partition.** Every named `Cell`
+ *   region present on the mesh gets its own independent entry (mirroring
+ *   `split`'s own "split by region" contract) -- a cell belonging to two
+ *   regions contributes fully to both; a cell in none contributes to
+ *   neither. `Point`/`Side` regions are skipped, exactly as `split` skips
+ *   them for the same reason (no cell-measure meaning for a point or facet
+ *   group).
+ * - The mesh is **never modified**; this returns a read-only report, like
+ *   `data_info` and `compute_stats`.
+ *
+ * Output is byte-identical across the three mesh backends, across thread
+ * counts, and across the C++/numpy boundary: per-cell measures are computed
+ * once (shared across every array and every region) via `parallel_for`, and
+ * every weighted-sum reduction is chunked-`parallel_for`-then-serially-merged
+ * (`detail::accumulate_weighted`), the same idiom `data_info`'s
+ * `detail::accumulate_stats` already uses.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format -- it is
+ * not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell-measure-weighted reduction of one array over one set of cells (the
+/// whole mesh, or one named `Cell` region) -- one entry per component.
+struct FieldIntegralRegion {
+    /// The region's name; empty for the whole-mesh entry.
+    std::string mName;
+    /// Cells with a computable measure (candidates for every component).
+    std::int64_t mNumCells = 0;
+    /// Cells excluded because their measure was not computable (ragged,
+    /// unsupported type, or degenerate) -- the same count for every
+    /// component, since it is purely geometric.
+    std::int64_t mNumSkipped = 0;
+    /// `sum(|measure|)` over cells finite in component k, size `mNumComponents`.
+    std::vector<double> mDomainMeasurePerComponent;
+    /// `sum(value * |measure|)` over the same cells, size `mNumComponents`.
+    std::vector<double> mTotalPerComponent;
+    /// `mTotalPerComponent[k] / mDomainMeasurePerComponent[k]`, or NaN when
+    /// that denominator is zero.
+    std::vector<double> mMeanPerComponent;
+    /// Measurable cells excluded from component k because its value was
+    /// non-finite there.
+    std::vector<std::int64_t> mNumNanPerComponent;
+};
+
+/// One array's whole-mesh integral, plus one entry per named `Cell` region.
+struct FieldIntegralArray {
+    std::string mName;
+    std::int64_t mNumComponents = 1;
+    /// The whole-mesh reduction (`mName` empty).
+    FieldIntegralRegion mDomain;
+    /// One independent entry per named `Cell` region present on the mesh,
+    /// in `Mesh::RegionNames()`'s sorted order.
+    std::vector<FieldIntegralRegion> mRegions;
+};
+
+/// The full report (see `data_integrate`).
+struct DataIntegrateReport {
+    std::vector<FieldIntegralArray> mArrays;
+};
+
+/// Options for `data_integrate`.
+struct DataIntegrateOptions {
+    /// `cell_data` array names to integrate; empty means every `cell_data`
+    /// array, in sorted name order.
+    std::vector<std::string> mArrayNames;
+};
+
+/**
+ * @brief Cell-measure-weighted total/mean of one or more `cell_data` arrays,
+ * for the whole mesh and independently for every named `Cell` region.
+ * @param rMesh the mesh to integrate over (never modified).
+ * @param rOptions which arrays to integrate.
+ * @return the populated report.
+ * @throws std::invalid_argument on an unknown array name (listing what
+ *         exists), a `point_data`-only name (naming `point_data_to_cell_data`
+ *         as the fix), or a `cell_data` array whose block count disagrees
+ *         with the mesh.
+ */
+MESHIOPLUSPLUS_API DataIntegrateReport data_integrate(const Mesh& rMesh,
+                                                      const DataIntegrateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/data_integrate.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/data_manage.hpp =====
 /**
  * @file operations/data_manage.hpp
@@ -21196,7 +21391,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 7
+#define MESHIOPLUSPLUS_VERSION_MINOR 8
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -21206,7 +21401,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.7.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.8.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -37055,6 +37250,38 @@ FiniteStats combine_components(const std::vector<FiniteStats>& rStats) {
     for (const FiniteStats& s : rStats)
         all.Merge(s);
     return all;
+}
+
+void accumulate_weighted(const NDArray& rArray, std::size_t NumComponents,
+                         const std::vector<double>& rWeights, std::vector<WeightedSum>& rStats) {
+    if (rStats.size() < NumComponents)
+        rStats.resize(NumComponents);
+    const std::size_t nrows = rWeights.size();
+    if (nrows == 0 || NumComponents == 0)
+        return;
+
+    const std::size_t grain = 4096;
+    const std::size_t nchunks = (nrows + grain - 1) / grain;
+    std::vector<std::vector<WeightedSum>> partial(nchunks);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            std::vector<WeightedSum> local(NumComponents);
+            const std::size_t begin = ci * grain;
+            const std::size_t end = std::min(begin + grain, nrows);
+            for (std::size_t r = begin; r < end; ++r) {
+                const double w = rWeights[r];
+                if (!(w > 0.0) || !std::isfinite(w))
+                    continue;
+                for (std::size_t k = 0; k < NumComponents; ++k)
+                    local[k].Add(read_double(rArray, r * NumComponents + k), w);
+            }
+            partial[ci] = std::move(local);
+        },
+        1);
+    for (const std::vector<WeightedSum>& chunk : partial)
+        for (std::size_t k = 0; k < NumComponents && k < chunk.size(); ++k)
+            rStats[k].Merge(chunk[k]);
 }
 
 double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::CellView& rCell,
@@ -70958,6 +71185,184 @@ DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const st
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/data_info.cpp =====
+// ===== begin src/cpp/src/operations/data_integrate.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// The cells belonging to one named Cell region, resolved to (block, row)
+// pairs once and reused across every requested array.
+struct DintRegionCells {
+    std::string mName;
+    std::vector<std::pair<std::size_t, std::int64_t>> mCells;
+};
+
+// Turns per-component accumulators into the public report shape.
+FieldIntegralRegion dint_build_region(std::string name,
+                                      const std::vector<detail::WeightedSum>& rStats,
+                                      std::int64_t NumCells, std::int64_t NumSkipped,
+                                      std::size_t Comps) {
+    FieldIntegralRegion out;
+    out.mName = std::move(name);
+    out.mNumCells = NumCells;
+    out.mNumSkipped = NumSkipped;
+    out.mDomainMeasurePerComponent.resize(Comps);
+    out.mTotalPerComponent.resize(Comps);
+    out.mMeanPerComponent.resize(Comps);
+    out.mNumNanPerComponent.resize(Comps);
+    for (std::size_t k = 0; k < Comps; ++k) {
+        out.mDomainMeasurePerComponent[k] = rStats[k].mSumW;
+        out.mTotalPerComponent[k] = rStats[k].mSumVW;
+        out.mMeanPerComponent[k] = rStats[k].Mean();
+        out.mNumNanPerComponent[k] = rStats[k].mNumNan;
+    }
+    return out;
+}
+
+std::string dint_unknown_or_point_message(const Mesh& rMesh, const std::string& rName) {
+    if (rMesh.HasPointData(rName))
+        return "meshio++: data_integrate: '" + rName +
+               "' is a point_data array; convert it first with point_data_to_cell_data (CLI: "
+               "`data to-cell`)";
+    return data_unknown_key_message(rMesh, DataLocation::Cell, rName);
+}
+
+}  // namespace
+
+DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions& rOptions) {
+    // --- resolve which arrays to integrate (validation before any work) -----
+    std::vector<std::string> names = rOptions.mArrayNames;
+    if (names.empty()) {
+        names = rMesh.CellDataNames();  // sorted on every backend
+    } else {
+        for (const std::string& name : names)
+            if (!rMesh.HasCellData(name))
+                throw std::invalid_argument(dint_unknown_or_point_message(rMesh, name));
+    }
+    for (const std::string& name : names)
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+            throw std::invalid_argument("meshio++: data_integrate: cell_data '" + name +
+                                        "' does not have one array per cell block");
+
+    DataIntegrateReport report;
+    if (names.empty())
+        return report;
+
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+
+    // --- per-cell measures, computed once and shared by every array/region --
+    // A negative sentinel marks a cell whose measure could not be computed
+    // (ragged/unsupported/degenerate), so every array's accumulation excludes
+    // it identically without recomputing anything geometric.
+    std::vector<std::vector<double>> measures(nblocks);
+    std::int64_t domain_num_cells = 0;
+    std::int64_t domain_num_skipped = 0;
+    if (nblocks > 0) {
+        const NDArray& points = rMesh.Points();
+        const std::size_t pdim = rMesh.PointDim();
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            std::vector<double>& w = measures[b];
+            w.assign(cb.NumCells(), 0.0);
+            parallel_for(cb.NumCells(), [&](std::size_t c) {
+                w[c] = std::abs(detail::cell_measure(points, pdim, cb, c));
+            });
+            for (double& v : w) {
+                if (std::isfinite(v) && v > 0.0)
+                    ++domain_num_cells;
+                else {
+                    v = -1.0;  // sentinel: unmeasurable
+                    ++domain_num_skipped;
+                }
+            }
+        }
+    }
+
+    // --- named Cell regions, resolved once -----------------------------------
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    std::vector<DintRegionCells> region_defs;
+    for (const std::string& rname : rMesh.RegionNames()) {
+        const std::size_t idx = rMesh.FindRegion(rname, RegionKind::Cell);
+        if (idx == Mesh::npos)
+            continue;
+        const Region& region = rMesh.Region(idx);
+        DintRegionCells rc;
+        rc.mName = rname;
+        const std::int64_t* entries = region.Entries();
+        const std::size_t n = region.NumEntries();
+        rc.mCells.reserve(n);
+        for (std::size_t e = 0; e < n; ++e) {
+            const auto [b, row] = detail::global_to_block_row(bases, entries[e]);
+            if (b != static_cast<std::size_t>(-1))
+                rc.mCells.push_back({b, row});
+        }
+        region_defs.push_back(std::move(rc));
+    }
+    std::vector<std::int64_t> region_num_cells(region_defs.size(), 0);
+    std::vector<std::int64_t> region_num_skipped(region_defs.size(), 0);
+    for (std::size_t r = 0; r < region_defs.size(); ++r)
+        for (const auto& [b, row] : region_defs[r].mCells) {
+            if (measures[b][static_cast<std::size_t>(row)] > 0.0)
+                ++region_num_cells[r];
+            else
+                ++region_num_skipped[r];
+        }
+
+    // --- per array: whole-mesh, then every region ----------------------------
+    report.mArrays.reserve(names.size());
+    for (const std::string& name : names) {
+        FieldIntegralArray arr;
+        arr.mName = name;
+        const std::size_t comps = data_num_components(rMesh.CellData(name, 0));
+        arr.mNumComponents = static_cast<std::int64_t>(comps);
+
+        std::vector<detail::WeightedSum> domain_stats(comps);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            detail::accumulate_weighted(rMesh.CellData(name, b), comps, measures[b], domain_stats);
+        arr.mDomain =
+            dint_build_region("", domain_stats, domain_num_cells, domain_num_skipped, comps);
+
+        arr.mRegions.reserve(region_defs.size());
+        for (std::size_t r = 0; r < region_defs.size(); ++r) {
+            // Regions are typically few and small relative to the whole mesh,
+            // so a plain serial fold (in the region's own canonical, sorted
+            // entry order) is simpler than chunked parallelism here and is
+            // trivially deterministic.
+            std::vector<detail::WeightedSum> region_stats(comps);
+            for (const auto& [b, row] : region_defs[r].mCells) {
+                const double w = measures[b][static_cast<std::size_t>(row)];
+                if (!(w > 0.0))
+                    continue;
+                const NDArray& block_arr = rMesh.CellData(name, b);
+                for (std::size_t k = 0; k < comps; ++k)
+                    region_stats[k].Add(
+                        detail::read_double(block_arr, static_cast<std::size_t>(row) * comps + k),
+                        w);
+            }
+            arr.mRegions.push_back(dint_build_region(region_defs[r].mName, region_stats,
+                                                     region_num_cells[r], region_num_skipped[r],
+                                                     comps));
+        }
+
+        report.mArrays.push_back(std::move(arr));
+    }
+
+    return report;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/data_integrate.cpp =====
 // ===== begin src/cpp/src/operations/data_manage.cpp =====
 #include <array>
 #include <algorithm>
