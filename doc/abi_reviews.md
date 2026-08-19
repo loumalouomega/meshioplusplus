@@ -1,29 +1,14 @@
 # ABI additive-change reviews
 
-`tools/check-abi-version.sh` fails a build whose installed headers changed while
-`MESHIOPLUSPLUS_ABI_VERSION` did not. This file is how that judgement gets recorded when the
-change really was additive.
+`tools/check-abi-version.sh` fails a build whose installed headers changed while `MESHIOPLUSPLUS_ABI_VERSION` did not. This file is how that judgement gets recorded when the change really was additive.
 
-**One row per release that changed an installed header while holding the ABI version.** Adding a
-row is a claim that every listed header change is Tier C by [`doc/abi.md`](abi.md)'s criterion —
-a *new* inline function, constexpr variable, type, declaration or header, or an *appended*
-enumerator — and therefore cannot affect a consumer that was already compiled. It is not a
-rubber stamp: the whole point of the ABI number is that a consumer may trust it instead of
-re-pinning the release version, so a wrong entry here ships silent memory corruption.
+**One row per release that changed an installed header while holding the ABI version.** Adding a row is a claim that every listed header change is Tier C by [`doc/abi.md`](abi.md)'s criterion — a *new* inline function, constexpr variable, type, declaration or header, or an *appended* enumerator — and therefore cannot affect a consumer that was already compiled. It is not a rubber stamp: the whole point of the ABI number is that a consumer may trust it instead of re-pinning the release version, so a wrong entry here ships silent memory corruption.
 
-**The `releases` and `headers changed` columns are read by the gate, not just by people.**
-`tools/check-abi-version.sh` looks for a row matching the ABI version *and* the release version
-in `CMakeLists.txt`, then requires every header that actually changed to be named in it — paths
-relative to `src/cpp/include/meshioplusplus/`, as written below. A header you changed but did
-not list is a red build naming it.
+**The `releases` and `headers changed` columns are read by the gate, not just by people.** `tools/check-abi-version.sh` looks for a row matching the ABI version *and* the release version in `CMakeLists.txt`, then requires every header that actually changed to be named in it — paths relative to `src/cpp/include/meshioplusplus/`, as written below. A header you changed but did not list is a red build naming it.
 
-That specificity is the fix for a real defect: through v9.4.0 the gate matched any row whose
-first column was the current ABI number, so once *any* ABI-3 row existed, every later header
-change matched it and passed — reporting "records the additive review" about a review of a
-different release entirely. A row for one release says nothing about the next one.
+That specificity is the fix for a real defect: through v9.4.0 the gate matched any row whose first column was the current ABI number, so once *any* ABI-3 row existed, every later header change matched it and passed — reporting "records the additive review" about a review of a different release entirely. A row for one release says nothing about the next one.
 
-If the change edited the *body* of an existing inline function or template, or moved a data
-member, it is Tier A/B and belongs in a version bump, not in this table.
+If the change edited the *body* of an existing inline function or template, or moved a data member, it is Tier A/B and belongs in a version bump, not in this table.
 
 | ABI | releases | headers changed | why it is additive |
 | --- | --- | --- | --- |

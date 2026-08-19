@@ -173,10 +173,7 @@ Format dispatch reuses the shared registry (with a content-sniff fallback on rea
 
 ## Selective reads and file summaries
 
-`mio_read` is unchanged. `mio_read_ex(path, format, opts)` adds the selective-read options,
-and `mio_read_metadata_create` returns an opaque summary handle in the style of
-`mio_split_result` / `mio_convert_cells_result` / `mio_subdivide_result` / `mio_agglomerate_result` / `mio_refine_result` /
-`mio_partition_result` / `mio_data_info`.
+`mio_read` is unchanged. `mio_read_ex(path, format, opts)` adds the selective-read options, and `mio_read_metadata_create` returns an opaque summary handle in the style of `mio_split_result` / `mio_convert_cells_result` / `mio_subdivide_result` / `mio_agglomerate_result` / `mio_refine_result` / `mio_partition_result` / `mio_data_info`.
 
 ```c
 mio_read_opts opts;
@@ -196,45 +193,21 @@ mio_read_metadata_time_values(meta, times, nsteps);
 mio_read_metadata_free(meta);
 ```
 
-`opts.time_step` selects a step of a multi-step file (0 = the first, negative counts from
-the end); out of range fails the call rather than clamping. It was added in v8.6.0 by
-consuming one of the struct's six `reserved` `int64_t` slots, so **`sizeof(mio_read_opts)`
-and every preceding field's offset are unchanged** — a caller compiled against the older
-header still passes a correctly-sized object. This is the only sanctioned way to grow the
-struct; a gtest pins the tail's width.
+`opts.time_step` selects a step of a multi-step file (0 = the first, negative counts from the end); out of range fails the call rather than clamping. It was added in v8.6.0 by consuming one of the struct's six `reserved` `int64_t` slots, so **`sizeof(mio_read_opts)` and every preceding field's offset are unchanged** — a caller compiled against the older header still passes a correctly-sized object. This is the only sanctioned way to grow the struct; a gtest pins the tail's width.
 
-A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_arrays == 0` means
-*none*. That distinction is load-bearing and is preserved throughout.
+A `NULL` `opts.arrays` means *every* array; a non-`NULL` pointer with `num_arrays == 0` means *none*. That distinction is load-bearing and is preserved throughout.
 
-`mio_read_metadata_bbox` returns `MIO_ERR_NOT_FOUND` when no bounding box was computed —
-the normal case for a native summary, which never decodes the point coordinates. It does not
-report a zero box.
+`mio_read_metadata_bbox` returns `MIO_ERR_NOT_FOUND` when no bounding box was computed — the normal case for a native summary, which never decodes the point coordinates. It does not report a zero box.
 
-**ABI note:** `mio_read_opts` is part of the installed library's permanent ABI. It carries
-reserved capacity and may only ever grow additively — never reorder, resize or repurpose an
-existing field. Always initialize through `mio_read_opts_init()` so fields added later default
-sensibly in code compiled against an older header.
+**ABI note:** `mio_read_opts` is part of the installed library's permanent ABI. It carries reserved capacity and may only ever grow additively — never reorder, resize or repurpose an existing field. Always initialize through `mio_read_opts_init()` so fields added later default sensibly in code compiled against an older header.
 
 ### Optional codecs in packages
 
-Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by
-default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so
-existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).
+Conan gains `with_zstd` / `with_lz4` and vcpkg gains `zstd` / `lz4` features, both **off by default** (unlike `with_hdf5`/`with_netcdf`/`with_zlib`). zlib remains the default codec, so existing package IDs and consumers are unaffected. See [Compression codecs](codecs.md).
 
 ## v9.1.0 additions
 
-- `mio_read_opts.lenient` — downgrade "this reader cannot represent construct X"
-  to a warning plus a skip (currently mdpa only). It took a second former
-  `reserved` slot, so `sizeof(mio_read_opts)` and every preceding offset are
-  unchanged. See [`doc/selective_read.md`](selective_read.md).
-- Transient XDMF: `mio_xdmf_series_create_ex` + `mio_xdmf_series_opts` (append
-  mode, auto-flush), `mio_xdmf_series_flush`, `mio_xdmf_series_finalized`, and
-  `mio_xdmf_series_write_data_arrays` + `mio_named_array` for writing a step from
-  raw solver arrays. `mio_xdmf_series_create` is unchanged. See
-  [`doc/xdmf_time_series.md`](xdmf_time_series.md).
+- `mio_read_opts.lenient` — downgrade "this reader cannot represent construct X" to a warning plus a skip (currently mdpa only). It took a second former `reserved` slot, so `sizeof(mio_read_opts)` and every preceding offset are unchanged. See [`doc/selective_read.md`](selective_read.md).
+- Transient XDMF: `mio_xdmf_series_create_ex` + `mio_xdmf_series_opts` (append mode, auto-flush), `mio_xdmf_series_flush`, `mio_xdmf_series_finalized`, and `mio_xdmf_series_write_data_arrays` + `mio_named_array` for writing a step from raw solver arrays. `mio_xdmf_series_create` is unchanged. See [`doc/xdmf_time_series.md`](xdmf_time_series.md).
 
-**Not on this ABI, by design:** `MdpaInfo` (MDPA properties bodies and entity
-names) is dropped by the registry, exactly as `MedInfo`/`ExodusInfo` are — the
-C ABI cannot hand out a variable-length tree of typed values. `ModelPart`,
-entity names and the Kratos bridge are likewise unreachable here; that is the
-reason the installable C++ API (`MESHIOPLUSPLUS_INSTALL_CPP`) exists at all.
+**Not on this ABI, by design:** `MdpaInfo` (MDPA properties bodies and entity names) is dropped by the registry, exactly as `MedInfo`/`ExodusInfo` are — the C ABI cannot hand out a variable-length tree of typed values. `ModelPart`, entity names and the Kratos bridge are likewise unreachable here; that is the reason the installable C++ API (`MESHIOPLUSPLUS_INSTALL_CPP`) exists at all.

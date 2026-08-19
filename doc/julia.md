@@ -140,8 +140,7 @@ Entries are 1-based, with one exception documented in [`doc/regions.md`](/region
 
 ## Selective reads and time steps
 
-`ReadOptions` narrows what a read materializes, and since v8.6.0 also picks which time step
-of a multi-step file to decode:
+`ReadOptions` narrows what a read materializes, and since v8.6.0 also picks which time step of a multi-step file to decode:
 
 ```julia
 using MeshioPlusPlus
@@ -155,16 +154,11 @@ meta = read_metadata("run.exo")
 meta.time_values          # [0.0, 0.5, 1.0] -- how many steps `time_step` may name
 ```
 
-Out of range is an error naming the available count, never a silent clamp.
-`meta.time_values` is empty for a format with no time concept, so `length(...)` is always
-safe. Honoured by `exodus`; see [Selective reads](/selective_read).
+Out of range is an error naming the available count, never a silent clamp. `meta.time_values` is empty for a format with no time concept, so `length(...)` is always safe. Honoured by `exodus`; see [Selective reads](/selective_read).
 
 ## Transient (time-series) XDMF writing
 
-`XdmfSeries` is the write half of the above, and the one writer `write` cannot express: a
-series is a **stateful** multi-call object, so it gets its own handle rather than a keyword.
-The grid goes out once and each solve appends a cheap step. See
-[XDMF time series](/xdmf_time_series).
+`XdmfSeries` is the write half of the above, and the one writer `write` cannot express: a series is a **stateful** multi-call object, so it gets its own handle rather than a keyword. The grid goes out once and each solve appends a cheap step. See [XDMF time series](/xdmf_time_series).
 
 ```julia
 using MeshioPlusPlus
@@ -189,22 +183,14 @@ XdmfSeries("simulation.xdmf"; data_format = "XML") do s
 end
 ```
 
-`data_format` is `"HDF"` (the default; needs an HDF5-enabled library), `"XML"` (everything
-inline in the `.xdmf`) or `"Binary"`; `gzip_level` applies to `"HDF"` datasets only and is
-negative (no compression) by default. An unknown format, or `"HDF"` against a library built
-without HDF5, throws a `MeshioError` from the constructor.
+`data_format` is `"HDF"` (the default; needs an HDF5-enabled library), `"XML"` (everything inline in the `.xdmf`) or `"Binary"`; `gzip_level` applies to `"HDF"` datasets only and is negative (no compression) by default. An unknown format, or `"HDF"` against a library built without HDF5, throws a `MeshioError` from the constructor.
 
 Two things worth knowing before reading the result back:
 
-- the `.xdmf` light data is **buffered until the series is finalized**, so the file is only
-  readable after `finalize!(s)` (or `close(s)`, which finalizes first);
-- `close` swallows a write failure during that implicit finalize — call `finalize!`
-  explicitly to see one.
+- the `.xdmf` light data is **buffered until the series is finalized**, so the file is only readable after `finalize!(s)` (or `close(s)`, which finalizes first);
+- `close` swallows a write failure during that implicit finalize — call `finalize!` explicitly to see one.
 
-Like `Mesh`, the handle is released by a GC finalizer and `close` is the deterministic,
-idempotent form. The name is `finalize!` rather than `finalize` because `Base.finalize`
-runs an object's GC finalizer and means something quite different. Reading a finished
-series back is the ordinary `MeshioPlusPlus.read(path; options = ReadOptions(time_step = k))`.
+Like `Mesh`, the handle is released by a GC finalizer and `close` is the deterministic, idempotent form. The name is `finalize!` rather than `finalize` because `Base.finalize` runs an object's GC finalizer and means something quite different. Reading a finished series back is the ordinary `MeshioPlusPlus.read(path; options = ReadOptions(time_step = k))`.
 
 ## Documented gaps
 
@@ -230,200 +216,78 @@ The suite uses the same deliberately non-square fixture as [`tests/fortran/test_
 
 ## v10.9.0 additions
 
-- `hessian(mesh, array; method=:green_gauss, location=:cell, output="",
-  overwrite=false) -> (; mesh, num_skipped, num_fallback)` — the Hessian
-  (second derivative) of a **scalar point-data** field,
-  [`gradient`](@ref)'s companion one order further. A composition of TWO
-  `gradient` calls, not a new numerical kernel: the field is differentiated
-  once (point location), then that `(n, 3)` gradient is differentiated
-  again with the default `:gradient` operator, producing `(n, 9)` — the
-  flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is
-  forwarded to BOTH internal passes. See [`doc/hessian.md`](hessian.md).
+- `hessian(mesh, array; method=:green_gauss, location=:cell, output="", overwrite=false) -> (; mesh, num_skipped, num_fallback)` — the Hessian (second derivative) of a **scalar point-data** field, [`gradient`](@ref)'s companion one order further. A composition of TWO `gradient` calls, not a new numerical kernel: the field is differentiated once (point location), then that `(n, 3)` gradient is differentiated again with the default `:gradient` operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is forwarded to BOTH internal passes. See [`doc/hessian.md`](hessian.md).
 
-  A field that is at most LINEAR has an exactly zero Hessian everywhere —
-  the one mesh-shape-independent guarantee. For a genuinely quadratic field
-  the composition is exact on a structured/symmetric mesh away from its own
-  boundary and a good, standard, but genuinely approximate curvature
-  estimate on an irregular mesh. Input must have exactly one component — a
-  vector field's Hessian is a separate quantity per component.
+A field that is at most LINEAR has an exactly zero Hessian everywhere — the one mesh-shape-independent guarantee. For a genuinely quadratic field the composition is exact on a structured/symmetric mesh away from its own boundary and a good, standard, but genuinely approximate curvature estimate on an irregular mesh. Input must have exactly one component — a vector field's Hessian is a separate quantity per component.
 
-  A curvature-driven refinement indicator needs no new function: `norm(...)`
-  in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius
-  norm, ready for [`refine`](@ref)'s `where` selector.
+A curvature-driven refinement indicator needs no new function: `norm(...)` in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius norm, ready for [`refine`](@ref)'s `where` selector.
 
-  `hessian` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
-  is exported.
+`hessian` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v10.8.0 additions
 
-- `data_integrate(mesh, names=String[])` — cell-measure-weighted total/mean
-  of one or more `cell_data` arrays, [`gradient`](@ref)'s integration
-  counterpart (`gradient` differentiates a field, this integrates one),
-  returning a `Vector{NamedTuple}` with `name`, `num_components`, `domain`
-  (`num_cells`, `num_skipped`, `components` — a vector of
-  `(total, mean, domain_measure, num_nan)` NamedTuples) and `regions` (the
-  same shape, one per named Cell region present). See
-  [`doc/field_integration.md`](field_integration.md).
+- `data_integrate(mesh, names=String[])` — cell-measure-weighted total/mean of one or more `cell_data` arrays, [`gradient`](@ref)'s integration counterpart (`gradient` differentiates a field, this integrates one), returning a `Vector{NamedTuple}` with `name`, `num_components`, `domain` (`num_cells`, `num_skipped`, `components` — a vector of `(total, mean, domain_measure, num_nan)` NamedTuples) and `regions` (the same shape, one per named Cell region present). See [`doc/field_integration.md`](field_integration.md).
 
-  Every sum is weighted by `|measure(cell)|`; a cell whose measure is not
-  computable, or a component whose value is non-finite, is excluded from
-  that component's numerator **and** denominator, never given a fallback
-  weight of 1. Regions are not a partition: a cell in two regions
-  contributes fully to both. A `point_data`-only name throws a
-  `MeshioError` naming `data_point_to_cell` as the fix.
+Every sum is weighted by `|measure(cell)|`; a cell whose measure is not computable, or a component whose value is non-finite, is excluded from that component's numerator **and** denominator, never given a fallback weight of 1. Regions are not a partition: a cell in two regions contributes fully to both. A `point_data`-only name throws a `MeshioError` naming `data_point_to_cell` as the fix.
 
-  `data_integrate` shadows nothing in `Base`, so unlike `read`/`write`/`split`
-  it is exported.
+`data_integrate` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v10.5.0 additions
 
-- `undo_green(coarse, fine)` — green-element undo: restores `fine`'s
-  transitional (closure-only) cells back to their original parent, read
-  verbatim from `coarse` — a **lookup, not a reconstruction**, since
-  [`refine`](@ref) never renumbers or prunes points, so a green parent's
-  exact connectivity and cell_data are already sitting, byte-for-byte, in
-  `coarse` at the row `fine`'s `refine:parent_id` names. Returns
-  `(; mesh, num_groups_undone, num_cells_removed)`. See
-  [`doc/undo_green.md`](undo_green.md).
+- `undo_green(coarse, fine)` — green-element undo: restores `fine`'s transitional (closure-only) cells back to their original parent, read verbatim from `coarse` — a **lookup, not a reconstruction**, since [`refine`](@ref) never renumbers or prunes points, so a green parent's exact connectivity and cell_data are already sitting, byte-for-byte, in `coarse` at the row `fine`'s `refine:parent_id` names. Returns `(; mesh, num_groups_undone, num_cells_removed)`. See [`doc/undo_green.md`](undo_green.md).
 
-  A **two-mesh** operation, like [`interpolate`](@ref): `coarse` is the mesh
-  a prior `refine(coarse, ...; record_hierarchy=true, record_levels=true)`
-  call was run on, `fine` is that call's output — both flags are required,
-  `record_hierarchy` alone does not imply `record_levels`. The six reserved
-  `refine:*` arrays are always dropped from the output; only a single-pass
-  (`levels=1`) hierarchy is supported, a deeper multi-level hierarchy being
-  refused by name. Unlike `subdivide`/`agglomerate`, this operation has **no
-  winding repair or discrete sign branch anywhere in it** — it is pure array
-  bookkeeping, which on the Python side means it has a full numpy reference
-  implementation rather than being C++-core-only (this binding always calls
-  the installed C library either way).
+A **two-mesh** operation, like [`interpolate`](@ref): `coarse` is the mesh a prior `refine(coarse, ...; record_hierarchy=true, record_levels=true)` call was run on, `fine` is that call's output — both flags are required, `record_hierarchy` alone does not imply `record_levels`. The six reserved `refine:*` arrays are always dropped from the output; only a single-pass (`levels=1`) hierarchy is supported, a deeper multi-level hierarchy being refused by name. Unlike `subdivide`/`agglomerate`, this operation has **no winding repair or discrete sign branch anywhere in it** — it is pure array bookkeeping, which on the Python side means it has a full numpy reference implementation rather than being C++-core-only (this binding always calls the installed C library either way).
 
-  `undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split`
-  it is exported.
+`undo_green` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
-- `conservative_interpolate(source, target; arrays=String[], default_value=0.0,
-  on_conflict="error")` — mass-preserving field transfer, [`interpolate`](@ref)'s
-  sibling: conserves `sum(target value * target measure) ==
-  sum(source value * source measure)` over the region the two meshes share,
-  a property `interpolate`'s pointwise sampling does not have. Both meshes
-  are simplexified first, accepting ragged/polyhedron blocks for free.
-  Unlike `interpolate`, an empty `arrays` means every source point_data
-  **and** cell_data array. Output arrays are always Float64. Like
-  `undo_green`, a **two-mesh** operation, and like `subdivide`/`agglomerate`
-  this is C++-core only — the 3D clip kernel's discrete branches could
-  disagree with a second implementation near a degenerate overlap, so there
-  is no pure-Julia fallback either; the installed C library is always
-  called. See [`doc/conservative_interpolate.md`](conservative_interpolate.md).
+- `conservative_interpolate(source, target; arrays=String[], default_value=0.0, on_conflict="error")` — mass-preserving field transfer, [`interpolate`](@ref)'s sibling: conserves `sum(target value * target measure) == sum(source value * source measure)` over the region the two meshes share, a property `interpolate`'s pointwise sampling does not have. Both meshes are simplexified first, accepting ragged/polyhedron blocks for free. Unlike `interpolate`, an empty `arrays` means every source point_data **and** cell_data array. Output arrays are always Float64. Like `undo_green`, a **two-mesh** operation, and like `subdivide`/`agglomerate` this is C++-core only — the 3D clip kernel's discrete branches could disagree with a second implementation near a degenerate overlap, so there is no pure-Julia fallback either; the installed C library is always called. See [`doc/conservative_interpolate.md`](conservative_interpolate.md).
 
 ## v10.4.0 additions
 
-- `agglomerate(mesh; target_group_size=8)` — polyhedral coarsening, the
-  many-to-one counterpart to [`subdivide`](@ref): greedy seed-and-grow over
-  the mesh's shared-face dual, absorbing face-adjacent neighbours by
-  accumulated shared-face area until each group reaches `target_group_size`
-  members, then emitting one polyhedron per group whose faces are exactly its
-  external boundary — conserving volume exactly, since internal faces are
-  simply dropped rather than re-triangulated. Returns `(; mesh, cell_map)`.
-  See [`doc/agglomerate.md`](agglomerate.md).
+- `agglomerate(mesh; target_group_size=8)` — polyhedral coarsening, the many-to-one counterpart to [`subdivide`](@ref): greedy seed-and-grow over the mesh's shared-face dual, absorbing face-adjacent neighbours by accumulated shared-face area until each group reaches `target_group_size` members, then emitting one polyhedron per group whose faces are exactly its external boundary — conserving volume exactly, since internal faces are simply dropped rather than re-triangulated. Returns `(; mesh, cell_map)`. See [`doc/agglomerate.md`](agglomerate.md).
 
-  Unlike every other opaque-result operation here, `cell_map` is a **single
-  flat**, not block-indexed, 1-based array: an agglomerated cell's output
-  index is a function of which group it joined, not which input block it
-  came from, so `_result_map` (the same single-array reader `split`'s node
-  map uses) reads it rather than `_result_cell_maps`. Like `subdivide`, there
-  is no `point_map` — points are never pruned or renumbered, so `clean(mesh;
-  remove_orphans=true)` is the documented follow-up for a minimal point set.
-  A non-manifold input (a face shared by three or more cells) raises a
-  `MeshioError` naming the face rather than guessing.
+Unlike every other opaque-result operation here, `cell_map` is a **single flat**, not block-indexed, 1-based array: an agglomerated cell's output index is a function of which group it joined, not which input block it came from, so `_result_map` (the same single-array reader `split`'s node map uses) reads it rather than `_result_cell_maps`. Like `subdivide`, there is no `point_map` — points are never pruned or renumbered, so `clean(mesh; remove_orphans=true)` is the documented follow-up for a minimal point set. A non-manifold input (a face shared by three or more cells) raises a `MeshioError` naming the face rather than guessing.
 
-  `agglomerate` shadows nothing in `Base`, so unlike `read`/`write`/`split`
-  it is exported.
+`agglomerate` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v10.3.0 additions
 
-- `subdivide(mesh; record_parent_ids=false)` — polyhedral refinement: one
-  polyhedral child per face of every eligible 3D cell, connected to a new
-  interior point, returning `(; mesh, cell_maps)`. Needs no per-type template
-  table — tabulated types (reduced to corners for a quadratic variant) and
-  existing polyhedron blocks are handled uniformly through the same
-  `detail::cell_rings`/`orient_rings` machinery `gradient` uses — and is
-  automatically conforming, unlike [`refine`](@ref). See
-  [`doc/subdivide.md`](subdivide.md).
+- `subdivide(mesh; record_parent_ids=false)` — polyhedral refinement: one polyhedral child per face of every eligible 3D cell, connected to a new interior point, returning `(; mesh, cell_maps)`. Needs no per-type template table — tabulated types (reduced to corners for a quadratic variant) and existing polyhedron blocks are handled uniformly through the same `detail::cell_rings`/`orient_rings` machinery `gradient` uses — and is automatically conforming, unlike [`refine`](@ref). See [`doc/subdivide.md`](subdivide.md).
 
-  Unlike [`convert_cells`](@ref), there is no `point_map`: `subdivide` never
-  prunes or renumbers an original point. `cell_maps[b]` is 1-based input cell
-  → the index of its **first** child (one per face) in the corresponding
-  output block, the same `FirstChild` shape `convert_cells` already uses for
-  its own one-to-many splits.
+Unlike [`convert_cells`](@ref), there is no `point_map`: `subdivide` never prunes or renumbers an original point. `cell_maps[b]` is 1-based input cell → the index of its **first** child (one per face) in the corresponding output block, the same `FirstChild` shape `convert_cells` already uses for its own one-to-many splits.
 
-  `subdivide` shadows nothing in `Base`, so unlike `read`/`write`/`split` it
-  is exported.
+`subdivide` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v10.2.0 additions
 
-- `estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
-  output="", marked="", overwrite=false)` — the Zienkiewicz-Zhu recovery-based
-  error indicator of a **point-data** field, plus optional marking, returning
-  `(; mesh, global_error, num_skipped, num_marked)`. A composition of
-  `gradient` with the point↔cell averaging round trip, not a new kernel. See
-  [`doc/error.md`](error.md).
+- `estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0, output="", marked="", overwrite=false)` — the Zienkiewicz-Zhu recovery-based error indicator of a **point-data** field, plus optional marking, returning `(; mesh, global_error, num_skipped, num_marked)`. A composition of `gradient` with the point↔cell averaging round trip, not a new kernel. See [`doc/error.md`](error.md).
 
-  `error:zz` is always attached; `error:marked` too when `marking` is not
-  `:none`, so `refine`'s own `where` selector needs no change to consume it —
-  `refine(mesh, where="error:marked > 0.5")`. Cells that cannot be evaluated
-  read `NaN` in `error:zz` and `0` (never `NaN`) in `error:marked`, counted in
-  `num_skipped` and excluded from `global_error`/`num_marked`.
+`error:zz` is always attached; `error:marked` too when `marking` is not `:none`, so `refine`'s own `where` selector needs no change to consume it — `refine(mesh, where="error:marked > 0.5")`. Cells that cannot be evaluated read `NaN` in `error:zz` and `0` (never `NaN`) in `error:marked`, counted in `num_skipped` and excluded from `global_error`/`num_marked`.
 
-  `estimate_error` shadows nothing in `Base`, so unlike `read`/`write`/`split`
-  it is exported.
+`estimate_error` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v9.11.0 additions
 
-- The [settings pipeline](pipeline.md): `run_pipeline_file(settings_path)` and
-  `run_pipeline_json(json_text)` run a whole `settings.json` (read → operation
-  chain → write; PascalCase ops/keys) through the C++ engine, and
-  `pipeline_has_json()` reports whether the loaded library carries the JSON
-  parser — a build without it raises a `MeshioError` naming
-  `-DMESHIOPLUSPLUS_WITH_JSON=ON` rather than missing a symbol. The flat ABI
-  carries JSON text only; the structured run report is a recorded follow-up.
-  All three are exported (none shadows `Base`).
+- The [settings pipeline](pipeline.md): `run_pipeline_file(settings_path)` and `run_pipeline_json(json_text)` run a whole `settings.json` (read → operation chain → write; PascalCase ops/keys) through the C++ engine, and `pipeline_has_json()` reports whether the loaded library carries the JSON parser — a build without it raises a `MeshioError` naming `-DMESHIOPLUSPLUS_WITH_JSON=ON` rather than missing a symbol. The flat ABI carries JSON text only; the structured run report is a recorded follow-up. All three are exported (none shadows `Base`).
 
 ## v9.10.0 additions
 
-- `gradient(mesh, array; operator=:gradient, method=:green_gauss,
-  location=:cell, output="", component=-1, overwrite=false)` — the gradient,
-  divergence or curl of a **point-data** field, returning
-  `(; mesh, num_skipped, num_fallback)`. See
-  [`doc/gradient.md`](gradient.md).
+- `gradient(mesh, array; operator=:gradient, method=:green_gauss, location=:cell, output="", component=-1, overwrite=false)` — the gradient, divergence or curl of a **point-data** field, returning `(; mesh, num_skipped, num_fallback)`. See [`doc/gradient.md`](gradient.md).
 
-  Two spellings to note. `method` is given as an underscored symbol
-  (`:green_gauss`, `:least_squares`) and translated to the C API's hyphenated
-  name by the binding, because a Julia symbol cannot carry a hyphen. And
-  `component` is negative for **every** component here — deliberately the
-  opposite of `isosurface`, where negative means the row magnitude.
+Two spellings to note. `method` is given as an underscored symbol (`:green_gauss`, `:least_squares`) and translated to the C API's hyphenated name by the binding, because a Julia symbol cannot carry a hyphen. And `component` is negative for **every** component here — deliberately the opposite of `isosurface`, where negative means the row magnitude.
 
-  `gradient` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is
-  exported.
+`gradient` shadows nothing in `Base`, so unlike `read`/`write`/`split` it is exported.
 
 ## v9.1.0 additions
 
 - `ReadOptions(; lenient=true)` — see [`doc/selective_read.md`](selective_read.md).
-- XDMF series: `flush!(s)`, `finalized(s)`, `XdmfSeries(path; mode=:append,
-  auto_flush=false)`, and `write_data!(s, t, Dict("u" => values))` for writing a
-  step from raw arrays with no `Mesh` in between. An `n x k` matrix is
-  transposed on the way out, since Julia is column-major and the C ABI expects
-  `k` components per entity row-major.
+- XDMF series: `flush!(s)`, `finalized(s)`, `XdmfSeries(path; mode=:append, auto_flush=false)`, and `write_data!(s, t, Dict("u" => values))` for writing a step from raw arrays with no `Mesh` in between. An `n x k` matrix is transposed on the way out, since Julia is column-major and the C ABI expects `k` components per entity row-major.
 
-`flush!` is named with a bang for the same reason `finalize!` is: `Base.flush`
-means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat
-binding).
+`flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat binding).
 
 ## Sequences (transient / multi-file datasets)
 
-`Sequence` wraps the C API's ordered plan over a set of files (or the steps
-inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu`
-precedes `out_10.vtu`; nothing is read until `read_step`, and the sequence
-caches nothing, so a 500-step dataset is traversable without materialising it.
+`Sequence` wraps the C API's ordered plan over a set of files (or the steps inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu` precedes `out_10.vtu`; nothing is read until `read_step`, and the sequence caches nothing, so a 500-step dataset is traversable without materialising it.
 
 ```julia
 seq = Sequence("out_*.vtu")               # or Sequence(["a.vtu", "b.vtu"])
@@ -439,29 +303,12 @@ timeseries_to_sequence("series.xdmf", "step_{step}.vtu")   # fan-out
 run_sequence_file("transient.json")                        # per-step chain
 ```
 
-`Sequence` is also iterable (`for mesh in seq`), and has a `do`-block form that
-closes the handle even if the body throws.
+`Sequence` is also iterable (`for mesh in seq`), and has a `do`-block form that closes the handle even if the body throws.
 
-**Not exported**, because they shadow `Base`: `path`, `step`, `time`,
-`time_source`. Reach them as `MeshioPlusPlus.time(seq, i)` — the same rule the
-binding already applies to `read`/`write`/`split`.
+**Not exported**, because they shadow `Base`: `path`, `step`, `time`, `time_source`. Reach them as `MeshioPlusPlus.time(seq, i)` — the same rule the binding already applies to `read`/`write`/`split`.
 
-See [sequences](sequences.md) for the ordering rule, the time-value precedence
-and the streaming guarantee.
+See [sequences](sequences.md) for the ordering rule, the time-value precedence and the streaming guarantee.
 
-- `grid(dims; origin, spacing)`, `voxelize(m; resolution, fill, ...)`,
-  `sample_distance(surface, points)`, `distance_to_surface(query, surface)` and
-  `surface_watertight_check(m)` (v9.24.0) — regular grids and signed distance.
-  `grid` shadows nothing in `Base`, so it is exported plainly. See
-  [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
-- `compute_sdf(surface; structure, resolution, root_resolution, max_depth, ...)`
-  (v9.25.0) — the grid and the field in one call, returning
-  `(; mesh, dims, origin, spacing, max_depth, num_banded, quality)`.
-  `structure=:octree` refines only near the surface and sizes itself from
-  `root_resolution`/`max_depth`, so passing `resolution` or `cell_size` with it
-  is an error; its output is 1-irregular.
-- `crop_predicate(m, array; compare, value, record_ids)` (v9.25.0) — keep the
-  cells whose scalar `cell_data` value satisfies a comparison, the same
-  vocabulary `refine`'s `where_op` uses. There is deliberately no `mode`: a
-  per-cell value has nothing for an all/any rule to reduce. See
-  [`doc/crop.md`](crop.md).
+- `grid(dims; origin, spacing)`, `voxelize(m; resolution, fill, ...)`, `sample_distance(surface, points)`, `distance_to_surface(query, surface)` and `surface_watertight_check(m)` (v9.24.0) — regular grids and signed distance. `grid` shadows nothing in `Base`, so it is exported plainly. See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+- `compute_sdf(surface; structure, resolution, root_resolution, max_depth, ...)` (v9.25.0) — the grid and the field in one call, returning `(; mesh, dims, origin, spacing, max_depth, num_banded, quality)`. `structure=:octree` refines only near the surface and sizes itself from `root_resolution`/`max_depth`, so passing `resolution` or `cell_size` with it is an error; its output is 1-irregular.
+- `crop_predicate(m, array; compare, value, record_ids)` (v9.25.0) — keep the cells whose scalar `cell_data` value satisfies a comparison, the same vocabulary `refine`'s `where_op` uses. There is deliberately no `mode`: a per-cell value has nothing for an all/any rule to reduce. See [`doc/crop.md`](crop.md).

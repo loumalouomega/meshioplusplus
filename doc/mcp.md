@@ -1,24 +1,15 @@
 # MCP server
 
-Expose every meshio++ operation to AI agents over the
-[Model Context Protocol](https://modelcontextprotocol.io/): reading and
-writing 40+ mesh formats, conversion, and the full mesh- and data-operation
-suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP
-inspector, …) can call.
+Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 40+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
 
 ```bash
 pip install "meshioplusplus[mcp]"          # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent things like *"convert `bracket.msh` to VTU, report its
-quality, and slice it at z = 0.02"* — it drives `convert`, `quality` and
-`slice` itself.
+Then ask the agent things like *"convert `bracket.msh` to VTU, report its quality, and slice it at z = 0.02"* — it drives `convert`, `quality` and `slice` itself.
 
-Every tool is **stateless and file-path based**: input path(s) in, output
-path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily
-large meshes out of the protocol, and lets the agent work in its own filesystem
-workspace. Nothing here is part of the C++ core, which stays dependency-free.
+Every tool is **stateless and file-path based**: input path(s) in, output path(s) out, a strict-JSON report back. That mirrors the CLI, keeps arbitrarily large meshes out of the protocol, and lets the agent work in its own filesystem workspace. Nothing here is part of the C++ core, which stays dependency-free.
 
 ## Installation
 
@@ -26,11 +17,7 @@ workspace. Nothing here is part of the C++ core, which stays dependency-free.
 |---|---|---|
 | `meshioplusplus[mcp]` | the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | the `meshioplusplus-mcp` server |
 
-This extra is **not** in `meshioplusplus[all]` — `[all]` means "the optional
-dependencies the *formats* need", the same reasoning as `[interop]`/`[viewer]`.
-Note the `mcp` SDK itself requires **Python ≥ 3.10** while meshio++ supports
-3.8: the package (and the server's pure tool layer) works everywhere, only
-*running* the server needs the newer Python.
+This extra is **not** in `meshioplusplus[all]` — `[all]` means "the optional dependencies the *formats* need", the same reasoning as `[interop]`/`[viewer]`. Note the `mcp` SDK itself requires **Python ≥ 3.10** while meshio++ supports 3.8: the package (and the server's pure tool layer) works everywhere, only *running* the server needs the newer Python.
 
 Without the extra, everything degrades by name rather than by traceback:
 
@@ -69,21 +56,11 @@ Interactive browsing: `npx @modelcontextprotocol/inspector meshioplusplus-mcp`.
 
 ## Path sandbox
 
-By default paths are unrestricted — the server runs locally under your own
-account and MCP clients gate filesystem access themselves. Pass `--root DIR`
-(or set `MESHIOPLUSPLUS_MCP_ROOT`) to confine every input **and** output path:
-each path is realpath-resolved (symlinks included) and must stay inside the
-root; relative paths resolve against it. Violations come back as clean
-`{"error": ..., "error_type": "ValueError"}` payloads the agent can act on —
-no tool ever surfaces a raw traceback.
+By default paths are unrestricted — the server runs locally under your own account and MCP clients gate filesystem access themselves. Pass `--root DIR` (or set `MESHIOPLUSPLUS_MCP_ROOT`) to confine every input **and** output path: each path is realpath-resolved (symlinks included) and must stay inside the root; relative paths resolve against it. Violations come back as clean `{"error": ..., "error_type": "ValueError"}` payloads the agent can act on — no tool ever surfaces a raw traceback.
 
 ## Tools
 
-54 tools; the two marked *gated* need a further extra and return a named
-install error without it. Transforming tools take `input_path`/`output_path`
-(+ optional `input_format`/`output_format`, otherwise inferred from the
-extension) and return the written path plus a mesh summary and the operation's
-report.
+54 tools; the two marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)
 
@@ -111,49 +88,7 @@ report.
 
 ### Mesh operations
 
-`extract_surface`, `extract_skin`, `reorder` (reports bandwidth before/after),
-`clean`, `crop` (bbox, half-space, or a `where_array`/`where_compare`/`where_value`
-`cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a
-surface, filled — `structure` `voxel`/`octree`), `transform`,
-`convert_cells`, `subdivide` (polyhedral refinement: one polyhedral child per
-3D cell face, connected to a new interior point — no per-type template table,
-unlike `refine`; see [subdivide](/subdivide)), `agglomerate` (polyhedral
-coarsening: merge groups of cells into single larger polyhedral cells via
-greedy seed-and-grow over the shared-face dual; see
-[agglomerate](/agglomerate)),
-`refine` (uniform, or a subset via `cells`/`region`/`where`
-with a conforming `closure`; `record_hierarchy` attaches the persistent
-`refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller
-resolves across the sequence of meshes it keeps — see
-[refine](/refine#refinecell_id-and-refineparent_id)), `undo_green` (restores
-a `refine` transitional/green cell to its coarse parent, read verbatim from
-`coarse_path` — a two-mesh tool like `interpolate`; reports
-`num_groups_undone`/`num_cells_removed` — see
-[green-element undo](/undo_green)), `decimate`, `decimate_volume` (the
-volume-mesh sibling of `decimate`: quadric-error tet-edge collapse;
-`preserve_boundary` defaults `False`, the opposite of `decimate`'s own
-default, since boundary vertices participate by real quadric error here —
-see [volume decimation](/decimate_volume)), `smooth`,
-`merge` (N inputs), `split`
-(one file per piece, `name_template`), `partition` (one file per part),
-`interpolate` (source → target field transfer), `conservative_interpolate`
-(mass-preserving overlap-measure weighted transfer — unlike `interpolate`,
-an unset `arrays` covers every source point_data AND cell_data array; see
-[conservative interpolation](/conservative_interpolate)), `gradient` (the gradient,
-divergence or curl of a `point_data` field — see
-[field derivatives](/gradient); reports `num_skipped` and `num_fallback`),
-`hessian` (the Hessian, second derivative, of a **scalar** `point_data`
-field — a composition of two `gradient` calls, `gradient`'s companion one
-order further; see [second derivatives](/hessian); reports `num_skipped` and
-`num_fallback`),
-`estimate_error` (the Zienkiewicz-Zhu recovery-based error indicator of a
-`point_data` field, plus optional `absolute`/`fraction`/`dorfler` marking into
-`error:marked` for `refine`'s own `where` selector — see
-[error estimation](/error); reports `global_error`, `num_skipped` and
-`num_marked`).
-Parameters mirror the Python API / CLI one-to-one; operations that produce
-reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `hessian`, `estimate_error`) include
-them in the response.
+`extract_surface`, `extract_skin`, `reorder` (reports bandwidth before/after), `clean`, `crop` (bbox, half-space, or a `where_array`/`where_compare`/`where_value` `cell_data` predicate), `slice`, `isosurface`, `compute_sdf` (a grid over a surface, filled — `structure` `voxel`/`octree`), `transform`, `convert_cells`, `subdivide` (polyhedral refinement: one polyhedral child per 3D cell face, connected to a new interior point — no per-type template table, unlike `refine`; see [subdivide](/subdivide)), `agglomerate` (polyhedral coarsening: merge groups of cells into single larger polyhedral cells via greedy seed-and-grow over the shared-face dual; see [agglomerate](/agglomerate)), `refine` (uniform, or a subset via `cells`/`region`/`where` with a conforming `closure`; `record_hierarchy` attaches the persistent `refine:cell_id`/`refine:parent_id` parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps — see [refine](/refine#refinecell_id-and-refineparent_id)), `undo_green` (restores a `refine` transitional/green cell to its coarse parent, read verbatim from `coarse_path` — a two-mesh tool like `interpolate`; reports `num_groups_undone`/`num_cells_removed` — see [green-element undo](/undo_green)), `decimate`, `decimate_volume` (the volume-mesh sibling of `decimate`: quadric-error tet-edge collapse; `preserve_boundary` defaults `False`, the opposite of `decimate`'s own default, since boundary vertices participate by real quadric error here — see [volume decimation](/decimate_volume)), `smooth`, `merge` (N inputs), `split` (one file per piece, `name_template`), `partition` (one file per part), `interpolate` (source → target field transfer), `conservative_interpolate` (mass-preserving overlap-measure weighted transfer — unlike `interpolate`, an unset `arrays` covers every source point_data AND cell_data array; see [conservative interpolation](/conservative_interpolate)), `gradient` (the gradient, divergence or curl of a `point_data` field — see [field derivatives](/gradient); reports `num_skipped` and `num_fallback`), `hessian` (the Hessian, second derivative, of a **scalar** `point_data` field — a composition of two `gradient` calls, `gradient`'s companion one order further; see [second derivatives](/hessian); reports `num_skipped` and `num_fallback`), `estimate_error` (the Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field, plus optional `absolute`/`fraction`/`dorfler` marking into `error:marked` for `refine`'s own `where` selector — see [error estimation](/error); reports `global_error`, `num_skipped` and `num_marked`). Parameters mirror the Python API / CLI one-to-one; operations that produce reports (`clean`, `decimate`, `decimate_volume`, `smooth`, `gradient`, `hessian`, `estimate_error`) include them in the response.
 
 ### Data operations
 
@@ -182,25 +117,10 @@ them in the response.
 
 ## Reports are strict JSON
 
-Every response survives `json.dumps(..., allow_nan=False)`: numpy scalars and
-arrays are converted, `NaN`/`±Inf` become `null` (with a
-`non_finite_replaced` count so the loss is visible), and any array longer
-than 1000 elements is replaced by a
-`{"truncated": true, "size", "shape", "dtype", "preview"}` wrapper — reports
-stay agent-sized no matter how large the mesh.
+Every response survives `json.dumps(..., allow_nan=False)`: numpy scalars and arrays are converted, `NaN`/`±Inf` become `null` (with a `non_finite_replaced` count so the loss is visible), and any array longer than 1000 elements is replaced by a `{"truncated": true, "size", "shape", "dtype", "preview"}` wrapper — reports stay agent-sized no matter how large the mesh.
 
 ## Architecture: the pure payload layer
 
-`src/python/meshioplusplus/mcp/` is split exactly the way
-[`_interop.py`](./interop) is, and for the same reason. Everything a tool
-*does* lives in the pure layer `_tools.py` — imports only meshioplusplus +
-numpy + stdlib, runs on every supported Python, tested in the default CI
-matrix with the `mcp` SDK absent. The FastMCP layer `_server.py` contributes
-only typed signatures (the JSON schemas) and docstrings (the tool
-descriptions), and is the one module importing the SDK.
+`src/python/meshioplusplus/mcp/` is split exactly the way [`_interop.py`](./interop) is, and for the same reason. Everything a tool *does* lives in the pure layer `_tools.py` — imports only meshioplusplus + numpy + stdlib, runs on every supported Python, tested in the default CI matrix with the `mcp` SDK absent. The FastMCP layer `_server.py` contributes only typed signatures (the JSON schemas) and docstrings (the tool descriptions), and is the one module importing the SDK.
 
-`_tools.TOOL_REGISTRY` is the single source of truth: the server registers
-from it, and the **parity guard** in `tests/python/test_mcp.py` asserts every
-public operation in `meshioplusplus.__all__` is claimed by some tool — a new
-operation fails CI until it gets a tool (or a conscious exemption). That test
-is what keeps this page's tool table honest as the library grows.
+`_tools.TOOL_REGISTRY` is the single source of truth: the server registers from it, and the **parity guard** in `tests/python/test_mcp.py` asserts every public operation in `meshioplusplus.__all__` is claimed by some tool — a new operation fails CI until it gets a tool (or a conscious exemption). That test is what keeps this page's tool table honest as the library grows.

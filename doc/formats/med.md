@@ -128,19 +128,11 @@ Since v9.6.0, both readers check `INFOS_GENERALES`'s `MAJ` attribute and reject 
 
 ## Lenient reads
 
-Since v9.9.0 the C++ reader accepts `ReadOptions` (MED is in `registry_readers_ex()`, which is
-what makes the options reach WASM, the C API, Fortran, Julia, R and both CLIs with no
-per-binding code), and `ReadOptions::mLenient` — the mechanism `mdpa` established in v9.1.0 —
-opens the whole set of constructs that previously threw
-`"handled by Python fallback"`.
+Since v9.9.0 the C++ reader accepts `ReadOptions` (MED is in `registry_readers_ex()`, which is what makes the options reach WASM, the C API, Fortran, Julia, R and both CLIs with no per-binding code), and `ReadOptions::mLenient` — the mechanism `mdpa` established in v9.1.0 — opens the whole set of constructs that previously threw `"handled by Python fallback"`.
 
-**Strict reads are unchanged.** Every construct below still throws by default, so
-`meshioplusplus.med.read` still falls back to the pure-Python reference and the Python surface
-is byte-identical to v9.8.0's. What changes is that a Python-less binding can now get through a
-real Salome/Code_Aster file at all, instead of failing on sight of it.
+**Strict reads are unchanged.** Every construct below still throws by default, so `meshioplusplus.med.read` still falls back to the pure-Python reference and the Python surface is byte-identical to v9.8.0's. What changes is that a Python-less binding can now get through a real Salome/Code_Aster file at all, instead of failing on sight of it.
 
-Under `mLenient`, constructs that can be *described* are read into `MedInfo` rather than merely
-skipped:
+Under `mLenient`, constructs that can be *described* are read into `MedInfo` rather than merely skipped:
 
 | `MedInfo` field | carries |
 | --- | --- |
@@ -149,26 +141,15 @@ skipped:
 | `mFieldTimeValues` | every step's `PDT`, in step order |
 | `mSkippedConstructs` | one entry per construct that was skipped, for diagnostics |
 
-Constructs that have no representation at all drop **that one field** with a `log::warn` and
-keep the rest of the file: a named `PFL` profile, an `ELNO`/`ELGA` support, and a field mixing
-nodal and cell supports. `ELNO`/`ELGA` is *structurally* impossible rather than merely
-unimplemented — the uniform mesh API's `cell_data` is always `(n,)` or `(n,k)`, never a
-per-node-within-cell 3-D shape — so no amount of work in this format closes it.
+Constructs that have no representation at all drop **that one field** with a `log::warn` and keep the rest of the file: a named `PFL` profile, an `ELNO`/`ELGA` support, and a field mixing nodal and cell supports. `ELNO`/`ELGA` is *structurally* impossible rather than merely unimplemented — the uniform mesh API's `cell_data` is always `(n,)` or `(n,k)`, never a per-node-within-cell 3-D shape — so no amount of work in this format closes it.
 
-`MedInfo` is a side channel the registry drops (`ReadFn` has no info slot), so the flat
-bindings get the lenient *read* but not the recorded metadata — the same documented gap
-`ExodusInfo` and `GmshInfo` have.
+`MedInfo` is a side channel the registry drops (`ReadFn` has no info slot), so the flat bindings get the lenient *read* but not the recorded metadata — the same documented gap `ExodusInfo` and `GmshInfo` have.
 
 ### Selecting a time step
 
-`ReadOptions::mTimeStep` selects one step of a multi-step `CHA` field (0-based, negative counts
-from the end — the `ResolveTimeStep` contract, see
-[selective reads](../selective_read.md#reading-one-time-step)). A multi-step field used to fail
-the read outright.
+`ReadOptions::mTimeStep` selects one step of a multi-step `CHA` field (0-based, negative counts from the end — the `ResolveTimeStep` contract, see [selective reads](../selective_read.md#reading-one-time-step)). A multi-step field used to fail the read outright.
 
-A non-default step is honoured **without** `mLenient`, deliberately: it is a request the Python
-shim never makes, so no Python behaviour depends on it. Step order comes from the `(NDT, NOR)`
-subgroup names, which MED zero-pads, so name order *is* step order.
+A non-default step is honoured **without** `mLenient`, deliberately: it is a request the Python shim never makes, so no Python behaviour depends on it. Step order comes from the `(NDT, NOR)` subgroup names, which MED zero-pads, so name order *is* step order.
 
 ## Quirks & limitations
 

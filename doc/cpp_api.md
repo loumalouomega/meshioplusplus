@@ -93,9 +93,9 @@ Two guards catch the cases CMake cannot:
 * defining more than one backend macro is a **compile** error (`mesh.hpp`);
 * defining none — so `mesh.hpp` silently assumes `MESHIO` — while linking a `NATIVE`/`KRATOS` build is a **link** error naming the backend it expected (`detail/mesh_backend_check.hpp`). This is what protects a pkg-config or hand-written-makefile consumer, which gets the include path but not the definitions. Define `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` to opt out.
 
-  On GNU/Clang this is an undefined reference to `mesh_backend_is_<backend>`; on MSVC it is a `/FAILIFMISMATCH` error naming both values. **MSVC plus a *shared* meshio++ is a documented gap** — the mismatch records are not reliably carried through a DLL's import library, so the check is absent there. Static MSVC builds and every GNU/Clang configuration are covered, and CI proves it by compiling a TU without the definitions and requiring the link to fail (`tests/consumer/no_backend_macro.cpp`).
+On GNU/Clang this is an undefined reference to `mesh_backend_is_<backend>`; on MSVC it is a `/FAILIFMISMATCH` error naming both values. **MSVC plus a *shared* meshio++ is a documented gap** — the mismatch records are not reliably carried through a DLL's import library, so the check is absent there. Static MSVC builds and every GNU/Clang configuration are covered, and CI proves it by compiling a TU without the definitions and requiring the link to fail (`tests/consumer/no_backend_macro.cpp`).
 
-  This guard was **inert before v9.2.0**: it relies on an `inline` variable that nothing reads, and such a variable is emitted lazily, so no reference ever reached the object file. If you are on v9.1.0 or earlier, do not rely on it.
+This guard was **inert before v9.2.0**: it relies on an `inline` variable that nothing reads, and such a variable is emitted lazily, so no reference ever reached the object file. If you are on v9.1.0 or earlier, do not rely on it.
 
 ## The Kratos bridge
 
@@ -173,8 +173,7 @@ See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for
 
 ## Which version am I compiled against?
 
-`<meshioplusplus/version.hpp>` carries the **release** version as preprocessor
-macros, so you can feature-detect without running CMake:
+`<meshioplusplus/version.hpp>` carries the **release** version as preprocessor macros, so you can feature-detect without running CMake:
 
 ```cpp
 #include <meshioplusplus/version.hpp>
@@ -184,9 +183,7 @@ macros, so you can feature-detect without running CMake:
 #endif
 ```
 
-`MESHIOPLUSPLUS_VERSION` is the same thing as one ordered integer
-(`major * 10000 + minor * 100 + patch`), for comparisons the macro cannot
-express, and `MESHIOPLUSPLUS_VERSION_STRING` is the `"9.6.0"` literal.
+`MESHIOPLUSPLUS_VERSION` is the same thing as one ordered integer (`major * 10000 + minor * 100 + patch`), for comparisons the macro cannot express, and `MESHIOPLUSPLUS_VERSION_STRING` is the `"9.6.0"` literal.
 
 Three questions, three mechanisms — they are not interchangeable:
 
@@ -196,40 +193,27 @@ Three questions, three mechanisms — they are not interchangeable:
 | what am I **running** against? | `mio_version()`, a call into the linked library |
 | are my headers **binary-compatible** with it? | `MESHIOPLUSPLUS_ABI_VERSION` + the link-time sentinel |
 
-With a shared library the first two genuinely can differ, which is why both
-exist: compile against the macros, report `mio_version()`.
+With a shared library the first two genuinely can differ, which is why both exist: compile against the macros, report `mio_version()`.
 
 ## Versioning: what to pin
 
-The two installed components make **different** compatibility promises, and the
-CMake package's `SameMajorVersion` mode describes only the first.
+The two installed components make **different** compatibility promises, and the CMake package's `SameMajorVersion` mode describes only the first.
 
 ### `COMPONENTS C` — pin the major
 
-`libmeshioplusplus`, the flat C ABI: `SOVERSION 0`, and the option structs
-(`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`) grow only into their
-`reserved` tails, so a binary compiled against 9.0 headers keeps running against
-a 9.1 `.so`.
+`libmeshioplusplus`, the flat C ABI: `SOVERSION 0`, and the option structs (`mio_read_opts`, `mio_write_opts`, `mio_xdmf_series_opts`) grow only into their `reserved` tails, so a binary compiled against 9.0 headers keeps running against a 9.1 `.so`.
 
 ```cmake
 find_package(meshioplusplus 10 CONFIG REQUIRED COMPONENTS C)
 ```
 
-Nothing in the rest of this section applies to it: a C consumer compiles no
-meshio++ header that defines a type, so header layout cannot reach it.
+Nothing in the rest of this section applies to it: a C consumer compiles no meshio++ header that defines a type, so header layout cannot reach it.
 
 ### `COMPONENTS CXX` — pin the ABI version, or the exact release
 
-`Mesh`, `ModelPart`, `GeometricalEntity` and every `operations/*` options struct
-are **header-defined**: the consumer compiles them, so the consumer and the
-library must agree on them exactly. What that does *not* mean is that every
-release breaks — v9.3.0's entire installed-header delta was one new
-`inline constexpr` string, which cannot affect anything already compiled.
+`Mesh`, `ModelPart`, `GeometricalEntity` and every `operations/*` options struct are **header-defined**: the consumer compiles them, so the consumer and the library must agree on them exactly. What that does *not* mean is that every release breaks — v9.3.0's entire installed-header delta was one new `inline constexpr` string, which cannot affect anything already compiled.
 
-[**`MESHIOPLUSPLUS_ABI_VERSION`**](/abi) is the thing that actually constrains
-you. It moves only when a change would break an already-compiled consumer;
-[`doc/abi.md`](/abi) states the criterion (layout changes and inline-body/ODR
-changes bump it; purely additive changes do not) and records the history.
+[**`MESHIOPLUSPLUS_ABI_VERSION`**](/abi) is the thing that actually constrains you. It moves only when a change would break an already-compiled consumer; [`doc/abi.md`](/abi) states the criterion (layout changes and inline-body/ODR changes bump it; purely additive changes do not) and records the history.
 
 ```cmake
 find_package(meshioplusplus CONFIG REQUIRED COMPONENTS CXX)
@@ -239,80 +223,37 @@ if(NOT MESHIOPLUSPLUS_ABI_VERSION EQUAL 3)
 endif()
 ```
 
-The conservative pin is still fully supported, and is the right choice if you
-would rather not reason about any of this:
+The conservative pin is still fully supported, and is the right choice if you would rather not reason about any of this:
 
 ```cmake
 find_package(meshioplusplus 10.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
-**All three components are required.** Under `SameMajorVersion`, `EXACT` is a
-full *string* comparison against the package version, so `9.4 EXACT` does not
-match an installed `9.5.0` — it fails with "no configuration file … exactly
-matches requested version". (Through v9.1.0 this page printed the
-two-component form, which could never succeed.)
+**All three components are required.** Under `SameMajorVersion`, `EXACT` is a full *string* comparison against the package version, so `9.4 EXACT` does not match an installed `9.5.0` — it fails with "no configuration file … exactly matches requested version". (Through v9.1.0 this page printed the two-component form, which could never succeed.)
 
-For distribution packaging, `EXACT` means an exact `= <full three-component
-version>` dependency, re-pinned on every release including patch releases — not
-a range, and not `= 9.4.x`, which `EXACT` cannot express. Depending on the ABI
-version instead is what lets a package skip the releases that provably cannot
-affect it.
+For distribution packaging, `EXACT` means an exact `= <full three-component version>` dependency, re-pinned on every release including patch releases — not a range, and not `= 9.4.x`, which `EXACT` cannot express. Depending on the ABI version instead is what lets a package skip the releases that provably cannot affect it.
 
 ### If you get it wrong, the build tells you
 
-Both knobs above are advisory — a consumer can ignore them, and a distro can
-rebuild a library in place under an unchanged version. Two things make a
-mismatch fail loudly instead of corrupting memory:
+Both knobs above are advisory — a consumer can ignore them, and a distro can rebuild a library in place under an unchanged version. Two things make a mismatch fail loudly instead of corrupting memory:
 
-- **`SOVERSION` tracks the ABI version.** The C++ variants install as
-  `libmeshioplusplus_core_<backend>.so.<abi>`, so the dynamic linker itself
-  refuses to load an incompatible library into an already-linked binary. (This
-  changed in v9.4.0; it used to be a flat `SOVERSION 0`, which promised nothing
-  and said so.)
-- **Every translation unit carries a link-time sentinel.** A TU compiled against
-  headers declaring a different ABI version fails to link with
-  `undefined reference to meshioplusplus::detail::abi_version_is_<N>()` naming
-  the version it expected. `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` opts out;
-  MSVC + a shared build is a documented gap, exactly as for the backend guard.
+- **`SOVERSION` tracks the ABI version.** The C++ variants install as `libmeshioplusplus_core_<backend>.so.<abi>`, so the dynamic linker itself refuses to load an incompatible library into an already-linked binary. (This changed in v9.4.0; it used to be a flat `SOVERSION 0`, which promised nothing and said so.)
+- **Every translation unit carries a link-time sentinel.** A TU compiled against headers declaring a different ABI version fails to link with `undefined reference to meshioplusplus::detail::abi_version_is_<N>()` naming the version it expected. `MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK` opts out; MSVC + a shared build is a documented gap, exactly as for the backend guard.
 
-Neither replaces the version pin — they catch the mistake at build time rather
-than preventing it — and neither can detect a consumer built with a different
-compiler or standard library, which is equally fatal and outside any library's
-reach. See [ABI compatibility](/abi) for the whole contract.
+Neither replaces the version pin — they catch the mistake at build time rather than preventing it — and neither can detect a consumer built with a different compiler or standard library, which is equally fatal and outside any library's reach. See [ABI compatibility](/abi) for the whole contract.
 
-The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake
-consumer cannot disagree about the backend by accident; a non-CMake consumer
-that defines none gets an undefined `mesh_backend_is_<backend>` at link time
-instead — on MSVC, a `/FAILIFMISMATCH` error naming both backends, except with a
-shared build, where the check is absent (see the gap noted above).
-`MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out.
+The mesh-backend macro rides in `INTERFACE_COMPILE_DEFINITIONS`, so a CMake consumer cannot disagree about the backend by accident; a non-CMake consumer that defines none gets an undefined `mesh_backend_is_<backend>` at link time instead — on MSVC, a `/FAILIFMISMATCH` error naming both backends, except with a shared build, where the check is absent (see the gap noted above). `MESHIOPLUSPLUS_NO_BACKEND_LINK_CHECK` opts out.
 
 ## `MESHIOPLUSPLUS_NO_STD_SPAN`
 
-Boost's uBLAS and MSVC's `<span>` both use an internal macro named
-`_BACKUP_ITERATOR_DEBUG_LEVEL`, so any MSVC translation unit including both
-fails inside `<span>` itself ([boostorg/ublas#77](https://github.com/boostorg/ublas/issues/77)).
-Kratos uses uBLAS, so this is a real collision. Three facts about the escape
-hatch, all of which CI now gates:
+Boost's uBLAS and MSVC's `<span>` both use an internal macro named `_BACKUP_ITERATOR_DEBUG_LEVEL`, so any MSVC translation unit including both fails inside `<span>` itself ([boostorg/ublas#77](https://github.com/boostorg/ublas/issues/77)). Kratos uses uBLAS, so this is a real collision. Three facts about the escape hatch, all of which CI now gates:
 
-- It guards **only** the `<span>` include and the inline `NativeMesh::ConnSpan()`
-  accessor. No member variable is involved, so it is **ABI-neutral**.
-- The guard is `#ifndef`, so **a consumer can define it themselves** —
-  `target_compile_definitions(app PRIVATE MESHIOPLUSPLUS_NO_STD_SPAN)` — against
-  *any* prefix, including a distro or Conan build that left the CMake option
-  off. A private meshio++ build is not required.
-- A build that sets the CMake option exports it (through
-  `INTERFACE_COMPILE_DEFINITIONS` and `meshioplusplus-cxx.pc`), so consumers of
-  such a prefix inherit the same choice by default.
+- It guards **only** the `<span>` include and the inline `NativeMesh::ConnSpan()` accessor. No member variable is involved, so it is **ABI-neutral**.
+- The guard is `#ifndef`, so **a consumer can define it themselves** — `target_compile_definitions(app PRIVATE MESHIOPLUSPLUS_NO_STD_SPAN)` — against *any* prefix, including a distro or Conan build that left the CMake option off. A private meshio++ build is not required.
+- A build that sets the CMake option exports it (through `INTERFACE_COMPILE_DEFINITIONS` and `meshioplusplus-cxx.pc`), so consumers of such a prefix inherit the same choice by default.
 
 ## Parallelism: meshio++ is serial
 
-There is **no MPI in the library**: no distributed reader or writer, no
-communicator anywhere in the API, and none planned. `FindMPI` appearing in the
-generated package config is HDF5's transitive requirement (a parallel HDF5 needs
-`mpi.h` even for purely serial use of its API), not meshio++'s.
+There is **no MPI in the library**: no distributed reader or writer, no communicator anywhere in the API, and none planned. `FindMPI` appearing in the generated package config is HDF5's transitive requirement (a parallel HDF5 needs `mpi.h` even for purely serial use of its API), not meshio++'s.
 
-The intended distributed workflow is to decompose and then let each rank handle
-its own piece: `partition(mesh, {nparts, ghost_layers})` produces exactly the
-shared-node halo an MPI assembly needs when `mGhostLayers > 0`. All parallelism
-inside meshio++ is intra-process (`MESHIOPLUSPLUS_PARALLEL_BACKEND`).
+The intended distributed workflow is to decompose and then let each rank handle its own piece: `partition(mesh, {nparts, ghost_layers})` produces exactly the shared-node halo an MPI assembly needs when `mGhostLayers > 0`. All parallelism inside meshio++ is intra-process (`MESHIOPLUSPLUS_PARALLEL_BACKEND`).

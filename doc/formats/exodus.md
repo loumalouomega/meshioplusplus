@@ -25,8 +25,7 @@ last = meshioplusplus.read("run.exo", time_step=-1)
 meshioplusplus.read_metadata("run.exo")["time_values"]  # e.g. [0.0, 0.5, 1.0]
 ```
 
-`write` takes no keyword arguments. `read` takes `time_step` (see
-[Time steps](#time-steps)).
+`write` takes no keyword arguments. `read` takes `time_step` (see [Time steps](#time-steps)).
 
 ## File structure
 
@@ -64,10 +63,7 @@ A large type table; representative entries:
 
 The write-side reverse map picks one canonical Exodus name per meshio++ type (e.g. `hexahedron → HEX8`, `tetra → TETRA`, `tetra4 → TET4` — a distinct entry from plain `tetra`).
 
-`SPHERE` is the one-node element particle codes use — peridynamics solvers such as
-[PeriLab](https://github.com/PeriHub/PeriLab.jl) write whole meshes of them — and
-maps to meshio++'s `vertex`. Its radius is not part of the connectivity; it lives
-in a per-element attribute (below).
+`SPHERE` is the one-node element particle codes use — peridynamics solvers such as [PeriLab](https://github.com/PeriHub/PeriLab.jl) write whole meshes of them — and maps to meshio++'s `vertex`. Its radius is not part of the connectivity; it lives in a per-element attribute (below).
 
 ## Data mapping
 
@@ -79,47 +75,26 @@ in a per-element attribute (below).
 
 ## Element attributes
 
-Exodus stores a fixed number of floating-point **attributes** per element of a
-block, in `attrib{k}` and named by `attrib_name{k}`. They are the standard home
-for a value the connectivity cannot express: a `SPHERE`/`CIRCLE` element's
-**radius**, a beam's cross-section area, a shell's thickness. Since v9.3.0 they
-read and write as ordinary `cell_data`, under the `exodus:attr:` prefix:
+Exodus stores a fixed number of floating-point **attributes** per element of a block, in `attrib{k}` and named by `attrib_name{k}`. They are the standard home for a value the connectivity cannot express: a `SPHERE`/`CIRCLE` element's **radius**, a beam's cross-section area, a shell's thickness. Since v9.3.0 they read and write as ordinary `cell_data`, under the `exodus:attr:` prefix:
 
 ```python
 mesh = meshioplusplus.read("particles.exo")
 radius = mesh.cell_data["exodus:attr:RADIUS"]   # one array per cell block
 ```
 
-The prefix is what makes the mapping unambiguous in both directions. On read it
-keeps an attribute from colliding with a same-named element *variable*
-(`name_elem_var`), which is a genuinely different concept — attributes are
-constant in time, element variables are per-time-step. On write it is the only
-signal telling the writer which `cell_data` arrays belong in `attrib{k}`;
-everything else in `cell_data` is left alone.
+The prefix is what makes the mapping unambiguous in both directions. On read it keeps an attribute from colliding with a same-named element *variable* (`name_elem_var`), which is a genuinely different concept — attributes are constant in time, element variables are per-time-step. On write it is the only signal telling the writer which `cell_data` arrays belong in `attrib{k}`; everything else in `cell_data` is left alone.
 
-Three rules follow from `cell_data` having exactly one array per cell block while
-Exodus attributes are per block:
+Three rules follow from `cell_data` having exactly one array per cell block while Exodus attributes are per block:
 
-- Values are always **float64** on read, whatever the on-disk type — Exodus
-  attributes are floating point by definition, and the NaN below needs somewhere
-  to live.
-- A block the file gives no such attribute is filled with **NaN**. There is no
-  "absent" to report in a `cell_data` array, and the name is still information.
-- On write, a block whose values are **all** non-finite is left out again. That
-  is exactly the NaN the reader fills in, so a file where only some blocks carry
-  an attribute round-trips instead of gaining NaN attributes; the only thing lost
-  is a genuinely all-NaN attribute, which carries no information anyway.
+- Values are always **float64** on read, whatever the on-disk type — Exodus attributes are floating point by definition, and the NaN below needs somewhere to live.
+- A block the file gives no such attribute is filled with **NaN**. There is no "absent" to report in a `cell_data` array, and the name is still information.
+- On write, a block whose values are **all** non-finite is left out again. That is exactly the NaN the reader fills in, so a file where only some blocks carry an attribute round-trips instead of gaining NaN attributes; the only thing lost is a genuinely all-NaN attribute, which carries no information anyway.
 
-An attribute is one value per element, so a multi-component array under this
-prefix is a `WriteError` naming it rather than a silent flatten. Unnamed
-attributes (a blank `attrib_name{k}`, which SEACAS writes often enough) are named
-by their 1-based column, `exodus:attr:attribute1` and so on, so two blocks agree
-on which one is "the first".
+An attribute is one value per element, so a multi-component array under this prefix is a `WriteError` naming it rather than a silent flatten. Unnamed attributes (a blank `attrib_name{k}`, which SEACAS writes often enough) are named by their 1-based column, `exodus:attr:attribute1` and so on, so two blocks agree on which one is "the first".
 
 ## Named regions
 
-Since v8.6.0 the reader maps all three of Exodus's grouping concepts onto
-[regions](../regions.md):
+Since v8.6.0 the reader maps all three of Exodus's grouping concepts onto [regions](../regions.md):
 
 | Exodus | Region kind | Name from | `tag` from |
 |---|---|---|---|
@@ -127,50 +102,23 @@ Since v8.6.0 the reader maps all three of Exodus's grouping concepts onto
 | `node_ns{k}` (node set) | `point` | `ns_names`, else `"Nodeset <id>"` | `ns_prop1` |
 | `elem_ss{k}`+`side_ss{k}` (side set) | `side` | `ss_names`, else `"Sideset <id>"` | `ss_prop1` |
 
-Cell entries are **global block-major** cell indices; side entries are
-`(global cell, local facet)` pairs. Two element blocks of the *same* element type
-stay distinguishable, since the name and tag come from per-block arrays — which
-is exactly what a materials assignment depends on.
+Cell entries are **global block-major** cell indices; side entries are `(global cell, local facet)` pairs. Two element blocks of the *same* element type stay distinguishable, since the name and tag come from per-block arrays — which is exactly what a materials assignment depends on.
 
-**Exodus side numbering is not meshio++ facet numbering.** Exodus orders an
-element's sides its own way, so the facet column is remapped through
-`exo_face_index` (the twin of `abq_face_index`) rather than stored raw; a gtest
-pins every entry against `detail/cell_faces.hpp` by node set. An unmappable
-`(cell type, side)` pair is skipped rather than stored pointing at the wrong
-face.
+**Exodus side numbering is not meshio++ facet numbering.** Exodus orders an element's sides its own way, so the facet column is remapped through `exo_face_index` (the twin of `abq_face_index`) rather than stored raw; a gtest pins every entry against `detail/cell_faces.hpp` by node set. An unmappable `(cell type, side)` pair is skipped rather than stored pointing at the wrong face.
 
-**Element blocks round-trip since v9.9.0**; node sets and side sets are still
-read-only. The writer recovers `eb_names` by inverting the read path: a `Cell`
-region whose canonical entries are exactly the contiguous global range
-`[base_k, base_k+1)` *is* block `k`'s name. Entries are sorted and de-duplicated
-by `AddRegion`, so "covers exactly this block" is a first/last check rather than a
-set comparison. `eb_names` is written only when at least one block is actually
-named, so a region-less mesh's bytes are unchanged — and a block with no matching
-region gets `""`, which is what SEACAS itself writes.
+**Element blocks round-trip since v9.9.0**; node sets and side sets are still read-only. The writer recovers `eb_names` by inverting the read path: a `Cell` region whose canonical entries are exactly the contiguous global range `[base_k, base_k+1)` *is* block `k`'s name. Entries are sorted and de-duplicated by `AddRegion`, so "covers exactly this block" is a first/last check rather than a set comparison. `eb_names` is written only when at least one block is actually named, so a region-less mesh's bytes are unchanged — and a block with no matching region gets `""`, which is what SEACAS itself writes.
 
-The writer still emits no node sets and no side sets, so a `Point` or `Side`
-region written here does not come back.
+The writer still emits no node sets and no side sets, so a `Point` or `Side` region written here does not come back.
 
 ## Time steps
 
-Exodus stores every data array with a leading `time_step` dimension. Before
-v8.6.0 the reader always took the first step and warned "Skipping some time
-data"; now `ReadOptions::mTimeStep` selects one:
+Exodus stores every data array with a leading `time_step` dimension. Before v8.6.0 the reader always took the first step and warned "Skipping some time data"; now `ReadOptions::mTimeStep` selects one:
 
 - `0` (the default) is the first step, so existing behaviour is unchanged.
-- Negative values count from the end; `-1` is the last step, which is what
-  "the final state of the simulation" means without knowing the count up front.
-- Out of range is an **error naming the available count**, never a silent clamp
-  — quietly returning step 0 for a request of step 7 is the failure this option
-  exists to remove.
+- Negative values count from the end; `-1` is the last step, which is what "the final state of the simulation" means without knowing the count up front.
+- Out of range is an **error naming the available count**, never a silent clamp — quietly returning step 0 for a request of step 7 is the failure this option exists to remove.
 
-`read_metadata(...)["time_values"]` reports the recorded times (from
-`time_whole`), so a step request is checkable before it is issued. Exodus is
-registered as an options-aware reader, so `reader_supports_options("exodus")` is
-true and the option reaches every binding: `time_step=` in Python,
-`mio_read_opts.time_step` in C, `m%read(..., time_step=)` in Fortran,
-`ReadOptions(time_step=)` in Julia, `mio_read(time_step=)` in R,
-`readMeshSelective(path, {timeStep})` in WASM, and `--time-step=N` in both CLIs.
+`read_metadata(...)["time_values"]` reports the recorded times (from `time_whole`), so a step request is checkable before it is issued. Exodus is registered as an options-aware reader, so `reader_supports_options("exodus")` is true and the option reaches every binding: `time_step=` in Python, `mio_read_opts.time_step` in C, `m%read(..., time_step=)` in Fortran, `ReadOptions(time_step=)` in Julia, `mio_read(time_step=)` in R, `readMeshSelective(path, {timeStep})` in WASM, and `--time-step=N` in both CLIs.
 
 ## Quirks & limitations
 

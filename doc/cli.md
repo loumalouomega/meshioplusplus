@@ -29,8 +29,7 @@ meshioplusplus convert [options] INFILE OUTFILE
 | `--sets-to-int-data` | `-s` | Convert point/cell sets to integer data arrays |
 | `--int-data-to-sets` | `-d` | Convert integer data arrays to point/cell sets |
 
-**Transient sequences** — treat a set of files, or the steps inside one file,
-as one dataset (see [sequences](sequences.md)):
+**Transient sequences** — treat a set of files, or the steps inside one file, as one dataset (see [sequences](sequences.md)):
 
 | Option | Description |
 |--------|-------------|
@@ -46,14 +45,9 @@ meshioplusplus convert series.xdmf 'step_{step}.vtu'    # fan-out
 meshioplusplus convert a.vtu --input b.vtu out.xdmf     # pre-expanded argv
 ```
 
-**Quote the pattern.** A shell expands `out_*.vtu` before the CLI sees it, so
-the unquoted form arrives as a dozen positionals and fails on the argument
-count; use `--input` when something else has already expanded the glob.
+**Quote the pattern.** A shell expands `out_*.vtu` before the CLI sees it, so the unquoted form arrives as a dozen positionals and fails on the argument count; use `--input` when something else has already expanded the glob.
 
-Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step
-input aimed at a single-step output is an **error** naming `{step}` and
-`--time-step`, never a silent write of step 0 — pass `--time-step=N` when you
-genuinely want one step.
+Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step input aimed at a single-step output is an **error** naming `{step}` and `--time-step`, never a silent write of step 0 — pass `--time-step=N` when you genuinely want one step.
 
 **Data-driven colouring** (SVG/TikZ output only):
 
@@ -66,12 +60,7 @@ genuinely want one step.
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
 | `--colorbar` | Append a gradient bar with min/max labels |
 
-Point data colours a face by the mean of its corner values, cell data by its
-owning cell's value — for a volume mesh, found through the skin's
-`surface:parent_cell` provenance. `--color-by` with any other output format is
-an error, as is any of the modifier flags without `--color-by`. See the
-[SVG](./formats/svg.md#data-driven-colouring) and [TikZ](./formats/tikz.md)
-format pages for the full semantics.
+Point data colours a face by the mean of its corner values, cell data by its owning cell's value — for a volume mesh, found through the skin's `surface:parent_cell` provenance. `--color-by` with any other output format is an error, as is any of the modifier flags without `--color-by`. See the [SVG](./formats/svg.md#data-driven-colouring) and [TikZ](./formats/tikz.md) format pages for the full semantics.
 
 **Examples:**
 
@@ -88,9 +77,7 @@ meshioplusplus convert mesh.vtu figure.tikz --color-by damage --cmap coolwarm \
     --vmin 0 --vmax 1
 ```
 
-Converting a 3D volume mesh to STL or PLY writes its extracted boundary
-skin (the writers' default — see [Skin extraction](./extract_skin.md));
-converting to SVG or TikZ renders it with the default isometric camera.
+Converting a 3D volume mesh to STL or PLY writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
 ---
 
@@ -118,8 +105,7 @@ meshioplusplus info mesh.msh
 
 ## meshioplusplus quality
 
-Print a per-cell [mesh quality](./mesh_quality.md) report (min/mean/max and
-counts of inverted/degenerate cells).
+Print a per-cell [mesh quality](./mesh_quality.md) report (min/mean/max and counts of inverted/degenerate cells).
 
 ```
 meshioplusplus quality [options] INFILE
@@ -141,8 +127,7 @@ meshioplusplus quality part.vtu -o part_quality.vtu
 
 ## meshioplusplus extract-surface
 
-Extract the [boundary surface/edges](./extract_surface.md) of a mesh (volume →
-faces, 2D surface → edges) and write it out.
+Extract the [boundary surface/edges](./extract_surface.md) of a mesh (volume → faces, 2D surface → edges) and write it out.
 
 ```
 meshioplusplus extract-surface [options] INFILE OUTFILE
@@ -165,8 +150,7 @@ meshioplusplus extract-surface --parent-ids part.vtu surface.vtu
 
 ## meshioplusplus reorder
 
-[Renumber](./reorder.md) a mesh's nodes/elements to reduce matrix bandwidth
-(RCM) or improve cache locality (Morton / Hilbert), as a pure permutation.
+[Renumber](./reorder.md) a mesh's nodes/elements to reduce matrix bandwidth (RCM) or improve cache locality (Morton / Hilbert), as a pure permutation.
 
 ```
 meshioplusplus reorder [options] INFILE OUTFILE
@@ -191,9 +175,7 @@ meshioplusplus reorder part.vtu reordered.vtu --method rcm --report
 
 ## meshioplusplus diff
 
-[Compare](./diff.md) two meshes and report whether they are equivalent within a
-tolerance. The **exit code is nonzero when the meshes differ** and zero when they
-are equal, so it drops straight into CI / shell scripts / Makefiles.
+[Compare](./diff.md) two meshes and report whether they are equivalent within a tolerance. The **exit code is nonzero when the meshes differ** and zero when they are equal, so it drops straight into CI / shell scripts / Makefiles.
 
 ```
 meshioplusplus diff [options] INFILE_A INFILE_B
@@ -271,8 +253,7 @@ meshioplusplus transform [options] INFILE OUTFILE
 | `--rotate-data` | Also rotate vector/tensor `point_data` by the transform |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Give exactly one transform source. Values starting with `-` need the `=` form
-(`--translate=-1,0,0`).
+Give exactly one transform source. Values starting with `-` need the `=` form (`--translate=-1,0,0`).
 
 **Examples:**
 
@@ -301,8 +282,7 @@ meshioplusplus clean [options] INFILE OUTFILE
 | `--drop-duplicates` | Drop exact-duplicate cells |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-With no step flags, the default set runs (remove-orphans + drop-degenerate +
-drop-duplicates, **no** weld). A removal summary is printed.
+With no step flags, the default set runs (remove-orphans + drop-degenerate + drop-duplicates, **no** weld). A removal summary is printed.
 
 **Examples:**
 
@@ -315,8 +295,7 @@ meshioplusplus clean in.vtu out.vtu --weld --atol 1e-6
 
 ## meshioplusplus crop
 
-Extract part of a mesh — inside a bounding box, inside a half-space, or the
-cells a `cell_data` comparison selects (see [crop](/crop)).
+Extract part of a mesh — inside a bounding box, inside a half-space, or the cells a `cell_data` comparison selects (see [crop](/crop)).
 
 ```
 meshioplusplus crop [options] INFILE OUTFILE
@@ -331,10 +310,7 @@ meshioplusplus crop [options] INFILE OUTFILE
 | `--record-ids` | Attach original point/cell ids as data arrays |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Give exactly one of `--bbox`/`--plane`/`--where`. Negative values need the `=`
-form (`--bbox=-1,-1,-1,1,1,1`). `--mode` alongside `--where` is an **error**
-rather than being ignored: a per-cell value has nothing for an all/any rule to
-reduce.
+Give exactly one of `--bbox`/`--plane`/`--where`. Negative values need the `=` form (`--bbox=-1,-1,-1,1,1,1`). `--mode` alongside `--where` is an **error** rather than being ignored: a per-cell value has nothing for an all/any rule to reduce.
 
 **Examples:**
 
@@ -352,9 +328,7 @@ meshioplusplus crop field.vtu inside.vtu --where 'sdf:distance < 0'
 
 ## meshioplusplus slice
 
-Compute the planar cross-section of a mesh — the intersection with a plane, one
-dimension below the cut cells (a volume mesh → a `triangle`/`quad` surface, a 2D
-surface → a `line` mesh). See [slice](/slice).
+Compute the planar cross-section of a mesh — the intersection with a plane, one dimension below the cut cells (a volume mesh → a `triangle`/`quad` surface, a 2D surface → a `line` mesh). See [slice](/slice).
 
 ```
 meshioplusplus slice [options] INFILE OUTFILE
@@ -367,8 +341,7 @@ meshioplusplus slice [options] INFILE OUTFILE
 | `--record-parent-ids` | Attach `slice:parent_cell` (the input cell each section cell was cut from) |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Negative components need the `=` form (`--normal=0,0,-1`). Unlike `crop`, which
-keeps whole cells on one side, `slice` computes the intersection itself.
+Negative components need the `=` form (`--normal=0,0,-1`). Unlike `crop`, which keeps whole cells on one side, `slice` computes the intersection itself.
 
 **Examples:**
 
@@ -381,10 +354,7 @@ meshioplusplus slice part.msh section.vtu --normal=0,0,-1 --record-parent-ids
 
 ## meshioplusplus isosurface
 
-Compute the level set(s) of a scalar `point_data` field — the data-driven
-sibling of `slice`, and like it one dimension below the cut cells (a volume mesh
-→ a `triangle`/`quad` surface, a 2D surface → a `line` contour). See
-[isosurface](/isosurface).
+Compute the level set(s) of a scalar `point_data` field — the data-driven sibling of `slice`, and like it one dimension below the cut cells (a volume mesh → a `triangle`/`quad` surface, a 2D surface → a `line` contour). See [isosurface](/isosurface).
 
 ```
 meshioplusplus isosurface [options] INFILE OUTFILE
@@ -398,11 +368,7 @@ meshioplusplus isosurface [options] INFILE OUTFILE
 | `--record-parent-ids` | Attach `iso:parent_cell` (the input cell each contour cell was cut from) |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Negative isovalues need the `=` form (`--values=-1.5`). A `cell_data` name is
-rejected: cell data is piecewise constant and has no level set — convert it with
-`meshioplusplus data to-point` first. Every contour cell is tagged with
-`iso:value` (Float64) and `iso:index` (Int64, the ordinal — the integer tag
-`split --by region --tag …` needs).
+Negative isovalues need the `=` form (`--values=-1.5`). A `cell_data` name is rejected: cell data is piecewise constant and has no level set — convert it with `meshioplusplus data to-point` first. Every contour cell is tagged with `iso:value` (Float64) and `iso:index` (Int64, the ordinal — the integer tag `split --by region --tag …` needs).
 
 **Examples:**
 
@@ -433,11 +399,7 @@ meshioplusplus split [options] INFILE OUTPATTERN
 | `--tag NAME` | For `--by region`: the integer `cell_data` name to split on (unused by `regions`) |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Prints how many pieces were produced and their sizes. `--by regions` (plural)
-is one piece per named **Cell** [region](/regions) and is **not a partition**
-— a cell in several regions lands in several pieces, and `Point`/`Side`
-regions produce no piece at all. Run [`meshioplusplus regions`](#meshioplusplus-regions)
-first to see what a mesh's regions are.
+Prints how many pieces were produced and their sizes. `--by regions` (plural) is one piece per named **Cell** [region](/regions) and is **not a partition** — a cell in several regions lands in several pieces, and `Point`/`Side` regions produce no piece at all. Run [`meshioplusplus regions`](#meshioplusplus-regions) first to see what a mesh's regions are.
 
 **Examples:**
 
@@ -451,8 +413,7 @@ meshioplusplus split in.inp 'part_{key}.vtu' --by regions
 
 ## meshioplusplus regions
 
-List a mesh's named [regions](/regions) — name, kind, dimension, tag, and
-entry count (not the entries themselves).
+List a mesh's named [regions](/regions) — name, kind, dimension, tag, and entry count (not the entries themselves).
 
 ```
 meshioplusplus regions [options] INFILE
@@ -463,11 +424,7 @@ meshioplusplus regions [options] INFILE
 | `--input-format` (`-i`) | Force input format |
 | `--json` | Emit the regions as JSON |
 
-Goes through the same cheap path `info --fast`/`read_metadata` use rather than
-a full read: whenever the summary already comes from an in-memory mesh (every
-format lacking a native metadata path, plus Exodus, which always falls back),
-regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/
-Gmsh 4.1) reports none, since none of those currently map regions at all.
+Goes through the same cheap path `info --fast`/`read_metadata` use rather than a full read: whenever the summary already comes from an in-memory mesh (every format lacking a native metadata path, plus Exodus, which always falls back), regions cost nothing extra to report; a native metadata path (VTU/VTP/XDMF/Gmsh 4.1) reports none, since none of those currently map regions at all.
 
 **Example:**
 
@@ -493,9 +450,7 @@ meshioplusplus stats [options] INFILE
 | `--json` | Emit the statistics as JSON |
 | `--input-format` (`-i`) | Force input format |
 
-Prints the bounding box, extent, centroid, per-cell-type counts, total area,
-signed/unsigned volume, and inverted-cell count. This complements `info` (which
-is topological) with geometric measures.
+Prints the bounding box, extent, centroid, per-cell-type counts, total area, signed/unsigned volume, and inverted-cell count. This complements `info` (which is topological) with geometric measures.
 
 **Examples:**
 
@@ -508,8 +463,7 @@ meshioplusplus stats mesh.vtu --json
 
 ## meshioplusplus convert-cells
 
-Convert a mesh's element representation (see [convert_cells](/convert_cells)).
-Distinct from `convert`, which changes the *file format*.
+Convert a mesh's element representation (see [convert_cells](/convert_cells)). Distinct from `convert`, which changes the *file format*.
 
 ```
 meshioplusplus convert-cells [options] INFILE OUTFILE
@@ -521,12 +475,7 @@ meshioplusplus convert-cells [options] INFILE OUTFILE
 | `--record-parent-ids` | Attach `convert:parent_cell` cell_data of the source cell indices |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-`linearize` drops higher-order nodes (`tetra10` → `tetra`) and prunes the points
-that become unreferenced; `simplexify` decomposes cells into simplices of the
-same dimension (`hexahedron` → 6 `tetra`); `elevate` promotes linear cells to
-serendipity quadratic (`triangle` → `triangle6`), adding a node per unique edge.
-A polyhedron block under `simplexify`, and `quad9`/`hexahedron27` under
-`elevate`, are errors.
+`linearize` drops higher-order nodes (`tetra10` → `tetra`) and prunes the points that become unreferenced; `simplexify` decomposes cells into simplices of the same dimension (`hexahedron` → 6 `tetra`); `elevate` promotes linear cells to serendipity quadratic (`triangle` → `triangle6`), adding a node per unique edge. A polyhedron block under `simplexify`, and `quad9`/`hexahedron27` under `elevate`, are errors.
 
 **Examples:**
 
@@ -540,10 +489,7 @@ meshioplusplus convert-cells in.msh out.vtu --mode elevate
 
 ## meshioplusplus subdivide
 
-Polyhedrally refine a mesh: split every eligible 3D cell into one polyhedral
-child per face, connected to a new interior point (see [subdivide](/subdivide)).
-Distinct from `refine`, which is built on fixed same-type templates and raises
-by name on a polyhedron.
+Polyhedrally refine a mesh: split every eligible 3D cell into one polyhedral child per face, connected to a new interior point (see [subdivide](/subdivide)). Distinct from `refine`, which is built on fixed same-type templates and raises by name on a polyhedron.
 
 ```
 meshioplusplus subdivide [options] INFILE OUTFILE
@@ -554,10 +500,7 @@ meshioplusplus subdivide [options] INFILE OUTFILE
 | `--record-parent-ids` | Attach `subdivide:parent_cell` cell_data of the source cell indices |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-No per-type template table is needed: tabulated types (reduced to corners for
-a quadratic variant) and existing polyhedron blocks are handled uniformly.
-Automatically conforming — no closure flag, unlike `refine`. Non-3D blocks and
-the full-Lagrange family (no face table) pass through unchanged.
+No per-type template table is needed: tabulated types (reduced to corners for a quadratic variant) and existing polyhedron blocks are handled uniformly. Automatically conforming — no closure flag, unlike `refine`. Non-3D blocks and the full-Lagrange family (no face table) pass through unchanged.
 
 **Example:**
 
@@ -569,10 +512,7 @@ meshioplusplus subdivide bracket.msh bracket_subdivided.vtu --record-parent-ids
 
 ## meshioplusplus agglomerate
 
-Polyhedrally coarsen a mesh: merge groups of cells into single larger
-polyhedral cells via greedy seed-and-grow over the shared-face dual (see
-[agglomerate](/agglomerate)). Distinct from `decimate`, whose fixed-template
-QEM edge collapse has no analogue for merging arbitrary polyhedral cells.
+Polyhedrally coarsen a mesh: merge groups of cells into single larger polyhedral cells via greedy seed-and-grow over the shared-face dual (see [agglomerate](/agglomerate)). Distinct from `decimate`, whose fixed-template QEM edge collapse has no analogue for merging arbitrary polyhedral cells.
 
 ```
 meshioplusplus agglomerate [options] INFILE OUTFILE
@@ -583,10 +523,7 @@ meshioplusplus agglomerate [options] INFILE OUTFILE
 | `--target-group-size N` | Approximate member cells per output group (default `8`) |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Non-volume blocks pass through unchanged; points are never pruned or
-renumbered (`clean --remove-orphans` is the follow-up for a minimal point
-set). Conserves volume exactly. `--target-group-size 1` groups every cell by
-itself.
+Non-volume blocks pass through unchanged; points are never pruned or renumbered (`clean --remove-orphans` is the follow-up for a minimal point set). Conserves volume exactly. `--target-group-size 1` groups every cell by itself.
 
 **Example:**
 
@@ -598,8 +535,7 @@ meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
 
 ## meshioplusplus refine
 
-Refine a mesh, subdividing cells into same-type children — every cell, or a
-selected subset with a conforming closure (see [refine](/refine)).
+Refine a mesh, subdividing cells into same-type children — every cell, or a selected subset with a conforming closure (see [refine](/refine)).
 
 ```
 meshioplusplus refine [options] INFILE OUTFILE
@@ -617,25 +553,11 @@ meshioplusplus refine [options] INFILE OUTFILE
 | `--record-hierarchy` | Attach `refine:cell_id`/`refine:parent_id` cell_data — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps; also forces `refine:entity` to be attached even when the closure leaves no hanging node |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-At most one of `--cells`, `--region` and `--where` may be given; with none, every
-cell is refined. `--closure redgreen` keeps the extra refinement local — a single
-refined quadrilateral costs one row of a structured grid, a hexahedron one dual
-sheet. `--closure propagate` is defined for every cell type but reaches the whole
-edge-connected component, so on a connected mesh it *is* the uniform refinement.
-`--closure balanced` does not close at all: it keeps the hanging nodes and only
-enforces 2:1 balance, so the output is **not conforming** (the constrained nodes
-are listed in `refine:hanging`) but the cost is bounded by the selection — one
-cell of a 4×4×4 block costs 7 extra cells, against 61 and 448.
+At most one of `--cells`, `--region` and `--where` may be given; with none, every cell is refined. `--closure redgreen` keeps the extra refinement local — a single refined quadrilateral costs one row of a structured grid, a hexahedron one dual sheet. `--closure propagate` is defined for every cell type but reaches the whole edge-connected component, so on a connected mesh it *is* the uniform refinement. `--closure balanced` does not close at all: it keeps the hanging nodes and only enforces 2:1 balance, so the output is **not conforming** (the constrained nodes are listed in `refine:hanging`) but the cost is bounded by the selection — one cell of a 4×4×4 block costs 7 extra cells, against 61 and 448.
 
-One level splits a `triangle`/`quad` into 4 and a `tetra`/`wedge`/`hexahedron`
-into 8, inserting nodes at edge, quad-face and body midpoints. Those nodes are
-shared between neighbouring cells, so the result has no hanging nodes, and
-`point_data` is interpolated onto them. Higher-order cells, `pyramid`, and ragged
-polygon/polyhedron blocks have no same-type subdivision and are errors —
-`convert-cells --mode linearize` (or `--mode simplexify`) first.
+One level splits a `triangle`/`quad` into 4 and a `tetra`/`wedge`/`hexahedron` into 8, inserting nodes at edge, quad-face and body midpoints. Those nodes are shared between neighbouring cells, so the result has no hanging nodes, and `point_data` is interpolated onto them. Higher-order cells, `pyramid`, and ragged polygon/polyhedron blocks have no same-type subdivision and are errors — `convert-cells --mode linearize` (or `--mode simplexify`) first.
 
-Note the cell count grows as `4^levels` (2D) or `8^levels` (3D), so `--levels 3`
-is already a 512× increase on a volume mesh.
+Note the cell count grows as `4^levels` (2D) or `8^levels` (3D), so `--levels 3` is already a 512× increase on a volume mesh.
 
 **Examples:**
 
@@ -652,10 +574,7 @@ meshioplusplus refine coarse.vtu fine.vtu --cells 12,13 --record-hierarchy
 
 ## meshioplusplus undo-green
 
-Restore a transitional (green) cell back to its coarse parent, read verbatim
-from the COARSE mesh — the standard "restore and re-split from scratch" rule
-for a selective refinement pass over a region a prior pass already closed up
-(see [green-element undo](/undo_green)). A two-mesh verb, like `interpolate`.
+Restore a transitional (green) cell back to its coarse parent, read verbatim from the COARSE mesh — the standard "restore and re-split from scratch" rule for a selective refinement pass over a region a prior pass already closed up (see [green-element undo](/undo_green)). A two-mesh verb, like `interpolate`.
 
 ```
 meshioplusplus undo-green [options] COARSE FINE OUTFILE
@@ -666,12 +585,7 @@ meshioplusplus undo-green [options] COARSE FINE OUTFILE
 | `--quiet` (`-q`) | Suppress the undo summary |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input (both files) / output format |
 
-`FINE` must be the output of a prior `refine COARSE FINE --record-hierarchy
---record-levels` call (both flags — `--record-hierarchy` alone does not
-imply `--record-levels`); it fails by name otherwise, or when a
-`refine:parent_id` cannot be resolved against `COARSE`'s id space. The six
-reserved `refine:*` arrays are dropped from the output. Only a single-pass
-(`--levels 1`) hierarchy is supported.
+`FINE` must be the output of a prior `refine COARSE FINE --record-hierarchy --record-levels` call (both flags — `--record-hierarchy` alone does not imply `--record-levels`); it fails by name otherwise, or when a `refine:parent_id` cannot be resolved against `COARSE`'s id space. The six reserved `refine:*` arrays are dropped from the output. Only a single-pass (`--levels 1`) hierarchy is supported.
 
 **Examples:**
 
@@ -685,8 +599,7 @@ meshioplusplus refine restored.vtu regraded.vtu --cells 44,58 --record-hierarchy
 
 ## meshioplusplus decimate
 
-Reduce a surface mesh's face count by quadric-error-metric edge collapse — the
-resolution-reducing inverse of `refine` (see [decimation](/decimate)).
+Reduce a surface mesh's face count by quadric-error-metric edge collapse — the resolution-reducing inverse of `refine` (see [decimation](/decimate)).
 
 ```
 meshioplusplus decimate [options] INFILE OUTFILE
@@ -704,12 +617,7 @@ meshioplusplus decimate [options] INFILE OUTFILE
 | `--quiet` (`-q`) | Do not print the collapse summary |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Exactly one of `--ratio`, `--target-faces` and `--max-error` must be given.
-Surface meshes only: `quad`/`polygon` blocks are triangulated first (the output
-is all-triangle), and a volume mesh is an error — run `extract-surface` first.
-Boundary and feature vertices are pinned by default, and the link condition
-plus a normal-flip guard reject any collapse that would change topology or
-fold the surface.
+Exactly one of `--ratio`, `--target-faces` and `--max-error` must be given. Surface meshes only: `quad`/`polygon` blocks are triangulated first (the output is all-triangle), and a volume mesh is an error — run `extract-surface` first. Boundary and feature vertices are pinned by default, and the link condition plus a normal-flip guard reject any collapse that would change topology or fold the surface.
 
 **Examples:**
 
@@ -724,9 +632,7 @@ meshioplusplus decimate open_patch.vtu out.vtu --ratio 0.1 --no-preserve-feature
 
 ## meshioplusplus decimate-volume
 
-Reduce a tetrahedral mesh's cell count by quadric-error-metric **tet**-edge
-collapse — the volume-mesh sibling of `decimate`, a separate verb rather than
-a mode on it (see [volume decimation](/decimate_volume)).
+Reduce a tetrahedral mesh's cell count by quadric-error-metric **tet**-edge collapse — the volume-mesh sibling of `decimate`, a separate verb rather than a mode on it (see [volume decimation](/decimate_volume)).
 
 ```
 meshioplusplus decimate-volume [options] INFILE OUTFILE
@@ -744,14 +650,7 @@ meshioplusplus decimate-volume [options] INFILE OUTFILE
 | `--quiet` (`-q`) | Do not print the collapse summary |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Exactly one of `--ratio`, `--target-cells` and `--max-error` must be given.
-Tet meshes only: a non-tetra 3D block is an error — run
-`convert-cells --mode simplexify` first. Note `--preserve-boundary` is
-opt-**in** here, the mirror image of `decimate`'s opt-out
-`--no-preserve-boundary` — boundary vertices participate in decimation by
-real quadric error by default. Validity guards reject any collapse that
-would change topology, invert a tet, or (for boundary-touching collapses)
-fold the outer surface.
+Exactly one of `--ratio`, `--target-cells` and `--max-error` must be given. Tet meshes only: a non-tetra 3D block is an error — run `convert-cells --mode simplexify` first. Note `--preserve-boundary` is opt-**in** here, the mirror image of `decimate`'s opt-out `--no-preserve-boundary` — boundary vertices participate in decimation by real quadric error by default. Validity guards reject any collapse that would change topology, invert a tet, or (for boundary-touching collapses) fold the outer surface.
 
 **Examples:**
 
@@ -766,8 +665,7 @@ meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-bound
 
 ## meshioplusplus smooth
 
-Relax point coordinates toward their edge-neighbour centroids to improve element
-shape (see [smoothing](/smooth)).
+Relax point coordinates toward their edge-neighbour centroids to improve element shape (see [smoothing](/smooth)).
 
 ```
 meshioplusplus smooth [options] INFILE OUTFILE
@@ -786,14 +684,7 @@ meshioplusplus smooth [options] INFILE OUTFILE
 | `--quiet` (`-q`) | Suppress the summary output |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Only the point coordinates move: connectivity, `cell_data`, `field_data` and
-`point_data` values come through unchanged, the point and cell counts are
-unchanged, and the points array keeps its input dtype. Neighbours are the nodes
-joined by an actual cell *edge*, so a structured hex block is a fixed point.
-Nodes of blocks whose edge topology is unknown — the higher-order family, the
-VTK-Lagrange types, `custom` — are pinned rather than guessed at. Unless
-suppressed, the summary reports the number of nodes moved, the largest net
-displacement, and how many moves the inversion guard rejected.
+Only the point coordinates move: connectivity, `cell_data`, `field_data` and `point_data` values come through unchanged, the point and cell counts are unchanged, and the points array keeps its input dtype. Neighbours are the nodes joined by an actual cell *edge*, so a structured hex block is a fixed point. Nodes of blocks whose edge topology is unknown — the higher-order family, the VTK-Lagrange types, `custom` — are pinned rather than guessed at. Unless suppressed, the summary reports the number of nodes moved, the largest net displacement, and how many moves the inversion guard rejected.
 
 **Examples:**
 
@@ -809,10 +700,7 @@ meshioplusplus smooth in.msh out.vtu --no-fix-boundary --no-guard-inversion -q
 
 ## meshioplusplus interpolate
 
-Sample data arrays from a SOURCE mesh onto a TARGET mesh (see
-[interpolation](/interpolate)). The output is a copy of the target — geometry,
-connectivity and its own data preserved exactly — with the requested source
-arrays sampled onto it.
+Sample data arrays from a SOURCE mesh onto a TARGET mesh (see [interpolation](/interpolate)). The output is a copy of the target — geometry, connectivity and its own data preserved exactly — with the requested source arrays sampled onto it.
 
 ```
 meshioplusplus interpolate [options] SOURCE TARGET OUTFILE
@@ -828,12 +716,7 @@ meshioplusplus interpolate [options] SOURCE TARGET OUTFILE
 | `--quiet` (`-q`) | Suppress the transfer summary |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input (both files) / output format |
 
-Source `point_data` is sampled at the target's points, source `cell_data` at
-the target's cell centroids — always by nearest source-cell centroid, whatever
-the method. Under `barycentric` the source is simplexified first, so on a
-quad/hex source the result is the simplex-linear interpolant, and triangle
-sources are evaluated in the xy-plane (use `nearest` for a curved surface
-embedded in 3D).
+Source `point_data` is sampled at the target's points, source `cell_data` at the target's cell centroids — always by nearest source-cell centroid, whatever the method. Under `barycentric` the source is simplexified first, so on a quad/hex source the result is the simplex-linear interpolant, and triangle sources are evaluated in the xy-plane (use `nearest` for a curved surface embedded in 3D).
 
 **Examples:**
 
@@ -848,15 +731,13 @@ meshioplusplus interpolate a.msh b.msh out.vtu --method barycentric --extrapolat
 
 ## meshioplusplus partition
 
-Decompose a mesh into N balanced parts for domain decomposition (see
-[partitioning](/partition)) — the count-driven complement to `split`.
+Decompose a mesh into N balanced parts for domain decomposition (see [partitioning](/partition)) — the count-driven complement to `split`.
 
 ```
 meshioplusplus partition [options] INFILE OUTPATTERN
 ```
 
-`OUTPATTERN` must contain `{part}` (e.g. `out_{part}.vtu`), expanded once per
-piece — except with `--labels-only`, where it is a single plain path.
+`OUTPATTERN` must contain `{part}` (e.g. `out_{part}.vtu`), expanded once per piece — except with `--labels-only`, where it is a single plain path.
 
 | Option | Description |
 |--------|-------------|
@@ -871,9 +752,7 @@ piece — except with `--labels-only`, where it is a single plain path.
 | `--ghost-layers N` | Reserved; only `0` is supported |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Every piece keeps the input's cell-block structure 1:1 (empty blocks included,
-unlike `split`), so the pieces recombine into the input — each cell lands in
-exactly one piece.
+Every piece keeps the input's cell-block structure 1:1 (empty blocks included, unlike `split`), so the pieces recombine into the input — each cell lands in exactly one piece.
 
 **Examples:**
 
@@ -888,10 +767,7 @@ meshioplusplus partition domain.msh 'p_{part}.vtu' -n 8 --weights cost --record-
 
 ## meshioplusplus data
 
-A nested group of ten verbs operating on a mesh's `point_data` / `cell_data` /
-`field_data` arrays (see [data operations](/data_operations)). **The geometry is
-never modified** by any of them — points, connectivity, block order and block
-types come through bit-identical.
+A nested group of ten verbs operating on a mesh's `point_data` / `cell_data` / `field_data` arrays (see [data operations](/data_operations)). **The geometry is never modified** by any of them — points, connectivity, block order and block types come through bit-identical.
 
 ```
 meshioplusplus data <subcommand> [options]
@@ -915,43 +791,18 @@ meshioplusplus data <subcommand> [options]
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 
-Every verb takes `--input-format` (`-i`), and every verb but `info` and
-`integrate` takes an `OUTFILE` and `--output-format` (`-o`) — the mesh is
-never modified by either of those two, so there is nothing to write.
-`export` and `export-dataset` are the
-exceptions on the output side: they write Parquet / zarr / hdf5, so they take
-no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5`
-instead, plus `--mesh-id stem|index`, and its input is several paths, one
-quoted glob, or one multi-step file — the sequence source language). Both are
-**Python CLI only**; both need the matching optional extra.
+Every verb takes `--input-format` (`-i`), and every verb but `info` and `integrate` takes an `OUTFILE` and `--output-format` (`-o`) — the mesh is never modified by either of those two, so there is nothing to write. `export` and `export-dataset` are the exceptions on the output side: they write Parquet / zarr / hdf5, so they take no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5` instead, plus `--mesh-id stem|index`, and its input is several paths, one quoted glob, or one multi-step file — the sequence source language). Both are **Python CLI only**; both need the matching optional extra.
 
 ::: tip `data gradient`, `data hessian`, `data estimate-error` and `data integrate` are mesh operations
-Every other verb in this group belongs to the `data_*` family, which by
-definition never touches geometry. `gradient` consumes and produces data arrays
-but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
-so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion
-one order further, a composition of two `gradient` calls; `estimate-error`
-composes `gradient` itself; `integrate` reads the same cell measures to weight
-its totals. All four are grouped here because that is where a user looks for
-them. See [field derivatives](/gradient), [second derivatives](/hessian),
-[error estimation](/error) and [field integration](/field_integration).
+Every other verb in this group belongs to the `data_*` family, which by definition never touches geometry. `gradient` consumes and produces data arrays but **reads** geometry and topology (face areas, cell volumes, cell adjacency), so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion one order further, a composition of two `gradient` calls; `estimate-error` composes `gradient` itself; `integrate` reads the same cell measures to weight its totals. All four are grouped here because that is where a user looks for them. See [field derivatives](/gradient), [second derivatives](/hessian), [error estimation](/error) and [field integration](/field_integration).
 :::
 
 ::: warning `data export` is not a mesh conversion
-It writes `point_data` / `cell_data` to Parquet **for analytics** (pandas,
-polars, DuckDB) and does not round-trip geometry — Parquet is deliberately not
-in the format registry, so `meshioplusplus convert mesh.vtu out.parquet` does
-not work. It needs `pip install meshioplusplus[arrow]`, and it exists in the
-**Python CLI only**: the native binary has no counterpart.
+It writes `point_data` / `cell_data` to Parquet **for analytics** (pandas, polars, DuckDB) and does not round-trip geometry — Parquet is deliberately not in the format registry, so `meshioplusplus convert mesh.vtu out.parquet` does not work. It needs `pip install meshioplusplus[arrow]`, and it exists in the **Python CLI only**: the native binary has no counterpart.
 :::
 
 ::: warning Colons in names
-Data names routinely contain colons (`gmsh:physical`). `data rename` therefore
-splits its `OLD:NEW` value on the **last** colon — `--point gmsh:physical:tag`
-renames `gmsh:physical` to `tag`. `data calc` splits `NAME = EXPR` on the
-**first** `=`. `drop`/`keep` take a comma-separated name list with no prefix, so
-colons there are unambiguous. The Python CLI and the native binary implement
-identical rules.
+Data names routinely contain colons (`gmsh:physical`). `data rename` therefore splits its `OLD:NEW` value on the **last** colon — `--point gmsh:physical:tag` renames `gmsh:physical` to `tag`. `data calc` splits `NAME = EXPR` on the **first** `=`. `drop`/`keep` take a comma-separated name list with no prefix, so colons there are unambiguous. The Python CLI and the native binary implement identical rules.
 :::
 
 ### data info
@@ -960,8 +811,7 @@ identical rules.
 |--------|-------------|
 | `--json` | Emit the summary as JSON |
 
-Prints location, name, dtype, component count, entry count, min/max/mean and
-NaN/inf counts for every array. Read-only.
+Prints location, name, dtype, component count, entry count, min/max/mean and NaN/inf counts for every array. Read-only.
 
 ### data rename / drop / keep
 
@@ -970,8 +820,7 @@ NaN/inf counts for every array. Read-only.
 | `--point`, `--cell`, `--field` | `OLD:NEW` for `rename` (repeatable); a comma-separated name list for `drop`/`keep` |
 | `--ignore-missing` | Skip names that do not exist instead of failing (`drop`/`keep`) |
 
-For `keep`, a location that is not named at all is left untouched; naming it
-with an empty list drops everything there.
+For `keep`, a location that is not named at all is left untouched; naming it with an empty list drops everything there.
 
 ### data to-cell / to-point
 
@@ -990,9 +839,7 @@ The output is always `float64` — the mean of an integer field is not an intege
 | `--point`, `--cell`, `--field` | `NAME = EXPRESSION` (repeatable) |
 | `--overwrite` | Allow replacing an array that already exists |
 
-The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric
-literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` — nothing else is
-evaluated.
+The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` — nothing else is evaluated.
 
 ### data export
 
@@ -1026,12 +873,7 @@ evaluated.
 | `--overwrite` | Replace an existing array of the output name instead of failing |
 | `--quiet`, `-q` | Suppress the summary |
 
-Naming a `cell_data` array is an error pointing at `data to-point`: a piecewise
-constant field has no derivative. Divergence and curl need a 2- or 3-component
-field. Cells that cannot be differentiated are reported as `cells skipped
-(NaN)`; least-squares cells with a degenerate neighbourhood fall back to
-Green-Gauss and are reported separately. See
-[field derivatives](/gradient) for the exactness guarantees and caveats.
+Naming a `cell_data` array is an error pointing at `data to-point`: a piecewise constant field has no derivative. Divergence and curl need a 2- or 3-component field. Cells that cannot be differentiated are reported as `cells skipped (NaN)`; least-squares cells with a degenerate neighbourhood fall back to Green-Gauss and are reported separately. See [field derivatives](/gradient) for the exactness guarantees and caveats.
 
 ### data hessian
 
@@ -1044,14 +886,7 @@ Green-Gauss and are reported separately. See
 | `--overwrite` | Replace an existing array of the output name instead of failing |
 | `--quiet`, `-q` | Suppress the summary |
 
-The Hessian (second derivative) of a scalar `point_data` field — `gradient`'s
-companion one order further, a composition of two `gradient` calls, not a new
-kernel. Naming a `cell_data` array is an error pointing at `data to-point`,
-for the same reason `data gradient` rejects one; a multi-component array is
-an error naming the per-component workaround (Hessian is scalar-only). Cells
-that cannot be evaluated are reported as `cells skipped (NaN)`. See
-[second derivatives](/hessian) for the exactness guarantees and the
-curvature-driven refinement composition.
+The Hessian (second derivative) of a scalar `point_data` field — `gradient`'s companion one order further, a composition of two `gradient` calls, not a new kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for the same reason `data gradient` rejects one; a multi-component array is an error naming the per-component workaround (Hessian is scalar-only). Cells that cannot be evaluated are reported as `cells skipped (NaN)`. See [second derivatives](/hessian) for the exactness guarantees and the curvature-driven refinement composition.
 
 ### data estimate-error
 
@@ -1066,17 +901,7 @@ curvature-driven refinement composition.
 | `--overwrite` | Replace an existing array of an output name instead of failing |
 | `--quiet`, `-q` | Suppress the summary |
 
-The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a
-composition of `gradient` and the point↔cell averaging round trip, not a new
-kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for
-the same reason `data gradient` rejects one. Cells that cannot be evaluated are
-reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in
-`error:marked`. With `--marking` not `none`, a second `cell_data` array is
-attached so [`refine`](/refine)'s own `--where` selector needs no change at
-all — the intended use is
-`meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`.
-See [error estimation](/error) for the composition, the marking policies and
-the byte-identity tolerance.
+The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a composition of `gradient` and the point↔cell averaging round trip, not a new kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for the same reason `data gradient` rejects one. Cells that cannot be evaluated are reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in `error:marked`. With `--marking` not `none`, a second `cell_data` array is attached so [`refine`](/refine)'s own `--where` selector needs no change at all — the intended use is `meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`. See [error estimation](/error) for the composition, the marking policies and the byte-identity tolerance.
 
 ### data integrate
 
@@ -1085,16 +910,7 @@ the byte-identity tolerance.
 | `--array NAME` | `cell_data` array to integrate (repeatable; default all `cell_data` arrays) |
 | `--json` | Emit the report as JSON |
 
-Cell-measure-weighted total and mean of one or more `cell_data` arrays —
-`gradient`'s integration counterpart. Every sum is weighted by the cell's
-own length/area/volume; a cell whose measure is not computable, or a
-component whose value is non-finite, is excluded from that component's
-numerator **and** denominator, never given a fallback weight of 1. Reported
-for the whole mesh and independently for every named `Cell` region — a cell
-in two regions contributes fully to both, one in none contributes to
-neither. Naming a `point_data` array is an error pointing at `data to-cell`.
-Read-only, like `data info`: there is no `OUTFILE`. See
-[field integration](/field_integration).
+Cell-measure-weighted total and mean of one or more `cell_data` arrays — `gradient`'s integration counterpart. Every sum is weighted by the cell's own length/area/volume; a cell whose measure is not computable, or a component whose value is non-finite, is excluded from that component's numerator **and** denominator, never given a fallback weight of 1. Reported for the whole mesh and independently for every named `Cell` region — a cell in two regions contributes fully to both, one in none contributes to neither. Naming a `point_data` array is an error pointing at `data to-cell`. Read-only, like `data info`: there is no `OUTFILE`. See [field integration](/field_integration).
 
 **Examples:**
 
@@ -1137,14 +953,7 @@ meshioplusplus data export in.vtu cells.parquet --location cell
 
 ## meshioplusplus dataset
 
-The second nested group: curate a hand-editable
-[dataset manifest](datasets.md) — the JSON cataloguing many cases (each
-possibly a time series) with splits, tags, groups and notes. Python CLI only,
-like `data export`. Every mutating verb is load → mutate → save against the
-same file a text editor uses, so hand edits made between two CLI calls
-survive; sources given on the command line are stored **relative to the
-manifest's directory** (absolute paths stay absolute), keeping the manifest
-portable.
+The second nested group: curate a hand-editable [dataset manifest](datasets.md) — the JSON cataloguing many cases (each possibly a time series) with splits, tags, groups and notes. Python CLI only, like `data export`. Every mutating verb is load → mutate → save against the same file a text editor uses, so hand edits made between two CLI calls survive; sources given on the command line are stored **relative to the manifest's directory** (absolute paths stay absolute), keeping the manifest portable.
 
 ```
 meshioplusplus dataset <subcommand> [options]
@@ -1170,9 +979,7 @@ meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
 
 ## meshioplusplus pipeline
 
-Run a whole [settings pipeline](pipeline.md): read `Input.Path`, apply the
-`Operations` chain, write `Output.Path` — one `settings.json` instead of N
-verb invocations with intermediate files.
+Run a whole [settings pipeline](pipeline.md): read `Input.Path`, apply the `Operations` chain, write `Output.Path` — one `settings.json` instead of N verb invocations with intermediate files.
 
 ```bash
 meshioplusplus pipeline settings.json
@@ -1181,25 +988,14 @@ meshioplusplus pipeline settings.json --json          # machine-readable report
 meshioplusplus pipeline settings.json --quiet
 ```
 
-A document whose `Input` is a `Pattern`/`Paths`, or whose `Output.Path` carries
-`{step}`/`{index}`, runs the chain **per step** over a whole transient dataset —
-see [sequences](sequences.md). The verb routes it automatically; a plain
-single-file document takes the unchanged path.
+A document whose `Input` is a `Pattern`/`Paths`, or whose `Output.Path` carries `{step}`/`{index}`, runs the chain **per step** over a whole transient dataset — see [sequences](sequences.md). The verb routes it automatically; a plain single-file document takes the unchanged path.
 
-- `--input` / `--output` override the two paths in the settings file (the
-  document itself is untouched).
-- The report lists each step with its counters (`step 3: Clean
-  (PointsWelded=12, ...)`) plus any warnings; `--json` prints the same as JSON.
-- Parsing is strict: an unknown op, an unknown key, or an `Output` option the
-  format cannot honour is an error naming the offender.
+- `--input` / `--output` override the two paths in the settings file (the document itself is untouched).
+- The report lists each step with its counters (`step 3: Clean (PointsWelded=12, ...)`) plus any warnings; `--json` prints the same as JSON.
+- Parsing is strict: an unknown op, an unknown key, or an `Output` option the format cannot honour is an error naming the offender.
 - The exit code is nonzero on any error, so the verb composes with `make`/CI.
 
-The verb exists in **both** CLIs. The Python CLI runs the pure-Python engine
-(and so inherits the per-format Python fallbacks); the native CLI needs a
-build with the JSON parser (`-DMESHIOPLUSPLUS_WITH_JSON=ON`, the default when
-the `src/cpp/third_party/json` submodule is checked out — release binaries
-carry it) and otherwise reports the flag by name. See
-[the settings pipeline](pipeline.md) for the schema and the full op table.
+The verb exists in **both** CLIs. The Python CLI runs the pure-Python engine (and so inherits the per-format Python fallbacks); the native CLI needs a build with the JSON parser (`-DMESHIOPLUSPLUS_WITH_JSON=ON`, the default when the `src/cpp/third_party/json` submodule is checked out — release binaries carry it) and otherwise reports the flag by name. See [the settings pipeline](pipeline.md) for the schema and the full op table.
 
 ---
 
@@ -1267,8 +1063,7 @@ The `--input-format` and `--output-format` options accept any of the registered 
 
 ## Selective reads and fast summaries
 
-`info --fast` summarizes a file from its header instead of loading it, and `convert` can
-narrow what it reads:
+`info --fast` summarizes a file from its header instead of loading it, and `convert` can narrow what it reads:
 
 ```bash
 meshioplusplus info --fast big.vtu
@@ -1277,30 +1072,15 @@ meshioplusplus convert --arrays u,p in.vtu out.vtu      # only these data arrays
 meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a time series
 ```
 
-`--points-only` keeps connectivity — it narrows data, not topology. `arrays` with an empty
-list keeps no arrays; omitting the flag keeps every array.
+`--points-only` keeps connectivity — it narrows data, not topology. `arrays` with an empty list keeps no arrays; omitting the flag keeps every array.
 
-`--time-step=N` picks one step of a multi-step file: `0` (the default) is the first,
-negative counts from the end. A negative value needs the `--time-step=-1` form, as with the
-other negative-valued options. Out of range is an error naming the available count, never a
-silent clamp; `info --fast` prints `Time steps: N [...]` when a file records more than one.
-Honoured by formats carrying a time series (currently `exodus`); a format whose reader has
-no time concept refuses rather than quietly returning the first step.
+`--time-step=N` picks one step of a multi-step file: `0` (the default) is the first, negative counts from the end. A negative value needs the `--time-step=-1` form, as with the other negative-valued options. Out of range is an error naming the available count, never a silent clamp; `info --fast` prints `Time steps: N [...]` when a file records more than one. Honoured by formats carrying a time series (currently `exodus`); a format whose reader has no time concept refuses rather than quietly returning the first step.
 
-`--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X"
-errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and
-`Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore
-all errors": a malformed row, a bad node reference or a duplicate node id still fail,
-because continuing past those returns a mesh that is quietly wrong rather than merely
-incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the
-pure-Python reference, which already accepts every construct the flag covers.
+`--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X" errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and `Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore all errors": a malformed row, a bad node reference or a duplicate node id still fail, because continuing past those returns a mesh that is quietly wrong rather than merely incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the pure-Python reference, which already accepts every construct the flag covers.
 
-Formats without a header-only path are read in full and `info --fast` says so explicitly
-(`no header-only path for this format; the file was read in full`) rather than implying a
-saving that did not happen. See [Selective reads](selective_read.md).
+Formats without a header-only path are read in full and `info --fast` says so explicitly (`no header-only path for this format; the file was read in full`) rather than implying a saving that did not happen. See [Selective reads](selective_read.md).
 
-`--points-only`/`--arrays` are rejected alongside `-s`/`-d`, which convert exactly the data
-arrays that were skipped.
+`--points-only`/`--arrays` are rejected alongside `-s`/`-d`, which convert exactly the data arrays that were skipped.
 
 ## Compression codecs
 
@@ -1308,10 +1088,7 @@ arrays that were skipped.
 meshioplusplus compress --codec lz4 mesh.vtu
 ```
 
-`--codec zlib|lz4|zstd` selects the VTK XML block codec for `.vtu`/`.vtp`. zlib is the
-default; `lz4` stays ParaView-readable, `zstd` is a meshio++ extension that ParaView cannot
-read. The flag is **rejected** for formats with no block codec rather than silently ignored.
-See [Compression codecs](codecs.md).
+`--codec zlib|lz4|zstd` selects the VTK XML block codec for `.vtu`/`.vtp`. zlib is the default; `lz4` stays ParaView-readable, `zstd` is a meshio++ extension that ParaView cannot read. The flag is **rejected** for formats with no block codec rather than silently ignored. See [Compression codecs](codecs.md).
 
 Both CLIs — the Python one and the native `meshioplusplus` binary — accept these identically.
 
@@ -1323,25 +1100,16 @@ meshioplusplus view part.msh --kind surface --color-by material
 meshioplusplus screenshot part.msh out.png --size 1600x1200
 ```
 
-Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`,
-`--color-by NAME`, `--name NAME`; `screenshot` adds `--size WIDTHxHEIGHT` and
-`--transparent`.
+Options: `--input-format/-i`, `--kind {auto,surface,volume,curve,points}`, `--color-by NAME`, `--name NAME`; `screenshot` adds `--size WIDTHxHEIGHT` and `--transparent`.
 
-These mirror the Python CLI's verbs, but in the **native binary** they are only
-functional in a build configured with
-[Polyscope](https://polyscope.run):
+These mirror the Python CLI's verbs, but in the **native binary** they are only functional in a build configured with [Polyscope](https://polyscope.run):
 
 ```sh
 git submodule update --init --recursive     # Polyscope vendors its own submodules
 build/configure.sh --cli --with-polyscope --build
 ```
 
-They are listed in `--help` in every build; without the flag they report it
-rather than silently not existing. The **prebuilt release binaries do not
-include the viewer** — they are deliberately dependency-free single files, and
-Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install
-meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather
-not build from source.
+They are listed in `--help` in every build; without the flag they report it rather than silently not existing. The **prebuilt release binaries do not include the viewer** — they are deliberately dependency-free single files, and Polyscope needs OpenGL, GLFW and X11. Use the Python CLI (`pip install meshioplusplus[viewer]`) or the [browser viewer](/viewer) if you would rather not build from source.
 
 ## `voxelize`
 
@@ -1380,6 +1148,4 @@ meshioplusplus sdf bunny.stl tree.vtu  --structure octree --max-depth 5
 | `--sign` / `--location` / `--band` / `--watertight-check` | as `distance_to_surface` |
 | `--max-cells N` | refuse above this many cells, re-checked after every octree pass |
 
-Write the result as `.vti` to keep the grid header — no other format carries it.
-The octree's output is 1-irregular (it has hanging nodes). See
-[`doc/sdf.md`](sdf.md).
+Write the result as `.vti` to keep the grid header — no other format carries it. The octree's output is 1-irregular (it has hanging nodes). See [`doc/sdf.md`](sdf.md).
