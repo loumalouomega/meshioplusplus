@@ -213,6 +213,25 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v10.8.0 additions
+
+- `mio_data_integrate(mesh, names = NULL)` — cell-measure-weighted
+  total/mean of one or more `cell_data` arrays, `mio_gradient()`'s
+  integration counterpart (`mio_gradient` differentiates a field, this
+  integrates one), returning a list of per-array summaries — each with
+  `name`, `num_components`, `domain` (`num_cells`, `num_skipped`, and a
+  `num_components x 4` `total`/`mean`/`domain_measure`/`num_nan`
+  `components` matrix) and `regions` (a list of the same shape, one per
+  named Cell region present). See
+  [`doc/field_integration.md`](field_integration.md).
+
+  Every sum is weighted by `|measure(cell)|`; a cell whose measure is not
+  computable, or a component whose value is non-finite, is excluded from
+  that component's numerator **and** denominator, never given a fallback
+  weight of 1. Regions are not a partition: a cell in two regions
+  contributes fully to both. A `point_data`-only name fails, naming
+  `mio_data_point_to_cell()` as the fix.
+
 ## v10.5.0 additions
 
 - `mio_undo_green(coarse, fine)` — green-element undo: restores `fine`'s

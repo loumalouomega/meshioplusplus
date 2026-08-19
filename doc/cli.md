@@ -910,24 +910,29 @@ meshioplusplus data <subcommand> [options]
 | `normalize` | Rescale values to a target range |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
+| `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 
-Every verb takes `--input-format` (`-i`), and every verb but `info` takes an
-`OUTFILE` and `--output-format` (`-o`). `export` and `export-dataset` are the
+Every verb takes `--input-format` (`-i`), and every verb but `info` and
+`integrate` takes an `OUTFILE` and `--output-format` (`-o`) — the mesh is
+never modified by either of those two, so there is nothing to write.
+`export` and `export-dataset` are the
 exceptions on the output side: they write Parquet / zarr / hdf5, so they take
 no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5`
 instead, plus `--mesh-id stem|index`, and its input is several paths, one
 quoted glob, or one multi-step file — the sequence source language). Both are
 **Python CLI only**; both need the matching optional extra.
 
-::: tip `data gradient` and `data estimate-error` are mesh operations
+::: tip `data gradient`, `data estimate-error` and `data integrate` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by
 definition never touches geometry. `gradient` consumes and produces data arrays
 but **reads** geometry and topology (face areas, cell volumes, cell adjacency),
 so it lives in the mesh-operations layer; `estimate-error` composes `gradient`
-itself. Both are grouped here because that is where a user looks for them. See
-[field derivatives](/gradient) and [error estimation](/error).
+itself; `integrate` reads the same cell measures to weight its totals. All
+three are grouped here because that is where a user looks for them. See
+[field derivatives](/gradient), [error estimation](/error) and
+[field integration](/field_integration).
 :::
 
 ::: warning `data export` is not a mesh conversion
@@ -1051,6 +1056,24 @@ all — the intended use is
 See [error estimation](/error) for the composition, the marking policies and
 the byte-identity tolerance.
 
+### data integrate
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | `cell_data` array to integrate (repeatable; default all `cell_data` arrays) |
+| `--json` | Emit the report as JSON |
+
+Cell-measure-weighted total and mean of one or more `cell_data` arrays —
+`gradient`'s integration counterpart. Every sum is weighted by the cell's
+own length/area/volume; a cell whose measure is not computable, or a
+component whose value is non-finite, is excluded from that component's
+numerator **and** denominator, never given a fallback weight of 1. Reported
+for the whole mesh and independently for every named `Cell` region — a cell
+in two regions contributes fully to both, one in none contributes to
+neither. Naming a `point_data` array is an error pointing at `data to-cell`.
+Read-only, like `data info`: there is no `OUTFILE`. See
+[field integration](/field_integration).
+
 **Examples:**
 
 ```sh
@@ -1063,6 +1086,9 @@ meshioplusplus data gradient in.vtu out.vtu --array T --method least-squares --o
 
 meshioplusplus data estimate-error in.vtu out.vtu --array T
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6
+
+meshioplusplus data integrate mesh.vtu --array density
+meshioplusplus data integrate mesh.vtu --array density --array pressure --json
 
 meshioplusplus data rename in.vtu out.vtu --point T:temperature
 meshioplusplus data drop   in.vtu out.vtu --point a,b --cell c

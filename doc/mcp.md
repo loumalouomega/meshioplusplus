@@ -79,7 +79,7 @@ no tool ever surfaces a raw traceback.
 
 ## Tools
 
-50 tools; the two marked *gated* need a further extra and return a named
+53 tools; the two marked *gated* need a further extra and return a named
 install error without it. Transforming tools take `input_path`/`output_path`
 (+ optional `input_format`/`output_format`, otherwise inferred from the
 extension) and return the written path plus a mesh summary and the operation's
@@ -95,6 +95,7 @@ report.
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |
 | `data_info` | every data array's dtype/shape/ranges/NaN counts |
+| `data_integrate` | cell-measure-weighted total/mean of one or more `cell_data` arrays, whole-mesh and per named Cell region |
 | `regions` | named point/cell/side groups with kind/dim/tag and an entries preview |
 | `bandwidth` | node-numbering bandwidth |
 | `data_preview` | a bounded window (`offset`/`limit`) of one data array's values |

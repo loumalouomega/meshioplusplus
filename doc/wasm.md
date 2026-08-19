@@ -357,6 +357,20 @@ catchable `Error`. See [data operations](./data_operations.md),
 [expressions](./data_calc.md), [conditioning](./data_condition.md) and
 [data summary](./data_info.md).
 
+`dataIntegrate(mesh, arrays)` returns an array of per-array field-integral
+objects (`name`, `numComponents`, `domain`, `regions`) — a cell-measure-weighted
+total/mean of one or more `cell_data` arrays, `gradient`'s integration
+counterpart. `domain` and each entry in `regions` share one shape (`numCells`,
+`numSkipped`, and parallel `totalPerComponent`/`meanPerComponent`/
+`domainMeasurePerComponent`/`numNanPerComponent` arrays — the `dataInfo`
+`*PerComponent` convention), `regions` carrying one entry per named Cell region
+present on the mesh (not a partition: a cell in two regions contributes fully
+to both). `arrays` empty/undefined means every `cell_data` array. Unlike
+`gradient`/`estimateError` it is **read-only** — like `dataInfo`, it changes no
+geometry and is not a `convertSurfaceOps`/pipeline step. A `point_data`-only
+name throws a catchable `Error` naming `dataPointToCell` as the fix. See
+[field integration](./field_integration.md).
+
 ## Transient (time-series) XDMF
 
 `createXdmfTimeSeriesWriter(path, { dataFormat, gzipLevel })` is the **one
