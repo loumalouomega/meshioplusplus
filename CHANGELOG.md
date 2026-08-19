@@ -8,6 +8,33 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.9.0 (2026-08-19)
+
+**Roadmap §1 closed** — second derivatives / Hessian was the section's last
+open item; "Field capability beyond derivatives" is now fully shipped.
+
+- **`hessian`** (`operations/hessian.hpp`, [`doc/hessian.md`](doc/hessian.md))
+  — the Hessian (second derivative) of a scalar `point_data` field, reachable
+  as `meshioplusplus data hessian` in both CLIs: `gradient`'s companion one
+  order further. A composition of two `gradient` calls, not a new numerical
+  kernel — the field is differentiated once (point location), and that
+  `(n, 3)` gradient is differentiated again with the default gradient
+  operator, producing `(n, 9)`, the flattened row-major 3x3 Hessian. A field
+  that is at most linear has an exactly zero Hessian everywhere — the one
+  mesh-shape-independent guarantee, verified rather than assumed. For a
+  genuinely quadratic field the composition is exact on a
+  structured/symmetric mesh away from its own boundary (also measured) and
+  a good, standard, but genuinely approximate curvature estimate on an
+  irregular mesh — stated honestly rather than oversold. Input must have
+  exactly one component; a vector field's Hessian is a separate quantity
+  per component, computed by calling `hessian` once per component. No new
+  marking subsystem is needed for curvature-driven adaptive refinement:
+  `data_calc`'s `norm(...)` on the 9-component output is exactly its
+  Frobenius norm, ready for `refine`'s `where` selector. Ships on every
+  binding surface: Python (with a pure-Python composition fallback), the C
+  API, Fortran, Julia, R, WASM (`hessian`, reachable as a `convertSurfaceOps`
+  pipeline step too), both CLIs, and an MCP tool.
+
 ## v10.8.0 (2026-08-19)
 
 **Roadmap §1 advanced** — field integration closes the section's smaller
