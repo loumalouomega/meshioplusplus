@@ -212,6 +212,32 @@ def test_estimate_error_pipeline_step(settings_env):
         assert "error:marked" in out_cpp.cell_data
 
 
+def test_hessian_pipeline_step(settings_env):
+    """Hessian dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair test_op_table_matches_core pins. Unlike
+    EstimateError, its Python fallback (`_hessian_py`) composes the public
+    `gradient()` function directly -- which itself prefers `_core.gradient`
+    when available -- so with `_core` installed both pipeline engines
+    literally call the same underlying gradient() twice, and the two
+    engines' output is bit-for-bit comparable, not merely within
+    tolerance (test_hessian.py::test_cpp_matches_python established this)."""
+    settings = make_settings(
+        settings_env, [{"Op": "Hessian", "Array": "temperature"}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Hessian"
+    assert "NumSkipped" in report["steps"][0]
+    out = meshioplusplus.read(settings_env["out"])
+    assert "temperature:hessian" in out.cell_data
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "Hessian"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict

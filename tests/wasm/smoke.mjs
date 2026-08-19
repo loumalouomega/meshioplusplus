@@ -1149,6 +1149,52 @@ step('gradient: a linear field is differentiated exactly, and the (n,3) shape su
     assert.throws(() => m.gradient(field, 'f', 'divergence'));
 });
 
+step('hessian: exactly zero for a linear field, (n,9), and scalar-only', () => {
+    // The exact same frustum fixture the gradient step above builds:
+    // f = 3x - 2y + 5z + 7 (linear, so its Hessian is exactly zero
+    // everywhere -- the one mesh-shape-independent guarantee), u a genuine
+    // 3-vector (rejected: hessian is scalar-only).
+    const frustum = {
+        points: new Float64Array([
+            0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 2, 0,
+            0.5, 0.5, 1, 1.5, 0.5, 1, 1.5, 1.5, 1, 0.5, 1.5, 1,
+        ]),
+        dim: 3,
+        cells: [
+            { type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const f = new Float64Array(8);
+    for (let i = 0; i < 8; ++i) {
+        f[i] = 3 * frustum.points[i * 3] - 2 * frustum.points[i * 3 + 1] +
+               5 * frustum.points[i * 3 + 2] + 7;
+    }
+    const field = { ...frustum, point_data: { f } };
+    const u = new Float64Array(24);
+    const vec = { ...frustum, point_data: { u }, point_data_components: { u: 3 } };
+
+    const h = m.hessian(field, 'f');
+    assert.equal(h.numSkipped, 0);
+    const hess = h.mesh.cell_data['f:hessian'][0];
+    assert.equal(hess.length, 9, 'one cell x 9 components');
+    assert.equal(h.mesh.cell_data_components['f:hessian'], 9,
+                 'the hessian declares 9 components');
+    for (let i = 0; i < 9; ++i)
+        assert.ok(Math.abs(hess[i]) < 1e-9, `hessian[${i}] = ${hess[i]} != 0`);
+
+    // The point location moves the result into point_data, declared likewise.
+    const atPoints = m.hessian(field, 'f', 'green-gauss', 'point');
+    assert.equal(atPoints.mesh.point_data_components['f:hessian'], 9);
+    assert.equal(atPoints.mesh.point_data['f:hessian'].length, 8 * 9);
+
+    // A cell_data field has no derivative, and a vector field is scalar-only.
+    assert.throws(() => m.hessian(h.mesh, 'f:hessian'));
+    assert.throws(() => m.hessian(vec, 'u'));
+});
+
 step('estimateError: zero on a linear field, nonzero and markable on a quadratic one', () => {
     // Two unit-cube hexahedra stacked along z, sharing the z=1 face -- a
     // single-cell mesh cannot show a nonzero indicator at all, since
@@ -1213,6 +1259,23 @@ step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
         assert.ok(Math.abs(skin.point_data.gf[i * 3 + 2] - 1) < 1e-9,
                   `d/dz ${skin.point_data.gf[i * 3 + 2]} != 1`);
     }
+});
+
+step('convertSurfaceOps: hessian is a chainable pipeline step', () => {
+    // f = z on the cube is linear, so its Hessian is exactly zero -- the one
+    // mesh-shape-independent guarantee, reused as the pipeline oracle too.
+    const f = new Float64Array([0, 0, 0, 0, 1, 1, 1, 1]);
+    m.writeMesh('/hess.vtu', { ...cube, point_data: { f } });
+    const rep = m.convertSurfaceOps('/hess.vtu', '/hess.vtp', [
+        { op: 'hessian', array: 'f', location: 'point', output: 'hf' },
+    ]);
+    assert.equal(rep.steps[0].op, 'hessian');
+    assert.equal(rep.steps[0].numSkipped, 0);
+    const skin = m.readMesh('/hess.vtp');
+    assert.ok('hf' in skin.point_data, 'the hessian rides through the re-skin');
+    assert.equal(skin.point_data_components.hf, 9);
+    for (let i = 0; i < skin.point_data.hf.length; ++i)
+        assert.ok(Math.abs(skin.point_data.hf[i]) < 1e-9, `hf[${i}] = ${skin.point_data.hf[i]} != 0`);
 });
 
 step('partition: refined hexahedra decompose into 2 balanced pieces', () => {
@@ -1406,6 +1469,7 @@ step('every binding is reachable through the wrapper', () => {
         'slice',
         'isosurface',
         'gradient',
+        'hessian',
         'estimateError',
         'cropBbox',
         'cropPlane',

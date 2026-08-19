@@ -788,6 +788,34 @@ program test_fortran_api
         call check(st /= 0, 'gradient rejects a scalar divergence')
     end block
 
+    ! ---- hessian (second derivative, gradient's companion) ----------------
+    block
+        type(mio_mesh) :: h
+        integer(int64) :: nskip, nfall
+        integer :: st
+
+        h = m%hessian('temperature', stat=st, num_skipped=nskip, num_fallback=nfall)
+        call check(st == 0, 'hessian succeeded')
+        call check(h%cell_data_num_blocks('temperature:hessian') >= 1_int64, &
+                   'hessian attaches temperature:hessian')
+        call check(nskip == 0_int64, 'no cell skipped on this mesh')
+        call h%free()
+
+        ! The point location moves the result into point_data.
+        h = m%hessian('temperature', location='point', output='H2', stat=st)
+        call check(st == 0, 'point-located hessian succeeded')
+        call check(h%num_point_data() > m%num_point_data(), &
+                   'the point-located result adds a point_data array')
+        call h%free()
+
+        ! A cell_data field is piecewise constant and has no derivative.
+        h = m%hessian('quality', stat=st)
+        call check(st /= 0, 'hessian rejects a cell_data field')
+        ! Hessian is scalar-only: a multi-component field is rejected by name.
+        h = m%hessian('velocity', stat=st)
+        call check(st /= 0, 'hessian rejects a multi-component field')
+    end block
+
     ! ---- estimate_error (ZZ recovery-based error indicator) ---------------
     block
         type(mio_mesh) :: e

@@ -2306,6 +2306,69 @@ TEST(CApi, GradientErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, HessianCarriesCountersAndShape) {
+    // A single hexahedron; a linear field has an exactly zero Hessian
+    // regardless of mesh shape (see hessian.hpp), so this needs no
+    // structured-grid fixture the way the C++ gtest suite's own
+    // interior-exactness test does.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::vector<double> f(8);
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double x = pts[i * 3 + 0], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+        f[i] = 3.0 * x - 2.0 * y + 5.0 * z + 7.0;
+    }
+    const std::int64_t sshape[1] = {8};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 1, 8, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "f", MIO_FLOAT64, 1, sshape, f.data()), MIO_OK);
+
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t got_shape[MIO_MAX_NDIM] = {0};
+
+    std::int64_t skipped = -1, fallback = -1;
+    mio_mesh* h =
+        mio_hessian(m, "f", nullptr, nullptr, nullptr, 0, &skipped, &fallback);
+    ASSERT_NE(h, nullptr) << mio_last_error();
+    EXPECT_EQ(skipped, 0);
+    EXPECT_EQ(fallback, 0);
+    ASSERT_EQ(mio_mesh_get_cell_data(h, "f:hessian", 0, &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(got_shape[1], 9);
+    const double* v = static_cast<const double*>(data);
+    for (int i = 0; i < 9; ++i)
+        EXPECT_NEAR(v[i], 0.0, 1e-9) << "entry " << i;
+    mio_mesh_free(h);
+
+    // Point location moves the array to point_data and drops the intermediate.
+    mio_mesh* p = mio_hessian(m, "f", "green-gauss", "point", nullptr, 0, nullptr, nullptr);
+    ASSERT_NE(p, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_get_point_data(p, "f:hessian", &data, &dt, &ndim, got_shape), MIO_OK);
+    EXPECT_LE(mio_mesh_cell_data_num_blocks(p, "f:hessian"), 0)
+        << "the intermediate cell array must be dropped";
+    mio_mesh_free(p);
+
+    // Unknown array, a vector (multi-component) input, and NULL arguments:
+    // NULL + last_error, never an exception across the ABI.
+    EXPECT_EQ(mio_hessian(m, "nope", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    const std::vector<double> u(24, 0.0);
+    const std::int64_t vshape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 2, vshape, u.data()), MIO_OK);
+    EXPECT_EQ(mio_hessian(m, "u", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr)
+        << "hessian is scalar-only";
+    EXPECT_EQ(mio_hessian(nullptr, "f", nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_hessian(m, nullptr, nullptr, nullptr, nullptr, 0, nullptr, nullptr), nullptr);
+
+    mio_mesh_free(m);
+}
+
 TEST(CApi, EstimateError) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
                                      0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
