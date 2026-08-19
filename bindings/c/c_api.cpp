@@ -97,6 +97,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -1228,6 +1229,35 @@ mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const
             *num_skipped = r.mNumSkipped;
         if (num_marked)
             *num_marked = r.mNumMarked;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
+                     double subsample_ratio, int max_subdivide, int max_iterations,
+                     int max_repair_passes, const char* metric, int64_t* num_clusters_out,
+                     int64_t* num_iterations, int* subdivide_applied,
+                     int64_t* num_isolated_clusters) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::RemeshOptions opts;
+        opts.mNumClusters = num_clusters;
+        opts.mSubdivide = subdivide;
+        opts.mSubsampleRatio = subsample_ratio;
+        opts.mMaxSubdivide = max_subdivide;
+        opts.mMaxIterations = max_iterations;
+        opts.mMaxRepairPasses = max_repair_passes;
+        opts.mMetric = meshioplusplus::remesh_metric_from_name(metric ? metric : "isotropic");
+        meshioplusplus::RemeshResult r = meshioplusplus::remesh(mesh->mMesh, opts);
+        if (num_clusters_out)
+            *num_clusters_out = r.mNumClusters;
+        if (num_iterations)
+            *num_iterations = r.mNumIterations;
+        if (subdivide_applied)
+            *subdivide_applied = r.mSubdivideApplied;
+        if (num_isolated_clusters)
+            *num_isolated_clusters = r.mNumIsolatedClusters;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

@@ -240,6 +240,34 @@ SEXP R_mio_estimate_error(SEXP mesh, SEXP array, SEXP method, SEXP marking, SEXP
     return res;
 }
 
+SEXP R_mio_remesh(SEXP mesh, SEXP num_clusters, SEXP subdivide, SEXP subsample_ratio,
+                  SEXP max_subdivide, SEXP max_iterations, SEXP max_repair_passes,
+                  SEXP metric) {
+    int64_t num_clusters_out = 0, num_iterations = 0, num_isolated = 0;
+    int subdivide_applied = 0;
+    mio_mesh *out = mio_remesh(
+        mio_r_mesh(mesh), (int64_t)mio_r_int(num_clusters, "num_clusters"),
+        mio_r_int(subdivide, "subdivide"),
+        mio_r_double(subsample_ratio, "subsample_ratio"),
+        mio_r_int(max_subdivide, "max_subdivide"), mio_r_int(max_iterations, "max_iterations"),
+        mio_r_int(max_repair_passes, "max_repair_passes"), mio_r_opt_string(metric),
+        &num_clusters_out, &num_iterations, &subdivide_applied, &num_isolated);
+    if (out == NULL) mio_r_fail("remesh");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    /* R has no native int64, so the counters come back as doubles -- the
+       mio_gradient wrapper's rule. */
+    SEXP nc = PROTECT(Rf_ScalarReal((double)num_clusters_out));
+    SEXP ni = PROTECT(Rf_ScalarReal((double)num_iterations));
+    SEXP sa = PROTECT(Rf_ScalarReal((double)subdivide_applied));
+    SEXP iso = PROTECT(Rf_ScalarReal((double)num_isolated));
+    const char *names[] = {"mesh", "num_clusters", "num_iterations", "subdivide_applied",
+                           "num_isolated_clusters"};
+    SEXP values[] = {mo, nc, ni, sa, iso};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

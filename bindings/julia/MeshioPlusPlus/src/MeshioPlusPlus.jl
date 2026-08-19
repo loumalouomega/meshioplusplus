@@ -96,6 +96,7 @@ export transform, clean, smooth, crop_bbox, crop_plane, crop_predicate, slice, i
 export gradient
 export hessian
 export estimate_error
+export remesh
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth

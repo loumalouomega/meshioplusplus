@@ -424,6 +424,55 @@ function estimate_error(m::Mesh, array::AbstractString; method=:zz, marking=:non
      num_skipped=Int(skipped[]), num_marked=Int(nmarked[]))
 end
 
+"""
+    remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
+           max_subdivide=4, max_iterations=100, max_repair_passes=10,
+           metric=:isotropic)
+        -> (; mesh, num_clusters, num_iterations, subdivide_applied,
+             num_isolated_clusters)
+
+Remesh a surface uniformly by approximated centroidal Voronoi diagram (ACVD)
+clustering: replace its triangulation with a new, near-uniformly-sized,
+well-shaped one at `num_clusters` vertices. Unlike every other
+resolution-changing operation, the output has NEW points and NEW
+connectivity with no correspondence to `mesh` — point/cell data and named
+regions are dropped, field data is carried.
+
+`metric` is `:isotropic` (default; area-weighted centroidal distance, fast,
+rounds sharp features) or `:quadric` (Garland-Heckbert quadric error,
+preserves sharp edges/corners at extra cost per candidate move). `subdivide`
+defaults to automatic (`-1`): the smallest count of uniform `refine` passes
+reaching `subsample_ratio` items per cluster, capped at `max_subdivide`; `0`
+disables subdivision. `num_isolated_clusters` non-zero means some clusters
+could not be repaired into a single connected piece, so the output may be
+non-manifold near them.
+
+Attribution: the isotropic clustering engine is derived from
+[pyacvd](https://github.com/pyvista/pyacvd) (MIT, (c) 2017-2024 The PyVista
+Developers), itself an independent implementation of the published research
+of S. Valette and J.-M. Chassery, not of the CeCILL-B licensed ACVD project.
+See `doc/remesh.md`.
+"""
+function remesh(m::Mesh, num_clusters::Integer; subdivide::Integer=-1,
+                subsample_ratio::Real=10.0, max_subdivide::Integer=4,
+                max_iterations::Integer=100, max_repair_passes::Integer=10,
+                metric::Symbol=:isotropic)
+    num_clusters_out = Ref{Int64}(0)
+    num_iterations = Ref{Int64}(0)
+    subdivide_applied = Ref{Cint}(0)
+    num_isolated = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_remesh), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int64, Cint, Cdouble, Cint, Cint, Cint, Cstring,
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Cint}, Ptr{Int64}),
+                _handle(m), Int64(num_clusters), Cint(subdivide), Cdouble(subsample_ratio),
+                Cint(max_subdivide), Cint(max_iterations), Cint(max_repair_passes),
+                String(metric), num_clusters_out, num_iterations, subdivide_applied,
+                num_isolated)
+    (mesh=Mesh(_check_ptr(ptr)), num_clusters=Int(num_clusters_out[]),
+     num_iterations=Int(num_iterations[]), subdivide_applied=Int(subdivide_applied[]),
+     num_isolated_clusters=Int(num_isolated[]))
+end
+
 # --- combining / comparing ---------------------------------------------------
 
 """

@@ -377,6 +377,7 @@ module meshioplusplus
         procedure :: gradient => mesh_gradient
         procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
+        procedure :: remesh => mesh_remesh
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: subdivide => mesh_subdivide
@@ -1044,6 +1045,21 @@ module meshioplusplus
             integer(c_int), value :: overwrite
             real(c_double), intent(out) :: global_error
             integer(c_int64_t), intent(out) :: n_skipped, n_marked
+            type(c_ptr) :: r
+        end function
+        function c_mio_remesh(h, num_clusters, subdivide, subsample_ratio, max_subdivide, &
+                              max_iterations, max_repair_passes, metric, num_clusters_out, &
+                              num_iterations, subdivide_applied, num_isolated_clusters) &
+                bind(c, name="mio_remesh") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char, c_double
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: num_clusters
+            integer(c_int), value :: subdivide, max_subdivide, max_iterations, max_repair_passes
+            real(c_double), value :: subsample_ratio
+            character(kind=c_char), dimension(*), intent(in) :: metric
+            integer(c_int64_t), intent(out) :: num_clusters_out, num_iterations
+            integer(c_int), intent(out) :: subdivide_applied
+            integer(c_int64_t), intent(out) :: num_isolated_clusters
             type(c_ptr) :: r
         end function
 
@@ -3179,6 +3195,61 @@ contains
         if (present(global_error)) global_error = real(cerror, real64)
         if (present(num_skipped)) num_skipped = int(nskip, int64)
         if (present(num_marked)) num_marked = int(nmark, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+    !> clustering: replace its triangulation with a new, near-uniformly-sized,
+    !> well-shaped one at `num_clusters` vertices. Unlike every other
+    !> resolution-changing procedure on this type, the output has NEW points
+    !> and NEW connectivity with no correspondence to `self` -- point/cell
+    !> data and named regions are dropped, field data is carried.
+    !>
+    !> `metric` is "isotropic" (default; area-weighted centroidal distance) or
+    !> "quadric" (Garland-Heckbert quadric error, preserves sharp edges and
+    !> corners). `subdivide` defaults to automatic (the smallest count
+    !> reaching `subsample_ratio` items per cluster, capped at
+    !> `max_subdivide`); pass 0 to disable subdivision.
+    function mesh_remesh(self, num_clusters, subdivide, subsample_ratio, max_subdivide, &
+                         max_iterations, max_repair_passes, metric, num_iterations, &
+                         subdivide_applied, num_isolated_clusters, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in) :: num_clusters
+        integer, intent(in), optional :: subdivide, max_subdivide, max_iterations
+        integer, intent(in), optional :: max_repair_passes
+        real(real64), intent(in), optional :: subsample_ratio
+        character(*), intent(in), optional :: metric
+        integer(int64), intent(out), optional :: num_iterations, num_isolated_clusters
+        integer, intent(out), optional :: subdivide_applied
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: csubdivide, cmaxsub, cmaxiter, cmaxrepair, csubapp
+        real(c_double) :: cratio
+        character(:), allocatable :: cmetric
+        integer(c_int64_t) :: cnclus_out, cniter, cniso
+        csubdivide = -1
+        if (present(subdivide)) csubdivide = int(subdivide, c_int)
+        cratio = 10.0_c_double
+        if (present(subsample_ratio)) cratio = real(subsample_ratio, c_double)
+        cmaxsub = 4
+        if (present(max_subdivide)) cmaxsub = int(max_subdivide, c_int)
+        cmaxiter = 100
+        if (present(max_iterations)) cmaxiter = int(max_iterations, c_int)
+        cmaxrepair = 10
+        if (present(max_repair_passes)) cmaxrepair = int(max_repair_passes, c_int)
+        cmetric = 'isotropic'
+        if (present(metric)) cmetric = metric
+        out%handle = c_mio_remesh(self%handle, int(num_clusters, c_int64_t), csubdivide, cratio, &
+                                  cmaxsub, cmaxiter, cmaxrepair, c_str(cmetric), cnclus_out, &
+                                  cniter, csubapp, cniso)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('remesh', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_iterations)) num_iterations = int(cniter, int64)
+        if (present(subdivide_applied)) subdivide_applied = int(csubapp)
+        if (present(num_isolated_clusters)) num_isolated_clusters = int(cniso, int64)
         call clear_status(stat, errmsg)
     end function
 

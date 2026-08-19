@@ -108,6 +108,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -1440,6 +1441,41 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("method") = "zz", py::arg("marking") = "none",
         py::arg("marking_value") = 0.0, py::arg("output") = "", py::arg("marked_name") = "",
         py::arg("overwrite") = false);
+
+    // Isotropic / feature-preserving surface remeshing by approximated
+    // centroidal Voronoi diagram clustering. Output is a brand-new,
+    // unrelated mesh (no point/cell maps, unlike decimate_volume) with
+    // point_data/cell_data/regions dropped, so the dict carries only the
+    // mesh plus the run's scalar counters. See operations/remesh.hpp.
+    m.def(
+        "remesh",
+        [](py::object pymesh, std::int64_t num_clusters, int subdivide, double subsample_ratio,
+           int max_subdivide, int max_iterations, int max_repair_passes,
+           const std::string& metric) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshOptions options;
+            options.mNumClusters = num_clusters;
+            options.mSubdivide = subdivide;
+            options.mSubsampleRatio = subsample_ratio;
+            options.mMaxSubdivide = max_subdivide;
+            options.mMaxIterations = max_iterations;
+            options.mMaxRepairPasses = max_repair_passes;
+            options.mMetric = meshioplusplus::remesh_metric_from_name(metric);
+            meshioplusplus::RemeshResult r = meshioplusplus::remesh(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_clusters"] = r.mNumClusters;
+            out["num_iterations"] = r.mNumIterations;
+            out["subdivide_applied"] = r.mSubdivideApplied;
+            out["num_isolated_clusters"] = r.mNumIsolatedClusters;
+            return out;
+        },
+        py::arg("mesh"), py::arg("num_clusters"), py::arg("subdivide") = -1,
+        py::arg("subsample_ratio") = 10.0, py::arg("max_subdivide") = 4,
+        py::arg("max_iterations") = 100, py::arg("max_repair_passes") = 10,
+        py::arg("metric") = "isotropic");
 
     // The settings.json pipeline (read -> operation chain -> write), run
     // entirely in C++ against file paths. Bound for parity tests and for

@@ -124,6 +124,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2098,6 +2099,37 @@ val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std:
 }
 
 /**
+ * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+ * clustering: replace its triangulation with a new, near-uniformly-sized,
+ * well-shaped one at `numClusters` vertices. Unlike every other
+ * resolution-changing operation the output has NEW points and NEW
+ * connectivity with no correspondence to the input -- point/cell data and
+ * named regions are dropped, field data is carried. See doc/remesh.md.
+ */
+val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
+             double subsampleRatio, int maxSubdivide, int maxIterations, int maxRepairPasses,
+             const std::string& rMetric) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemeshOptions options;
+        options.mNumClusters = numClusters;
+        options.mSubdivide = subdivide;
+        options.mSubsampleRatio = subsampleRatio;
+        options.mMaxSubdivide = maxSubdivide;
+        options.mMaxIterations = maxIterations;
+        options.mMaxRepairPasses = maxRepairPasses;
+        options.mMetric = meshioplusplus::remesh_metric_from_name(rMetric);
+        meshioplusplus::RemeshResult r = meshioplusplus::remesh(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numClusters", static_cast<double>(r.mNumClusters));
+        out.set("numIterations", static_cast<double>(r.mNumIterations));
+        out.set("subdivideApplied", static_cast<double>(r.mSubdivideApplied));
+        out.set("numIsolatedClusters", static_cast<double>(r.mNumIsolatedClusters));
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -2945,6 +2977,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("gradient", &gradient_js);
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
+    emscripten::function("remesh", &remesh_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

@@ -822,6 +822,58 @@ mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
   )
 }
 
+#' Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+#' clustering
+#'
+#' Replace a surface mesh's triangulation with a new, near-uniformly-sized,
+#' well-shaped one at `num_clusters` vertices. Unlike every other
+#' resolution-changing operation, the output has NEW points and NEW
+#' connectivity with no correspondence to the input -- point/cell data and
+#' named regions are dropped, field data is carried.
+#'
+#' `metric` is `"isotropic"` (default; area-weighted centroidal distance,
+#' fast, rounds sharp features) or `"quadric"` (Garland-Heckbert quadric
+#' error, preserves sharp edges/corners at extra cost per candidate move).
+#' `subdivide` defaults to automatic (`-1`): the smallest count of uniform
+#' `refine` passes reaching `subsample_ratio` items per cluster, capped at
+#' `max_subdivide`; `0` disables subdivision. `num_isolated_clusters` in the
+#' result non-zero means some clusters could not be repaired into a single
+#' connected piece, so the output may be non-manifold near them.
+#'
+#' Attribution: the isotropic clustering engine is derived from
+#' \href{https://github.com/pyvista/pyacvd}{pyacvd} (MIT, (c) 2017-2024 The
+#' PyVista Developers), itself an independent implementation of the
+#' published research of S. Valette and J.-M. Chassery, not of the
+#' CeCILL-B licensed ACVD project. See `doc/remesh.md`.
+#'
+#' @param mesh A `mio_mesh` (surface only).
+#' @param num_clusters Number of clusters, i.e. output vertices aimed for;
+#'   must be >= 4 and <= the subdivided input's vertex count.
+#' @param subdivide Uniform refine passes before clustering; negative (the
+#'   default) picks the smallest count reaching `subsample_ratio`
+#'   items/cluster, capped at `max_subdivide`; `0` disables subdivision.
+#' @param subsample_ratio Items per cluster targeted by automatic
+#'   subdivision.
+#' @param max_subdivide Ceiling on automatic subdivision (ignored when
+#'   `subdivide` is set explicitly).
+#' @param max_iterations Maximum energy-minimisation sweeps per pass.
+#' @param max_repair_passes "Split disconnected clusters, minimise again"
+#'   passes; `0` skips repair.
+#' @param metric `"isotropic"` (default) or `"quadric"`.
+#' @return A list of `mesh`, `num_clusters`, `num_iterations`,
+#'   `subdivide_applied` and `num_isolated_clusters`.
+#' @export
+mio_remesh <- function(mesh, num_clusters, subdivide = -1L, subsample_ratio = 10.0,
+                       max_subdivide = 4L, max_iterations = 100L,
+                       max_repair_passes = 10L, metric = "isotropic") {
+  .Call(
+    R_mio_remesh, mesh, as.integer(num_clusters), as.integer(subdivide),
+    as.numeric(subsample_ratio), as.integer(max_subdivide),
+    as.integer(max_iterations), as.integer(max_repair_passes),
+    as.character(metric)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_merge <- function(meshes, weld = FALSE, atol = 1e-12, source_tag = TRUE,

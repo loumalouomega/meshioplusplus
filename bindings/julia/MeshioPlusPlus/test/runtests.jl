@@ -648,6 +648,33 @@ end
     close(m)
 end
 
+@testset "operations: remesh" begin
+    # A regular octahedron: the smallest closed 2-manifold triangle mesh with
+    # no coplanar faces.
+    octa = Mesh()
+    set_points!(octa, Float64[1 -1 0 0 0 0; 0 0 1 -1 0 0; 0 0 0 0 1 -1])
+    add_cell_block!(octa, "triangle",
+                    Int64[1 3 2 4 3 2 4 1; 3 2 4 1 1 3 2 4; 5 5 5 5 6 6 6 6])
+
+    r = remesh(octa, 30)
+    @test r.num_clusters == 30
+    @test num_points(r.mesh) == 30
+    @test r.subdivide_applied > 0  # 6 vertices cannot support 30 clusters unsubdivided
+    @test r.num_iterations >= 0
+    @test r.num_isolated_clusters >= 0
+    close(r.mesh)
+
+    # The quadric ("feature-preserving") metric is accepted too.
+    q = remesh(octa, 30; metric=:quadric)
+    @test q.num_clusters == 30
+    close(q.mesh)
+
+    # Too few clusters is rejected by name.
+    @test_throws MeshioError remesh(octa, 3)
+
+    close(octa)
+end
+
 @testset "operations: merge and interpolate" begin
     a = fixture()
     b = fixture()

@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 9
+#define MIO_VERSION_MINOR 10
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1020,6 +1020,52 @@ MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_nam
                                      const char* marked_name, int overwrite,
                                      double* global_error, int64_t* num_skipped,
                                      int64_t* num_marked);
+
+/**
+ * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+ * clustering: replace its triangulation with a new, near-uniformly-sized,
+ * well-shaped one at a caller-chosen vertex count. Unlike every other
+ * resolution-changing operation this does not work on the input's own
+ * triangulation, so the output has NEW points and NEW connectivity with no
+ * correspondence to the input -- point_data/cell_data/named regions are
+ * dropped, field_data is carried. See doc/remesh.md.
+ * @param mesh                input surface mesh.
+ * @param num_clusters        number of clusters, i.e. output vertices aimed
+ *                             for; must be >= 4 and <= the subdivided
+ *                             input's vertex count.
+ * @param subdivide            uniform refine passes applied before
+ *                             clustering (each multiplies triangle count by
+ *                             4); negative picks the smallest count reaching
+ *                             subsample_ratio items/cluster, capped at
+ *                             max_subdivide; 0 disables subdivision.
+ * @param subsample_ratio      items per cluster targeted by automatic
+ *                             subdivision.
+ * @param max_subdivide        ceiling on automatic subdivision (ignored when
+ *                             subdivide is set explicitly).
+ * @param max_iterations       maximum energy-minimisation sweeps per pass.
+ * @param max_repair_passes    "split disconnected clusters, minimise again"
+ *                             passes; 0 skips repair.
+ * @param metric               NULL, "" or "isotropic" (area-weighted
+ *                             centroidal distance) selects the default;
+ *                             "quadric" selects the Garland-Heckbert
+ *                             quadric-error, feature-preserving metric.
+ * @param num_clusters_out     optional out: clusters actually produced
+ *                             (mesh->NumPoints(); may be lower than
+ *                             num_clusters, never higher).
+ * @param num_iterations       optional out: energy-minimisation sweeps
+ *                             performed, summed over every repair pass.
+ * @param subdivide_applied    optional out: subdivision passes actually
+ *                             applied (the resolved value of subdivide).
+ * @param num_isolated_clusters optional out: clusters still disconnected
+ *                             after repair; non-zero means the output may be
+ *                             non-manifold near them.
+ * @return the remeshed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
+                             double subsample_ratio, int max_subdivide, int max_iterations,
+                             int max_repair_passes, const char* metric,
+                             int64_t* num_clusters_out, int64_t* num_iterations,
+                             int* subdivide_applied, int64_t* num_isolated_clusters);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
