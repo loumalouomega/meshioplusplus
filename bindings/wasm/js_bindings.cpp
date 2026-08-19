@@ -114,6 +114,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -2024,6 +2025,47 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
 }
 
 /**
+ * @brief The Hessian (second derivative) of a scalar point_data field --
+ * gradient_js's companion one order further, for curvature-based adaptive
+ * refinement.
+ *
+ * A composition of TWO gradient() calls, not a new numerical kernel: the
+ * field is differentiated once (Point location), then that (n,3) gradient
+ * is differentiated again with the default "gradient" operator, producing
+ * (n,9) -- the flattened row-major 3x3 Hessian. `method` is forwarded to
+ * BOTH internal passes. An empty `output` selects `<array>:hessian`.
+ *
+ * A field that is at most LINEAR has an exactly zero Hessian everywhere --
+ * the one mesh-shape-independent guarantee. For a genuinely quadratic field
+ * the composition is exact on a structured/symmetric mesh away from its own
+ * boundary and a good, standard, but genuinely approximate curvature
+ * estimate on an irregular mesh (see doc/hessian.md). Input must have
+ * exactly one component.
+ *
+ * Like gradient_js, the result's (n,9) width travels in the
+ * point_data_components/cell_data_components sibling maps mesh_to_val
+ * emits.
+ */
+val hessian_js(const val& rMeshObj, const std::string& rArray, const std::string& rMethod,
+              const std::string& rLocation, const std::string& rOutput, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::HessianOptions options;
+        options.mArrayName = rArray;
+        options.mMethod = meshioplusplus::gradient_method_from_name(rMethod);
+        options.mLocation =
+            meshioplusplus::data_location_from_name(rLocation.empty() ? "cell" : rLocation);
+        options.mOutputName = rOutput;
+        options.mOverwrite = overwrite;
+        meshioplusplus::HessianResult r = meshioplusplus::hessian(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numFallback", static_cast<double>(r.mNumFallback));
+        return out;
+    });
+}
+
+/**
  * @brief The ZZ recovery-based error indicator plus marking.
  *
  * A composition of `gradient_js` with the measure-weighted point<->cell
@@ -2901,6 +2943,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("distanceToSurface", &distance_to_surface_js);
     emscripten::function("computeSdf", &compute_sdf_js);
     emscripten::function("gradient", &gradient_js);
+    emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);

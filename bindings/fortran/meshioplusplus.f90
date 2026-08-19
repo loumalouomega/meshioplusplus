@@ -375,6 +375,7 @@ module meshioplusplus
         procedure :: slice => mesh_slice
         procedure :: isosurface => mesh_isosurface
         procedure :: gradient => mesh_gradient
+        procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
@@ -1015,6 +1016,18 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: array_name, op, method
             character(kind=c_char), dimension(*), intent(in) :: location, output_name
             integer(c_int), value :: component, overwrite
+            integer(c_int64_t), intent(out) :: n_skipped, n_fallback
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_hessian(h, array_name, method, location, output_name, &
+                              overwrite, n_skipped, n_fallback) &
+                bind(c, name="mio_hessian") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array_name, method, location
+            character(kind=c_char), dimension(*), intent(in) :: output_name
+            integer(c_int), value :: overwrite
             integer(c_int64_t), intent(out) :: n_skipped, n_fallback
             type(c_ptr) :: r
         end function
@@ -3038,6 +3051,66 @@ contains
                                     c_str(cloc), c_str(cout), ccomp, cover, nskip, nfall)
         if (.not. c_associated(out%handle)) then
             call handle_failure('gradient', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_skipped)) num_skipped = int(nskip, int64)
+        if (present(num_fallback)) num_fallback = int(nfall, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The Hessian (second derivative) of a scalar point_data field --
+    !> `gradient`'s companion one order further, for curvature-based adaptive
+    !> refinement.
+    !>
+    !> A composition of TWO `gradient` calls, not a new numerical kernel: the
+    !> field is differentiated once (point location), then that (n,3)
+    !> gradient is differentiated again with the default "gradient" operator,
+    !> producing (n,9) -- the flattened row-major 3x3 Hessian, H(i,j) at
+    !> index i*3+j. `method` (default "green-gauss") is forwarded to BOTH
+    !> internal passes. `output` overrides the default "<array>:hessian"
+    !> name.
+    !>
+    !> A field that is at most LINEAR has an exactly zero Hessian everywhere
+    !> -- the one mesh-shape-independent guarantee. For a genuinely
+    !> quadratic field the composition is exact on a structured/symmetric
+    !> mesh away from its own boundary and a good, standard, but genuinely
+    !> approximate curvature estimate on an irregular mesh (see
+    !> doc/hessian.md). Input must have exactly one component -- a vector
+    !> field's Hessian is a separate quantity per component.
+    !>
+    !> Cells that cannot be evaluated yield NaN and are reported in
+    !> `num_skipped`; least-squares cells with a degenerate neighbourhood in
+    !> either internal pass fall back to Green-Gauss and are reported in
+    !> `num_fallback` (summed over both passes).
+    function mesh_hessian(self, array, method, location, output, overwrite, num_skipped, &
+                          num_fallback, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        character(*), intent(in), optional :: method, location, output
+        logical, intent(in), optional :: overwrite
+        integer(int64), intent(out), optional :: num_skipped, num_fallback
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cover
+        integer(c_int64_t) :: nskip, nfall
+        character(:), allocatable :: cmethod, cloc, cout
+        cmethod = ''
+        if (present(method)) cmethod = method
+        cloc = 'cell'
+        if (present(location)) cloc = location
+        cout = ''
+        if (present(output)) cout = output
+        cover = 0
+        if (present(overwrite)) then
+            if (overwrite) cover = 1
+        end if
+        nskip = 0
+        nfall = 0
+        out%handle = c_mio_hessian(self%handle, c_str(array), c_str(cmethod), c_str(cloc), &
+                                   c_str(cout), cover, nskip, nfall)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('hessian', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(num_skipped)) num_skipped = int(nskip, int64)

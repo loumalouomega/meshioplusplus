@@ -553,6 +553,29 @@ test_that("gradient differentiates a point-data field", {
   expect_error(mio_gradient(m, "temperature", op = "divergence"))
 })
 
+test_that("hessian computes the second derivative of a scalar field", {
+  m <- fixture()
+  on.exit(mio_release(m))
+
+  h <- mio_hessian(m, "temperature")
+  expect_equal(h$num_skipped, 0)
+  expect_true("temperature:hessian" %in% mio_cell_data_names(h$mesh))
+  mio_release(h$mesh)
+
+  l <- mio_hessian(m, "temperature", method = "least-squares")
+  expect_gte(l$num_fallback, 0)
+  mio_release(l$mesh)
+
+  p <- mio_hessian(m, "temperature", location = "point", output = "H2")
+  expect_true("H2" %in% mio_point_data_names(p$mesh))
+  mio_release(p$mesh)
+
+  # A cell_data array has no derivative, and a vector field is scalar-only.
+  # Both must fail by name.
+  expect_error(mio_hessian(m, "material"))
+  expect_error(mio_hessian(m, "displacement"))
+})
+
 test_that("estimate_error estimates a recovery-based indicator and marks", {
   m <- fixture()
   on.exit(mio_release(m))

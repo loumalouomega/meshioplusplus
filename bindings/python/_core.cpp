@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -1381,6 +1382,33 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("operator_") = "gradient",
         py::arg("method") = "green-gauss", py::arg("location") = "cell", py::arg("output") = "",
         py::arg("component") = -1, py::arg("overwrite") = false);
+
+    // The Hessian (second derivative) of a scalar point_data field, built
+    // entirely as a composition of two `gradient` calls. See
+    // operations/hessian.hpp for the exactness argument and the scalar-only
+    // scope.
+    m.def(
+        "hessian",
+        [](py::object pymesh, const std::string& array, const std::string& method,
+           const std::string& location, const std::string& output, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::HessianOptions options;
+            options.mArrayName = array;
+            options.mMethod = meshioplusplus::gradient_method_from_name(method);
+            options.mLocation = meshioplusplus::data_location_from_name(location);
+            options.mOutputName = output;
+            options.mOverwrite = overwrite;
+            meshioplusplus::HessianResult r = meshioplusplus::hessian(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_fallback"] = r.mNumFallback;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("method") = "green-gauss",
+        py::arg("location") = "cell", py::arg("output") = "", py::arg("overwrite") = false);
 
     // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
     // entirely as a composition of `gradient` + the two `data_average`

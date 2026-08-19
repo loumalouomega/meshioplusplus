@@ -84,6 +84,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -1172,6 +1173,29 @@ mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, const char*
             opts.mComponent = component;
         opts.mOverwrite = overwrite != 0;
         meshioplusplus::GradientResult r = meshioplusplus::gradient(mesh->mMesh, opts);
+        if (num_skipped)
+            *num_skipped = r.mNumSkipped;
+        if (num_fallback)
+            *num_fallback = r.mNumFallback;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_hessian(const mio_mesh* mesh, const char* array_name, const char* method,
+                      const char* location, const char* output_name, int overwrite,
+                      int64_t* num_skipped, int64_t* num_fallback) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !array_name)
+            throw meshioplusplus::ReadError("meshio++: mesh/array_name is NULL");
+        meshioplusplus::HessianOptions opts;
+        opts.mArrayName = array_name;
+        opts.mMethod = meshioplusplus::gradient_method_from_name(method ? method : "");
+        opts.mLocation =
+            meshioplusplus::data_location_from_name((location && *location) ? location : "cell");
+        if (output_name)
+            opts.mOutputName = output_name;
+        opts.mOverwrite = overwrite != 0;
+        meshioplusplus::HessianResult r = meshioplusplus::hessian(mesh->mMesh, opts);
         if (num_skipped)
             *num_skipped = r.mNumSkipped;
         if (num_fallback)

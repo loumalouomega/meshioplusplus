@@ -599,6 +599,29 @@ end
     close(m)
 end
 
+@testset "operations: hessian" begin
+    m = fixture()
+
+    h = hessian(m, "temperature")
+    @test h.num_skipped == 0
+    @test "temperature:hessian" in cell_data_names(h.mesh)
+    close(h.mesh)
+
+    l = hessian(m, "temperature"; method=:least_squares)
+    @test l.num_fallback >= 0
+    close(l.mesh)
+
+    p = hessian(m, "temperature"; location=:point, output="H2")
+    @test "H2" in point_data_names(p.mesh)
+    close(p.mesh)
+
+    # A cell_data array has no derivative, and a vector field is scalar-only:
+    # both must fail by name.
+    @test_throws MeshioError hessian(m, "material")
+    @test_throws MeshioError hessian(m, "displacement")
+    close(m)
+end
+
 @testset "operations: estimate_error" begin
     m = fixture()
 

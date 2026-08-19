@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 8
+#define MIO_VERSION_MINOR 9
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -904,6 +904,70 @@ MIO_API mio_mesh* mio_gradient(const mio_mesh* mesh, const char* array_name, con
                                const char* method, const char* location, const char* output_name,
                                int component, int overwrite, int64_t* num_skipped,
                                int64_t* num_fallback);
+
+/**
+ * The Hessian (second derivative) of a scalar point_data field --
+ * mio_gradient's companion one order further, for curvature-based adaptive
+ * refinement.
+ *
+ * A composition of TWO mio_gradient calls, not a new numerical kernel: the
+ * field is differentiated once (Point location, so the result is a genuine
+ * point_data array), then that (n,3) gradient is differentiated again with
+ * the default "gradient" operator, which is generic over its input's own
+ * component count and so produces (n,9) -- the flattened row-major 3x3
+ * Hessian, H[i][j] at index i*3+j. The result is a copy of the input
+ * carrying one new array; geometry, connectivity, regions and every
+ * existing array come through unchanged.
+ *
+ * A field that is at most LINEAR has an exactly zero Hessian everywhere
+ * (its gradient is a constant, and Green-Gauss of a constant field is
+ * trivially exact) -- the one mesh-shape-independent guarantee. For a
+ * genuinely QUADRATIC field the composition is exact on a
+ * structured/symmetric mesh away from its own boundary (measured, not
+ * assumed) and a good, standard, but genuinely approximate curvature
+ * estimate on an irregular mesh, because the mandatory intermediate
+ * Uniform-weighted point-averaging step between the two passes is only
+ * exact for a field that is constant over the averaged neighbourhood.
+ *
+ * Input must have exactly one component -- a vector field's Hessian is a
+ * separate quantity per component; call this once per component instead of
+ * passing a multi-component array.
+ *
+ * Cells that cannot be evaluated (the same reasons mio_gradient's own
+ * num_skipped covers, structurally identical between the two internal
+ * passes) yield NaN in the Hessian and are counted in num_skipped. With
+ * "least-squares", a cell whose neighbourhood is degenerate in either pass
+ * falls back to Green-Gauss and is counted in num_fallback (summed over
+ * both passes).
+ *
+ * A curvature-driven refinement indicator needs no new API here: a scalar
+ * Frobenius-norm indicator over the 9-component output is
+ * `mio_data_calc(mesh, "curv = norm(`<array>:hessian`)", ...)`, ready for
+ * `mio_refine_ex`'s predicate selector.
+ *
+ * @param mesh         input mesh.
+ * @param array_name   name of the scalar point_data array to differentiate
+ *                     twice. A cell_data name is an error naming the fix; a
+ *                     name with more than one component is an error naming
+ *                     the per-component workaround.
+ * @param method       "green-gauss" (default) or "least-squares"; NULL or ""
+ *                     selects the default. Forwarded to BOTH internal
+ *                     mio_gradient calls.
+ * @param location     "cell" (default) or "point"; NULL or "" selects the
+ *                     default.
+ * @param output_name  name for the produced array; NULL or "" uses
+ *                     "<array_name>:hessian".
+ * @param overwrite    nonzero to replace an existing array of the output name
+ *                     instead of failing.
+ * @param num_skipped  optional out: cells that produced a NaN row.
+ * @param num_fallback optional out: least-squares cells that fell back, in
+ *                     either internal pass.
+ * @return the mesh carrying the produced array (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_hessian(const mio_mesh* mesh, const char* array_name, const char* method,
+                              const char* location, const char* output_name, int overwrite,
+                              int64_t* num_skipped, int64_t* num_fallback);
 
 /**
  * Estimate the per-cell recovered-gradient (Zienkiewicz-Zhu) error of a

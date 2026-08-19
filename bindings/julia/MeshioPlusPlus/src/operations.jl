@@ -342,6 +342,48 @@ _op_name(op) = String(op)
 _method_name(m) = replace(String(m), '_' => '-')
 
 """
+    hessian(mesh, array; method=:green_gauss, location=:cell, output="",
+            overwrite=false) -> (; mesh, num_skipped, num_fallback)
+
+The Hessian (second derivative) of a **scalar point-data** field —
+[`gradient`](@ref)'s companion one order further, for curvature-based
+adaptive refinement.
+
+A composition of TWO `gradient` calls, not a new numerical kernel: the field
+is differentiated once (point location), then that `(n, 3)` gradient is
+differentiated again with the default `:gradient` operator, producing
+`(n, 9)` — the flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`.
+`method` is forwarded to BOTH internal passes. The result is named
+`"<array>:hessian"` unless `output` overrides it.
+
+A field that is at most LINEAR has an exactly zero Hessian everywhere — the
+one mesh-shape-independent guarantee. For a genuinely quadratic field the
+composition is exact on a structured/symmetric mesh away from its own
+boundary and a good, standard, but genuinely approximate curvature estimate
+on an irregular mesh (see `doc/hessian.md`). Input must have exactly one
+component — a vector field's Hessian is a separate quantity per component.
+
+Cells that cannot be evaluated yield `NaN` and are counted in `num_skipped`;
+least-squares cells with a degenerate neighbourhood in either internal pass
+fall back to Green-Gauss and are counted in `num_fallback` (summed over both
+passes).
+
+A curvature-driven refinement indicator needs no new function: `norm(...)`
+in [`data_calc`](@ref) on the 9-component output is exactly its Frobenius
+norm, ready for [`refine`](@ref)'s `where` selector.
+"""
+function hessian(m::Mesh, array::AbstractString; method=:green_gauss, location=:cell,
+                 output::AbstractString="", overwrite::Bool=false)
+    skipped = Ref{Int64}(0)
+    fallback = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_hessian), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring, Cint, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), array, _method_name(method), String(location), output,
+                overwrite ? Cint(1) : Cint(0), skipped, fallback)
+    (mesh=Mesh(_check_ptr(ptr)), num_skipped=Int(skipped[]), num_fallback=Int(fallback[]))
+end
+
+"""
     estimate_error(mesh, array; method=:zz, marking=:none, marking_value=0.0,
                    output="", marked="", overwrite=false)
         -> (; mesh, global_error, num_skipped, num_marked)

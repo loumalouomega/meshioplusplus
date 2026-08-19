@@ -94,6 +94,7 @@ export regions, add_region!
 export extract_surface, extract_skin, attach_quality, quality_counts
 export transform, clean, smooth, crop_bbox, crop_plane, crop_predicate, slice, isosurface
 export gradient
+export hessian
 export estimate_error
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
