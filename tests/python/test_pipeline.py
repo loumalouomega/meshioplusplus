@@ -221,9 +221,7 @@ def test_hessian_pipeline_step(settings_env):
     literally call the same underlying gradient() twice, and the two
     engines' output is bit-for-bit comparable, not merely within
     tolerance (test_hessian.py::test_cpp_matches_python established this)."""
-    settings = make_settings(
-        settings_env, [{"Op": "Hessian", "Array": "temperature"}]
-    )
+    settings = make_settings(settings_env, [{"Op": "Hessian", "Array": "temperature"}])
     report = meshioplusplus.run_pipeline(settings)
     assert report["steps"][0]["op"] == "Hessian"
     assert "NumSkipped" in report["steps"][0]

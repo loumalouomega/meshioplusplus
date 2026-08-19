@@ -93,7 +93,9 @@ def _validate(mesh, array, method, location, output, overwrite):
             "(expected 'green-gauss' or 'least-squares')"
         )
     if location not in _LOCATION_ALIASES:
-        raise ValueError(f"{_PREFIX}unknown location '{location}' (expected 'cell' or 'point')")
+        raise ValueError(
+            f"{_PREFIX}unknown location '{location}' (expected 'cell' or 'point')"
+        )
 
     if not array:
         raise ValueError(f"{_PREFIX}an array name is required")
@@ -139,12 +141,23 @@ def _hessian_py(mesh, array, method, location, output, overwrite):
     out_name = output or f"{array}:hessian"
 
     g1 = gradient(
-        mesh, array, operator="gradient", method=method, location="point",
-        output=_RAW_GRAD_NAME, overwrite=True,
+        mesh,
+        array,
+        operator="gradient",
+        method=method,
+        location="point",
+        output=_RAW_GRAD_NAME,
+        overwrite=True,
     )
     g2, report = gradient(
-        g1, _RAW_GRAD_NAME, operator="gradient", method=method, location="cell",
-        output=out_name, overwrite=True, return_report=True,
+        g1,
+        _RAW_GRAD_NAME,
+        operator="gradient",
+        method=method,
+        location="cell",
+        output=out_name,
+        overwrite=True,
+        return_report=True,
     )
 
     out = g2
@@ -204,7 +217,10 @@ def hessian(
             bool(overwrite),
         )
         out = res["mesh"]
-        report = {"num_skipped": res["num_skipped"], "num_fallback": res["num_fallback"]}
+        report = {
+            "num_skipped": res["num_skipped"],
+            "num_fallback": res["num_fallback"],
+        }
     except (ValueError, TypeError):
         # A genuine user error must not fall through to the composition path,
         # which would either raise something less helpful or silently
@@ -215,7 +231,12 @@ def hessian(
 
     if out is None:
         out, skipped, fallback = _hessian_py(
-            mesh, array, _METHOD_ALIASES[method], _LOCATION_ALIASES[location], output, overwrite
+            mesh,
+            array,
+            _METHOD_ALIASES[method],
+            _LOCATION_ALIASES[location],
+            output,
+            overwrite,
         )
         report = {"num_skipped": skipped, "num_fallback": fallback}
 
