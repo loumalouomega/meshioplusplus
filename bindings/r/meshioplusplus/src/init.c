@@ -100,6 +100,7 @@ extern SEXP R_mio_data_cell_to_point(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_calc(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_condition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_info(SEXP);
+extern SEXP R_mio_data_integrate(SEXP, SEXP);
 extern SEXP R_mio_pipeline_run_file(SEXP);
 extern SEXP R_mio_sequence_open(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sequence_open_list(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -218,6 +219,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_data_calc, 5),
     CALLDEF(R_mio_data_condition, 10),
     CALLDEF(R_mio_data_info, 1),
+    CALLDEF(R_mio_data_integrate, 2),
     CALLDEF(R_mio_pipeline_run_file, 1),
     CALLDEF(R_mio_sequence_open, 5),
     CALLDEF(R_mio_sequence_open_list, 5),

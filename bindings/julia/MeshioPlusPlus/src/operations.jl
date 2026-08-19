@@ -1164,6 +1164,89 @@ function data_info(m::Mesh)
     end
 end
 
+function _field_integral_components(handle, i::Int64, region, nc::Int64)
+    comps = NamedTuple{(:total, :mean, :domain_measure, :num_nan),
+                        Tuple{Float64,Float64,Float64,Int64}}[]
+    for c in 0:(nc - 1)
+        total = Ref{Cdouble}(0.0); mean = Ref{Cdouble}(0.0)
+        dm = Ref{Cdouble}(0.0); nnan = Ref{Int64}(0)
+        if region === nothing
+            _check(ccall(_sym(:mio_data_integrate_component), Cint,
+                         (Ptr{Cvoid}, Int64, Int64, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble},
+                          Ptr{Int64}), handle, i, c, total, mean, dm, nnan))
+        else
+            _check(ccall(_sym(:mio_data_integrate_region_component), Cint,
+                         (Ptr{Cvoid}, Int64, Int64, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                          Ptr{Cdouble}, Ptr{Int64}), handle, i, region, c, total, mean, dm, nnan))
+        end
+        push!(comps, (total=total[], mean=mean[], domain_measure=dm[], num_nan=Int(nnan[])))
+    end
+    comps
+end
+
+"""
+    data_integrate(mesh, names=String[]) -> Vector{NamedTuple}
+
+Cell-measure-weighted total/mean of one or more `cell_data` arrays --
+`gradient`'s integration counterpart (`gradient` differentiates a field, this
+integrates one). Every sum is weighted by the cell's own length/area/volume,
+excluding both a cell with unmeasurable geometry and a component with a
+non-finite value from that component's numerator *and* denominator. `names`
+empty means every `cell_data` array. Reported for the whole mesh (`domain`)
+and independently for every named Cell region (`regions`) -- a cell in two
+regions contributes fully to both, one in none contributes to neither. A
+`point_data`-only name throws naming `data_point_to_cell` as the fix. See
+`doc/field_integration.md`.
+"""
+function data_integrate(m::Mesh, names=String[])
+    h = _handle(m)
+    handle = _with_names(names) do p, c
+        _check_ptr(ccall(_sym(:mio_data_integrate_create), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Ptr{Cstring}, Int64), h, p, c))
+    end
+    try
+        n = _check_count(ccall(_sym(:mio_data_integrate_count), Int64, (Ptr{Cvoid},), handle),
+                         "mio_data_integrate_count")
+        out = []
+        for i in 0:(n - 1)
+            name = _getstring() do buf, len
+                ccall(_sym(:mio_data_integrate_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), handle, i, buf, len)
+            end
+            entry = Ref{_CFieldIntegralInfo}()
+            _check(ccall(_sym(:mio_data_integrate_entry), Cint,
+                         (Ptr{Cvoid}, Int64, Ptr{_CFieldIntegralInfo}), handle, i, entry))
+            e = entry[]
+            domain = (num_cells=Int(e.num_cells), num_skipped=Int(e.num_skipped),
+                      components=_field_integral_components(handle, i, nothing, e.num_components))
+
+            nregions = _check_count(ccall(_sym(:mio_data_integrate_region_count), Int64,
+                                          (Ptr{Cvoid}, Int64), handle, i),
+                                    "mio_data_integrate_region_count")
+            regions = []
+            for r in 0:(nregions - 1)
+                rname = _getstring() do buf, len
+                    ccall(_sym(:mio_data_integrate_region_name), Int64,
+                          (Ptr{Cvoid}, Int64, Int64, Ptr{UInt8}, Int64), handle, i, r, buf, len)
+                end
+                rentry = Ref{_CFieldIntegralInfo}()
+                _check(ccall(_sym(:mio_data_integrate_region_entry), Cint,
+                             (Ptr{Cvoid}, Int64, Int64, Ptr{_CFieldIntegralInfo}), handle, i, r,
+                             rentry))
+                re = rentry[]
+                push!(regions,
+                      (name=rname, num_cells=Int(re.num_cells), num_skipped=Int(re.num_skipped),
+                       components=_field_integral_components(handle, i, r, re.num_components)))
+            end
+            push!(out, (name=name, num_components=Int(e.num_components), domain=domain,
+                        regions=regions))
+        end
+        out
+    finally
+        ccall(_sym(:mio_data_integrate_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
 const _LOCATION_SYMS = (:point, :cell, :field)
 
 # ---------------------------------------------------------------------------

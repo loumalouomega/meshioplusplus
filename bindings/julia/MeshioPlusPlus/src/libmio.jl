@@ -188,6 +188,13 @@ struct _CDataArrayInfo
     inconsistent_blocks::Cint
 end
 
+"""Mirror of C `mio_field_integral_info`."""
+struct _CFieldIntegralInfo
+    num_components::Int64
+    num_cells::Int64
+    num_skipped::Int64
+end
+
 """Mirror of C `mio_region_info`."""
 struct _CRegionInfo
     kind::Cint

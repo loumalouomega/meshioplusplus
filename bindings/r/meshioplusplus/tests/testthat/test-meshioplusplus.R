@@ -680,6 +680,38 @@ test_that("data operations never touch geometry", {
   expect_equal(temp$num_nan, 0)
 })
 
+test_that("field integration (mio_data_integrate) totals/means over cells", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  mio_add_region(m, "solid", "cell", 1L, dim = 3L, tag = 17)
+
+  report <- mio_data_integrate(m, "material")
+  expect_length(report, 1)
+  arr <- report[[1]]
+  expect_equal(arr$name, "material")
+  expect_equal(arr$num_components, 1)
+  expect_equal(arr$domain$num_cells, 2)
+  expect_equal(arr$domain$num_skipped, 0)
+  dcomp <- arr$domain$components
+  expect_gt(unname(dcomp[1, "domain_measure"]), 0)
+  expect_equal(
+    unname(dcomp[1, "mean"]), unname(dcomp[1, "total"] / dcomp[1, "domain_measure"])
+  )
+  expect_equal(unname(dcomp[1, "num_nan"]), 0)
+
+  expect_length(arr$regions, 1)
+  region <- arr$regions[[1]]
+  expect_equal(region$name, "solid")
+  expect_equal(region$num_cells, 1)
+  expect_lt(unname(region$components[1, "total"]), unname(dcomp[1, "total"])) # one cell < both
+
+  # NULL names means every cell_data array (there's exactly one: material).
+  expect_length(mio_data_integrate(m), 1)
+
+  # A point_data-only name fails, naming the fix.
+  expect_error(mio_data_integrate(m, "temperature"), "point_data_to_cell_data")
+})
+
 test_that("the settings pipeline runs (or fails naming the flag)", {
   # Behaviour follows the build: with the JSON parser a bad document fails
   # naming the offending op; without it every entry point fails naming

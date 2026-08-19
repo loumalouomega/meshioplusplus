@@ -55,6 +55,7 @@ module meshioplusplus
     public :: mio_surface_quality
     public :: mio_grid
     public :: mio_data_array_info
+    public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
     ! `mio_sequence`'s fan-in is the type-bound `%to_timeseries`; only the
@@ -180,6 +181,17 @@ module meshioplusplus
         integer(c_int64_t) :: num_inf
         integer(c_int64_t) :: num_finite
         integer(c_int) :: inconsistent_blocks !< nonzero if blocks disagree
+    end type
+
+    ! Whole-mesh (or one named Cell region's) reduction of one array (bind(c);
+    ! layout must match mio_field_integral_info in meshioplusplus.h). Per-
+    ! component total/mean/domain_measure/num_nan are retrieved separately via
+    ! the `data_integrate`/`data_integrate_region` procedures' optional
+    ! arguments.
+    type, bind(c) :: mio_field_integral_info
+        integer(c_int64_t) :: num_components !< product of trailing dimensions
+        integer(c_int64_t) :: num_cells      !< cells with a computable measure
+        integer(c_int64_t) :: num_skipped    !< cells excluded: unmeasurable geometry
     end type
 
     ! mio_dtype values (must match the C enum in meshioplusplus.h).
@@ -395,6 +407,8 @@ module meshioplusplus
         procedure :: data_calc => mesh_data_calc
         procedure :: data_condition => mesh_data_condition
         procedure :: data_info => mesh_data_info
+        procedure :: data_integrate => mesh_data_integrate
+        procedure :: data_integrate_region => mesh_data_integrate_region
         ! -- building --
         procedure :: set_points => mesh_set_points
         procedure, private :: mesh_add_cell_block_i32
@@ -1537,6 +1551,91 @@ module meshioplusplus
         end function
 
         subroutine c_mio_data_info_free(r) bind(c, name="mio_data_info_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_data_integrate_create(h, names, count) &
+                bind(c, name="mio_data_integrate_create") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h, names
+            integer(c_int64_t), value :: count
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_data_integrate_count(r) &
+                bind(c, name="mio_data_integrate_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_integrate_name(r, index, buf, buflen) &
+                bind(c, name="mio_data_integrate_name") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_integrate_entry(r, index, out) &
+                bind(c, name="mio_data_integrate_entry") result(s)
+            import :: c_ptr, c_int, c_int64_t, mio_field_integral_info
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(mio_field_integral_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_data_integrate_component(r, index, comp, total, mean, domain_measure, &
+                num_nan) bind(c, name="mio_data_integrate_component") result(s)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, comp
+            real(c_double), intent(out) :: total, mean, domain_measure
+            integer(c_int64_t), intent(out) :: num_nan
+            integer(c_int) :: s
+        end function
+
+        function c_mio_data_integrate_region_count(r, index) &
+                bind(c, name="mio_data_integrate_region_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_integrate_region_name(r, index, region, buf, buflen) &
+                bind(c, name="mio_data_integrate_region_name") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, region, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_data_integrate_region_entry(r, index, region, out) &
+                bind(c, name="mio_data_integrate_region_entry") result(s)
+            import :: c_ptr, c_int, c_int64_t, mio_field_integral_info
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, region
+            type(mio_field_integral_info), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_data_integrate_region_component(r, index, region, comp, total, mean, &
+                domain_measure, num_nan) &
+                bind(c, name="mio_data_integrate_region_component") result(s)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, region, comp
+            real(c_double), intent(out) :: total, mean, domain_measure
+            integer(c_int64_t), intent(out) :: num_nan
+            integer(c_int) :: s
+        end function
+
+        subroutine c_mio_data_integrate_free(r) bind(c, name="mio_data_integrate_free")
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
@@ -4265,6 +4364,195 @@ contains
             end if
         end do
         call c_mio_data_info_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Cell-measure-weighted total/mean of one or more cell_data arrays over
+    !> the whole mesh -- gradient's integration counterpart. `arrays` absent
+    !> means every cell_data array (sorted name order); a point_data-only name
+    !> fails, naming data_point_to_cell as the fix. Returns one
+    !> mio_field_integral_info per array; pass `keys` for their names and
+    !> `totals`/`means`/`domain_measures`/`num_nans` for the flat,
+    !> array-major, per-component buffers (length sum(out%num_components)).
+    !> Per-region breakdown is a separate call: `data_integrate_region`.
+    function mesh_data_integrate(self, arrays, keys, totals, means, domain_measures, num_nans, &
+            stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: arrays(:)
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: keys(:)
+        real(real64), allocatable, intent(out), optional :: totals(:), means(:), &
+            domain_measures(:)
+        integer(int64), allocatable, intent(out), optional :: num_nans(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_field_integral_info), allocatable :: out(:)
+        type(c_ptr) :: res
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count, i, n, k, comp, off, total_comp
+        integer(c_int) :: s
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        real(c_double) :: ctotal, cmean, cdomain
+        integer(c_int64_t) :: cnan
+
+        if (present(arrays)) then
+            call c_str_array(arrays, storage, cptrs, arr, count)
+        else
+            arr = c_null_ptr
+            count = 0_c_int64_t
+        end if
+        res = c_mio_data_integrate_create(self%handle, arr, count)
+        if (.not. c_associated(res)) then
+            call handle_failure('data_integrate', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            if (present(keys)) allocate (keys(0))
+            if (present(totals)) allocate (totals(0))
+            if (present(means)) allocate (means(0))
+            if (present(domain_measures)) allocate (domain_measures(0))
+            if (present(num_nans)) allocate (num_nans(0))
+            return
+        end if
+
+        n = c_mio_data_integrate_count(res)
+        if (n < 0) n = 0
+        allocate (out(n))
+        if (present(keys)) allocate (keys(n))
+        do i = 1, n
+            s = c_mio_data_integrate_entry(res, i - 1_c_int64_t, out(i))
+            if (s /= 0_c_int) then
+                call c_mio_data_integrate_free(res)
+                call handle_failure('data_integrate', mio_error_message(), stat, errmsg)
+                return
+            end if
+            if (present(keys)) then
+                k = c_mio_data_integrate_name(res, i - 1_c_int64_t, buf, int(STRBUF_LEN, c_int64_t))
+                keys(i) = ''
+                if (k > 0) keys(i) = from_c_buf(buf, min(int(k), STRBUF_LEN - 1))
+            end if
+        end do
+
+        if (present(totals) .or. present(means) .or. present(domain_measures) .or. &
+                present(num_nans)) then
+            total_comp = 0
+            do i = 1, n
+                total_comp = total_comp + out(i)%num_components
+            end do
+            if (present(totals)) allocate (totals(total_comp))
+            if (present(means)) allocate (means(total_comp))
+            if (present(domain_measures)) allocate (domain_measures(total_comp))
+            if (present(num_nans)) allocate (num_nans(total_comp))
+            off = 0
+            do i = 1, n
+                do comp = 0, out(i)%num_components - 1
+                    s = c_mio_data_integrate_component(res, i - 1_c_int64_t, comp, ctotal, cmean, &
+                                                        cdomain, cnan)
+                    if (s /= 0_c_int) then
+                        call c_mio_data_integrate_free(res)
+                        call handle_failure('data_integrate', mio_error_message(), stat, errmsg)
+                        return
+                    end if
+                    off = off + 1
+                    if (present(totals)) totals(off) = real(ctotal, real64)
+                    if (present(means)) means(off) = real(cmean, real64)
+                    if (present(domain_measures)) domain_measures(off) = real(cdomain, real64)
+                    if (present(num_nans)) num_nans(off) = int(cnan, int64)
+                end do
+            end do
+        end if
+
+        call c_mio_data_integrate_free(res)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Per-named-Cell-region breakdown of one array's field integral (see
+    !> `data_integrate`, which this complements): one mio_field_integral_info
+    !> per region present on the mesh, plus the same optional flat,
+    !> region-major, per-component buffers.
+    function mesh_data_integrate_region(self, array_name, keys, totals, means, domain_measures, &
+            num_nans, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array_name
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: keys(:)
+        real(real64), allocatable, intent(out), optional :: totals(:), means(:), &
+            domain_measures(:)
+        integer(int64), allocatable, intent(out), optional :: num_nans(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_field_integral_info), allocatable :: out(:)
+        type(c_ptr) :: res
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count, n, k, comp, off, total_comp
+        integer(c_int) :: s
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        real(c_double) :: ctotal, cmean, cdomain
+        integer(c_int64_t) :: cnan
+
+        call c_str_array([array_name], storage, cptrs, arr, count)
+        res = c_mio_data_integrate_create(self%handle, arr, count)
+        if (.not. c_associated(res)) then
+            call handle_failure('data_integrate_region', mio_error_message(), stat, errmsg)
+            allocate (out(0))
+            if (present(keys)) allocate (keys(0))
+            if (present(totals)) allocate (totals(0))
+            if (present(means)) allocate (means(0))
+            if (present(domain_measures)) allocate (domain_measures(0))
+            if (present(num_nans)) allocate (num_nans(0))
+            return
+        end if
+
+        n = c_mio_data_integrate_region_count(res, 0_c_int64_t)
+        if (n < 0) n = 0
+        allocate (out(n))
+        if (present(keys)) allocate (keys(n))
+        do k = 1, n
+            s = c_mio_data_integrate_region_entry(res, 0_c_int64_t, k - 1_c_int64_t, out(k))
+            if (s /= 0_c_int) then
+                call c_mio_data_integrate_free(res)
+                call handle_failure('data_integrate_region', mio_error_message(), stat, errmsg)
+                return
+            end if
+            if (present(keys)) then
+                off = c_mio_data_integrate_region_name(res, 0_c_int64_t, k - 1_c_int64_t, buf, &
+                                                        int(STRBUF_LEN, c_int64_t))
+                keys(k) = ''
+                if (off > 0) keys(k) = from_c_buf(buf, min(int(off), STRBUF_LEN - 1))
+            end if
+        end do
+
+        if (present(totals) .or. present(means) .or. present(domain_measures) .or. &
+                present(num_nans)) then
+            total_comp = 0
+            do k = 1, n
+                total_comp = total_comp + out(k)%num_components
+            end do
+            if (present(totals)) allocate (totals(total_comp))
+            if (present(means)) allocate (means(total_comp))
+            if (present(domain_measures)) allocate (domain_measures(total_comp))
+            if (present(num_nans)) allocate (num_nans(total_comp))
+            off = 0
+            do k = 1, n
+                do comp = 0, out(k)%num_components - 1
+                    s = c_mio_data_integrate_region_component(res, 0_c_int64_t, k - 1_c_int64_t, &
+                                                               comp, ctotal, cmean, cdomain, cnan)
+                    if (s /= 0_c_int) then
+                        call c_mio_data_integrate_free(res)
+                        call handle_failure('data_integrate_region', mio_error_message(), stat, &
+                                             errmsg)
+                        return
+                    end if
+                    off = off + 1
+                    if (present(totals)) totals(off) = real(ctotal, real64)
+                    if (present(means)) means(off) = real(cmean, real64)
+                    if (present(domain_measures)) domain_measures(off) = real(cdomain, real64)
+                    if (present(num_nans)) num_nans(off) = int(cnan, int64)
+                end do
+            end do
+        end if
+
+        call c_mio_data_integrate_free(res)
         call clear_status(stat, errmsg)
     end function
 

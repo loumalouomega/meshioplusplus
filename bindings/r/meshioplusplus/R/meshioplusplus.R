@@ -1071,6 +1071,32 @@ mio_data_condition <- function(mesh, location, names = NULL, cond_mode = "clamp"
 #' @export
 mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
 
+#' Cell-measure-weighted field integration
+#'
+#' Total/mean of one or more `cell_data` arrays, weighted by each cell's own
+#' length/area/volume -- [mio_gradient()]'s integration counterpart
+#' (`mio_gradient` differentiates a field, this integrates one). A cell whose
+#' measure is not computable (ragged, unsupported type, or degenerate), or
+#' whose value is non-finite in a given component, is excluded from that
+#' component's numerator *and* denominator, never given a fallback weight.
+#' Reported for the whole mesh (`domain`) and independently for every named
+#' Cell region (`regions`) -- a cell in two regions contributes fully to
+#' both, one in none contributes to neither. A `point_data`-only name fails,
+#' naming [mio_data_point_to_cell()] as the fix. See
+#' `doc/field_integration.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param names `cell_data` array names to integrate, or `NULL` for every
+#'   `cell_data` array.
+#' @return A list of per-array summaries, each with `name`, `num_components`,
+#'   `domain` (`num_cells`, `num_skipped`, and a `num_components x 4`
+#'   `total`/`mean`/`domain_measure`/`num_nan` `components` matrix) and
+#'   `regions` (a list of the same shape, one per named Cell region present).
+#' @export
+mio_data_integrate <- function(mesh, names = NULL) {
+  .Call(R_mio_data_integrate, mesh, if (is.null(names)) NULL else as.character(names))
+}
+
 # --- transient (time-series) XDMF writing -------------------------------------
 
 #' Write a transient (time-series) XDMF file

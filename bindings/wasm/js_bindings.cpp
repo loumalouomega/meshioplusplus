@@ -97,6 +97,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
@@ -2562,6 +2563,66 @@ val data_info_js(const val& rMeshObj) {
     });
 }
 
+/** @brief Cell-measure-weighted total/mean of one or more cell_data arrays --
+ *  gradient's integration counterpart (gradient differentiates a field, this
+ *  integrates one). `arrays` is a JS array of names (undefined/null/empty =
+ *  every cell_data array). Every sum is weighted by the cell's own
+ *  length/area/volume, excluding both a cell with unmeasurable geometry and
+ *  a component with a non-finite value from that component's numerator and
+ *  denominator. Returns a JS array of objects with `name`, `numComponents`,
+ *  `domain` (`numCells`, `numSkipped`, `totalPerComponent`,
+ *  `meanPerComponent`, `domainMeasurePerComponent`, `numNanPerComponent`)
+ *  and `regions` (the same shape plus `name`, one per named Cell region
+ *  present -- a cell in two regions contributes fully to both, one in none
+ *  contributes to neither). A point_data-only name throws naming
+ *  pointDataToCellData as the fix. */
+val data_integrate_js(const val& rMeshObj, const val& rArrays) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DataIntegrateOptions opts;
+        opts.mArrayNames = val_to_string_vector(rArrays);
+        meshioplusplus::DataIntegrateReport r =
+            meshioplusplus::data_integrate(val_to_mesh(rMeshObj), opts);
+        auto to_array_d = [](const std::vector<double>& rValues) {
+            val a = val::array();
+            for (double v : rValues)
+                a.call<void>("push", v);
+            return a;
+        };
+        auto to_array_i = [](const std::vector<std::int64_t>& rValues) {
+            val a = val::array();
+            for (std::int64_t v : rValues)
+                a.call<void>("push", static_cast<double>(v));
+            return a;
+        };
+        auto region_to_val = [&](const meshioplusplus::FieldIntegralRegion& rRegion) {
+            val o = val::object();
+            o.set("numCells", static_cast<double>(rRegion.mNumCells));
+            o.set("numSkipped", static_cast<double>(rRegion.mNumSkipped));
+            o.set("totalPerComponent", to_array_d(rRegion.mTotalPerComponent));
+            o.set("meanPerComponent", to_array_d(rRegion.mMeanPerComponent));
+            o.set("domainMeasurePerComponent", to_array_d(rRegion.mDomainMeasurePerComponent));
+            o.set("numNanPerComponent", to_array_i(rRegion.mNumNanPerComponent));
+            return o;
+        };
+        val out = val::array();
+        for (const meshioplusplus::FieldIntegralArray& a : r.mArrays) {
+            val o = val::object();
+            o.set("name", a.mName);
+            o.set("numComponents", static_cast<double>(a.mNumComponents));
+            o.set("domain", region_to_val(a.mDomain));
+            val regions = val::array();
+            for (const meshioplusplus::FieldIntegralRegion& rr : a.mRegions) {
+                val ro = region_to_val(rr);
+                ro.set("name", rr.mName);
+                regions.call<void>("push", ro);
+            }
+            o.set("regions", regions);
+            out.call<void>("push", o);
+        }
+        return out;
+    });
+}
+
 /**
  * @brief Cross-mesh field transfer: sample the source's data arrays onto the
  * target (source point_data at the target's points, source cell_data by
@@ -2861,6 +2922,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("dataCalc", &data_calc_js);
     emscripten::function("dataCondition", &data_condition_js);
     emscripten::function("dataInfo", &data_info_js);
+    emscripten::function("dataIntegrate", &data_integrate_js);
     // Transient XDMF: the one stateful surface -- an opaque handle plus these
     // seven calls (see the block comment above their definitions for why it is
     // not an embind class_).

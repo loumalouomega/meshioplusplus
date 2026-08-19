@@ -996,6 +996,151 @@ SEXP R_mio_data_info(SEXP mesh) {
     return out;
 }
 
+typedef struct {
+    const mio_data_integrate *result;
+    int64_t index;
+} integrate_name_ctx;
+
+typedef struct {
+    const mio_data_integrate *result;
+    int64_t index;
+    int64_t region;
+} integrate_region_name_ctx;
+
+static int64_t integrate_name_getter(void *c, char *buf, int64_t buflen) {
+    integrate_name_ctx *x = (integrate_name_ctx *)c;
+    return mio_data_integrate_name(x->result, x->index, buf, buflen);
+}
+
+static int64_t integrate_region_name_getter(void *c, char *buf, int64_t buflen) {
+    integrate_region_name_ctx *x = (integrate_region_name_ctx *)c;
+    return mio_data_integrate_region_name(x->result, x->index, x->region, buf, buflen);
+}
+
+/* Build the (num_components x 4) total/mean/domain_measure/num_nan matrix for
+ * one array's whole-mesh entry (region < 0) or one of its named Cell
+ * regions (region >= 0). Frees `result` and raises via mio_r_fail (which
+ * longjmps, unwinding the protection stack) on any C API failure -- the
+ * caller never sees a NULL back. Returns unprotected, like mio_r_named_list;
+ * the caller must PROTECT it immediately. */
+static SEXP integrate_components_matrix(mio_data_integrate *result, int64_t index, int64_t region,
+                                        int64_t num_components) {
+    int64_t nc = num_components > 0 ? num_components : 0;
+    SEXP m = PROTECT(Rf_allocMatrix(REALSXP, (int)nc, 4));
+    for (int64_t c = 0; c < nc; ++c) {
+        double total = 0.0, mean = 0.0, dm = 0.0;
+        int64_t nan = 0;
+        mio_status s = (region < 0) ? mio_data_integrate_component(result, index, c, &total,
+                                                                    &mean, &dm, &nan)
+                                    : mio_data_integrate_region_component(
+                                          result, index, region, c, &total, &mean, &dm, &nan);
+        if (s != MIO_OK) {
+            mio_data_integrate_free(result);
+            UNPROTECT(1); /* m */
+            mio_r_fail("data_integrate component");
+        }
+        REAL(m)[c] = total;
+        REAL(m)[nc + c] = mean;
+        REAL(m)[2 * nc + c] = dm;
+        REAL(m)[3 * nc + c] = (double)nan;
+    }
+    SEXP dimnames = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP cols = PROTECT(Rf_allocVector(STRSXP, 4));
+    SET_STRING_ELT(cols, 0, Rf_mkChar("total"));
+    SET_STRING_ELT(cols, 1, Rf_mkChar("mean"));
+    SET_STRING_ELT(cols, 2, Rf_mkChar("domain_measure"));
+    SET_STRING_ELT(cols, 3, Rf_mkChar("num_nan"));
+    SET_VECTOR_ELT(dimnames, 0, R_NilValue);
+    SET_VECTOR_ELT(dimnames, 1, cols);
+    Rf_setAttrib(m, R_DimNamesSymbol, dimnames);
+    UNPROTECT(3); /* dimnames, cols, m */
+    return m;
+}
+
+/* Cell-measure-weighted total/mean of one or more cell_data arrays --
+ * gradient's integration counterpart. `names` NULL means every cell_data
+ * array. Reported for the whole mesh (`domain`) and independently for every
+ * named Cell region (`regions`) -- a cell in two regions contributes fully
+ * to both, one in none contributes to neither. A point_data-only name fails,
+ * naming data_point_to_cell as the fix. See doc/field_integration.md. */
+SEXP R_mio_data_integrate(SEXP mesh, SEXP names) {
+    SEXP shelter;
+    int64_t ncount = 0;
+    const char *const *nm = mio_r_names(names, &ncount, &shelter);
+    mio_data_integrate *result = (mio_data_integrate *)mio_r_check_ptr(
+        mio_data_integrate_create(mio_r_mesh(mesh), nm, ncount), "data_integrate");
+    UNPROTECT(1); /* shelter */
+
+    int64_t n = mio_data_integrate_count(result);
+    if (n < 0) {
+        mio_data_integrate_free(result);
+        mio_r_fail("data_integrate count");
+    }
+
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        integrate_name_ctx nctx = {result, i};
+        SEXP name =
+            PROTECT(mio_r_getstring(integrate_name_getter, &nctx, "data_integrate name"));
+
+        mio_field_integral_info e;
+        memset(&e, 0, sizeof(e));
+        if (mio_data_integrate_entry(result, i, &e) != MIO_OK) {
+            mio_data_integrate_free(result);
+            UNPROTECT(2); /* name, out */
+            mio_r_fail("data_integrate entry");
+        }
+        SEXP ncomp = PROTECT(Rf_ScalarReal((double)e.num_components));
+        SEXP dcells = PROTECT(Rf_ScalarReal((double)e.num_cells));
+        SEXP dskip = PROTECT(Rf_ScalarReal((double)e.num_skipped));
+        SEXP dcomps = PROTECT(integrate_components_matrix(result, i, -1, e.num_components));
+
+        const char *domain_names[] = {"num_cells", "num_skipped", "components"};
+        SEXP domain_values[] = {dcells, dskip, dcomps};
+        SEXP domain = PROTECT(mio_r_named_list(3, domain_names, domain_values));
+
+        int64_t nregions = mio_data_integrate_region_count(result, i);
+        if (nregions < 0) {
+            mio_data_integrate_free(result);
+            UNPROTECT(7); /* name, ncomp, dcells, dskip, dcomps, domain, out */
+            mio_r_fail("data_integrate region count");
+        }
+
+        SEXP regions = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nregions));
+        for (int64_t r = 0; r < nregions; ++r) {
+            integrate_region_name_ctx rctx = {result, i, r};
+            SEXP rname = PROTECT(mio_r_getstring(integrate_region_name_getter, &rctx,
+                                                 "data_integrate region name"));
+
+            mio_field_integral_info re;
+            memset(&re, 0, sizeof(re));
+            if (mio_data_integrate_region_entry(result, i, r, &re) != MIO_OK) {
+                mio_data_integrate_free(result);
+                UNPROTECT(9); /* rname + the 7 above + regions */
+                mio_r_fail("data_integrate region entry");
+            }
+            SEXP rcells = PROTECT(Rf_ScalarReal((double)re.num_cells));
+            SEXP rskip = PROTECT(Rf_ScalarReal((double)re.num_skipped));
+            SEXP rcomps = PROTECT(integrate_components_matrix(result, i, r, re.num_components));
+
+            const char *region_names[] = {"name", "num_cells", "num_skipped", "components"};
+            SEXP region_values[] = {rname, rcells, rskip, rcomps};
+            SEXP region_item = PROTECT(mio_r_named_list(4, region_names, region_values));
+            SET_VECTOR_ELT(regions, (R_xlen_t)r, region_item);
+            UNPROTECT(5); /* rname, rcells, rskip, rcomps, region_item */
+        }
+
+        const char *array_names[] = {"name", "num_components", "domain", "regions"};
+        SEXP array_values[] = {name, ncomp, domain, regions};
+        SEXP item = PROTECT(mio_r_named_list(4, array_names, array_values));
+        SET_VECTOR_ELT(out, (R_xlen_t)i, item);
+        UNPROTECT(8); /* name, ncomp, dcells, dskip, dcomps, domain, regions, item */
+    }
+    mio_data_integrate_free(result);
+    UNPROTECT(1); /* out */
+    return out;
+}
+
 /* --- settings pipeline (v9.11.0) ---------------------------------------- */
 
 SEXP R_mio_pipeline_run_file(SEXP settings_path) {

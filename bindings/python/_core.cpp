@@ -83,6 +83,7 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -1786,6 +1787,48 @@ PYBIND11_MODULE(_core, m) {
             return arrays;
         },
         py::arg("mesh"));
+
+    // Cell-measure-weighted field integration (total/mean, whole mesh and
+    // per named Cell region). Returns a list of dicts, one per array. See
+    // operations/data_integrate.hpp.
+    m.def(
+        "data_integrate",
+        [](py::object pymesh, py::object arrays) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DataIntegrateOptions opts;
+            if (!arrays.is_none())
+                opts.mArrayNames = py::cast<std::vector<std::string>>(arrays);
+            meshioplusplus::DataIntegrateReport r = meshioplusplus::data_integrate(cpp, opts);
+
+            auto region_dict = [](const meshioplusplus::FieldIntegralRegion& reg) {
+                py::dict d;
+                d["name"] = reg.mName;
+                d["num_cells"] = reg.mNumCells;
+                d["num_skipped"] = reg.mNumSkipped;
+                d["domain_measure_per_component"] = py::cast(reg.mDomainMeasurePerComponent);
+                d["total_per_component"] = py::cast(reg.mTotalPerComponent);
+                d["mean_per_component"] = py::cast(reg.mMeanPerComponent);
+                d["num_nan_per_component"] = py::cast(reg.mNumNanPerComponent);
+                return d;
+            };
+
+            py::list out;
+            for (const meshioplusplus::FieldIntegralArray& a : r.mArrays) {
+                py::dict d;
+                d["name"] = a.mName;
+                d["num_components"] = a.mNumComponents;
+                d["domain"] = region_dict(a.mDomain);
+                py::list regions;
+                for (const meshioplusplus::FieldIntegralRegion& reg : a.mRegions)
+                    regions.append(region_dict(reg));
+                d["regions"] = regions;
+                out.append(d);
+            }
+            return out;
+        },
+        py::arg("mesh"), py::arg("arrays") = py::none());
 
     // Mesh comparison ("diff"). Returns a nested dict mirroring DiffReport, with
     // an overall verdict string. See operations/diff.hpp.

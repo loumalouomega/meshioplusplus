@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 7
+#define MIO_VERSION_MINOR 8
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -2180,6 +2180,80 @@ MIO_API mio_status mio_data_info_component(const mio_data_info* info, int64_t in
 
 /** Destroy a summary handle. Safe to call with NULL. */
 MIO_API void mio_data_info_free(mio_data_info* info);
+
+/** Opaque cell-measure-weighted field-integration report. Destroy with
+ *  mio_data_integrate_free(). See meshioplusplus::data_integrate. */
+typedef struct mio_data_integrate mio_data_integrate;
+
+/** Fixed-size summary of one array's or one region's reduction (see
+ *  mio_data_integrate_entry / mio_data_integrate_region_entry). Per-component
+ *  totals are retrieved separately with mio_data_integrate_component /
+ *  mio_data_integrate_region_component. */
+typedef struct mio_field_integral_info {
+    int64_t num_components; /**< product of the trailing dimensions */
+    int64_t num_cells;      /**< cells with a computable measure */
+    int64_t num_skipped;    /**< cells excluded: unmeasurable geometry */
+} mio_field_integral_info;
+
+/**
+ * Cell-measure-weighted total/mean of one or more cell_data arrays, for the
+ * whole mesh and independently for every named Cell region -- gradient's
+ * integration counterpart. A point_data-only name fails, naming
+ * point_data_to_cell_data (CLI `data to-cell`) as the fix.
+ * @param names array names to integrate, or NULL for every cell_data array.
+ * @param count length of names; ignored when names is NULL.
+ * @return a result handle (free with mio_data_integrate_free), or NULL on
+ *         failure.
+ */
+MIO_API mio_data_integrate* mio_data_integrate_create(const mio_mesh* mesh,
+                                                       const char* const* names, int64_t count);
+
+/** @return the number of arrays described, or -1 on error. */
+MIO_API int64_t mio_data_integrate_count(const mio_data_integrate* result);
+
+/**
+ * Copy the `index`-th array's name into `buf`.
+ * @return the required length excluding the NUL (so a value >= buflen means the
+ *         name was truncated), or -1 on error.
+ */
+MIO_API int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
+                                        char* buf, int64_t buflen);
+
+/** Fill `out` with the `index`-th array's whole-mesh summary. */
+MIO_API mio_status mio_data_integrate_entry(const mio_data_integrate* result, int64_t index,
+                                            mio_field_integral_info* out);
+
+/**
+ * Per-component whole-mesh totals of the `index`-th array. Any out pointer
+ * may be NULL.
+ * @param comp component index, in [0, num_components).
+ */
+MIO_API mio_status mio_data_integrate_component(const mio_data_integrate* result, int64_t index,
+                                                int64_t comp, double* total, double* mean,
+                                                double* domain_measure, int64_t* num_nan);
+
+/** @return the number of named Cell regions reported for the `index`-th
+ *          array, or -1 on error. */
+MIO_API int64_t mio_data_integrate_region_count(const mio_data_integrate* result, int64_t index);
+
+/** Copy the `index`-th array's `region`-th region name into `buf`.
+ * @return the required length excluding the NUL, or -1 on error. */
+MIO_API int64_t mio_data_integrate_region_name(const mio_data_integrate* result, int64_t index,
+                                               int64_t region, char* buf, int64_t buflen);
+
+/** Fill `out` with the `index`-th array's `region`-th region summary. */
+MIO_API mio_status mio_data_integrate_region_entry(const mio_data_integrate* result, int64_t index,
+                                                   int64_t region, mio_field_integral_info* out);
+
+/** Per-component totals of the `index`-th array's `region`-th region. Any out
+ *  pointer may be NULL. */
+MIO_API mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
+                                                        int64_t index, int64_t region,
+                                                        int64_t comp, double* total, double* mean,
+                                                        double* domain_measure, int64_t* num_nan);
+
+/** Destroy a result handle. Safe to call with NULL. */
+MIO_API void mio_data_integrate_free(mio_data_integrate* result);
 
 /**
  * Renumber a mesh (RCM / Morton / Hilbert) as a pure permutation of node and
