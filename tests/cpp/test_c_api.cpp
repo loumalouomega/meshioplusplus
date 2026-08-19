@@ -1181,6 +1181,74 @@ TEST(CApi, DataNullArgumentsAreRejected) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, DataIntegrateHandle) {
+    mio_mesh* m = build_data_mesh();  // cell_data "mat" = {10.0, 20.0} over 2 tets
+    const int64_t region_cells[1] = {0};
+    ASSERT_EQ(mio_mesh_add_region(m, "one_cell", MIO_REGION_CELL, -1, -1, region_cells, 1),
+              MIO_OK);
+
+    const char* names[] = {"mat"};
+    mio_data_integrate* result = mio_data_integrate_create(m, names, 1);
+    ASSERT_NE(result, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_data_integrate_count(result), 1);
+
+    char buf[64] = {};
+    const std::int64_t len = mio_data_integrate_name(result, 0, buf, sizeof(buf));
+    EXPECT_GE(len, 0);
+    EXPECT_STREQ(buf, "mat");
+
+    mio_field_integral_info entry;
+    ASSERT_EQ(mio_data_integrate_entry(result, 0, &entry), MIO_OK);
+    EXPECT_EQ(entry.num_components, 1);
+    EXPECT_EQ(entry.num_cells, 2);
+    EXPECT_EQ(entry.num_skipped, 0);
+
+    double total = 0, mean = 0, domain_measure = 0;
+    std::int64_t num_nan = 0;
+    ASSERT_EQ(mio_data_integrate_component(result, 0, 0, &total, &mean, &domain_measure, &num_nan),
+              MIO_OK);
+    EXPECT_GT(total, 0.0);
+    EXPECT_GT(domain_measure, 0.0);
+    EXPECT_NEAR(mean, total / domain_measure, 1e-9);
+    EXPECT_EQ(num_nan, 0);
+    // Every out pointer is optional.
+    EXPECT_EQ(mio_data_integrate_component(result, 0, 0, nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+
+    ASSERT_EQ(mio_data_integrate_region_count(result, 0), 1);
+    char rbuf[64] = {};
+    EXPECT_GE(mio_data_integrate_region_name(result, 0, 0, rbuf, sizeof(rbuf)), 0);
+    EXPECT_STREQ(rbuf, "one_cell");
+    mio_field_integral_info rentry;
+    ASSERT_EQ(mio_data_integrate_region_entry(result, 0, 0, &rentry), MIO_OK);
+    EXPECT_EQ(rentry.num_cells, 1);
+    double rtotal = 0;
+    ASSERT_EQ(mio_data_integrate_region_component(result, 0, 0, 0, &rtotal, nullptr, nullptr,
+                                                   nullptr),
+              MIO_OK);
+    EXPECT_LT(rtotal, total);  // one cell contributes less than both
+
+    // Out-of-range indices are rejected, not dereferenced.
+    EXPECT_NE(mio_data_integrate_entry(result, 1, &entry), MIO_OK);
+    EXPECT_EQ(mio_data_integrate_name(result, -1, nullptr, 0), -1);
+    EXPECT_NE(mio_data_integrate_component(result, 0, 999, nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_data_integrate_region_entry(result, 0, 1, &rentry), MIO_OK);
+
+    mio_data_integrate_free(result);
+    mio_data_integrate_free(nullptr);  // must tolerate NULL
+
+    // A point_data-only name fails, naming the fix.
+    const char* point_only[] = {"T"};
+    EXPECT_EQ(mio_data_integrate_create(m, point_only, 1), nullptr);
+    EXPECT_STRNE(mio_last_error(), "");
+
+    EXPECT_EQ(mio_data_integrate_create(nullptr, nullptr, 0), nullptr);
+    EXPECT_EQ(mio_data_integrate_count(nullptr), -1);
+
+    mio_mesh_free(m);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------

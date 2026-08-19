@@ -284,6 +284,38 @@ program test_fortran_api
         call check(saw, 'data_info named the temperature array')
     end block
 
+    ! field integration -- gradient's counterpart (total/mean over cells)
+    block
+        type(mio_field_integral_info), allocatable :: fi(:)
+        character(len=STRBUF_LEN), allocatable :: fikeys(:)
+        real(real64), allocatable :: fitotals(:), fimeans(:), fidm(:)
+        integer(int64), allocatable :: finan(:)
+
+        fi = m%data_integrate(arrays=['quality'], keys=fikeys, totals=fitotals, means=fimeans, &
+                              domain_measures=fidm, num_nans=finan, stat=ierr)
+        call check(ierr == 0, 'data_integrate succeeds')
+        call check(size(fi) == 1, 'data_integrate reports one array')
+        call check(trim(fikeys(1)) == 'quality', 'data_integrate names the array')
+        call check(fi(1)%num_components == 1_int64, 'quality is scalar')
+        call check(fi(1)%num_cells == 2_int64, 'both tets have a computable measure')
+        call check(fi(1)%num_skipped == 0_int64, 'no cells skipped')
+        call check(fidm(1) > 0.0_real64, 'domain measure is positive')
+        call check(abs(fimeans(1) - fitotals(1) / fidm(1)) < 1.0e-9_real64, &
+                   'mean is total / domain_measure')
+        call check(finan(1) == 0_int64, 'no NaN values')
+
+        ! No array filter means every cell_data array (there is exactly one).
+        fi = m%data_integrate(keys=fikeys, stat=ierr)
+        call check(ierr == 0, 'data_integrate with no array filter succeeds')
+        call check(size(fi) == 1, 'no filter still reports the one cell_data array')
+
+        ! A point_data-only name fails, naming the fix.
+        ierr = 0
+        fi = m%data_integrate(arrays=['temperature'], stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'data_integrate rejects a point_data array')
+        call check(len(msg) > 0, 'data_integrate failure sets errmsg')
+    end block
+
     ! -- selective reads and read_metadata ---------------------------------
     block
         type(mio_mesh) :: sel
@@ -814,6 +846,21 @@ program test_fortran_api
         ! Point/cell indices come back 1-based, as everywhere else in this API.
         call check(size(rentries) == 3, 'entry buffer length')
         call check(rentries(1) == 1_int64 .and. rentries(2) == 4_int64, 'point entries 1-based')
+    end block
+
+    ! field integration's per-region breakdown, now that `m` carries the
+    ! 'solid' Cell region added just above.
+    block
+        type(mio_field_integral_info), allocatable :: fir(:)
+        character(len=STRBUF_LEN), allocatable :: firkeys(:)
+        real(real64), allocatable :: firtotals(:)
+        integer :: st
+
+        fir = m%data_integrate_region('quality', keys=firkeys, totals=firtotals, stat=st)
+        call check(st == 0, 'data_integrate_region succeeds')
+        call check(size(fir) == 1, 'one named Cell region reported')
+        call check(trim(firkeys(1)) == 'solid', 'data_integrate_region names the region')
+        call check(fir(1)%num_cells == 1_int64, 'the region has one cell')
     end block
 
     ! ---- transient (time-series) XDMF writing ---------------------------

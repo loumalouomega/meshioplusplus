@@ -334,6 +334,37 @@ step('dataInfo summarizes every array', () => {
     assert.equal(p.max, 40);
 });
 
+step('dataIntegrate: cell-measure-weighted total/mean, and per-region', () => {
+    const tagged = {
+        ...tetv,
+        regions: [{ name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) }],
+    };
+    const report = m.dataIntegrate(tagged, ['material']);
+    assert.equal(report.length, 1);
+    const arr = report[0];
+    assert.equal(arr.name, 'material');
+    assert.equal(arr.numComponents, 1);
+    assert.equal(arr.domain.numCells, 1);
+    assert.equal(arr.domain.numSkipped, 0);
+    assert.ok(arr.domain.domainMeasurePerComponent[0] > 0);
+    assert.ok(
+        Math.abs(
+            arr.domain.meanPerComponent[0] -
+                arr.domain.totalPerComponent[0] / arr.domain.domainMeasurePerComponent[0],
+        ) < 1e-9,
+    );
+    assert.equal(arr.domain.numNanPerComponent[0], 0);
+    assert.equal(arr.regions.length, 1);
+    assert.equal(arr.regions[0].name, 'solid');
+    assert.equal(arr.regions[0].numCells, 1);
+
+    // No array filter means every cell_data array (there's exactly one).
+    assert.equal(m.dataIntegrate(tetv).length, 1);
+
+    // A point_data-only name throws, naming the fix.
+    assert.throws(() => m.dataIntegrate(tetv, ['temperature']), /point_data_to_cell_data/);
+});
+
 step('dataCalc evaluates an expression', () => {
     const out = m.dataCalc(tetv, '2 * temperature + 1', 'point', 'derived', false);
     const derived = out.point_data.derived;
@@ -1356,6 +1387,7 @@ step('every binding is reachable through the wrapper', () => {
         'dataCalc',
         'dataCondition',
         'dataInfo',
+        'dataIntegrate',
         'extractSurface',
         'extractSkin',
         'attachQuality',
