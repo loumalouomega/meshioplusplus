@@ -8,6 +8,42 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.10.0 (2026-08-19)
+
+**Roadmap §1 advanced** — isotropic CVD remeshing and the ACVDQ
+feature-preserving metric are shipped; curvature gradation, the anisotropic
+metric, boundary/manifoldness protection and the volumetric counterpart
+remain open.
+
+- **`remesh`** (`operations/remesh.hpp`, [`doc/remesh.md`](doc/remesh.md))
+  — isotropic and feature-preserving surface remeshing by approximated
+  centroidal Voronoi diagram (ACVD) clustering: replaces a surface mesh's
+  own triangulation with a new, near-uniformly-sized, well-shaped one at a
+  caller-chosen vertex count. The one resolution-changing operation that
+  does not work on the input's own triangulation — `refine`/`decimate`/
+  `subdivide`/`agglomerate`/`smooth` all inherit the input's element
+  shapes, so none of them can *raise* a badly-shaped surface's quality at
+  every target count; `remesh` partitions the surface into clusters and
+  builds the dual, so output quality is a property of the clustering
+  rather than the input. Two metrics: `"isotropic"` (default, area-weighted
+  centroidal distance) and `"quadric"` (Garland-Heckbert quadric error,
+  preserves sharp edges/corners, reusing this repo's own pre-existing
+  quadric machinery rather than a second QEM implementation). The output
+  has no correspondence to the input — new points, new connectivity — so
+  `point_data`/`cell_data`/named regions are dropped and `field_data`
+  carries through; compose with `interpolate`/`conservative_interpolate`
+  to transfer a field onto the result. C++-core only, with no numpy
+  fallback: the energy-minimisation loop's move-acceptance test is
+  inherently sequential, so a second implementation could silently diverge
+  into a different clustering rather than a last-ulp difference. Ships on
+  every binding surface: Python, the C API, Fortran, Julia, R, WASM
+  (`remesh`, reachable as a `convertSurfaceOps`/pipeline step too), both
+  CLIs, and an MCP tool. **Attribution**: the isotropic clustering engine
+  is derived from [pyacvd](https://github.com/pyvista/pyacvd) (MIT,
+  (c) 2017-2024 The PyVista Developers) — an independent implementation of
+  Valette & Chassery's published research, not of ACVD's own CeCILL-B
+  source, which this project never reads or vendors; see `CITATION.cff`.
+
 ## v10.9.0 (2026-08-19)
 
 **Roadmap §1 closed** — second derivatives / Hessian was the section's last

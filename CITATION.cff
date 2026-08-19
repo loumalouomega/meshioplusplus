@@ -28,3 +28,15 @@ license: MIT
 # source available; private use carries no obligation). The C++ core, the C
 # API it calls and the R binding in bindings/r/ are all MIT. See
 # bindings/julia/LICENSE.
+#
+# The isotropic clustering engine behind the `remesh` operation
+# (src/cpp/src/operations/remesh.cpp) is derived from pyacvd
+# (https://github.com/pyvista/pyacvd), MIT License, Copyright (c) 2017-2024
+# The PyVista Developers -- itself an independent implementation of the
+# published research of S. Valette and J.-M. Chassery, not of the CeCILL-B
+# licensed ACVD project (https://github.com/valette/ACVD), which this
+# codebase never reads code from and never vendors. remesh's optional
+# quadric-driven ("feature-preserving") metric has no pyacvd counterpart and
+# is an original synthesis built on this project's own pre-existing
+# Garland-Heckbert quadric machinery (detail/decimate_common.hpp). See
+# doc/remesh.md for the full attribution and licence reasoning.
