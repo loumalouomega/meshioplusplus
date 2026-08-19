@@ -8,6 +8,40 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.11.0 (2026-08-19)
+
+**Roadmap §1 advanced further** — curvature gradation and boundaries/output
+manifoldness are shipped, closing two of the four bullets left open after
+v10.10.0; the anisotropic metric (now unblocked) and the volumetric
+counterpart remain open.
+
+- **`remesh` curvature gradation** (`RemeshOptions::mGradation` /
+  `gradation`) — a per-item density weight `area * kappa^gamma` that
+  concentrates clusters where the surface bends more sharply, via a new
+  local osculating-paraboloid curvature estimator over each vertex's
+  1-ring (reusing the clustering's own node-adjacency graph, no new
+  neighbourhood machinery). `gradation = 0.0` (the default) disables
+  gradation entirely — curvature is never computed — and reproduces plain
+  area weighting byte-for-byte, so every pre-existing test and example is
+  unaffected. Applies identically under both `metric="isotropic"` and
+  `metric="quadric"`.
+- **`remesh` boundaries and output manifoldness**
+  (`RemeshOptions::mPreserveBoundary` / `preserve_boundary`, default
+  `True`) — an open surface's boundary vertices are now detected, seeded
+  before the interior, and pinned, with a second, optional `line` dual
+  cell block emitted along every boundary edge whose endpoints land in
+  different clusters. Non-manifold "bowtie" output vertices are now
+  detected and reported separately from disconnected clusters
+  (`RemeshResult::mNumNonManifoldVertices`, distinct from the existing
+  `mNumIsolatedClusters`), both repaired by the same regrow-and-reminimise
+  loop. A clean-room design, not a reproduction of ACVD's own
+  boundary-fixing algorithm.
+- Both extensions shipped across every `remesh` binding surface in one
+  release: Python, C API, Fortran, Julia, R, WASM, both CLIs (`--gradation`,
+  `--no-preserve-boundary`), the settings pipeline (`Gradation`,
+  `PreserveBoundary` step params), and the MCP tool. See
+  [`doc/remesh.md`](doc/remesh.md).
+
 ## v10.10.0 (2026-08-19)
 
 **Roadmap §1 advanced** — isotropic CVD remeshing and the ACVDQ
