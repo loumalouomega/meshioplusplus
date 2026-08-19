@@ -18260,6 +18260,161 @@ MESHIOPLUSPLUS_API GradientMethod gradient_method_from_name(const std::string& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/gradient.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/hessian.hpp =====
+/**
+ * @file operations/hessian.hpp
+ * @brief The second derivative (Hessian matrix) of a scalar `point_data`
+ * field, for curvature-based adaptive refinement -- `gradient`'s companion
+ * one order further: `gradient` differentiates a field once, this
+ * differentiates it twice.
+ *
+ * ### Composition, not a new numerical kernel
+ *
+ * `hessian` is built entirely out of two calls to `gradient()`, exactly the
+ * precedent `estimate_error` already sets: (1) `gradient(mArrayName,
+ * location=Point)` gives the field's gradient as a genuine `point_data`
+ * array (`(n, 3)`); (2) `gradient()` again on THAT array, with the default
+ * `Gradient` operator, differentiates a 3-component field and so produces
+ * `(n, 9)` -- the flattened row-major 3x3 Hessian, `H[i][j] = d^2f/dxi dxj`
+ * at index `i*3+j`. The first call MUST use `Point` location: the second
+ * call's `point_data`-only validation would otherwise reject a `cell_data`
+ * intermediate. No new differentiation math is written here at all --
+ * `mMethod` simply forwards to both internal `gradient()` calls, so
+ * `LeastSquares` is available for free, exactly as it already is for
+ * `gradient` itself.
+ *
+ * ### Exactness -- stated honestly, not oversold
+ *
+ * Green-Gauss is exact for a linear field on any cell (see `gradient.hpp`).
+ * A field that is at most LINEAR therefore has an EXACTLY ZERO Hessian
+ * everywhere: its gradient is a constant, and Green-Gauss of an exactly
+ * zero/constant field is trivially exact. This is the one rigorous,
+ * mesh-shape-independent guarantee, and it is what `test_hessian.cpp` pins
+ * -- the same reasoning `test_gradient.cpp`'s own
+ * `CurlOfAGradientAndDivergenceOfACurlVanish` already relies on, for the
+ * identical reason.
+ *
+ * For a genuinely QUADRATIC field, each Green-Gauss pass alone would be
+ * exact (the gradient of a quadratic field is linear), but the mandatory
+ * intermediate step between the two passes --
+ * `cell_data_to_point_data(weight=Uniform)`, a plain arithmetic mean of
+ * incident-cell values -- is only exact for a field that is constant over
+ * the averaged neighbourhood. For a genuinely-varying linear field (i.e.
+ * the gradient of a true quadratic), averaging several cells'
+ * individually-exact-but-different local values reproduces the true nodal
+ * value only when those cells are symmetric about the shared node.
+ * Measured, not merely argued: on a regular axis-aligned hex grid, every
+ * INTERIOR node's 8-cell neighbourhood is exactly that symmetric, and the
+ * composed Hessian comes back exact to machine precision there; the same
+ * mesh's own BOUNDARY cells (a one-sided, asymmetric neighbourhood) show
+ * real, bounded error (`test_hessian.cpp`'s
+ * `QuadraticFieldOnAStructuredGridIsExactAwayFromTheBoundary` and
+ * `...HasBoundedBoundaryError` pin both halves of this on the identical
+ * mesh). So the composed Hessian is EXACT away from a mesh's own boundary
+ * on a structured/symmetric mesh, and a good, standard, but genuinely
+ * APPROXIMATE curvature estimate on an irregular one -- the same honesty
+ * `gradient.hpp` itself uses ("first-order on a warped quad in 3D") rather
+ * than a blanket exactness claim. A full quadratic-least-squares Hessian
+ * recovery would restore mesh-shape independence but is a substantially
+ * larger undertaking and out of scope here.
+ *
+ * ### Scope: scalar fields only
+ *
+ * The input must have exactly one component. A vector field's Hessian is a
+ * separate quantity per component (`(n, 3*9)`, one 3x3 matrix per vector
+ * component) -- a real but different need, refused by name rather than
+ * guessed at: call `hessian` once per component.
+ *
+ * ### Curvature-driven refinement needs no new marking step
+ *
+ * `data_calc`'s `norm(...)` is a plain sum-of-squares-then-sqrt over
+ * however many components its argument has, so `norm(<array>:hessian)` on
+ * the 9-component output is exactly its Frobenius norm -- a scalar
+ * curvature indicator with zero new code, ready for `refine --where`. See
+ * `doc/hessian.md`'s worked composition (`hessian` -> `data_calc norm` ->
+ * `refine --where`), which is deliberately NOT a bespoke marking pass
+ * (unlike `estimate_error`'s ZZ-specific one): the composable pieces
+ * already exist and are more general.
+ *
+ * ### Contracts
+ *
+ * - Input must be `point_data` with exactly one component.
+ * - Private working arrays are never returned: like `estimate_error`, the
+ *   actual result mesh is built from a fresh `detail::clone_mesh(rMesh)`,
+ *   so a name collision with the caller's own data cannot lose anything.
+ * - Geometry, connectivity, regions, property sets and every existing data
+ *   array pass through bit-identically.
+ *
+ * Output is byte-identical across the three mesh backends and thread
+ * counts. Across the C++/numpy boundary it matches the numpy twin to
+ * within a numeric tolerance rather than bit-for-bit -- inherited from the
+ * `Uniform`-weighted averaging step the composition relies on, the same
+ * already-accepted precedent `estimate_error`'s own `Measure`-weighted
+ * recovery step has.
+ *
+ * Everything is standard C++ and the uniform mesh API only, so it compiles
+ * under every mesh backend. This is an operation, not a file format -- it
+ * is not in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Default suffix of the produced array.
+inline constexpr const char* kHessianSuffix = ":hessian";
+
+/// Options for `hessian`.
+struct HessianOptions {
+    /// Name of the scalar `point_data` array to differentiate twice. Required.
+    std::string mArrayName;
+    /// How each of the two internal `gradient()` passes reconstructs its
+    /// derivative. Forwarded unchanged to both.
+    GradientMethod mMethod = GradientMethod::GreenGauss;
+    /// Where the result is stored: `Point` or `Cell`. `Field` is an error.
+    DataLocation mLocation = DataLocation::Cell;
+    /// Output array name; empty selects `"<array>:hessian"`.
+    std::string mOutputName;
+    /// When false, an output name that already exists is an error rather
+    /// than being overwritten.
+    bool mOverwrite = false;
+};
+
+/// The mesh with the produced `(n, 9)` array, plus what could not be computed.
+struct HessianResult {
+    /// The input mesh with the Hessian array added; everything else unchanged.
+    Mesh mMesh;
+    /// Cells where the Hessian could not be computed (the second internal
+    /// `gradient()` pass's own count -- structural skip reasons are
+    /// identical between the two passes, since both run over the same mesh
+    /// topology). The Hessian reads NaN there.
+    std::int64_t mNumSkipped = 0;
+    /// Cells where either internal `gradient()` pass fell back from
+    /// least-squares to Green-Gauss (summed over both passes; always 0 for
+    /// `mMethod == GreenGauss`, which has no fallback concept).
+    std::int64_t mNumFallback = 0;
+};
+
+/**
+ * @brief The Hessian (second derivative) of a scalar `point_data` field.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOptions which array, method, location and output name.
+ * @return the mesh with the produced `(n, 9)` array and the skip/fallback
+ *         counters.
+ * @throws std::invalid_argument on an empty or unknown array name, on a
+ *         `cell_data` name (message names the fix), on an array with more
+ *         than one component (message names the per-component workaround),
+ *         on a mesh with no cell of topological dimension 1 or more, or on
+ *         an output-name collision when `mOverwrite` is false.
+ */
+MESHIOPLUSPLUS_API HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/hessian.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
 /**
  * @file interpolate.hpp
@@ -74779,6 +74934,116 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/gradient.cpp =====
+// ===== begin src/cpp/src/operations/hessian.cpp =====
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kHessPrefix = "meshio++: hessian: ";
+// Private working names: never reach the returned mesh (see the file
+// comment above), so any clash with a user array only affects internal
+// intermediate copies, not the caller's data.
+constexpr const char* kHessRawGradName = "__hessian_raw_gradient__";
+constexpr const char* kHessRawName = "__hessian_raw__";
+
+}  // namespace
+
+HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
+    // --- validation, all before any work -------------------------------------
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kHessPrefix) + "an array name is required");
+    if (rOptions.mLocation == DataLocation::Field)
+        throw std::invalid_argument(std::string(kHessPrefix) +
+                                    "field_data has no location on the mesh; the result must be "
+                                    "'point' or 'cell'");
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        // Same restriction gradient states, for the same reason.
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                std::string(kHessPrefix) + "'" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no derivative; convert it "
+                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
+        throw std::invalid_argument(
+            std::string(kHessPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
+    const NDArray& field = rMesh.PointData(rOptions.mArrayName);
+    const std::size_t field_comp = data_num_components(field);
+    if (field_comp != 1)
+        throw std::invalid_argument(
+            std::string(kHessPrefix) + "'" + rOptions.mArrayName + "' has " +
+            std::to_string(field_comp) +
+            " components; hessian currently supports scalar fields only -- call it once per "
+            "component of a vector field");
+
+    const std::string out_name =
+        rOptions.mOutputName.empty() ? rOptions.mArrayName + kHessianSuffix : rOptions.mOutputName;
+    if (!rOptions.mOverwrite) {
+        const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
+                                                                     : rMesh.HasCellData(out_name);
+        if (taken)
+            throw std::invalid_argument(
+                std::string(kHessPrefix) + "'" + out_name + "' already exists in " +
+                data_location_name(rOptions.mLocation) + " (pass overwrite=true to replace it)");
+    }
+
+    // --- two composed gradient() passes -----------------------------------
+    // The first pass MUST be Point-located: the second pass' own validation
+    // requires a point_data input, which is why this can't stay at gradient's
+    // Cell default the way estimate_error's own single pass does.
+    GradientOptions grad1;
+    grad1.mArrayName = rOptions.mArrayName;
+    grad1.mLocation = DataLocation::Point;
+    grad1.mMethod = rOptions.mMethod;
+    grad1.mOutputName = kHessRawGradName;
+    grad1.mOverwrite = true;
+    const GradientResult r1 = gradient(rMesh, grad1);
+
+    // The second pass differentiates the first pass' (n,3) gradient with the
+    // default Gradient operator, which is generic over the input's own
+    // component count -- feeding a 3-component field back in yields (n,9),
+    // the flattened row-major 3x3 Hessian. Always computed at Cell first,
+    // mirroring gradient()'s own unconditional cell-first step.
+    GradientOptions grad2;
+    grad2.mArrayName = kHessRawGradName;
+    grad2.mLocation = DataLocation::Cell;
+    grad2.mMethod = rOptions.mMethod;
+    grad2.mOutputName = kHessRawName;
+    grad2.mOverwrite = true;
+    const GradientResult r2 = gradient(r1.mMesh, grad2);
+
+    // --- build the actual result from a fresh clone of the ORIGINAL input ---
+    Mesh out = detail::clone_mesh(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<NDArray> hess_blocks;
+    hess_blocks.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b)
+        hess_blocks.push_back(r2.mMesh.CellData(kHessRawName, b));  // deep copy: NDArray owns its buffer
+    out.AddCellData(out_name, std::move(hess_blocks));
+
+    if (rOptions.mLocation == DataLocation::Point) {
+        // Compose the existing averaging rather than reimplementing a scatter
+        // -- gradient()'s own Point-location handling, applied to the final
+        // Hessian array.
+        DataAverageOptions avg;
+        avg.names = {out_name};
+        avg.weight = CellPointWeight::Uniform;
+        avg.overwrite = true;
+        Mesh with_points = cell_data_to_point_data(out, avg);
+        out = data_drop(with_points, DataLocation::Cell, {out_name});
+    }
+
+    return HessianResult{std::move(out), r2.mNumSkipped, r1.mNumFallback + r2.mNumFallback};
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/hessian.cpp =====
 // ===== begin src/cpp/src/operations/interpolate.cpp =====
 #include <algorithm>
 #include <array>
@@ -77457,6 +77722,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
@@ -77817,6 +78083,24 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
+    }
+    if (op == "Hessian") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with one new (n,9) array attached.
+        HessianOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mMethod = gradient_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mLocation = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        opts.mOverwrite = true;
+        HessianResult hr = hessian(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSkipped", static_cast<double>(hr.mNumSkipped)},
+                        {"NumFallback", static_cast<double>(hr.mNumFallback)}});
+        if (hr.mNumSkipped > 0)
+            rReport.mWarnings.push_back("hessian: " + std::to_string(hr.mNumSkipped) +
+                                        " cell(s) could not be evaluated and are NaN");
+        return std::move(hr.mMesh);
     }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the

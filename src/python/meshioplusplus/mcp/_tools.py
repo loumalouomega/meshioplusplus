@@ -61,6 +61,7 @@ from .. import (
     extract_surface,
     gradient,
     grid,
+    hessian,
     interpolate,
     isosurface,
     merge,
@@ -972,6 +973,38 @@ def tool_gradient(
     )
 
 
+def tool_hessian(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    method="green-gauss",
+    location="cell",
+    output=None,
+    overwrite=False,
+):
+    """Hessian (second derivative) of a scalar point_data field --
+    gradient's companion one order further, a composition of two gradient
+    calls."""
+    mesh = _load(input_path, input_format)
+    out, report = hessian(
+        mesh,
+        array,
+        method=method,
+        location=location,
+        output=output,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_skipped=int(report["num_skipped"]),
+        num_fallback=int(report["num_fallback"]),
+    )
+
+
 def tool_estimate_error(
     input_path,
     output_path,
@@ -1808,6 +1841,7 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
         ),
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
+        ("hessian", {"fn": tool_hessian, "wraps": ("hessian",), "gated": None}),
         (
             "estimate_error",
             {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},

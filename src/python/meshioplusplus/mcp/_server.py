@@ -669,6 +669,53 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def hessian(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "green-gauss",
+        location: str = "cell",
+        output: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """Hessian (second derivative) of a scalar point_data field --
+        gradient's companion one order further, for curvature-based adaptive
+        refinement.
+
+        A composition of TWO gradient calls, not a new numerical kernel: the
+        field is differentiated once (point location), then that (n,3)
+        gradient is differentiated again with the default gradient operator,
+        producing (n,9) -- the flattened row-major 3x3 Hessian. method is
+        forwarded to BOTH internal passes. The result is named
+        <array>:hessian unless `output` overrides it. Input must have exactly
+        one component -- a vector field's Hessian is a separate quantity per
+        component, call this once per component. A field that is at most
+        linear has an exactly zero Hessian everywhere; for a genuinely
+        quadratic field the composition is exact on a structured/symmetric
+        mesh away from its own boundary and a good, standard, but genuinely
+        approximate curvature estimate on an irregular mesh. Cells that
+        cannot be evaluated yield NaN and are reported in num_skipped;
+        least-squares cells with a degenerate neighbourhood in either
+        internal pass fall back to Green-Gauss and are reported in
+        num_fallback. A curvature-driven refinement indicator needs no new
+        tool: `norm(...)` in data_calc on the 9-component output is exactly
+        its Frobenius norm, ready for refine's where selector."""
+        return _guard(
+            _tools.tool_hessian,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            location=location,
+            output=output,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def estimate_error(
         input_path: str,
         output_path: str,

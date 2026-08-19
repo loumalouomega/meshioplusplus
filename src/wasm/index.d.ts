@@ -304,6 +304,19 @@ export type OpSpec =
     }
   | {
       /**
+       * The Hessian (second derivative) of a scalar `point_data` field --
+       * `gradient`'s companion one order further, for curvature-based
+       * adaptive refinement. A pure data step: geometry is untouched and
+       * one new (n,9) array is attached.
+       */
+      op: 'hessian';
+      array: string;
+      method?: GradientMethod;
+      location?: 'point' | 'cell';
+      output?: string;
+    }
+  | {
+      /**
        * The ZZ recovery-based error indicator of a `point_data` field, plus
        * optional marking. A pure data step: geometry is untouched and the
        * indicator (and, when `marking` is not `"none"`, the marking) array
@@ -1307,6 +1320,41 @@ export interface MeshioPlusPlusModule {
     location?: 'point' | 'cell',
     output?: string,
     component?: number,
+    overwrite?: boolean,
+  ): { mesh: Mesh; numSkipped: number; numFallback: number };
+
+  /**
+   * The Hessian (second derivative) of a **scalar** `point_data` field --
+   * `gradient`'s companion one order further, for curvature-based adaptive
+   * refinement.
+   *
+   * A composition of TWO `gradient` calls, not a new numerical kernel: the
+   * field is differentiated once (point location), then that `(n, 3)`
+   * gradient is differentiated again with the default gradient operator,
+   * producing `(n, 9)` -- the flattened row-major 3x3 Hessian, `H[i][j]` at
+   * index `i*3+j`. `method` is forwarded to BOTH internal passes. The width
+   * travels with the array in the returned mesh's `point_data_components` /
+   * `cell_data_components` maps, exactly as `gradient`'s own output does.
+   *
+   * A field that is at most LINEAR has an exactly zero Hessian everywhere --
+   * the one mesh-shape-independent guarantee. For a genuinely quadratic
+   * field the composition is exact on a structured/symmetric mesh away from
+   * its own boundary and a good, standard, but genuinely approximate
+   * curvature estimate on an irregular mesh (see doc/hessian.md).
+   *
+   * A curvature-driven refinement indicator needs no new API: `norm(...)`
+   * in `dataCalc` on the 9-component output is exactly its Frobenius norm,
+   * ready for `refine`'s `where` selector.
+   * @throws {Error} when `array` names a `cell_data` array (piecewise
+   *   constant, so it has no derivative), an unknown array, or an array
+   *   with more than one component (hessian is scalar-only).
+   */
+  hessian(
+    mesh: Mesh,
+    array: string,
+    method?: GradientMethod,
+    location?: 'point' | 'cell',
+    output?: string,
     overwrite?: boolean,
   ): { mesh: Mesh; numSkipped: number; numFallback: number };
 

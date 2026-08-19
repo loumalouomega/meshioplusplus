@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -2532,6 +2533,46 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `data hessian` is `data gradient`'s companion one order further: a
+// composition of TWO gradient() calls, not a new kernel. See
+// doc/hessian.md.
+int cmd_data_hessian(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"method", {}, true});
+    specs.push_back({"location", {}, true});
+    specs.push_back({"output", {}, true});
+    specs.push_back({"overwrite", {}, false});
+    specs.push_back({"quiet", {"-q"}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data hessian requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("data hessian requires --array NAME");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::HessianOptions opts;
+    opts.mArrayName = opt_value(p, "array");
+    // The defaults here must stay string-identical to the Python CLI's.
+    opts.mMethod = meshioplusplus::gradient_method_from_name(opt_value(p, "method", "green-gauss"));
+    opts.mLocation = meshioplusplus::data_location_from_name(opt_value(p, "location", "cell"));
+    opts.mOutputName = opt_value(p, "output");
+    opts.mOverwrite = has_flag(p, "overwrite");
+
+    meshioplusplus::HessianResult r = meshioplusplus::hessian(mesh, opts);
+    if (!has_flag(p, "quiet")) {
+        const std::string name = opts.mOutputName.empty()
+                                     ? opts.mArrayName + std::string(meshioplusplus::kHessianSuffix)
+                                     : opts.mOutputName;
+        std::cout << "wrote " << meshioplusplus::data_location_name(opts.mLocation) << " '" << name
+                  << "' (" << opt_value(p, "method", "green-gauss") << ")\n";
+        std::cout << "  cells skipped (NaN):      " << r.mNumSkipped << "\n";
+        std::cout << "  cells fell back to GG:    " << r.mNumFallback << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 // `data integrate` is `data gradient`'s companion the other direction: a
 // **mesh** operation (it reads cell measures), living here because it reduces
 // data arrays, not because it belongs to the no-geometry data_* bundle. See
@@ -2754,6 +2795,8 @@ void print_data_usage(std::ostream& rOut) {
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
             "gradient|divergence|curl)\n"
+            "  hessian     Second derivative of a scalar point_data field "
+            "(--array NAME), gradient's companion one order further\n"
             "  integrate   Cell-measure-weighted total/mean of a cell_data field, "
             "whole mesh and per named Cell region (--array NAME, repeatable)\n"
             "  estimate-error  ZZ recovery-based error indicator (--array NAME "
@@ -2791,6 +2834,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_normalize(rest);
     if (sub == "gradient")
         return cmd_data_gradient(rest);
+    if (sub == "hessian")
+        return cmd_data_hessian(rest);
     if (sub == "integrate")
         return cmd_data_integrate(rest);
     if (sub == "estimate-error")

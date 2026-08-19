@@ -50,6 +50,7 @@
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
@@ -242,6 +243,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Slice", {"Point", "Normal", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
@@ -602,6 +604,24 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("gradient: " + std::to_string(gr.mNumSkipped) +
                                         " cell(s) could not be differentiated and are NaN");
         return std::move(gr.mMesh);
+    }
+    if (op == "Hessian") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with one new (n,9) array attached.
+        HessianOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mMethod = gradient_method_from_name(pipe_text(rStep, "Method", ""));
+        opts.mLocation = data_location_from_name(pipe_text(rStep, "Location", "cell"));
+        opts.mOutputName = pipe_text(rStep, "Output", "");
+        opts.mOverwrite = true;
+        HessianResult hr = hessian(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSkipped", static_cast<double>(hr.mNumSkipped)},
+                        {"NumFallback", static_cast<double>(hr.mNumFallback)}});
+        if (hr.mNumSkipped > 0)
+            rReport.mWarnings.push_back("hessian: " + std::to_string(hr.mNumSkipped) +
+                                        " cell(s) could not be evaluated and are NaN");
+        return std::move(hr.mMesh);
     }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the

@@ -1,6 +1,6 @@
 """The nested ``meshioplusplus data <verb>`` command group.
 
-Nine of the fourteen verbs are thin front-ends over the five data operations:
+Nine of the fifteen verbs are thin front-ends over the five data operations:
 ``rename``/``drop``/``keep`` call ``data_manage``, ``to-cell``/``to-point``
 call the two averaging entry points, ``clamp``/``normalize`` call
 ``data_condition`` with a preset mode, and ``calc``/``info`` map one-to-one.
@@ -10,18 +10,21 @@ exports for analytics, not mesh formats**: neither round-trips geometry, and
 pyarrow/zarr are optional extras, so their imports stay inside the handlers.
 Neither has a counterpart in the native C++ CLI.
 
-``gradient``, ``integrate`` and ``estimate-error`` are a slight departure: all
-three are **mesh** operations (``operations/gradient.hpp``,
-``operations/data_integrate.hpp``, ``operations/error.hpp``), not part of the
-``data_*`` family, because they read geometry (cell measures, face tables)
-rather than only data arrays. They live here anyway because they consume and
-produce data arrays, which is where a user looks for them. ``estimate-error``
-composes ``gradient`` with the point↔cell averaging round trip to produce the
-ZZ recovery-based error indicator ``refine``'s own ``--where`` selector
-consumes, closing the adaptive loop; ``integrate`` is ``gradient``'s
-companion the other direction, reducing a ``cell_data`` field to a physical
-total/mean instead of differentiating it. See ``doc/gradient.md`` /
-``doc/field_integration.md`` / ``doc/error.md``.
+``gradient``, ``hessian``, ``integrate`` and ``estimate-error`` are a slight
+departure: all four are **mesh** operations (``operations/gradient.hpp``,
+``operations/hessian.hpp``, ``operations/data_integrate.hpp``,
+``operations/error.hpp``), not part of the ``data_*`` family, because they
+read geometry (cell measures, face tables) rather than only data arrays.
+They live here anyway because they consume and produce data arrays, which is
+where a user looks for them. ``hessian`` is ``gradient``'s companion one
+order further -- a composition of two ``gradient`` calls, not a new kernel;
+``estimate-error`` composes ``gradient`` with the point↔cell averaging round
+trip to produce the ZZ recovery-based error indicator ``refine``'s own
+``--where`` selector consumes, closing the adaptive loop; ``integrate`` is
+``gradient``'s companion the other direction, reducing a ``cell_data`` field
+to a physical total/mean instead of differentiating it. See
+``doc/gradient.md`` / ``doc/hessian.md`` / ``doc/field_integration.md`` /
+``doc/error.md``.
 
 This is the repository's first two-level subcommand. It needs no change to
 ``_main.py``'s dispatch because ``set_defaults(func=...)`` on the *inner*
@@ -40,6 +43,7 @@ from .._data_manage import data_drop, data_keep, data_rename
 from .._error import estimate_error
 from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
+from .._hessian import hessian
 
 _LOCATION_FLAGS = ("point", "cell", "field")
 
@@ -652,6 +656,69 @@ def gradient_cmd(args):
     return 0
 
 
+# --- data hessian --------------------------------------------------------------
+
+
+def add_hessian_args(parser):
+    _add_io_args(parser)
+    parser.add_argument(
+        "--array",
+        type=str,
+        required=True,
+        metavar="NAME",
+        help="scalar point_data array to differentiate twice (cell_data has no derivative)",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="green-gauss",
+        choices=("green-gauss", "least-squares"),
+        help="how each internal gradient pass reconstructs its derivative (default: green-gauss)",
+    )
+    parser.add_argument(
+        "--location",
+        type=str,
+        default="cell",
+        choices=("cell", "point"),
+        help="where the result is stored (default: cell)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="output array name (default: <array>:hessian)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing array of the output name instead of failing",
+    )
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def hessian_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = hessian(
+        mesh,
+        args.array,
+        method=args.method,
+        location=args.location,
+        output=args.output,
+        overwrite=args.overwrite,
+        return_report=True,
+    )
+    if not args.quiet:
+        name = args.output or f"{args.array}:hessian"
+        print(f"wrote {args.location}_data '{name}' ({args.method})")
+        print(f"  cells skipped (NaN):      {report['num_skipped']}")
+        print(f"  cells fell back to GG:    {report['num_fallback']}")
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
 # --- data integrate ----------------------------------------------------------
 
 
@@ -805,6 +872,13 @@ _VERBS = (
         "Differentiate a point_data field (gradient / divergence / curl)",
         add_gradient_args,
         gradient_cmd,
+    ),
+    (
+        "hessian",
+        "Second derivative of a scalar point_data field, gradient's "
+        "companion one order further",
+        add_hessian_args,
+        hessian_cmd,
     ),
     (
         "integrate",

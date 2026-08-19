@@ -86,6 +86,7 @@ from ._helpers import (
     write,
     write_points_cells,
 )
+from ._hessian import hessian
 from ._interop import (
     from_arrow,
     from_pyvista,
@@ -209,6 +210,7 @@ __all__ = [
     "interpolate",
     "conservative_interpolate",
     "gradient",
+    "hessian",
     "data_integrate",
     "estimate_error",
     "slice",
