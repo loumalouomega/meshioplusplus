@@ -961,3 +961,23 @@ test_that("crop_predicate keeps the cells a data comparison selects", {
   expect_error(mio_crop_predicate(f$mesh, "sdf:distance", compare = "~"))
   expect_error(mio_crop_predicate(f$mesh, "nope"))
 })
+
+test_that("remesh replaces a surface's triangulation by ACVD clustering", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  r <- mio_remesh(cube, 10)
+  on.exit(mio_release(r$mesh), add = TRUE)
+  expect_equal(mio_cell_block_type(r$mesh, 1), "triangle")
+  expect_equal(mio_num_points(r$mesh), r$num_clusters)
+  expect_gte(r$num_isolated_clusters, 0)
+  expect_gte(r$num_non_manifold_vertices, 0)
+
+  # gradation/preserve_boundary are accepted and reach the C API; a closed
+  # mesh's boundary handling is a no-op either way.
+  q <- mio_remesh(cube, 10, metric = "quadric", gradation = 1.5, preserve_boundary = FALSE)
+  on.exit(mio_release(q$mesh), add = TRUE)
+  expect_gt(mio_num_cells(q$mesh), 0)
+
+  expect_error(mio_remesh(cube, 3))
+})

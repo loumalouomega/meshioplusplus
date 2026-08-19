@@ -1451,7 +1451,7 @@ PYBIND11_MODULE(_core, m) {
         "remesh",
         [](py::object pymesh, std::int64_t num_clusters, int subdivide, double subsample_ratio,
            int max_subdivide, int max_iterations, int max_repair_passes,
-           const std::string& metric) {
+           const std::string& metric, double gradation, bool preserve_boundary) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -1463,6 +1463,8 @@ PYBIND11_MODULE(_core, m) {
             options.mMaxIterations = max_iterations;
             options.mMaxRepairPasses = max_repair_passes;
             options.mMetric = meshioplusplus::remesh_metric_from_name(metric);
+            options.mGradation = gradation;
+            options.mPreserveBoundary = preserve_boundary;
             meshioplusplus::RemeshResult r = meshioplusplus::remesh(cpp, options);
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
@@ -1470,12 +1472,14 @@ PYBIND11_MODULE(_core, m) {
             out["num_iterations"] = r.mNumIterations;
             out["subdivide_applied"] = r.mSubdivideApplied;
             out["num_isolated_clusters"] = r.mNumIsolatedClusters;
+            out["num_non_manifold_vertices"] = r.mNumNonManifoldVertices;
             return out;
         },
         py::arg("mesh"), py::arg("num_clusters"), py::arg("subdivide") = -1,
         py::arg("subsample_ratio") = 10.0, py::arg("max_subdivide") = 4,
         py::arg("max_iterations") = 100, py::arg("max_repair_passes") = 10,
-        py::arg("metric") = "isotropic");
+        py::arg("metric") = "isotropic", py::arg("gradation") = 0.0,
+        py::arg("preserve_boundary") = true);
 
     // The settings.json pipeline (read -> operation chain -> write), run
     // entirely in C++ against file paths. Bound for parity tests and for

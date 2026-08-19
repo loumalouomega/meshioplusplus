@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 10
+#define MIO_VERSION_MINOR 11
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1049,6 +1049,16 @@ MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_nam
  *                             centroidal distance) selects the default;
  *                             "quadric" selects the Garland-Heckbert
  *                             quadric-error, feature-preserving metric.
+ * @param gradation            curvature-gradation exponent gamma in the item
+ *                             weight area * kappa^gamma; 0.0 disables
+ *                             gradation (curvature is not even computed) and
+ *                             reproduces plain area weighting.
+ * @param preserve_boundary    nonzero (default behaviour) detects the
+ *                             input's open boundary (if any), seeds it
+ *                             before the interior, and emits a `line` dual
+ *                             cell along every boundary edge whose endpoints
+ *                             land in different clusters; a no-op on a
+ *                             closed mesh either way.
  * @param num_clusters_out     optional out: clusters actually produced
  *                             (mesh->NumPoints(); may be lower than
  *                             num_clusters, never higher).
@@ -1059,13 +1069,20 @@ MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_nam
  * @param num_isolated_clusters optional out: clusters still disconnected
  *                             after repair; non-zero means the output may be
  *                             non-manifold near them.
+ * @param num_non_manifold_vertices optional out: output vertices whose
+ *                             incident dual-triangle fan is still not a
+ *                             single loop/chain after repair; a distinct
+ *                             cause of non-manifold output from
+ *                             num_isolated_clusters, reported separately.
  * @return the remeshed mesh (free with mio_mesh_free), or NULL on failure.
  */
 MIO_API mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
                              double subsample_ratio, int max_subdivide, int max_iterations,
-                             int max_repair_passes, const char* metric,
-                             int64_t* num_clusters_out, int64_t* num_iterations,
-                             int* subdivide_applied, int64_t* num_isolated_clusters);
+                             int max_repair_passes, const char* metric, double gradation,
+                             int preserve_boundary, int64_t* num_clusters_out,
+                             int64_t* num_iterations, int* subdivide_applied,
+                             int64_t* num_isolated_clusters,
+                             int64_t* num_non_manifold_vertices);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).

@@ -1235,9 +1235,10 @@ mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const
 
 mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
                      double subsample_ratio, int max_subdivide, int max_iterations,
-                     int max_repair_passes, const char* metric, int64_t* num_clusters_out,
-                     int64_t* num_iterations, int* subdivide_applied,
-                     int64_t* num_isolated_clusters) {
+                     int max_repair_passes, const char* metric, double gradation,
+                     int preserve_boundary, int64_t* num_clusters_out, int64_t* num_iterations,
+                     int* subdivide_applied, int64_t* num_isolated_clusters,
+                     int64_t* num_non_manifold_vertices) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
@@ -1249,6 +1250,8 @@ mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
         opts.mMaxIterations = max_iterations;
         opts.mMaxRepairPasses = max_repair_passes;
         opts.mMetric = meshioplusplus::remesh_metric_from_name(metric ? metric : "isotropic");
+        opts.mGradation = gradation;
+        opts.mPreserveBoundary = preserve_boundary != 0;
         meshioplusplus::RemeshResult r = meshioplusplus::remesh(mesh->mMesh, opts);
         if (num_clusters_out)
             *num_clusters_out = r.mNumClusters;
@@ -1258,6 +1261,8 @@ mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
             *subdivide_applied = r.mSubdivideApplied;
         if (num_isolated_clusters)
             *num_isolated_clusters = r.mNumIsolatedClusters;
+        if (num_non_manifold_vertices)
+            *num_non_manifold_vertices = r.mNumNonManifoldVertices;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

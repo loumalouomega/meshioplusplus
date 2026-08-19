@@ -836,9 +836,10 @@ mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
 #' error, preserves sharp edges/corners at extra cost per candidate move).
 #' `subdivide` defaults to automatic (`-1`): the smallest count of uniform
 #' `refine` passes reaching `subsample_ratio` items per cluster, capped at
-#' `max_subdivide`; `0` disables subdivision. `num_isolated_clusters` in the
-#' result non-zero means some clusters could not be repaired into a single
-#' connected piece, so the output may be non-manifold near them.
+#' `max_subdivide`; `0` disables subdivision. `num_isolated_clusters` and
+#' `num_non_manifold_vertices` in the result are two distinct causes of
+#' non-manifold output (disconnected clusters vs. "bowtie" vertices) that
+#' repair could not fully fix; check both rather than assuming.
 #'
 #' Attribution: the isotropic clustering engine is derived from
 #' \href{https://github.com/pyvista/pyacvd}{pyacvd} (MIT, (c) 2017-2024 The
@@ -860,17 +861,26 @@ mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
 #' @param max_repair_passes "Split disconnected clusters, minimise again"
 #'   passes; `0` skips repair.
 #' @param metric `"isotropic"` (default) or `"quadric"`.
+#' @param gradation Curvature-gradation exponent `gamma` in the item weight
+#'   `area * kappa^gamma`; `0.0` (default) disables gradation entirely and
+#'   reproduces plain area weighting.
+#' @param preserve_boundary Detect the input's open boundary (if any), seed
+#'   it before the interior, and emit a `line` dual cell along boundary
+#'   edges whose endpoints land in different clusters. A no-op on a closed
+#'   mesh (`TRUE` by default).
 #' @return A list of `mesh`, `num_clusters`, `num_iterations`,
-#'   `subdivide_applied` and `num_isolated_clusters`.
+#'   `subdivide_applied`, `num_isolated_clusters` and
+#'   `num_non_manifold_vertices`.
 #' @export
 mio_remesh <- function(mesh, num_clusters, subdivide = -1L, subsample_ratio = 10.0,
                        max_subdivide = 4L, max_iterations = 100L,
-                       max_repair_passes = 10L, metric = "isotropic") {
+                       max_repair_passes = 10L, metric = "isotropic", gradation = 0.0,
+                       preserve_boundary = TRUE) {
   .Call(
     R_mio_remesh, mesh, as.integer(num_clusters), as.integer(subdivide),
     as.numeric(subsample_ratio), as.integer(max_subdivide),
     as.integer(max_iterations), as.integer(max_repair_passes),
-    as.character(metric)
+    as.character(metric), as.numeric(gradation), isTRUE(preserve_boundary)
   )
 }
 
