@@ -45,6 +45,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -149,8 +151,21 @@ RemeshSurface remesh_build_surface(const Mesh& rMesh) {
 }
 
 /// Per-item weight (a third of the incident triangle area, so the weights sum
-/// to the surface area) and the weighted position each cluster accumulates.
-void remesh_item_weights(const RemeshSurface& rS, std::vector<double>& rArea,
+/// to the surface area -- unless curvature gradation rescales it, see below)
+/// and the weighted position each cluster accumulates.
+///
+/// When `Gradation != 0.0` and `rCurvature` is non-empty, `rArea` (which
+/// becomes the general "item weight" from this point on, not literal area,
+/// everywhere it is used downstream -- seeding, badness, final placement)
+/// is rescaled to `area * max(kappa, kappa_floor)^Gradation`, where
+/// `kappa_floor` is a small internal fraction of the mesh's own maximum
+/// curvature -- a defensive floor, not a tunable, guarding against an
+/// exact-zero weight degenerating a flat vertex's cluster membership (the
+/// same weight-clamping idea the real ACVD reference documents for its own
+/// isotropic weighting). A perfectly flat mesh (`kappa` identically zero
+/// everywhere) leaves `rArea` untouched -- there is nothing to grade.
+void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCurvature,
+                         double Gradation, std::vector<double>& rArea,
                          std::vector<double>& rWeighted) {
     rArea.assign(rS.mNumPoints, 0.0);
     rWeighted.assign(rS.mNumPoints * 3, 0.0);
@@ -173,6 +188,18 @@ void remesh_item_weights(const RemeshSurface& rS, std::vector<double>& rArea,
         rArea[static_cast<std::size_t>(i1)] += area;
         rArea[static_cast<std::size_t>(i2)] += area;
     }
+
+    if (Gradation != 0.0 && !rCurvature.empty()) {
+        double kappa_max = 0.0;
+        for (const double k : rCurvature)
+            kappa_max = std::max(kappa_max, k);
+        if (kappa_max > 0.0) {
+            const double kappa_floor = kappa_max * 1e-3;
+            for (std::size_t i = 0; i < rS.mNumPoints; ++i)
+                rArea[i] *= std::pow(std::max(rCurvature[i], kappa_floor), Gradation);
+        }
+    }
+
     for (std::size_t i = 0; i < rS.mNumPoints; ++i)
         for (int d = 0; d < 3; ++d)
             rWeighted[i * 3 + d] = rArea[i] * rS.mXyz[i * 3 + d];
@@ -196,6 +223,146 @@ std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric
     return detail::decim_accumulate_quadrics(csr, rS.mNumPoints, quad_k);
 }
 
+/// Area-weighted unit normal at each vertex, from its incident face normals
+/// (the per-vertex analogue of `remesh_cluster_normals` below). Only computed
+/// when curvature gradation is requested.
+std::vector<double> remesh_vertex_normals(const RemeshSurface& rS) {
+    std::vector<double> nrm(rS.mNumPoints * 3, 0.0);
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                             e0[0] * e1[1] - e0[1] * e1[0]};
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t vi = static_cast<std::size_t>(rS.mCorners[f * 3 + k]);
+            for (int d = 0; d < 3; ++d)
+                nrm[vi * 3 + d] += c[d];
+        }
+    }
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const double len = std::sqrt(nrm[i * 3] * nrm[i * 3] + nrm[i * 3 + 1] * nrm[i * 3 + 1] +
+                                     nrm[i * 3 + 2] * nrm[i * 3 + 2]);
+        if (len > 0.0)
+            for (int d = 0; d < 3; ++d)
+                nrm[i * 3 + d] /= len;
+    }
+    return nrm;
+}
+
+/// Solves the symmetric 3x3 system `M x = b` via Cramer's rule with explicit
+/// 3x3 determinants (never the cofactor/adjugate shortcut -- this system has
+/// no special structure to exploit, unlike `decim_quadric_optimal_point`'s).
+/// Returns `false` (leaving `pOut` untouched) when the system is
+/// ill-conditioned relative to its own scale.
+bool remesh_solve_sym3(double m00, double m01, double m02, double m11, double m12, double m22,
+                       double b0, double b1, double b2, double pOut[3]) {
+    const double det = m00 * (m11 * m22 - m12 * m12) - m01 * (m01 * m22 - m12 * m02) +
+                       m02 * (m01 * m12 - m11 * m02);
+    double scale = std::abs(m00);
+    scale = std::max(scale, std::abs(m01));
+    scale = std::max(scale, std::abs(m02));
+    scale = std::max(scale, std::abs(m11));
+    scale = std::max(scale, std::abs(m12));
+    scale = std::max(scale, std::abs(m22));
+    if (std::abs(det) <= 1e-12 * (scale * scale * scale))
+        return false;
+
+    const double det0 = b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) +
+                        m02 * (b1 * m12 - m11 * b2);
+    const double det1 = m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) +
+                        m02 * (m01 * b2 - b1 * m02);
+    const double det2 = m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) +
+                        b0 * (m01 * m12 - m11 * m02);
+    pOut[0] = det0 / det;
+    pOut[1] = det1 / det;
+    pOut[2] = det2 / det;
+    return true;
+}
+
+/// Per-vertex curvature magnitude via a local osculating-paraboloid fit over
+/// the 1-ring (the same `detail::NodeAdjacency` graph the edge sweep already
+/// builds -- no separate neighbourhood machinery). At vertex `v` with unit
+/// normal `n` and tangent basis `(u, w)`, each 1-ring neighbour is projected
+/// into local `(u, w, h)` coordinates (`h` = height out of the tangent
+/// plane) and `h = a*u^2 + b*u*w + c*w^2` is fit by least squares; `kappa` is
+/// the larger-magnitude eigenvalue of `[[2a, b], [b, 2c]]` (the dominant
+/// bend). A low-valence (<3) or near-degenerate neighbourhood falls back to
+/// `kappa = 0` -- the same ill-conditioning-means-flat convention
+/// `decim_quadric_optimal_point` already established.
+std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
+                                            const detail::NodeAdjacency& rAdj,
+                                            const std::vector<double>& rNormals) {
+    std::vector<double> kappa(rS.mNumPoints, 0.0);
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const std::int64_t lo = rAdj.mXadj[i];
+        const std::int64_t hi = rAdj.mXadj[i + 1];
+        if (hi - lo < 3)
+            continue;
+
+        const double* p0 = rS.mXyz.data() + i * 3;
+        const double* n = rNormals.data() + i * 3;
+        if (n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0)
+            continue;  // an unreferenced or degenerate-fan vertex
+
+        // An orthonormal tangent basis (u, w) perpendicular to n: seed u from
+        // whichever coordinate axis is least aligned with n (so the
+        // Gram-Schmidt subtraction below never nearly cancels), then
+        // Gram-Schmidt it against n and take w = n x u.
+        const double ax[3] = {1.0, 0.0, 0.0};
+        const double ay[3] = {0.0, 1.0, 0.0};
+        const double* seed = (std::abs(n[0]) < 0.9) ? ax : ay;
+        const double dp = seed[0] * n[0] + seed[1] * n[1] + seed[2] * n[2];
+        double u[3] = {seed[0] - dp * n[0], seed[1] - dp * n[1], seed[2] - dp * n[2]};
+        const double ulen = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+        if (ulen <= 0.0)
+            continue;
+        u[0] /= ulen;
+        u[1] /= ulen;
+        u[2] /= ulen;
+        const double w[3] = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2],
+                             n[0] * u[1] - n[1] * u[0]};
+
+        double m00 = 0.0, m01 = 0.0, m02 = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
+        double b0 = 0.0, b1 = 0.0, b2 = 0.0;
+        for (std::int64_t k = lo; k < hi; ++k) {
+            const std::size_t j = static_cast<std::size_t>(rAdj.mAdj[static_cast<std::size_t>(k)]);
+            const double d[3] = {rS.mXyz[j * 3] - p0[0], rS.mXyz[j * 3 + 1] - p0[1],
+                                 rS.mXyz[j * 3 + 2] - p0[2]};
+            const double du = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+            const double dw = d[0] * w[0] + d[1] * w[1] + d[2] * w[2];
+            const double dh = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+            const double r0 = du * du, r1 = du * dw, r2 = dw * dw;
+            m00 += r0 * r0;
+            m01 += r0 * r1;
+            m02 += r0 * r2;
+            m11 += r1 * r1;
+            m12 += r1 * r2;
+            m22 += r2 * r2;
+            b0 += r0 * dh;
+            b1 += r1 * dh;
+            b2 += r2 * dh;
+        }
+
+        double abc[3];
+        if (!remesh_solve_sym3(m00, m01, m02, m11, m12, m22, b0, b1, b2, abc))
+            continue;  // ill-conditioned -> kappa stays 0
+
+        // Principal curvatures = eigenvalues of [[2a, b], [b, 2c]].
+        const double a = abc[0], b = abc[1], c = abc[2];
+        const double tr = 2.0 * a + 2.0 * c;
+        const double det2x2 = 4.0 * a * c - b * b;
+        const double disc = std::max(0.0, tr * tr - 4.0 * det2x2);
+        const double sq = std::sqrt(disc);
+        const double k1 = 0.5 * (tr + sq);
+        const double k2 = 0.5 * (tr - sq);
+        kappa[i] = std::max(std::abs(k1), std::abs(k2));
+    }
+    return kappa;
+}
+
 /// The undirected edge list of the adjacency graph, each edge once with
 /// `lo < hi`, in ascending `(lo, hi)` order -- the sweep order, hence part of
 /// the determinism contract.
@@ -213,11 +380,78 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
     return edges;
 }
 
-/// Grows `NumClusters` seeds breadth-first from the lowest unassigned vertex,
-/// each absorbing neighbours until it holds its share of the remaining area.
-/// RNG-free by construction, unlike pyacvd.
+/// The input's open boundary: an edge used by exactly one triangle is a
+/// boundary edge; a vertex is a boundary vertex iff it is an endpoint of at
+/// least one. A local, self-contained edge-use-count pass -- deliberately
+/// NOT shared with `decimate.cpp`'s own `decim_build_edges`, whose header
+/// comment already scopes that helper to decimate's two current callers
+/// only ("stays private to decimate.cpp ... neither concept applies" to the
+/// other one). `std::map` (not a hash map) is deliberate: it costs nothing
+/// here and gives a canonical, deterministic edge-visitation order for free.
+struct RemeshBoundaryInfo {
+    std::vector<std::uint8_t> mIsBoundaryVertex;  ///< size NumPoints.
+    std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
+};
+
+RemeshBoundaryInfo remesh_boundary_info(const RemeshSurface& rS) {
+    RemeshBoundaryInfo info;
+    info.mIsBoundaryVertex.assign(rS.mNumPoints, 0);
+    std::map<std::pair<std::int64_t, std::int64_t>, int> use_count;
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const std::int64_t v[3] = {rS.mCorners[f * 3], rS.mCorners[f * 3 + 1],
+                                   rS.mCorners[f * 3 + 2]};
+        for (int k = 0; k < 3; ++k) {
+            std::int64_t a = v[k], b = v[(k + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            ++use_count[{a, b}];
+        }
+    }
+    for (const auto& [edge, count] : use_count) {
+        if (count == 1) {
+            info.mBoundaryEdges.push_back(edge);
+            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.first)] = 1;
+            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.second)] = 1;
+        }
+    }
+    return info;
+}
+
+/// The vertex visitation order `remesh_seed_clusters` picks its next seed
+/// from: every boundary vertex (ascending id) before every interior vertex
+/// (ascending id) when `rIsBoundaryVertex` names any, else plain ascending
+/// id -- reproducing today's order exactly. This is the "pinned" half of
+/// boundary preservation: a boundary vertex is always available to become a
+/// seed before an interior one, so a cluster's boundary segment is anchored
+/// early rather than being absorbed piecemeal by whichever interior cluster
+/// reaches it first during the general BFS growth that follows unchanged.
+std::vector<std::int64_t> remesh_seed_order(std::size_t NumPoints,
+                                            const std::vector<std::uint8_t>& rIsBoundaryVertex) {
+    std::vector<std::int64_t> order;
+    order.reserve(NumPoints);
+    if (rIsBoundaryVertex.empty()) {
+        for (std::size_t i = 0; i < NumPoints; ++i)
+            order.push_back(static_cast<std::int64_t>(i));
+        return order;
+    }
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (rIsBoundaryVertex[i])
+            order.push_back(static_cast<std::int64_t>(i));
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (!rIsBoundaryVertex[i])
+            order.push_back(static_cast<std::int64_t>(i));
+    return order;
+}
+
+/// Grows `NumClusters` seeds breadth-first from the next unassigned vertex in
+/// `rOrder`, each absorbing neighbours until it holds its share of the
+/// remaining area. RNG-free by construction, unlike pyacvd. `rOrder` is
+/// plain ascending-id order unless boundary preservation reorders it (see
+/// `remesh_seed_order`); this function itself has no boundary-specific logic
+/// at all -- it only ever asks "what's the next free vertex in this order."
 void remesh_seed_clusters(std::vector<std::int64_t>& rClusters, const detail::NodeAdjacency& rAdj,
-                          const std::vector<double>& rArea, std::int64_t NumClusters,
+                          const std::vector<double>& rArea,
+                          const std::vector<std::int64_t>& rOrder, std::int64_t NumClusters,
                           std::size_t NumPoints) {
     double area_remain = 0.0;
     for (std::size_t i = 0; i < NumPoints; ++i)
@@ -232,15 +466,17 @@ void remesh_seed_clusters(std::vector<std::int64_t>& rClusters, const detail::No
         const double t_area = area_remain - target * static_cast<double>(NumClusters - c - 1);
         double c_area = 0.0;
 
-        while (next_free < NumPoints && rClusters[next_free] != -1)
+        while (next_free < NumPoints &&
+               rClusters[static_cast<std::size_t>(rOrder[next_free])] != -1)
             ++next_free;
         if (next_free >= NumPoints)
             break;
+        const std::size_t seed_v = static_cast<std::size_t>(rOrder[next_free]);
 
-        c_area += rArea[next_free];
-        rClusters[next_free] = c;
+        c_area += rArea[seed_v];
+        rClusters[seed_v] = c;
         ring.clear();
-        ring.push_back(static_cast<std::int64_t>(next_free));
+        ring.push_back(static_cast<std::int64_t>(seed_v));
 
         while (!ring.empty()) {
             next.clear();
@@ -709,13 +945,18 @@ std::vector<double> remesh_cluster_normals(const RemeshSurface& rS,
     return nrm;
 }
 
-/// Builds the dual: one triangle per input face spanning three distinct
-/// clusters, deduplicated on the sorted id triple and emitted in ascending
-/// order, then wound to agree with the mean normal of its three clusters.
-std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
-                                            const std::vector<std::int64_t>& rClusters,
-                                            const std::vector<double>& rPositions,
-                                            const std::vector<double>& rNormals) {
+/// The deduplicated set of (sorted) cluster-id triples the current
+/// clustering's dual would have as triangles -- topology only, no
+/// positions/winding. Shared by `remesh_dual_faces` (which adds those on
+/// top, and is only ever called once every vertex is resolved) and the
+/// repair loop's non-manifold check (which may call this on a NOT-yet-fully
+/// resolved cluster array -- `remesh_split_disconnected` unassigns vertices
+/// back to `-1` and this may be read before the next `remesh_grow_null`
+/// re-fills them, so a face touching any still-unassigned corner is skipped
+/// outright: with no valid output vertex for that corner yet, it cannot
+/// contribute to even a provisional dual).
+std::vector<std::array<std::int64_t, 3>> remesh_dual_triangle_keys(
+    const RemeshSurface& rS, const std::vector<std::int64_t>& rClusters) {
     std::vector<std::array<std::int64_t, 3>> keys;
     keys.reserve(rS.mNumFaces);
     for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
@@ -723,6 +964,8 @@ std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
             rClusters[static_cast<std::size_t>(rS.mCorners[f * 3])],
             rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + 1])],
             rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + 2])]};
+        if (t[0] < 0 || t[1] < 0 || t[2] < 0)
+            continue;  // a corner has no cluster yet
         std::sort(t.begin(), t.end());
         if (t[0] == t[1] || t[1] == t[2])
             continue;  // the face does not join three distinct clusters
@@ -730,6 +973,18 @@ std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
     }
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+/// Builds the dual: one triangle per deduplicated key from
+/// `remesh_dual_triangle_keys`, wound to agree with the mean normal of its
+/// three clusters.
+std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
+                                            const std::vector<std::int64_t>& rClusters,
+                                            const std::vector<double>& rPositions,
+                                            const std::vector<double>& rNormals) {
+    const std::vector<std::array<std::int64_t, 3>> keys =
+        remesh_dual_triangle_keys(rS, rClusters);
 
     std::vector<std::int64_t> out;
     out.reserve(keys.size() * 3);
@@ -760,6 +1015,110 @@ std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
         }
     }
     return out;
+}
+
+/// One `line` cell per genuine input boundary edge whose two endpoints land
+/// in different clusters, connecting those two clusters' representative
+/// points -- deduplicated by unordered cluster-id pair, the same idiom
+/// `remesh_dual_triangle_keys` already uses for the triangle dual. Without
+/// this, a boundary-adjacent input triangle simply has no "third neighbour"
+/// across the missing side and is silently dropped from the triangle dual,
+/// leaving no coherent output boundary at all -- this is the "extra dual
+/// elements... inserted along the boundary" half of boundary preservation.
+std::vector<std::int64_t> remesh_dual_boundary_edges(
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& rBoundaryEdges,
+    const std::vector<std::int64_t>& rClusters) {
+    std::vector<std::pair<std::int64_t, std::int64_t>> keys;
+    keys.reserve(rBoundaryEdges.size());
+    for (const auto& [a, b] : rBoundaryEdges) {
+        std::int64_t ca = rClusters[static_cast<std::size_t>(a)];
+        std::int64_t cb = rClusters[static_cast<std::size_t>(b)];
+        if (ca == cb)
+            continue;
+        if (ca > cb)
+            std::swap(ca, cb);
+        keys.push_back({ca, cb});
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+    std::vector<std::int64_t> out;
+    out.reserve(keys.size() * 2);
+    for (const auto& [ca, cb] : keys) {
+        out.push_back(ca);
+        out.push_back(cb);
+    }
+    return out;
+}
+
+/// Output (cluster) vertices whose incident dual-triangle fan is NOT a
+/// single loop (interior vertex, closed fan) or open chain (boundary
+/// vertex, open fan) -- a "bowtie." `rKeys` is `remesh_dual_triangle_keys`'
+/// own output, so this works identically whether called on the FINAL
+/// (post-renumber, contiguous) cluster space or the repair loop's CURRENT
+/// (possibly-gapped) one -- it only ever asks about ids that actually
+/// appear in `rKeys`.
+///
+/// For vertex `v`, each incident triangle `(v, a, b)` contributes the
+/// "opposite edge" `(a, b)` (the edge not touching `v`); manifold means
+/// those opposite edges, viewed as a graph on `v`'s neighbours, are a
+/// single simple cycle (every node degree 2) or a single simple path
+/// (exactly two nodes of degree 1, the open chain's ends, the rest degree
+/// 2) -- checked as: no node of degree > 2, either 0 or 2 nodes of degree
+/// 1, and one connected component spanning every opposite edge.
+std::vector<std::uint8_t> remesh_detect_nonmanifold_vertices(
+    const std::vector<std::array<std::int64_t, 3>>& rKeys, std::int64_t NumClusters) {
+    const std::size_t n_clus = static_cast<std::size_t>(NumClusters);
+    std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> incident(n_clus);
+    for (const auto& t : rKeys) {
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t v = t[k], a = t[(k + 1) % 3], b = t[(k + 2) % 3];
+            incident[static_cast<std::size_t>(v)].push_back({a, b});
+        }
+    }
+
+    std::vector<std::uint8_t> bad(n_clus, 0);
+    for (std::size_t v = 0; v < n_clus; ++v) {
+        const auto& edges = incident[v];
+        if (edges.size() < 2)
+            continue;  // 0 or 1 incident dual triangle is trivially fine
+
+        std::map<std::int64_t, std::vector<std::int64_t>> adj;
+        for (const auto& [a, b] : edges) {
+            adj[a].push_back(b);
+            adj[b].push_back(a);
+        }
+
+        bool ok = true;
+        int deg1_count = 0;
+        for (const auto& [node, nbrs] : adj) {
+            if (nbrs.size() > 2) {
+                ok = false;
+                break;
+            }
+            if (nbrs.size() == 1)
+                ++deg1_count;
+        }
+        if (ok && deg1_count != 0 && deg1_count != 2)
+            ok = false;
+        if (ok) {
+            std::set<std::int64_t> visited;
+            std::vector<std::int64_t> stack = {edges[0].first};
+            visited.insert(edges[0].first);
+            while (!stack.empty()) {
+                const std::int64_t cur = stack.back();
+                stack.pop_back();
+                for (const std::int64_t nb : adj.at(cur))
+                    if (visited.insert(nb).second)
+                        stack.push_back(nb);
+            }
+            if (visited.size() != adj.size())
+                ok = false;
+        }
+        if (!ok)
+            bad[v] = 1;
+    }
+    return bad;
 }
 
 }  // namespace
@@ -839,17 +1198,30 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
             ") exceeds the " + std::to_string(surf.mNumPoints) +
             " vertices available after subdivision; raise subdivide or lower num_clusters");
 
-    std::vector<double> area;
-    std::vector<double> weighted;
-    remesh_item_weights(surf, area, weighted);
-    const std::vector<double> vertex_quad = remesh_vertex_quadrics(surf, metric);
-
+    // Adjacency is needed by curvature (1-ring) as well as the edge sweep and
+    // seeding below, so it is built once, up front, with no dependency on the
+    // item weights that follow.
     const detail::NodeAdjacency adj =
         detail::build_node_adjacency(work, surf.mNumPoints, detail::NodeAdjacencyKind::Edge);
     const std::vector<std::int64_t> edges = remesh_unique_edges(adj, surf.mNumPoints);
 
+    std::vector<double> curvature;
+    if (rOptions.mGradation != 0.0) {
+        const std::vector<double> vertex_normals = remesh_vertex_normals(surf);
+        curvature = remesh_vertex_curvature(surf, adj, vertex_normals);
+    }
+    std::vector<double> area;
+    std::vector<double> weighted;
+    remesh_item_weights(surf, curvature, rOptions.mGradation, area, weighted);
+    const std::vector<double> vertex_quad = remesh_vertex_quadrics(surf, metric);
+
+    const RemeshBoundaryInfo boundary =
+        rOptions.mPreserveBoundary ? remesh_boundary_info(surf) : RemeshBoundaryInfo{};
+    const std::vector<std::int64_t> seed_order =
+        remesh_seed_order(surf.mNumPoints, boundary.mIsBoundaryVertex);
+
     std::vector<std::int64_t> clusters(surf.mNumPoints, -1);
-    remesh_seed_clusters(clusters, adj, area, rOptions.mNumClusters, surf.mNumPoints);
+    remesh_seed_clusters(clusters, adj, area, seed_order, rOptions.mNumClusters, surf.mNumPoints);
     if (remesh_grow_null(edges, clusters))
         for (std::size_t i = 0; i < surf.mNumPoints; ++i)
             if (clusters[i] == -1)
@@ -861,12 +1233,30 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
                         rOptions.mNumClusters, rOptions.mMaxIterations);
 
-    // Repair: a minimisation sweep can leave a cluster in two pieces, whose
-    // dual is where non-manifold output comes from. Split, re-grow, minimise
-    // again, and report whatever is still split at the end.
+    // Repair: a minimisation sweep can leave a cluster in two pieces, or the
+    // dual can come out non-manifold at some vertex even with every cluster
+    // itself connected -- two distinct causes, both folded into the same
+    // split/re-grow/re-minimise loop and both reported separately at the end.
+    // The non-manifold check runs on the CURRENT (possibly-gapped,
+    // pre-renumber) cluster id space via remesh_dual_triangle_keys, which
+    // makes no assumption of contiguity.
+    auto unassign_bad_clusters = [&](const std::vector<std::uint8_t>& rBad) {
+        for (std::size_t i = 0; i < surf.mNumPoints; ++i)
+            if (clusters[i] >= 0 && rBad[static_cast<std::size_t>(clusters[i])])
+                clusters[i] = -1;
+    };
+
     std::int64_t disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
                                                           surf.mNumPoints);
-    for (int pass = 0; pass < rOptions.mMaxRepairPasses && disconnected > 0; ++pass) {
+    std::vector<std::uint8_t> bad_vertices = remesh_detect_nonmanifold_vertices(
+        remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+    std::int64_t nonmanifold =
+        std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
+    if (nonmanifold > 0)
+        unassign_bad_clusters(bad_vertices);
+
+    for (int pass = 0; pass < rOptions.mMaxRepairPasses && (disconnected > 0 || nonmanifold > 0);
+        ++pass) {
         if (remesh_grow_null(edges, clusters))
             for (std::size_t i = 0; i < surf.mNumPoints; ++i)
                 if (clusters[i] == -1)
@@ -878,6 +1268,11 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
                             rOptions.mNumClusters, rOptions.mMaxIterations);
         disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
                                                  surf.mNumPoints);
+        bad_vertices = remesh_detect_nonmanifold_vertices(
+            remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+        nonmanifold = std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
+        if (nonmanifold > 0)
+            unassign_bad_clusters(bad_vertices);
     }
     result.mNumIsolatedClusters = disconnected;
     if (remesh_grow_null(edges, clusters))
@@ -893,10 +1288,23 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
                   "split more finely)",
                   n_clus, rOptions.mNumClusters);
 
+    // The honest, final, vertex-level manifoldness count: whatever repair
+    // could not fix, checked once more on the true final (renumbered)
+    // clustering -- distinct in kind from mNumIsolatedClusters, which the
+    // loop above already tracks at cluster granularity.
+    const std::vector<std::uint8_t> final_bad = remesh_detect_nonmanifold_vertices(
+        remesh_dual_triangle_keys(surf, clusters), n_clus);
+    result.mNumNonManifoldVertices =
+        std::count(final_bad.begin(), final_bad.end(), std::uint8_t{1});
+
     const std::vector<double> positions = remesh_final_positions(
         clusters, area, weighted, vertex_quad, metric, n_clus, surf.mNumPoints);
     const std::vector<double> normals = remesh_cluster_normals(surf, clusters, n_clus);
     const std::vector<std::int64_t> faces = remesh_dual_faces(surf, clusters, positions, normals);
+    const std::vector<std::int64_t> boundary_lines =
+        rOptions.mPreserveBoundary
+            ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
+            : std::vector<std::int64_t>{};
 
     Mesh& out = result.mMesh;
     {
@@ -913,6 +1321,14 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         for (std::size_t i = 0; i < faces.size(); ++i)
             dst[i] = faces[i];
         out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(conn));
+    }
+    if (!boundary_lines.empty()) {
+        const std::size_t nl = boundary_lines.size() / 2;
+        NDArray lconn = NDArray::Uninit(DType::Int64, {nl, 2});
+        std::int64_t* dst = lconn.As<std::int64_t>();
+        for (std::size_t i = 0; i < boundary_lines.size(); ++i)
+            dst[i] = boundary_lines[i];
+        out.AddCellBlock(cell_type_name(CellType::Line), std::move(lconn));
     }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, rMesh.FieldData(name));

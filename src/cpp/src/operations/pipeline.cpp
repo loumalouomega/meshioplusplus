@@ -248,7 +248,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
-          "MaxRepairPasses", "Metric"}},
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -661,16 +661,22 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 100));
         opts.mMaxRepairPasses = static_cast<int>(pipe_number(rStep, "MaxRepairPasses", 10));
         opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
+        opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         RemeshResult rr = remesh(mesh, opts);
-        pipe_push_step(rReport, rStep,
-                       {{"NumClusters", static_cast<double>(rr.mNumClusters)},
-                        {"NumIterations", static_cast<double>(rr.mNumIterations)},
-                        {"SubdivideApplied", static_cast<double>(rr.mSubdivideApplied)},
-                        {"NumIsolatedClusters", static_cast<double>(rr.mNumIsolatedClusters)}});
-        if (rr.mNumIsolatedClusters > 0)
-            rReport.mWarnings.push_back("remesh: " + std::to_string(rr.mNumIsolatedClusters) +
-                                        " cluster(s) could not be repaired; output may be "
-                                        "non-manifold near them");
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumClusters", static_cast<double>(rr.mNumClusters)},
+             {"NumIterations", static_cast<double>(rr.mNumIterations)},
+             {"SubdivideApplied", static_cast<double>(rr.mSubdivideApplied)},
+             {"NumIsolatedClusters", static_cast<double>(rr.mNumIsolatedClusters)},
+             {"NumNonManifoldVertices", static_cast<double>(rr.mNumNonManifoldVertices)}});
+        if (rr.mNumIsolatedClusters > 0 || rr.mNumNonManifoldVertices > 0)
+            rReport.mWarnings.push_back(
+                "remesh: " + std::to_string(rr.mNumIsolatedClusters) +
+                " isolated cluster(s), " + std::to_string(rr.mNumNonManifoldVertices) +
+                " non-manifold vertex/vertices could not be repaired; output may be "
+                "non-manifold near them");
         return std::move(rr.mMesh);
     }
     if (op == "Voxelize") {

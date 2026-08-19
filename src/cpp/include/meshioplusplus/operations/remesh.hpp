@@ -131,12 +131,45 @@
  * is exactly the composition those operations exist for. `field_data` passes
  * through verbatim.
  *
- * **Boundaries are not specially protected in v1.** An open surface's boundary
- * vertices are ordinary items with no extra pinning or dual-edge insertion (the
- * `refine`/`decimate`-style "boundary preservation" the roadmap's own
- * "Boundaries and output manifoldness" bullet still records as open); this
- * operation runs on an open mesh without error, matching ACVD's own `-b 0`
- * default, but the outline near an open edge is not guaranteed preserved.
+ * **Curvature gradation** (`mGradation`, the roadmap's `area * kappa^gamma`
+ * density weight). Each item's clustering weight is normally its plain
+ * triangle-fan area; when `mGradation` (the exponent `gamma`) is non-zero, the
+ * weight becomes `area * max(kappa, kappa_floor)^gamma`, where `kappa` is a
+ * per-vertex curvature magnitude from a local osculating-paraboloid fit over
+ * the vertex's 1-ring (`remesh_vertex_curvature`, built on the same
+ * `detail::NodeAdjacency` graph the edge sweep already uses -- no separate
+ * neighbourhood machinery). `kappa_floor` is a small internal fraction of the
+ * mesh's own maximum curvature, guarding against an exact-zero weight
+ * degenerating a flat vertex's cluster membership. This is the **single**
+ * weight threaded everywhere `sgamma`/`srho`/the badness/the final placement
+ * already use, under both metrics unchanged -- gradation is orthogonal to the
+ * `Isotropic`/`Quadric` choice, not a third metric. `mGradation == 0.0` (the
+ * default) means `kappa^0 == 1` identically, so curvature is never even
+ * computed and every existing weight is reproduced byte-for-byte.
+ *
+ * **Boundaries** (`mPreserveBoundary`, default **true** -- a no-op, and so
+ * free, on the closed meshes most callers and every pre-existing test use).
+ * An open surface's boundary vertices are detected once
+ * (`remesh_boundary_info`, a local edge-use-count pass: a triangle edge used
+ * by exactly one face is a boundary edge) and seeded **before** the general
+ * interior BFS, walking each boundary chain/loop first so a cluster's
+ * boundary segment is anchored contiguously rather than being absorbed
+ * piecemeal by whichever interior cluster reaches it first -- the "pinned"
+ * half of the roadmap's "boundary items pinned and extra dual elements
+ * inserted along the boundary." The second half is dual-side: a genuine
+ * boundary edge whose two endpoints land in different clusters emits a `line`
+ * cell between those two clusters' representative points (deduplicated by
+ * cluster-id pair, the same idiom the triangle dual already uses), so the
+ * output gains a second, optional `line` cell block carrying the boundary
+ * polyline -- without it, a boundary-adjacent triangle simply has no "third
+ * neighbour" across the missing side and is silently dropped from the
+ * triangle dual, leaving no coherent output boundary at all.
+ *
+ * This is a clean-room design achieving the roadmap's stated boundary goals,
+ * built from this project's own conventions (the pinning idiom `decimate`/
+ * `smooth` already use, the dedup idiom the triangle dual already uses) --
+ * not a reproduction of ACVD's own boundary-fixing algorithm, whose source
+ * this project does not read (see the licence reasoning above).
  *
  * **Topology is not preserved.** Two surface sheets closer together than a
  * cluster can merge, and the genus can change. This is inherent to dualising a
@@ -144,10 +177,19 @@
  * count far below the feature scale will visibly simplify topology.
  *
  * **Output manifoldness is best-effort.** The dual of a discrete Voronoi
- * partition need not be 2-manifold. Repair removes the common cause
- * (disconnected clusters), and `mNumIsolatedClusters` reports what could not be
- * fixed, but a pathological input can still produce non-manifold output; check
- * `mNumIsolatedClusters` rather than assuming.
+ * partition need not be 2-manifold, for two distinct reasons, reported
+ * separately. Disconnected clusters (`mNumIsolatedClusters`) are the
+ * `remesh_split_disconnected` repair loop's own concern, unchanged from
+ * v10.10.0. Non-manifold **output vertices** (`mNumNonManifoldVertices`) are
+ * a second, independent cause -- a vertex whose incident dual-triangle fan
+ * does not form a single loop (interior) or open chain (boundary), i.e. a
+ * "bowtie" -- detected by `remesh_detect_nonmanifold_vertices` and folded
+ * into the **same** repair loop already driving disconnected-cluster repair
+ * (its implicated clusters are unassigned and regrown/reminimised alongside
+ * whatever `remesh_split_disconnected` already found, up to
+ * `mMaxRepairPasses`), rather than a second, separate loop. Either counter
+ * non-zero means a pathological input still produced non-manifold output;
+ * check both rather than assuming.
  *
  * **Determinism, and no numpy twin.** Seeding is RNG-free, the energy sweep
  * visits edges in a fixed order and is **serial** (the objective is inherently
@@ -230,6 +272,20 @@ struct RemeshOptions {
 
     /// The clustering objective. See `RemeshMetric`.
     RemeshMetric mMetric = RemeshMetric::Isotropic;
+
+    /// Curvature-gradation exponent `gamma` in the item weight
+    /// `area * kappa^gamma`. `0.0` (the default) disables gradation entirely
+    /// (curvature is not even computed) and reproduces plain area weighting.
+    /// Positive values concentrate clusters where the surface bends more
+    /// sharply.
+    double mGradation = 0.0;
+
+    /// Detect the input's open boundary (if any) and seed it before the
+    /// interior, then emit a `line` dual cell along every boundary edge whose
+    /// endpoints land in different clusters. A no-op, and so free, whenever
+    /// the input has no boundary edges (e.g. every mesh in this repo's own
+    /// closed-surface tests).
+    bool mPreserveBoundary = true;
 };
 
 /// The result of `remesh`.
@@ -256,6 +312,12 @@ struct RemeshResult {
     /// Clusters still disconnected after `mMaxRepairPasses`. Non-zero means the
     /// output may be non-manifold near those clusters.
     std::int64_t mNumIsolatedClusters = 0;
+
+    /// Output vertices whose incident dual-triangle fan is still not a single
+    /// loop/chain (a "bowtie") after `mMaxRepairPasses`. Non-zero means the
+    /// output may be non-manifold at those vertices -- a distinct cause from
+    /// `mNumIsolatedClusters`, reported separately.
+    std::int64_t mNumNonManifoldVertices = 0;
 };
 
 /**

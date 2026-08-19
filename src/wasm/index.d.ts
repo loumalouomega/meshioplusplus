@@ -1409,9 +1409,17 @@ export interface MeshioPlusPlusModule {
    * error, preserves sharp edges/corners at extra cost per candidate move).
    * `subdivide` defaults to automatic (`-1`): the smallest count of uniform
    * `refine` passes reaching `subsampleRatio` items per cluster, capped at
-   * `maxSubdivide`; `0` disables subdivision. `numIsolatedClusters` non-zero
-   * means some clusters could not be repaired into a single connected piece,
-   * so the output may be non-manifold near them.
+   * `maxSubdivide`; `0` disables subdivision. `gradation` is the
+   * curvature-gradation exponent `gamma` in the item weight
+   * `area * kappa^gamma` (`0.0`, the default, disables gradation entirely and
+   * reproduces plain area weighting). `preserveBoundary` (default `true`)
+   * detects the input's open boundary (if any), seeds it before the
+   * interior, and emits a `line` dual cell along boundary edges whose
+   * endpoints land in different clusters — a no-op on a closed mesh.
+   * `numIsolatedClusters` and `numNonManifoldVertices` are two distinct
+   * causes of non-manifold output (disconnected clusters vs. "bowtie"
+   * vertices) that repair could not fully fix; check both rather than
+   * assuming.
    * @throws {Error} on a cluster count below 4 or above the subdivided
    *   input's vertex count, or on any block outside the surface scope (3D
    *   volume cells, higher-order cells, ragged polygon/polyhedron blocks).
@@ -1425,12 +1433,15 @@ export interface MeshioPlusPlusModule {
     maxIterations?: number,
     maxRepairPasses?: number,
     metric?: RemeshMetric,
+    gradation?: number,
+    preserveBoundary?: boolean,
   ): {
     mesh: Mesh;
     numClusters: number;
     numIterations: number;
     subdivideApplied: number;
     numIsolatedClusters: number;
+    numNonManifoldVertices: number;
   };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */

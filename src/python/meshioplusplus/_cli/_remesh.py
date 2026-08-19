@@ -70,10 +70,27 @@ def add_args(parser):
         "quadric (Garland-Heckbert error, preserves sharp edges/corners)",
     )
     parser.add_argument(
+        "--gradation",
+        type=float,
+        default=0.0,
+        dest="gradation",
+        help="curvature-gradation exponent gamma in the item weight "
+        "area * kappa**gamma; 0 (default) disables gradation and reproduces "
+        "plain area weighting",
+    )
+    parser.add_argument(
+        "--no-preserve-boundary",
+        dest="preserve_boundary",
+        action="store_false",
+        help="do not pin the input's open boundary or emit a boundary line "
+        "block (a no-op on a closed mesh either way)",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="do not print the run summary",
     )
+    parser.set_defaults(preserve_boundary=True)
 
 
 def remesh_cmd(args):
@@ -87,6 +104,8 @@ def remesh_cmd(args):
         max_iterations=args.iterations,
         max_repair_passes=args.repair_passes,
         metric=args.metric,
+        gradation=args.gradation,
+        preserve_boundary=args.preserve_boundary,
         return_report=True,
     )
     if not args.quiet:
@@ -94,7 +113,8 @@ def remesh_cmd(args):
             f"remeshed to {report['num_clusters']} clusters "
             f"({report['num_iterations']} iterations, "
             f"{report['subdivide_applied']} subdivide passes, "
-            f"{report['num_isolated_clusters']} isolated clusters)"
+            f"{report['num_isolated_clusters']} isolated clusters, "
+            f"{report['num_non_manifold_vertices']} non-manifold vertices)"
         )
     write(args.outfile, out, file_format=args.output_format)
     return 0

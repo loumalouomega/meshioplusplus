@@ -1830,6 +1830,8 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
                                   {"iterations", {}, true},
                                   {"repair-passes", {}, true},
                                   {"metric", {}, true},
+                                  {"gradation", {}, true},
+                                  {"no-preserve-boundary", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -1846,6 +1848,8 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
     options.mMaxIterations = std::stoi(opt_value(p, "iterations", "100"));
     options.mMaxRepairPasses = std::stoi(opt_value(p, "repair-passes", "10"));
     options.mMetric = meshioplusplus::remesh_metric_from_name(opt_value(p, "metric", "isotropic"));
+    options.mGradation = std::stod(opt_value(p, "gradation", "0"));
+    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
 
     auto r = meshioplusplus::remesh(mesh, options);
     if (!has_flag(p, "quiet")) {
@@ -1853,6 +1857,7 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
         std::cout << "  iterations:               " << r.mNumIterations << "\n";
         std::cout << "  subdivide passes applied: " << r.mSubdivideApplied << "\n";
         std::cout << "  isolated clusters:        " << r.mNumIsolatedClusters << "\n";
+        std::cout << "  non-manifold vertices:    " << r.mNumNonManifoldVertices << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;

@@ -116,6 +116,8 @@ _OP_TABLE = {
         "MaxIterations",
         "MaxRepairPasses",
         "Metric",
+        "Gradation",
+        "PreserveBoundary",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -539,16 +541,20 @@ def _apply_step(mesh, step, steps, warnings):
             max_iterations=int(_number(step, "MaxIterations", 100)),
             max_repair_passes=int(_number(step, "MaxRepairPasses", 10)),
             metric=_text(step, "Metric", "isotropic"),
+            gradation=_number(step, "Gradation", 0.0),
+            preserve_boundary=_flag(step, "PreserveBoundary", True),
             return_report=True,
         )
         entry["NumClusters"] = float(report["num_clusters"])
         entry["NumIterations"] = float(report["num_iterations"])
         entry["SubdivideApplied"] = float(report["subdivide_applied"])
         entry["NumIsolatedClusters"] = float(report["num_isolated_clusters"])
-        if report["num_isolated_clusters"] > 0:
+        entry["NumNonManifoldVertices"] = float(report["num_non_manifold_vertices"])
+        if report["num_isolated_clusters"] > 0 or report["num_non_manifold_vertices"] > 0:
             warnings.append(
-                f"remesh: {report['num_isolated_clusters']} cluster(s) could not "
-                "be repaired; output may be non-manifold near them"
+                f"remesh: {report['num_isolated_clusters']} isolated cluster(s), "
+                f"{report['num_non_manifold_vertices']} non-manifold vertex/vertices could "
+                "not be repaired; output may be non-manifold near them"
             )
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")

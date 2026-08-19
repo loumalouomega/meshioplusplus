@@ -58,6 +58,8 @@ def remesh(
     max_iterations=100,
     max_repair_passes=10,
     metric="isotropic",
+    gradation=0.0,
+    preserve_boundary=True,
     return_report=False,
 ):
     """Remesh a surface uniformly by ACVD clustering.
@@ -89,10 +91,23 @@ def remesh(
         and robust, rounds sharp features) or ``"quadric"`` (Garland-Heckbert
         quadric error, preserves sharp edges/corners at extra cost per
         candidate move).
+    :param gradation: curvature-gradation exponent ``gamma`` in the item
+        weight ``area * kappa**gamma``. ``0.0`` (the default) disables
+        gradation entirely -- curvature is not even computed -- and
+        reproduces plain area weighting byte-for-byte. Positive values
+        concentrate clusters where the surface bends more sharply; ``kappa``
+        comes from a local osculating-paraboloid fit over each vertex's
+        1-ring.
+    :param preserve_boundary: detect the input's open boundary (if any) and
+        seed it before the interior, then emit a ``line`` dual cell along
+        every boundary edge whose endpoints land in different clusters. A
+        no-op, and so free, on a closed mesh.
     :param return_report: also return the run summary dict (``num_clusters``,
-        ``num_iterations``, ``subdivide_applied``, ``num_isolated_clusters``
-        -- the last is non-zero when some clusters could not be repaired,
-        meaning the output may be non-manifold near them).
+        ``num_iterations``, ``subdivide_applied``, ``num_isolated_clusters``,
+        ``num_non_manifold_vertices`` -- both of the last two are non-zero
+        when repair could not fully fix the output, for two distinct causes:
+        disconnected clusters vs. non-manifold "bowtie" vertices; check
+        both rather than assuming).
     :returns: the remeshed mesh, or ``(mesh, report)`` if ``return_report``.
     :raises ValueError: on a cluster count below 4 or above the subdivided
         input's vertex count, on a non-positive limit, and on any block
@@ -101,11 +116,8 @@ def remesh(
         (``meshioplusplus._core``) is unavailable -- this operation has no
         pure-Python fallback.
 
-    Boundaries are **not** specially protected in this release: an open
-    surface remeshes without error (matching the reference method's own
-    default), but its outline near an open edge is not guaranteed preserved.
-    Topology is not preserved either -- two surface sheets closer together
-    than a cluster can merge, and the genus can change; this is inherent to
+    Topology is not preserved -- two surface sheets closer together than a
+    cluster can merge, and the genus can change; this is inherent to
     dualising a discrete Voronoi partition, not an implementation limit.
     """
     try:
@@ -132,6 +144,8 @@ def remesh(
         int(max_iterations),
         int(max_repair_passes),
         metric,
+        float(gradation),
+        bool(preserve_boundary),
     )
     out = res["mesh"]
     if not return_report:
@@ -141,5 +155,6 @@ def remesh(
         "num_iterations": res["num_iterations"],
         "subdivide_applied": res["subdivide_applied"],
         "num_isolated_clusters": res["num_isolated_clusters"],
+        "num_non_manifold_vertices": res["num_non_manifold_vertices"],
     }
     return out, report

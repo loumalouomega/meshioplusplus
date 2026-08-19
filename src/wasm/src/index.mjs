@@ -494,6 +494,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             maxIterations = 100,
             maxRepairPasses = 10,
             metric = 'isotropic',
+            gradation = 0.0,
+            preserveBoundary = true,
         ) =>
             Module.remesh(
                 mesh,
@@ -504,6 +506,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 maxIterations,
                 maxRepairPasses,
                 metric,
+                gradation,
+                preserveBoundary,
             ),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>

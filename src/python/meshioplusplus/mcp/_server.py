@@ -1007,6 +1007,8 @@ def _register_operations(server: FastMCP) -> None:
         max_iterations: int = 100,
         max_repair_passes: int = 10,
         metric: str = "isotropic",
+        gradation: float = 0.0,
+        preserve_boundary: bool = True,
     ) -> dict:
         """Replace a surface mesh's triangulation with a new,
         near-uniformly-sized, well-shaped one at num_clusters vertices
@@ -1016,7 +1018,11 @@ def _register_operations(server: FastMCP) -> None:
         field_data is carried; use interpolate/conservative_interpolate to
         transfer a field onto the result. metric is "isotropic" (default,
         fast, rounds sharp features) or "quadric" (Garland-Heckbert error,
-        preserves sharp edges/corners)."""
+        preserves sharp edges/corners). gradation is the curvature-gradation
+        exponent gamma in the item weight area * kappa**gamma (0.0 default
+        disables gradation). preserve_boundary (default True) seeds and
+        pins the input's open boundary and emits a line dual cell along it,
+        a no-op on a closed mesh."""
         return _guard(
             _tools.tool_remesh,
             input_path=input_path,
@@ -1030,6 +1036,8 @@ def _register_operations(server: FastMCP) -> None:
             max_iterations=max_iterations,
             max_repair_passes=max_repair_passes,
             metric=metric,
+            gradation=gradation,
+            preserve_boundary=preserve_boundary,
         )
 
     @server.tool()
