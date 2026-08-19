@@ -236,6 +236,59 @@ def test_hessian_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_remesh_pipeline_step(tmp_path):
+    """Remesh is the one step whose output has no correspondence to the
+    input (new points, new connectivity), unlike every other step
+    _OP_TABLE/pipeline_op_table dispatch. It needs its own surface fixture
+    since settings_env's tet mesh is out of remesh's scope."""
+    octa = meshioplusplus.Mesh(
+        np.array(
+            [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "triangle",
+                np.array(
+                    [
+                        [0, 2, 4],
+                        [2, 1, 4],
+                        [1, 3, 4],
+                        [3, 0, 4],
+                        [2, 0, 5],
+                        [1, 2, 5],
+                        [3, 1, 5],
+                        [0, 3, 5],
+                    ],
+                    dtype=np.int64,
+                ),
+            )
+        ],
+    )
+    in_path = tmp_path / "octa.vtu"
+    meshioplusplus.write(str(in_path), octa)
+    out_path = tmp_path / "out.vtu"
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [{"Op": "Remesh", "NumClusters": 30, "Metric": "quadric"}],
+        "Output": {"Path": str(out_path)},
+    }
+
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Remesh"
+    assert report["steps"][0]["NumClusters"] == 30
+    out = meshioplusplus.read(str(out_path))
+    assert out.points.shape[0] == 30
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "Remesh"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert out_cpp.points.shape[0] == 30
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict

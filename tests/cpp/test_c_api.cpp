@@ -2453,6 +2453,60 @@ TEST(CApi, EstimateErrorErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+namespace {
+// A regular octahedron -- the smallest closed 2-manifold triangle mesh with
+// no coplanar faces, small enough to hand-write for a C API smoke test.
+mio_mesh* c_api_octahedron() {
+    const std::vector<double> pts = {1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1};
+    const std::vector<std::int64_t> conn = {0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
+                                            2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5};
+    mio_mesh* m = mio_mesh_create();
+    mio_mesh_set_points(m, MIO_FLOAT64, 6, 3, pts.data());
+    mio_mesh_add_cell_block(m, "triangle", 8, 3, MIO_INT64, conn.data());
+    return m;
+}
+}  // namespace
+
+TEST(CApi, RemeshProducesTheRequestedNumberOfClusters) {
+    mio_mesh* m = c_api_octahedron();
+
+    std::int64_t num_clusters = -1, num_iterations = -1, num_isolated = -1;
+    int subdivide_applied = -1;
+    mio_mesh* out = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "isotropic", &num_clusters,
+                               &num_iterations, &subdivide_applied, &num_isolated);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(num_clusters, 30);
+    EXPECT_GT(subdivide_applied, 0) << "6 vertices cannot support 30 clusters without subdividing";
+    EXPECT_EQ(mio_mesh_num_points(out), 30);
+    mio_mesh_free(out);
+
+    // The quadric ("feature-preserving") metric is accepted too.
+    mio_mesh* out2 = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "quadric", nullptr, nullptr, nullptr,
+                                nullptr);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    mio_mesh_free(out2);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshErrorsAreGuardedNotThrown) {
+    mio_mesh* m = c_api_octahedron();
+
+    EXPECT_EQ(mio_remesh(m, 3, -1, 10.0, 4, 100, 10, nullptr, nullptr, nullptr, nullptr, nullptr),
+              nullptr)
+        << "too few clusters";
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(
+        mio_remesh(m, 10, -1, 10.0, 4, 100, 10, "bogus", nullptr, nullptr, nullptr, nullptr),
+        nullptr)
+        << "unknown metric";
+    EXPECT_EQ(mio_remesh(nullptr, 10, -1, 10.0, 4, 100, 10, nullptr, nullptr, nullptr, nullptr,
+                         nullptr),
+              nullptr);
+
+    mio_mesh_free(m);
+}
+
 TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
     const std::vector<std::int64_t> conn = {0, 1, 2, 3};

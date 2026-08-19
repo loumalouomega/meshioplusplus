@@ -870,6 +870,41 @@ step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     assert.ok(m.readMesh('/dec.vtp').cells[0].data.length / 3 < 48);
 });
 
+step('remesh: produces the requested cluster count on a closed surface', () => {
+    // Unlike every other geometry op, the output has NO correspondence to
+    // the input -- new points, new connectivity -- so it is asserted purely
+    // on shape/counters, never against the input's own point/cell ids.
+    const skin = m.extractSkin(cube, true);
+    const out = m.remesh(skin, 40);
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'triangle');
+    assert.equal(out.numClusters, 40);
+    assert.equal(out.mesh.points.length / 3, 40);
+    assert.ok(out.subdivideApplied > 0, 'the cube skin cannot support 40 clusters unsubdivided');
+    assert.ok(out.numIterations >= 0);
+    assert.equal(out.numIsolatedClusters, 0);
+
+    // The quadric ("feature-preserving") metric is accepted too.
+    const outQ = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'quadric');
+    assert.equal(outQ.numClusters, 40);
+});
+
+step('remesh rejects a volume mesh and a too-small cluster count', () => {
+    assert.throws(() => m.remesh(cube, 10), /extract_surface/);
+    const skin = m.extractSkin(cube, true);
+    assert.throws(() => m.remesh(skin, 3));
+});
+
+step('remesh is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/remesh.vtu', m.extractSkin(cube, true));
+    const out = m.convertSurfaceOps('/remesh.vtu', '/remesh.vtp', [
+        { op: 'remesh', numClusters: 30, metric: 'quadric' },
+    ]);
+    assert.equal(out.steps[0].op, 'remesh');
+    assert.equal(out.steps[0].numClusters, 30);
+    assert.equal(m.readMesh('/remesh.vtp').points.length / 3, 30);
+});
+
 step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/sub.vtu', cube);
     const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
@@ -1480,6 +1515,7 @@ step('every binding is reachable through the wrapper', () => {
         'agglomerate',
         'refine',
         'decimate',
+        'remesh',
         'partition',
         'partitionLabels',
         // Regular grids and signed distance. `grid` is the only binding here

@@ -673,6 +673,51 @@ program test_fortran_api
         call fan%free()
     end block
 
+    ! -- remesh: ACVD surface remeshing (a brand-new mesh, no maps) --
+    block
+        type(mio_mesh) :: octa, out, out_q, bad
+        integer(int64) :: niter, niso
+        integer :: subapp, st
+        real(real64) :: octa_points(3, 6)
+        integer(int64) :: octa_conn(3, 8)
+
+        ! A regular octahedron: the smallest closed 2-manifold triangle mesh
+        ! with no coplanar faces.
+        octa_points = reshape([1.0_real64, 0.0_real64, 0.0_real64, &
+                               -1.0_real64, 0.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, -1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               0.0_real64, 0.0_real64, -1.0_real64], [3, 6])
+        octa_conn = reshape([1_int64, 3_int64, 5_int64, 3_int64, 2_int64, 5_int64, &
+                             2_int64, 4_int64, 5_int64, 4_int64, 1_int64, 5_int64, &
+                             3_int64, 1_int64, 6_int64, 2_int64, 3_int64, 6_int64, &
+                             4_int64, 2_int64, 6_int64, 1_int64, 4_int64, 6_int64], [3, 8])
+        call octa%create()
+        call octa%set_points(octa_points)
+        call octa%add_cell_block('triangle', octa_conn)
+
+        out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
+                          num_isolated_clusters=niso, stat=st)
+        call check(st == 0, 'remesh succeeded')
+        call check(out%num_points() == 30_int64, 'remesh produced 30 clusters')
+        call check(subapp > 0, 'remesh auto-subdivided (6 vertices cannot support 30 clusters)')
+        call check(niter >= 0_int64, 'remesh reported an iteration count')
+        call check(niso >= 0_int64, 'remesh reported an isolated-cluster count')
+
+        ! The quadric ("feature-preserving") metric is accepted too.
+        out_q = octa%remesh(30_int64, metric='quadric', stat=st)
+        call check(st == 0, 'remesh accepts the quadric metric')
+
+        ! Too few clusters is rejected by name.
+        bad = octa%remesh(3_int64, stat=st)
+        call check(st /= 0, 'remesh rejects a too-small cluster count')
+
+        call out%free()
+        call out_q%free()
+        call octa%free()
+    end block
+
     ! -- partition: N balanced pieces + flat labels --
     block
         type(mio_mesh), allocatable :: pieces(:)
