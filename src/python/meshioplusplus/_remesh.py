@@ -16,11 +16,14 @@ nanobind), MIT License, Copyright (c) 2017-2024 The PyVista Developers --
 itself an independent implementation of the published research of
 S. Valette and J.-M. Chassery, not of the CeCILL-B licensed ACVD project,
 which this codebase never reads code from and never vendors (see
-``doc/remesh.md``). The optional ``metric="quadric"`` (feature-preserving)
-mode has no pyacvd counterpart and is an original synthesis built on this
-project's own pre-existing Garland-Heckbert quadric machinery
-(``detail/decimate_common.hpp``, shared with :func:`decimate`/
-:func:`decimate_volume`).
+``doc/remesh.md``). Both ``metric="quadric"`` (feature-preserving) and
+``metric="anisotropic"`` have no pyacvd counterpart (pyacvd ships isotropic
+only) and are original syntheses built on this project's own pre-existing
+Garland-Heckbert quadric machinery (``detail/decimate_common.hpp``, shared
+with :func:`decimate`/:func:`decimate_volume`), from the general
+"metric-dependent discrete Voronoi diagram" concept (Valette, Chassery &
+Prost, IEEE TVCG 2008) -- the same paper for both, never from ACVD's own
+source.
 
 **This operation is C++-core only, with no numpy fallback at all** -- like
 :func:`subdivide`/:func:`agglomerate`/:func:`decimate_volume`/
@@ -60,6 +63,7 @@ def remesh(
     metric="isotropic",
     gradation=0.0,
     preserve_boundary=True,
+    max_anisotropy=4.0,
     return_report=False,
 ):
     """Remesh a surface uniformly by ACVD clustering.
@@ -88,9 +92,11 @@ def remesh(
         energy sweep splits into disjoint pieces, which is where
         non-manifold output comes from. ``0`` skips repair entirely.
     :param metric: ``"isotropic"`` (area-weighted centroidal distance, fast
-        and robust, rounds sharp features) or ``"quadric"`` (Garland-Heckbert
+        and robust, rounds sharp features), ``"quadric"`` (Garland-Heckbert
         quadric error, preserves sharp edges/corners at extra cost per
-        candidate move).
+        candidate move), or ``"anisotropic"`` (clusters shaped by a local
+        curvature tensor -- elongated along low-curvature directions,
+        compact across sharp ones -- see ``max_anisotropy``).
     :param gradation: curvature-gradation exponent ``gamma`` in the item
         weight ``area * kappa**gamma``. ``0.0`` (the default) disables
         gradation entirely -- curvature is not even computed -- and
@@ -102,6 +108,14 @@ def remesh(
         seed it before the interior, then emit a ``line`` dual cell along
         every boundary edge whose endpoints land in different clusters. A
         no-op, and so free, on a closed mesh.
+    :param max_anisotropy: under ``metric="anisotropic"``, the maximum ratio
+        between the two in-plane target edge lengths a per-vertex curvature
+        tensor may request (long axis / short axis); ``1.0`` recovers the
+        isotropic shape exactly. Must be at least 1.0. An error to set away
+        from its default under any other metric -- there is nothing for it
+        to shape. The default (``4.0``) is a measured, not round, number:
+        see the ``kRemeshDefaultMaxAnisotropy`` doc comment in
+        ``remesh.hpp`` for the sweep that picked it.
     :param return_report: also return the run summary dict (``num_clusters``,
         ``num_iterations``, ``subdivide_applied``, ``num_isolated_clusters``,
         ``num_non_manifold_vertices`` -- both of the last two are non-zero
@@ -146,6 +160,7 @@ def remesh(
         metric,
         float(gradation),
         bool(preserve_boundary),
+        float(max_anisotropy),
     )
     out = res["mesh"]
     if not return_report:

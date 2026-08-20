@@ -405,7 +405,7 @@ export type ErrorMethod = 'zz';
 export type ErrorMarking = 'none' | 'absolute' | 'fraction' | 'dorfler';
 
 /** `remesh`'s clustering objective. See doc/remesh.md. */
-export type RemeshMetric = 'isotropic' | 'quadric';
+export type RemeshMetric = 'isotropic' | 'quadric' | 'anisotropic';
 
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
@@ -1405,17 +1405,24 @@ export interface MeshioPlusPlusModule {
    * `cell_data` and named regions are dropped, `field_data` is carried.
    *
    * `metric` is `"isotropic"` (default; area-weighted centroidal distance,
-   * fast, rounds sharp features) or `"quadric"` (Garland-Heckbert quadric
-   * error, preserves sharp edges/corners at extra cost per candidate move).
-   * `subdivide` defaults to automatic (`-1`): the smallest count of uniform
-   * `refine` passes reaching `subsampleRatio` items per cluster, capped at
-   * `maxSubdivide`; `0` disables subdivision. `gradation` is the
-   * curvature-gradation exponent `gamma` in the item weight
-   * `area * kappa^gamma` (`0.0`, the default, disables gradation entirely and
-   * reproduces plain area weighting). `preserveBoundary` (default `true`)
-   * detects the input's open boundary (if any), seeds it before the
-   * interior, and emits a `line` dual cell along boundary edges whose
-   * endpoints land in different clusters — a no-op on a closed mesh.
+   * fast, rounds sharp features), `"quadric"` (Garland-Heckbert quadric
+   * error, preserves sharp edges/corners at extra cost per candidate move),
+   * or `"anisotropic"` (clusters shaped by a local curvature tensor —
+   * elongated along low-curvature directions, compact across sharp ones —
+   * see `maxAnisotropy`). `subdivide` defaults to automatic (`-1`): the
+   * smallest count of uniform `refine` passes reaching `subsampleRatio`
+   * items per cluster, capped at `maxSubdivide`; `0` disables subdivision.
+   * `gradation` is the curvature-gradation exponent `gamma` in the item
+   * weight `area * kappa^gamma` (`0.0`, the default, disables gradation
+   * entirely and reproduces plain area weighting). `preserveBoundary`
+   * (default `true`) detects the input's open boundary (if any), seeds it
+   * before the interior, and emits a `line` dual cell along boundary edges
+   * whose endpoints land in different clusters — a no-op on a closed mesh.
+   * `maxAnisotropy` (default `4.0`, a measured value) is, under
+   * `metric = "anisotropic"`, the maximum ratio between the two in-plane
+   * target edge lengths a curvature tensor may request; `1.0` recovers the
+   * isotropic shape exactly. Must be at least `1.0`, and an error to set
+   * away from the default under any other metric.
    * `numIsolatedClusters` and `numNonManifoldVertices` are two distinct
    * causes of non-manifold output (disconnected clusters vs. "bowtie"
    * vertices) that repair could not fully fix; check both rather than
@@ -1435,6 +1442,7 @@ export interface MeshioPlusPlusModule {
     metric?: RemeshMetric,
     gradation?: number,
     preserveBoundary?: boolean,
+    maxAnisotropy?: number,
   ): {
     mesh: Mesh;
     numClusters: number;

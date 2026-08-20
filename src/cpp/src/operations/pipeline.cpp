@@ -248,7 +248,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
-          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary"}},
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -663,6 +663,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
         opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMaxAnisotropy = pipe_number(rStep, "MaxAnisotropy", kRemeshDefaultMaxAnisotropy);
         RemeshResult rr = remesh(mesh, opts);
         pipe_push_step(
             rReport, rStep,

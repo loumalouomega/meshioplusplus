@@ -118,6 +118,7 @@ _OP_TABLE = {
         "Metric",
         "Gradation",
         "PreserveBoundary",
+        "MaxAnisotropy",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -543,6 +544,7 @@ def _apply_step(mesh, step, steps, warnings):
             metric=_text(step, "Metric", "isotropic"),
             gradation=_number(step, "Gradation", 0.0),
             preserve_boundary=_flag(step, "PreserveBoundary", True),
+            max_anisotropy=_number(step, "MaxAnisotropy", 4.0),
             return_report=True,
         )
         entry["NumClusters"] = float(report["num_clusters"])

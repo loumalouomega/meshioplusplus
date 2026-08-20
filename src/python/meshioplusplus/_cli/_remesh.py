@@ -64,10 +64,23 @@ def add_args(parser):
     )
     parser.add_argument(
         "--metric",
-        choices=["isotropic", "quadric"],
+        choices=["isotropic", "quadric", "anisotropic"],
         default="isotropic",
-        help="isotropic (area-weighted centroidal distance, default) or "
-        "quadric (Garland-Heckbert error, preserves sharp edges/corners)",
+        help="isotropic (area-weighted centroidal distance, default), "
+        "quadric (Garland-Heckbert error, preserves sharp edges/corners), "
+        "or anisotropic (clusters shaped by a local curvature tensor -- "
+        "see --max-anisotropy)",
+    )
+    parser.add_argument(
+        "--max-anisotropy",
+        type=float,
+        default=4.0,
+        help="under --metric anisotropic, the maximum ratio between the "
+        "two in-plane target edge lengths (long axis / short axis) a "
+        "per-vertex curvature tensor may request; 1.0 recovers the "
+        "isotropic shape exactly (default: 4.0, a measured value -- see "
+        "kRemeshDefaultMaxAnisotropy in remesh.hpp); an error to set away "
+        "from the default under any other metric",
     )
     parser.add_argument(
         "--gradation",
@@ -106,6 +119,7 @@ def remesh_cmd(args):
         metric=args.metric,
         gradation=args.gradation,
         preserve_boundary=args.preserve_boundary,
+        max_anisotropy=args.max_anisotropy,
         return_report=True,
     )
     if not args.quiet:

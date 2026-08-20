@@ -460,7 +460,7 @@ void print_usage(std::ostream& os) {
           "                            exactly one of --ratio/--target-cells/--max-error\n"
           "  remesh                  Replace a surface's triangulation with a new,\n"
           "                            well-shaped one (ACVD clustering); --num-clusters\n"
-          "                            is required, --metric isotropic|quadric\n"
+          "                            is required, --metric isotropic|quadric|anisotropic\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1832,6 +1832,7 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
                                   {"metric", {}, true},
                                   {"gradation", {}, true},
                                   {"no-preserve-boundary", {}, false},
+                                  {"max-anisotropy", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -1850,6 +1851,8 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
     options.mMetric = meshioplusplus::remesh_metric_from_name(opt_value(p, "metric", "isotropic"));
     options.mGradation = std::stod(opt_value(p, "gradation", "0"));
     options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    options.mMaxAnisotropy = std::stod(
+        opt_value(p, "max-anisotropy", std::to_string(meshioplusplus::kRemeshDefaultMaxAnisotropy)));
 
     auto r = meshioplusplus::remesh(mesh, options);
     if (!has_flag(p, "quiet")) {

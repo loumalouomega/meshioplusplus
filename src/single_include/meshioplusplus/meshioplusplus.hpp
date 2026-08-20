@@ -76,6 +76,7 @@
  *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
  *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
+ *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
  *
  * ### This is the ONE place the number is written
  *
@@ -94,7 +95,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 8
+#define MESHIOPLUSPLUS_ABI_VERSION 9
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -19419,6 +19420,27 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
  * of smearing it toward a centroid -- which is the entire quality difference
  * between the two metrics.
  *
+ * **Anisotropic metric** (`RemeshMetric::Anisotropic`, `mMaxAnisotropy`).
+ * Also built from the Valette/Chassery/Prost TVCG 2008 concept above -- the
+ * same paper, not a second attribution. Each vertex's curvature fit
+ * (`remesh_vertex_curvature`, shared with `mGradation`) already computes the
+ * principal curvatures `kappa1`/`kappa2` and their tangent-plane directions;
+ * this metric is the one consumer that keeps the directions instead of
+ * collapsing them to `max(|kappa1|, |kappa2|)`. A per-vertex SPD tensor `M`
+ * is built with in-plane eigenvalues proportional to curvature magnitude
+ * (short target edges across a sharp bend, long ones along a flat one),
+ * ratio clamped to `mMaxAnisotropy`, normal eigenvalue pinned to the sharper
+ * in-plane one (keeps clusters on the surface), then rescaled to `det(M) = 1`
+ * -- the metric only reshapes clusters, it never rescales the objective, so
+ * it composes cleanly with `mGradation` (density) and stays comparable
+ * vertex-to-vertex regardless of the surface's absolute curvature magnitude.
+ * `M = I` exactly wherever the surface is locally flat or `mMaxAnisotropy ==
+ * 1.0`. Algebraically, `E(v) = sum(w * (x-v)^T M (x-v))` expands to the same
+ * `x^T A x + 2 b.x + c` form the quadric metric already accumulates and
+ * minimises via `decim_quadric_optimal_point` -- so this packs into the
+ * *same* 10-entry accumulator, needs no new per-cluster storage, and the
+ * per-move cost is identical to `Quadric`'s.
+ *
  * **Subdivision matters more than iteration count.** The clustering is a
  * *discrete* approximation of a centroidal Voronoi diagram whose resolution is
  * the number of items per cluster, so a target near the input vertex count
@@ -19530,7 +19552,7 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 namespace meshioplusplus {
 
 /// The clustering objective driving `remesh`.
-enum class RemeshMetric {
+enum class RemeshMetric : std::uint8_t {
     /// Area-weighted centroidal distance (Valette & Chassery, CGF 2004). Fast,
     /// robust, and rounds sharp features.
     Isotropic,
@@ -19538,16 +19560,48 @@ enum class RemeshMetric {
     /// sharp edges and corners at the cost of one extra 10-entry accumulator
     /// per cluster and a 3x3 solve per candidate move.
     Quadric,
+    /// Clusters shaped by a local curvature tensor rather than isotropic
+    /// distance (Valette, Chassery & Prost, IEEE TVCG 2008 -- the same paper
+    /// `Quadric` cites): elongated features get elongated elements. Packs
+    /// into the same 10-entry accumulator `Quadric` uses, so it costs the
+    /// same per-move solve; see `RemeshOptions::mMaxAnisotropy`.
+    Anisotropic,
 };
+
+/// A fixed underlying type, checked below, so appending a future enumerator
+/// stays a Tier C addition (doc/abi.md) rather than accidentally widening
+/// the type an already-compiled consumer stored.
+static_assert(sizeof(RemeshMetric) == 1,
+              "meshio++ ABI: RemeshMetric's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 /**
  * @brief Parses a metric name.
- * @param rName One of `"isotropic"`, `"quadric"` (case-sensitive, as
- *        elsewhere in the operations layer).
+ * @param rName One of `"isotropic"`, `"quadric"`, `"anisotropic"`
+ *        (case-sensitive, as elsewhere in the operations layer).
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
 MESHIOPLUSPLUS_API RemeshMetric remesh_metric_from_name(const std::string& rName);
+
+/// Default for `RemeshOptions::mMaxAnisotropy` -- meaningful only under
+/// `RemeshMetric::Anisotropic`, but a single named constant so the header's
+/// default and the "you set this under the wrong metric" guard in
+/// `remesh.cpp` cannot drift apart. Chosen by measurement, not a round
+/// number: on a near-umbilic input (the icosahedron test fixture, whose
+/// TRUE surface is a sphere -- equal principal curvatures everywhere, so
+/// the metric has no genuine anisotropy signal to read, only discretisation
+/// noise), a swept `max_anisotropy` of 1/2/4/10 produced 0/0/1/18 clusters
+/// short of a 120-cluster target -- energy minimisation can fully absorb a
+/// seeded cluster into its neighbours (not a disconnection `mMaxRepairPasses`
+/// helps with; `RemeshResult::mNumClusters` is already documented as "never
+/// higher", and more repair passes measurably did not change the count
+/// here). `4.0` keeps that near-worst-case shortfall to a single cluster
+/// while still giving genuinely anisotropic surfaces (a cylinder, a fillet)
+/// real elongation headroom; a caller expecting to hit an exact count on
+/// nearly-umbilic geometry should still prefer something closer to `2.0`.
+inline constexpr double kRemeshDefaultMaxAnisotropy = 4.0;
 
 /// Options for `remesh`.
 struct RemeshOptions {
@@ -19596,6 +19650,15 @@ struct RemeshOptions {
     /// the input has no boundary edges (e.g. every mesh in this repo's own
     /// closed-surface tests).
     bool mPreserveBoundary = true;
+
+    /// Under `RemeshMetric::Anisotropic`, the maximum ratio between the two
+    /// in-plane target edge lengths (long axis / short axis) a per-vertex
+    /// curvature tensor is allowed to request; `1.0` recovers the isotropic
+    /// shape exactly. Must be `>= 1.0`. An error to set away from
+    /// `kRemeshDefaultMaxAnisotropy` under any other metric -- there is
+    /// nothing for it to shape, so a silently-ignored value would be a
+    /// caller mistake with no diagnostic.
+    double mMaxAnisotropy = kRemeshDefaultMaxAnisotropy;
 };
 
 /// The result of `remesh`.
@@ -19647,10 +19710,12 @@ MESHIOPLUSPLUS_API int remesh_suggest_subdivide(std::int64_t NumPoints, std::int
  * @param rOptions Cluster count, subdivision, iteration limits and metric.
  * @return The remeshed all-triangle mesh and the run summary.
  * @throws std::invalid_argument on a cluster count below 4 or above the
- *         subdivided input's vertex count, on a non-positive limit, and on any
- *         block outside the surface scope: 3D volume cells (use
- *         `extract_surface` first), higher-order cells (linearize first),
- *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ *         subdivided input's vertex count, on a non-positive limit, on
+ *         `mMaxAnisotropy < 1.0`, on `mMaxAnisotropy` set away from its
+ *         default under a non-`Anisotropic` metric, and on any block outside
+ *         the surface scope: 3D volume cells (use `extract_surface` first),
+ *         higher-order cells (linearize first), ragged polygon/polyhedron
+ *         blocks, and `line`/`vertex` blocks.
  */
 MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions);
 
@@ -21897,7 +21962,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 11
+#define MESHIOPLUSPLUS_VERSION_MINOR 12
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -21907,7 +21972,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.11.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.12.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -78092,7 +78157,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
-          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary"}},
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -78507,6 +78572,7 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
         opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMaxAnisotropy = pipe_number(rStep, "MaxAnisotropy", kRemeshDefaultMaxAnisotropy);
         RemeshResult rr = remesh(mesh, opts);
         pipe_push_step(
             rReport, rStep,
@@ -81508,6 +81574,46 @@ std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric
     return detail::decim_accumulate_quadrics(csr, rS.mNumPoints, quad_k);
 }
 
+/// Each vertex's own curvature-tensor quadric (`RemeshMetric::Anisotropic`
+/// only), packed into the SAME 10-entry layout `remesh_vertex_quadrics`
+/// builds for `Quadric` mode -- the sibling that construction, not a second
+/// accumulator shape. `E(v) = sum(w * (x-v)^T M (x-v))` expands to
+/// `x^T A x + 2 b.x + c` with `A = sum(w*M)`, `b = -sum(w*M*x)`, `c =
+/// sum(w * x^T M x)` -- exactly `decim_quadric_error`'s own convention, so
+/// the same `decim_quadric_optimal_point` solves it with no new solver.
+/// `rArea` must already be computed (the item weight): folded in HERE
+/// rather than in `remesh_vertex_curvature`, which has no notion of
+/// clustering weights and is also used, tensor-free, under `mGradation`
+/// alone.
+std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
+                                          const std::vector<double>& rTensors,
+                                          const std::vector<double>& rArea) {
+    std::vector<double> quad(rS.mNumPoints * 10, 0.0);
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const double* m = rTensors.data() + i * 6;  // [xx,xy,xz,yy,yz,zz]
+        const double* x = rS.mXyz.data() + i * 3;
+        const double w = rArea[i];
+
+        const double mx0 = m[0] * x[0] + m[1] * x[1] + m[2] * x[2];
+        const double mx1 = m[1] * x[0] + m[3] * x[1] + m[4] * x[2];
+        const double mx2 = m[2] * x[0] + m[4] * x[1] + m[5] * x[2];
+        const double c_term = w * (x[0] * mx0 + x[1] * mx1 + x[2] * mx2);
+
+        double* q = quad.data() + i * 10;
+        q[0] = w * m[0];
+        q[1] = w * m[1];
+        q[2] = w * m[2];
+        q[3] = -w * mx0;
+        q[4] = w * m[3];
+        q[5] = w * m[4];
+        q[6] = -w * mx1;
+        q[7] = w * m[5];
+        q[8] = -w * mx2;
+        q[9] = c_term;
+    }
+    return quad;
+}
+
 /// Area-weighted unit normal at each vertex, from its incident face normals
 /// (the per-vertex analogue of `remesh_cluster_normals` below). Only computed
 /// when curvature gradation is requested.
@@ -81577,9 +81683,27 @@ bool remesh_solve_sym3(double m00, double m01, double m02, double m11, double m1
 /// bend). A low-valence (<3) or near-degenerate neighbourhood falls back to
 /// `kappa = 0` -- the same ill-conditioning-means-flat convention
 /// `decim_quadric_optimal_point` already established.
+///
+/// `pTensors`, when non-null, is filled with the SAME fit's principal
+/// directions instead of discarding them: `RemeshMetric::Anisotropic`'s only
+/// consumer. Six doubles per vertex, the upper triangle `[xx,xy,xz,yy,yz,zz]`
+/// of a world-space symmetric 3x3 -- see `remesh_vertex_metrics` for what it
+/// is built into. Every early-return path below (low valence, zero normal,
+/// degenerate tangent, ill-conditioned fit) writes the identity, matching
+/// `kappa = 0`'s "flat" convention: no curvature signal, no shape signal.
 std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
                                             const detail::NodeAdjacency& rAdj,
-                                            const std::vector<double>& rNormals) {
+                                            const std::vector<double>& rNormals,
+                                            std::vector<double>* pTensors = nullptr,
+                                            double MaxAnisotropy = kRemeshDefaultMaxAnisotropy) {
+    if (pTensors) {
+        pTensors->assign(rS.mNumPoints * 6, 0.0);
+        for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+            (*pTensors)[i * 6] = 1.0;
+            (*pTensors)[i * 6 + 3] = 1.0;
+            (*pTensors)[i * 6 + 5] = 1.0;
+        }
+    }
     std::vector<double> kappa(rS.mNumPoints, 0.0);
     for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
         const std::int64_t lo = rAdj.mXadj[i];
@@ -81644,6 +81768,80 @@ std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
         const double k1 = 0.5 * (tr + sq);
         const double k2 = 0.5 * (tr - sq);
         kappa[i] = std::max(std::abs(k1), std::abs(k2));
+
+        if (pTensors) {
+            // The 2x2 eigenvector for k1 in the local (u, w) frame is
+            // proportional to (b, k1 - 2a) -- or (k1 - 2c, b) when that is
+            // better conditioned. k2's eigenvector is its exact in-plane
+            // perpendicular: symmetric matrices with distinct eigenvalues
+            // have orthogonal eigenvectors, so this needs no second solve.
+            // At an umbilic (k1 == k2) any orthogonal pair is equally valid,
+            // since only the OUTER PRODUCTS e*e^T enter the tensor below --
+            // e and -e give the same e*e^T, and an umbilic's ratio is 1
+            // regardless of which pair is picked.
+            const double tensor_eps = 1e-20 * (a * a + b * b + c * c + 1.0);
+            double alpha = b, beta = k1 - 2.0 * a;
+            double len2 = alpha * alpha + beta * beta;
+            if (len2 < tensor_eps) {
+                alpha = k1 - 2.0 * c;
+                beta = b;
+                len2 = alpha * alpha + beta * beta;
+            }
+            if (len2 < tensor_eps) {
+                alpha = 1.0;
+                beta = 0.0;
+                len2 = 1.0;
+            }
+            const double inv_len = 1.0 / std::sqrt(len2);
+            alpha *= inv_len;
+            beta *= inv_len;
+
+            // World-space unit vectors: e1 for the k1 direction, e2 its
+            // in-plane perpendicular (the k2 direction).
+            const double e1[3] = {alpha * u[0] + beta * w[0], alpha * u[1] + beta * w[1],
+                                  alpha * u[2] + beta * w[2]};
+            const double e2[3] = {-beta * u[0] + alpha * w[0], -beta * u[1] + alpha * w[1],
+                                  -beta * u[2] + alpha * w[2]};
+
+            const double k1_abs = std::abs(k1), k2_abs = std::abs(k2);
+            const bool k1_is_sharp = k1_abs >= k2_abs;
+            const double hi_kappa = k1_is_sharp ? k1_abs : k2_abs;
+            const double lo_kappa = k1_is_sharp ? k2_abs : k1_abs;
+            const double* e_hi = k1_is_sharp ? e1 : e2;
+            const double* e_lo = k1_is_sharp ? e2 : e1;
+
+            // Length ratio (long axis / short axis) the tensor targets,
+            // clamped to MaxAnisotropy. hi_kappa == 0 means no curvature
+            // signal at all (an isotropic point), so ratio == 1; hi_kappa >
+            // 0 with lo_kappa == 0 (the canonical cylinder) goes straight to
+            // the clamp rather than dividing by zero -- the same formula's
+            // limit, not a special case grafted on.
+            double ratio = 1.0;
+            if (hi_kappa > 0.0)
+                ratio = (lo_kappa > 0.0)
+                            ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
+                            : MaxAnisotropy;
+
+            // Unit-determinant SPD tensor: in-plane eigenvalues (lam_hi,
+            // lam_lo), normal eigenvalue pinned to lam_hi (keeps clusters on
+            // the surface, no sharper than the sharpest in-plane direction
+            // already demands) -- the pre-scale determinant is ratio^4, so
+            // scaling every eigenvalue by ratio^(-4/3) makes det == 1 while
+            // preserving the ratio itself (see remesh.hpp's doc comment).
+            // ratio == 1 (flat, or MaxAnisotropy == 1.0) makes both
+            // eigenvalues exactly 1.0, i.e. M == I.
+            const double lam_hi = std::pow(ratio, 2.0 / 3.0);
+            const double lam_lo = std::pow(ratio, -4.0 / 3.0);
+
+            for (int r = 0; r < 3; ++r)
+                for (int cc = r; cc < 3; ++cc) {
+                    const double m_rc = lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) +
+                                        lam_lo * e_lo[r] * e_lo[cc];
+                    const std::size_t idx =
+                        static_cast<std::size_t>(r == 0 ? cc : (r == 1 ? cc + 2 : 5));
+                    (*pTensors)[i * 6 + idx] = m_rc;
+                }
+        }
     }
     return kappa;
 }
@@ -81849,29 +82047,53 @@ double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double S
                                  new_sgamma[2] * new_sgamma[2]) /
                                new_srho;
 
-    if (Metric == RemeshMetric::Isotropic)
+    switch (Metric) {
+    case RemeshMetric::Isotropic:
         return iso_badness;
-
-    // Quadric mode ADDS the quadric flatness error to the isotropic
-    // compactness term rather than using the quadric error alone -- measured
-    // (see remesh.hpp's doc comment): pure quadric-error badness has no
-    // compactness pull at all, since a cluster confined to a common plane can
-    // grow arbitrarily thin and snake-like along a low-curvature direction
-    // without its quadric error rising, which repeatedly produced
-    // disconnected, non-manifold clusters even after every repair pass (17 of
-    // 150 clusters still split on a smooth closed sphere in gtest). The
-    // isotropic term is the SAME `-|sgamma|^2/srho` form `Isotropic` mode
-    // uses on its own -- both terms are area-weighted squared-distance-like
-    // quantities (dimensionally consistent, no free blend weight to tune),
-    // and their sum keeps the compactness pull that prevents pathological
-    // elongation while still rewarding flatness/feature alignment where a
-    // real crease or corner makes the quadric term the deciding factor.
-    double new_quad[10];
-    for (int k = 0; k < 10; ++k)
-        new_quad[k] = pQuad[k] + sign * pItemQuad[k];
-    double centroid[3];
-    remesh_centroid_of(new_sgamma, new_srho, centroid);
-    return iso_badness + remesh_quadric_badness(new_quad, centroid);
+    case RemeshMetric::Quadric: {
+        // Quadric mode ADDS the quadric flatness error to the isotropic
+        // compactness term rather than using the quadric error alone --
+        // measured (see remesh.hpp's doc comment): pure quadric-error
+        // badness has no compactness pull at all, since a cluster confined
+        // to a common plane can grow arbitrarily thin and snake-like along a
+        // low-curvature direction without its quadric error rising, which
+        // repeatedly produced disconnected, non-manifold clusters even after
+        // every repair pass (17 of 150 clusters still split on a smooth
+        // closed sphere in gtest). The isotropic term is the SAME
+        // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
+        // terms are area-weighted squared-distance-like quantities
+        // (dimensionally consistent, no free blend weight to tune), and
+        // their sum keeps the compactness pull that prevents pathological
+        // elongation while still rewarding flatness/feature alignment where
+        // a real crease or corner makes the quadric term the deciding
+        // factor.
+        double new_quad[10];
+        for (int k = 0; k < 10; ++k)
+            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+        double centroid[3];
+        remesh_centroid_of(new_sgamma, new_srho, centroid);
+        return iso_badness + remesh_quadric_badness(new_quad, centroid);
+    }
+    case RemeshMetric::Anisotropic: {
+        // The per-vertex curvature tensor is SPD (never rank-deficient the
+        // way a flat quadric is), so unlike `Quadric` this metric's own
+        // error term already penalises spread in every direction -- just
+        // anisotropically -- and is used PURE, not additively stabilised.
+        // See remesh.hpp's doc comment and doc/remesh.md for the measurement
+        // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
+        // swept across mMaxAnisotropy on the fixtures below).
+        double new_quad[10];
+        for (int k = 0; k < 10; ++k)
+            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+        double centroid[3];
+        remesh_centroid_of(new_sgamma, new_srho, centroid);
+        return remesh_quadric_badness(new_quad, centroid);
+    }
+    }
+    // Unreachable: every RemeshMetric enumerator is handled above, and
+    // -Wswitch (no `default:`) makes a future enumerator a compile error
+    // here rather than a silent quadric/anisotropic misclassification.
+    return iso_badness;
 }
 
 /// The accumulators one cluster carries. `mQuad` is filled and read only
@@ -81895,7 +82117,12 @@ RemeshState remesh_init_state(const std::vector<std::int64_t>& rClusters,
     st.mSrho.assign(n_clus, 0.0);
     st.mBadness.assign(n_clus, 0.0);
     st.mCount.assign(n_clus, 0);
-    if (Metric == RemeshMetric::Quadric)
+    // The 10-double accumulator is shared by both Quadric and Anisotropic
+    // (the latter packs a per-vertex curvature-tensor quadric into the exact
+    // same layout, see remesh_vertex_metrics) -- Isotropic is the one metric
+    // that never reads it.
+    const bool needs_quad = Metric != RemeshMetric::Isotropic;
+    if (needs_quad)
         st.mQuad.assign(n_clus * 10, 0.0);
 
     for (std::size_t i = 0; i < NumPoints; ++i) {
@@ -81905,25 +82132,32 @@ RemeshState remesh_init_state(const std::vector<std::int64_t>& rClusters,
         st.mSgamma[c * 3 + 1] += rWeighted[i * 3 + 1];
         st.mSgamma[c * 3 + 2] += rWeighted[i * 3 + 2];
         ++st.mCount[c];
-        if (Metric == RemeshMetric::Quadric)
+        if (needs_quad)
             for (int k = 0; k < 10; ++k)
                 st.mQuad[c * 10 + static_cast<std::size_t>(k)] +=
                     rVertexQuad[i * 10 + static_cast<std::size_t>(k)];
     }
     for (std::size_t c = 0; c < n_clus; ++c) {
-        if (Metric == RemeshMetric::Isotropic) {
-            st.mBadness[c] = -(st.mSgamma[c * 3] * st.mSgamma[c * 3] +
-                               st.mSgamma[c * 3 + 1] * st.mSgamma[c * 3 + 1] +
-                               st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
-                             st.mSrho[c];
-        } else {
-            const double iso = -(st.mSgamma[c * 3] * st.mSgamma[c * 3] +
-                                 st.mSgamma[c * 3 + 1] * st.mSgamma[c * 3 + 1] +
-                                 st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
-                               st.mSrho[c];
+        const double iso = -(st.mSgamma[c * 3] * st.mSgamma[c * 3] +
+                             st.mSgamma[c * 3 + 1] * st.mSgamma[c * 3 + 1] +
+                             st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
+                           st.mSrho[c];
+        switch (Metric) {
+        case RemeshMetric::Isotropic:
+            st.mBadness[c] = iso;
+            break;
+        case RemeshMetric::Quadric: {
             double centroid[3];
             remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
             st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+            break;
+        }
+        case RemeshMetric::Anisotropic: {
+            double centroid[3];
+            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+            st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+            break;
+        }
         }
     }
     return st;
@@ -81948,7 +82182,8 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
         rSt.mSgamma[ut * 3 + d] += rWeighted[Item * 3 + d];
         rSt.mSgamma[uf * 3 + d] -= rWeighted[Item * 3 + d];
     }
-    if (Metric == RemeshMetric::Isotropic) {
+    switch (Metric) {
+    case RemeshMetric::Isotropic:
         rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
                              rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
                              rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
@@ -81957,7 +82192,9 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
                              rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
                              rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
                            rSt.mSrho[ut];
-    } else {
+        break;
+    case RemeshMetric::Quadric:
+    case RemeshMetric::Anisotropic: {
         for (int k = 0; k < 10; ++k) {
             rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
                 rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
@@ -81967,16 +82204,25 @@ void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
         double cen_f[3], cen_t[3];
         remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
         remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
-        const double iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
-                               rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
-                               rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
-                             rSt.mSrho[uf];
-        const double iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
-                               rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
-                               rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
-                             rSt.mSrho[ut];
+        // Quadric adds the isotropic compactness term back in (see
+        // remesh_trial_badness); Anisotropic's own SPD tensor already
+        // penalises spread in every direction and uses the quadric error
+        // pure.
+        double iso_f = 0.0, iso_t = 0.0;
+        if (Metric == RemeshMetric::Quadric) {
+            iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                     rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                     rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                   rSt.mSrho[uf];
+            iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                     rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                     rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                   rSt.mSrho[ut];
+        }
         rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
         rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
+        break;
+    }
     }
 }
 
@@ -82020,14 +82266,13 @@ std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
             const bool can_move_b = rSt.mCount[ucb] > 1;
             const double badness_orig = rSt.mBadness[uca] + rSt.mBadness[ucb];
 
-            const double* q_a = Metric == RemeshMetric::Quadric ? rSt.mQuad.data() + uca * 10
-                                                                 : nullptr;
-            const double* q_b = Metric == RemeshMetric::Quadric ? rSt.mQuad.data() + ucb * 10
-                                                                 : nullptr;
-            const double* item_q_b =
-                Metric == RemeshMetric::Quadric ? rVertexQuad.data() + pb * 10 : nullptr;
-            const double* item_q_a =
-                Metric == RemeshMetric::Quadric ? rVertexQuad.data() + pa * 10 : nullptr;
+            // Both Quadric and Anisotropic read the 10-double accumulator;
+            // only Isotropic never touches it (see remesh_init_state).
+            const bool needs_quad = Metric != RemeshMetric::Isotropic;
+            const double* q_a = needs_quad ? rSt.mQuad.data() + uca * 10 : nullptr;
+            const double* q_b = needs_quad ? rSt.mQuad.data() + ucb * 10 : nullptr;
+            const double* item_q_b = needs_quad ? rVertexQuad.data() + pb * 10 : nullptr;
+            const double* item_q_a = needs_quad ? rVertexQuad.data() + pa * 10 : nullptr;
 
             // Candidate 1: move b into a (b leaves its own cluster).
             double badness_move_b = badness_orig;  // sentinel: "no better than orig"
@@ -82165,7 +82410,8 @@ std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClu
     std::vector<double> sgamma(n_clus * 3, 0.0);
     std::vector<double> srho(n_clus, 0.0);
     std::vector<double> quad;
-    if (Metric == RemeshMetric::Quadric)
+    const bool needs_quad = Metric != RemeshMetric::Isotropic;
+    if (needs_quad)
         quad.assign(n_clus * 10, 0.0);
 
     for (std::size_t i = 0; i < NumPoints; ++i) {
@@ -82173,7 +82419,7 @@ std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClu
         srho[c] += rArea[i];
         for (int d = 0; d < 3; ++d)
             sgamma[c * 3 + d] += rWeighted[i * 3 + d];
-        if (Metric == RemeshMetric::Quadric)
+        if (needs_quad)
             for (int k = 0; k < 10; ++k)
                 quad[c * 10 + static_cast<std::size_t>(k)] +=
                     rVertexQuad[i * 10 + static_cast<std::size_t>(k)];
@@ -82183,16 +82429,24 @@ std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClu
     for (std::size_t c = 0; c < n_clus; ++c) {
         double centroid[3];
         remesh_centroid_of(sgamma.data() + c * 3, srho[c], centroid);
-        if (Metric == RemeshMetric::Isotropic) {
+        switch (Metric) {
+        case RemeshMetric::Isotropic:
             out[c * 3] = centroid[0];
             out[c * 3 + 1] = centroid[1];
             out[c * 3 + 2] = centroid[2];
-        } else {
+            break;
+        case RemeshMetric::Quadric:
+        case RemeshMetric::Anisotropic: {
+            // Both metrics place the dual vertex at their own quadric's
+            // optimal point -- Anisotropic's quadric already encodes the
+            // curvature-tensor shape, so no separate placement rule exists.
             double pt[3];
             detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
             out[c * 3] = pt[0];
             out[c * 3 + 1] = pt[1];
             out[c * 3 + 2] = pt[2];
+            break;
+        }
         }
     }
     return out;
@@ -82413,8 +82667,10 @@ RemeshMetric remesh_metric_from_name(const std::string& rName) {
         return RemeshMetric::Isotropic;
     if (rName == "quadric")
         return RemeshMetric::Quadric;
+    if (rName == "anisotropic")
+        return RemeshMetric::Anisotropic;
     throw std::invalid_argument("meshio++: remesh: unknown metric '" + rName +
-                                "' (expected 'isotropic' or 'quadric')");
+                                "' (expected 'isotropic', 'quadric' or 'anisotropic')");
 }
 
 int remesh_suggest_subdivide(std::int64_t NumPoints, std::int64_t NumClusters,
@@ -82449,6 +82705,17 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
             std::to_string(rOptions.mMaxRepairPasses));
     if (rOptions.mSubsampleRatio <= 0.0)
         throw std::invalid_argument("meshio++: remesh: subsample_ratio must be positive");
+    if (rOptions.mMetric == RemeshMetric::Anisotropic && rOptions.mMaxAnisotropy < 1.0)
+        throw std::invalid_argument(
+            "meshio++: remesh: max_anisotropy must be at least 1.0, got " +
+            std::to_string(rOptions.mMaxAnisotropy));
+    if (rOptions.mMetric != RemeshMetric::Anisotropic &&
+        rOptions.mMaxAnisotropy != kRemeshDefaultMaxAnisotropy)
+        throw std::invalid_argument(
+            "meshio++: remesh: max_anisotropy is only meaningful under "
+            "metric=\"anisotropic\" (there is nothing for it to shape under '" +
+            std::string(rOptions.mMetric == RemeshMetric::Isotropic ? "isotropic" : "quadric") +
+            "')");
 
     remesh_check_blocks(rMesh);
     detail::warn_regions_dropped(rMesh, "remesh");
@@ -82491,14 +82758,23 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
     const std::vector<std::int64_t> edges = remesh_unique_edges(adj, surf.mNumPoints);
 
     std::vector<double> curvature;
-    if (rOptions.mGradation != 0.0) {
+    std::vector<double> curvature_tensors;  // Anisotropic only, 6 doubles/vertex
+    if (rOptions.mGradation != 0.0 || metric == RemeshMetric::Anisotropic) {
         const std::vector<double> vertex_normals = remesh_vertex_normals(surf);
-        curvature = remesh_vertex_curvature(surf, adj, vertex_normals);
+        curvature = remesh_vertex_curvature(
+            surf, adj, vertex_normals,
+            metric == RemeshMetric::Anisotropic ? &curvature_tensors : nullptr,
+            rOptions.mMaxAnisotropy);
     }
     std::vector<double> area;
     std::vector<double> weighted;
     remesh_item_weights(surf, curvature, rOptions.mGradation, area, weighted);
-    const std::vector<double> vertex_quad = remesh_vertex_quadrics(surf, metric);
+    // Anisotropic packs its per-vertex curvature tensor into the accumulator
+    // AFTER item weights exist (it needs rArea); Quadric's plain
+    // face-quadric accumulation needs no weight at all.
+    const std::vector<double> vertex_quad = metric == RemeshMetric::Anisotropic
+                                                ? remesh_vertex_metrics(surf, curvature_tensors, area)
+                                                : remesh_vertex_quadrics(surf, metric);
 
     const RemeshBoundaryInfo boundary =
         rOptions.mPreserveBoundary ? remesh_boundary_info(surf) : RemeshBoundaryInfo{};

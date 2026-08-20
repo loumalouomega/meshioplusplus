@@ -58,6 +58,7 @@
  *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
  *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
+ *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
  *
  * ### This is the ONE place the number is written
  *
@@ -76,4 +77,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 8
+#define MESHIOPLUSPLUS_ABI_VERSION 9

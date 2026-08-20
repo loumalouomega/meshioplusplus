@@ -107,6 +107,27 @@
  * of smearing it toward a centroid -- which is the entire quality difference
  * between the two metrics.
  *
+ * **Anisotropic metric** (`RemeshMetric::Anisotropic`, `mMaxAnisotropy`).
+ * Also built from the Valette/Chassery/Prost TVCG 2008 concept above -- the
+ * same paper, not a second attribution. Each vertex's curvature fit
+ * (`remesh_vertex_curvature`, shared with `mGradation`) already computes the
+ * principal curvatures `kappa1`/`kappa2` and their tangent-plane directions;
+ * this metric is the one consumer that keeps the directions instead of
+ * collapsing them to `max(|kappa1|, |kappa2|)`. A per-vertex SPD tensor `M`
+ * is built with in-plane eigenvalues proportional to curvature magnitude
+ * (short target edges across a sharp bend, long ones along a flat one),
+ * ratio clamped to `mMaxAnisotropy`, normal eigenvalue pinned to the sharper
+ * in-plane one (keeps clusters on the surface), then rescaled to `det(M) = 1`
+ * -- the metric only reshapes clusters, it never rescales the objective, so
+ * it composes cleanly with `mGradation` (density) and stays comparable
+ * vertex-to-vertex regardless of the surface's absolute curvature magnitude.
+ * `M = I` exactly wherever the surface is locally flat or `mMaxAnisotropy ==
+ * 1.0`. Algebraically, `E(v) = sum(w * (x-v)^T M (x-v))` expands to the same
+ * `x^T A x + 2 b.x + c` form the quadric metric already accumulates and
+ * minimises via `decim_quadric_optimal_point` -- so this packs into the
+ * *same* 10-entry accumulator, needs no new per-cluster storage, and the
+ * per-move cost is identical to `Quadric`'s.
+ *
  * **Subdivision matters more than iteration count.** The clustering is a
  * *discrete* approximation of a centroidal Voronoi diagram whose resolution is
  * the number of items per cluster, so a target near the input vertex count
@@ -220,7 +241,7 @@
 namespace meshioplusplus {
 
 /// The clustering objective driving `remesh`.
-enum class RemeshMetric {
+enum class RemeshMetric : std::uint8_t {
     /// Area-weighted centroidal distance (Valette & Chassery, CGF 2004). Fast,
     /// robust, and rounds sharp features.
     Isotropic,
@@ -228,16 +249,48 @@ enum class RemeshMetric {
     /// sharp edges and corners at the cost of one extra 10-entry accumulator
     /// per cluster and a 3x3 solve per candidate move.
     Quadric,
+    /// Clusters shaped by a local curvature tensor rather than isotropic
+    /// distance (Valette, Chassery & Prost, IEEE TVCG 2008 -- the same paper
+    /// `Quadric` cites): elongated features get elongated elements. Packs
+    /// into the same 10-entry accumulator `Quadric` uses, so it costs the
+    /// same per-move solve; see `RemeshOptions::mMaxAnisotropy`.
+    Anisotropic,
 };
+
+/// A fixed underlying type, checked below, so appending a future enumerator
+/// stays a Tier C addition (doc/abi.md) rather than accidentally widening
+/// the type an already-compiled consumer stored.
+static_assert(sizeof(RemeshMetric) == 1,
+              "meshio++ ABI: RemeshMetric's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 /**
  * @brief Parses a metric name.
- * @param rName One of `"isotropic"`, `"quadric"` (case-sensitive, as
- *        elsewhere in the operations layer).
+ * @param rName One of `"isotropic"`, `"quadric"`, `"anisotropic"`
+ *        (case-sensitive, as elsewhere in the operations layer).
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
 MESHIOPLUSPLUS_API RemeshMetric remesh_metric_from_name(const std::string& rName);
+
+/// Default for `RemeshOptions::mMaxAnisotropy` -- meaningful only under
+/// `RemeshMetric::Anisotropic`, but a single named constant so the header's
+/// default and the "you set this under the wrong metric" guard in
+/// `remesh.cpp` cannot drift apart. Chosen by measurement, not a round
+/// number: on a near-umbilic input (the icosahedron test fixture, whose
+/// TRUE surface is a sphere -- equal principal curvatures everywhere, so
+/// the metric has no genuine anisotropy signal to read, only discretisation
+/// noise), a swept `max_anisotropy` of 1/2/4/10 produced 0/0/1/18 clusters
+/// short of a 120-cluster target -- energy minimisation can fully absorb a
+/// seeded cluster into its neighbours (not a disconnection `mMaxRepairPasses`
+/// helps with; `RemeshResult::mNumClusters` is already documented as "never
+/// higher", and more repair passes measurably did not change the count
+/// here). `4.0` keeps that near-worst-case shortfall to a single cluster
+/// while still giving genuinely anisotropic surfaces (a cylinder, a fillet)
+/// real elongation headroom; a caller expecting to hit an exact count on
+/// nearly-umbilic geometry should still prefer something closer to `2.0`.
+inline constexpr double kRemeshDefaultMaxAnisotropy = 4.0;
 
 /// Options for `remesh`.
 struct RemeshOptions {
@@ -286,6 +339,15 @@ struct RemeshOptions {
     /// the input has no boundary edges (e.g. every mesh in this repo's own
     /// closed-surface tests).
     bool mPreserveBoundary = true;
+
+    /// Under `RemeshMetric::Anisotropic`, the maximum ratio between the two
+    /// in-plane target edge lengths (long axis / short axis) a per-vertex
+    /// curvature tensor is allowed to request; `1.0` recovers the isotropic
+    /// shape exactly. Must be `>= 1.0`. An error to set away from
+    /// `kRemeshDefaultMaxAnisotropy` under any other metric -- there is
+    /// nothing for it to shape, so a silently-ignored value would be a
+    /// caller mistake with no diagnostic.
+    double mMaxAnisotropy = kRemeshDefaultMaxAnisotropy;
 };
 
 /// The result of `remesh`.
@@ -337,10 +399,12 @@ MESHIOPLUSPLUS_API int remesh_suggest_subdivide(std::int64_t NumPoints, std::int
  * @param rOptions Cluster count, subdivision, iteration limits and metric.
  * @return The remeshed all-triangle mesh and the run summary.
  * @throws std::invalid_argument on a cluster count below 4 or above the
- *         subdivided input's vertex count, on a non-positive limit, and on any
- *         block outside the surface scope: 3D volume cells (use
- *         `extract_surface` first), higher-order cells (linearize first),
- *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
+ *         subdivided input's vertex count, on a non-positive limit, on
+ *         `mMaxAnisotropy < 1.0`, on `mMaxAnisotropy` set away from its
+ *         default under a non-`Anisotropic` metric, and on any block outside
+ *         the surface scope: 3D volume cells (use `extract_surface` first),
+ *         higher-order cells (linearize first), ragged polygon/polyhedron
+ *         blocks, and `line`/`vertex` blocks.
  */
 MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions);
 

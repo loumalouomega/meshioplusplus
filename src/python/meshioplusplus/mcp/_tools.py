@@ -1218,6 +1218,7 @@ def tool_remesh(
     metric="isotropic",
     gradation=0.0,
     preserve_boundary=True,
+    max_anisotropy=4.0,
 ):
     """Replace a surface's triangulation with a new, well-shaped one (ACVD
     clustering). The output has NO correspondence to the input -- point/cell
@@ -1234,6 +1235,7 @@ def tool_remesh(
         metric=metric,
         gradation=gradation,
         preserve_boundary=preserve_boundary,
+        max_anisotropy=max_anisotropy,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

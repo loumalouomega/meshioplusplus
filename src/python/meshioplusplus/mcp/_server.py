@@ -1009,6 +1009,7 @@ def _register_operations(server: FastMCP) -> None:
         metric: str = "isotropic",
         gradation: float = 0.0,
         preserve_boundary: bool = True,
+        max_anisotropy: float = 4.0,
     ) -> dict:
         """Replace a surface mesh's triangulation with a new,
         near-uniformly-sized, well-shaped one at num_clusters vertices
@@ -1017,12 +1018,18 @@ def _register_operations(server: FastMCP) -> None:
         the input -- point_data/cell_data/named regions are dropped,
         field_data is carried; use interpolate/conservative_interpolate to
         transfer a field onto the result. metric is "isotropic" (default,
-        fast, rounds sharp features) or "quadric" (Garland-Heckbert error,
-        preserves sharp edges/corners). gradation is the curvature-gradation
-        exponent gamma in the item weight area * kappa**gamma (0.0 default
-        disables gradation). preserve_boundary (default True) seeds and
-        pins the input's open boundary and emits a line dual cell along it,
-        a no-op on a closed mesh."""
+        fast, rounds sharp features), "quadric" (Garland-Heckbert error,
+        preserves sharp edges/corners), or "anisotropic" (clusters shaped by
+        a local curvature tensor, elongated along low-curvature directions --
+        see max_anisotropy). gradation is the curvature-gradation exponent
+        gamma in the item weight area * kappa**gamma (0.0 default disables
+        gradation). preserve_boundary (default True) seeds and pins the
+        input's open boundary and emits a line dual cell along it, a no-op
+        on a closed mesh. max_anisotropy (default 4.0) is, under
+        metric="anisotropic", the maximum ratio between the two in-plane
+        target edge lengths a curvature tensor may request; 1.0 recovers
+        the isotropic shape; an error to set away from the default under
+        any other metric."""
         return _guard(
             _tools.tool_remesh,
             input_path=input_path,
@@ -1036,6 +1043,7 @@ def _register_operations(server: FastMCP) -> None:
             max_iterations=max_iterations,
             max_repair_passes=max_repair_passes,
             metric=metric,
+            max_anisotropy=max_anisotropy,
             gradation=gradation,
             preserve_boundary=preserve_boundary,
         )

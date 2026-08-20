@@ -162,7 +162,7 @@ function resolveVariant(variant) {
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   hessian: (mesh: Mesh, array: string, method?: string, location?: string, output?: string, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
- *   remesh: (mesh: Mesh, numClusters: number, subdivide?: number, subsampleRatio?: number, maxSubdivide?: number, maxIterations?: number, maxRepairPasses?: number, metric?: string) => {mesh: Mesh, numClusters: number, numIterations: number, subdivideApplied: number, numIsolatedClusters: number},
+ *   remesh: (mesh: Mesh, numClusters: number, subdivide?: number, subsampleRatio?: number, maxSubdivide?: number, maxIterations?: number, maxRepairPasses?: number, metric?: string, gradation?: number, preserveBoundary?: boolean, maxAnisotropy?: number) => {mesh: Mesh, numClusters: number, numIterations: number, subdivideApplied: number, numIsolatedClusters: number, numNonManifoldVertices: number},
  *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
  *   subdivide: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
@@ -496,6 +496,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             metric = 'isotropic',
             gradation = 0.0,
             preserveBoundary = true,
+            maxAnisotropy = 4.0,
         ) =>
             Module.remesh(
                 mesh,
@@ -508,6 +509,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 metric,
                 gradation,
                 preserveBoundary,
+                maxAnisotropy,
             ),
         split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
         convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
