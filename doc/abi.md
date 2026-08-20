@@ -66,6 +66,7 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 6 | v9.20.0 – v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`, so the OpenFOAM writer can round-trip a patch's `type` |
 | 7 | v10.1.0 | `RefineOptions` gained `mRecordHierarchy`, the persistent `refine:cell_id`/`refine:parent_id` parent/child hierarchy |
 | 8 | v10.11.0 | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
+| 9 | v10.12.0 | `RemeshOptions` gained `mMaxAnisotropy`, `RemeshMetric` gained `Anisotropic` |
 
 It reaches consumers three ways:
 

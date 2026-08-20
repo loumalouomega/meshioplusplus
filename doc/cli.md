@@ -663,6 +663,42 @@ meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-bound
 
 ---
 
+## meshioplusplus remesh
+
+Replace a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering (see [remeshing](/remesh)).
+
+```
+meshioplusplus remesh [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--num-clusters N` | Target output vertex count (required) |
+| `--subdivide N` | Uniform `refine` passes applied before clustering; `-1` (default) auto-picks from `--subsample-ratio` |
+| `--subsample-ratio R` | Target items per cluster driving the auto-`subdivide` pick (default `10`) |
+| `--max-subdivide N` | Cap on the auto-picked subdivide count (default `4`) |
+| `--iterations N` | Energy-minimisation sweeps (default `10`) |
+| `--repair-passes N` | Max repair passes for disconnected/non-manifold clusters (default `3`) |
+| `--metric isotropic\|quadric\|anisotropic` | Clustering metric (default `isotropic`) |
+| `--gradation G` | Curvature-weighting exponent; `0` (default) disables curvature weighting entirely |
+| `--no-preserve-boundary` | Let boundary-adjacent triangles drop from the dual instead of emitting a boundary `line` block |
+| `--max-anisotropy A` | `metric anisotropic` only: cap on a vertex's principal-curvature-length ratio (default `4`) |
+| `--quiet` (`-q`) | Do not print the clustering summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output is a brand-new mesh with new points and new connectivity — there is no point/cell map, and `point_data`/`cell_data`/named regions are dropped (`field_data` passes through); transfer a field with `interpolate`/`conservative-interpolate` afterwards. `--metric anisotropic` shapes clusters with a per-vertex curvature tensor rather than isotropic distance, so elongated features (a fillet, a pipe, a rib) get elongated elements; `--max-anisotropy` is an error under any other `--metric`.
+
+**Examples:**
+
+```sh
+meshioplusplus remesh bracket.stl out.vtu --num-clusters 5000
+meshioplusplus remesh bracket.stl out.vtu --num-clusters 5000 --metric quadric
+meshioplusplus remesh bracket.stl out.vtu --num-clusters 5000 --metric anisotropic --max-anisotropy 4
+meshioplusplus remesh bracket.stl out.vtu --num-clusters 2000 --gradation 1.5 --no-preserve-boundary -q
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element shape (see [smoothing](/smooth)).
