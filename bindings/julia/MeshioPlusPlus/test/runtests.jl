@@ -669,6 +669,16 @@ end
     @test q.num_clusters == 30
     close(q.mesh)
 
+    # The anisotropic metric + max_anisotropy go through mio_remesh_ex.
+    a = remesh(octa, 30; metric=:anisotropic, max_anisotropy=3.0)
+    @test a.num_clusters > 0
+    @test a.num_non_manifold_vertices >= 0
+    close(a.mesh)
+
+    # max_anisotropy away from the default under a non-anisotropic metric is
+    # guarded, not silently ignored.
+    @test_throws MeshioError remesh(octa, 30; metric=:isotropic, max_anisotropy=2.0)
+
     # Too few clusters is rejected by name.
     @test_throws MeshioError remesh(octa, 3)
 

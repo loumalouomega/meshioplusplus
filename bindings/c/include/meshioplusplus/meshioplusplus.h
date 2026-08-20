@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 11
+#define MIO_VERSION_MINOR 12
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1083,6 +1083,78 @@ MIO_API mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int sub
                              int64_t* num_iterations, int* subdivide_applied,
                              int64_t* num_isolated_clusters,
                              int64_t* num_non_manifold_vertices);
+
+/**
+ * Options for `mio_remesh_ex`; use `mio_remesh_opts_init` to get the same
+ * defaults as `mio_remesh`. Append-only: new fields consume `reserved`
+ * slots so `sizeof` never changes for an already-compiled consumer -- see
+ * `mio_refine_opts`.
+ */
+typedef struct mio_remesh_opts {
+    /** Number of clusters, i.e. output vertices aimed for. */
+    int64_t num_clusters;
+    /** Uniform refine passes before clustering; negative = automatic. */
+    int32_t subdivide;
+    /** Ceiling on automatic subdivision. */
+    int32_t max_subdivide;
+    /** Items per cluster targeted by automatic subdivision. */
+    double subsample_ratio;
+    /** Maximum energy-minimisation sweeps per pass. */
+    int32_t max_iterations;
+    /** "Split disconnected clusters, minimise again" passes. */
+    int32_t max_repair_passes;
+    /** NULL/"" = "isotropic"; "quadric" or "anisotropic" select the others. */
+    const char* metric;
+    /** Curvature-gradation exponent gamma; 0.0 disables gradation. */
+    double gradation;
+    /** Nonzero (default) detects/pins the input's open boundary. */
+    int32_t preserve_boundary;
+    int32_t reserved_pad; /**< must be zero; keeps the double tail aligned */
+    /**
+     * Under metric="anisotropic", the maximum ratio between the two in-plane
+     * target edge lengths a per-vertex curvature tensor may request; `1.0`
+     * recovers the isotropic shape exactly. Must be >= 1.0. An error to set
+     * away from `mio_remesh_opts_init`'s default under any other metric.
+     */
+    double max_anisotropy;
+    double reserved_d[3]; /**< must be zero; room for additive double growth */
+    int64_t reserved[4];  /**< must be zero; room for additive int64 growth */
+} mio_remesh_opts;
+
+/** Zero-initialize remesh options to the same defaults as `mio_remesh`. */
+MIO_API void mio_remesh_opts_init(mio_remesh_opts* opts);
+
+/** Output counters from `mio_remesh_ex`; every field is always written. */
+typedef struct mio_remesh_report {
+    /** Clusters actually produced; may be lower than requested, never higher. */
+    int64_t num_clusters;
+    /** Energy-minimisation sweeps performed, summed over every pass. */
+    int64_t num_iterations;
+    /** Subdivision passes actually applied (the resolved value of subdivide). */
+    int32_t subdivide_applied;
+    int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
+    /** Clusters still disconnected after repair. */
+    int64_t num_isolated_clusters;
+    /** Output vertices whose incident dual-triangle fan is still not a
+     *  single loop/chain after repair -- distinct from num_isolated_clusters. */
+    int64_t num_non_manifold_vertices;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_remesh_report;
+
+/**
+ * Remesh a surface, `mio_remesh`'s options-struct growth path -- the
+ * `mio_refine_ex`/`mio_refine_opts` shape, needed because `mio_remesh`
+ * itself is a flat function with no room to grow (it already changed once).
+ * @param mesh   input surface mesh.
+ * @param opts   options; NULL means every field at its `mio_remesh_opts_init`
+ *               default (which still requires `num_clusters` to be set, so a
+ *               NULL `opts` is only useful after `mio_remesh_opts_init` sets
+ *               it -- pass a real struct in practice).
+ * @param report optional out: the run summary; NULL to ignore it.
+ * @return the remeshed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_ex(const mio_mesh* mesh, const mio_remesh_opts* opts,
+                                mio_remesh_report* report);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).

@@ -69,7 +69,7 @@ extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -191,7 +191,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_gradient, 8),
     CALLDEF(R_mio_hessian, 6),
     CALLDEF(R_mio_estimate_error, 8),
-    CALLDEF(R_mio_remesh, 10),
+    CALLDEF(R_mio_remesh, 11),
     CALLDEF(R_mio_grid, 4),
     CALLDEF(R_mio_voxelize, 11),
     CALLDEF(R_mio_compute_sdf, 16),

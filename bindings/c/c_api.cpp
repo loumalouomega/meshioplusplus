@@ -1233,6 +1233,60 @@ mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const
     });
 }
 
+namespace {
+
+/// Translate the flat option struct into the core's RemeshOptions -- the
+/// mio_refine_opts precedent (capi_refine_options).
+meshioplusplus::RemeshOptions capi_remesh_options(const mio_remesh_opts& rOpts) {
+    meshioplusplus::RemeshOptions options;
+    options.mNumClusters = rOpts.num_clusters;
+    options.mSubdivide = rOpts.subdivide;
+    options.mSubsampleRatio = rOpts.subsample_ratio;
+    options.mMaxSubdivide = rOpts.max_subdivide;
+    options.mMaxIterations = rOpts.max_iterations;
+    options.mMaxRepairPasses = rOpts.max_repair_passes;
+    options.mMetric =
+        meshioplusplus::remesh_metric_from_name(rOpts.metric ? rOpts.metric : "isotropic");
+    options.mGradation = rOpts.gradation;
+    options.mPreserveBoundary = rOpts.preserve_boundary != 0;
+    options.mMaxAnisotropy = rOpts.max_anisotropy;
+    return options;
+}
+
+mio_mesh* capi_remesh(const mio_mesh* pMesh, const meshioplusplus::RemeshOptions& rOptions,
+                      mio_remesh_report* pReport) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::RemeshResult r = meshioplusplus::remesh(pMesh->mMesh, rOptions);
+    if (pReport) {
+        *pReport = mio_remesh_report{};
+        pReport->num_clusters = r.mNumClusters;
+        pReport->num_iterations = r.mNumIterations;
+        pReport->subdivide_applied = r.mSubdivideApplied;
+        pReport->num_isolated_clusters = r.mNumIsolatedClusters;
+        pReport->num_non_manifold_vertices = r.mNumNonManifoldVertices;
+    }
+    return new mio_mesh{std::move(r.mMesh)};
+}
+
+}  // namespace
+
+static_assert(sizeof(mio_remesh_opts) == 120, "mio_remesh_opts grew outside its reserved tail");
+static_assert(sizeof(mio_remesh_report) == 72, "mio_remesh_report grew outside its reserved tail");
+
+void mio_remesh_opts_init(mio_remesh_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remesh_opts{};  // value-initialized: zero every field first
+    opts->subdivide = -1;
+    opts->max_subdivide = 4;
+    opts->subsample_ratio = 10.0;
+    opts->max_iterations = 100;
+    opts->max_repair_passes = 10;
+    opts->preserve_boundary = 1;
+    opts->max_anisotropy = meshioplusplus::kRemeshDefaultMaxAnisotropy;
+}
+
 mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
                      double subsample_ratio, int max_subdivide, int max_iterations,
                      int max_repair_passes, const char* metric, double gradation,
@@ -1240,8 +1294,6 @@ mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
                      int* subdivide_applied, int64_t* num_isolated_clusters,
                      int64_t* num_non_manifold_vertices) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
-        if (!mesh)
-            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         meshioplusplus::RemeshOptions opts;
         opts.mNumClusters = num_clusters;
         opts.mSubdivide = subdivide;
@@ -1252,18 +1304,34 @@ mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
         opts.mMetric = meshioplusplus::remesh_metric_from_name(metric ? metric : "isotropic");
         opts.mGradation = gradation;
         opts.mPreserveBoundary = preserve_boundary != 0;
-        meshioplusplus::RemeshResult r = meshioplusplus::remesh(mesh->mMesh, opts);
+        // max_anisotropy has no flat parameter here -- mio_remesh_ex is
+        // required to move it away from the default (RemeshOptions's own
+        // member-initializer default, inherited unchanged above).
+        mio_remesh_report report{};
+        mio_mesh* out = capi_remesh(mesh, opts, &report);
         if (num_clusters_out)
-            *num_clusters_out = r.mNumClusters;
+            *num_clusters_out = report.num_clusters;
         if (num_iterations)
-            *num_iterations = r.mNumIterations;
+            *num_iterations = report.num_iterations;
         if (subdivide_applied)
-            *subdivide_applied = r.mSubdivideApplied;
+            *subdivide_applied = report.subdivide_applied;
         if (num_isolated_clusters)
-            *num_isolated_clusters = r.mNumIsolatedClusters;
+            *num_isolated_clusters = report.num_isolated_clusters;
         if (num_non_manifold_vertices)
-            *num_non_manifold_vertices = r.mNumNonManifoldVertices;
-        return new mio_mesh{std::move(r.mMesh)};
+            *num_non_manifold_vertices = report.num_non_manifold_vertices;
+        return out;
+    });
+}
+
+mio_mesh* mio_remesh_ex(const mio_mesh* mesh, const mio_remesh_opts* opts,
+                        mio_remesh_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (opts == nullptr) {
+            mio_remesh_opts defaults;
+            mio_remesh_opts_init(&defaults);
+            return capi_remesh(mesh, capi_remesh_options(defaults), report);
+        }
+        return capi_remesh(mesh, capi_remesh_options(*opts), report);
     });
 }
 

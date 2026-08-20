@@ -979,5 +979,15 @@ test_that("remesh replaces a surface's triangulation by ACVD clustering", {
   on.exit(mio_release(q$mesh), add = TRUE)
   expect_gt(mio_num_cells(q$mesh), 0)
 
+  # The anisotropic metric + max_anisotropy go through mio_remesh_ex.
+  a <- mio_remesh(cube, 10, metric = "anisotropic", max_anisotropy = 3.0)
+  on.exit(mio_release(a$mesh), add = TRUE)
+  expect_gt(mio_num_cells(a$mesh), 0)
+  expect_gte(a$num_non_manifold_vertices, 0)
+
+  # max_anisotropy away from the default under a non-anisotropic metric is
+  # guarded, not silently ignored.
+  expect_error(mio_remesh(cube, 10, metric = "isotropic", max_anisotropy = 2.0))
+
   expect_error(mio_remesh(cube, 3))
 })

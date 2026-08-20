@@ -427,7 +427,8 @@ end
 """
     remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
            max_subdivide=4, max_iterations=100, max_repair_passes=10,
-           metric=:isotropic, gradation=0.0, preserve_boundary=true)
+           metric=:isotropic, gradation=0.0, preserve_boundary=true,
+           max_anisotropy=4.0)
         -> (; mesh, num_clusters, num_iterations, subdivide_applied,
              num_isolated_clusters, num_non_manifold_vertices)
 
@@ -439,19 +440,31 @@ connectivity with no correspondence to `mesh` — point/cell data and named
 regions are dropped, field data is carried.
 
 `metric` is `:isotropic` (default; area-weighted centroidal distance, fast,
-rounds sharp features) or `:quadric` (Garland-Heckbert quadric error,
-preserves sharp edges/corners at extra cost per candidate move). `subdivide`
-defaults to automatic (`-1`): the smallest count of uniform `refine` passes
-reaching `subsample_ratio` items per cluster, capped at `max_subdivide`; `0`
-disables subdivision. `gradation` is the curvature-gradation exponent
-`gamma` in the item weight `area * kappa^gamma`; `0.0` (default) disables
-gradation entirely and reproduces plain area weighting. `preserve_boundary`
-(default `true`) detects the input's open boundary (if any), seeds it before
-the interior, and emits a `line` dual cell along boundary edges whose
-endpoints land in different clusters — a no-op on a closed mesh.
+rounds sharp features), `:quadric` (Garland-Heckbert quadric error,
+preserves sharp edges/corners at extra cost per candidate move), or
+`:anisotropic` (clusters shaped by a local curvature tensor — elongated
+along low-curvature directions — see `max_anisotropy`). `subdivide` defaults
+to automatic (`-1`): the smallest count of uniform `refine` passes reaching
+`subsample_ratio` items per cluster, capped at `max_subdivide`; `0` disables
+subdivision. `gradation` is the curvature-gradation exponent `gamma` in the
+item weight `area * kappa^gamma`; `0.0` (default) disables gradation
+entirely and reproduces plain area weighting. `preserve_boundary` (default
+`true`) detects the input's open boundary (if any), seeds it before the
+interior, and emits a `line` dual cell along boundary edges whose endpoints
+land in different clusters — a no-op on a closed mesh. `max_anisotropy`
+(default `4.0`, a measured value — see `kRemeshDefaultMaxAnisotropy`'s doc
+comment in `remesh.hpp`) is, under `metric=:anisotropic`, the maximum ratio
+between the two in-plane target edge lengths a curvature tensor may
+request; `1.0` recovers the isotropic shape exactly. Must be at least `1.0`,
+and an error to set away from the default under any other metric.
 `num_isolated_clusters` and `num_non_manifold_vertices` are two distinct
 causes of non-manifold output (disconnected clusters vs. "bowtie" vertices)
 that repair could not fully fix; check both rather than assuming.
+
+Goes through `mio_remesh_ex`/`mio_remesh_opts` rather than the flat
+`mio_remesh` — the `refine`/`mio_refine_ex` precedent, needed because
+`mio_remesh` is a flat C function with no room to grow (it already changed
+once).
 
 Attribution: the isotropic clustering engine is derived from
 [pyacvd](https://github.com/pyvista/pyacvd) (MIT, (c) 2017-2024 The PyVista
@@ -463,24 +476,28 @@ function remesh(m::Mesh, num_clusters::Integer; subdivide::Integer=-1,
                 subsample_ratio::Real=10.0, max_subdivide::Integer=4,
                 max_iterations::Integer=100, max_repair_passes::Integer=10,
                 metric::Symbol=:isotropic, gradation::Real=0.0,
-                preserve_boundary::Bool=true)
-    num_clusters_out = Ref{Int64}(0)
-    num_iterations = Ref{Int64}(0)
-    subdivide_applied = Ref{Cint}(0)
-    num_isolated = Ref{Int64}(0)
-    num_nonmanifold = Ref{Int64}(0)
-    ptr = ccall(_sym(:mio_remesh), Ptr{Cvoid},
-                (Ptr{Cvoid}, Int64, Cint, Cdouble, Cint, Cint, Cint, Cstring, Cdouble, Cint,
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Cint}, Ptr{Int64}, Ptr{Int64}),
-                _handle(m), Int64(num_clusters), Cint(subdivide), Cdouble(subsample_ratio),
-                Cint(max_subdivide), Cint(max_iterations), Cint(max_repair_passes),
-                String(metric), Cdouble(gradation), Cint(preserve_boundary ? 1 : 0),
-                num_clusters_out, num_iterations, subdivide_applied, num_isolated,
-                num_nonmanifold)
-    (mesh=Mesh(_check_ptr(ptr)), num_clusters=Int(num_clusters_out[]),
-     num_iterations=Int(num_iterations[]), subdivide_applied=Int(subdivide_applied[]),
-     num_isolated_clusters=Int(num_isolated[]),
-     num_non_manifold_vertices=Int(num_nonmanifold[]))
+                preserve_boundary::Bool=true, max_anisotropy::Real=4.0)
+    metric_c = Vector{UInt8}(codeunits(String(metric)))
+    push!(metric_c, 0x00)
+    report = Ref{_CRemeshReport}()
+    ptr = GC.@preserve metric_c begin
+        opts = _CRemeshOpts(Int64(num_clusters), Int32(subdivide), Int32(max_subdivide),
+                            Cdouble(subsample_ratio), Int32(max_iterations),
+                            Int32(max_repair_passes), Cstring(pointer(metric_c)),
+                            Cdouble(gradation), preserve_boundary ? Int32(1) : Int32(0),
+                            Int32(0), Cdouble(max_anisotropy),
+                            (Cdouble(0), Cdouble(0), Cdouble(0)),
+                            (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_remesh_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshOpts}, Ptr{_CRemeshReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_clusters=Int(rep.num_clusters),
+     num_iterations=Int(rep.num_iterations), subdivide_applied=Int(rep.subdivide_applied),
+     num_isolated_clusters=Int(rep.num_isolated_clusters),
+     num_non_manifold_vertices=Int(rep.num_non_manifold_vertices))
 end
 
 # --- combining / comparing ---------------------------------------------------

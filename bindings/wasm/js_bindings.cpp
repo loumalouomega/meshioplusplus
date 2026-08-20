@@ -2108,7 +2108,8 @@ val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std:
  */
 val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
              double subsampleRatio, int maxSubdivide, int maxIterations, int maxRepairPasses,
-             const std::string& rMetric, double gradation, bool preserveBoundary) {
+             const std::string& rMetric, double gradation, bool preserveBoundary,
+             double maxAnisotropy) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RemeshOptions options;
         options.mNumClusters = numClusters;
@@ -2120,6 +2121,7 @@ val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
         options.mMetric = meshioplusplus::remesh_metric_from_name(rMetric);
         options.mGradation = gradation;
         options.mPreserveBoundary = preserveBoundary;
+        options.mMaxAnisotropy = maxAnisotropy;
         meshioplusplus::RemeshResult r = meshioplusplus::remesh(val_to_mesh(rMeshObj), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));

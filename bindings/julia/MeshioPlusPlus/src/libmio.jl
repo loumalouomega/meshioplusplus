@@ -299,6 +299,40 @@ struct _CComputeSdfOpts
     distance::_CSdfOpts
 end
 
+"""
+Mirror of C `mio_remesh_opts`. Field order, types and the trailing `reserved`/
+`reserved_d` padding are ABI: they must match `meshioplusplus.h` exactly.
+Always build one through [`remesh`](@ref) rather than by hand. `metric` needs
+the same NUL-terminated-buffer + GC.@preserve idiom `refine`'s `region`/
+`predicate_array` already use.
+"""
+struct _CRemeshOpts
+    num_clusters::Int64
+    subdivide::Int32
+    max_subdivide::Int32
+    subsample_ratio::Cdouble
+    max_iterations::Int32
+    max_repair_passes::Int32
+    metric::Cstring
+    gradation::Cdouble
+    preserve_boundary::Int32
+    reserved_pad::Int32
+    max_anisotropy::Cdouble
+    reserved_d::NTuple{3,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_remesh_report`."""
+struct _CRemeshReport
+    num_clusters::Int64
+    num_iterations::Int64
+    subdivide_applied::Int32
+    reserved_pad::Int32
+    num_isolated_clusters::Int64
+    num_non_manifold_vertices::Int64
+    reserved::NTuple{4,Int64}
+end
+
 # Layout guards: a mismatch here would corrupt every call taking these structs,
 # silently. Checked once at load rather than trusted.
 function _check_abi_layout()
@@ -323,6 +357,10 @@ function _check_abi_layout()
     sizeof(_CComputeSdfOpts) == 232 ||
         error("meshio++: mio_compute_sdf_opts layout mismatch " *
               "($(sizeof(_CComputeSdfOpts)) bytes)")
+    sizeof(_CRemeshOpts) == 120 ||
+        error("meshio++: mio_remesh_opts layout mismatch ($(sizeof(_CRemeshOpts)) bytes)")
+    sizeof(_CRemeshReport) == 72 ||
+        error("meshio++: mio_remesh_report layout mismatch ($(sizeof(_CRemeshReport)) bytes)")
     nothing
 end
 
