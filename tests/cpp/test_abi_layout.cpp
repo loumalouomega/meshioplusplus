@@ -68,6 +68,7 @@
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -170,6 +171,14 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 // aggregate looks free to grow" gap the pipeline/sequence comment above
 // warns about. Closed here rather than after a third field is added to it.
 MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
+
+// RemeshOptions is passed by const-ref through the exported `remesh()`,
+// the same RefineOptions shape -- pinned from the release that first grew
+// it (v10.11.0's mGradation/mPreserveBoundary) rather than left unpinned
+// the way RefineOptions was for over twenty releases. RemeshResult is
+// deliberately NOT pinned, for the same reason as every other *Result
+// struct noted above: it embeds a `Mesh`, whose size is per-backend.
+MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 56, 8);
 
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and

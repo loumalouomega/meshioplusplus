@@ -65,6 +65,7 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 5 | v9.9.0 – v9.19.0 | `MedInfo` gained four members (`mFieldUnits`, `mStepMeta`, `mFieldTimeValues`, `mSkippedConstructs`) for the lenient-read surface |
 | 6 | v9.20.0 – v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`, so the OpenFOAM writer can round-trip a patch's `type` |
 | 7 | v10.1.0 | `RefineOptions` gained `mRecordHierarchy`, the persistent `refine:cell_id`/`refine:parent_id` parent/child hierarchy |
+| 8 | v10.11.0 | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
 
 It reaches consumers three ways:
 
