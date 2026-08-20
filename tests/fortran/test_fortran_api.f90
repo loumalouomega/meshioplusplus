@@ -675,8 +675,8 @@ program test_fortran_api
 
     ! -- remesh: ACVD surface remeshing (a brand-new mesh, no maps) --
     block
-        type(mio_mesh) :: octa, out, out_q, bad
-        integer(int64) :: niter, niso
+        type(mio_mesh) :: octa, out, out_q, out_a, bad
+        integer(int64) :: niter, niso, nnm
         integer :: subapp, st
         real(real64) :: octa_points(3, 6)
         integer(int64) :: octa_conn(3, 8)
@@ -709,12 +709,20 @@ program test_fortran_api
         out_q = octa%remesh(30_int64, metric='quadric', stat=st)
         call check(st == 0, 'remesh accepts the quadric metric')
 
+        ! The anisotropic metric + max_anisotropy go through mio_remesh_ex.
+        out_a = octa%remesh(30_int64, metric='anisotropic', max_anisotropy=3.0_real64, &
+                            num_non_manifold_vertices=nnm, stat=st)
+        call check(st == 0, 'remesh accepts the anisotropic metric')
+        call check(out_a%num_points() > 0_int64, 'anisotropic remesh produced clusters')
+        call check(nnm >= 0_int64, 'remesh reported a non-manifold-vertex count')
+
         ! Too few clusters is rejected by name.
         bad = octa%remesh(3_int64, stat=st)
         call check(st /= 0, 'remesh rejects a too-small cluster count')
 
         call out%free()
         call out_q%free()
+        call out_a%free()
         call octa%free()
     end block
 

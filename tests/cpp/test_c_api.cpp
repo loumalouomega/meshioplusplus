@@ -2511,6 +2511,46 @@ TEST(CApi, RemeshErrorsAreGuardedNotThrown) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RemeshExAcceptsAnisotropicAndReportsCounters) {
+    mio_mesh* m = c_api_octahedron();
+
+    mio_remesh_opts opts;
+    mio_remesh_opts_init(&opts);
+    opts.num_clusters = 30;
+    opts.metric = "anisotropic";
+    opts.max_anisotropy = 3.0;
+    mio_remesh_report report;
+    mio_mesh* out = mio_remesh_ex(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_clusters, 0);
+    EXPECT_EQ(mio_mesh_num_points(out), report.num_clusters);
+    EXPECT_GE(report.num_isolated_clusters, 0);
+    EXPECT_GE(report.num_non_manifold_vertices, 0);
+    mio_mesh_free(out);
+
+    // NULL report is fine.
+    mio_mesh* out2 = mio_remesh_ex(m, &opts, nullptr);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    mio_mesh_free(out2);
+
+    // NULL opts falls back to mio_remesh_opts_init's own defaults, whose
+    // num_clusters == 0 fails validation exactly like the flat mio_remesh's
+    // own "too few clusters" case above.
+    EXPECT_EQ(mio_remesh_ex(m, nullptr, nullptr), nullptr);
+
+    // max_anisotropy away from the default under a non-anisotropic metric
+    // is guarded, not silently ignored, exactly as in the C++ core.
+    mio_remesh_opts bad;
+    mio_remesh_opts_init(&bad);
+    bad.num_clusters = 30;
+    bad.metric = "isotropic";
+    bad.max_anisotropy = 2.0;
+    EXPECT_EQ(mio_remesh_ex(m, &bad, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(m);
+}
+
 TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
     const std::vector<std::int64_t> conn = {0, 1, 2, 3};

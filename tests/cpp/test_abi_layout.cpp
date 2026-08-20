@@ -178,7 +178,7 @@ MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
 // the way RefineOptions was for over twenty releases. RemeshResult is
 // deliberately NOT pinned, for the same reason as every other *Result
 // struct noted above: it embeds a `Mesh`, whose size is per-backend.
-MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 64, 8);
 
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
@@ -187,6 +187,16 @@ static_assert(sizeof(meshioplusplus::CellType) == 2,
               "meshio++ ABI: CellType's underlying type changed width. Appending "
               "enumerators is safe and expected; changing `: std::uint16_t` is a "
               "Tier A break (doc/abi.md).");
+
+// RemeshMetric mirrors the same reasoning as CellType above: appending
+// `Anisotropic` (v10.12.0) is fine and deliberately not caught here; the
+// primary guard lives in remesh.hpp itself (checked by every consumer that
+// compiles it, not just this suite) -- this mirror exists for the same
+// discoverability CellType's own entry has here.
+static_assert(sizeof(meshioplusplus::RemeshMetric) == 1,
+              "meshio++ ABI: RemeshMetric's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

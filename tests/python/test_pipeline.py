@@ -288,6 +288,30 @@ def test_remesh_pipeline_step(tmp_path):
         out_cpp = meshioplusplus.read(settings["Output"]["Path"])
         assert out_cpp.points.shape[0] == 30
 
+    # MaxAnisotropy joins Gradation/PreserveBoundary in the same step key
+    # list -- reachable through the identical dispatch, no new pipeline code.
+    aniso_out_path = tmp_path / "out_aniso.vtu"
+    aniso_settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [
+            {"Op": "Remesh", "NumClusters": 30, "Metric": "anisotropic", "MaxAnisotropy": 3.0}
+        ],
+        "Output": {"Path": str(aniso_out_path)},
+    }
+    aniso_report = meshioplusplus.run_pipeline(aniso_settings)
+    assert aniso_report["steps"][0]["op"] == "Remesh"
+    assert aniso_report["steps"][0]["NumClusters"] == 30
+    aniso_out = meshioplusplus.read(str(aniso_out_path))
+    assert aniso_out.points.shape[0] == 30
+
+    if hasattr(_core, "run_pipeline_json"):
+        aniso_settings["Output"]["Path"] = str(tmp_path / "out_aniso_cpp.vtu")
+        aniso_cpp_report = _core.run_pipeline_json(json.dumps(aniso_settings))
+        assert aniso_cpp_report["steps"][0]["op"] == "Remesh"
+        aniso_out_cpp = meshioplusplus.read(aniso_settings["Output"]["Path"])
+        np.testing.assert_array_equal(aniso_out.points, aniso_out_cpp.points)
+
 
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])

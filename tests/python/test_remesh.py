@@ -207,3 +207,80 @@ def test_no_preserve_boundary_still_runs():
     out = remesh(patch, 80, subdivide=0, preserve_boundary=False)
     assert out.cells[0].type == "triangle"
 
+
+def _cylinder_mesh(n_circ=24, n_axial=48, radius=1.0, height=8.0):
+    theta = 2.0 * np.pi * np.arange(n_circ) / n_circ
+    ring_x, ring_y = radius * np.cos(theta), radius * np.sin(theta)
+    j = np.arange(n_axial + 1)
+    x = np.tile(ring_x, n_axial + 1)
+    y = np.tile(ring_y, n_axial + 1)
+    z = np.repeat(height * j / n_axial, n_circ)
+    pts = np.column_stack([x, y, z])
+
+    def vid(i, jj):
+        return jj * n_circ + (i % n_circ)
+
+    faces = []
+    for jj in range(n_axial):
+        for i in range(n_circ):
+            v0, v1, v2, v3 = vid(i, jj), vid(i + 1, jj), vid(i + 1, jj + 1), vid(i, jj + 1)
+            faces.append([v0, v1, v2])
+            faces.append([v0, v2, v3])
+    return meshioplusplus.Mesh(pts, [("triangle", np.array(faces, dtype=np.int64))])
+
+
+def _axial_over_circumferential_ratio(mesh, radius):
+    pts = mesh.points
+    conn = mesh.cells[0].data
+    sum_axial = sum_arc = 0.0
+    for tri in conn:
+        for k in range(3):
+            a, b = tri[k], tri[(k + 1) % 3]
+            xa, ya, za = pts[a]
+            xb, yb, zb = pts[b]
+            dtheta = np.arctan2(yb, xb) - np.arctan2(ya, xa)
+            dtheta = (dtheta + np.pi) % (2 * np.pi) - np.pi
+            sum_arc += abs(dtheta) * radius
+            sum_axial += abs(za - zb)
+    return sum_axial / sum_arc
+
+
+@needs_core
+def test_anisotropic_metric_elongates_along_the_low_curvature_axis():
+    radius = 1.0
+    cyl = _cylinder_mesh(radius=radius)
+
+    iso = remesh(cyl, 200, subdivide=0, preserve_boundary=False)
+    iso_ratio = _axial_over_circumferential_ratio(iso, radius)
+
+    aniso = remesh(
+        cyl, 200, subdivide=0, preserve_boundary=False, metric="anisotropic", max_anisotropy=8.0
+    )
+    aniso_ratio = _axial_over_circumferential_ratio(aniso, radius)
+
+    assert aniso_ratio > iso_ratio * 1.3, f"{aniso_ratio} vs isotropic {iso_ratio}"
+
+
+@needs_core
+def test_anisotropic_metric_keeps_clusters_on_a_curved_surface():
+    amplitude, sigma = 0.5, 0.3
+    bump = _gaussian_bump(30, 1.0, amplitude, sigma)
+
+    out = remesh(
+        bump, 150, subdivide=0, metric="anisotropic", max_anisotropy=6.0, preserve_boundary=True
+    )
+    x, y, z = out.points[:, 0], out.points[:, 1], out.points[:, 2]
+    target = amplitude * np.exp(-(x * x + y * y) / (sigma * sigma))
+    dev = float(np.max(np.abs(z - target)))
+    assert dev < amplitude * 0.5, f"max vertical deviation from the true bump surface: {dev}"
+
+
+@needs_core
+def test_max_anisotropy_validation():
+    ico = _icosahedron()
+    with pytest.raises(Exception):
+        remesh(ico, 60, metric="anisotropic", max_anisotropy=0.5)
+    with pytest.raises(Exception):
+        remesh(ico, 60, metric="isotropic", max_anisotropy=5.0)
+    # the default is always accepted, regardless of metric
+    remesh(ico, 60, metric="isotropic", max_anisotropy=4.0)

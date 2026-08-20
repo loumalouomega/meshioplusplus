@@ -366,6 +366,7 @@ TEST(Remesh, CarriesFieldDataAndDropsPointData) {
 TEST(Remesh, MetricNameParsingRoundTrips) {
     EXPECT_EQ(remesh_metric_from_name("isotropic"), RemeshMetric::Isotropic);
     EXPECT_EQ(remesh_metric_from_name("quadric"), RemeshMetric::Quadric);
+    EXPECT_EQ(remesh_metric_from_name("anisotropic"), RemeshMetric::Anisotropic);
     EXPECT_THROW(remesh_metric_from_name("bogus"), std::invalid_argument);
 }
 
@@ -447,6 +448,67 @@ Mesh gaussian_bump(int n, double half, double amplitude, double sigma) {
             f.push_back({b, b + n + 2, b + n + 1});
         }
     return mt::make_mesh(p, "triangle", f);
+}
+
+/// An open cylindrical tube (no end caps): curvature is 1/radius around the
+/// circumference and exactly 0 along the axis -- the canonical anisotropic
+/// surface, since a sphere or bump cannot separate "curvature exists" from
+/// "curvature is direction-dependent" the way this can. The two rims are
+/// left as open boundaries; tests using this disable mPreserveBoundary so
+/// boundary pinning cannot be mistaken for the metric's own effect.
+Mesh cylinder_mesh(int n_circ, int n_axial, double radius, double height) {
+    std::vector<std::vector<double>> p;
+    for (int j = 0; j <= n_axial; ++j)
+        for (int i = 0; i < n_circ; ++i) {
+            const double theta = 2.0 * M_PI * i / n_circ;
+            p.push_back(
+                {radius * std::cos(theta), radius * std::sin(theta), height * j / n_axial});
+        }
+    std::vector<std::vector<std::int64_t>> f;
+    auto vid = [&](int i, int j) { return j * n_circ + (i % n_circ); };
+    for (int j = 0; j < n_axial; ++j)
+        for (int i = 0; i < n_circ; ++i) {
+            const std::int64_t v0 = vid(i, j), v1 = vid(i + 1, j), v2 = vid(i + 1, j + 1),
+                               v3 = vid(i, j + 1);
+            f.push_back({v0, v1, v2});
+            f.push_back({v0, v2, v3});
+        }
+    return mt::make_mesh(p, "triangle", f);
+}
+
+/// The mean output-edge axial extent divided by the mean output-edge
+/// circumferential (arc-length) extent, over a mesh produced from
+/// `cylinder_mesh`. Isotropic clustering has no reason to prefer one
+/// direction over the other, so this sits near 1; an anisotropic metric
+/// that correctly reads "curved around, flat along the axis" should raise
+/// it well above 1 -- short edges bridging the curvature, long edges
+/// running along the flat direction.
+double axial_over_circumferential_ratio(const Mesh& rM, double radius) {
+    const NDArray& pts = rM.Points();
+    const NDArray& conn = rM.Cells(0).Conn();
+    double sum_axial = 0.0, sum_arc = 0.0;
+    for (std::size_t c = 0; c < rM.Cells(0).NumCells(); ++c) {
+        const std::int64_t tri[3] = {detail::read_int(conn, c * 3),
+                                     detail::read_int(conn, c * 3 + 1),
+                                     detail::read_int(conn, c * 3 + 2)};
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t a = tri[k], b = tri[(k + 1) % 3];
+            const double xa = detail::read_double(pts, static_cast<std::size_t>(a) * 3);
+            const double ya = detail::read_double(pts, static_cast<std::size_t>(a) * 3 + 1);
+            const double za = detail::read_double(pts, static_cast<std::size_t>(a) * 3 + 2);
+            const double xb = detail::read_double(pts, static_cast<std::size_t>(b) * 3);
+            const double yb = detail::read_double(pts, static_cast<std::size_t>(b) * 3 + 1);
+            const double zb = detail::read_double(pts, static_cast<std::size_t>(b) * 3 + 2);
+            double dtheta = std::atan2(yb, xb) - std::atan2(ya, xa);
+            while (dtheta > M_PI)
+                dtheta -= 2.0 * M_PI;
+            while (dtheta < -M_PI)
+                dtheta += 2.0 * M_PI;
+            sum_arc += std::abs(dtheta) * radius;
+            sum_axial += std::abs(za - zb);
+        }
+    }
+    return sum_axial / sum_arc;
 }
 
 TEST(Remesh, CurvatureGradationConcentratesClustersNearHighCurvature) {
@@ -536,4 +598,156 @@ TEST(Remesh, PreservesBoundaryOfAnOpenPatch) {
         << "boundary polyline length " << total_length << " vs perimeter " << true_perimeter;
     EXPECT_LT(total_length, true_perimeter * 1.5)
         << "boundary polyline length " << total_length << " vs perimeter " << true_perimeter;
+}
+
+TEST(Remesh, AnisotropicMetricElongatesClustersAlongTheLowCurvatureAxis) {
+    const double radius = 1.0, height = 8.0;
+    const Mesh cyl = cylinder_mesh(24, 48, radius, height);
+
+    RemeshOptions iso;
+    iso.mNumClusters = 200;
+    iso.mSubdivide = 0;
+    iso.mPreserveBoundary = false;  // isolate the metric, not boundary pinning
+    const double iso_ratio = axial_over_circumferential_ratio(remesh(cyl, iso).mMesh, radius);
+
+    RemeshOptions aniso = iso;
+    aniso.mMetric = RemeshMetric::Anisotropic;
+    aniso.mMaxAnisotropy = 8.0;
+    const double aniso_ratio = axial_over_circumferential_ratio(remesh(cyl, aniso).mMesh, radius);
+
+    // max_anisotropy == 1.0 clamps the shape tensor to the identity
+    // everywhere (see remesh.hpp), so it should show no meaningful
+    // elongation over plain isotropic clustering -- this isolates "the
+    // metric is doing something" from "the clamp actually clamps".
+    RemeshOptions aniso_clamped = aniso;
+    aniso_clamped.mMaxAnisotropy = 1.0;
+    const double clamped_ratio =
+        axial_over_circumferential_ratio(remesh(cyl, aniso_clamped).mMesh, radius);
+
+    EXPECT_GT(aniso_ratio, iso_ratio * 1.3)
+        << "anisotropic axial/circumferential ratio " << aniso_ratio << " vs isotropic "
+        << iso_ratio;
+    EXPECT_LT(clamped_ratio, iso_ratio * 1.3)
+        << "max_anisotropy=1.0 still elongated: " << clamped_ratio << " vs isotropic "
+        << iso_ratio;
+}
+
+TEST(Remesh, AnisotropicMetricStaysExactlyFlatOnAFlatSurface) {
+    // amplitude 0.0 -> z == 0 identically at every input point, so a
+    // correctly-signed, correctly-indexed curvature tensor must reduce to
+    // the identity everywhere (hi_kappa == 0 unconditionally) and the
+    // z-row of the resulting quadric's linear term must vanish exactly.
+    // NOTE this is a regression guard, not a comprehensive oracle for the
+    // tensor's normal-pinning term specifically: on a flat, fully symmetric
+    // input M == I collapses several distinct bugs (e.g. dropping the
+    // tensor's n*n^T term altogether) onto the SAME z == 0 answer, since
+    // the quadric solve's ill-conditioning fallback also lands on z == 0
+    // here. See AnisotropicMetricKeepsClustersOnACurvedSurface below for the
+    // oracle that actually discriminates the normal-pinning term.
+    const Mesh flat = gaussian_bump(20, 1.0, 0.0, 0.25);
+
+    RemeshOptions o;
+    o.mNumClusters = 60;
+    o.mSubdivide = 0;
+    o.mMetric = RemeshMetric::Anisotropic;
+    const RemeshResult r = remesh(flat, o);
+
+    const NDArray& pts = r.mMesh.Points();
+    for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
+        EXPECT_EQ(detail::read_double(pts, i * 3 + 2), 0.0)
+            << "vertex " << i << " left the z=0 plane under the anisotropic metric";
+}
+
+TEST(Remesh, AnisotropicMetricKeepsClustersOnACurvedSurface) {
+    // The tensor's normal eigenvalue is deliberately pinned to the sharper
+    // in-plane one (see remesh.hpp) specifically so a cluster elongated
+    // in-plane does not also drift off the true surface. A bug dropping
+    // that term (e.g. missing the tensor's n*n^T contribution) degenerates
+    // the per-cluster quadric solve on any near-flat member and falls back
+    // to the plain centroid there -- which is systematically LOWER than the
+    // bump's own local height away from its peak, pulling the output
+    // visibly under the cap.
+    const double amplitude = 0.5, sigma = 0.3;
+    const Mesh bump = gaussian_bump(30, 1.0, amplitude, sigma);
+
+    auto max_vertical_deviation = [](const Mesh& m, double amp, double s) {
+        const NDArray& pts = m.Points();
+        double worst = 0.0;
+        for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+            const double x = detail::read_double(pts, i * 3);
+            const double y = detail::read_double(pts, i * 3 + 1);
+            const double z = detail::read_double(pts, i * 3 + 2);
+            const double target = amp * std::exp(-(x * x + y * y) / (s * s));
+            worst = std::max(worst, std::abs(z - target));
+        }
+        return worst;
+    };
+
+    RemeshOptions o;
+    o.mNumClusters = 150;
+    o.mSubdivide = 0;
+    o.mMetric = RemeshMetric::Anisotropic;
+    o.mMaxAnisotropy = 6.0;
+    const double dev = max_vertical_deviation(remesh(bump, o).mMesh, amplitude, sigma);
+
+    // Bound has real headroom (measured well under this on a correct
+    // implementation) but is tight enough that a broken normal pin, which
+    // pulls whole clusters toward the surrounding near-flat height instead
+    // of the cap's own local height, blows through it -- verified by
+    // sabotage (dropping the tensor's n*n^T term).
+    EXPECT_LT(dev, amplitude * 0.5)
+        << "max vertical deviation from the true bump surface: " << dev;
+}
+
+TEST(Remesh, AnisotropicModeIsDeterministic) {
+    RemeshOptions o;
+    o.mNumClusters = 120;
+    o.mMetric = RemeshMetric::Anisotropic;
+    const RemeshResult a = remesh(icosahedron(), o);
+    const RemeshResult b = remesh(icosahedron(), o);
+
+    ASSERT_EQ(a.mMesh.NumPoints(), b.mMesh.NumPoints());
+    EXPECT_EQ(a.mNumIterations, b.mNumIterations);
+    const NDArray& pa = a.mMesh.Points();
+    const NDArray& pb = b.mMesh.Points();
+    for (std::size_t i = 0; i < a.mMesh.NumPoints() * 3; ++i)
+        EXPECT_EQ(detail::read_double(pa, i), detail::read_double(pb, i))
+            << "coordinate " << i << " differs between two identical runs";
+}
+
+TEST(Remesh, AnisotropicModeProducesAValidWatertightMesh) {
+    RemeshOptions o;
+    o.mNumClusters = 150;
+    o.mMetric = RemeshMetric::Anisotropic;
+    const RemeshResult r = remesh(icosahedron(), o);
+
+    for (const auto& [edge, uses] : edge_uses(r.mMesh))
+        EXPECT_EQ(uses, 2);
+    const std::int64_t v = static_cast<std::int64_t>(r.mMesh.NumPoints());
+    const std::int64_t f = static_cast<std::int64_t>(r.mMesh.Cells(0).NumCells());
+    const std::int64_t e = static_cast<std::int64_t>(edge_uses(r.mMesh).size());
+    EXPECT_EQ(v - e + f, 2);
+}
+
+TEST(Remesh, MaxAnisotropyValidation) {
+    RemeshOptions below_one;
+    below_one.mNumClusters = 60;
+    below_one.mMetric = RemeshMetric::Anisotropic;
+    below_one.mMaxAnisotropy = 0.5;
+    EXPECT_THROW(remesh(icosahedron(), below_one), std::invalid_argument);
+
+    RemeshOptions off_default;
+    off_default.mNumClusters = 60;
+    off_default.mMetric = RemeshMetric::Isotropic;
+    off_default.mMaxAnisotropy = 5.0;
+    EXPECT_THROW(remesh(icosahedron(), off_default), std::invalid_argument);
+
+    RemeshOptions off_default_quadric = off_default;
+    off_default_quadric.mMetric = RemeshMetric::Quadric;
+    EXPECT_THROW(remesh(icosahedron(), off_default_quadric), std::invalid_argument);
+
+    // The default value is always accepted, regardless of metric.
+    RemeshOptions ok = off_default;
+    ok.mMaxAnisotropy = kRemeshDefaultMaxAnisotropy;
+    EXPECT_NO_THROW(remesh(icosahedron(), ok));
 }

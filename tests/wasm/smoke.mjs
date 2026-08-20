@@ -892,6 +892,11 @@ step('remesh: produces the requested cluster count on a closed surface', () => {
     // gradation/preserveBoundary reach the C++ core and are honoured.
     const outG = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'isotropic', 1.5, false);
     assert.equal(outG.numClusters, 40);
+
+    // The anisotropic metric + maxAnisotropy are accepted too.
+    const outA = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'anisotropic', 0.0, true, 3.0);
+    assert.equal(outA.mesh.cells[0].type, 'triangle');
+    assert.ok(outA.numClusters > 0);
 });
 
 step('remesh rejects a volume mesh and a too-small cluster count', () => {
@@ -908,6 +913,14 @@ step('remesh is reachable as a convertSurfaceOps pipeline step', () => {
     assert.equal(out.steps[0].op, 'remesh');
     assert.equal(out.steps[0].numClusters, 30);
     assert.equal(m.readMesh('/remesh.vtp').points.length / 3, 30);
+
+    // MaxAnisotropy joins Gradation/PreserveBoundary in the same step key
+    // list -- reachable through the identical generic dispatch.
+    const outA = m.convertSurfaceOps('/remesh.vtu', '/remesh_aniso.vtp', [
+        { op: 'remesh', numClusters: 30, metric: 'anisotropic', maxAnisotropy: 3.0 },
+    ]);
+    assert.equal(outA.steps[0].op, 'remesh');
+    assert.ok(m.readMesh('/remesh_aniso.vtp').points.length / 3 > 0);
 });
 
 step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
