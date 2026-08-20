@@ -8,6 +8,43 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.12.0 (2026-08-20)
+
+**Roadmap §1 closed** — the anisotropic metric ships, closing the last
+bullet with a clean scope boundary (Volumetric CVD/ODT remains, explicitly
+"not a follow-on task; a project in its own right").
+
+- **`remesh` anisotropic metric** (`metric="anisotropic"`,
+  `RemeshOptions::mMaxAnisotropy` / `max_anisotropy`, default `4.0`, a
+  measured value) — clusters shaped by a local curvature tensor rather than
+  isotropic distance, elongating along low-curvature directions and staying
+  compact across sharp ones. Built on the same per-vertex curvature fit
+  `mGradation` already computes (widened to keep the principal directions
+  instead of collapsing them to a scalar magnitude); packs into the exact
+  10-double accumulator `metric="quadric"` already uses, so it costs the
+  same per-move solve and needed no new per-cluster storage. The two
+  existing `RemeshMetric` branch sites were also converted from implicit
+  `if/quadric-else` pairs to explicit exhaustive `switch`es with no
+  `default:`, so a future metric is a compiler error instead of a silent
+  misclassification.
+- Shipped across every `remesh` binding surface: Python, both CLIs
+  (`--max-anisotropy`), the settings pipeline (`MaxAnisotropy` step
+  param), the MCP tool, and WASM directly against the C++ API; C, Fortran,
+  Julia and R via a new `mio_remesh_ex`/`mio_remesh_opts` growth path (the
+  `mio_refine_ex` precedent), since the flat `mio_remesh` function had no
+  room left to grow a second time. Plain `mio_remesh` is unchanged and now
+  delegates internally.
+- **Breaking (ABI):** `RemeshOptions` gained a member (`mMaxAnisotropy`) and
+  `RemeshMetric` gained an enumerator (`Anisotropic`) — the member is what
+  moves it, a Tier A layout change (an *existing* struct, not a wholly new
+  header) per `doc/abi.md`'s own criterion — so `MESHIOPLUSPLUS_ABI_VERSION`
+  moves 8 → 9 and the installed C++ variants' `SOVERSION` moves with it; the
+  C, Fortran, Julia and R surfaces stay at `SOVERSION 0` (the flat ABI's own
+  append-only-`reserved` contract, via the new `mio_remesh_ex` growth path,
+  is unaffected). See [`doc/abi.md`](doc/abi.md).
+
+See [`doc/remesh.md`](doc/remesh.md).
+
 ## v10.11.0 (2026-08-19)
 
 **Roadmap §1 advanced further** — curvature gradation and boundaries/output
