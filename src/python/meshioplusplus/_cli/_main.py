@@ -29,6 +29,7 @@ from . import (
     _refine,
     _regions,
     _remesh,
+    _remesh_volume,
     _reorder,
     _sdf,
     _slice,
@@ -249,6 +250,13 @@ def main(argv=None):
     )
     _remesh.add_args(parser)
     parser.set_defaults(func=_remesh.remesh_cmd)
+
+    parser = subparsers.add_parser(
+        "remesh-volume",
+        help="Retetrahedralize a volume (or closed surface) by isosurface stuffing",
+    )
+    _remesh_volume.add_args(parser)
+    parser.set_defaults(func=_remesh_volume.remesh_volume_cmd)
 
     parser = subparsers.add_parser(
         "partition",

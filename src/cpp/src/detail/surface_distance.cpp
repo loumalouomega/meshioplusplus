@@ -313,6 +313,75 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     return q;
 }
 
+namespace {
+
+// The bucket-grid nearest-triangle search shared by query_distances and
+// query_closest_points, extracted verbatim from what used to be inline in
+// query_distances (a pure refactor -- query_distances' own test suite is the
+// regression guard that its output is unchanged). @p MaxShell caps expansion,
+// used by query_distances to stop early under a band; a plain search (as
+// query_closest_points needs) passes the int64 max.
+struct SdNearestTriangle {
+    std::int64_t mTri = -1;
+    PointTriangleHit mHit;
+};
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
+    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+
+    double best_d2 = std::numeric_limits<double>::infinity();
+    std::int64_t best_tri = -1;
+    PointTriangleHit best_hit;
+
+    // The largest shell radius that can still reach an occupied bucket. Note
+    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
+    // mean "no more candidates" for a query far outside it -- without this
+    // bound the loop would stop early on exactly those points.
+    std::int64_t reach = 0;
+    if (!rQuery.mGrid.Empty()) {
+        const GridKey lo = rQuery.mGrid.OccupiedLo();
+        const GridKey hi = rQuery.mGrid.OccupiedHi();
+        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
+        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
+        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
+        reach = std::max(dx, std::max(dy, dz));
+    }
+    if (reach > MaxShell)
+        reach = MaxShell;
+
+    for (std::int64_t r = 0; r <= reach; ++r) {
+        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
+        // away, so once that bound exceeds the best found there is nothing
+        // left to find.
+        if (r >= 1 && best_tri >= 0) {
+            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
+            if (bound > 0.0 && bound * bound > best_d2)
+                break;
+        }
+        rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+            for (std::int64_t t : rIds) {
+                const std::size_t ti = static_cast<std::size_t>(t);
+                const PointTriangleHit hit = closest_point_on_triangle(
+                    rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
+                    rSoup.mCorners[ti * 3 + 2]);
+                // The total order that makes the accelerator unobservable:
+                // distance first, then the triangle id, so two equidistant
+                // triangles always resolve the same way regardless of which
+                // bucket happened to be visited first.
+                if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
+                    best_d2 = hit.mDistanceSq;
+                    best_tri = t;
+                    best_hit = hit;
+                }
+            }
+        });
+    }
+    return {best_tri, best_hit};
+}
+
+}  // namespace
+
 std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
                                          const std::vector<Vec3>& rPoints,
                                          const SurfaceDistanceOptions& rOptions) {
@@ -341,55 +410,10 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const GridKey centre = rQuery.mGrid.KeyOf(query.data());
-
-        double best_d2 = std::numeric_limits<double>::infinity();
-        std::int64_t best_tri = -1;
-        PointTriangleHit best_hit;
-
-        // The largest shell radius that can still reach an occupied bucket. Note
-        // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-        // mean "no more candidates" for a query far outside it -- without this
-        // bound the loop would stop early on exactly those points.
-        std::int64_t reach = 0;
-        if (!rQuery.mGrid.Empty()) {
-            const GridKey lo = rQuery.mGrid.OccupiedLo();
-            const GridKey hi = rQuery.mGrid.OccupiedHi();
-            const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-            const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-            const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-            reach = std::max(dx, std::max(dy, dz));
-        }
-        if (reach > max_shell)
-            reach = max_shell;
-
-        for (std::int64_t r = 0; r <= reach; ++r) {
-            // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-            // away, so once that bound exceeds the best found there is nothing
-            // left to find.
-            if (r >= 1 && best_tri >= 0) {
-                const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-                if (bound > 0.0 && bound * bound > best_d2)
-                    break;
-            }
-            rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
-                for (std::int64_t t : rIds) {
-                    const std::size_t ti = static_cast<std::size_t>(t);
-                    const PointTriangleHit hit = closest_point_on_triangle(
-                        query, soup.mCorners[ti * 3 + 0], soup.mCorners[ti * 3 + 1],
-                        soup.mCorners[ti * 3 + 2]);
-                    // The total order that makes the accelerator unobservable:
-                    // distance first, then the triangle id, so two equidistant
-                    // triangles always resolve the same way regardless of which
-                    // bucket happened to be visited first.
-                    if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
-                        best_d2 = hit.mDistanceSq;
-                        best_tri = t;
-                        best_hit = hit;
-                    }
-                }
-            });
-        }
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const std::int64_t best_tri = found.mTri;
+        const PointTriangleHit& best_hit = found.mHit;
+        const double best_d2 = best_hit.mDistanceSq;
 
         DistanceHit& res = out[p];
         if (best_tri < 0) {
@@ -470,6 +494,29 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         }
         const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
         res.mSignedDistance = side < 0.0 ? -dist : dist;
+    });
+
+    return out;
+}
+
+std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
+                                                   const std::vector<Vec3>& rPoints) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<ClosestPointHit> out(n);
+
+    parallel_for(n, [&](std::size_t p) {
+        const SdNearestTriangle found = sd_nearest_triangle(
+            rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+        ClosestPointHit& res = out[p];
+        if (found.mTri < 0) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
     return out;

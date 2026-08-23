@@ -1049,6 +1049,47 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def remesh_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.1,
+        max_cells: int = 20000000,
+        max_tets: int = 20000000,
+        warp_fraction: float = 0.35,
+        watertight_check: str = "warn",
+    ) -> dict:
+        """Retetrahedralize a volume mesh (or closed surface) at a chosen
+        resolution by isosurface stuffing -- the volumetric sibling of remesh.
+        Give exactly one of resolution (nx, ny, nz) or cell_size. Like remesh,
+        the output has NO correspondence to the input -- point_data/cell_data/
+        named regions are dropped, field_data is carried. warp_fraction (0-1,
+        default 0.35) trades boundary tet quality for a small, measured chance
+        of non-manifold boundary edges (reported as num_non_manifold_edges);
+        0 gives an exactly watertight but lower-quality boundary."""
+        return _guard(
+            _tools.tool_remesh_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            max_cells=max_cells,
+            max_tets=max_tets,
+            warp_fraction=warp_fraction,
+            watertight_check=watertight_check,
+        )
+
+    @server.tool()
     def smooth(
         input_path: str,
         output_path: str,
@@ -1063,9 +1104,11 @@ def _register_operations(server: FastMCP) -> None:
         feature_angle: float = 30.0,
         guard_inversion: bool = True,
     ) -> dict:
-        """Smooth point coordinates (taubin, the feature-preserving default, or
-        laplacian). Pure coordinate move; boundary and feature nodes pinned by
-        default. lambda_factor < 0 means the method's own default."""
+        """Smooth point coordinates (taubin, the feature-preserving default;
+        laplacian; or odt, optimal-Delaunay-triangulation smoothing, tet-only
+        and C++-core-only with no pure-Python fallback). Pure coordinate move;
+        boundary and feature nodes pinned by default. lambda_factor < 0 means
+        the method's own default."""
         return _guard(
             _tools.tool_smooth,
             input_path=input_path,

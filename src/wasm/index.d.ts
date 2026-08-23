@@ -444,8 +444,11 @@ export type MergeDataPolicy = 'intersection' | 'fill';
 /** Element-representation conversion performed by `convertCells`. */
 export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
-/** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
-export type SmoothMethod = 'laplacian' | 'taubin';
+/** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free.
+ *  `'odt'` (optimal-Delaunay-triangulation smoothing) is tet-only and
+ *  moves each free interior vertex toward the volume-weighted average of
+ *  its incident tets' circumcenters. See doc/smooth.md. */
+export type SmoothMethod = 'laplacian' | 'taubin' | 'odt';
 
 /**
  * How `refine` resolves the hanging nodes a partial refinement leaves behind.
@@ -1450,6 +1453,49 @@ export interface MeshioPlusPlusModule {
     subdivideApplied: number;
     numIsolatedClusters: number;
     numNonManifoldVertices: number;
+  };
+
+  /**
+   * Retetrahedralize a volume mesh (or a closed surface) at a caller-chosen
+   * resolution by isosurface stuffing — the volumetric sibling of `remesh`.
+   * Unlike `remesh`, this accepts a VOLUME mesh directly (its boundary is
+   * extracted internally) as well as a closed surface. Same
+   * no-correspondence-with-the-input output contract as `remesh`: new
+   * points, new connectivity, `point_data`/`cell_data`/named regions
+   * dropped, `field_data` carried.
+   *
+   * Exactly one of `resolution`/`cellSize` must be given, sizing a body-
+   * centered cubic (BCC) lattice whose uncut tets have dihedral angles from
+   * a fixed, mesh-size-independent set. `warpFraction` (default `0.35`)
+   * moves lattice vertices near the surface onto it, trading a small,
+   * measured chance of non-manifold boundary edges (reported as
+   * `numNonManifoldEdges`) for substantially better boundary tet quality;
+   * `0` disables warping and gives an exactly watertight but lower-quality
+   * boundary. See doc/remesh_volume.md for the measured tradeoff.
+   * @throws {Error} when neither or both of `resolution`/`cellSize` are
+   *   set, on a non-positive resolution/cell size, on a negative
+   *   `warpFraction`, when the root lattice would exceed `maxCells`, when
+   *   the cut output would exceed `maxTets`, and on any input the boundary
+   *   extraction itself refuses.
+   */
+  remeshVolume(
+    mesh: Mesh,
+    resolution?: number[] | null,
+    cellSize?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    maxCells?: number,
+    maxTets?: number,
+    warpFraction?: number,
+    sign?: SdfSign,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    numTets: number;
+    numVerticesWarped: number;
+    numTetsRejected: number;
+    numNonManifoldEdges: number;
   };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */

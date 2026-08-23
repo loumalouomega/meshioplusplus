@@ -59,6 +59,7 @@
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
  *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
  *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
+ *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
  *
  * ### This is the ONE place the number is written
  *
@@ -77,4 +78,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 9
+#define MESHIOPLUSPLUS_ABI_VERSION 10

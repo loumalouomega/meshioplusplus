@@ -77,6 +77,7 @@
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
  *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
  *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
+ *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
  *
  * ### This is the ONE place the number is written
  *
@@ -95,7 +96,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 9
+#define MESHIOPLUSPLUS_ABI_VERSION 10
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -10218,6 +10219,46 @@ MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
     const SurfaceDistanceOptions& rOptions);
 
+/// What `query_closest_points` resolved a single query point to. A new,
+/// additive type (Tier C) rather than a field added to `DistanceHit` -- see
+/// that function's own doc comment for why.
+struct ClosestPointHit {
+    Vec3 mPoint{0.0, 0.0, 0.0};     ///< The nearest point on the soup.
+    double mDistance = 0.0;         ///< Its distance from the query (unsigned).
+    std::int64_t mSourceCell = -1;  ///< The input cell it came from, or -1 (empty soup only).
+    bool mFound = false;            ///< False only when the soup has no triangles at all.
+};
+
+/**
+ * @brief The actual nearest POINT on the soup to each of @p rPoints, not just
+ * its distance.
+ *
+ * `query_distances`'s own `PointTriangleHit` already computes this internally
+ * (`best_hit.mPoint`) and then discards it, keeping only the distance and the
+ * sign -- which is all `sample_distance`/`distance_to_surface` ever needed.
+ * `remesh_volume`'s warp step is the first caller that needs the point itself
+ * (to move a lattice vertex onto the surface, not merely learn how far it
+ * is), hence this sibling function rather than growing `DistanceHit`, whose
+ * layout is an ABI boundary (`doc/abi.md`) this header already participates
+ * in. Both functions share the identical bucket-grid nearest-triangle search
+ * (`sd_nearest_triangle`, private to `surface_distance.cpp`) so they cannot
+ * disagree about which triangle is nearest.
+ *
+ * No banding and no sign here -- a warp threshold is the caller's own
+ * decision (`remesh_volume.cpp`'s own threshold, compared against
+ * `mDistance` after the fact), and a warp target has no notion of inside or
+ * outside to report.
+ *
+ * @param rQuery the accelerator built by `build_distance_query`.
+ * @param rPoints the query points.
+ * @return one hit per query point, `mFound == false` only when the soup this
+ *         query was built from has no triangles (impossible in practice,
+ *         since `build_distance_query` itself refuses an empty soup, but the
+ *         field exists so a caller need not assume).
+ */
+MESHIOPLUSPLUS_API std::vector<ClosestPointHit> query_closest_points(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
@@ -19721,6 +19762,244 @@ MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/remesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
+/**
+ * @file remesh_volume.hpp
+ * @brief Retetrahedralize a volume (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing: a body-centered cubic (BCC) lattice,
+ * warped onto the surface, then cut.
+ *
+ * The volumetric sibling of `remesh` -- the same relationship `decimate_volume`
+ * has to `decimate`, and the roadmap's own framing of this bullet. Nothing
+ * else in this repo can *raise* the quality of a tetrahedral mesh at a chosen
+ * target resolution: `refine` subdivides the input's own (possibly bad) cells,
+ * `decimate_volume` can only remove elements, `smooth` (see
+ * `SmoothMethod::Odt`) only moves points. `remesh_volume` instead discards the
+ * input's own tetrahedra entirely and generates a fresh lattice-based mesh,
+ * so output element quality is a property of the lattice construction, not of
+ * the input.
+ *
+ * ### Why a lattice rather than Delaunay/CVD/ODT remeshing
+ *
+ * The roadmap bullet this closes names "optimal Delaunay triangulation / CVD
+ * in 3D" -- the literal 3D counterpart of `remesh.hpp`'s own surface
+ * clustering. That method needs robust orientation/in-sphere predicates,
+ * which is exactly where this project's dependency-free posture stops paying
+ * (the same trade `doc/roadmap.md`'s Delaunay-meshing bullet already
+ * records): the permissive candidates are large new dependencies (Geogram),
+ * and the smaller ones (TetGen, CGAL's `Mesh_3`) are AGPL/GPL, a poor fit for
+ * an MIT project even as an optional dependency. Isosurface stuffing needs no
+ * predicate at all -- only a signed-distance field, which this repo already
+ * has (`sample_distance`/`distance_to_surface`, `operations/sdf.hpp`) -- and
+ * gives every uncut lattice tet a dihedral angle from a small FIXED set
+ * (below) rather than an unbounded, mesh-dependent one, so it closes the
+ * bullet's *capability* (retetrahedralize at a chosen resolution with good
+ * element quality) even though it is not the named method.
+ * `SmoothMethod::Odt` (`operations/smooth.hpp`) closes the "ODT" half of the
+ * bullet's name honestly and separately: ODT *smoothing* on an existing tet
+ * mesh's fixed connectivity, not ODT *remeshing*.
+ *
+ * ### The algorithm
+ *
+ * 1. **Lattice.** A body-centered cubic lattice -- two interleaved simple
+ *    cubic lattices, the second offset by half a cell on every axis -- is
+ *    generated over the (padded) bounding box, sized exactly like
+ *    `SdfOptions`' own `mResolution`/`mCellSize`/`mBounds`/`mPadding`/
+ *    `mPaddingRelative` vocabulary (reused verbatim, not reinvented, since
+ *    `remesh_volume` is a lattice generator exactly as `compute_sdf` is);
+ *    `mResolution` is validated to resolve to genuinely CUBIC cells (a
+ *    non-cube bounding box combined with a per-axis resolution can otherwise
+ *    resolve to a rectangular lattice, which the construction below assumes
+ *    away) -- named by error, never silently distorted.
+ *
+ *    Its natural tetrahedralization -- 12 congruent tets per cell, each
+ *    cell's body-center connected across one fixed diagonal of each of the
+ *    cell's 6 faces -- gives every UNCUT tet dihedral angles from the fixed
+ *    set {45, 60, 90, 120} degrees, independent of cell size (every cell is a
+ *    translate of the same unit construction). This is this project's OWN
+ *    derivation, not a transcription of Labelle & Shewchuk's own
+ *    tetrahedralization (which is not read): the paper reports a tighter
+ *    {60, 90, 120} set for its own construction, and this one is a
+ *    deliberately simpler, independently-verified alternative that still
+ *    delivers a small, mesh-size-independent bound rather than an unbounded
+ *    one -- honestly reported as what it is, not as a reproduction of the
+ *    paper's exact angles. The 12-tet table is DERIVED and algebraically
+ *    pinned in `remesh_volume.cpp` (tiling with no gap or overlap,
+ *    orientation, volume-sum, and the dihedral set itself), never
+ *    transcribed from anywhere.
+ * 2. **Classify.** Every lattice vertex gets a signed distance to the surface
+ *    (`sample_distance`'s own machinery) and an inside/outside LABEL from
+ *    that sign, fixed for the rest of the algorithm.
+ * 3. **Warp.** A lattice vertex within `mWarpFraction * h` of the surface
+ *    (`h` the lattice's own cell size -- every incident edge's length is a
+ *    fixed multiple of `h` regardless of vertex type, so one uniform
+ *    threshold covers both the A and B sublattices) is moved (its LABEL is
+ *    unchanged) onto the nearest point on the surface -- this is what
+ *    removes the slivers a naive cut would otherwise produce near the
+ *    boundary. Warping is load-bearing,
+ *    not an optimization: disabling it (`mWarpFraction = 0`) still produces a
+ *    watertight, correctly-oriented mesh, but with arbitrarily bad dihedral
+ *    angles on boundary-adjacent tets -- plain marching tetrahedra's usual
+ *    failure mode.
+ * 4. **Cut.** A tet whose 4 vertices share one label is kept whole (using
+ *    each vertex's current, possibly-warped position) or discarded. A
+ *    straddling tet is cut by the same sign-mask case table marching
+ *    tetrahedra uses (`detail/marching.hpp`'s sibling for VOLUME rather than
+ *    surface output): each crossing edge gets one cut point, reusing an
+ *    incident vertex's warped position when one of the edge's two endpoints
+ *    was warped (which is the common case near a well-resolved surface,
+ *    and is what carries the quality benefit of warping into the cut
+ *    region), falling back to a fresh linear-interpolation point along the
+ *    edge otherwise (`detail/marching.hpp`'s own convention) -- so a cut
+ *    tet's boundary is always an honest approximation of the true crossing,
+ *    never expanded by a warp that moved a vertex further than its own edge.
+ *    This is a considered simplification of the paper's own two-threshold,
+ *    priority-ordered warp/cut interaction (see doc/remesh_volume.md), kept
+ *    honestly distinct from a claim of literal fidelity to it; the achieved
+ *    dihedral-angle improvement over an unwarped cut is MEASURED, not merely
+ *    asserted from the paper, exactly as `RemeshOptions::mMaxAnisotropy`'s own
+ *    default was. Reusing a warped vertex's position for every cut edge it
+ *    touches is also what can leave a SMALL number of the output's own
+ *    boundary edges non-manifold on some inputs, at `mWarpFraction > 0` only
+ *    -- reported as `RemeshVolumeResult::mNumNonManifoldEdges` rather than
+ *    hidden, and always exactly 0 at `mWarpFraction = 0` (a plain cut has no
+ *    such reuse to create the defect). See that field's own doc comment and
+ *    doc/remesh_volume.md for the measured magnitude.
+ *
+ * Determinism follows the repo's standard phase split: signed distances and
+ * warps are computed in parallel into disjoint per-vertex slots; cut points
+ * are deduplicated by a SERIAL, ascending-edge-key pass (the
+ * `refine.cpp`/`surface.cpp` idiom), so two lattice tets sharing a face agree
+ * bit-for-bit on that face's cut points and the output is watertight by
+ * construction, not by luck.
+ *
+ * ### What does NOT survive
+ *
+ * Identical to `remesh`: the output has entirely new points and new
+ * connectivity, so there is no point or cell map, and `point_data`/
+ * `cell_data`/regions are dropped (`warn_regions_dropped`, never silent);
+ * `field_data` carries through. Compose with `interpolate`/
+ * `conservative_interpolate` to transfer a field onto the result.
+ *
+ * ### Scope
+ *
+ * Accepts a volume mesh (its boundary is extracted internally via
+ * `extract_surface`, which is closed by construction) OR a closed surface
+ * directly (triangle/quad/rectangular-polygon, exactly `build_triangle_soup`'s
+ * own scope) -- unlike plain `remesh`, which only ever works on a surface and
+ * throws on a volume input. The BOUNDARY of the result is therefore only ever
+ * as good as the lattice resolution and the warp step can make it; a caller
+ * wanting a genuinely high-quality boundary composes with `extract_surface`
+ * + `remesh` on the result rather than expecting this operation to build one
+ * in.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format -- it is deliberately not
+ * in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `remesh_volume`. Mirrors `SdfOptions`' lattice-sizing
+/// vocabulary field-for-field (this operation, like `compute_sdf`, is a
+/// lattice generator) but never embeds `SdfOptions` itself: `SdfOptions`
+/// carries octree-specific fields (`mRootResolution`, `mMaxDepth`,
+/// `mBandCells`, `mRecordLevels`) this operation has no use for -- there is
+/// no adaptive refinement here, only one fixed-resolution BCC lattice.
+struct RemeshVolumeOptions {
+    /// Cell counts per axis of the ROOT (pre-cut) BCC lattice; unset derives
+    /// them from `mCellSize`. Exactly one of `mResolution`/`mCellSize` must be
+    /// set, `SdfOptions`' own rule.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cubic cell size of the root lattice; unset derives it from `mResolution`.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the surface's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box
+    /// diagonal. A lattice that stops exactly at the surface leaves nowhere
+    /// for a fully-outside cell to exist, hence the non-zero default -- the
+    /// same reasoning `SdfOptions::mPaddingRelative` states.
+    double mPaddingRelative = 0.1;
+    /// Refuse to generate a root lattice with more cells than this, naming
+    /// the option -- checked BEFORE any lattice is built, `SdfOptions::mMaxCells`'s
+    /// own contract.
+    std::int64_t mMaxCells = 20000000;
+    /// Refuse an output with more tets than this, naming the option --
+    /// checked AFTER cutting, since the true output count (unlike the root
+    /// lattice's) depends on how much of the lattice the surface excludes and
+    /// cannot be bounded in advance without doing the work.
+    std::int64_t mMaxTets = 20000000;
+
+    /// Fraction of a lattice vertex's own shortest incident edge length within
+    /// which it may be warped onto the surface. `0` disables warping entirely
+    /// (a plain, unwarped marching-tetrahedra cut of the BCC lattice --
+    /// watertight and correctly oriented, but with arbitrarily bad boundary
+    /// dihedral angles); see `doc/remesh_volume.md` for the measured
+    /// sweep this default was chosen from.
+    double mWarpFraction = 0.35;
+
+    /// Sign, region restriction and watertight-check policy for every surface
+    /// query this operation makes. Embedded by value on purpose, and the
+    /// reason this whole header ships complete: growing
+    /// `SurfaceDistanceOptions` later would move everything after it here
+    /// (`SdfOptions::mDistance`'s own documented ABI caveat).
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `remesh_volume`: the generated tet mesh and what was found.
+struct RemeshVolumeResult {
+    Mesh mMesh;                ///< The output mesh, a single `tetra` block.
+    SurfaceQuality mQuality;   ///< The surface verdict (see `surface_watertight_check`).
+    std::int64_t mNumTets = 0;         ///< Tets emitted.
+    std::int64_t mNumVerticesWarped = 0;  ///< Lattice vertices moved onto the surface.
+    std::int64_t mNumTetsRejected = 0;    ///< Cut sub-tets discarded as degenerate.
+    /// Non-manifold edges of the OUTPUT tet mesh's own boundary (via
+    /// `extract_surface` + `surface_watertight_check` on `mMesh` itself, not
+    /// the input surface `mQuality` reports on). `mWarpFraction = 0` gives a
+    /// mathematically watertight cut and this is always 0 there -- pinned by
+    /// `AWarplessCutIsExactlyWatertight`. A nonzero `mWarpFraction` reuses a
+    /// warped lattice vertex's position for every cut edge it touches
+    /// (`rvol_cut_tet`'s doc comment), and on some inputs this can leave a
+    /// small number of coincident-but-topologically-distinct boundary edges
+    /// near the warped region -- MEASURED here rather than silently accepted:
+    /// `doc/remesh_volume.md` records the swept magnitude (small and bounded
+    /// relative to the output's own boundary edge count on every fixture
+    /// tried) and a caller needing an exactly watertight result should check
+    /// this counter, or fall back to `mWarpFraction = 0` / post-process with
+    /// `clean(weld=true)`.
+    std::int64_t mNumNonManifoldEdges = 0;
+};
+
+/**
+ * @brief Retetrahedralize @p rMesh at a caller-chosen resolution by isosurface
+ *        stuffing.
+ * @param rMesh a volume mesh (its boundary is extracted via `extract_surface`)
+ *        or a closed surface (`build_triangle_soup`'s own scope: triangle,
+ *        quad, rectangular polygon).
+ * @param rOptions the lattice to generate, the warp fraction, and the surface
+ *        query policy.
+ * @return the output tet mesh plus the surface verdict and counters.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution/cell size, on a
+ *         negative `mWarpFraction`, when the root lattice would exceed
+ *         `mMaxCells`, when the cut output would exceed `mMaxTets`, and on
+ *         any input `build_triangle_soup`/`extract_surface` itself refuses
+ *         (a higher-order or ragged surface block, an empty surface).
+ */
+MESHIOPLUSPLUS_API RemeshVolumeResult remesh_volume(const Mesh& rMesh,
+                                                    const RemeshVolumeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/reorder.hpp =====
 /**
  * @file operations/reorder.hpp
@@ -20479,15 +20758,35 @@ MESHIOPLUSPLUS_API Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = 
 namespace meshioplusplus {
 
 /// Which smoothing operator to apply.
-enum class SmoothMethod {
+///
+/// Fixed `: std::uint8_t` underlying type (the `RemeshMetric`/`CellType`
+/// precedent) so a width change is a mechanical ABI check, not a silent
+/// layout shift; every dispatch site in `smooth.cpp` is an exhaustive
+/// `switch (SmoothMethod)` with **no `default:`**, so `-Wswitch` catches the
+/// next enumerator at compile time rather than a reader having to -- the
+/// hazard `remesh.cpp`'s own metric branches were converted away from.
+enum class SmoothMethod : std::uint8_t {
     Laplacian,  ///< `x <- x + lambda * L(x)`. Simple and strong; shrinks volume.
     Taubin,     ///< A `+lambda` then `-mu` pass pair per iteration. Shrink-free.
+    /// Optimal Delaunay Triangulation: each free interior vertex moves to the
+    /// volume-weighted circumcenter combination that minimises the local ODT
+    /// energy (Alliez et al. 2005; Chen & Xu) -- **tet-only**, throwing by
+    /// name on any other cell type, unlike `Laplacian`/`Taubin` which work on
+    /// any mesh. `mMu` is silently ignored, matching `Laplacian`.
+    Odt,
 };
+
+/// `sizeof(SmoothMethod)` mirror of the primary guard in `test_abi_layout.cpp`
+/// -- the `RemeshMetric` precedent, so a width change is caught here too.
+static_assert(sizeof(SmoothMethod) == 1,
+              "meshio++ ABI: SmoothMethod's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 /**
  * @brief Parses a smoothing method name.
- * @param rName One of `"laplacian"`, `"taubin"` (case-sensitive, as elsewhere
- *        in the operations layer).
+ * @param rName One of `"laplacian"`, `"taubin"`, `"odt"` (case-sensitive, as
+ *        elsewhere in the operations layer).
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
@@ -20499,19 +20798,28 @@ struct SmoothOptions {
     SmoothMethod mMethod = SmoothMethod::Taubin;
 
     /// How many iterations to run. For `Taubin` one iteration is **two** passes
-    /// (`+mLambda` then `mMu`). Zero or less returns an unchanged clone.
+    /// (`+mLambda` then `mMu`); for `Laplacian`/`Odt` one iteration is one pass.
+    /// Zero or less returns an unchanged clone.
     int mIterations = 10;
 
     /// Relaxation factor of the smoothing pass, which must lie in `(0, 1)`.
     /// **Negative means "this method's own default"**: `0.5` for `Laplacian`,
-    /// `0.33` for `Taubin`. The sensible default genuinely differs between the
-    /// two methods, and a factor of zero or less is never a meaningful request,
-    /// so a negative sentinel is total; two separate fields would instead let a
-    /// caller set the one the chosen method ignores.
+    /// `0.33` for `Taubin`, `0.9` for `Odt` (a near-full step toward the local
+    /// ODT energy minimiser -- damped rather than exactly `1.0` so an
+    /// overshoot past a concave boundary is a rejected inversion-guard move
+    /// rather than a hard failure). The sensible default genuinely differs
+    /// per method, and a factor of zero or less is never a meaningful
+    /// request, so a negative sentinel is total; separate fields would
+    /// instead let a caller set the ones the chosen method ignores.
     double mLambda = -1.0;
 
     /// `Taubin` only: the un-shrinking factor, which must satisfy
-    /// `mMu < -mLambda < 0`. Ignored by `Laplacian`.
+    /// `mMu < -mLambda < 0`. Silently ignored by `Laplacian` **and** `Odt` --
+    /// deliberately not a named-error option like `RemeshOptions::mMaxAnisotropy`,
+    /// since making only the newest method strict about an ignored field
+    /// while its sibling stays silent would be a worse inconsistency than
+    /// either rule applied uniformly, and changing `Laplacian`'s established
+    /// behaviour here would be breaking.
     double mMu = -0.34;
 
     /// Pin every node lying on a boundary facet. Almost always what you want:
@@ -21962,7 +22270,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 12
+#define MESHIOPLUSPLUS_VERSION_MINOR 13
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -21972,7 +22280,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.12.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.13.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -41775,6 +42083,75 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     return q;
 }
 
+namespace {
+
+// The bucket-grid nearest-triangle search shared by query_distances and
+// query_closest_points, extracted verbatim from what used to be inline in
+// query_distances (a pure refactor -- query_distances' own test suite is the
+// regression guard that its output is unchanged). @p MaxShell caps expansion,
+// used by query_distances to stop early under a band; a plain search (as
+// query_closest_points needs) passes the int64 max.
+struct SdNearestTriangle {
+    std::int64_t mTri = -1;
+    PointTriangleHit mHit;
+};
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
+    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+
+    double best_d2 = std::numeric_limits<double>::infinity();
+    std::int64_t best_tri = -1;
+    PointTriangleHit best_hit;
+
+    // The largest shell radius that can still reach an occupied bucket. Note
+    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
+    // mean "no more candidates" for a query far outside it -- without this
+    // bound the loop would stop early on exactly those points.
+    std::int64_t reach = 0;
+    if (!rQuery.mGrid.Empty()) {
+        const GridKey lo = rQuery.mGrid.OccupiedLo();
+        const GridKey hi = rQuery.mGrid.OccupiedHi();
+        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
+        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
+        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
+        reach = std::max(dx, std::max(dy, dz));
+    }
+    if (reach > MaxShell)
+        reach = MaxShell;
+
+    for (std::int64_t r = 0; r <= reach; ++r) {
+        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
+        // away, so once that bound exceeds the best found there is nothing
+        // left to find.
+        if (r >= 1 && best_tri >= 0) {
+            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
+            if (bound > 0.0 && bound * bound > best_d2)
+                break;
+        }
+        rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+            for (std::int64_t t : rIds) {
+                const std::size_t ti = static_cast<std::size_t>(t);
+                const PointTriangleHit hit = closest_point_on_triangle(
+                    rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
+                    rSoup.mCorners[ti * 3 + 2]);
+                // The total order that makes the accelerator unobservable:
+                // distance first, then the triangle id, so two equidistant
+                // triangles always resolve the same way regardless of which
+                // bucket happened to be visited first.
+                if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
+                    best_d2 = hit.mDistanceSq;
+                    best_tri = t;
+                    best_hit = hit;
+                }
+            }
+        });
+    }
+    return {best_tri, best_hit};
+}
+
+}  // namespace
+
 std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
                                          const std::vector<Vec3>& rPoints,
                                          const SurfaceDistanceOptions& rOptions) {
@@ -41803,55 +42180,10 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const GridKey centre = rQuery.mGrid.KeyOf(query.data());
-
-        double best_d2 = std::numeric_limits<double>::infinity();
-        std::int64_t best_tri = -1;
-        PointTriangleHit best_hit;
-
-        // The largest shell radius that can still reach an occupied bucket. Note
-        // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-        // mean "no more candidates" for a query far outside it -- without this
-        // bound the loop would stop early on exactly those points.
-        std::int64_t reach = 0;
-        if (!rQuery.mGrid.Empty()) {
-            const GridKey lo = rQuery.mGrid.OccupiedLo();
-            const GridKey hi = rQuery.mGrid.OccupiedHi();
-            const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-            const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-            const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-            reach = std::max(dx, std::max(dy, dz));
-        }
-        if (reach > max_shell)
-            reach = max_shell;
-
-        for (std::int64_t r = 0; r <= reach; ++r) {
-            // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-            // away, so once that bound exceeds the best found there is nothing
-            // left to find.
-            if (r >= 1 && best_tri >= 0) {
-                const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-                if (bound > 0.0 && bound * bound > best_d2)
-                    break;
-            }
-            rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
-                for (std::int64_t t : rIds) {
-                    const std::size_t ti = static_cast<std::size_t>(t);
-                    const PointTriangleHit hit = closest_point_on_triangle(
-                        query, soup.mCorners[ti * 3 + 0], soup.mCorners[ti * 3 + 1],
-                        soup.mCorners[ti * 3 + 2]);
-                    // The total order that makes the accelerator unobservable:
-                    // distance first, then the triangle id, so two equidistant
-                    // triangles always resolve the same way regardless of which
-                    // bucket happened to be visited first.
-                    if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
-                        best_d2 = hit.mDistanceSq;
-                        best_tri = t;
-                        best_hit = hit;
-                    }
-                }
-            });
-        }
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const std::int64_t best_tri = found.mTri;
+        const PointTriangleHit& best_hit = found.mHit;
+        const double best_d2 = best_hit.mDistanceSq;
 
         DistanceHit& res = out[p];
         if (best_tri < 0) {
@@ -41932,6 +42264,29 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         }
         const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
         res.mSignedDistance = side < 0.0 ? -dist : dist;
+    });
+
+    return out;
+}
+
+std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
+                                                   const std::vector<Vec3>& rPoints) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<ClosestPointHit> out(n);
+
+    parallel_for(n, [&](std::size_t p) {
+        const SdNearestTriangle found = sd_nearest_triangle(
+            rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+        ClosestPointHit& res = out[p];
+        if (found.mTri < 0) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
     return out;
@@ -78158,6 +78513,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
+        {"RemeshVolume",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
+          "WarpFraction", "Sign", "WatertightCheck"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -78588,6 +78946,40 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 " non-manifold vertex/vertices could not be repaired; output may be "
                 "non-manifold near them");
         return std::move(rr.mMesh);
+    }
+    if (op == "RemeshVolume") {
+        // Remesh's volumetric sibling: same no-correspondence-with-the-input
+        // contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        RemeshVolumeOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 20000000.0));
+        opts.mWarpFraction = pipe_number(rStep, "WarpFraction", 0.35);
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mWatertightCheck =
+            sdf_watertight_check_from_name(pipe_text(rStep, "WatertightCheck", "warn"));
+        RemeshVolumeResult rv = remesh_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTets", static_cast<double>(rv.mNumTets)},
+                        {"NumVerticesWarped", static_cast<double>(rv.mNumVerticesWarped)},
+                        {"NumTetsRejected", static_cast<double>(rv.mNumTetsRejected)},
+                        {"NumNonManifoldEdges", static_cast<double>(rv.mNumNonManifoldEdges)}});
+        if (rv.mNumNonManifoldEdges > 0)
+            rReport.mWarnings.push_back(
+                "remesh_volume: " + std::to_string(rv.mNumNonManifoldEdges) +
+                " non-manifold boundary edge(s), from warping (see doc/remesh_volume.md)");
+        return std::move(rv.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does
@@ -82899,6 +83291,702 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/remesh.cpp =====
+// ===== begin src/cpp/src/operations/remesh_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kRvolPrefix = "meshio++: remesh_volume: ";
+
+// --- exact-position weld key -------------------------------------------------
+//
+// Multiple crossing edges incident to the SAME warped lattice vertex each get
+// their OWN fresh point (Resolve()'s own design, see its doc comment) that
+// nonetheless lands at the IDENTICAL warped-target position -- confirmed by
+// RemeshVolume.OutputIsWatertightAndPositivelyOriented, whose non-manifold
+// edges traced back to exactly this. Welding those AFTER every tet's winding
+// is already fixed (remesh_volume's own weld pass, below) is what makes the
+// fix safe: merging two ids changes only which id a face references, never
+// any tet's corner order, so it cannot reopen the winding-consistency problem
+// a vertex-level SHARED id (tried and reverted -- see git history) did. Keyed
+// on the exact bit pattern (the `SurfaceEdgeKeyHash` mixing constant and
+// shape), not a tolerance: these positions are not merely close, they are the
+// SAME `mFinalPosition[...]` value read twice, so exact equality is both
+// sufficient and the more conservative choice (a tolerance could weld two
+// genuinely distinct nearby crossings that happen to be close by coincidence).
+struct RvolPosKey {
+    std::int64_t mBits[3];
+    bool operator==(const RvolPosKey& rOther) const {
+        return mBits[0] == rOther.mBits[0] && mBits[1] == rOther.mBits[1] &&
+               mBits[2] == rOther.mBits[2];
+    }
+};
+struct RvolPosKeyHash {
+    std::size_t operator()(const RvolPosKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t b : rKey.mBits)
+            h ^= std::hash<std::int64_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+RvolPosKey rvol_pos_key(const Vec3& rP) {
+    RvolPosKey key;
+    static_assert(sizeof(double) == sizeof(std::int64_t), "double/int64 size mismatch");
+    for (int i = 0; i < 3; ++i) {
+        double v = rP[static_cast<std::size_t>(i)];
+        std::memcpy(&key.mBits[i], &v, sizeof(v));
+    }
+    return key;
+}
+
+// --- the BCC 12-tet local table ---------------------------------------------
+//
+// Local corner indices 0-7 are the standard hexahedron corner layout
+// (0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1),
+// 6=(1,1,1), 7=(0,1,1)); index 8 is the cell's own body center (0.5,0.5,0.5).
+// Each of the cell's 6 faces is split into 2 triangles by ONE fixed diagonal
+// (the one connecting its two lattice-index-lowest and lattice-index-highest
+// corners, in the face's own local (u,v) parametrization -- a rule stated
+// purely in terms of the FACE's own global coordinates, so two cells sharing
+// a face independently compute the identical diagonal with no adjacency
+// bookkeeping), and each resulting triangle is connected to the center.
+//
+// DERIVED and algebraically pinned (never transcribed from anywhere): the 12
+// entries tile the unit cell exactly (sum of |volume| == 1, every point of
+// the cell belongs to exactly one tet -- RemeshVolume.BccTableTilesTheUnitCellWithNoGapOrOverlap),
+// every entry is positively oriented (RemeshVolume.BccTableIsPositivelyOriented),
+// and every tet's 6 dihedral angles are exactly {45, 60, 60, 90, 120}
+// degrees, independent of cell size (RemeshVolume.BccTableDihedralAnglesAreFixed)
+// -- NOT Labelle & Shewchuk's own reported {60, 90, 120} set, since this is
+// an independent derivation of the same general idea rather than a
+// transcription of their (unread) construction; see remesh_volume.hpp's file
+// doc comment.
+constexpr std::array<std::array<int, 3>, 12> kBccLocalTets = {{
+    {0, 7, 3},
+    {0, 4, 7},
+    {1, 2, 6},
+    {1, 6, 5},
+    {0, 1, 5},
+    {0, 5, 4},
+    {3, 6, 2},
+    {3, 7, 6},
+    {0, 2, 1},
+    {0, 3, 2},
+    {4, 5, 6},
+    {4, 6, 7},
+}};
+
+// --- lattice generation ------------------------------------------------------
+
+// The root BCC lattice: every point (A-lattice corners, then B-lattice
+// centers), and every root tet as 4 point ids, already positively oriented
+// (kBccLocalTets's own guarantee, since every cell is a translate of the same
+// unit construction).
+struct RvolLattice {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mTets;
+    std::int64_t mNumLatticeIds() const { return static_cast<std::int64_t>(mPoints.size()); }
+};
+
+RvolLattice rvol_build_lattice(const detail::LatticeSpec& rSpec) {
+    RvolLattice lat;
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t nz = rSpec.mDims[2];
+    if (nx <= 0 || ny <= 0 || nz <= 0)
+        return lat;
+
+    const std::array<double, 3>& o = rSpec.mOrigin;
+    const std::array<double, 3>& h = rSpec.mSpacing;
+
+    const std::int64_t nax = nx + 1, nay = ny + 1, naz = nz + 1;
+    const std::int64_t numA = nax * nay * naz;
+    const std::int64_t numB = nx * ny * nz;
+
+    auto a_id = [&](std::int64_t i, std::int64_t j, std::int64_t k) {
+        return (i * nay + j) * naz + k;
+    };
+    auto b_id = [&](std::int64_t i, std::int64_t j, std::int64_t k) {
+        return numA + (i * ny + j) * nz + k;
+    };
+
+    lat.mPoints.resize(static_cast<std::size_t>(numA + numB));
+    for (std::int64_t i = 0; i < nax; ++i)
+        for (std::int64_t j = 0; j < nay; ++j)
+            for (std::int64_t k = 0; k < naz; ++k)
+                lat.mPoints[static_cast<std::size_t>(a_id(i, j, k))] =
+                    Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
+                        o[2] + static_cast<double>(k) * h[2]};
+    for (std::int64_t i = 0; i < nx; ++i)
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t k = 0; k < nz; ++k)
+                lat.mPoints[static_cast<std::size_t>(b_id(i, j, k))] =
+                    Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
+                        o[1] + (static_cast<double>(j) + 0.5) * h[1],
+                        o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+
+    lat.mTets.reserve(static_cast<std::size_t>(numB) * 12);
+    for (std::int64_t i = 0; i < nx; ++i)
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t k = 0; k < nz; ++k) {
+                const std::int64_t corner[8] = {
+                    a_id(i, j, k),         a_id(i + 1, j, k),         a_id(i + 1, j + 1, k),
+                    a_id(i, j + 1, k),     a_id(i, j, k + 1),         a_id(i + 1, j, k + 1),
+                    a_id(i + 1, j + 1, k + 1), a_id(i, j + 1, k + 1)};
+                const std::int64_t centre = b_id(i, j, k);
+                for (const auto& t : kBccLocalTets)
+                    lat.mTets.push_back({centre, corner[t[0]], corner[t[1]], corner[t[2]]});
+            }
+    return lat;
+}
+
+// --- classify + warp ---------------------------------------------------------
+
+// Every lattice vertex's inside/outside LABEL (from its ORIGINAL signed
+// distance, fixed for the rest of the algorithm), its raw signed distance
+// (needed by a fresh cut point's interpolation parameter), whether it was
+// warped, and its FINAL (possibly-warped) position.
+struct RvolClassification {
+    std::vector<std::uint8_t> mInside;
+    std::vector<std::uint8_t> mWarped;
+    std::vector<double> mDistance;
+    std::vector<Vec3> mFinalPosition;
+};
+
+RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
+                                          const detail::DistanceQuery& rQuery,
+                                          const SurfaceDistanceOptions& rDistOpts,
+                                          double WarpThreshold, std::int64_t& rNumWarped) {
+    const std::size_t n = rLattice.mPoints.size();
+    RvolClassification c;
+    c.mInside.resize(n);
+    c.mWarped.assign(n, 0);
+    c.mDistance.resize(n);
+    c.mFinalPosition = rLattice.mPoints;
+    rNumWarped = 0;
+    if (n == 0)
+        return c;
+
+    const std::vector<detail::DistanceHit> hits =
+        detail::query_distances(rQuery, rLattice.mPoints, rDistOpts);
+    for (std::size_t i = 0; i < n; ++i) {
+        c.mDistance[i] = hits[i].mSignedDistance;
+        c.mInside[i] = hits[i].mSignedDistance <= 0.0 ? 1 : 0;
+    }
+
+    if (!(WarpThreshold > 0.0))
+        return c;
+
+    std::vector<std::size_t> candidates;
+    for (std::size_t i = 0; i < n; ++i)
+        if (std::fabs(c.mDistance[i]) <= WarpThreshold)
+            candidates.push_back(i);
+    if (candidates.empty())
+        return c;
+
+    std::vector<Vec3> qpts(candidates.size());
+    for (std::size_t ci = 0; ci < candidates.size(); ++ci)
+        qpts[ci] = rLattice.mPoints[candidates[ci]];
+    const std::vector<detail::ClosestPointHit> chits = detail::query_closest_points(rQuery, qpts);
+
+    std::int64_t warped = 0;
+    for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+        if (!chits[ci].mFound)
+            continue;
+        const std::size_t i = candidates[ci];
+        c.mWarped[i] = 1;
+        c.mFinalPosition[i] = chits[ci].mPoint;
+        ++warped;
+    }
+    rNumWarped = warped;
+    return c;
+}
+
+// --- cut: resolve one crossing edge to a point id ----------------------------
+
+// Resolves a crossing edge (one endpoint inside, one outside -- the caller's
+// contract, never checked here) to a point id in the combined id space:
+// [0, numLatticeIds) are original lattice vertices (kept whole or REUSED as a
+// cut point when warped -- see the file doc comment for why reuse is safe:
+// warping never moves a vertex past its own edges); ids at or beyond
+// numLatticeIds are fresh points, one per distinct crossing edge, deduped by
+// the sorted endpoint-id pair (the `refine.cpp`/`surface.cpp` phase-split
+// idiom's dedup key, applied here to a SERIAL pass rather than a parallel
+// fill + serial dedup, since the classify/warp pass above -- not this one --
+// is the genuinely expensive step; see the file doc comment).
+class RvolCutResolver {
+public:
+    RvolCutResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
+        : mrLattice(rLattice), mrClass(rClass) {}
+
+    // Every crossing edge gets exactly one FRESH point id, deduped by the
+    // sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is
+    // what makes watertightness a structural consequence of global,
+    // edge-keyed dedup rather than something this function has to reason
+    // about per case. Warping affects only WHERE that point sits (reusing an
+    // incident endpoint's own warp target when available), never WHETHER it
+    // is a distinct point -- deliberately a genuinely FRESH point every time,
+    // even when it coincides exactly with another edge's own fresh point
+    // (both incident to the same warped vertex): any scheme that instead
+    // SHARES one id across multiple edges was tried and rejected here (see
+    // git history) -- sharing by the warped vertex's own id collapsed a
+    // straddling tet's kept corner onto its own cut point when that same
+    // vertex was both kept and a cut-point source; sharing by a SEPARATE id
+    // per warped vertex avoided that but broke winding CONSISTENCY between
+    // neighbouring tets instead (RemeshVolume.OutputIsWatertightAndPositivelyOriented
+    // caught both, first as non-manifold edges, then as inconsistently wound
+    // pairs). Genuinely-coincident fresh points are instead welded AFTER
+    // every tet is built (see remesh_volume's own weld pass below), which
+    // touches only WHICH id a face uses, never any tet's already-decided
+    // winding.
+    std::int64_t Resolve(std::int64_t Inside, std::int64_t Outside) {
+        const std::int64_t lo = Inside < Outside ? Inside : Outside;
+        const std::int64_t hi = Inside < Outside ? Outside : Inside;
+        const detail::SurfaceEdgeKey key{lo, hi};
+        auto it = mEdgeToNew.find(key);
+        if (it != mEdgeToNew.end())
+            return it->second;
+
+        Vec3 np;
+        if (mrClass.mWarped[static_cast<std::size_t>(Inside)]) {
+            np = mrClass.mFinalPosition[static_cast<std::size_t>(Inside)];
+        } else if (mrClass.mWarped[static_cast<std::size_t>(Outside)]) {
+            np = mrClass.mFinalPosition[static_cast<std::size_t>(Outside)];
+        } else {
+            const double du = mrClass.mDistance[static_cast<std::size_t>(Inside)];
+            const double dv = mrClass.mDistance[static_cast<std::size_t>(Outside)];
+            double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
+            if (!(t > 0.0 && t < 1.0))
+                t = 0.5;  // a near-tangent crossing: the safe interior fallback
+            const Vec3& pu = mrLattice.mPoints[static_cast<std::size_t>(Inside)];
+            const Vec3& pv = mrLattice.mPoints[static_cast<std::size_t>(Outside)];
+            np = {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]),
+                 pu[2] + t * (pv[2] - pu[2])};
+        }
+        const std::int64_t id = NewPoint(np);
+        mEdgeToNew.emplace(key, id);
+        return id;
+    }
+
+    const std::vector<Vec3>& NewPositions() const { return mNewPositions; }
+
+    // The position of ANY id in the combined space: an original lattice
+    // vertex (using its current, possibly-warped position) or a fresh cut
+    // point this resolver created.
+    const Vec3& PositionOf(std::int64_t Id) const {
+        return Id < mrLattice.mNumLatticeIds()
+                  ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
+                  : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
+    }
+
+private:
+    std::int64_t NewPoint(const Vec3& rPos) {
+        const std::int64_t id =
+            mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mNewPositions.size());
+        mNewPositions.push_back(rPos);
+        return id;
+    }
+
+    const RvolLattice& mrLattice;
+    const RvolClassification& mrClass;
+    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash>
+        mEdgeToNew;
+    std::vector<Vec3> mNewPositions;
+};
+
+// --- cut: the sign-mask case table -------------------------------------------
+//
+// Every sub-case's TOPOLOGY (which corners survive, which edges are cut, how
+// the cut region decomposes into tets) is derived and numerically pinned --
+// tested by comparing the emitted sub-tets' total signed volume against an
+// independently-computed expected value (RemeshVolume.CutCaseTopologyIsExact)
+// -- never transcribed. Two facts are load-bearing and both are pinned by a
+// dedicated test rather than trusted from the derivation alone:
+//
+// 1-inside / 3-inside: with `k` the single distinguished corner's index into
+// the root tet's own 4-entry array and "others" the remaining 3 in their
+// ORIGINAL array order, that natural order gives a POSITIVELY oriented result
+// only for EVEN k (0 or 2); ODD k (1 or 3) needs the last two of "others"
+// swapped. This is a parity fact about the tet corner numbering (a cyclic
+// rotation by one position is an odd permutation of 4 elements), not an
+// approximation -- RemeshVolume.CutCaseTableIsCorrectlyOrientedForEveryVertexPosition
+// checks all 4 positions explicitly.
+//
+// 2-inside: with the inside pair's ascending indices (i0, i1) and the outside
+// pair's ascending indices (j0, j1), the outside pair's order must be
+// SWAPPED exactly when (i0, i1) is (0, 2) or (1, 3) -- the tet's two
+// "diagonal" (non-adjacent-in-array) vertex pairs -- and used as-is for the
+// other 4 of the 6 possible pairings. Same test covers all 6.
+// Rejects a degenerate (near-zero or negative) tet -- possible only from an
+// ill-conditioned cut near a tangency, never from a whole (count==0/4) tet,
+// whose sign is already guaranteed by kBccLocalTets.
+bool rvol_tet_ok(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, double Eps) {
+    const Vec3 d1{p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    const Vec3 d2{p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    const Vec3 d3{p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]};
+    const double v = d1[0] * (d2[1] * d3[2] - d2[2] * d3[1]) -
+                     d1[1] * (d2[0] * d3[2] - d2[2] * d3[0]) +
+                     d1[2] * (d2[0] * d3[1] - d2[1] * d3[0]);
+    return v > Eps;
+}
+
+void rvol_cut_tet(const std::array<std::int64_t, 4>& rV, const RvolClassification& rClass,
+                  RvolCutResolver& rResolver, std::vector<std::array<std::int64_t, 4>>& rOut) {
+    bool lab[4];
+    int count = 0;
+    for (int i = 0; i < 4; ++i) {
+        lab[i] = rClass.mInside[static_cast<std::size_t>(rV[static_cast<std::size_t>(i)])] != 0;
+        if (lab[i])
+            ++count;
+    }
+    if (count == 0)
+        return;
+    if (count == 4) {
+        rOut.push_back(rV);
+        return;
+    }
+
+    // Checks each candidate tet's sign and swaps its own last two corners if
+    // negative -- a purely WITHIN-tet reordering that cannot change which
+    // vertices any face uses, so it cannot reopen a cross-tet consistency
+    // problem. Declared once here so both the count==3 and count==2 branches
+    // below share it.
+    auto push_oriented = [&](std::int64_t p0, std::int64_t p1, std::int64_t p2, std::int64_t p3) {
+        if (rvol_tet_ok(rResolver.PositionOf(p0), rResolver.PositionOf(p1),
+                        rResolver.PositionOf(p2), rResolver.PositionOf(p3), 0.0))
+            rOut.push_back({p0, p1, p2, p3});
+        else
+            rOut.push_back({p0, p1, p3, p2});
+    };
+
+    if (count == 1) {
+        // The single inside vertex is unambiguous (there is only one
+        // candidate), so unlike count==2/3 below, no GLOBAL-vertex-id rule is
+        // needed here: which 3 outside neighbours it pairs with -- and hence
+        // which 3 faces get emitted -- is fixed by the LABELS alone, and
+        // their internal order affects only this one tet's own winding
+        // (fixed by push_oriented), never which faces exist.
+        int k = -1;
+        for (int i = 0; i < 4; ++i)
+            if (lab[i]) {
+                k = i;
+                break;
+            }
+        const std::int64_t pk = rV[static_cast<std::size_t>(k)];
+        const std::int64_t pb = rV[static_cast<std::size_t>((k + 1) % 4)];
+        const std::int64_t pc = rV[static_cast<std::size_t>((k + 2) % 4)];
+        const std::int64_t pd = rV[static_cast<std::size_t>((k + 3) % 4)];
+        const std::int64_t e1 = rResolver.Resolve(pk, pb);
+        const std::int64_t e2 = rResolver.Resolve(pk, pc);
+        const std::int64_t e3 = rResolver.Resolve(pk, pd);
+        push_oriented(pk, e1, e2, e3);
+        return;
+    }
+
+    if (count == 3) {
+        // The single outside vertex pk is unambiguous, but the 3 INSIDE
+        // vertices (b, c, d) are not: which one plays the "far corner" that
+        // recurs in every sub-tet is exactly the same kind of ambiguity
+        // count==2's hub choice has below, and for the identical reason
+        // (a neighbouring tet sharing a 2-inside face sees the same two
+        // global ids at different local slots) must be resolved by GLOBAL
+        // vertex id, not local array position. Sorted ascending by global id
+        // (B0, B1, B2), the "inside" region is a triangular prism with ends
+        // (B0, B1, B2) and (cut(B0,pk), cut(B1,pk), cut(B2,pk)) -- the exact
+        // topological shape count==2's own prism has (2 triangular ends, 3
+        // quad sides), split by the identical canonical "staircase" formula,
+        // confirmed to agree with count==2's own diagonal choice on every
+        // shared 2-inside-type face (RemeshVolume.OutputIsWatertightAndPositivelyOriented
+        // is what actually caught this cross-case disagreement -- a
+        // same-case self-consistency check alone, which an earlier version
+        // of this branch already passed, could not).
+        std::int64_t inside_ids[3];
+        std::int64_t pk = -1;
+        int ii = 0;
+        for (int i = 0; i < 4; ++i)
+            if (lab[i])
+                inside_ids[ii++] = rV[static_cast<std::size_t>(i)];
+            else
+                pk = rV[static_cast<std::size_t>(i)];
+        std::sort(inside_ids, inside_ids + 3);
+        const std::int64_t b0 = inside_ids[0], b1 = inside_ids[1], b2 = inside_ids[2];
+        const std::int64_t e0 = rResolver.Resolve(b0, pk);
+        const std::int64_t e1 = rResolver.Resolve(b1, pk);
+        const std::int64_t e2 = rResolver.Resolve(b2, pk);
+        push_oriented(b0, b1, b2, e2);
+        push_oriented(b0, b1, e2, e1);
+        push_oriented(b0, e1, e2, e0);
+        return;
+    }
+
+    // count == 2. Which of the 2 inside vertices becomes the "hub" (the one
+    // appearing in all 3 sub-tets) is genuinely ambiguous from this tet's
+    // own local vertex order alone -- and MUST be resolved by a rule that
+    // depends only on the two GLOBAL vertex ids, never on which of the four
+    // local array slots (0-3) they happen to occupy in THIS root tet.
+    // A neighbouring lattice tet sharing this same face sees the identical
+    // two global ids but very likely at DIFFERENT local slots (each root
+    // tet's own 4-vertex order comes from kBccLocalTets independently), so a
+    // local-index-based hub choice picks OPPOSITE diagonals for the two
+    // tets' shared quad face -- caught by
+    // RemeshVolume.OutputIsWatertightAndPositivelyOriented's non-manifold-edge
+    // count staying stubbornly nonzero even after the face-sharing bug above
+    // was fixed. Smaller global id = hub ("a"), for both the inside and the
+    // outside pair -- an arbitrary but, critically, GLOBALLY CONSISTENT rule.
+    std::int64_t inside_ids[2], outside_ids[2];
+    int ii = 0, jj = 0;
+    for (int i = 0; i < 4; ++i)
+        if (lab[i])
+            inside_ids[ii++] = rV[static_cast<std::size_t>(i)];
+        else
+            outside_ids[jj++] = rV[static_cast<std::size_t>(i)];
+    if (inside_ids[0] > inside_ids[1])
+        std::swap(inside_ids[0], inside_ids[1]);
+    if (outside_ids[0] > outside_ids[1])
+        std::swap(outside_ids[0], outside_ids[1]);
+    const std::int64_t pa = inside_ids[0], pb = inside_ids[1];
+    const std::int64_t pc = outside_ids[0], pd = outside_ids[1];
+    const std::int64_t eac = rResolver.Resolve(pa, pc);
+    const std::int64_t ead = rResolver.Resolve(pa, pd);
+    const std::int64_t ebc = rResolver.Resolve(pb, pc);
+    const std::int64_t ebd = rResolver.Resolve(pb, pd);
+    // The standard "staircase fan" split of a triangular prism whose two
+    // triangular ends are (pa, eac, ead) and (pb, ebc, ebd) (corresponding
+    // vertex-for-vertex: pa<->pb, eac<->ebc, ead<->ebd) -- the identical
+    // canonical formula count==3 above uses, verified against an
+    // independently-computed convex-hull volume AND checked for no face
+    // shared by more than 2 of the 3 tets (a stronger, and as it turned out
+    // necessary, check than volume-sum alone; see the git history for the
+    // face-sharing bug this replaced). Global-id ordering fixes WHICH points
+    // are used (for cross-tet consistency); push_oriented (declared above)
+    // fixes each candidate's winding independently.
+    push_oriented(pa, eac, ead, ebd);
+    push_oriented(pa, eac, ebd, ebc);
+    push_oriented(pa, ebc, ebd, pb);
+}
+
+// Does the mesh contain a 3D or polyhedron block? Selects whether the input is
+// treated as a volume (its boundary is extracted) or a surface (used as-is).
+bool rvol_has_volume_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            return true;
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(cb.Type())) == 3)
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& rOptions) {
+    if (!(rOptions.mWarpFraction >= 0.0))
+        throw std::invalid_argument(std::string(kRvolPrefix) + "warp_fraction must not be "
+                                    "negative, got " +
+                                    std::to_string(rOptions.mWarpFraction));
+
+    const bool is_volume = rvol_has_volume_cells(rMesh);
+    const Mesh surface_owner = is_volume ? extract_surface(rMesh) : Mesh{};
+    const Mesh& surface = is_volume ? surface_owner : rMesh;
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(surface, rOptions.mDistance.mSurfaceRegion);
+
+    detail::LatticeRequest req;
+    req.mResolution = rOptions.mResolution;
+    req.mCellSize = rOptions.mCellSize;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    const detail::LatticeSpec spec = detail::lattice_resolve(surface, req, kRvolPrefix);
+
+    // The BCC construction assumes a genuinely cubic cell; a per-axis
+    // mResolution over a non-cube bounding box can resolve to a rectangular
+    // one, which would silently distort every dihedral-angle guarantee this
+    // operation makes. Named rather than allowed through.
+    if (spec.mDims[0] > 0 && spec.mDims[1] > 0 && spec.mDims[2] > 0) {
+        const double h0 = spec.mSpacing[0];
+        const double tol = 1e-9 * (h0 > 0.0 ? h0 : 1.0);
+        if (std::fabs(spec.mSpacing[1] - h0) > tol || std::fabs(spec.mSpacing[2] - h0) > tol)
+            throw std::invalid_argument(
+                std::string(kRvolPrefix) +
+                "the resolved lattice cell is not cubic (spacing " + std::to_string(spec.mSpacing[0]) +
+                ", " + std::to_string(spec.mSpacing[1]) + ", " + std::to_string(spec.mSpacing[2]) +
+                ") -- a per-axis resolution over a non-cube bounding box does not fit this "
+                "operation's fixed BCC cell; use cell_size instead");
+    }
+
+    detail::warn_regions_dropped(rMesh, "remesh_volume");
+
+    RemeshVolumeResult result;
+    result.mQuality = detail::soup_quality(soup);
+    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error && !result.mQuality.mWatertight)
+        throw std::invalid_argument(std::string(kRvolPrefix) + "the surface is not watertight "
+                                    "(boundary_edges=" +
+                                    std::to_string(result.mQuality.mBoundaryEdges) +
+                                    ", non_manifold_edges=" +
+                                    std::to_string(result.mQuality.mNonManifoldEdges) +
+                                    ", inconsistent_pairs=" +
+                                    std::to_string(result.mQuality.mInconsistentPairs) + ")");
+    else if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Warn &&
+            !result.mQuality.mWatertight)
+        log::warn("remesh_volume: the surface is not watertight; signs may be unreliable "
+                  "near the defect");
+
+    const detail::DistanceQuery query = detail::build_distance_query(soup, rOptions.mDistance);
+    const RvolLattice lattice = rvol_build_lattice(spec);
+
+    const double h = spec.mSpacing[0];
+    std::int64_t num_warped = 0;
+    const RvolClassification cls = rvol_classify_and_warp(
+        lattice, query, rOptions.mDistance, rOptions.mWarpFraction * h, num_warped);
+    result.mNumVerticesWarped = num_warped;
+
+    // --- cut: SERIAL, ascending root-tet order -- see rvol_build_lattice's
+    // doc comment above for why this pass, unlike the classify/warp one
+    // above it, does not need to be parallel.
+    RvolCutResolver resolver(lattice, cls);
+    std::vector<std::array<std::int64_t, 4>> raw_tets;
+    raw_tets.reserve(lattice.mTets.size());
+    std::int64_t num_rejected = 0;
+    // A cut tet may reference a point resolver.Resolve() has not yet created
+    // (impossible for a WHOLE tet, but possible for a cut one), so validation
+    // must happen only after every Resolve() call for that root tet has run --
+    // hence the per-root-tet scratch buffer rather than validating in place.
+    std::vector<std::array<std::int64_t, 4>> scratch;
+    auto point_at = [&](std::int64_t id) -> const Vec3& { return resolver.PositionOf(id); };
+    for (const auto& t : lattice.mTets) {
+        scratch.clear();
+        rvol_cut_tet(t, cls, resolver, scratch);
+        for (const auto& tt : scratch) {
+            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
+                            1e-15 * h * h * h))
+                raw_tets.push_back(tt);
+            else
+                ++num_rejected;
+        }
+    }
+    // --- weld: exact-position dedup of fresh points, then re-check for any
+    // tet that welding itself made degenerate (two of its own corners
+    // collapsing onto one welded id) -- see RvolPosKey's own doc comment for
+    // why this is the safe place to fix duplicate coincident points, and
+    // why it is exact rather than tolerance-based.
+    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    {
+        const std::vector<Vec3>& fresh = resolver.NewPositions();
+        std::unordered_map<RvolPosKey, std::int64_t, RvolPosKeyHash> pos_to_first;
+        std::vector<std::int64_t> fresh_remap(fresh.size());
+        for (std::size_t i = 0; i < fresh.size(); ++i) {
+            const RvolPosKey key = rvol_pos_key(fresh[i]);
+            auto it = pos_to_first.find(key);
+            if (it == pos_to_first.end()) {
+                pos_to_first.emplace(key, static_cast<std::int64_t>(i));
+                fresh_remap[i] = static_cast<std::int64_t>(i);
+            } else {
+                fresh_remap[i] = it->second;
+            }
+        }
+        std::vector<std::array<std::int64_t, 4>> welded;
+        welded.reserve(raw_tets.size());
+        for (const auto& t : raw_tets) {
+            std::array<std::int64_t, 4> tt = t;
+            for (std::int64_t& id : tt)
+                if (id >= num_lattice)
+                    id = num_lattice + fresh_remap[static_cast<std::size_t>(id - num_lattice)];
+            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
+                            1e-15 * h * h * h))
+                welded.push_back(tt);
+            else
+                ++num_rejected;
+        }
+        raw_tets = std::move(welded);
+    }
+    result.mNumTetsRejected = num_rejected;
+
+    if (static_cast<std::int64_t>(raw_tets.size()) > rOptions.mMaxTets)
+        throw std::invalid_argument(
+            std::string(kRvolPrefix) + "the cut output has " + std::to_string(raw_tets.size()) +
+            " tets, exceeding max_tets (" + std::to_string(rOptions.mMaxTets) +
+            "); coarsen the lattice or raise max_tets");
+
+    // --- compact: used lattice vertices (in ascending original id) + the
+    // resolver's fresh points (already in deterministic assignment order) ---
+    std::vector<std::uint8_t> used(static_cast<std::size_t>(num_lattice), 0);
+    for (const auto& t : raw_tets)
+        for (std::int64_t id : t)
+            if (id < num_lattice)
+                used[static_cast<std::size_t>(id)] = 1;
+
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(num_lattice), -1);
+    std::vector<Vec3> out_points;
+    out_points.reserve(raw_tets.size());  // a reasonable-order estimate
+    for (std::int64_t i = 0; i < num_lattice; ++i)
+        if (used[static_cast<std::size_t>(i)]) {
+            remap[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(out_points.size());
+            out_points.push_back(cls.mFinalPosition[static_cast<std::size_t>(i)]);
+        }
+    const std::int64_t new_base = static_cast<std::int64_t>(out_points.size());
+    for (const Vec3& p : resolver.NewPositions())
+        out_points.push_back(p);
+
+    auto final_id = [&](std::int64_t id) -> std::int64_t {
+        if (id < num_lattice)
+            return remap[static_cast<std::size_t>(id)];
+        return new_base + (id - num_lattice);
+    };
+
+    result.mNumTets = static_cast<std::int64_t>(raw_tets.size());
+
+    Mesh& out = result.mMesh;
+    {
+        NDArray pts = NDArray::Uninit(DType::Float64, {out_points.size(), std::size_t{3}});
+        double* dst = pts.As<double>();
+        for (std::size_t i = 0; i < out_points.size(); ++i)
+            for (int d = 0; d < 3; ++d)
+                dst[i * 3 + static_cast<std::size_t>(d)] = out_points[i][static_cast<std::size_t>(d)];
+        out.AssignPoints(std::move(pts));
+    }
+    {
+        NDArray conn = NDArray::Uninit(DType::Int64, {raw_tets.size(), std::size_t{4}});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < raw_tets.size(); ++i)
+            for (int c = 0; c < 4; ++c)
+                dst[i * 4 + static_cast<std::size_t>(c)] = final_id(raw_tets[i][static_cast<std::size_t>(c)]);
+        if (!raw_tets.empty())
+            out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, rMesh.FieldData(name));
+
+    // Measure, don't assume: report the OUTPUT mesh's own boundary
+    // manifoldness rather than trust the warp/cut construction blindly (see
+    // RemeshVolumeResult::mNumNonManifoldEdges' doc comment). Skipped for an
+    // empty result, which extract_surface refuses.
+    if (!raw_tets.empty())
+        result.mNumNonManifoldEdges = surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/remesh_volume.cpp =====
 // ===== begin src/cpp/src/operations/reorder.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -84630,24 +85718,49 @@ NDArray smooth_owned_copy(const NDArray& rArr) {
 // --- resolved iteration parameters ------------------------------------------
 
 struct SmoothParams {
+    SmoothMethod mMethod = SmoothMethod::Laplacian;
     double mLambda = 0.0;
     double mMu = 0.0;
     int mNumPasses = 0;
+    // Retained alongside mMethod (never a substitute for a switch on it):
+    // Taubin's every-other-pass +lambda/-mu alternation is the one piece of
+    // per-pass logic still cheaper as a bool than a re-dispatch on mMethod
+    // inside the hot loop -- see phase 4 below.
     bool mTaubin = false;
 };
 
 // Validate the options and expand the method-dependent lambda sentinel.
+//
+// Every branch here is an explicit switch (mMethod) with NO default: case --
+// the RemeshMetric precedent from last cycle, adopted because the previous
+// shape (a single `p.mTaubin = mMethod == Taubin` bool, with "not Taubin"
+// standing in for Laplacian everywhere downstream) would have made a third
+// enumerator silently take the Laplacian branch: plausible output, wrong
+// method, no diagnostic. -Wswitch now catches the next enumerator at compile
+// time instead.
 SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
     SmoothParams p;
+    p.mMethod = rOptions.mMethod;
     p.mTaubin = rOptions.mMethod == SmoothMethod::Taubin;
     p.mLambda = rOptions.mLambda;
-    if (p.mLambda < 0.0)
-        p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
+    if (p.mLambda < 0.0) {
+        switch (rOptions.mMethod) {
+            case SmoothMethod::Laplacian:
+                p.mLambda = 0.5;
+                break;
+            case SmoothMethod::Taubin:
+                p.mLambda = 0.33;
+                break;
+            case SmoothMethod::Odt:
+                p.mLambda = 0.9;
+                break;
+        }  // the sentinel: each method's own default
+    }
     if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
         throw std::invalid_argument("meshio++: smooth: lambda must lie in (0, 1); got " +
                                     std::to_string(p.mLambda));
 
-    if (p.mTaubin) {
+    if (rOptions.mMethod == SmoothMethod::Taubin) {
         p.mMu = rOptions.mMu;
         // mu < -lambda < 0 is what makes the pass pair a low-pass filter rather
         // than an amplifier; without it Taubin diverges instead of preserving.
@@ -84656,9 +85769,21 @@ SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
                 "meshio++: smooth: taubin requires mu < -lambda < 0; got mu=" +
                 std::to_string(p.mMu) + ", lambda=" + std::to_string(p.mLambda));
     }
+    // Laplacian and Odt silently ignore mu (documented in SmoothOptions::mMu):
+    // making only the newest method strict about an already-established
+    // silently-ignored field would be a worse inconsistency than either rule
+    // applied uniformly.
 
     const int iterations = rOptions.mIterations > 0 ? rOptions.mIterations : 0;
-    p.mNumPasses = p.mTaubin ? iterations * 2 : iterations;
+    switch (rOptions.mMethod) {
+        case SmoothMethod::Taubin:
+            p.mNumPasses = iterations * 2;  // +lambda then mu, per iteration
+            break;
+        case SmoothMethod::Laplacian:
+        case SmoothMethod::Odt:
+            p.mNumPasses = iterations;
+            break;
+    }
     return p;
 }
 
@@ -85359,6 +86484,81 @@ void smooth_pin_unknown_topology(const Mesh& rMesh, std::size_t n,
     }
 }
 
+// --- ODT: tet-only scope check + circumcenter --------------------------------
+
+// ODT's closed-form vertex update needs a genuine circumsphere per incident
+// tet, which only a linear tetra has -- no other 3D cell type (hex/wedge/
+// pyramid, any quadratic family, a polyhedron) has one at all. Reject every
+// construct outside that scope by name before any node moves; the same shape
+// as decimate_volume.cpp's own dv_check_blocks for its identical tet-only
+// restriction (a separate, private copy here rather than a shared helper --
+// the two operations' error prefixes and follow-up advice genuinely differ).
+void smooth_check_odt_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains a polyhedron cell block -- run convert_cells(mode='simplexify') first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains ragged cell block '" +
+                std::string(cb.Type()) + "'");
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains 3D cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh contains "
+            "non-3D cell block '" +
+            std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle after smoothing; drop it first, e.g. "
+            "via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' requires at least one tetra cell block");
+}
+
+// Circumcenter of tetrahedron (p0, p1, p2, p3): the point equidistant from all
+// four corners, found from the three equal-distance planes |x-p1|^2=|x-p0|^2,
+// |x-p2|^2=|x-p0|^2, |x-p3|^2=|x-p0|^2, which linearize into A*o=b with rows
+// `2*(p_k - p0)` and `b_k = |p_k|^2 - |p0|^2`. Solved by Cramer's rule via
+// `detail::det3` (this file's own vocabulary, not `quality.cpp`'s unrelated
+// -- and file-private, hence unreachable from here -- `quality_solve3`; the
+// two are independently derived from the same textbook construction rather
+// than one transcribing the other). Pinned against a regular tetrahedron's
+// closed-form circumcenter in `Smooth.OdtCircumcenterMatchesClosedFormOnARegularTetra`.
+bool smooth_tet_circumcenter(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
+                             double eps, Vec3& rOut) {
+    const Vec3 a0 = detail::vec3_scale(detail::vec3_sub(p1, p0), 2.0);
+    const Vec3 a1 = detail::vec3_scale(detail::vec3_sub(p2, p0), 2.0);
+    const Vec3 a2 = detail::vec3_scale(detail::vec3_sub(p3, p0), 2.0);
+    const Vec3 rhs = {detail::vec3_norm_sq(p1) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p2) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p3) - detail::vec3_norm_sq(p0)};
+    const double d = detail::det3(a0, a1, a2);
+    if (std::fabs(d) < eps)
+        return false;
+    for (int k = 0; k < 3; ++k) {
+        Vec3 c0 = a0, c1 = a1, c2 = a2;
+        c0[k] = rhs[0];
+        c1[k] = rhs[1];
+        c2[k] = rhs[2];
+        rOut[k] = detail::det3(c0, c1, c2) / d;
+    }
+    return true;
+}
+
 }  // namespace
 
 SmoothMethod smooth_method_from_name(const std::string& rName) {
@@ -85366,8 +86566,10 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
         return SmoothMethod::Laplacian;
     if (rName == "taubin")
         return SmoothMethod::Taubin;
+    if (rName == "odt")
+        return SmoothMethod::Odt;
     throw std::invalid_argument("meshio++: smooth: unknown method '" + rName +
-                                "' (expected 'laplacian' or 'taubin')");
+                                "' (expected 'laplacian', 'taubin' or 'odt')");
 }
 
 SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
@@ -85379,6 +86581,13 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         throw std::invalid_argument("meshio++: smooth: frozen mask has " +
                                     std::to_string(rOptions.mFrozen.size()) +
                                     " entries but the mesh has " + std::to_string(n) + " points");
+
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    if (is_odt)
+        smooth_check_odt_blocks(rMesh);
+    // Degenerate-tet / degenerate-circumsphere threshold, matching
+    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
+    constexpr double kOdtEps = 1e-14;
 
     // --- phase 0: coordinates as a flat double buffer ---
     const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
@@ -85420,10 +86629,19 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
 
     // --- phase 3: the inversion guard's tables ---
+    // Also built, unconditionally, when method == Odt: under Odt's tet-only
+    // scope this table is exactly the tet corner list, so its node -> cell
+    // incidence serves double duty -- ODT's own target computation (phase 4)
+    // AND the inversion guard, with no second CSR anywhere. This is the
+    // reason ODT was scoped tet-only rather than left general: a general
+    // vertex -> incident-cell structure already existed here for the guard,
+    // and restricting the scope is what let it be reused rather than
+    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
+    // node incidence, which this file has no other use for).
     SmoothCellTable cells;
     SmoothCsr incidence;
     const bool guard = rOptions.mGuardInversion;
-    if (guard) {
+    if (guard || is_odt) {
         cells = smooth_build_cell_table(rMesh, n, dim == 2);
         incidence = smooth_build_incidence(cells, n);
     }
@@ -85438,33 +86656,91 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
             const std::size_t o = i * 3;
-            const std::int64_t b = csr.mXadj[i];
-            const std::int64_t e = csr.mXadj[i + 1];
-            if (frozen[i] || b == e) {
+
+            if (frozen[i]) {
                 cur[o] = prev[o];
                 cur[o + 1] = prev[o + 1];
                 cur[o + 2] = prev[o + 2];
                 return;
             }
-            // Summed in ascending neighbour id (the adjacency rows are sorted),
-            // which is what pins the FP accumulation order across backends and
-            // thread counts.
-            Vec3 sum = {0.0, 0.0, 0.0};
-            for (std::int64_t k = b; k < e; ++k) {
-                const std::size_t p =
-                    static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
-                sum[0] += prev[p];
-                sum[1] += prev[p + 1];
-                sum[2] += prev[p + 2];
+
+            // The move target: an edge-neighbour mean for Laplacian/Taubin,
+            // the volume-weighted circumcenter average of incident tets for
+            // Odt. `has_target` is each method's own "isolated node" case
+            // (no edge neighbours; no tet contributed a valid circumcenter),
+            // which both leave the node exactly where it was.
+            Vec3 target = {0.0, 0.0, 0.0};
+            bool has_target = false;
+            if (is_odt) {
+                const std::int64_t ib = incidence.mXadj[i];
+                const std::int64_t ie = incidence.mXadj[i + 1];
+                // Accumulated over incident tets in ascending cell index
+                // (the incidence rows are built by ascending cell, per
+                // smooth_build_incidence), which pins the FP order the same
+                // way the edge-mean branch pins ascending neighbour id.
+                double sum_v = 0.0;
+                Vec3 sum_wc = {0.0, 0.0, 0.0};
+                for (std::int64_t k = ib; k < ie; ++k) {
+                    const std::size_t c =
+                        static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
+                    const std::int64_t cb = cells.mCornerOffset[c];
+                    const SmoothCornerReader at{&prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)],
+                                                -1, nullptr};
+                    const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
+                    Vec3 cc;
+                    if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
+                        continue;  // degenerate tet: no circumsphere, no contribution
+                    const Vec3 coords[4] = {p0, p1, p2, p3};
+                    const double vol = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                    if (vol < kOdtEps)
+                        continue;
+                    sum_v += vol;
+                    sum_wc[0] += vol * cc[0];
+                    sum_wc[1] += vol * cc[1];
+                    sum_wc[2] += vol * cc[2];
+                }
+                has_target = sum_v > kOdtEps;
+                if (has_target) {
+                    const double inv = 1.0 / sum_v;
+                    target = {sum_wc[0] * inv, sum_wc[1] * inv, sum_wc[2] * inv};
+                }
+            } else {
+                const std::int64_t b = csr.mXadj[i];
+                const std::int64_t e = csr.mXadj[i + 1];
+                has_target = b != e;
+                if (has_target) {
+                    // Summed in ascending neighbour id (the adjacency rows are
+                    // sorted), which is what pins the FP accumulation order
+                    // across backends and thread counts.
+                    Vec3 sum = {0.0, 0.0, 0.0};
+                    for (std::int64_t k = b; k < e; ++k) {
+                        const std::size_t p =
+                            static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                        sum[0] += prev[p];
+                        sum[1] += prev[p + 1];
+                        sum[2] += prev[p + 2];
+                    }
+                    const double inv = 1.0 / static_cast<double>(e - b);
+                    target = {sum[0] * inv, sum[1] * inv, sum[2] * inv};
+                }
             }
-            const double inv = 1.0 / static_cast<double>(e - b);
-            // For a 2D mesh every z is exactly +0.0, so this reduces to
-            // 0.0 + factor * (0.0 - 0.0) and the z column stays bit-exactly
-            // +0.0 through arbitrarily many passes -- no masking needed.
+
+            if (!has_target) {
+                cur[o] = prev[o];
+                cur[o + 1] = prev[o + 1];
+                cur[o + 2] = prev[o + 2];
+                return;
+            }
+
+            // For a 2D Laplacian/Taubin mesh every z is exactly +0.0, so this
+            // reduces to 0.0 + factor * (0.0 - 0.0) and the z column stays
+            // bit-exactly +0.0 through arbitrarily many passes -- no masking
+            // needed. Odt is tet-only, so dim == 3 always and this note does
+            // not apply there.
             const Vec3 cand = {
-                prev[o] + factor * (sum[0] * inv - prev[o]),
-                prev[o + 1] + factor * (sum[1] * inv - prev[o + 1]),
-                prev[o + 2] + factor * (sum[2] * inv - prev[o + 2]),
+                prev[o] + factor * (target[0] - prev[o]),
+                prev[o + 1] + factor * (target[1] - prev[o + 1]),
+                prev[o + 2] + factor * (target[2] - prev[o + 2]),
             };
 
             if (guard) {

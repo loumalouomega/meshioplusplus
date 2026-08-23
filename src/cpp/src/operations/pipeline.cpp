@@ -66,6 +66,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
 
 namespace meshioplusplus {
 
@@ -249,6 +250,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
+        {"RemeshVolume",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
+          "WarpFraction", "Sign", "WatertightCheck"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -679,6 +683,40 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 " non-manifold vertex/vertices could not be repaired; output may be "
                 "non-manifold near them");
         return std::move(rr.mMesh);
+    }
+    if (op == "RemeshVolume") {
+        // Remesh's volumetric sibling: same no-correspondence-with-the-input
+        // contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        RemeshVolumeOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 20000000.0));
+        opts.mWarpFraction = pipe_number(rStep, "WarpFraction", 0.35);
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mWatertightCheck =
+            sdf_watertight_check_from_name(pipe_text(rStep, "WatertightCheck", "warn"));
+        RemeshVolumeResult rv = remesh_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTets", static_cast<double>(rv.mNumTets)},
+                        {"NumVerticesWarped", static_cast<double>(rv.mNumVerticesWarped)},
+                        {"NumTetsRejected", static_cast<double>(rv.mNumTetsRejected)},
+                        {"NumNonManifoldEdges", static_cast<double>(rv.mNumNonManifoldEdges)}});
+        if (rv.mNumNonManifoldEdges > 0)
+            rReport.mWarnings.push_back(
+                "remesh_volume: " + std::to_string(rv.mNumNonManifoldEdges) +
+                " non-manifold boundary edge(s), from warping (see doc/remesh_volume.md)");
+        return std::move(rv.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does

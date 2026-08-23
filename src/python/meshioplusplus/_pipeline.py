@@ -45,6 +45,7 @@ from ._partition import partition_labels
 from ._quality import attach_quality
 from ._refine import refine
 from ._remesh import remesh
+from ._remesh_volume import remesh_volume
 from ._reorder import reorder
 from ._sdf import compute_sdf
 from ._skin import extract_skin
@@ -119,6 +120,18 @@ _OP_TABLE = {
         "Gradation",
         "PreserveBoundary",
         "MaxAnisotropy",
+    ),
+    "RemeshVolume": (
+        "Resolution",
+        "CellSize",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "MaxCells",
+        "MaxTets",
+        "WarpFraction",
+        "Sign",
+        "WatertightCheck",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -557,6 +570,34 @@ def _apply_step(mesh, step, steps, warnings):
                 f"remesh: {report['num_isolated_clusters']} isolated cluster(s), "
                 f"{report['num_non_manifold_vertices']} non-manifold vertex/vertices could "
                 "not be repaired; output may be non-manifold near them"
+            )
+    elif op == "RemeshVolume":
+        # Remesh's volumetric sibling: same no-correspondence-with-the-input
+        # contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        resolution = _dvec(step, "Resolution")
+        bounds = _dvec(step, "Bounds")
+        mesh, report = remesh_volume(
+            mesh,
+            resolution=None if not resolution else [int(v) for v in resolution],
+            cell_size=_number(step, "CellSize", 0.0) if "CellSize" in step else None,
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.1),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            max_tets=int(_number(step, "MaxTets", 20000000.0)),
+            warp_fraction=_number(step, "WarpFraction", 0.35),
+            sign=_text(step, "Sign", "pseudonormal"),
+            watertight_check=_text(step, "WatertightCheck", "warn"),
+            return_report=True,
+        )
+        entry["NumTets"] = float(report["num_tets"])
+        entry["NumVerticesWarped"] = float(report["num_vertices_warped"])
+        entry["NumTetsRejected"] = float(report["num_tets_rejected"])
+        entry["NumNonManifoldEdges"] = float(report["num_non_manifold_edges"])
+        if report["num_non_manifold_edges"] > 0:
+            warnings.append(
+                f"remesh_volume: {report['num_non_manifold_edges']} non-manifold boundary "
+                "edge(s), from warping (see doc/remesh_volume.md)"
             )
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")

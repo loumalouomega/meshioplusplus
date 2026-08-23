@@ -71,6 +71,7 @@ from .. import (
     read_metadata,
     refine,
     remesh,
+    remesh_volume,
     reorder,
     run_pipeline,
     sample_distance,
@@ -1241,6 +1242,43 @@ def tool_remesh(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_remesh_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.1,
+    max_cells=20000000,
+    max_tets=20000000,
+    warp_fraction=0.35,
+    watertight_check="warn",
+):
+    """Retetrahedralize a volume mesh (or closed surface) at a chosen
+    resolution by isosurface stuffing -- the volumetric sibling of `remesh`.
+    The output has NO correspondence to the input -- point/cell data and
+    named regions are dropped, field data is carried. Exactly one of
+    `resolution`/`cell_size` must be given."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh_volume(
+        mesh,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        max_cells=max_cells,
+        max_tets=max_tets,
+        warp_fraction=warp_fraction,
+        watertight_check=watertight_check,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_smooth(
     input_path,
     output_path,
@@ -1255,7 +1293,8 @@ def tool_smooth(
     feature_angle=30.0,
     guard_inversion=True,
 ):
-    """Smooth point coordinates (taubin | laplacian); geometry-only move."""
+    """Smooth point coordinates (taubin | laplacian | odt); geometry-only
+    move. odt is tet-only and C++-core-only (no pure-Python fallback)."""
     mesh = _load(input_path, input_format)
     out, report = smooth(
         mesh,
@@ -1934,6 +1973,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
         ),
         ("remesh", {"fn": tool_remesh, "wraps": ("remesh",), "gated": None}),
+        (
+            "remesh_volume",
+            {"fn": tool_remesh_volume, "wraps": ("remesh_volume",), "gated": None},
+        ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),

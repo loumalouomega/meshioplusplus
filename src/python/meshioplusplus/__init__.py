@@ -62,6 +62,7 @@ from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._remesh import remesh
+from ._remesh_volume import remesh_volume
 from ._diff import diff, meshes_equal
 from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
@@ -228,6 +229,7 @@ __all__ = [
     "decimate",
     "decimate_volume",
     "remesh",
+    "remesh_volume",
     "grid",
     "voxelize",
     "sample_distance",
