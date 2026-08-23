@@ -923,6 +923,43 @@ step('remesh is reachable as a convertSurfaceOps pipeline step', () => {
     assert.ok(m.readMesh('/remesh_aniso.vtp').points.length / 3 > 0);
 });
 
+step('remeshVolume: retetrahedralizes a volume mesh directly', () => {
+    // Unlike remesh, remeshVolume accepts a VOLUME mesh directly (no
+    // extractSkin needed first) -- its boundary is extracted internally.
+    const out = m.remeshVolume(cube, null, 0.4, null, 0, 0.1, 20000000, 20000000, 0.35,
+        'pseudonormal', 'off');
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.numTets > 0);
+    assert.equal(out.numTets, out.mesh.cells[0].data.length / 4);
+    assert.ok(out.numVerticesWarped >= 0);
+    assert.ok(out.numTetsRejected >= 0);
+    assert.ok(out.numNonManifoldEdges >= 0);
+
+    // Also accepts a closed SURFACE directly, extractSkin's own output.
+    const skin = m.extractSkin(cube, true);
+    const outFromSurface = m.remeshVolume(skin, null, 0.4, null, 0, 0.1, 20000000, 20000000, 0.35,
+        'pseudonormal', 'off');
+    assert.ok(outFromSurface.numTets > 0);
+});
+
+step('remeshVolume is reachable as a convertSurfaceOps pipeline step', () => {
+    // convertSurfaceOps always ends on a boundary extraction (it is the
+    // viewer's rendering pipeline), so the VTP output is the tet mesh's own
+    // triangle boundary, not the tet mesh itself -- unlike the plain
+    // runPipeline test above, which writes exactly what the pipeline
+    // produced. The step's own counters are what actually prove the op ran.
+    m.writeMesh('/rvol.vtu', cube);
+    const out = m.convertSurfaceOps('/rvol.vtu', '/rvol.vtp', [
+        { op: 'remeshVolume', cellSize: 0.4, watertightCheck: 'off' },
+    ]);
+    assert.equal(out.steps[0].op, 'remeshVolume');
+    assert.ok(out.steps[0].numTets > 0);
+    const rendered = m.readMesh('/rvol.vtp');
+    assert.equal(rendered.cells[0].type, 'triangle');
+    assert.ok(rendered.cells[0].data.length > 0);
+});
+
 step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/sub.vtu', cube);
     const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
@@ -992,6 +1029,18 @@ step('smooth: taubin defaults leave a structured hex block alone', () => {
 
 step('smooth rejects an unknown method', () => {
     assert.throws(() => m.smooth(cube, 'not-a-method'));
+});
+
+step("smooth: method 'odt' moves a tet mesh's free vertices", () => {
+    // ODT is tet-only, unlike taubin/laplacian, which run on the hex cube.
+    const tets = m.convertCells(cube, 'simplexify');
+    const out = m.smooth(tets, 'odt', 3, -1, -0.34, false, false, 30, true);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.equal(out.mesh.points.length, tets.points.length);
+    assert.ok(out.numNodesMoved >= 0);
+
+    // ODT refuses a non-tet block by name, rather than silently ignoring it.
+    assert.throws(() => m.smooth(cube, 'odt'), /tet/);
 });
 
 step('interpolate: transfers fields onto a target mesh', () => {
@@ -1534,6 +1583,7 @@ step('every binding is reachable through the wrapper', () => {
         'refine',
         'decimate',
         'remesh',
+        'remeshVolume',
         'partition',
         'partitionLabels',
         // Regular grids and signed distance. `grid` is the only binding here

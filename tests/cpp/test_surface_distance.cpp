@@ -274,6 +274,64 @@ TEST(SurfaceDistance, BoxDistanceIsExactEverywhere) {
             << "at (" << queries[i][0] << ", " << queries[i][1] << ", " << queries[i][2] << ")";
 }
 
+TEST(SurfaceDistance, QueryClosestPointsReturnsTheActualNearestPointOnABox) {
+    // The whole reason query_closest_points exists rather than reusing
+    // query_distances: a caller (remesh_volume's warp step) needs the actual
+    // point, not just how far away it is. A box gives a closed-form nearest
+    // point exactly (a straight axis-aligned projection onto whichever face is
+    // nearest), so this is checkable to machine precision, not just plausible.
+    const double half = 1.0;
+    const Mesh box = box_mesh(half);
+    const d::TriangleSoup soup = d::build_triangle_soup(box, "");
+    const SurfaceDistanceOptions opts;
+    const d::DistanceQuery query = d::build_distance_query(soup, opts);
+
+    // Outside, off the +x face: nearest point is the straight projection.
+    const d::Vec3 outside{{2.0, 0.3, 0.2}};
+    // Inside, off-center: nearest point is still the straight projection onto
+    // whichever face is closest (here +x, since 1 - 0.2 < the other five gaps).
+    const d::Vec3 inside{{0.2, -0.1, 0.05}};
+    const std::vector<d::Vec3> queries = {outside, inside};
+    const std::vector<d::ClosestPointHit> hits = d::query_closest_points(query, queries);
+    ASSERT_EQ(hits.size(), 2u);
+
+    ASSERT_TRUE(hits[0].mFound);
+    EXPECT_NEAR(hits[0].mPoint[0], 1.0, 1e-12);
+    EXPECT_NEAR(hits[0].mPoint[1], 0.3, 1e-12);
+    EXPECT_NEAR(hits[0].mPoint[2], 0.2, 1e-12);
+    EXPECT_NEAR(hits[0].mDistance, 1.0, 1e-12);  // |2 - 1|
+    EXPECT_GE(hits[0].mSourceCell, 0);
+
+    ASSERT_TRUE(hits[1].mFound);
+    EXPECT_NEAR(hits[1].mPoint[0], 1.0, 1e-12);
+    EXPECT_NEAR(hits[1].mPoint[1], -0.1, 1e-12);
+    EXPECT_NEAR(hits[1].mPoint[2], 0.05, 1e-12);
+    EXPECT_NEAR(hits[1].mDistance, 0.8, 1e-12);  // |1 - 0.2|
+}
+
+TEST(SurfaceDistance, QueryClosestPointsAgreesWithQueryDistancesOnWhichTriangleIsNearest) {
+    // The two functions share sd_nearest_triangle, so they cannot disagree
+    // about which triangle is nearest -- checked here via the source-cell id
+    // and the (unsigned) distance, on a fixture with genuine tie-break
+    // structure (a UV sphere: many equidistant-ish facets).
+    const double r = 1.0;
+    const Mesh sphere = uv_sphere(r, 12, 24);
+    const d::TriangleSoup soup = d::build_triangle_soup(sphere, "");
+    const SurfaceDistanceOptions opts;
+    const d::DistanceQuery query = d::build_distance_query(soup, opts);
+    const std::vector<d::Vec3> queries = sample_lattice(-2.0, 2.0, 5);
+
+    const std::vector<d::DistanceHit> dist_hits = d::query_distances(query, queries, opts);
+    const std::vector<d::ClosestPointHit> point_hits = d::query_closest_points(query, queries);
+    ASSERT_EQ(dist_hits.size(), point_hits.size());
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+        ASSERT_TRUE(point_hits[i].mFound) << "index " << i;
+        EXPECT_EQ(point_hits[i].mSourceCell, dist_hits[i].mSourceCell) << "index " << i;
+        EXPECT_NEAR(point_hits[i].mDistance, std::fabs(dist_hits[i].mSignedDistance), 1e-12)
+            << "index " << i;
+    }
+}
+
 TEST(SurfaceDistance, SphereDistanceMatchesTheAnalyticFieldWithinTessellationError) {
     const double r = 1.0;
     const Mesh sphere = uv_sphere(r, 24, 48);

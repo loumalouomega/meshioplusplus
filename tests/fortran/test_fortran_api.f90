@@ -437,6 +437,16 @@ program test_fortran_api
         call check(st /= 0, 'smooth rejects an unknown method')
 
         call relaxed%free()
+
+        ! ODT (optimal-Delaunay-triangulation smoothing): tet-only, C++-core
+        ! only, moves free vertices toward incident-tet circumcenters. `m`'s
+        ! own cell block is 'tetra' (set up above), so this is in scope.
+        relaxed = m%smooth('odt', 1, fix_boundary=.false., preserve_features=.false., &
+                           nodes_moved=moved, max_displacement=max_disp, stat=st)
+        call check(st == 0, 'smooth accepts method=odt on a tet mesh')
+        call check(relaxed%num_points() == n0, 'odt smooth preserves the point count')
+        call check(moved >= 0_int64, 'odt smooth reported a node-moved count')
+        call relaxed%free()
     end block
 
     ! -- interpolate: cross-mesh field transfer --
@@ -723,6 +733,35 @@ program test_fortran_api
         call out%free()
         call out_q%free()
         call out_a%free()
+
+        ! -- remesh_volume: isosurface stuffing, remesh's volumetric sibling --
+        block
+            type(mio_mesh) :: rv_out, rv_bad
+            integer(int64) :: warped, rejected, nonmanifold
+            type(mio_surface_quality) :: q
+            integer :: rv_st
+
+            ! Unlike remesh, remesh_volume accepts the closed surface (octa)
+            ! directly and returns a tetra mesh.
+            rv_out = octa%remesh_volume(cell_size=0.4_real64, watertight_check='off', &
+                                        num_vertices_warped=warped, num_tets_rejected=rejected, &
+                                        num_non_manifold_edges=nonmanifold, quality=q, stat=rv_st)
+            call check(rv_st == 0, 'remesh_volume succeeded')
+            call check(rv_out%num_points() > 0_int64, 'remesh_volume produced points')
+            call check(rv_out%num_cell_blocks() == 1, 'remesh_volume produced one cell block')
+            call check(rv_out%cell_block_type(1) == 'tetra', 'remesh_volume produced tets')
+            call check(warped >= 0_int64, 'remesh_volume reported a warped-vertex count')
+            call check(rejected >= 0_int64, 'remesh_volume reported a rejected-tet count')
+            call check(nonmanifold >= 0_int64, 'remesh_volume reported a non-manifold-edge count')
+            call check(q%watertight /= 0, 'remesh_volume reported the input as watertight')
+
+            ! Neither resolution nor cell_size given is rejected by name.
+            rv_bad = octa%remesh_volume(stat=rv_st)
+            call check(rv_st /= 0, 'remesh_volume rejects a missing resolution/cell_size')
+
+            call rv_out%free()
+        end block
+
         call octa%free()
     end block
 

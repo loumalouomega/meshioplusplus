@@ -354,3 +354,87 @@ def test_helpers_meshes_survive_smoothing():
         out = mp.smooth(m, iterations=3)
         assert len(out.points) == len(m.points)
         assert [b.type for b in out.cells] == [b.type for b in m.cells]
+
+
+# --- ODT smoothing -----------------------------------------------------------
+
+try:
+    from meshioplusplus import _core
+except ImportError:  # pragma: no cover - a pure-Python build
+    _core = None
+
+needs_core_odt = pytest.mark.skipif(
+    _core is None, reason="method='odt' is C++-core only and has no pure-Python fallback"
+)
+
+
+def _tet_block(n=4):
+    """A jittered n x n x n block of tetrahedra (a hex block simplexified)."""
+    hexes = _hex_block(n)
+    return mp.convert_cells(hexes, mode="simplexify")
+
+
+@needs_core_odt
+def test_odt_moves_a_single_tets_vertex_toward_its_circumcenter():
+    pts = np.array([[0, 0, 0], [4, 0, 0], [0, 4, 0], [1, 1, 5]], dtype=float)
+    conn = np.array([[0, 1, 2, 3]], dtype=np.int64)
+    mesh = mp.Mesh(pts, [("tetra", conn)])
+
+    out, report = mp.smooth(
+        mesh,
+        method="odt",
+        iterations=1,
+        fix_boundary=False,
+        preserve_features=False,
+        return_report=True,
+    )
+    assert out.points.shape == (4, 3)
+    assert out.cells[0].data.shape == (1, 4)
+    assert report["num_nodes_moved"] > 0
+    assert report["max_displacement"] > 0.0
+
+
+@needs_core_odt
+def test_odt_rejects_non_tet_blocks_by_name():
+    with pytest.raises(Exception, match="tet"):
+        mp.smooth(_hex_block(2), method="odt", iterations=1)
+
+
+@needs_core_odt
+def test_odt_improves_dihedral_angles_more_than_taubin():
+    import copy
+
+    from meshioplusplus import compute_quality
+
+    rng = np.random.default_rng(11)
+    base = _tet_block(4)
+    interior = np.arange(base.points.shape[0])
+    lo, hi = base.points.min(axis=0), base.points.max(axis=0)
+    is_interior = np.all((base.points > lo + 0.1) & (base.points < hi - 0.1), axis=1)
+
+    jittered = copy.deepcopy(base)
+    jittered.points[is_interior] += rng.normal(0, 0.15, (int(is_interior.sum()), 3))
+
+    taubin = mp.smooth(jittered, method="taubin", iterations=10)
+    odt = mp.smooth(jittered, method="odt", iterations=10)
+
+    q_taubin = compute_quality(taubin)
+    q_odt = compute_quality(odt)
+    min_dihedral_taubin = q_taubin["metrics"]["quality:min_dihedral"]["min"]
+    min_dihedral_odt = q_odt["metrics"]["quality:min_dihedral"]["min"]
+    assert min_dihedral_odt >= min_dihedral_taubin - 1e-9
+
+
+@needs_core_odt
+def test_odt_is_deterministic_across_repeated_runs():
+    import copy
+
+    rng = np.random.default_rng(12)
+    base = _tet_block(3)
+    jittered = copy.deepcopy(base)
+    jittered.points += rng.normal(0, 0.05, jittered.points.shape)
+
+    first = mp.smooth(jittered, method="odt", iterations=5).points
+    for _ in range(3):
+        again = mp.smooth(jittered, method="odt", iterations=5).points
+        np.testing.assert_array_equal(again, first)

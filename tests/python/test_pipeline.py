@@ -313,6 +313,63 @@ def test_remesh_pipeline_step(tmp_path):
         np.testing.assert_array_equal(aniso_out.points, aniso_out_cpp.points)
 
 
+@pytest.mark.skipif(_core is None, reason="remesh_volume has no pure-Python fallback")
+def test_remesh_volume_pipeline_step(tmp_path):
+    """RemeshVolume is Remesh's volumetric sibling and shares its
+    no-correspondence-with-the-input output contract; same surface fixture
+    as test_remesh_pipeline_step, since it accepts either a volume or a
+    closed surface."""
+    octa = meshioplusplus.Mesh(
+        np.array(
+            [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "triangle",
+                np.array(
+                    [
+                        [0, 2, 4],
+                        [2, 1, 4],
+                        [1, 3, 4],
+                        [3, 0, 4],
+                        [2, 0, 5],
+                        [1, 2, 5],
+                        [3, 1, 5],
+                        [0, 3, 5],
+                    ],
+                    dtype=np.int64,
+                ),
+            )
+        ],
+    )
+    in_path = tmp_path / "octa.vtu"
+    meshioplusplus.write(str(in_path), octa)
+    out_path = tmp_path / "out.vtu"
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [
+            {"Op": "RemeshVolume", "CellSize": 0.4, "WatertightCheck": "off"}
+        ],
+        "Output": {"Path": str(out_path)},
+    }
+
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "RemeshVolume"
+    assert report["steps"][0]["NumTets"] > 0
+    out = meshioplusplus.read(str(out_path))
+    assert out.points.shape[0] > 0
+    assert out.cells[0].type == "tetra"
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "RemeshVolume"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert out_cpp.cells[0].type == "tetra"
+
+
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):
     settings = make_settings(settings_env, [{"Op": "Quality"}])
     # dict
