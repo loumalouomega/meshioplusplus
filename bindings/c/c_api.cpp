@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -3918,6 +3919,32 @@ meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& 
     return options;
 }
 
+/// Translate the flat option struct into the core's RemeshVolumeOptions.
+meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(const mio_remesh_volume_opts& rOpts) {
+    meshioplusplus::RemeshVolumeOptions options;
+    if (rOpts.resolution != nullptr)
+        options.mResolution = std::array<std::int64_t, 3>{
+            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
+    if (rOpts.cell_size > 0.0)
+        options.mCellSize = rOpts.cell_size;
+    if (rOpts.bounds != nullptr)
+        options.mBounds =
+            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
+                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
+    options.mPadding = rOpts.padding;
+    options.mPaddingRelative = rOpts.padding_relative;
+    // Verbatim, not gated on > 0: mMaxCells/mMaxTets <= 0 means "unlimited"
+    // to the C++ checks themselves (sdf.cpp/remesh_volume.cpp's own
+    // `> 0 && ...` guards), so passing it through unconditionally is what
+    // makes explicitly requesting "unlimited" (0) actually work, rather than
+    // silently falling back to the struct's C++-side default of 20000000.
+    options.mMaxCells = rOpts.max_cells;
+    options.mMaxTets = rOpts.max_tets;
+    options.mWarpFraction = rOpts.warp_fraction;
+    options.mDistance = capi_sdf_options(rOpts.distance);
+    return options;
+}
+
 void capi_fill_quality(const meshioplusplus::SurfaceQuality& rQuality, mio_surface_quality* pOut) {
     if (!pOut)
         return;
@@ -3988,6 +4015,45 @@ mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* o
         if (num_banded)
             *num_banded = r.mNumBanded;
         capi_fill_quality(r.mQuality, quality);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_remesh_volume_opts) == 216,
+              "mio_remesh_volume_opts grew outside its reserved tail");
+static_assert(sizeof(mio_remesh_volume_report) == 136,
+              "mio_remesh_volume_report grew outside its reserved tail");
+
+void mio_remesh_volume_opts_init(mio_remesh_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remesh_volume_opts{};
+    opts->padding_relative = 0.1;
+    opts->max_cells = 20000000;
+    opts->max_tets = 20000000;
+    opts->warp_fraction = 0.35;
+    mio_sdf_opts_init(&opts->distance);
+}
+
+mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_volume_opts* opts,
+                               mio_remesh_volume_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw meshioplusplus::ReadError(
+                "meshio++: remesh_volume: options are NULL, but exactly one of resolution and "
+                "cell_size must be given");
+        meshioplusplus::RemeshVolumeResult r =
+            meshioplusplus::remesh_volume(mesh->mMesh, capi_remesh_volume_options(*opts));
+        if (report) {
+            *report = mio_remesh_volume_report{};
+            capi_fill_quality(r.mQuality, &report->input_quality);
+            report->num_tets = r.mNumTets;
+            report->num_vertices_warped = r.mNumVerticesWarped;
+            report->num_tets_rejected = r.mNumTetsRejected;
+            report->num_non_manifold_edges = r.mNumNonManifoldEdges;
+        }
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

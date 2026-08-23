@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 12
+#define MIO_VERSION_MINOR 13
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -2194,6 +2194,105 @@ MIO_API mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf
                                   int64_t dims_out[3], double origin_out[3],
                                   double spacing_out[3], int64_t* max_depth_out,
                                   int64_t* num_banded, mio_surface_quality* quality);
+
+/**
+ * Options for mio_remesh_volume_ex.
+ *
+ * ABI NOTE: the same append-only discipline as mio_compute_sdf_opts, which
+ * this mirrors: `distance` is embedded BY VALUE (not flattened, unlike
+ * mio_voxel_opts's sign/watertight_check-only fields) because
+ * RemeshVolumeOptions, like SdfOptions, needs the FULL SurfaceDistanceOptions
+ * surface, not just two of its fields -- and mio_sdf_opts carries its own
+ * `reserved` tail, so growing it never shifts anything in THIS struct.
+ * Always zero-initialize through mio_remesh_volume_opts_init().
+ *
+ * Unlike mio_remesh (which has both a flat function and this options-struct
+ * growth path, because mio_remesh shipped flat first and grew once), this
+ * operation ships ONLY the options-struct form: a brand-new entry point has
+ * no back-compat flat signature to keep, so there is nothing to repeat.
+ *
+ * Exactly ONE of `resolution` and `cell_size` must be given, `mio_voxel_opts`'s
+ * own rule.
+ */
+typedef struct mio_remesh_volume_opts {
+    /** Cell counts (three entries), or NULL when sizing by cell_size. */
+    const int64_t* resolution;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the mesh's own. */
+    const double* bounds;
+    /** Cubic cell size of the root lattice, or <= 0 when sizing by resolution. */
+    double cell_size;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal; the default is 0.1. */
+    double padding_relative;
+    /** Refuse to generate a root lattice above this many cells; <= 0 lifts the limit. */
+    int64_t max_cells;
+    /** Refuse an output with more tets than this. UNLIKE max_cells, this has
+     *  no "<= 0 lifts the limit" escape hatch -- the check is unconditional,
+     *  so 0 or a negative value refuses any non-empty output. Leave it at
+     *  mio_remesh_volume_opts_init()'s default (20000000) unless a smaller
+     *  budget is genuinely wanted. */
+    int64_t max_tets;
+    /** Fraction of a lattice vertex's shortest incident edge within which it
+     *  may be warped onto the surface; 0 disables warping. */
+    double warp_fraction;
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    /** Sign, region restriction and watertight-check policy for every
+     *  surface query. Embedded by value, as in C++ -- see the ABI note above. */
+    mio_sdf_opts distance;
+} mio_remesh_volume_opts;
+
+/** Zero-initialize remesh_volume options to their default values. */
+MIO_API void mio_remesh_volume_opts_init(mio_remesh_volume_opts* opts);
+
+/**
+ * Output counters and the surface verdict from mio_remesh_volume_ex; every
+ * field is always written.
+ */
+typedef struct mio_remesh_volume_report {
+    /** The verdict for the INPUT surface (or the extracted boundary of an
+     *  input volume mesh), not the output. */
+    mio_surface_quality input_quality;
+    /** Tets emitted. */
+    int64_t num_tets;
+    /** Lattice vertices moved onto the surface. */
+    int64_t num_vertices_warped;
+    /** Cut sub-tets discarded as degenerate. */
+    int64_t num_tets_rejected;
+    /**
+     * Non-manifold edges of the OUTPUT tet mesh's own boundary. `warp_fraction
+     * == 0` gives a mathematically watertight cut and this is always 0 there.
+     * A nonzero `warp_fraction` reuses a warped lattice vertex's position for
+     * every cut edge it touches, which on some inputs can leave a small
+     * number of coincident-but-topologically-distinct boundary edges near the
+     * warped region -- MEASURED and reported here rather than hidden. See
+     * doc/remesh_volume.md for the measured magnitude on this repo's own test
+     * fixtures. A caller needing an exactly watertight result should check
+     * this counter, or fall back to `warp_fraction = 0` / post-process with
+     * mio_clean(weld=true).
+     */
+    int64_t num_non_manifold_edges;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_remesh_volume_report;
+
+/**
+ * Retetrahedralize a volume (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing -- the volumetric sibling of mio_remesh,
+ * generating an entirely new tet mesh rather than working on the input's own
+ * cells. See doc/remesh_volume.md for the algorithm and its measured
+ * warp/quality tradeoff.
+ *
+ * @param mesh   a volume mesh (its boundary is extracted internally) or a
+ *               closed surface (triangle, quad, rectangular polygon).
+ * @param opts   options; NULL is an error, since a resolution or cell size
+ *               must be given -- mio_voxelize's own rule.
+ * @param report optional out: the run's counters and input surface verdict;
+ *               NULL to ignore it.
+ * @return the retetrahedralized mesh, a single tetra block (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_volume_opts* opts,
+                                       mio_remesh_volume_report* report);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

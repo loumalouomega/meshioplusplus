@@ -1395,6 +1395,74 @@ SEXP R_mio_compute_sdf(SEXP mesh, SEXP structure, SEXP resolution, SEXP cell_siz
     return res_list;
 }
 
+/* Retetrahedralize a volume mesh (or closed surface) by isosurface stuffing
+   -- remesh's volumetric sibling. Same "R links the real C header, no
+   hand-mirrored struct" note as R_mio_remesh above; `distance` is set
+   directly rather than through fill_sdf_opts, whose location/band/
+   record_inside fields remesh_volume never reads. */
+SEXP R_mio_remesh_volume(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds,
+                         SEXP padding, SEXP padding_relative, SEXP max_cells, SEXP max_tets,
+                         SEXP warp_fraction, SEXP sign, SEXP watertight_check,
+                         SEXP surface_region, SEXP grid_cell_size, SEXP max_winding_work) {
+    mio_remesh_volume_opts opts;
+    mio_remesh_volume_report report;
+    mio_mesh *out;
+
+    mio_remesh_volume_opts_init(&opts);
+
+    /* The buffers the option pointers reference must outlive the call, the
+       R_mio_compute_sdf idiom above. */
+    int64_t res[3];
+    double bnd[6];
+    if (Rf_xlength(resolution) > 0) {
+        SEXP r = PROTECT(Rf_coerceVector(resolution, REALSXP));
+        if (Rf_xlength(r) != 3) {
+            UNPROTECT(1);
+            Rf_error("`resolution` must have exactly 3 elements");
+        }
+        for (int i = 0; i < 3; ++i) res[i] = (int64_t)REAL(r)[i];
+        UNPROTECT(1);
+        opts.resolution = res;
+    }
+    if (Rf_xlength(bounds) > 0) {
+        SEXP b = PROTECT(Rf_coerceVector(bounds, REALSXP));
+        if (Rf_xlength(b) != 6) {
+            UNPROTECT(1);
+            Rf_error("`bounds` must have exactly 6 elements");
+        }
+        memcpy(bnd, REAL(b), 6 * sizeof(double));
+        UNPROTECT(1);
+        opts.bounds = bnd;
+    }
+    opts.cell_size = mio_r_double(cell_size, "cell_size");
+    opts.padding = mio_r_double(padding, "padding");
+    opts.padding_relative = mio_r_double(padding_relative, "padding_relative");
+    opts.max_cells = mio_r_int64(max_cells, "max_cells");
+    opts.max_tets = mio_r_int64(max_tets, "max_tets");
+    opts.warp_fraction = mio_r_double(warp_fraction, "warp_fraction");
+    opts.distance.sign = (int32_t)mio_r_int(sign, "sign");
+    opts.distance.watertight_check = (int32_t)mio_r_int(watertight_check, "watertight_check");
+    opts.distance.surface_region = mio_r_opt_string(surface_region);
+    opts.distance.grid_cell_size = mio_r_double(grid_cell_size, "grid_cell_size");
+    opts.distance.max_winding_work = mio_r_double(max_winding_work, "max_winding_work");
+
+    out = mio_remesh_volume_ex(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("remesh_volume");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nt = PROTECT(Rf_ScalarReal((double)report.num_tets));
+    SEXP nw = PROTECT(Rf_ScalarReal((double)report.num_vertices_warped));
+    SEXP nr = PROTECT(Rf_ScalarReal((double)report.num_tets_rejected));
+    SEXP nm = PROTECT(Rf_ScalarReal((double)report.num_non_manifold_edges));
+    SEXP ql = PROTECT(quality_list(&report.input_quality));
+    const char *names[] = {"mesh", "num_tets", "num_vertices_warped", "num_tets_rejected",
+                           "num_non_manifold_edges", "input_quality"};
+    SEXP values[] = {mo, nt, nw, nr, nm, ql};
+    SEXP res_list = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res_list;
+}
+
+
 SEXP R_mio_surface_watertight_check(SEXP mesh) {
     mio_surface_quality q;
     memset(&q, 0, sizeof(q));

@@ -125,6 +125,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2135,6 +2136,56 @@ val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
 }
 
 /**
+ * Retetrahedralize a volume mesh (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing -- remesh's volumetric sibling. Same
+ * no-correspondence output contract (new points, new connectivity;
+ * point/cell data and named regions are dropped, field data is carried).
+ * `resolution`/`cellSize`/`bounds` share `voxelize_js`'s own convention:
+ * `resolution` is a length-3 array or undefined/null, `cellSize <= 0` means
+ * unset, `bounds` is a length-6 array or undefined/null. See
+ * doc/remesh_volume.md.
+ */
+val remesh_volume_js(const val& rMeshObj, const val& rResolution, double cellSize,
+                     const val& rBounds, double padding, double paddingRelative, double maxCells,
+                     double maxTets, double warpFraction, const std::string& rSign,
+                     const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemeshVolumeOptions options;
+        if (!rResolution.isUndefined() && !rResolution.isNull() &&
+            rResolution["length"].as<unsigned>() == 3)
+            options.mResolution = std::array<std::int64_t, 3>{
+                {static_cast<std::int64_t>(rResolution[0].as<double>()),
+                 static_cast<std::int64_t>(rResolution[1].as<double>()),
+                 static_cast<std::int64_t>(rResolution[2].as<double>())}};
+        if (cellSize > 0.0)
+            options.mCellSize = cellSize;
+        if (!rBounds.isUndefined() && !rBounds.isNull() && rBounds["length"].as<unsigned>() == 6) {
+            std::array<double, 6> b{};
+            for (unsigned i = 0; i < 6; ++i)
+                b[i] = rBounds[i].as<double>();
+            options.mBounds = b;
+        }
+        options.mPadding = padding;
+        options.mPaddingRelative = paddingRelative;
+        options.mMaxCells = static_cast<std::int64_t>(maxCells);
+        options.mMaxTets = static_cast<std::int64_t>(maxTets);
+        options.mWarpFraction = warpFraction;
+        options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+        options.mDistance.mWatertightCheck =
+            meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+        meshioplusplus::RemeshVolumeResult r =
+            meshioplusplus::remesh_volume(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTets", static_cast<double>(r.mNumTets));
+        out.set("numVerticesWarped", static_cast<double>(r.mNumVerticesWarped));
+        out.set("numTetsRejected", static_cast<double>(r.mNumTetsRejected));
+        out.set("numNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges));
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -2983,6 +3034,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("remesh", &remesh_js);
+    emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

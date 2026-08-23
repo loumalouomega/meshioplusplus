@@ -570,14 +570,17 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #' @param remove_orphans Drop points referenced by no cell.
 #' @param drop_degenerate Drop degenerate cells.
 #' @param drop_duplicate_cells Drop exact-duplicate cells.
-#' @param method For `mio_smooth()`, `"taubin"` or `"laplacian"`; for
-#'   `mio_reorder()`, `"rcm"`, `"morton"` or `"hilbert"`; for
-#'   `mio_partition()`, `"sfc"`, `"kahip"` or `"auto"`; for
+#' @param method For `mio_smooth()`, `"taubin"`, `"laplacian"` or `"odt"`
+#'   (optimal-Delaunay-triangulation smoothing -- tet-only, moves each free
+#'   interior vertex toward the volume-weighted average of its incident
+#'   tets' circumcenters); for `mio_reorder()`, `"rcm"`, `"morton"` or
+#'   `"hilbert"`; for `mio_partition()`, `"sfc"`, `"kahip"` or `"auto"`; for
 #'   `mio_interpolate()`, `"nearest"` or `"barycentric"`.
 #' @param iterations Smoothing iterations.
 #' @param lambda Relaxation factor in (0, 1). **Negative means "this method's
-#'   own default"**: 0.5 for laplacian, 0.33 for taubin.
+#'   own default"**: 0.5 for laplacian, 0.33 for taubin, 0.9 for odt.
 #' @param mu Taubin's un-shrinking factor, which must satisfy `mu < -lambda < 0`.
+#'   Silently ignored by laplacian and odt.
 #' @param fix_boundary Pin every node on a boundary facet.
 #' @param preserve_features Pin boundary nodes whose incident facets meet above
 #'   `feature_angle`.
@@ -895,6 +898,80 @@ mio_remesh <- function(mesh, num_clusters, subdivide = -1L, subsample_ratio = 10
     as.integer(max_iterations), as.integer(max_repair_passes),
     as.character(metric), as.numeric(gradation), isTRUE(preserve_boundary),
     as.numeric(max_anisotropy)
+  )
+}
+
+#' Retetrahedralize a volume mesh (or a closed surface) by isosurface stuffing
+#'
+#' The volumetric sibling of [mio_remesh()], generating an entirely new tet
+#' mesh (no point/cell maps, `point_data`/`cell_data`/named regions dropped,
+#' `field_data` carried) rather than working on the input's own cells. Unlike
+#' `mio_remesh`, `mesh` may be a VOLUME mesh directly (its boundary is
+#' extracted internally) as well as a closed surface.
+#'
+#' Exactly one of `resolution`/`cell_size` must be given, sizing a
+#' body-centered cubic (BCC) lattice whose uncut tets have dihedral angles
+#' from a fixed, mesh-size-independent set. `warp_fraction` (default `0.35`)
+#' moves lattice vertices near the surface onto it, trading a small,
+#' measured chance of non-manifold boundary edges (reported as
+#' `num_non_manifold_edges`) for substantially better boundary tet quality;
+#' `0` disables warping and gives an exactly watertight but lower-quality
+#' boundary. See `doc/remesh_volume.md` for the measured tradeoff.
+#'
+#' Attribution: implemented from the PUBLISHED DESCRIPTION of Labelle &
+#' Shewchuk, "Isosurface Stuffing" (SIGGRAPH 2007) only -- neither the
+#' paper's own reference implementation (Stellar) nor TetGen (AGPL-3.0) is
+#' read or vendored here. See `doc/remesh_volume.md`.
+#'
+#' @param mesh A `mio_mesh` (volume mesh, or closed surface).
+#' @param resolution Cell counts `c(nx, ny, nz)` of the root lattice; exactly
+#'   one of `resolution`/`cell_size` must be given.
+#' @param cell_size Cubic cell size of the root lattice.
+#' @param bounds Explicit `c(xlo, ylo, zlo, xhi, yhi, zhi)`; `NULL` uses the
+#'   surface's own bounding box.
+#' @param padding Padding added to every side, in world units.
+#' @param padding_relative Padding added to every side, as a fraction of the
+#'   bounding-box diagonal (default `0.1`).
+#' @param max_cells Refuse to generate a root lattice above this many cells.
+#' @param max_tets Refuse an output with more tets than this (checked after
+#'   cutting; unlike `max_cells`, no "lifts the limit" value).
+#' @param warp_fraction Fraction of a lattice vertex's own shortest incident
+#'   edge length within which it may be warped onto the surface; `0`
+#'   disables warping (default `0.35`).
+#' @param sign How lattice vertices are classified inside/outside:
+#'   `"pseudonormal"` (default) or `"winding-number"`.
+#' @param watertight_check What to do about an input surface that is not
+#'   watertight: `"off"`, `"warn"` (default) or `"error"`.
+#' @param surface_region Restrict the surface to a named `Cell` region;
+#'   `""` (default) is all of it.
+#' @param grid_cell_size Bucket size of the search grid; `0` (default)
+#'   derives one from the triangle sizes.
+#' @param max_winding_work Refuse a `"winding-number"` query above this cost.
+#' @return A list of `mesh`, `num_tets`, `num_vertices_warped`,
+#'   `num_tets_rejected`, `num_non_manifold_edges` and `input_quality` (the
+#'   verdict for the INPUT surface, not the output).
+#' @export
+mio_remesh_volume <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
+                              padding = 0, padding_relative = 0.1, max_cells = 20000000,
+                              max_tets = 20000000, warp_fraction = 0.35,
+                              sign = "pseudonormal", watertight_check = "warn",
+                              surface_region = "", grid_cell_size = 0,
+                              max_winding_work = 2e9) {
+  signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
+  checks <- c(off = 0L, warn = 1L, error = 2L)
+  if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
+  if (!watertight_check %in% names(checks)) {
+    stop("unknown watertight check '", watertight_check, "'")
+  }
+  .Call(
+    R_mio_remesh_volume, mesh,
+    if (is.null(resolution)) numeric(0) else as.numeric(resolution),
+    as.numeric(cell_size),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    as.numeric(padding), as.numeric(padding_relative), as.numeric(max_cells),
+    as.numeric(max_tets), as.numeric(warp_fraction), signs[[sign]],
+    checks[[watertight_check]], as.character(surface_region),
+    as.numeric(grid_cell_size), as.numeric(max_winding_work)
   )
 }
 

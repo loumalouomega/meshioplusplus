@@ -333,6 +333,35 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_remesh_volume_opts`. Field order and types are
+    !> ABI and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved` is padding for additive growth and must stay zero.
+    !> `distance` is embedded by value, the `mio_compute_sdf_opts_t` precedent
+    !> above -- its own `reserved` tail absorbs future growth without shifting
+    !> anything here.
+    type, bind(c) :: mio_remesh_volume_opts_t
+        type(c_ptr) :: resolution = c_null_ptr
+        type(c_ptr) :: bounds = c_null_ptr
+        real(c_double) :: cell_size = 0.0_c_double
+        real(c_double) :: padding = 0.0_c_double
+        real(c_double) :: padding_relative = 0.1_c_double
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int64_t) :: max_tets = 20000000
+        real(c_double) :: warp_fraction = 0.35_c_double
+        integer(c_int64_t) :: reserved(6) = 0
+        type(mio_sdf_opts_t) :: distance
+    end type
+
+    !> Interop mirror of C `mio_remesh_volume_report`. Field order/types ABI.
+    type, bind(c) :: mio_remesh_volume_report_t
+        type(mio_surface_quality) :: input_quality
+        integer(c_int64_t) :: num_tets = 0
+        integer(c_int64_t) :: num_vertices_warped = 0
+        integer(c_int64_t) :: num_tets_rejected = 0
+        integer(c_int64_t) :: num_non_manifold_edges = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
     !> `reserved` is padding for additive growth and must stay zero.
@@ -411,6 +440,7 @@ module meshioplusplus
         procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
         procedure :: remesh => mesh_remesh
+        procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: subdivide => mesh_subdivide
@@ -1111,6 +1141,21 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_remesh_opts_t), intent(in) :: opts
             type(mio_remesh_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_remesh_volume_opts_init(opts) &
+                bind(c, name="mio_remesh_volume_opts_init")
+            import :: mio_remesh_volume_opts_t
+            type(mio_remesh_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_remesh_volume_ex(h, opts, report) &
+                bind(c, name="mio_remesh_volume_ex") result(r)
+            import :: c_ptr, mio_remesh_volume_opts_t, mio_remesh_volume_report_t
+            type(c_ptr), value :: h
+            type(mio_remesh_volume_opts_t), intent(in) :: opts
+            type(mio_remesh_volume_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -3323,6 +3368,95 @@ contains
             num_isolated_clusters = int(report%num_isolated_clusters, int64)
         if (present(num_non_manifold_vertices)) &
             num_non_manifold_vertices = int(report%num_non_manifold_vertices, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Retetrahedralize this mesh (a volume mesh, or a closed surface) at a
+    !> caller-chosen resolution by isosurface stuffing -- remesh's volumetric
+    !> sibling. Unlike `remesh`, `self` may be a VOLUME mesh directly (its
+    !> boundary is extracted internally) as well as a closed surface. Same
+    !> no-correspondence-with-`self` output contract: new points, new
+    !> connectivity, point/cell data and named regions dropped, field data
+    !> carried.
+    !>
+    !> Exactly one of `resolution`/`cell_size` must be given. `warp_fraction`
+    !> (default 0.35) trades a small, measured chance of non-manifold
+    !> boundary edges (reported in `num_non_manifold_edges`) for
+    !> substantially better boundary tet quality; 0 disables warping. See
+    !> doc/remesh_volume.md for the measured tradeoff.
+    function mesh_remesh_volume(self, resolution, cell_size, bounds, padding, &
+                                padding_relative, max_cells, max_tets, warp_fraction, sign, &
+                                watertight_check, num_vertices_warped, num_tets_rejected, &
+                                num_non_manifold_edges, quality, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: resolution(3)
+        real(real64), intent(in), optional :: cell_size, bounds(6)
+        real(real64), intent(in), optional :: padding, padding_relative, warp_fraction
+        integer(int64), intent(in), optional :: max_cells, max_tets
+        character(*), intent(in), optional :: sign, watertight_check
+        integer(int64), intent(out), optional :: num_vertices_warped, num_tets_rejected
+        integer(int64), intent(out), optional :: num_non_manifold_edges
+        type(mio_surface_quality), intent(out), optional :: quality
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_remesh_volume_opts_t) :: opts
+        type(mio_remesh_volume_report_t) :: report
+        ! The buffers the option pointers reference must outlive the call,
+        ! the mesh_compute_sdf idiom above.
+        integer(c_int64_t), target :: res_buf(3)
+        real(c_double), target :: bounds_buf(6)
+        integer(c_int32_t) :: code
+
+        call c_mio_remesh_volume_opts_init(opts)
+        if (present(resolution)) then
+            res_buf = int(resolution, c_int64_t)
+            opts%resolution = c_loc(res_buf(1))
+        end if
+        if (present(cell_size)) opts%cell_size = real(cell_size, c_double)
+        if (present(bounds)) then
+            bounds_buf = real(bounds, c_double)
+            opts%bounds = c_loc(bounds_buf(1))
+        end if
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(padding_relative)) opts%padding_relative = real(padding_relative, c_double)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(max_tets)) opts%max_tets = int(max_tets, c_int64_t)
+        if (present(warp_fraction)) opts%warp_fraction = real(warp_fraction, c_double)
+        if (present(sign)) then
+            code = sdf_sign_code(sign)
+            if (code < 0) then
+                call handle_failure('remesh_volume', 'unknown sign '//trim(sign), stat, errmsg)
+                return
+            end if
+            opts%distance%sign = code
+        end if
+        if (present(watertight_check)) then
+            select case (trim(watertight_check))
+            case ('off'); opts%distance%watertight_check = 0
+            case ('', 'warn'); opts%distance%watertight_check = 1
+            case ('error'); opts%distance%watertight_check = 2
+            case default
+                call handle_failure('remesh_volume', &
+                                    'unknown watertight check '//trim(watertight_check), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+
+        res = c_mio_remesh_volume_ex(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('remesh_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_vertices_warped)) &
+            num_vertices_warped = int(report%num_vertices_warped, int64)
+        if (present(num_tets_rejected)) num_tets_rejected = int(report%num_tets_rejected, int64)
+        if (present(num_non_manifold_edges)) &
+            num_non_manifold_edges = int(report%num_non_manifold_edges, int64)
+        if (present(quality)) quality = report%input_quality
         call clear_status(stat, errmsg)
     end function
 

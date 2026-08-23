@@ -496,6 +496,14 @@ test_that("clean, smooth and crop work", {
   expect_gte(s$max_displacement, 0)
   mio_release(s$mesh)
 
+  # method="odt": tet-only, C++-core only. `m`'s own block is "tetra".
+  so <- mio_smooth(m, method = "odt", iterations = 1L, fix_boundary = FALSE,
+                   preserve_features = FALSE)
+  expect_equal(mio_num_points(so$mesh), 5)
+  expect_equal(mio_num_cells(so$mesh), 2)
+  expect_gte(so$num_nodes_moved, 0)
+  mio_release(so$mesh)
+
   b <- mio_crop_bbox(m, c(-1, -1, -1), c(10, 10, 10))
   expect_equal(mio_num_cells(b), 2) # the box holds everything
   mio_release(b)
@@ -990,4 +998,24 @@ test_that("remesh replaces a surface's triangulation by ACVD clustering", {
   expect_error(mio_remesh(cube, 10, metric = "isotropic", max_anisotropy = 2.0))
 
   expect_error(mio_remesh(cube, 3))
+})
+
+test_that("remesh_volume retetrahedralizes by isosurface stuffing", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  # Unlike remesh, remesh_volume accepts the closed surface directly and
+  # returns a tetra mesh.
+  r <- mio_remesh_volume(cube, cell_size = 0.4, watertight_check = "off")
+  on.exit(mio_release(r$mesh), add = TRUE)
+  expect_equal(mio_cell_block_type(r$mesh, 1), "tetra")
+  expect_gt(r$num_tets, 0)
+  expect_equal(r$num_tets, mio_num_cells(r$mesh))
+  expect_gte(r$num_vertices_warped, 0)
+  expect_gte(r$num_tets_rejected, 0)
+  expect_gte(r$num_non_manifold_edges, 0)
+  expect_true(r$input_quality$watertight)
+
+  # Neither resolution nor cell_size given is rejected by name.
+  expect_error(mio_remesh_volume(cube))
 })

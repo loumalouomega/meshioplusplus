@@ -154,9 +154,16 @@ end
 Relax the point coordinates toward their edge-neighbour centroids. Topology and
 every data value pass through unchanged — only the points move.
 
+`method` is `"taubin"` (default, shrink-free), `"laplacian"` (stronger per
+pass, shrinks the mesh), or `"odt"` (optimal-Delaunay-triangulation
+smoothing — tet-only, raises on any other block; moves each free interior
+vertex toward the volume-weighted average of its incident tets'
+circumcenters).
+
 A **negative `lambda` means "this method's own default"**: 0.5 for
-`"laplacian"`, 0.33 for `"taubin"`. Taubin additionally needs
-`mu < -lambda < 0`. See `doc/smooth.md`.
+`"laplacian"`, 0.33 for `"taubin"`, 0.9 for `"odt"`. Taubin additionally
+needs `mu < -lambda < 0`; `mu` is silently ignored by `"laplacian"` and
+`"odt"`. See `doc/smooth.md`.
 
 The `frozen` pin mask of the C++ API is **not reachable across the C ABI** (a
 documented flat-ABI gap shared with Fortran).
@@ -498,6 +505,81 @@ function remesh(m::Mesh, num_clusters::Integer; subdivide::Integer=-1,
      num_iterations=Int(rep.num_iterations), subdivide_applied=Int(rep.subdivide_applied),
      num_isolated_clusters=Int(rep.num_isolated_clusters),
      num_non_manifold_vertices=Int(rep.num_non_manifold_vertices))
+end
+
+"""
+    remesh_volume(mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
+                  padding=0.0, padding_relative=0.1, max_cells=20_000_000,
+                  max_tets=20_000_000, warp_fraction=0.35, sign=:pseudonormal,
+                  watertight_check=:warn)
+        -> (; mesh, num_tets, num_vertices_warped, num_tets_rejected,
+             num_non_manifold_edges, input_quality)
+
+Retetrahedralize `mesh` (a volume mesh, or a closed surface) at a
+caller-chosen resolution by isosurface stuffing — the volumetric sibling of
+[`remesh`](@ref). Unlike `remesh`, `mesh` may be a VOLUME mesh directly (its
+boundary is extracted internally) as well as a closed surface. Same
+no-correspondence-with-the-input output contract as `remesh`: new points, new
+connectivity, `point_data`/`cell_data`/named regions dropped, `field_data`
+carried.
+
+Exactly one of `resolution`/`cell_size` must be given, sizing a
+body-centered cubic (BCC) lattice whose uncut tets have dihedral angles from
+a fixed, mesh-size-independent set. `warp_fraction` (default `0.35`) moves
+lattice vertices near the surface onto it, trading a small, measured chance
+of non-manifold boundary edges (reported as `num_non_manifold_edges`) for
+substantially better boundary tet quality; `0` disables warping and gives an
+exactly watertight but lower-quality boundary. See `doc/remesh_volume.md`
+for the measured tradeoff.
+
+Attribution: implemented from the PUBLISHED DESCRIPTION of Labelle &
+Shewchuk, "Isosurface Stuffing" (SIGGRAPH 2007) only — neither the paper's
+own reference implementation (Stellar) nor TetGen (AGPL-3.0) is read or
+vendored here. See `doc/remesh_volume.md`.
+"""
+function remesh_volume(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
+                       padding::Real=0.0, padding_relative::Real=0.1,
+                       max_cells::Integer=20_000_000, max_tets::Integer=20_000_000,
+                       warp_fraction::Real=0.35, sign=:pseudonormal, weight=:angle,
+                       watertight_check=:warn, surface_region::AbstractString="",
+                       grid_cell_size::Real=0.0, max_winding_work::Real=2.0e9)
+    res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
+    (resolution === nothing || length(res) == 3) ||
+        throw(ArgumentError("resolution must have three entries"))
+    bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
+    (bounds === nothing || length(bnd) == 6) ||
+        throw(ArgumentError("bounds must have six entries"))
+
+    region_buf = Vector{UInt8}(codeunits(String(surface_region)))
+    push!(region_buf, 0x00)
+    report = Ref{_CRemeshVolumeReport}()
+    ptr = GC.@preserve res bnd region_buf begin
+        inner = _sdf_opts(; sign, weight, location=:corner, band=0.0,
+                          record_closest_cell=false, record_inside=false, watertight_check,
+                          surface_region, grid_cell_size, max_winding_work, region_buf)
+        opts = _CRemeshVolumeOpts(isempty(res) ? Ptr{Int64}(C_NULL) : pointer(res),
+                                  isempty(bnd) ? Ptr{Cdouble}(C_NULL) : pointer(bnd),
+                                  Cdouble(cell_size === nothing ? 0.0 : cell_size),
+                                  Cdouble(padding), Cdouble(padding_relative),
+                                  Int64(max_cells), Int64(max_tets), Cdouble(warp_fraction),
+                                  (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)),
+                                  inner)
+        ccall(_sym(:mio_remesh_volume_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshVolumeOpts}, Ptr{_CRemeshVolumeReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    q = rep.input_quality
+    (mesh=Mesh(r), num_tets=Int(rep.num_tets),
+     num_vertices_warped=Int(rep.num_vertices_warped),
+     num_tets_rejected=Int(rep.num_tets_rejected),
+     num_non_manifold_edges=Int(rep.num_non_manifold_edges),
+     input_quality=(boundary_edges=Int(q.boundary_edges),
+                    non_manifold_edges=Int(q.non_manifold_edges),
+                    inconsistent_pairs=Int(q.inconsistent_pairs),
+                    degenerate_triangles=Int(q.degenerate_triangles),
+                    watertight=q.watertight != 0))
 end
 
 # --- combining / comparing ---------------------------------------------------

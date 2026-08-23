@@ -109,6 +109,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -1348,6 +1349,65 @@ PYBIND11_MODULE(_core, m) {
         py::arg("max_cells") = 20000000, py::arg("sign") = "pseudonormal",
         py::arg("weight") = "angle", py::arg("location") = "corner", py::arg("band") = 0.0,
         py::arg("record_closest_cell") = false, py::arg("record_inside") = false,
+        py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
+        py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+
+    // Volumetric retetrahedralization by isosurface stuffing -- the
+    // volumetric sibling of `remesh`, generating an entirely new tet mesh
+    // (no point/cell maps, point_data/cell_data/regions dropped) rather than
+    // working on the input's own cells. Same lattice-sizing and distance
+    // kwargs as `compute_sdf`, since it is a lattice generator too. See
+    // operations/remesh_volume.hpp and doc/remesh_volume.md.
+    m.def(
+        "remesh_volume",
+        [](py::object pymesh, py::object resolution, py::object cell_size, py::object bounds,
+           double padding, double padding_relative, std::int64_t max_cells, std::int64_t max_tets,
+           double warp_fraction, const std::string& sign, const std::string& weight,
+           const std::string& watertight_check, const std::string& surface_region,
+           double grid_cell_size, double max_winding_work) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshVolumeOptions options;
+            if (!resolution.is_none())
+                options.mResolution = resolution.cast<std::array<std::int64_t, 3>>();
+            if (!cell_size.is_none())
+                options.mCellSize = cell_size.cast<double>();
+            if (!bounds.is_none())
+                options.mBounds = bounds.cast<std::array<double, 6>>();
+            options.mPadding = padding;
+            options.mPaddingRelative = padding_relative;
+            options.mMaxCells = max_cells;
+            options.mMaxTets = max_tets;
+            options.mWarpFraction = warp_fraction;
+            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mDistance.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            options.mDistance.mSurfaceRegion = surface_region;
+            options.mDistance.mGridCellSize = grid_cell_size;
+            options.mDistance.mMaxWindingWork = max_winding_work;
+            meshioplusplus::RemeshVolumeResult r = meshioplusplus::remesh_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::dict q;
+            q["boundary_edges"] = r.mQuality.mBoundaryEdges;
+            q["non_manifold_edges"] = r.mQuality.mNonManifoldEdges;
+            q["inconsistent_pairs"] = r.mQuality.mInconsistentPairs;
+            q["degenerate_triangles"] = r.mQuality.mDegenerateTriangles;
+            q["watertight"] = r.mQuality.mWatertight;
+            out["input_quality"] = q;
+            out["num_tets"] = r.mNumTets;
+            out["num_vertices_warped"] = r.mNumVerticesWarped;
+            out["num_tets_rejected"] = r.mNumTetsRejected;
+            out["num_non_manifold_edges"] = r.mNumNonManifoldEdges;
+            return out;
+        },
+        py::arg("mesh"), py::arg("resolution") = py::none(), py::arg("cell_size") = py::none(),
+        py::arg("bounds") = py::none(), py::arg("padding") = 0.0,
+        py::arg("padding_relative") = 0.1, py::arg("max_cells") = 20000000,
+        py::arg("max_tets") = 20000000, py::arg("warp_fraction") = 0.35,
+        py::arg("sign") = "pseudonormal", py::arg("weight") = "angle",
         py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
         py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
 

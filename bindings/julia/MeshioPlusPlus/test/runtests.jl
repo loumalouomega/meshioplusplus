@@ -542,6 +542,13 @@ end
     @test s.max_displacement >= 0.0
     close(s.mesh)
 
+    # method="odt": tet-only, C++-core only. `m`'s own block is "tetra".
+    so = smooth(m; method="odt", iterations=1, fix_boundary=false, preserve_features=false)
+    @test num_points(so.mesh) == 5
+    @test num_cells(so.mesh) == 2
+    @test so.num_nodes_moved >= 0
+    close(so.mesh)
+
     b = crop_bbox(m, [-1.0, -1.0, -1.0], [10.0, 10.0, 10.0])
     @test num_cells(b) == 2                   # the box holds everything
     close(b)
@@ -681,6 +688,32 @@ end
 
     # Too few clusters is rejected by name.
     @test_throws MeshioError remesh(octa, 3)
+
+    close(octa)
+end
+
+@testset "operations: remesh_volume" begin
+    octa = Mesh()
+    set_points!(octa, Float64[1 -1 0 0 0 0; 0 0 1 -1 0 0; 0 0 0 0 1 -1])
+    add_cell_block!(octa, "triangle",
+                    Int64[1 3 2 4 3 2 4 1; 3 2 4 1 1 3 2 4; 5 5 5 5 6 6 6 6])
+
+    # Unlike remesh, remesh_volume accepts the closed surface directly and
+    # returns a tetra mesh.
+    r = remesh_volume(octa; cell_size=0.4, watertight_check=:off)
+    @test num_points(r.mesh) > 0
+    @test num_cell_blocks(r.mesh) == 1
+    @test cell_block_type(r.mesh, 1) == "tetra"
+    @test r.num_tets > 0
+    @test r.num_tets == num_cells(r.mesh)
+    @test r.num_vertices_warped >= 0
+    @test r.num_tets_rejected >= 0
+    @test r.num_non_manifold_edges >= 0
+    @test r.input_quality.watertight
+    close(r.mesh)
+
+    # Neither resolution nor cell_size given is rejected by name.
+    @test_throws MeshioError remesh_volume(octa)
 
     close(octa)
 end
