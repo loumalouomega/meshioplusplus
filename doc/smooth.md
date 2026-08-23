@@ -1,6 +1,6 @@
-# Smoothing (Laplacian / Taubin)
+# Smoothing (Laplacian / Taubin / ODT)
 
-`meshioplusplus.smooth(mesh, method="taubin", iterations=10)` improves **element shape** by relaxing each free node toward the centroid of its edge neighbours. It is a mesh **operation** (like [refine](/refine) and [clean](/clean)), not a file format, and uses only standard C++/numpy, so it runs under every mesh backend.
+`meshioplusplus.smooth(mesh, method="taubin", iterations=10)` improves **element shape** by relaxing each free node toward the centroid of its edge neighbours (`method="odt"` instead moves each free interior tet vertex toward the volume-weighted average of its incident tets' circumcenters — see [ODT smoothing](#odt-smoothing) below). It is a mesh **operation** (like [refine](/refine) and [clean](/clean)), not a file format, and uses only standard C++/numpy, so it runs under every mesh backend.
 
 It is a **pure coordinate move**. Connectivity, cell counts, `cell_data`, `field_data` and `point_data` *values* all come through unchanged; only the point coordinates differ, and the points array keeps its input dtype. That makes `smooth` the geometric counterpart to [mesh quality](/mesh_quality), which only measures the thing this operation fixes.
 
@@ -46,6 +46,24 @@ The difference is not subtle — the same noisy grid, 40 iterations of each, wit
 ::: tip Python naming
 The Python parameter is `lambda_`, with a trailing underscore, because `lambda` is a Python keyword. Every other surface spells it `lambda`.
 :::
+
+## ODT smoothing
+
+`method="odt"` is optimal-Delaunay-triangulation smoothing: rather than the edge-neighbour centroid `laplacian`/`taubin` use, each free **interior** tet vertex moves toward the volume-weighted average of its incident tets' circumcenters. It is closed-form, not iterative-within-a-pass — one pass computes the target directly from the current mesh, the same Jacobi update `laplacian`/`taubin` already use.
+
+**Tet-only.** `smooth` otherwise works on any mesh; `method="odt"` raises by name on any non-`tetra` block, rather than silently pinning or ignoring it. This is what closes the "ODT" half of `doc/roadmap.md`'s "Volumetric CVD/ODT" bullet — honestly, as ODT *smoothing* on an existing tet mesh's fixed connectivity, not ODT *remeshing* (which would need to change the connectivity itself; see [`remesh_volume`](/remesh_volume) for the operation that actually generates a fresh tet mesh).
+
+```python
+mesh = meshioplusplus.read("tangled.vtu")  # a tetra mesh
+
+better, report = meshioplusplus.smooth(mesh, method="odt", iterations=10, return_report=True)
+```
+
+`lambda`'s negative-sentinel-means-"this method's own default" convention (above) extends to ODT: its default is `0.9`, a near-full step toward the circumcenter average, damped rather than exactly `1.0` for the same reason the other two methods are not exactly `1.0`. `mu` is silently ignored by ODT, matching `laplacian`'s own silent ignoring of it — deliberately *not* a named-error option the way `RemeshOptions.max_anisotropy` is under the wrong metric, since making only the newest method strict while its sibling stays lenient would be a worse inconsistency than either rule applied uniformly.
+
+**Boundary pinning still applies**: with `fix_boundary=True` (the default), a tet mesh's boundary vertices are pinned exactly as under `laplacian`/`taubin`, so ODT only ever relaxes the interior. The inversion guard (below) applies unchanged too — an unguarded ODT step can invert a tet near a concave boundary, which is why the numpy fallback (below) refuses `method="odt"` unconditionally rather than only under `guard_inversion=True`.
+
+**This is C++-core only, with no numpy fallback at all** — unlike `laplacian`/`taubin`, whose continuous part the fallback does implement (just not the inversion guard). ODT's target is a genuinely different closed-form computation (a circumcenter, not a centroid), and pairing it with the same "raise unless the guard is off" fallback posture would still leave an unguarded ODT step meaningless on a concave mesh; `meshioplusplus.smooth(mesh, method="odt")` raises `NotImplementedError` naming the reason when `_core` is unavailable, for any input.
 
 ## The neighbour graph is edges, not cliques
 
@@ -108,12 +126,15 @@ meshioplusplus smooth rough.msh better.vtu
 meshioplusplus smooth rough.msh better.vtu --method laplacian --iterations 5
 meshioplusplus smooth rough.msh better.vtu --feature-angle 45 --no-guard-inversion
 meshioplusplus smooth rough.msh better.vtu --lambda 0.4 --mu=-0.45
+meshioplusplus smooth tangled.vtu better.vtu --method odt --iterations 10
 ```
 
 Negative values need the `--mu=-0.45` form, as for [transform](/transform) and [crop](/crop). See the [CLI reference](/cli).
 
 ## Other languages
 
-- **C API** — `mio_smooth(mesh, method, iterations, lambda, mu, fix_boundary, preserve_features, feature_angle, guard_inversion, &nodes_moved, &max_displacement, &skipped_inversion)` returns a plain `mio_mesh*`; the three counter out-params are individually optional. `frozen` is not exposed on the flat ABI. See the [C API reference](/c_api).
+- **C API** — `mio_smooth(mesh, method, iterations, lambda, mu, fix_boundary, preserve_features, feature_angle, guard_inversion, &nodes_moved, &max_displacement, &skipped_inversion)` returns a plain `mio_mesh*`; the three counter out-params are individually optional. `frozen` is not exposed on the flat ABI. `method` is passed straight through, so `"odt"` needs no C API surface of its own beyond the string. See the [C API reference](/c_api).
 - **Fortran** — `mesh%smooth(method, iterations [, lambda, mu, fix_boundary, preserve_features, feature_angle, guard_inversion, nodes_moved, max_displacement, skipped_inversion])`. See the [Fortran reference](/fortran).
+- **Julia** — `smooth(mesh; method="taubin", iterations=10, ...)`. See the [Julia reference](/julia).
+- **R** — `mio_smooth(mesh, method="taubin", iterations=10L, ...)`. See the [R reference](/r).
 - **WebAssembly / JavaScript** — `smooth(mesh, method, iterations, lambda, mu, fixBoundary, preserveFeatures, featureAngle, guardInversion)`, returning `{mesh, numNodesMoved, maxDisplacement, numSkippedInversion}`. See the [WebAssembly reference](/wasm).

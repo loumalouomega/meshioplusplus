@@ -699,6 +699,41 @@ meshioplusplus remesh bracket.stl out.vtu --num-clusters 2000 --gradation 1.5 --
 
 ---
 
+## meshioplusplus remesh-volume
+
+Retetrahedralize a **volume** mesh (or a closed surface) at a caller-chosen resolution by isosurface stuffing over a body-centered cubic (BCC) lattice — the volumetric sibling of `remesh` (see [volumetric remeshing](/remesh_volume)). Unlike `remesh`, this accepts a volume mesh directly; its boundary is extracted internally.
+
+```
+meshioplusplus remesh-volume [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--resolution nx,ny,nz` | Cell counts of the root lattice (exactly one of `--resolution`/`--cell-size`) |
+| `--cell-size S` | Cubic cell size of the root lattice |
+| `--bounds xlo,ylo,zlo,xhi,yhi,zhi` | Explicit bounds; the mesh's own bounding box by default (negatives need the `--bounds=` form) |
+| `--padding P` | Grow the box by this on every side, in world units |
+| `--padding-relative R` | Grow the box by this fraction of its diagonal (default `0.1`) |
+| `--max-cells N` | Refuse to generate a root lattice above this many cells |
+| `--max-tets N` | Refuse an output with more tets than this (checked after cutting; unlike `--max-cells`, has no "lifts the limit" value) |
+| `--warp-fraction F` | Fraction of a lattice vertex's shortest incident edge within which it may be warped onto the surface; `0` disables warping (default `0.35`; negatives need the `--warp-fraction=` form) |
+| `--sign pseudonormal\|winding-number` | How lattice vertices are classified inside/outside |
+| `--watertight-check off\|warn\|error` | What to do about a non-watertight input surface (default `warn`) |
+| `--quiet` (`-q`) | Do not print the run summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output is a brand-new single-`tetra`-block mesh with new points and new connectivity — there is no point/cell map, and `point_data`/`cell_data`/named regions are dropped (`field_data` passes through); transfer a field with `interpolate`/`conservative-interpolate` afterwards. Warping (`--warp-fraction`) trades a small, measured chance of non-manifold boundary edges (reported as `non-manifold edges` in the summary) for substantially better boundary tet quality; `--warp-fraction 0` gives an exactly watertight but lower-quality boundary. See [the measured tradeoff](/remesh_volume#the-warp-quality-tradeoff-measured).
+
+**Examples:**
+
+```sh
+meshioplusplus remesh-volume part.vtu out.vtu --cell-size 0.5
+meshioplusplus remesh-volume part.vtu out.vtu --resolution 64,64,64 --warp-fraction 0.2
+meshioplusplus remesh-volume surface.stl out.vtu --cell-size 0.3 --watertight-check error
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element shape (see [smoothing](/smooth)).
@@ -709,10 +744,10 @@ meshioplusplus smooth [options] INFILE OUTFILE
 
 | Option | Description |
 |--------|-------------|
-| `--method taubin\|laplacian` | Smoothing operator (default `taubin`, which does not shrink; `laplacian` is stronger per pass but shrinks) |
+| `--method taubin\|laplacian\|odt` | Smoothing operator (default `taubin`, which does not shrink; `laplacian` is stronger per pass but shrinks; `odt` is optimal-Delaunay-triangulation smoothing, tet-only and C++-core only, moving each free interior vertex toward the volume-weighted average of its incident tets' circumcenters) |
 | `--iterations N` | How many iterations to run; for `taubin` one iteration is two passes (default `10`) |
-| `--lambda L` | Relaxation factor of the smoothing pass, in (0, 1); the default depends on `--method` (`0.5` laplacian, `0.33` taubin) |
-| `--mu=M` | `taubin` only: un-shrinking factor, must satisfy `mu < -lambda < 0` (default `-0.34`; the negative value needs the `--mu=` form) |
+| `--lambda L` | Relaxation factor of the smoothing pass, in (0, 1); the default depends on `--method` (`0.5` laplacian, `0.33` taubin, `0.9` odt) |
+| `--mu=M` | `taubin` only: un-shrinking factor, must satisfy `mu < -lambda < 0` (default `-0.34`; the negative value needs the `--mu=` form); silently ignored by `laplacian` and `odt` |
 | `--no-fix-boundary` | Let boundary nodes move too (they are pinned by default) |
 | `--no-preserve-features` | Do not pin feature nodes (sharp corners/creases are kept by default) |
 | `--feature-angle A` | Angle in degrees between boundary facet normals above which their shared nodes are pinned as features (default `30`) |
@@ -730,6 +765,7 @@ meshioplusplus smooth noisy.vtu smooth.vtu --iterations 40
 meshioplusplus smooth in.msh out.vtu --method laplacian --lambda 0.4
 meshioplusplus smooth in.msh out.vtu --mu=-0.4 --feature-angle 45
 meshioplusplus smooth in.msh out.vtu --no-fix-boundary --no-guard-inversion -q
+meshioplusplus smooth tangled.vtu out.vtu --method odt --iterations 10
 ```
 
 ---
