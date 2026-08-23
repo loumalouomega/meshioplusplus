@@ -8,6 +8,49 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.13.0 (2026-08-23)
+
+**Roadmap §1 closed in full** — the last remaining bullet, "Volumetric
+CVD/ODT", closes by a different algorithm than the one named (honestly
+reported as such, not as a literal Delaunay/CVD implementation), plus a
+separate closure of the "ODT" half by name.
+
+- **`remesh_volume`** (new operation, `operations/remesh_volume.{hpp,cpp}`,
+  [`doc/remesh_volume.md`](doc/remesh_volume.md)) — retetrahedralizes a
+  volume mesh (or a closed surface) at a caller-chosen resolution by
+  isosurface stuffing (Labelle & Shewchuk, SIGGRAPH 2007, implemented from
+  the published description only) over a body-centered cubic (BCC) lattice.
+  `remesh`'s volumetric sibling: nothing else in this repo can *raise* a
+  tet mesh's quality at a chosen resolution. Every uncut lattice tet has a
+  dihedral angle from a fixed, mesh-size-independent set; `warp_fraction`
+  (default `0.35`) moves lattice vertices near the surface onto it, trading
+  a small, *measured* chance of non-manifold boundary edges (reported as
+  `num_non_manifold_edges`) for substantially better boundary tet quality —
+  `0` disables warping for an exactly watertight but lower-quality boundary.
+  Unlike `remesh`, accepts a volume mesh directly (its boundary is
+  extracted internally). Shipped across every binding surface (Python, C
+  API, Fortran, Julia, R, WASM, both CLIs, the settings pipeline, MCP) in
+  one release.
+- **`SmoothMethod::Odt`** (`smooth(mesh, method="odt")`,
+  [`doc/smooth.md#odt-smoothing`](doc/smooth.md#odt-smoothing)) —
+  optimal-Delaunay-triangulation smoothing on `smooth`'s existing, fixed
+  connectivity: each free interior tet vertex moves to the closed-form
+  volume-weighted average of its incident tets' circumcenters. Tet-only;
+  closes the "ODT" half of the roadmap bullet's name honestly as
+  *smoothing*, not *remeshing*. Needed no new `SmoothOptions` field (reuses
+  the existing negative-`lambda`-means-"this method's own default"
+  sentinel, default `0.9`) and no C API/Fortran/Julia/R/WASM code changes
+  beyond the method string, since every surface already passes it through
+  unchanged. C++-core only, no numpy fallback (unlike `laplacian`/`taubin`).
+- **`MESHIOPLUSPLUS_ABI_VERSION` 9→10.** `remesh_volume` alone is Tier C (a
+  wholly new header). The bump is caused by `SmoothMethod::Odt`: giving
+  `SmoothMethod` an explicit `: std::uint8_t` underlying type for the first
+  time (previously the scoped-enum default `int`) is a Tier A layout
+  change under `doc/abi.md`'s own rule, independent of the appended `Odt`
+  enumerator itself or of `SmoothOptions` gaining no new field.
+  `SmoothOptions` is pinned in `tests/cpp/test_abi_layout.cpp` for the
+  first time as a result.
+
 ## v10.12.0 (2026-08-20)
 
 **Roadmap §1 closed** — the anisotropic metric ships, closing the last

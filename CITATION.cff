@@ -40,3 +40,22 @@ license: MIT
 # is an original synthesis built on this project's own pre-existing
 # Garland-Heckbert quadric machinery (detail/decimate_common.hpp). See
 # doc/remesh.md for the full attribution and licence reasoning.
+#
+# The `remesh_volume` operation (src/cpp/src/operations/remesh_volume.cpp)
+# is implemented from the PUBLISHED DESCRIPTION only of:
+#   J. Labelle and J. R. Shewchuk, "Isosurface Stuffing: Fast Tetrahedral
+#   Meshes with Good Dihedral Angles", ACM Transactions on Graphics
+#   (SIGGRAPH 2007), 26(3), Article 57.
+# Neither the paper's own reference implementation (Stellar, non-commercial
+# licence) nor TetGen (AGPL-3.0, also by Shewchuk) is read or vendored here.
+# The 12-tet body-centered-cubic lattice tetrahedralization used is this
+# project's own derivation (a deliberately simpler alternative to the
+# paper's own construction), independently verified and algebraically
+# pinned rather than transcribed. See doc/remesh_volume.md for the full
+# attribution and licence reasoning.
+#
+# SmoothMethod::Odt (src/cpp/src/operations/smooth.cpp) cites the
+# variational-tetrahedral-meshing literature (e.g. P. Alliez et al.,
+# "Variational Tetrahedral Meshing", SIGGRAPH 2005) for the optimal-Delaunay-
+# triangulation energy it minimizes; CGAL's GPL-licensed Mesh_3
+# implementation is not read.
