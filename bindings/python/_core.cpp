@@ -23,6 +23,7 @@
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
@@ -260,6 +261,11 @@ PYBIND11_MODULE(_core, m) {
     // extension refuses to build against any other; see CMakeLists.txt),
     // exposed for symmetry with the standalone/WASM builds.
     m.attr("__mesh_backend__") = meshioplusplus::mesh_backend_name();
+    // The release this extension was compiled against (MESHIOPLUSPLUS_VERSION_STRING),
+    // so the Python-side provenance tag (meshioplusplus._provenance.TAG, built from
+    // installed package metadata) can be pinned against what the C++ core actually
+    // compiled with, rather than the two silently drifting.
+    m.attr("__version__") = MESHIOPLUSPLUS_VERSION_STRING;
 
     // Translate C++ I/O errors to the existing Python exception classes.
     py::register_exception_translator([](std::exception_ptr p) {
