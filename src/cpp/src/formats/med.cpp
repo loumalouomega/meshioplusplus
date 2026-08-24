@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
@@ -787,11 +788,16 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         if (rMesh.Region(i).mKind == RegionKind::Side)
             ++n;
-    if (n > 0)
+    if (n > 0) {
         log::warn(
             "MED: {} side region(s) have no MED equivalent (a facet is not a node or an "
             "element) and were not written.",
             n);
+        detail::provenance_note("regions-dropped",
+                                std::to_string(n) +
+                                    " side region(s) dropped -- a facet is neither a node nor "
+                                    "an element in MED");
+    }
 }
 
 // --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
@@ -1604,6 +1610,9 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                 "MED: cell type '{}' has 'cell_tags' covering only some of its blocks; FAM not "
                 "written for this section.",
                 ctype);
+            detail::provenance_note("data-dropped",
+                                    "FAM not written for cell type '" + std::string(ctype) +
+                                        "' -- cell_tags covers only some of its blocks");
         } else if (synthesized_cell) {
             NDArray fam = med_concat_ndarray_rows(synth_cell_fam_blocks, idxs);
             h5::write_dataset(g, "FAM", fam);
@@ -1630,6 +1639,9 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                 "MED: cell type '{}' has 'med:num' covering only some of its blocks; NUM not "
                 "written for this section.",
                 ctype);
+            detail::provenance_note("data-dropped",
+                                    "NUM not written for cell type '" + std::string(ctype) +
+                                        "' -- med:num covers only some of its blocks");
         }
     }
 

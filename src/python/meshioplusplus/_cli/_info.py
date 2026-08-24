@@ -63,6 +63,17 @@ def _print_metadata(meta):
             tag = "" if r["tag"] < 0 else f" tag={r['tag']}"
             print(f"    {r['name']} ({r['kind']}, {r['num_entries']} entries{tag})")
 
+    provenance = meta.get("provenance") or []
+    if provenance:
+        # Say whose block it is: a file can carry a comment that merely looks
+        # like a header, and reporting that as meshio++'s would be a lie.
+        whose = (
+            "" if meta.get("provenance_recognised") else " (not written by meshio++)"
+        )
+        print(f"  Provenance{whose}:")
+        for line in provenance:
+            print(f"    {line}")
+
     if "bbox_min" in meta:
         lo = ", ".join(f"{v:g}" for v in meta["bbox_min"])
         hi = ", ".join(f"{v:g}" for v in meta["bbox_max"])

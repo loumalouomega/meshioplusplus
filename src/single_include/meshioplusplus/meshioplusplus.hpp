@@ -96,7 +96,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 10
+#define MESHIOPLUSPLUS_ABI_VERSION 11
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7719,6 +7719,30 @@ struct MeshMetadata {
      */
     std::vector<RegionSummary> mRegions;
 
+    /**
+     * @brief The provenance block the file carries, or empty when it has none.
+     *
+     * The lines as found, comment punctuation stripped, in file order --
+     * deliberately not re-parsed into a `ProvenanceRecord`, since a block can
+     * have been hand-edited, truncated by a fixed-width slot, or written by a
+     * later release carrying fields this build has never heard of. See
+     * `detail/provenance.hpp`.
+     *
+     * Filled from the file's bytes by `registry_read_metadata`, on both the
+     * native and the fall-back path -- unlike everything else here it cannot
+     * come from `metadata_from_mesh`, since a `Mesh` does not carry it.
+     */
+    std::vector<std::string> mProvenance;
+
+    /**
+     * @brief Whether `mProvenance`'s first line is meshio++'s own tag format.
+     *
+     * False both for a file with no block at all and for one whose block does
+     * not start the way this library writes one -- the honest distinction
+     * between "meshio++ wrote this" and "something left a comment here".
+     */
+    bool mProvenanceRecognised = false;
+
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {
         std::size_t total = 0;
@@ -9059,7 +9083,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 16
+#define MESHIOPLUSPLUS_VERSION_MINOR 17
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9069,7 +9093,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.16.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.17.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -9330,6 +9354,64 @@ MESHIOPLUSPLUS_API std::string provenance_render_xml_comment(SlotTier tier);
  * recorded -- these files get shared.
  */
 MESHIOPLUSPLUS_API std::string provenance_timestamp();
+
+/// What `read_provenance_lines` found in a file.
+struct ProvenanceReadResult {
+    /// The block's lines as found, comment punctuation stripped, in file
+    /// order. Empty when the file carries none.
+    std::vector<std::string> mLines;
+    /// Whether the first line is our own tag format (`"Written by meshio++
+    /// v<something>"`). False for a file with no block at all, and for one
+    /// whose block does not start the way this library writes one.
+    bool mRecognised = false;
+};
+
+/**
+ * @brief Recovers the provenance block a writer left in @p rPath.
+ *
+ * **One scanner, not 44 parsers.** `render_block`'s output lines are
+ * format-independent by construction -- only the comment punctuation wrapping
+ * them differs -- so recovering them is a matter of reading the file's head,
+ * stripping whatever leading marker each format uses (`#`, `!`, `*`, `$`,
+ * `%`, `//`, PLY's `comment `, an XML `<!--`) plus any trailing box
+ * structure, and keeping the runs that match the shapes this file writes.
+ *
+ * **Deliberately returns raw lines rather than a re-parsed
+ * `ProvenanceRecord`.** A block can have been hand-edited, truncated by a
+ * `Bounded` slot, or written by a later release carrying fields this build
+ * has never heard of; handing back what is actually there, plus a flag for
+ * "this at least starts like ours", cannot silently drop or mis-attribute
+ * any of those. Callers wanting structure can match on the documented line
+ * prefixes themselves.
+ *
+ * Two formats are **not** served by this scanner and are handled by their own
+ * readers instead: exodus keeps the block in a netCDF `title` attribute
+ * rather than the head bytes (`read_exodus_metadata` reads it, having already
+ * opened the file for `mTimeValues`), and the HDF5 containers carry no block
+ * at all (`SlotTier::None`).
+ *
+ * Never throws for a missing or unreadable file -- an absent block and an
+ * unopenable path are both simply "nothing found", since this is a
+ * best-effort enrichment of a summary, not a read whose failure should
+ * fail the summary.
+ *
+ * @param rPath the file to scan.
+ * @param max_bytes how much of the head to read; the block is always at or
+ *        near the top of every slot that can hold one.
+ */
+MESHIOPLUSPLUS_API ProvenanceReadResult read_provenance_lines(const std::string& rPath,
+                                                              std::size_t max_bytes = 8192);
+
+/**
+ * @brief `read_provenance_lines`' scanner, over bytes already in hand.
+ *
+ * The half exodus needs: it has the block as one newline-joined netCDF
+ * attribute string rather than a file to open, and re-opening the file to
+ * scan it would be both wasteful and wrong (the attribute is not in the head
+ * bytes). Same stripping and matching rules, so the two paths cannot
+ * disagree about what counts as a block.
+ */
+MESHIOPLUSPLUS_API ProvenanceReadResult scan_provenance_text(std::string_view text);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -41283,7 +41365,9 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <mutex>
+#include <string_view>
 
 // Project includes
 
@@ -41522,6 +41606,150 @@ std::string provenance_timestamp() {
     char buf[32];
     std::size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
     return std::string(buf, n);
+}
+
+namespace {
+
+/// The line shapes `render_block` emits, plus the tag itself. A line counts as
+/// provenance iff it starts with one of these once its comment punctuation is
+/// stripped -- which is what makes one scanner serve every format.
+constexpr const char* kProvenancePrefixes[] = {
+    "Written by meshio++ v", "Converted from ", "Written as ",
+    "Operation: ",           "Note [",          "Timestamp: ",
+};
+
+bool prov_starts_with(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+/// Trims ASCII whitespace from both ends.
+std::string_view prov_trim(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
+        s.remove_suffix(1);
+    return s;
+}
+
+bool prov_is_provenance_line(std::string_view s) {
+    for (const char* p : kProvenancePrefixes)
+        if (prov_starts_with(s, p))
+            return true;
+    return false;
+}
+
+/// Strips one leading comment marker, if present.
+///
+/// Deliberately tolerant rather than per-format: the marker sets across the 44
+/// formats are small and none of them collides with the content prefixes
+/// above, so stripping any of them can only expose a real provenance line or
+/// leave a non-matching one to be rejected by the prefix test anyway.
+std::string_view prov_strip_marker(std::string_view line) {
+    line = prov_trim(line);
+    if (prov_starts_with(line, "<!--"))
+        line.remove_prefix(4);
+    else if (prov_starts_with(line, "//"))
+        line.remove_prefix(2);
+    else if (prov_starts_with(line, "comment "))
+        line.remove_prefix(8);
+    else if (!line.empty() && (line.front() == '#' || line.front() == '!' || line.front() == '*' ||
+                               line.front() == '$' || line.front() == '%'))
+        line.remove_prefix(1);
+    return prov_trim(line);
+}
+
+/// Yields every substring of @p rRaw that could be a provenance line, best
+/// candidate first, and calls @p rFn with each until one is accepted.
+///
+/// Three shapes have to be tried rather than one, and each earns its place:
+/// the plain comment-stripped line (almost every format); the body of a
+/// keyword slot that *wraps* the text in a quote or paren (Tecplot's
+/// `TITLE = "..."`, Ansys's `(1 "...")`) -- where the closing punctuation must
+/// be removed only because this opener put it there, never unconditionally,
+/// since `Converted from x (fmt)` and `Operation: Clean(Weld=true)` both end
+/// in a legitimate `)`; and each `|`-delimited cell of a box-drawn banner
+/// (OpenFOAM), whose credit sits in an interior cell rather than at the start
+/// of the line.
+template <class F>
+void prov_for_each_candidate(std::string_view rRaw, F&& rFn) {
+    std::string_view stripped = prov_strip_marker(rRaw);
+    if (rFn(stripped))
+        return;
+
+    for (std::string_view lead : {std::string_view("TITLE = \""), std::string_view("TITLE=\""),
+                                  std::string_view("(1 \"")}) {
+        if (!prov_starts_with(stripped, lead))
+            continue;
+        std::string_view body = stripped.substr(lead.size());
+        // Drop exactly the closer this opener implies, nothing more.
+        while (!body.empty() && (body.back() == ')' || body.back() == '"'))
+            body.remove_suffix(1);
+        if (rFn(prov_trim(body)))
+            return;
+    }
+
+    if (rRaw.find('|') == std::string_view::npos)
+        return;
+    std::size_t pos = 0;
+    while (pos <= rRaw.size()) {
+        std::size_t bar = rRaw.find('|', pos);
+        std::string_view cell =
+            rRaw.substr(pos, bar == std::string_view::npos ? std::string_view::npos : bar - pos);
+        if (rFn(prov_trim(cell)))
+            return;
+        if (bar == std::string_view::npos)
+            break;
+        pos = bar + 1;
+    }
+}
+
+}  // namespace
+
+ProvenanceReadResult scan_provenance_text(std::string_view text) {
+    ProvenanceReadResult out;
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        std::size_t nl = text.find('\n', pos);
+        std::string_view raw =
+            text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+
+        prov_for_each_candidate(raw, [&](std::string_view candidate) {
+            if (!prov_is_provenance_line(candidate))
+                return false;
+            // An XML block's closing "-->" can share the last content line.
+            while (candidate.size() >= 3 && candidate.compare(candidate.size() - 3, 3, "-->") == 0)
+                candidate = prov_trim(candidate.substr(0, candidate.size() - 3));
+            out.mLines.emplace_back(candidate);
+            return true;
+        });
+
+        if (nl == std::string_view::npos)
+            break;
+        pos = nl + 1;
+    }
+    out.mRecognised =
+        !out.mLines.empty() && prov_starts_with(out.mLines[0], "Written by meshio++ v");
+    return out;
+}
+
+ProvenanceReadResult read_provenance_lines(const std::string& rPath, std::size_t max_bytes) {
+    // Best-effort: an unopenable path is "nothing found", never a throw. This
+    // enriches a summary; it must not be able to fail one.
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        return {};
+    std::string head(max_bytes, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(max_bytes));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+
+    // Binary slots (STL's 80-byte header, EnSight's str80 records) NUL-pad
+    // their text. Treating NUL as a line break is what lets the same
+    // line-oriented scan find those without a separate code path.
+    for (char& c : head)
+        if (c == '\0')
+            c = '\n';
+
+    return scan_provenance_text(head);
 }
 
 }  // namespace detail
@@ -47448,6 +47676,11 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                 "zone-wide CellCenter FlowSolution cannot be distributed back across them; {} "
                 "cell_data array(s) not written.",
                 cnames.size());
+            detail::provenance_note(
+                "data-dropped",
+                std::to_string(cnames.size()) +
+                    " cell_data array(s) not written -- CGNS's CellCenter FlowSolution is "
+                    "per-zone and this mesh mixes topological dimensions");
         } else if (!cnames.empty()) {
             h5::Hid sol = cgns_create_solution(zone, kCgnsCellSolution, "CellCenter");
             for (const std::string& name : cnames) {
@@ -50726,6 +50959,22 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
         ~Closer() { nc_close(mId); }
     } closer{ncid};
     meta.mTimeValues = exo_time_values(ncid);
+    // Exodus is the one format whose provenance block is NOT in the file's
+    // head bytes -- it rides the netCDF `title` global attribute -- so the
+    // generic scanner in `registry_read_metadata` cannot see it. Read it here,
+    // where the file is already open for the time values, and hand it to the
+    // same scanner so the two paths agree on what counts as a block.
+    {
+        // Probe first: `read_att_text` throws on a missing attribute, and a
+        // file with no `title` is an ordinary case, not an error.
+        std::size_t title_len = 0;
+        if (nc_inq_attlen(ncid, NC_GLOBAL, "title", &title_len) == NC_NOERR) {
+            detail::ProvenanceReadResult found =
+                detail::scan_provenance_text(read_att_text(ncid, NC_GLOBAL, "title"));
+            meta.mProvenance = std::move(found.mLines);
+            meta.mProvenanceRecognised = found.mRecognised;
+        }
+    }
     return meta;
 }
 
@@ -55630,6 +55879,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (a.Size() != 1) {
             log::warn("mdpa: field_data '{}' has {} values; only scalars are written", name,
                       a.Size());
+            detail::provenance_note("data-dropped", "field_data '" + name +
+                                                        "' not written -- MDPA's ModelPartData "
+                                                        "holds scalars only");
             continue;
         }
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
@@ -55820,6 +56072,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 continue;
             if (r.mKind == RegionKind::Side) {
                 log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
+                detail::provenance_note("regions-dropped", "side region '" + name +
+                                                               "' dropped -- MDPA has no facet "
+                                                               "sets");
                 continue;
             }
             any = true;
@@ -56629,11 +56884,16 @@ void med_warn_side_regions_dropped(const Mesh& rMesh) {
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         if (rMesh.Region(i).mKind == RegionKind::Side)
             ++n;
-    if (n > 0)
+    if (n > 0) {
         log::warn(
             "MED: {} side region(s) have no MED equivalent (a facet is not a node or an "
             "element) and were not written.",
             n);
+        detail::provenance_note("regions-dropped",
+                                std::to_string(n) +
+                                    " side region(s) dropped -- a facet is neither a node nor "
+                                    "an element in MED");
+    }
 }
 
 // --- CHA (field) reading: the mirror image of write_cha_*, same scope -----
@@ -57446,6 +57706,9 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                 "MED: cell type '{}' has 'cell_tags' covering only some of its blocks; FAM not "
                 "written for this section.",
                 ctype);
+            detail::provenance_note("data-dropped",
+                                    "FAM not written for cell type '" + std::string(ctype) +
+                                        "' -- cell_tags covers only some of its blocks");
         } else if (synthesized_cell) {
             NDArray fam = med_concat_ndarray_rows(synth_cell_fam_blocks, idxs);
             h5::write_dataset(g, "FAM", fam);
@@ -57472,6 +57735,9 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
                 "MED: cell type '{}' has 'med:num' covering only some of its blocks; NUM not "
                 "written for this section.",
                 ctype);
+            detail::provenance_note("data-dropped",
+                                    "NUM not written for cell type '" + std::string(ctype) +
+                                        "' -- med:num covers only some of its blocks");
         }
     }
 
@@ -60317,8 +60583,8 @@ struct FoamFaceOrder {
  * conditions, which is strictly better than one that does not open.
  */
 bool foam_type_is_self_contained(const std::string& rType) {
-    return rType == "patch" || rType == "wall" || rType == "symmetry" ||
-           rType == "symmetryPlane" || rType == "empty" || rType == "wedge";
+    return rType == "patch" || rType == "wall" || rType == "symmetry" || rType == "symmetryPlane" ||
+           rType == "empty" || rType == "wedge";
 }
 
 /// Resolve the polyMesh directory. One function for both directions, so the
@@ -60381,7 +60647,7 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
 struct FoamPatchAssignment {
     std::vector<std::int64_t> mFacePatch;
     std::vector<FoamPatchOut> mPatches;
-    std::int64_t mNumOrphan = 0;         ///< 2D cell matching no face at all
+    std::int64_t mNumOrphan = 0;          ///< 2D cell matching no face at all
     std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
 };
 
@@ -60411,6 +60677,10 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                     "OpenFOAM: patch '{}' has type '{}', which needs dictionary entries meshio++ "
                     "does not carry; writing 'patch' instead so the case still loads",
                     p.mName, it->second);
+                detail::provenance_note(
+                    "data-dropped", "patch '" + p.mName + "' downgraded from type '" + it->second +
+                                        "' to 'patch' -- its companion dictionary entries "
+                                        "are not carried");
             }
         }
         fam_to_patch[fam] = out.mPatches.size();
@@ -60495,6 +60765,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
         if (counts[p] == 0) {
             log::warn("OpenFOAM: patch '{}' has no faces and is not written",
                       out.mPatches[p].mName);
+            detail::provenance_note("regions-dropped", "patch '" + out.mPatches[p].mName +
+                                                           "' dropped -- it has no faces");
             continue;
         }
         remap[p] = static_cast<std::int64_t>(kept.size());
@@ -60574,11 +60846,9 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
         detail::Vec3 acc{0, 0, 0};
         std::size_t n = 0;
         for (std::size_t k = 0; k < rFaces.NumCellFaces(c); ++k) {
-            const std::size_t f =
-                static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
+            const std::size_t f = static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
             for (std::size_t j = 0; j < rFaces.FaceSize(f); ++j) {
-                const detail::Vec3 p =
-                    detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
+                const detail::Vec3 p = detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
                 acc[0] += p[0];
                 acc[1] += p[1];
                 acc[2] += p[2];
@@ -60598,10 +60868,9 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
 
         // C2: internal faces first.
         if (is_internal != (rFaces.mNeighbour[f] >= 0))
-            return detail::format_compat(
-                "C2: face {} is {} but sits in the {} range", i,
-                rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
-                is_internal ? "internal" : "boundary");
+            return detail::format_compat("C2: face {} is {} but sits in the {} range", i,
+                                         rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
+                                         is_internal ? "internal" : "boundary");
 
         // C7: node ids in range, ring big enough to bound an area.
         if (rFaces.FaceSize(f) < 3)
@@ -60609,8 +60878,7 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
         for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k) {
             const std::int64_t id = rFaces.Face(f)[k];
             if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
-                return detail::format_compat("C7: face {} references node {}, out of range", i,
-                                             id);
+                return detail::format_compat("C7: face {} references node {}, out of range", i, id);
         }
 
         ring.clear();
@@ -60642,16 +60910,16 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
             // C4: normal points owner -> neighbour.
             const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
             const detail::Vec3& cn = centroid[static_cast<std::size_t>(rFaces.mNeighbour[f])];
-            const double d = nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) +
-                             nrm[2] * (cn[2] - co[2]);
+            const double d =
+                nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) + nrm[2] * (cn[2] - co[2]);
             if (!(d > 0.0))
                 return detail::format_compat(
                     "C4: internal face {} does not point from owner to neighbour", i);
         } else {
             // C5: boundary normal points out of the domain.
             const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
-            const double d = nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) +
-                             nrm[2] * (fc[2] - co[2]);
+            const double d =
+                nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) + nrm[2] * (fc[2] - co[2]);
             if (!(d > 0.0))
                 return detail::format_compat("C5: boundary face {} is wound inward", i);
         }
@@ -60669,12 +60937,12 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
             return detail::format_compat("C6: patch '{}' starts at {}, expected {}", patch.mName,
                                          patch.mStartFace, expect);
         for (std::int64_t i = patch.mStartFace; i < patch.mStartFace + patch.mNFaces; ++i) {
-            const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[
-                static_cast<std::size_t>(i)]);
+            const std::size_t f =
+                static_cast<std::size_t>(rOrder.mNewToOld[static_cast<std::size_t>(i)]);
             if (rAssign.mFacePatch[f] != static_cast<std::int64_t>(p))
                 return detail::format_compat(
-                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i,
-                    patch.mName, rAssign.mFacePatch[f]);
+                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i, patch.mName,
+                    rAssign.mFacePatch[f]);
         }
         expect += patch.mNFaces;
     }
@@ -60717,21 +60985,32 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             "an owner and one neighbour",
             faces.mNumNonManifold));
     if (faces.mNumUnorientable > 0)
-        log::warn("OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
-                  "written with the winding they arrived with",
-                  faces.mNumUnorientable);
+        log::warn(
+            "OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
+            "written with the winding they arrived with",
+            faces.mNumUnorientable);
     if (faces.mNumFlipped > 0)
         log::info("OpenFOAM: rewound {} inverted cell(s) so their faces point outward",
                   faces.mNumFlipped);
 
     const FoamPatchAssignment assign = foam_assign_patches(rMesh, faces, rInfo);
-    if (assign.mNumOrphan > 0)
+    if (assign.mNumOrphan > 0) {
         log::warn("OpenFOAM: {} boundary cell(s) match no cell face and are not written",
                   assign.mNumOrphan);
-    if (assign.mNumInternalTagged > 0)
-        log::warn("OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
-                  "put such a face on a patch, so they are not written",
-                  assign.mNumInternalTagged);
+        detail::provenance_note("cells-dropped",
+                                std::to_string(assign.mNumOrphan) +
+                                    " boundary cell(s) dropped -- they match no cell face");
+    }
+    if (assign.mNumInternalTagged > 0) {
+        log::warn(
+            "OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
+            "put such a face on a patch, so they are not written",
+            assign.mNumInternalTagged);
+        detail::provenance_note("cells-dropped",
+                                std::to_string(assign.mNumInternalTagged) +
+                                    " boundary cell(s) dropped -- they coincide with an internal "
+                                    "face, which OpenFOAM cannot put on a patch");
+    }
 
     const FoamFaceOrder order = foam_order_faces(faces, assign);
     const std::string bad = foam_validate_order(faces, order, assign, rMesh.Points(),
@@ -60754,10 +61033,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     // Companion files this writer does not produce but OpenFOAM would read.
     // Leaving a stale one behind corrupts the case, so remove exactly these --
     // never the whole directory, which may hold a user's own files.
-    for (const char* name : {"cellZones", "faceZones", "pointZones", "meshModifiers",
-                             "boundaryProcAddressing", "cellProcAddressing",
-                             "faceProcAddressing", "pointProcAddressing", "cellLevel",
-                             "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+    for (const char* name :
+         {"cellZones", "faceZones", "pointZones", "meshModifiers", "boundaryProcAddressing",
+          "cellProcAddressing", "faceProcAddressing", "pointProcAddressing", "cellLevel",
+          "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
         std::error_code rc;
         if (fs::remove(poly / name, rc))
             log::info("OpenFOAM: removed stale {}", name);
@@ -60812,8 +61091,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         foam_write_header(f, "labelList", "neighbour");
         f << order.mNumInternal << "\n(\n";
         for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-            f << faces.mNeighbour[static_cast<std::size_t>(order.mNewToOld[
-                  static_cast<std::size_t>(i)])]
+            f << faces.mNeighbour[static_cast<std::size_t>(
+                     order.mNewToOld[static_cast<std::size_t>(i)])]
               << "\n";
         f << ")\n";
     }
@@ -60831,9 +61110,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
 
-    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)",
-              poly.string(), faces.NumCells(), order.mNewToOld.size(), order.mNumInternal,
-              order.mPatches.size());
+    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
+              faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
 }
 
 }  // namespace meshioplusplus
@@ -61465,11 +61743,16 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         for (const auto cb : rMesh.CellRange())
             if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
                 ++dropped;
-        if (dropped > 0)
+        if (dropped > 0) {
             log::warn(
                 "PLY: writing the extracted skin of the volume cells; {} pre-existing "
                 "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
                 dropped);
+            detail::provenance_note("cells-dropped",
+                                    std::to_string(dropped) +
+                                        " non-volume cell block(s) dropped in favour of the "
+                                        "extracted skin of the volume cells");
+        }
         write_ply(rPath, extract_skin(rMesh, /*linearize=*/true), binary, /*skin=*/false);
         return;
     }
@@ -61515,6 +61798,14 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     if (num_cells > 0) {
         os << "element face " << num_cells << "\n";
         os << "property list uint8 int32 vertex_indices\n";
+        for (const auto cb : rMesh.CellRange()) {
+            if (is_legal(cb.Type()) && cb.NumCells() > 0 && cb.Conn().Dtype() == DType::Int64) {
+                detail::provenance_note("dtype",
+                                        "connectivity cast from int64 to int32 -- PLY has no "
+                                        "64-bit integer type");
+                break;
+            }
+        }
     }
     os << "end_header\n";
 
@@ -61850,11 +62141,16 @@ std::size_t stl_num_surface_blocks(const Mesh& rMesh) {
 void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
     if (skin && has_skinnable_cells(rMesh)) {
         const std::size_t dropped = stl_num_surface_blocks(rMesh);
-        if (dropped > 0)
+        if (dropped > 0) {
             log::warn(
                 "STL: writing the extracted skin of the volume cells; {} pre-existing "
                 "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
                 dropped);
+            detail::provenance_note("cells-dropped",
+                                    std::to_string(dropped) +
+                                        " non-volume cell block(s) dropped in favour of the "
+                                        "extracted skin of the volume cells");
+        }
         write_stl(rPath, stl_skin_triangles(rMesh), binary, /*skin=*/false);
         return;
     }
@@ -65291,6 +65587,9 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         bool beam;
         if (!meshio_descriptor(cb.Type(), desc, beam)) {
             log::warn("UNV does not support '{}' cells. Skipping.", cb.Type());
+            detail::provenance_note(
+                "cells-dropped",
+                "cell block(s) of type " + std::string(cb.Type()) + " have no UNV equivalent");
             continue;
         }
         const NDArray& conn = cb.Conn();
@@ -91285,11 +91584,25 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
 
 MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
                                     const ReadOptions& rOptions) {
+    // Best-effort, on every path: the block lives in the file's bytes, so
+    // unlike everything else in a summary it cannot come from
+    // `metadata_from_mesh`. A reader that fills it natively (exodus, whose
+    // block is a netCDF attribute rather than head bytes) wins -- hence the
+    // "only if still empty" test below rather than an unconditional overwrite.
+    auto fill_provenance = [&rPath](MeshMetadata& rMeta) {
+        if (!rMeta.mProvenance.empty())
+            return;
+        detail::ProvenanceReadResult found = detail::read_provenance_lines(rPath);
+        rMeta.mProvenance = std::move(found.mLines);
+        rMeta.mProvenanceRecognised = found.mRecognised;
+    };
+
     auto it = registry_metadata_readers().find(rFormat);
     if (it != registry_metadata_readers().end()) {
         try {
             MeshMetadata meta = it->second(rPath, rOptions);
             meta.mFormat = rFormat;
+            fill_provenance(meta);
             return meta;
         } catch (const meshioplusplus::ReadError&) {
             // A native summary can legitimately decline a construct it cannot
@@ -91305,6 +91618,7 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
     MeshMetadata meta = metadata_from_mesh(registry_full_reader(rFormat)(rPath));
     meta.mFellBackToFullRead = true;
     meta.mFormat = rFormat;
+    fill_provenance(meta);
     return meta;
 }
 

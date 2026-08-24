@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
+#include <fstream>
 #include <mutex>
+#include <string_view>
 
 // Project includes
 #include "meshioplusplus/detail/provenance.hpp"
@@ -260,6 +262,150 @@ std::string provenance_timestamp() {
     char buf[32];
     std::size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
     return std::string(buf, n);
+}
+
+namespace {
+
+/// The line shapes `render_block` emits, plus the tag itself. A line counts as
+/// provenance iff it starts with one of these once its comment punctuation is
+/// stripped -- which is what makes one scanner serve every format.
+constexpr const char* kProvenancePrefixes[] = {
+    "Written by meshio++ v", "Converted from ", "Written as ",
+    "Operation: ",           "Note [",          "Timestamp: ",
+};
+
+bool prov_starts_with(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+/// Trims ASCII whitespace from both ends.
+std::string_view prov_trim(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
+        s.remove_suffix(1);
+    return s;
+}
+
+bool prov_is_provenance_line(std::string_view s) {
+    for (const char* p : kProvenancePrefixes)
+        if (prov_starts_with(s, p))
+            return true;
+    return false;
+}
+
+/// Strips one leading comment marker, if present.
+///
+/// Deliberately tolerant rather than per-format: the marker sets across the 44
+/// formats are small and none of them collides with the content prefixes
+/// above, so stripping any of them can only expose a real provenance line or
+/// leave a non-matching one to be rejected by the prefix test anyway.
+std::string_view prov_strip_marker(std::string_view line) {
+    line = prov_trim(line);
+    if (prov_starts_with(line, "<!--"))
+        line.remove_prefix(4);
+    else if (prov_starts_with(line, "//"))
+        line.remove_prefix(2);
+    else if (prov_starts_with(line, "comment "))
+        line.remove_prefix(8);
+    else if (!line.empty() && (line.front() == '#' || line.front() == '!' || line.front() == '*' ||
+                               line.front() == '$' || line.front() == '%'))
+        line.remove_prefix(1);
+    return prov_trim(line);
+}
+
+/// Yields every substring of @p rRaw that could be a provenance line, best
+/// candidate first, and calls @p rFn with each until one is accepted.
+///
+/// Three shapes have to be tried rather than one, and each earns its place:
+/// the plain comment-stripped line (almost every format); the body of a
+/// keyword slot that *wraps* the text in a quote or paren (Tecplot's
+/// `TITLE = "..."`, Ansys's `(1 "...")`) -- where the closing punctuation must
+/// be removed only because this opener put it there, never unconditionally,
+/// since `Converted from x (fmt)` and `Operation: Clean(Weld=true)` both end
+/// in a legitimate `)`; and each `|`-delimited cell of a box-drawn banner
+/// (OpenFOAM), whose credit sits in an interior cell rather than at the start
+/// of the line.
+template <class F>
+void prov_for_each_candidate(std::string_view rRaw, F&& rFn) {
+    std::string_view stripped = prov_strip_marker(rRaw);
+    if (rFn(stripped))
+        return;
+
+    for (std::string_view lead : {std::string_view("TITLE = \""), std::string_view("TITLE=\""),
+                                  std::string_view("(1 \"")}) {
+        if (!prov_starts_with(stripped, lead))
+            continue;
+        std::string_view body = stripped.substr(lead.size());
+        // Drop exactly the closer this opener implies, nothing more.
+        while (!body.empty() && (body.back() == ')' || body.back() == '"'))
+            body.remove_suffix(1);
+        if (rFn(prov_trim(body)))
+            return;
+    }
+
+    if (rRaw.find('|') == std::string_view::npos)
+        return;
+    std::size_t pos = 0;
+    while (pos <= rRaw.size()) {
+        std::size_t bar = rRaw.find('|', pos);
+        std::string_view cell =
+            rRaw.substr(pos, bar == std::string_view::npos ? std::string_view::npos : bar - pos);
+        if (rFn(prov_trim(cell)))
+            return;
+        if (bar == std::string_view::npos)
+            break;
+        pos = bar + 1;
+    }
+}
+
+}  // namespace
+
+ProvenanceReadResult scan_provenance_text(std::string_view text) {
+    ProvenanceReadResult out;
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        std::size_t nl = text.find('\n', pos);
+        std::string_view raw =
+            text.substr(pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+
+        prov_for_each_candidate(raw, [&](std::string_view candidate) {
+            if (!prov_is_provenance_line(candidate))
+                return false;
+            // An XML block's closing "-->" can share the last content line.
+            while (candidate.size() >= 3 && candidate.compare(candidate.size() - 3, 3, "-->") == 0)
+                candidate = prov_trim(candidate.substr(0, candidate.size() - 3));
+            out.mLines.emplace_back(candidate);
+            return true;
+        });
+
+        if (nl == std::string_view::npos)
+            break;
+        pos = nl + 1;
+    }
+    out.mRecognised =
+        !out.mLines.empty() && prov_starts_with(out.mLines[0], "Written by meshio++ v");
+    return out;
+}
+
+ProvenanceReadResult read_provenance_lines(const std::string& rPath, std::size_t max_bytes) {
+    // Best-effort: an unopenable path is "nothing found", never a throw. This
+    // enriches a summary; it must not be able to fail one.
+    std::ifstream in(rPath, std::ios::binary);
+    if (!in)
+        return {};
+    std::string head(max_bytes, '\0');
+    in.read(head.data(), static_cast<std::streamsize>(max_bytes));
+    head.resize(static_cast<std::size_t>(in.gcount()));
+
+    // Binary slots (STL's 80-byte header, EnSight's str80 records) NUL-pad
+    // their text. Treating NUL as a line break is what lets the same
+    // line-oriented scan find those without a separate code path.
+    for (char& c : head)
+        if (c == '\0')
+            c = '\n';
+
+    return scan_provenance_text(head);
 }
 
 }  // namespace detail

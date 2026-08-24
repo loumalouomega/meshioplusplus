@@ -269,5 +269,63 @@ MESHIOPLUSPLUS_API std::string provenance_render_xml_comment(SlotTier tier);
  */
 MESHIOPLUSPLUS_API std::string provenance_timestamp();
 
+/// What `read_provenance_lines` found in a file.
+struct ProvenanceReadResult {
+    /// The block's lines as found, comment punctuation stripped, in file
+    /// order. Empty when the file carries none.
+    std::vector<std::string> mLines;
+    /// Whether the first line is our own tag format (`"Written by meshio++
+    /// v<something>"`). False for a file with no block at all, and for one
+    /// whose block does not start the way this library writes one.
+    bool mRecognised = false;
+};
+
+/**
+ * @brief Recovers the provenance block a writer left in @p rPath.
+ *
+ * **One scanner, not 44 parsers.** `render_block`'s output lines are
+ * format-independent by construction -- only the comment punctuation wrapping
+ * them differs -- so recovering them is a matter of reading the file's head,
+ * stripping whatever leading marker each format uses (`#`, `!`, `*`, `$`,
+ * `%`, `//`, PLY's `comment `, an XML `<!--`) plus any trailing box
+ * structure, and keeping the runs that match the shapes this file writes.
+ *
+ * **Deliberately returns raw lines rather than a re-parsed
+ * `ProvenanceRecord`.** A block can have been hand-edited, truncated by a
+ * `Bounded` slot, or written by a later release carrying fields this build
+ * has never heard of; handing back what is actually there, plus a flag for
+ * "this at least starts like ours", cannot silently drop or mis-attribute
+ * any of those. Callers wanting structure can match on the documented line
+ * prefixes themselves.
+ *
+ * Two formats are **not** served by this scanner and are handled by their own
+ * readers instead: exodus keeps the block in a netCDF `title` attribute
+ * rather than the head bytes (`read_exodus_metadata` reads it, having already
+ * opened the file for `mTimeValues`), and the HDF5 containers carry no block
+ * at all (`SlotTier::None`).
+ *
+ * Never throws for a missing or unreadable file -- an absent block and an
+ * unopenable path are both simply "nothing found", since this is a
+ * best-effort enrichment of a summary, not a read whose failure should
+ * fail the summary.
+ *
+ * @param rPath the file to scan.
+ * @param max_bytes how much of the head to read; the block is always at or
+ *        near the top of every slot that can hold one.
+ */
+MESHIOPLUSPLUS_API ProvenanceReadResult read_provenance_lines(const std::string& rPath,
+                                                              std::size_t max_bytes = 8192);
+
+/**
+ * @brief `read_provenance_lines`' scanner, over bytes already in hand.
+ *
+ * The half exodus needs: it has the block as one newline-joined netCDF
+ * attribute string rather than a file to open, and re-opening the file to
+ * scan it would be both wasteful and wrong (the attribute is not in the head
+ * bytes). Same stripping and matching rules, so the two paths cannot
+ * disagree about what counts as a block.
+ */
+MESHIOPLUSPLUS_API ProvenanceReadResult scan_provenance_text(std::string_view text);
+
 }  // namespace detail
 }  // namespace meshioplusplus

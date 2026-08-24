@@ -1663,6 +1663,33 @@ export interface MeshioPlusPlusModule {
   stats(mesh: Mesh): object;
 
   /**
+   * Run `fn` with a provenance scope open, so any write inside it records the
+   * richer block (source, target, operation chain, conversion assumptions,
+   * timestamp) into the target format's header slot. With no scope open a
+   * writer emits only the one-line credit, which is the default everywhere.
+   * The scope is closed even if `fn` throws. See doc/provenance.md.
+   * @param mode 0 = off, 1 = best-effort (default), 2 = required.
+   */
+  withProvenance<T>(mode: number | null | undefined, fn: () => T): T;
+  /** Open a provenance scope. Prefer `withProvenance`, which cannot leak one. */
+  provenanceBegin(mode?: number): void;
+  /** Close the most recently opened provenance scope. */
+  provenanceEnd(): void;
+  /** Record one conversion assumption. A no-op outside a scope. */
+  provenanceNote(category: string, detail: string): void;
+  /** Record where the mesh came from. A no-op outside a scope. */
+  provenanceSetSource(path: string, format: string): void;
+  /** Record what was actually written. A no-op outside a scope. */
+  provenanceSetTarget(
+    format: string,
+    encoding?: string,
+    codec?: string,
+    floatFormat?: string,
+  ): void;
+  /** Recover the provenance block a file carries, if any. */
+  readProvenance(path: string): { lines: string[]; recognised: boolean };
+
+  /**
    * Data operations: act on `point_data`/`cell_data`/`field_data` only -- the
    * geometry is never modified. See doc/data_operations.md. Note the mesh
    * object's flat, shapeless array shape means these only support scalar

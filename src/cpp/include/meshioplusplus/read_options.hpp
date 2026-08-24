@@ -270,6 +270,30 @@ struct MeshMetadata {
      */
     std::vector<RegionSummary> mRegions;
 
+    /**
+     * @brief The provenance block the file carries, or empty when it has none.
+     *
+     * The lines as found, comment punctuation stripped, in file order --
+     * deliberately not re-parsed into a `ProvenanceRecord`, since a block can
+     * have been hand-edited, truncated by a fixed-width slot, or written by a
+     * later release carrying fields this build has never heard of. See
+     * `detail/provenance.hpp`.
+     *
+     * Filled from the file's bytes by `registry_read_metadata`, on both the
+     * native and the fall-back path -- unlike everything else here it cannot
+     * come from `metadata_from_mesh`, since a `Mesh` does not carry it.
+     */
+    std::vector<std::string> mProvenance;
+
+    /**
+     * @brief Whether `mProvenance`'s first line is meshio++'s own tag format.
+     *
+     * False both for a file with no block at all and for one whose block does
+     * not start the way this library writes one -- the honest distinction
+     * between "meshio++ wrote this" and "something left a comment here".
+     */
+    bool mProvenanceRecognised = false;
+
     /** @brief Total cells across every block. */
     std::size_t NumCells() const {
         std::size_t total = 0;

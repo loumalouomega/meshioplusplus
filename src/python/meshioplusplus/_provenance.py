@@ -404,3 +404,108 @@ def lines(tier: SlotTier) -> list:
 
     out.extend(_render_block(current_record()))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Read-back (v10.17.0). The twin of `detail::read_provenance_lines` /
+# `detail::scan_provenance_text` -- see the C++ header for why this is one
+# scanner rather than 44 parsers, and why it returns raw lines rather than a
+# re-parsed Record.
+# ---------------------------------------------------------------------------
+
+#: The line shapes :func:`_render_block` emits, plus the tag itself. Kept in
+#: lockstep with ``kProvenancePrefixes`` in ``detail/provenance.cpp``.
+_PREFIXES = (
+    "Written by meshio++ v",
+    "Converted from ",
+    "Written as ",
+    "Operation: ",
+    "Note [",
+    "Timestamp: ",
+)
+
+#: How much of a file's head to scan. The block always sits at or near the top
+#: of every slot that can hold one.
+_SCAN_BYTES = 8192
+
+
+def _strip_marker(line: str) -> str:
+    """Strips one format's leading comment marker, if present."""
+    s = line.strip()
+    for marker in ("<!--", "//", "comment "):
+        if s.startswith(marker):
+            return s[len(marker) :].strip()
+    if s[:1] in ("#", "!", "*", "$", "%"):
+        return s[1:].strip()
+    return s
+
+
+def _candidates(raw: str):
+    """Yields every substring of ``raw`` that could be a provenance line.
+
+    Three shapes, each earning its place exactly as in the C++ twin: the
+    plain comment-stripped line; the body of a keyword slot that *wraps* the
+    text (Tecplot's ``TITLE = "..."``, Ansys's ``(1 "...")``), whose closing
+    punctuation is removed only because that opener put it there -- never
+    unconditionally, since ``Converted from x (fmt)`` and
+    ``Operation: Clean(Weld=true)`` both end in a legitimate ``)``; and each
+    ``|``-delimited cell of a box-drawn banner (OpenFOAM), whose credit sits
+    in an interior cell rather than at the line's start.
+    """
+    stripped = _strip_marker(raw)
+    yield stripped
+
+    for lead in ('TITLE = "', 'TITLE="', '(1 "'):
+        if stripped.startswith(lead):
+            body = stripped[len(lead) :]
+            yield body.rstrip(')"').strip()
+
+    if "|" in raw:
+        for cell in raw.split("|"):
+            yield cell.strip()
+
+
+def scan_provenance_text(text: str):
+    """Recovers a provenance block from text already in hand.
+
+    :returns: ``(lines, recognised)`` -- the block's lines as found (comment
+        punctuation stripped, in order), and whether the first is meshio++'s
+        own tag format.
+    """
+    found = []
+    for raw in text.splitlines():
+        for candidate in _candidates(raw):
+            if not candidate.startswith(_PREFIXES):
+                continue
+            while candidate.endswith("-->"):
+                candidate = candidate[:-3].strip()
+            found.append(candidate)
+            break
+    recognised = bool(found) and found[0].startswith("Written by meshio++ v")
+    return found, recognised
+
+
+def read_provenance_lines(path, max_bytes: int = _SCAN_BYTES):
+    """Recovers the provenance block a writer left in ``path``.
+
+    Best-effort: an unopenable path is "nothing found", never an exception --
+    this enriches a summary and must not be able to fail one. Bridges to the
+    compiled extension when present so the two engines cannot disagree about
+    what counts as a block.
+    """
+    core = _core_module()
+    if core is not None:
+        try:
+            lines_found, recognised = core.read_provenance_lines(str(path), max_bytes)
+            return list(lines_found), bool(recognised)
+        except Exception:
+            return [], False
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(max_bytes)
+    except OSError:
+        return [], False
+    # Binary slots (STL's 80-byte header, EnSight's str80 records) NUL-pad
+    # their text; treating NUL as a line break is what lets one line-oriented
+    # scan find those too.
+    return scan_provenance_text(head.replace(b"\0", b"\n").decode("utf-8", "replace"))

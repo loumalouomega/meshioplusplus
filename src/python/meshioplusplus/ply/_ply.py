@@ -400,6 +400,11 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
                 f"{dropped} pre-existing non-volume cell block(s) dropped "
                 "(pass skin=False for the legacy behavior)."
             )
+            _provenance.note(
+                "cells-dropped",
+                f"{dropped} non-volume cell block(s) dropped in favour of the "
+                "extracted skin of the volume cells",
+            )
         mesh = _extract_skin_py(mesh, linearize=True)
 
     with open_file(filename, "wb") as fh:

@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
@@ -1200,6 +1201,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (a.Size() != 1) {
             log::warn("mdpa: field_data '{}' has {} values; only scalars are written", name,
                       a.Size());
+            detail::provenance_note("data-dropped", "field_data '" + name +
+                                                        "' not written -- MDPA's ModelPartData "
+                                                        "holds scalars only");
             continue;
         }
         os << "    " << name << " " << mdpa_format_value(a, 0) << "\n";
@@ -1390,6 +1394,9 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
                 continue;
             if (r.mKind == RegionKind::Side) {
                 log::warn("mdpa: dropping side region '{}' (MDPA has no facet sets)", name);
+                detail::provenance_note("regions-dropped", "side region '" + name +
+                                                               "' dropped -- MDPA has no facet "
+                                                               "sets");
                 continue;
             }
             any = true;

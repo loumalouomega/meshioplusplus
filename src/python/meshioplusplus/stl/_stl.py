@@ -208,6 +208,11 @@ def write(filename, mesh, binary=False, skin=True):
                 f"{dropped} pre-existing non-volume cell block(s) dropped "
                 "(pass skin=False for the legacy behavior)."
             )
+            _provenance.note(
+                "cells-dropped",
+                f"{dropped} non-volume cell block(s) dropped in favour of the "
+                "extracted skin of the volume cells",
+            )
         mesh = _skin_triangles(mesh)
 
     if "triangle" not in {block.type for block in mesh.cells}:

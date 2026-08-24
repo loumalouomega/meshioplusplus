@@ -401,11 +401,16 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         for (const auto cb : rMesh.CellRange())
             if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
                 ++dropped;
-        if (dropped > 0)
+        if (dropped > 0) {
             log::warn(
                 "PLY: writing the extracted skin of the volume cells; {} pre-existing "
                 "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
                 dropped);
+            detail::provenance_note("cells-dropped",
+                                    std::to_string(dropped) +
+                                        " non-volume cell block(s) dropped in favour of the "
+                                        "extracted skin of the volume cells");
+        }
         write_ply(rPath, extract_skin(rMesh, /*linearize=*/true), binary, /*skin=*/false);
         return;
     }
@@ -451,6 +456,14 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     if (num_cells > 0) {
         os << "element face " << num_cells << "\n";
         os << "property list uint8 int32 vertex_indices\n";
+        for (const auto cb : rMesh.CellRange()) {
+            if (is_legal(cb.Type()) && cb.NumCells() > 0 && cb.Conn().Dtype() == DType::Int64) {
+                detail::provenance_note("dtype",
+                                        "connectivity cast from int64 to int32 -- PLY has no "
+                                        "64-bit integer type");
+                break;
+            }
+        }
     }
     os << "end_header\n";
 

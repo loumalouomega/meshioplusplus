@@ -291,11 +291,16 @@ std::size_t stl_num_surface_blocks(const Mesh& rMesh) {
 void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
     if (skin && has_skinnable_cells(rMesh)) {
         const std::size_t dropped = stl_num_surface_blocks(rMesh);
-        if (dropped > 0)
+        if (dropped > 0) {
             log::warn(
                 "STL: writing the extracted skin of the volume cells; {} pre-existing "
                 "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
                 dropped);
+            detail::provenance_note("cells-dropped",
+                                    std::to_string(dropped) +
+                                        " non-volume cell block(s) dropped in favour of the "
+                                        "extracted skin of the volume cells");
+        }
         write_stl(rPath, stl_skin_triangles(rMesh), binary, /*skin=*/false);
         return;
     }
