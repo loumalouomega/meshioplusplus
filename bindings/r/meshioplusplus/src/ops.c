@@ -1545,3 +1545,38 @@ SEXP R_mio_distance_to_surface(SEXP mesh, SEXP surface, SEXP sign, SEXP location
     UNPROTECT(4);
     return res;
 }
+
+/* --- Provenance (see doc/provenance.md) --------------------------------
+ *
+ * Rides the flat C ABI. R has no RAII, so the begin/end pair is exposed as
+ * two entry points and the R-side `mio_with_provenance()` wrapper pairs them
+ * with `on.exit()` -- the same shape `mio_xdmf_series()` already uses to give
+ * a C handle an R-shaped lifetime. */
+
+SEXP R_mio_provenance_begin(SEXP mode) {
+    if (mio_provenance_scope_begin(Rf_asInteger(mode)) != MIO_OK)
+        mio_r_fail("provenance_scope_begin");
+    return R_NilValue;
+}
+
+SEXP R_mio_provenance_end(void) {
+    mio_provenance_scope_end();
+    return R_NilValue;
+}
+
+SEXP R_mio_provenance_note(SEXP category, SEXP detail) {
+    mio_provenance_note(mio_r_string(category, "category"), mio_r_string(detail, "detail"));
+    return R_NilValue;
+}
+
+SEXP R_mio_provenance_set_source(SEXP path, SEXP format) {
+    mio_provenance_set_source(mio_r_string(path, "path"), mio_r_string(format, "format"));
+    return R_NilValue;
+}
+
+SEXP R_mio_provenance_set_target(SEXP format, SEXP encoding, SEXP codec, SEXP float_format) {
+    mio_provenance_set_target(mio_r_string(format, "format"), mio_r_string(encoding, "encoding"),
+                              mio_r_string(codec, "codec"),
+                              mio_r_string(float_format, "float_format"));
+    return R_NilValue;
+}

@@ -1719,3 +1719,81 @@ mio_distance_to_surface <- function(mesh, surface, sign = "pseudonormal",
     as.numeric(band), isTRUE(record_inside), checks[[watertight_check]]
   )
 }
+
+#' Run an expression with a provenance scope open
+#'
+#' Any `mio_write()` inside `expr` records the richer provenance block --
+#' source, target, operation chain, conversion assumptions, timestamp -- into
+#' the file's header slot, where the format has one. With no scope open a
+#' writer emits only the one-line credit, which is the default everywhere.
+#'
+#' The scope is closed on exit even if `expr` throws: R has no RAII, so this
+#' wrapper pairs the underlying begin/end C calls with `on.exit()`, the same
+#' shape `mio_xdmf_series()` uses to give a C handle an R-shaped lifetime.
+#'
+#' @param expr Expression to evaluate with the scope open.
+#' @param mode One of `"off"`, `"best_effort"` (default) or `"required"`.
+#'   `"required"` errors for a format whose header slot cannot hold a block
+#'   at all; it does **not** error merely because a slot is too small for the
+#'   full block, since degrading to the credit line is that slot's honest
+#'   maximum. See `doc/provenance.md`.
+#' @return The value of `expr`.
+#' @examples
+#' \dontrun{
+#' mio_with_provenance({
+#'   mio_provenance_source("bracket.msh", "gmsh")
+#'   mio_provenance_note("regions-dropped", "Side regions have no VTU equivalent")
+#'   mio_write(mesh, "out.vtu")
+#' })
+#' }
+#' @export
+mio_with_provenance <- function(expr, mode = c("best_effort", "off", "required")) {
+  mode <- match.arg(mode)
+  code <- switch(mode, off = 0L, best_effort = 1L, required = 2L)
+  .Call("R_mio_provenance_begin", code, PACKAGE = "meshioplusplus")
+  on.exit(.Call("R_mio_provenance_end", PACKAGE = "meshioplusplus"), add = TRUE)
+  expr
+}
+
+#' Record one conversion assumption against the active provenance scope
+#'
+#' A no-op outside a scope, so it is safe to call unconditionally.
+#'
+#' @param category Short stable slug, e.g. `"regions-dropped"` or `"dtype"`.
+#' @param detail Human-readable specifics.
+#' @return `NULL`, invisibly.
+#' @export
+mio_provenance_note <- function(category, detail) {
+  .Call("R_mio_provenance_note", as.character(category), as.character(detail),
+        PACKAGE = "meshioplusplus")
+  invisible(NULL)
+}
+
+#' Record where a mesh came from, on the active provenance scope
+#'
+#' A no-op outside a scope.
+#'
+#' @param path Source file path.
+#' @param format Source format name.
+#' @return `NULL`, invisibly.
+#' @export
+mio_provenance_source <- function(path, format) {
+  .Call("R_mio_provenance_set_source", as.character(path), as.character(format),
+        PACKAGE = "meshioplusplus")
+  invisible(NULL)
+}
+
+#' Record what was actually written, on the active provenance scope
+#'
+#' Records the encoding/codec/float format actually used, as opposed to what
+#' was requested. A no-op outside a scope.
+#'
+#' @param format Target format name.
+#' @param encoding,codec,float_format Optional; empty when not applicable.
+#' @return `NULL`, invisibly.
+#' @export
+mio_provenance_target <- function(format, encoding = "", codec = "", float_format = "") {
+  .Call("R_mio_provenance_set_target", as.character(format), as.character(encoding),
+        as.character(codec), as.character(float_format), PACKAGE = "meshioplusplus")
+  invisible(NULL)
+}

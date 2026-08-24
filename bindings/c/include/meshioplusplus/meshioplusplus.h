@@ -457,6 +457,30 @@ MIO_API mio_status mio_read_metadata_bbox(const mio_read_metadata* meta, double*
  */
 MIO_API int mio_read_metadata_fell_back(const mio_read_metadata* meta);
 
+/**
+ * The provenance block the file carries (v10.17.0), one line per entry, comment
+ * punctuation already stripped -- the read half of mio_provenance_*. Lines are
+ * returned as found rather than re-parsed into fields: a block can have been
+ * hand-edited, truncated by a fixed-width slot, or written by a later release
+ * carrying fields this build has never heard of.
+ * @return the number of lines, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_num_provenance_lines(const mio_read_metadata* meta);
+
+/**
+ * Copy provenance line `index` into `out` (NUL-terminated, truncated to `cap`).
+ * @return the required buffer size including the NUL, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_provenance_line(const mio_read_metadata* meta, int64_t index,
+                                                  char* out, int64_t cap);
+
+/**
+ * Whether the block's first line is meshio++'s own tag format.
+ * @return 1 when it is, 0 when the file carries no block or one that does not
+ *         start the way this library writes one, -1 on error.
+ */
+MIO_API int mio_read_metadata_provenance_recognised(const mio_read_metadata* meta);
+
 /** Destroy a summary handle. Safe to call with NULL. */
 MIO_API void mio_read_metadata_free(mio_read_metadata* meta);
 

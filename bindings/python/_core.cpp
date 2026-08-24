@@ -221,6 +221,10 @@ py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
         regions.append(std::move(entry));
     }
     out["regions"] = std::move(regions);
+    // Always present too (empty for a file carrying no block), matching
+    // time_values/regions above, so a caller can iterate without a key test.
+    out["provenance"] = rMeta.mProvenance;
+    out["provenance_recognised"] = rMeta.mProvenanceRecognised;
     // Absent rather than None-valued when not computed, so callers must ask
     // for it explicitly instead of accidentally treating "not computed" as a
     // real box at the origin.
@@ -2972,6 +2976,13 @@ finalizes.
         out["notes"] = notes;
         return out;
     });
+    m.def(
+        "read_provenance_lines",
+        [](const std::string& path, std::size_t max_bytes) {
+            auto r = meshioplusplus::detail::read_provenance_lines(path, max_bytes);
+            return py::make_tuple(r.mLines, r.mRecognised);
+        },
+        py::arg("path"), py::arg("max_bytes") = 8192);
     m.def("provenance_lines", [](int tier) {
         return meshioplusplus::detail::provenance_lines(
             static_cast<meshioplusplus::detail::SlotTier>(tier));

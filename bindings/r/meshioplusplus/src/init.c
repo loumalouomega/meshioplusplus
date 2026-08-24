@@ -133,6 +133,11 @@ extern SEXP R_mio_xdmf_series_finalize(SEXP);
 extern SEXP R_mio_xdmf_series_num_steps(SEXP);
 extern SEXP R_mio_xdmf_series_release(SEXP);
 extern SEXP R_mio_xdmf_series_is_open(SEXP);
+extern SEXP R_mio_provenance_begin(SEXP);
+extern SEXP R_mio_provenance_end(void);
+extern SEXP R_mio_provenance_note(SEXP, SEXP);
+extern SEXP R_mio_provenance_set_source(SEXP, SEXP);
+extern SEXP R_mio_provenance_set_target(SEXP, SEXP, SEXP, SEXP);
 
 #define CALLDEF(name, n) {#name, (DL_FUNC)&name, n}
 
@@ -254,6 +259,11 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_xdmf_series_num_steps, 1),
     CALLDEF(R_mio_xdmf_series_release, 1),
     CALLDEF(R_mio_xdmf_series_is_open, 1),
+    CALLDEF(R_mio_provenance_begin, 1),
+    CALLDEF(R_mio_provenance_end, 0),
+    CALLDEF(R_mio_provenance_note, 2),
+    CALLDEF(R_mio_provenance_set_source, 2),
+    CALLDEF(R_mio_provenance_set_target, 4),
     {NULL, NULL, 0}};
 
 void attribute_visible R_init_meshioplusplus(DllInfo *dll) {

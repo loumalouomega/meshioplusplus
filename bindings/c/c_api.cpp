@@ -822,6 +822,35 @@ int mio_read_metadata_fell_back(const mio_read_metadata* meta) {
     });
 }
 
+int64_t mio_read_metadata_num_provenance_lines(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mProvenance.size());
+    });
+}
+
+int64_t mio_read_metadata_provenance_line(const mio_read_metadata* meta, int64_t index, char* out,
+                                          int64_t cap) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        const std::vector<std::string>& lines = meta->mMeta.mProvenance;
+        if (index < 0 || static_cast<std::size_t>(index) >= lines.size())
+            throw meshioplusplus::ReadError("meshio++: provenance line index " +
+                                            std::to_string(index) + " out of range");
+        return copy_string(lines[static_cast<std::size_t>(index)], out, cap);
+    });
+}
+
+int mio_read_metadata_provenance_recognised(const mio_read_metadata* meta) {
+    return guarded_ptr(-1, [&]() -> int {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return meta->mMeta.mProvenanceRecognised ? 1 : 0;
+    });
+}
+
 void mio_read_metadata_free(mio_read_metadata* meta) {
     delete meta;
 }

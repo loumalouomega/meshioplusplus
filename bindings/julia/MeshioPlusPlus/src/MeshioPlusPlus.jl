@@ -59,6 +59,7 @@ include("regions.jl")
 include("operations.jl")
 include("sequence.jl")
 include("xdmf_series.jl")
+include("provenance.jl")
 
 function __init__()
     _load_library()
@@ -72,6 +73,8 @@ export ReadOptions, MeshMetadata, DiffReport
 
 # Introspection
 export version, mesh_backend, last_error, library_path
+export provenance, provenance_note, provenance_source, provenance_target
+export PROVENANCE_OFF, PROVENANCE_BEST_EFFORT, PROVENANCE_REQUIRED
 export format_readable, format_writable, sniff_format
 export cell_type_num_nodes, cell_type_dimension, reader_supports_options, read_metadata
 
