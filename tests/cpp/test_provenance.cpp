@@ -26,8 +26,10 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -141,4 +143,160 @@ TEST(Provenance, OpenfoamBannerStaysColumnAligned) {
     EXPECT_EQ(line.back(), '|');
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
+}
+
+// ---------------------------------------------------------------------------
+// The opt-in record (v10.16.0): Mode/SlotTier semantics, the operation-chain
+// bridge, and conversion-assumption capture -- roadmap #1's bullets 2-7.
+// ---------------------------------------------------------------------------
+
+namespace {
+using meshioplusplus::detail::ProvenanceMode;
+using meshioplusplus::detail::ProvenanceRecord;
+using meshioplusplus::detail::ProvenanceScope;
+using meshioplusplus::detail::SlotTier;
+
+/// An Int64 `(n,)` entry array -- the `test_region_api.cpp` helper,
+/// duplicated locally rather than shared, since it is three lines.
+meshioplusplus::NDArray region_entries(const std::vector<std::int64_t>& rVals) {
+    meshioplusplus::NDArray a =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {rVals.size()});
+    for (std::size_t i = 0; i < rVals.size(); ++i)
+        a.As<std::int64_t>()[i] = rVals[i];
+    return a;
+}
+
+}  // namespace
+
+TEST(Provenance, OffModeIgnoresEverySlotTier) {
+    // No scope open -- exactly v10.15.0's contract, for every tier.
+    for (SlotTier tier :
+         {SlotTier::None, SlotTier::Bounded, SlotTier::SingleLine, SlotTier::Block}) {
+        auto lines = meshioplusplus::detail::provenance_lines(tier);
+        ASSERT_EQ(lines.size(), 1u);
+        EXPECT_EQ(lines[0], meshioplusplus::detail::kProvenanceTag);
+    }
+}
+
+TEST(Provenance, BestEffortRendersTheFullBlockOnlyForBlockTier) {
+    ProvenanceScope scope(ProvenanceMode::BestEffort);
+    meshioplusplus::detail::provenance_set_source("in.vtu", "vtu");
+    meshioplusplus::detail::provenance_add_operation("clean(weld=true)");
+    meshioplusplus::detail::provenance_note("regions-dropped", "3 regions dropped");
+
+    auto block = meshioplusplus::detail::provenance_lines(SlotTier::Block);
+    ASSERT_EQ(block.size(), 5u);  // tag, source, operation, note, timestamp
+    EXPECT_EQ(block[0], meshioplusplus::detail::kProvenanceTag);
+    EXPECT_NE(block[1].find("in.vtu"), std::string::npos);
+    EXPECT_NE(block[2].find("clean(weld=true)"), std::string::npos);
+    EXPECT_NE(block[3].find("3 regions dropped"), std::string::npos);
+
+    // SingleLine/Bounded degrade to the tag alone, silently, even though a
+    // record is active -- the slot is the honest maximum, not a preference.
+    EXPECT_EQ(meshioplusplus::detail::provenance_lines(SlotTier::SingleLine).size(), 1u);
+    EXPECT_EQ(meshioplusplus::detail::provenance_lines(SlotTier::Bounded).size(), 1u);
+}
+
+TEST(Provenance, RequiredThrowsOnlyForNoneTier) {
+    ProvenanceScope scope(ProvenanceMode::Required);
+    EXPECT_THROW(meshioplusplus::detail::provenance_lines(SlotTier::None), std::exception);
+    // Degrading to the tag on a structurally smaller slot is not a failure.
+    EXPECT_NO_THROW(meshioplusplus::detail::provenance_lines(SlotTier::SingleLine));
+    EXPECT_NO_THROW(meshioplusplus::detail::provenance_lines(SlotTier::Bounded));
+    EXPECT_NO_THROW(meshioplusplus::detail::provenance_lines(SlotTier::Block));
+}
+
+TEST(Provenance, DuplicateNotesAreCollapsed) {
+    ProvenanceScope scope(ProvenanceMode::BestEffort);
+    meshioplusplus::detail::provenance_note("dtype", "cast to int32");
+    meshioplusplus::detail::provenance_note("dtype", "cast to int32");
+    meshioplusplus::detail::provenance_note("dtype", "cast to int32");
+    EXPECT_EQ(scope.Get().mNotes.size(), 1u);
+}
+
+TEST(Provenance, ScopesNestAndRestore) {
+    ProvenanceScope outer(ProvenanceMode::BestEffort);
+    meshioplusplus::detail::provenance_set_source("outer.vtu", "vtu");
+    {
+        ProvenanceScope inner(ProvenanceMode::BestEffort);
+        meshioplusplus::detail::provenance_set_source("inner.vtu", "vtu");
+        EXPECT_EQ(meshioplusplus::detail::current_provenance().mSourcePath, "inner.vtu");
+    }
+    EXPECT_EQ(meshioplusplus::detail::current_provenance().mSourcePath, "outer.vtu");
+}
+
+TEST(Provenance, NoScopeMeansOffAndNoteIsANoOp) {
+    EXPECT_EQ(meshioplusplus::detail::current_provenance_mode(), ProvenanceMode::Off);
+    meshioplusplus::detail::provenance_note("x", "y");  // must not throw or crash
+    EXPECT_TRUE(meshioplusplus::detail::current_provenance().mNotes.empty());
+}
+
+TEST(Provenance, TimestampHonoursSourceDateEpochAndTheOffSwitch) {
+    setenv("SOURCE_DATE_EPOCH", "1000000000", 1);
+    EXPECT_EQ(meshioplusplus::detail::provenance_timestamp(), "2001-09-09T01:46:40Z");
+    unsetenv("SOURCE_DATE_EPOCH");
+
+    setenv("MESHIOPLUSPLUS_PROVENANCE_TIMESTAMP", "off", 1);
+    EXPECT_EQ(meshioplusplus::detail::provenance_timestamp(), "");
+    unsetenv("MESHIOPLUSPLUS_PROVENANCE_TIMESTAMP");
+}
+
+TEST(Provenance, PipelineRecordsSourceTargetAndOperations) {
+    std::string in_path = mt::temp_path(".obj");
+    meshioplusplus::write_obj(in_path, mt::tri_mesh());
+    std::string out_path = mt::temp_path("_out.obj");
+
+    meshioplusplus::Pipeline p;
+    p.mInput.mPath = in_path;
+    meshioplusplus::PipelineStep step;
+    step.mOp = "Clean";
+    step.mParams["Weld"] = true;
+    p.mSteps.push_back(step);
+    p.mOutput.mPath = out_path;
+
+    ProvenanceScope scope(ProvenanceMode::BestEffort);
+    meshioplusplus::run_pipeline(p);
+    const auto& rec = scope.Get();
+    EXPECT_EQ(rec.mSourcePath, in_path);
+    EXPECT_EQ(rec.mSourceFormat, "obj");
+    EXPECT_EQ(rec.mTargetFormat, "obj");
+    ASSERT_EQ(rec.mOperations.size(), 1u);
+    EXPECT_NE(rec.mOperations[0].find("Clean("), std::string::npos);
+    EXPECT_NE(rec.mOperations[0].find("Weld=true"), std::string::npos);
+
+    std::error_code ec;
+    std::filesystem::remove(in_path, ec);
+    std::filesystem::remove(out_path, ec);
+}
+
+TEST(Provenance, WarnRegionsDroppedRecordsANote) {
+    meshioplusplus::Mesh mesh = mt::tri_mesh();
+    mesh.AddRegion(meshioplusplus::Region("boundary", meshioplusplus::RegionKind::Point,
+                                          region_entries({0, 1})));
+
+    ProvenanceScope scope(ProvenanceMode::BestEffort);
+    meshioplusplus::detail::warn_regions_dropped(mesh, "isosurface");
+    ASSERT_EQ(scope.Get().mNotes.size(), 1u);
+    EXPECT_EQ(scope.Get().mNotes[0].mCategory, "regions-dropped");
+    EXPECT_NE(scope.Get().mNotes[0].mDetail.find("isosurface"), std::string::npos);
+}
+
+TEST(Provenance, OffWriterRecordsDroppedCellTypes) {
+    meshioplusplus::Mesh mesh = mt::tri_quad_mesh();
+    meshioplusplus::NDArray tet_conn =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {1, 4});
+    for (int i = 0; i < 4; ++i)
+        tet_conn.As<std::int64_t>()[i] = i % static_cast<int>(mesh.NumPoints());
+    mesh.AddCellBlock("tetra", tet_conn);
+
+    ProvenanceScope scope(ProvenanceMode::BestEffort);
+    std::string path = mt::temp_path(".off");
+    meshioplusplus::write_off(path, mesh);
+    bool found = false;
+    for (const auto& n : scope.Get().mNotes)
+        if (n.mCategory == "cells-dropped" && n.mDetail.find("tetra") != std::string::npos)
+            found = true;
+    EXPECT_TRUE(found);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }

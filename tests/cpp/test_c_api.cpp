@@ -3418,3 +3418,66 @@ TEST(CApi, DistanceToSurfaceAttachesPointData) {
     mio_mesh_free(q);
     mio_mesh_free(cube);
 }
+
+// ---------------------------------------------------------------------------
+// Provenance (v10.16.0): the C ABI bridge over detail::ProvenanceScope.
+// ---------------------------------------------------------------------------
+
+TEST(CApi, ProvenanceOffByDefaultIsByteIdenticalToNoScope) {
+    mio_mesh* m = capi_cube_surface();
+    const std::string a = mt::temp_path("_capi_prov_a.obj");
+    const std::string b = mt::temp_path("_capi_prov_b.obj");
+    ASSERT_EQ(mio_write(a.c_str(), m, "obj"), MIO_OK);
+
+    ASSERT_EQ(mio_provenance_scope_begin(MIO_PROVENANCE_OFF), MIO_OK);
+    ASSERT_EQ(mio_write(b.c_str(), m, "obj"), MIO_OK);
+    mio_provenance_scope_end();
+
+    std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+    std::string sa((std::istreambuf_iterator<char>(fa)), std::istreambuf_iterator<char>());
+    std::string sb((std::istreambuf_iterator<char>(fb)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(sa, sb);
+
+    mio_mesh_free(m);
+    std::error_code ec;
+    std::filesystem::remove(a, ec);
+    std::filesystem::remove(b, ec);
+}
+
+TEST(CApi, ProvenanceBestEffortRecordsSourceAndNotes) {
+    mio_mesh* m = capi_cube_surface();
+    const std::string path = mt::temp_path("_capi_prov.obj");
+
+    ASSERT_EQ(mio_provenance_scope_begin(MIO_PROVENANCE_BEST_EFFORT), MIO_OK);
+    mio_provenance_set_source("in.vtu", "vtu");
+    mio_provenance_note("regions-dropped", "1 named region(s) dropped");
+    ASSERT_EQ(mio_write(path.c_str(), m, "obj"), MIO_OK);
+    mio_provenance_scope_end();
+
+    std::ifstream f(path);
+    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("in.vtu"), std::string::npos);
+    EXPECT_NE(text.find("regions-dropped"), std::string::npos);
+
+    // Scope closed: the next write must not see the stale note.
+    const std::string path2 = mt::temp_path("_capi_prov2.obj");
+    ASSERT_EQ(mio_write(path2.c_str(), m, "obj"), MIO_OK);
+    std::ifstream f2(path2);
+    std::string text2((std::istreambuf_iterator<char>(f2)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text2.find("in.vtu"), std::string::npos);
+
+    mio_mesh_free(m);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(path2, ec);
+}
+
+TEST(CApi, ProvenanceScopeBeginRejectsAnUnknownMode) {
+    EXPECT_EQ(mio_provenance_scope_begin(99), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_provenance_scope_begin(-1), MIO_ERR_INVALID_ARG);
+}
+
+TEST(CApi, ProvenanceScopeEndWithNoneOpenIsANoOp) {
+    mio_provenance_scope_end();  // must not crash
+    SUCCEED();
+}
