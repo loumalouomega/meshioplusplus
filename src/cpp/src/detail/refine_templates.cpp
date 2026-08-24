@@ -267,8 +267,14 @@ RtplTypeTable rtpl_hexahedron_table() {
 /// re-derived.
 const std::vector<std::array<std::uint8_t, 4>>& rtpl_even_perms() {
     static const std::vector<std::array<std::uint8_t, 4>> perms = [] {
+        // `v` is `int`, not `std::uint8_t`, deliberately: GCC 13's
+        // -Wstringop-overflow analysis of std::next_permutation inlined over a
+        // byte-sized std::array iterator has a known false-positive blowup
+        // (exponential warning/offset enumeration, observed OOM-killing an
+        // arm64 CI runner) -- widening the working type sidesteps the buggy
+        // codegen path without changing the permutations generated.
         std::vector<std::array<std::uint8_t, 4>> out;
-        std::array<std::uint8_t, 4> v{0, 1, 2, 3};
+        std::array<int, 4> v{0, 1, 2, 3};
         do {
             int inversions = 0;
             for (std::size_t i = 0; i < 4; ++i)
@@ -276,7 +282,8 @@ const std::vector<std::array<std::uint8_t, 4>>& rtpl_even_perms() {
                     if (v[i] > v[j])
                         ++inversions;
             if (inversions % 2 == 0)
-                out.push_back(v);
+                out.push_back({static_cast<std::uint8_t>(v[0]), static_cast<std::uint8_t>(v[1]),
+                               static_cast<std::uint8_t>(v[2]), static_cast<std::uint8_t>(v[3])});
         } while (std::next_permutation(v.begin(), v.end()));
         return out;
     }();

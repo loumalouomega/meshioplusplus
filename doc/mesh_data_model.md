@@ -94,13 +94,7 @@ mesh.write("out.vtk")
 
 ## Named regions
 
-Since v8.1.0 the named groups live in `mesh.regions` as
-[`Region`](/regions) objects, which the C++ core carries, every binding surface
-sees, and every operation either remaps or explicitly drops. `point_sets` and
-`cell_sets` are unchanged compat **views** over them, so existing code keeps
-working; a third kind, **side sets** (groups of cell *facets*), has no view
-equivalent and is reachable only through `mesh.regions`. See
-[Named regions](/regions).
+Since v8.1.0 the named groups live in `mesh.regions` as [`Region`](/regions) objects, which the C++ core carries, every binding surface sees, and every operation either remaps or explicitly drops. `point_sets` and `cell_sets` are unchanged compat **views** over them, so existing code keeps working; a third kind, **side sets** (groups of cell *facets*), has no view equivalent and is reachable only through `mesh.regions`. See [Named regions](/regions).
 
 ## Converting sets ↔ data
 

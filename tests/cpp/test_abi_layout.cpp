@@ -68,6 +68,10 @@
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -171,6 +175,45 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 // warns about. Closed here rather than after a third field is added to it.
 MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
 
+// RemeshOptions is passed by const-ref through the exported `remesh()`,
+// the same RefineOptions shape -- pinned from the release that first grew
+// it (v10.11.0's mGradation/mPreserveBoundary) rather than left unpinned
+// the way RefineOptions was for over twenty releases. RemeshResult is
+// deliberately NOT pinned, for the same reason as every other *Result
+// struct noted above: it embeds a `Mesh`, whose size is per-backend.
+MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 64, 8);
+
+// RemeshVolumeOptions is passed by const-ref through the exported
+// `remesh_volume()`, and embeds `SurfaceDistanceOptions` BY VALUE exactly as
+// SdfOptions/VoxelOptions do above -- pinned from the release that
+// introduces it (v10.13.0) rather than after the fact, the RefineOptions
+// lesson applied in advance a second time. RemeshVolumeResult is
+// deliberately NOT pinned, embedding a `Mesh` like every other *Result.
+MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
+
+// OptimizeVolumeOptions is passed by const-ref through the exported
+// `optimize_volume()` -- pinned from the release that introduces it, the
+// RefineOptions/RemeshOptions "pin in advance" lesson. OptimizeVolumeResult is
+// deliberately NOT pinned, embedding a `Mesh` like every other *Result.
+MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 40, 8);
+
+// SmoothOptions is passed by const-ref through the exported `smooth()`, and
+// is pinned here for the FIRST time -- not because it grew a member (it
+// didn't), but because `SmoothMethod` (its first member) gained an explicit
+// `: std::uint8_t` underlying type in the same release, which doc/abi.md's
+// own Tier A rule names explicitly ("changing an enum's underlying type").
+// A scoped enum with no explicit underlying type defaults to `int`
+// [dcl.enum], so this is a genuine 4-byte -> 1-byte narrowing of
+// `SmoothMethod` alone, independent of whether padding happens to leave
+// `sizeof(SmoothOptions)` unchanged -- exactly the RefineOptions/
+// RemeshOptions "pin from the release that first touches it" lesson,
+// applied here to a change that is easy to mistake for Tier C (an appended
+// enumerator, `Odt`) when it is actually Tier A (the underlying-type
+// change that made the appendage narrow-safe going forward). SmoothResult
+// is deliberately NOT pinned, for the same reason as every other *Result
+// struct above: it embeds a `Mesh`, whose size is per-backend.
+MIO_ABI_LAYOUT(meshioplusplus::SmoothOptions, 80, 8);
+
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
 // deliberately not caught here); widening the underlying type is not.
@@ -178,6 +221,25 @@ static_assert(sizeof(meshioplusplus::CellType) == 2,
               "meshio++ ABI: CellType's underlying type changed width. Appending "
               "enumerators is safe and expected; changing `: std::uint16_t` is a "
               "Tier A break (doc/abi.md).");
+
+// RemeshMetric mirrors the same reasoning as CellType above: appending
+// `Anisotropic` (v10.12.0) is fine and deliberately not caught here; the
+// primary guard lives in remesh.hpp itself (checked by every consumer that
+// compiles it, not just this suite) -- this mirror exists for the same
+// discoverability CellType's own entry has here.
+static_assert(sizeof(meshioplusplus::RemeshMetric) == 1,
+              "meshio++ ABI: RemeshMetric's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
+
+// SmoothMethod mirrors the same reasoning: appending `Odt` (v10.13.0) is
+// fine and deliberately not caught here; the primary guard lives in
+// smooth.hpp itself (checked by every consumer that compiles it), this
+// mirror exists for the same discoverability CellType/RemeshMetric have.
+static_assert(sizeof(meshioplusplus::SmoothMethod) == 1,
+              "meshio++ ABI: SmoothMethod's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

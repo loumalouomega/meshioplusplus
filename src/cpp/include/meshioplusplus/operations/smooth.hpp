@@ -115,15 +115,35 @@
 namespace meshioplusplus {
 
 /// Which smoothing operator to apply.
-enum class SmoothMethod {
+///
+/// Fixed `: std::uint8_t` underlying type (the `RemeshMetric`/`CellType`
+/// precedent) so a width change is a mechanical ABI check, not a silent
+/// layout shift; every dispatch site in `smooth.cpp` is an exhaustive
+/// `switch (SmoothMethod)` with **no `default:`**, so `-Wswitch` catches the
+/// next enumerator at compile time rather than a reader having to -- the
+/// hazard `remesh.cpp`'s own metric branches were converted away from.
+enum class SmoothMethod : std::uint8_t {
     Laplacian,  ///< `x <- x + lambda * L(x)`. Simple and strong; shrinks volume.
     Taubin,     ///< A `+lambda` then `-mu` pass pair per iteration. Shrink-free.
+    /// Optimal Delaunay Triangulation: each free interior vertex moves to the
+    /// volume-weighted circumcenter combination that minimises the local ODT
+    /// energy (Alliez et al. 2005; Chen & Xu) -- **tet-only**, throwing by
+    /// name on any other cell type, unlike `Laplacian`/`Taubin` which work on
+    /// any mesh. `mMu` is silently ignored, matching `Laplacian`.
+    Odt,
 };
+
+/// `sizeof(SmoothMethod)` mirror of the primary guard in `test_abi_layout.cpp`
+/// -- the `RemeshMetric` precedent, so a width change is caught here too.
+static_assert(sizeof(SmoothMethod) == 1,
+              "meshio++ ABI: SmoothMethod's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 /**
  * @brief Parses a smoothing method name.
- * @param rName One of `"laplacian"`, `"taubin"` (case-sensitive, as elsewhere
- *        in the operations layer).
+ * @param rName One of `"laplacian"`, `"taubin"`, `"odt"` (case-sensitive, as
+ *        elsewhere in the operations layer).
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
@@ -135,19 +155,28 @@ struct SmoothOptions {
     SmoothMethod mMethod = SmoothMethod::Taubin;
 
     /// How many iterations to run. For `Taubin` one iteration is **two** passes
-    /// (`+mLambda` then `mMu`). Zero or less returns an unchanged clone.
+    /// (`+mLambda` then `mMu`); for `Laplacian`/`Odt` one iteration is one pass.
+    /// Zero or less returns an unchanged clone.
     int mIterations = 10;
 
     /// Relaxation factor of the smoothing pass, which must lie in `(0, 1)`.
     /// **Negative means "this method's own default"**: `0.5` for `Laplacian`,
-    /// `0.33` for `Taubin`. The sensible default genuinely differs between the
-    /// two methods, and a factor of zero or less is never a meaningful request,
-    /// so a negative sentinel is total; two separate fields would instead let a
-    /// caller set the one the chosen method ignores.
+    /// `0.33` for `Taubin`, `0.9` for `Odt` (a near-full step toward the local
+    /// ODT energy minimiser -- damped rather than exactly `1.0` so an
+    /// overshoot past a concave boundary is a rejected inversion-guard move
+    /// rather than a hard failure). The sensible default genuinely differs
+    /// per method, and a factor of zero or less is never a meaningful
+    /// request, so a negative sentinel is total; separate fields would
+    /// instead let a caller set the ones the chosen method ignores.
     double mLambda = -1.0;
 
     /// `Taubin` only: the un-shrinking factor, which must satisfy
-    /// `mMu < -mLambda < 0`. Ignored by `Laplacian`.
+    /// `mMu < -mLambda < 0`. Silently ignored by `Laplacian` **and** `Odt` --
+    /// deliberately not a named-error option like `RemeshOptions::mMaxAnisotropy`,
+    /// since making only the newest method strict about an ignored field
+    /// while its sibling stays silent would be a worse inconsistency than
+    /// either rule applied uniformly, and changing `Laplacian`'s established
+    /// behaviour here would be breaking.
     double mMu = -0.34;
 
     /// Pin every node lying on a boundary facet. Almost always what you want:

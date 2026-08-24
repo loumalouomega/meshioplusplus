@@ -102,7 +102,10 @@ meshioplusplus subdivide  in.vtu out.vtu                      # polyhedral refin
 meshioplusplus refine     in.vtu out.vtu --levels 2          # uniform subdivision
 meshioplusplus refine     in.vtu out.vtu --where "q<0.3"     # adaptive, closed conformingly
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
+meshioplusplus remesh-volume in.vtu out.vtu --cell-size 0.5  # retetrahedralize (isosurface stuffing)
+meshioplusplus optimize-volume in.vtu out.vtu               # ODT-remesh a tet mesh (relocate + flips)
 meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
+meshioplusplus smooth     in.vtu out.vtu --method odt        # ODT smoothing, tet-only
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
@@ -433,11 +436,54 @@ quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 
 Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece. `ghost_layers=N` instead grows each piece by N shared-node layers of its neighbours' cells (an MPI-style halo), tagged `partition:ghost`.
 
+#### Surface remeshing (ACVD clustering)
+
+**`meshioplusplus.remesh`** replaces a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering — the one resolution-changing operation that does not inherit the input's element shapes, so it can *raise* quality at every target count rather than only remove elements. See `doc/remesh.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.remesh(mesh, num_clusters=5000)
+out = meshioplusplus.remesh(mesh, num_clusters=5000, metric="quadric")       # preserves sharp edges/corners
+out = meshioplusplus.remesh(mesh, num_clusters=5000, metric="anisotropic", max_anisotropy=4.0)
+```
+
+`metric="isotropic"` (default) is fast and rounds sharp features; `"quadric"` (Garland-Heckbert error) pins clusters onto edges/corners instead; `"anisotropic"` shapes clusters with a local curvature tensor, elongating elements along low-curvature directions. The output has entirely **new** points and connectivity — no point/cell map — so `point_data`/`cell_data`/named regions are dropped and `field_data` carries through; transfer a field onto the result with `interpolate`/`conservative_interpolate`.
+
+#### Volumetric remeshing (isosurface stuffing)
+
+**`meshioplusplus.remesh_volume`** is `remesh`'s volumetric sibling — the tet-mesh counterpart `decimate_volume` needed but could not itself provide, since QEM edge collapse can only remove elements. It retetrahedralizes a **volume** mesh (or a closed surface, unlike `remesh`) at a caller-chosen resolution by isosurface stuffing over a body-centered cubic (BCC) lattice, generating an entirely new mesh rather than working on the input's own cells. See `doc/remesh_volume.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.remesh_volume(mesh, cell_size=0.5)
+out = meshioplusplus.remesh_volume(mesh, resolution=(64, 64, 64))
+out, report = meshioplusplus.remesh_volume(mesh, cell_size=0.5, return_report=True)
+print(report["num_tets"], report["num_non_manifold_edges"])
+```
+
+Every uncut lattice tet has a dihedral angle from a small, mesh-size-independent fixed set. `warp_fraction` (default `0.35`) moves lattice vertices near the surface onto it, trading a small, *measured* chance of non-manifold boundary edges (reported in `num_non_manifold_edges`) for substantially better boundary tet quality; `0` disables warping and gives an exactly watertight but lower-quality boundary. Implemented from the published description of Labelle & Shewchuk's isosurface stuffing (SIGGRAPH 2007) only — no predicate library needed, unlike literal Delaunay/CVD tetrahedralization.
+
+#### ODT remeshing (relocate + flip connectivity)
+
+**`meshioplusplus.optimize_volume`** raises a tetrahedral mesh's worst element quality by *ODT remeshing* — relocating vertices AND changing connectivity. It is the genuine "ODT remeshing" and the third member of a trio whose other two each do half the job: `smooth(method="odt")` moves points on *fixed* connectivity, `remesh_volume` discards the input's tets for a fresh lattice mesh. It alternates the ODT vertex relocation with quality-improving topological **flips** (2-3 and 3-2), **predicate-free** — a flip is applied only when a pure signed-volume test finds the local configuration convex and the minimum scaled Jacobian strictly improves (no in-sphere/Delaunay predicate). See `doc/optimize_volume.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.optimize_volume(mesh)                       # a tetrahedral mesh
+out, report = meshioplusplus.optimize_volume(mesh, return_report=True)
+print(report["num_flips"], report["min_quality_before"], report["min_quality_after"])
+```
+
+The flips touch only interior faces/edges, so the boundary surface is preserved exactly (watertight in ⇒ watertight out); the point set is invariant, so `point_data`/`field_data` and named Point regions carry through while `cell_data`/Cell/Side regions are dropped. Tet-only, and (like `remesh_volume`) C++-core only.
+
 #### Smoothing
 
-**`meshioplusplus.smooth`** relaxes point coordinates toward their edge-neighbour centroids to improve element shape, leaving topology and every data value alone: **only the points move**. See `doc/smooth.md`.
+**`meshioplusplus.smooth`** relaxes point coordinates to improve element shape, leaving topology and every data value alone: **only the points move**. See `doc/smooth.md`.
 
-Both operators are driven by the same centroid displacement. **Laplacian** (`x <- x + lambda*L(x)`) smooths strongly per pass but shrinks — over 40 iterations on a jittered 8×8 quad grid it contracts the bounding box by 57%. **Taubin** (the default) follows each `+lambda` pass with a larger-magnitude `-mu` pass that deliberately un-shrinks, leaving the same grid 3.6% smaller. Neighbours are the nodes joined by an actual cell *edge*, not the element clique, so a structured hex block is a fixed point rather than being bevelled toward a sphere. Boundary nodes, feature nodes (incident boundary facet normals differing by more than `feature_angle`), an optional `frozen` mask, and the nodes of blocks whose edge topology is unknown are all pinned by default, and the inversion guard rejects any move that would turn a valid cell inverted.
+Three methods. **Laplacian** (`x <- x + lambda*L(x)`, the edge-neighbour centroid displacement) smooths strongly per pass but shrinks — over 40 iterations on a jittered 8×8 quad grid it contracts the bounding box by 57%. **Taubin** (the default) follows each `+lambda` pass with a larger-magnitude `-mu` pass that deliberately un-shrinks, leaving the same grid 3.6% smaller. **ODT** (optimal-Delaunay-triangulation smoothing, **tet-only**) instead moves each free interior vertex to the closed-form volume-weighted average of its incident tets' circumcenters — the "ODT" half of the volumetric-remeshing roadmap item, closed as *smoothing on existing connectivity* rather than remeshing. Neighbours for Laplacian/Taubin are the nodes joined by an actual cell *edge*, not the element clique, so a structured hex block is a fixed point rather than being bevelled toward a sphere. Boundary nodes, feature nodes (incident boundary facet normals differing by more than `feature_angle`), an optional `frozen` mask, and the nodes of blocks whose edge topology is unknown are all pinned by default, and the inversion guard rejects any move that would turn a valid cell inverted.
 
 <!--pytest-codeblocks:skip-->
 
@@ -445,6 +491,7 @@ Both operators are driven by the same centroid displacement. **Laplacian** (`x <
 relaxed = meshioplusplus.smooth(mesh)                          # 10 Taubin iterations
 harder = meshioplusplus.smooth(mesh, iterations=40)            # shrink-free even so
 lap = meshioplusplus.smooth(mesh, method="laplacian", lambda_=0.4)  # note the underscore
+odt = meshioplusplus.smooth(tet_mesh, method="odt", iterations=10)  # tet-only, C++-core only
 out, report = meshioplusplus.smooth(mesh, return_report=True)  # nodes moved, max displacement
 ```
 
@@ -508,7 +555,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus remesh`, `meshioplusplus remesh-volume`, `meshioplusplus optimize-volume`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Second derivatives (Hessian)
 
@@ -831,7 +878,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.9.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.14.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -1729,6 +1729,31 @@ TEST(CApi, SmoothMovesInteriorAndPinsBoundary) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SmoothOdtMovesATetVertexTowardItsCircumcenter) {
+    // A single, non-degenerate tet with one free vertex: ODT's closed-form
+    // update pulls it toward the tet's own circumcenter -- mio_smooth's
+    // method string is passed through to smooth_method_from_name unchanged,
+    // so "odt" needs no C API surface of its own beyond the string.
+    const std::vector<double> pts = {0, 0, 0, 4, 0, 0, 0, 4, 0, 1, 1, 5};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 1, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    std::int64_t moved = -1, skipped = -1;
+    double max_disp = -1.0;
+    mio_mesh* out = mio_smooth(m, "odt", /*iterations=*/1, /*lambda=*/-1.0, /*mu=*/-0.34,
+                               /*fix_boundary=*/0, /*preserve_features=*/0,
+                               /*feature_angle=*/30.0, /*guard_inversion=*/1, &moved, &max_disp,
+                               &skipped);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(out), 4);
+    EXPECT_GT(moved, 0);
+    EXPECT_GT(max_disp, 0.0);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, SmoothRejectsBadArguments) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
     const std::vector<std::int64_t> conn = {0, 1, 2, 3};
@@ -1750,6 +1775,44 @@ TEST(CApi, SmoothRejectsBadArguments) {
         nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");
 
+    mio_mesh_free(m);
+}
+
+TEST(CApi, OptimizeVolumeFlipsAndImproves) {
+    // The 2-tet fixture whose 2-3 flip raises the worst scaled Jacobian from
+    // ~0.066 to ~0.362 (see test_optimize_volume.cpp). relocate off so only the
+    // flip acts; every out-param is exercised.
+    const std::vector<double> pts = {0.0,    0.0,    0.0,    1.0,    0.0,   0.0,   0.3,   0.9,
+                                     0.0,    0.2252, 0.2808, 0.6977, 0.4659, 0.3149, -0.0367};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    std::int64_t nflips = -1, n23 = -1, n32 = -1, moved = -1, ntets = -1;
+    double qbefore = -1.0, qafter = -1.0;
+    mio_mesh* out = mio_optimize_volume(m, /*max_iterations=*/5, /*relocate=*/0, /*flip=*/1,
+                                        /*preserve_boundary=*/1, /*min_improvement=*/1e-6, &nflips,
+                                        &n23, &n32, &moved, &ntets, &qbefore, &qafter);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(n23, 1);
+    EXPECT_EQ(n32, 0);
+    EXPECT_EQ(nflips, 1);
+    EXPECT_EQ(ntets, 3);
+    EXPECT_EQ(mio_mesh_num_points(out), 5);  // point set invariant
+    EXPECT_GT(qafter, qbefore + 0.2);
+    mio_mesh_free(out);
+
+    // A non-tet mesh is refused by name; no exception crosses the ABI.
+    mio_mesh* q = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(q, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    const std::vector<std::int64_t> quad = {0, 1, 2, 3};
+    ASSERT_EQ(mio_mesh_add_cell_block(q, "quad", 1, 4, MIO_INT64, quad.data()), MIO_OK);
+    EXPECT_EQ(mio_optimize_volume(q, 5, 1, 1, 1, 1e-6, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    mio_mesh_free(q);
     mio_mesh_free(m);
 }
 
@@ -2451,6 +2514,157 @@ TEST(CApi, EstimateErrorErrorsAreGuardedNotThrown) {
                                  nullptr, nullptr),
               nullptr);
     mio_mesh_free(m);
+}
+
+namespace {
+// A regular octahedron -- the smallest closed 2-manifold triangle mesh with
+// no coplanar faces, small enough to hand-write for a C API smoke test.
+mio_mesh* c_api_octahedron() {
+    const std::vector<double> pts = {1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1};
+    const std::vector<std::int64_t> conn = {0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4,
+                                            2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5};
+    mio_mesh* m = mio_mesh_create();
+    mio_mesh_set_points(m, MIO_FLOAT64, 6, 3, pts.data());
+    mio_mesh_add_cell_block(m, "triangle", 8, 3, MIO_INT64, conn.data());
+    return m;
+}
+}  // namespace
+
+TEST(CApi, RemeshProducesTheRequestedNumberOfClusters) {
+    mio_mesh* m = c_api_octahedron();
+
+    std::int64_t num_clusters = -1, num_iterations = -1, num_isolated = -1, num_nonmanifold = -1;
+    int subdivide_applied = -1;
+    mio_mesh* out =
+        mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "isotropic", 0.0, 1, &num_clusters,
+                   &num_iterations, &subdivide_applied, &num_isolated, &num_nonmanifold);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(num_clusters, 30);
+    EXPECT_GT(subdivide_applied, 0) << "6 vertices cannot support 30 clusters without subdividing";
+    EXPECT_EQ(mio_mesh_num_points(out), 30);
+    EXPECT_GE(num_nonmanifold, 0);
+    mio_mesh_free(out);
+
+    // The quadric ("feature-preserving") metric, gradation and boundary
+    // preservation are all accepted too.
+    mio_mesh* out2 = mio_remesh(m, 30, -1, 10.0, 4, 100, 10, "quadric", 1.5, 0, nullptr, nullptr,
+                                nullptr, nullptr, nullptr);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    mio_mesh_free(out2);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshErrorsAreGuardedNotThrown) {
+    mio_mesh* m = c_api_octahedron();
+
+    EXPECT_EQ(mio_remesh(m, 3, -1, 10.0, 4, 100, 10, nullptr, 0.0, 1, nullptr, nullptr, nullptr,
+                         nullptr, nullptr),
+              nullptr)
+        << "too few clusters";
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_remesh(m, 10, -1, 10.0, 4, 100, 10, "bogus", 0.0, 1, nullptr, nullptr, nullptr,
+                         nullptr, nullptr),
+              nullptr)
+        << "unknown metric";
+    EXPECT_EQ(mio_remesh(nullptr, 10, -1, 10.0, 4, 100, 10, nullptr, 0.0, 1, nullptr, nullptr,
+                         nullptr, nullptr, nullptr),
+              nullptr);
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshExAcceptsAnisotropicAndReportsCounters) {
+    mio_mesh* m = c_api_octahedron();
+
+    mio_remesh_opts opts;
+    mio_remesh_opts_init(&opts);
+    opts.num_clusters = 30;
+    opts.metric = "anisotropic";
+    opts.max_anisotropy = 3.0;
+    mio_remesh_report report;
+    mio_mesh* out = mio_remesh_ex(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_clusters, 0);
+    EXPECT_EQ(mio_mesh_num_points(out), report.num_clusters);
+    EXPECT_GE(report.num_isolated_clusters, 0);
+    EXPECT_GE(report.num_non_manifold_vertices, 0);
+    mio_mesh_free(out);
+
+    // NULL report is fine.
+    mio_mesh* out2 = mio_remesh_ex(m, &opts, nullptr);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    mio_mesh_free(out2);
+
+    // NULL opts falls back to mio_remesh_opts_init's own defaults, whose
+    // num_clusters == 0 fails validation exactly like the flat mio_remesh's
+    // own "too few clusters" case above.
+    EXPECT_EQ(mio_remesh_ex(m, nullptr, nullptr), nullptr);
+
+    // max_anisotropy away from the default under a non-anisotropic metric
+    // is guarded, not silently ignored, exactly as in the C++ core.
+    mio_remesh_opts bad;
+    mio_remesh_opts_init(&bad);
+    bad.num_clusters = 30;
+    bad.metric = "isotropic";
+    bad.max_anisotropy = 2.0;
+    EXPECT_EQ(mio_remesh_ex(m, &bad, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshVolumeOptsInitDefaultsAndRemeshVolume) {
+    mio_mesh* octa = c_api_octahedron();
+
+    mio_remesh_volume_opts opts;
+    mio_remesh_volume_opts_init(&opts);
+    EXPECT_EQ(opts.cell_size, 0.0);
+    EXPECT_DOUBLE_EQ(opts.padding_relative, 0.1);
+    EXPECT_EQ(opts.max_cells, 20000000);
+    EXPECT_EQ(opts.max_tets, 20000000);
+    EXPECT_DOUBLE_EQ(opts.warp_fraction, 0.35);
+    // mio_sdf_opts_init's own defaults are honoured for the embedded distance
+    // options -- the mio_compute_sdf_opts nesting precedent.
+    EXPECT_EQ(opts.distance.sign, MIO_SDF_PSEUDONORMAL);
+    opts.cell_size = 0.4;
+    opts.distance.watertight_check = MIO_SDF_WATERTIGHT_OFF;
+
+    mio_remesh_volume_report report;
+    mio_mesh* out = mio_remesh_volume_ex(octa, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_tets, 0);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "tetra");
+    EXPECT_GE(report.num_vertices_warped, 0);
+    EXPECT_GE(report.num_tets_rejected, 0);
+    EXPECT_GE(report.num_non_manifold_edges, 0);
+    mio_mesh_free(out);
+
+    // NULL report is fine.
+    mio_mesh* out2 = mio_remesh_volume_ex(octa, &opts, nullptr);
+    ASSERT_NE(out2, nullptr) << mio_last_error();
+    mio_mesh_free(out2);
+
+    // NULL opts is an error, mio_voxelize's own rule: a resolution or cell
+    // size must be given, and there is no sensible all-defaults fallback.
+    EXPECT_EQ(mio_remesh_volume_ex(octa, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(octa);
+}
+
+TEST(CApi, RemeshVolumeErrorsAreGuardedNotThrown) {
+    mio_mesh* octa = c_api_octahedron();
+    mio_remesh_volume_opts opts;
+    mio_remesh_volume_opts_init(&opts);
+    opts.cell_size = 0.4;
+    opts.warp_fraction = -0.1;  // negative warp fraction
+
+    EXPECT_EQ(mio_remesh_volume_ex(octa, &opts, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(octa);
 }
 
 TEST(CApi, IsosurfaceErrorsAreGuardedNotThrown) {

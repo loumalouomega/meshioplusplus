@@ -61,6 +61,7 @@ extern SEXP R_mio_quality_counts(SEXP);
 extern SEXP R_mio_transform(SEXP, SEXP, SEXP);
 extern SEXP R_mio_clean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_optimize_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -69,6 +70,9 @@ extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_remesh_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                                SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -182,6 +186,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_transform, 3),
     CALLDEF(R_mio_clean, 6),
     CALLDEF(R_mio_smooth, 9),
+    CALLDEF(R_mio_optimize_volume, 6),
     CALLDEF(R_mio_crop_bbox, 5),
     CALLDEF(R_mio_crop_plane, 5),
     CALLDEF(R_mio_crop_predicate, 5),
@@ -190,6 +195,8 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_gradient, 8),
     CALLDEF(R_mio_hessian, 6),
     CALLDEF(R_mio_estimate_error, 8),
+    CALLDEF(R_mio_remesh, 11),
+    CALLDEF(R_mio_remesh_volume, 14),
     CALLDEF(R_mio_grid, 4),
     CALLDEF(R_mio_voxelize, 11),
     CALLDEF(R_mio_compute_sdf, 16),

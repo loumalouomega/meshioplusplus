@@ -97,6 +97,9 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -1048,6 +1051,39 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
     });
 }
 
+mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relocate, int flip,
+                              int preserve_boundary, double min_improvement, int64_t* num_flips,
+                              int64_t* num_23_flips, int64_t* num_32_flips,
+                              int64_t* num_vertices_moved, int64_t* num_tets,
+                              double* min_quality_before, double* min_quality_after) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::OptimizeVolumeOptions opts;
+        opts.mMaxIterations = max_iterations;
+        opts.mRelocate = relocate != 0;
+        opts.mFlip = flip != 0;
+        opts.mPreserveBoundary = preserve_boundary != 0;
+        opts.mMinImprovement = min_improvement;
+        meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh->mMesh, opts);
+        if (num_flips)
+            *num_flips = r.mNumFlips;
+        if (num_23_flips)
+            *num_23_flips = r.mNum23Flips;
+        if (num_32_flips)
+            *num_32_flips = r.mNum32Flips;
+        if (num_vertices_moved)
+            *num_vertices_moved = r.mNumVerticesMoved;
+        if (num_tets)
+            *num_tets = r.mNumTets;
+        if (min_quality_before)
+            *min_quality_before = r.mMinQualityBefore;
+        if (min_quality_after)
+            *min_quality_after = r.mMinQualityAfter;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine, int64_t* num_groups_undone,
                          int64_t* num_cells_removed) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
@@ -1229,6 +1265,108 @@ mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_name, const
         if (num_marked)
             *num_marked = r.mNumMarked;
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+namespace {
+
+/// Translate the flat option struct into the core's RemeshOptions -- the
+/// mio_refine_opts precedent (capi_refine_options).
+meshioplusplus::RemeshOptions capi_remesh_options(const mio_remesh_opts& rOpts) {
+    meshioplusplus::RemeshOptions options;
+    options.mNumClusters = rOpts.num_clusters;
+    options.mSubdivide = rOpts.subdivide;
+    options.mSubsampleRatio = rOpts.subsample_ratio;
+    options.mMaxSubdivide = rOpts.max_subdivide;
+    options.mMaxIterations = rOpts.max_iterations;
+    options.mMaxRepairPasses = rOpts.max_repair_passes;
+    options.mMetric =
+        meshioplusplus::remesh_metric_from_name(rOpts.metric ? rOpts.metric : "isotropic");
+    options.mGradation = rOpts.gradation;
+    options.mPreserveBoundary = rOpts.preserve_boundary != 0;
+    options.mMaxAnisotropy = rOpts.max_anisotropy;
+    return options;
+}
+
+mio_mesh* capi_remesh(const mio_mesh* pMesh, const meshioplusplus::RemeshOptions& rOptions,
+                      mio_remesh_report* pReport) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::RemeshResult r = meshioplusplus::remesh(pMesh->mMesh, rOptions);
+    if (pReport) {
+        *pReport = mio_remesh_report{};
+        pReport->num_clusters = r.mNumClusters;
+        pReport->num_iterations = r.mNumIterations;
+        pReport->subdivide_applied = r.mSubdivideApplied;
+        pReport->num_isolated_clusters = r.mNumIsolatedClusters;
+        pReport->num_non_manifold_vertices = r.mNumNonManifoldVertices;
+    }
+    return new mio_mesh{std::move(r.mMesh)};
+}
+
+}  // namespace
+
+static_assert(sizeof(mio_remesh_opts) == 120, "mio_remesh_opts grew outside its reserved tail");
+static_assert(sizeof(mio_remesh_report) == 72, "mio_remesh_report grew outside its reserved tail");
+
+void mio_remesh_opts_init(mio_remesh_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remesh_opts{};  // value-initialized: zero every field first
+    opts->subdivide = -1;
+    opts->max_subdivide = 4;
+    opts->subsample_ratio = 10.0;
+    opts->max_iterations = 100;
+    opts->max_repair_passes = 10;
+    opts->preserve_boundary = 1;
+    opts->max_anisotropy = meshioplusplus::kRemeshDefaultMaxAnisotropy;
+}
+
+mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
+                     double subsample_ratio, int max_subdivide, int max_iterations,
+                     int max_repair_passes, const char* metric, double gradation,
+                     int preserve_boundary, int64_t* num_clusters_out, int64_t* num_iterations,
+                     int* subdivide_applied, int64_t* num_isolated_clusters,
+                     int64_t* num_non_manifold_vertices) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        meshioplusplus::RemeshOptions opts;
+        opts.mNumClusters = num_clusters;
+        opts.mSubdivide = subdivide;
+        opts.mSubsampleRatio = subsample_ratio;
+        opts.mMaxSubdivide = max_subdivide;
+        opts.mMaxIterations = max_iterations;
+        opts.mMaxRepairPasses = max_repair_passes;
+        opts.mMetric = meshioplusplus::remesh_metric_from_name(metric ? metric : "isotropic");
+        opts.mGradation = gradation;
+        opts.mPreserveBoundary = preserve_boundary != 0;
+        // max_anisotropy has no flat parameter here -- mio_remesh_ex is
+        // required to move it away from the default (RemeshOptions's own
+        // member-initializer default, inherited unchanged above).
+        mio_remesh_report report{};
+        mio_mesh* out = capi_remesh(mesh, opts, &report);
+        if (num_clusters_out)
+            *num_clusters_out = report.num_clusters;
+        if (num_iterations)
+            *num_iterations = report.num_iterations;
+        if (subdivide_applied)
+            *subdivide_applied = report.subdivide_applied;
+        if (num_isolated_clusters)
+            *num_isolated_clusters = report.num_isolated_clusters;
+        if (num_non_manifold_vertices)
+            *num_non_manifold_vertices = report.num_non_manifold_vertices;
+        return out;
+    });
+}
+
+mio_mesh* mio_remesh_ex(const mio_mesh* mesh, const mio_remesh_opts* opts,
+                        mio_remesh_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (opts == nullptr) {
+            mio_remesh_opts defaults;
+            mio_remesh_opts_init(&defaults);
+            return capi_remesh(mesh, capi_remesh_options(defaults), report);
+        }
+        return capi_remesh(mesh, capi_remesh_options(*opts), report);
     });
 }
 
@@ -3815,6 +3953,32 @@ meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& 
     return options;
 }
 
+/// Translate the flat option struct into the core's RemeshVolumeOptions.
+meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(const mio_remesh_volume_opts& rOpts) {
+    meshioplusplus::RemeshVolumeOptions options;
+    if (rOpts.resolution != nullptr)
+        options.mResolution = std::array<std::int64_t, 3>{
+            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
+    if (rOpts.cell_size > 0.0)
+        options.mCellSize = rOpts.cell_size;
+    if (rOpts.bounds != nullptr)
+        options.mBounds =
+            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
+                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
+    options.mPadding = rOpts.padding;
+    options.mPaddingRelative = rOpts.padding_relative;
+    // Verbatim, not gated on > 0: mMaxCells/mMaxTets <= 0 means "unlimited"
+    // to the C++ checks themselves (sdf.cpp/remesh_volume.cpp's own
+    // `> 0 && ...` guards), so passing it through unconditionally is what
+    // makes explicitly requesting "unlimited" (0) actually work, rather than
+    // silently falling back to the struct's C++-side default of 20000000.
+    options.mMaxCells = rOpts.max_cells;
+    options.mMaxTets = rOpts.max_tets;
+    options.mWarpFraction = rOpts.warp_fraction;
+    options.mDistance = capi_sdf_options(rOpts.distance);
+    return options;
+}
+
 void capi_fill_quality(const meshioplusplus::SurfaceQuality& rQuality, mio_surface_quality* pOut) {
     if (!pOut)
         return;
@@ -3885,6 +4049,45 @@ mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf_opts* o
         if (num_banded)
             *num_banded = r.mNumBanded;
         capi_fill_quality(r.mQuality, quality);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_remesh_volume_opts) == 216,
+              "mio_remesh_volume_opts grew outside its reserved tail");
+static_assert(sizeof(mio_remesh_volume_report) == 136,
+              "mio_remesh_volume_report grew outside its reserved tail");
+
+void mio_remesh_volume_opts_init(mio_remesh_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remesh_volume_opts{};
+    opts->padding_relative = 0.1;
+    opts->max_cells = 20000000;
+    opts->max_tets = 20000000;
+    opts->warp_fraction = 0.35;
+    mio_sdf_opts_init(&opts->distance);
+}
+
+mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_volume_opts* opts,
+                               mio_remesh_volume_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw meshioplusplus::ReadError(
+                "meshio++: remesh_volume: options are NULL, but exactly one of resolution and "
+                "cell_size must be given");
+        meshioplusplus::RemeshVolumeResult r =
+            meshioplusplus::remesh_volume(mesh->mMesh, capi_remesh_volume_options(*opts));
+        if (report) {
+            *report = mio_remesh_volume_report{};
+            capi_fill_quality(r.mQuality, &report->input_quality);
+            report->num_tets = r.mNumTets;
+            report->num_vertices_warped = r.mNumVerticesWarped;
+            report->num_tets_rejected = r.mNumTetsRejected;
+            report->num_non_manifold_edges = r.mNumNonManifoldEdges;
+        }
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

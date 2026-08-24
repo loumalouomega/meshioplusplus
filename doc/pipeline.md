@@ -1,10 +1,6 @@
 # The settings pipeline
 
-Since v9.11.0 meshio++ can run a whole *chain* of operations declaratively:
-one `settings.json` document describes read → operations → write, and every
-surface executes it — both CLIs (the `pipeline` verb), Python
-(`meshioplusplus.run_pipeline`), C (`mio_pipeline_run_file`/`_json`), Fortran,
-Julia, R, WASM (`runPipeline`) and the MCP server (the `pipeline` tool).
+Since v9.11.0 meshio++ can run a whole *chain* of operations declaratively: one `settings.json` document describes read → operations → write, and every surface executes it — both CLIs (the `pipeline` verb), Python (`meshioplusplus.run_pipeline`), C (`mio_pipeline_run_file`/`_json`), Fortran, Julia, R, WASM (`runPipeline`) and the MCP server (the `pipeline` tool).
 
 ```bash
 meshioplusplus pipeline settings.json            # either CLI
@@ -31,25 +27,11 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 ## The rules
 
-- **Vocabulary is PascalCase** for op names and parameter keys
-  (`"Op": "ConvertCells"`, `"RemoveOrphans": true`). Enum *values* keep the
-  exact lowercase spellings the rest of meshio++ uses (`"simplexify"`,
-  `"redgreen"`, `"cell"`, `"rcm"`). Refine's comparison key is `Compare`,
-  never `Op` — `Op` is the step discriminant.
-- **Parsing is strict.** An unknown op, an unknown key on a step, an unknown
-  top-level key, or a mis-typed value is an error naming the offender — never
-  silently ignored (the same rule `registry_write_ex` applies to `Output`
-  options a format cannot honour).
-- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split`, `Diff` and
-  `UndoGreen` need extra inputs or produce extra outputs, and a step naming one errors
-  pointing at the matching CLI verb (`undo-green` for `UndoGreen`, which needs a second
-  coarse mesh exactly as `Interpolate` needs a second source mesh). `Partition` as a step
-  attaches the `partition:part` labels (colour-by-part) rather than splitting into pieces.
-- Steps are validated **before** the input is read — a typo in step 7 never
-  costs reading a 10 GB mesh first.
-- The run returns a **report**: `{"steps": [{"op", ...counters}],
-  "warnings": [...]}` with PascalCase counter keys (`PointsWelded`,
-  `SectionFaces`, `NumSkipped`, ...).
+- **Vocabulary is PascalCase** for op names and parameter keys (`"Op": "ConvertCells"`, `"RemoveOrphans": true`). Enum *values* keep the exact lowercase spellings the rest of meshio++ uses (`"simplexify"`, `"redgreen"`, `"cell"`, `"rcm"`). Refine's comparison key is `Compare`, never `Op` — `Op` is the step discriminant.
+- **Parsing is strict.** An unknown op, an unknown key on a step, an unknown top-level key, or a mis-typed value is an error naming the offender — never silently ignored (the same rule `registry_write_ex` applies to `Output` options a format cannot honour).
+- **A chain runs over one mesh at a time.** `Merge`, `Interpolate`, `Split`, `Diff` and `UndoGreen` need extra inputs or produce extra outputs, and a step naming one errors pointing at the matching CLI verb (`undo-green` for `UndoGreen`, which needs a second coarse mesh exactly as `Interpolate` needs a second source mesh). `Partition` as a step attaches the `partition:part` labels (colour-by-part) rather than splitting into pieces.
+- Steps are validated **before** the input is read — a typo in step 7 never costs reading a 10 GB mesh first.
+- The run returns a **report**: `{"steps": [{"op", ...counters}], "warnings": [...]}` with PascalCase counter keys (`PointsWelded`, `SectionFaces`, `NumSkipped`, ...).
 
 ## Top-level schema
 
@@ -60,14 +42,9 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 | `Operations` | no (default `[]`) | the step array; empty = a plain convert |
 | `Output` | yes | `{Path, Format?, Encoding?, Codec?, FloatFormat?}` |
 
-`Input.Options` narrows the read (see [selective reads](selective_read.md)):
-`PointsOnly` (bool), `DataArrays` (string array; absent = all, `[]` = none),
-`TimeStep` (int), `Lenient` (bool), `Mmap` (`"auto" | "on" | "off"`).
+`Input.Options` narrows the read (see [selective reads](selective_read.md)): `PointsOnly` (bool), `DataArrays` (string array; absent = all, `[]` = none), `TimeStep` (int), `Lenient` (bool), `Mmap` (`"auto" | "on" | "off"`).
 
-`Output` maps onto `registry_write_ex`: `Encoding` (`"ascii" | "binary"`),
-`Codec` (`"none" | "zlib" | "lz4" | "zstd"`, VTU/VTP block codecs), and
-`FloatFormat` (a printf-style float format for ASCII writers that take one).
-An option the output format cannot honour is an error.
+`Output` maps onto `registry_write_ex`: `Encoding` (`"ascii" | "binary"`), `Codec` (`"none" | "zlib" | "lz4" | "zstd"`, VTU/VTP block codecs), and `FloatFormat` (a printf-style float format for ASCII writers that take one). An option the output format cannot honour is an error.
 
 ## Operations
 
@@ -101,9 +78,7 @@ An option the output format cannot honour is an error.
 
 ## Sequences (transient / multi-file runs)
 
-Since v9.12.0 the same document can describe a whole **transient** run: a
-glob/list input, the chain applied per step, and a fan-out or fan-in output.
-Seven additional keys, all optional:
+Since v9.12.0 the same document can describe a whole **transient** run: a glob/list input, the chain applied per step, and a fan-out or fan-in output. Seven additional keys, all optional:
 
 | Key | Where | Meaning |
 | --- | --- | --- |
@@ -128,50 +103,19 @@ Seven additional keys, all optional:
 
 Two rules worth stating explicitly:
 
-- **A document using none of these keys behaves exactly as before** — the C++
-  engine literally delegates to the single-file `run_pipeline`, and Python's
-  `run_pipeline` never enters the sequence code path.
-- Conversely, the typed single-file parser (`parse_pipeline_json`) **rejects** a
-  sequence key by name rather than ignoring it. Ignoring one would run a
-  transient document as its first step, which is exactly the silent truncation
-  this feature exists to prevent. The CLI verb, Python's `run_pipeline` and the
-  MCP tool all route a sequence document to the right engine automatically, so
-  nobody has to know which kind of document they hold.
+- **A document using none of these keys behaves exactly as before** — the C++ engine literally delegates to the single-file `run_pipeline`, and Python's `run_pipeline` never enters the sequence code path.
+- Conversely, the typed single-file parser (`parse_pipeline_json`) **rejects** a sequence key by name rather than ignoring it. Ignoring one would run a transient document as its first step, which is exactly the silent truncation this feature exists to prevent. The CLI verb, Python's `run_pipeline` and the MCP tool all route a sequence document to the right engine automatically, so nobody has to know which kind of document they hold.
 
-See [sequences](sequences.md) for the ordering rule, the time-value precedence,
-the mode-inference table and the streaming guarantee.
+See [sequences](sequences.md) for the ordering rule, the time-value precedence, the mode-inference table and the streaming guarantee.
 
 ## Where the engine lives
 
-The engine is `operations/pipeline.{hpp,cpp}` in the C++ core, split in two
-layers:
+The engine is `operations/pipeline.{hpp,cpp}` in the C++ core, split in two layers:
 
-- The **typed layer** (`PipelineStep`, `apply_pipeline_step`,
-  `run_pipeline_steps`, `run_pipeline`) always compiles and is the **single
-  owner of the step dispatch** — the browser viewer's
-  [`convertSurfaceOps`](wasm.md) pipeline goes through the same code, so the
-  viewer's op chips and a settings.json cannot drift apart (the viewer's op
-  specs are the same words in camelCase; the two casings differ by exactly
-  the first character).
-- The **JSON front-end** (`parse_pipeline_*`, `run_pipeline_json/_file`)
-  parses the document with [nlohmann/json](https://github.com/nlohmann/json)
-  v3.12.0, vendored as a git submodule at `src/cpp/third_party/json` exactly
-  like Eigen. When the submodule is absent or
-  `-DMESHIOPLUSPLUS_WITH_JSON=OFF`, the entry points still exist and throw
-  naming the flag (`pipeline_has_json()` / `mio_pipeline_has_json()` /
-  `_core.__has_json__` report which build you have). Wheels, the release CLI
-  binaries and the from-source builds all carry it; the conan/vcpkg packages
-  currently do not (the submodule is not in a source export — the Eigen
-  rule), so there the C ABI entry points fail by name.
+- The **typed layer** (`PipelineStep`, `apply_pipeline_step`, `run_pipeline_steps`, `run_pipeline`) always compiles and is the **single owner of the step dispatch** — the browser viewer's [`convertSurfaceOps`](wasm.md) pipeline goes through the same code, so the viewer's op chips and a settings.json cannot drift apart (the viewer's op specs are the same words in camelCase; the two casings differ by exactly the first character).
+- The **JSON front-end** (`parse_pipeline_*`, `run_pipeline_json/_file`) parses the document with [nlohmann/json](https://github.com/nlohmann/json) v3.12.0, vendored as a git submodule at `src/cpp/third_party/json` exactly like Eigen. When the submodule is absent or `-DMESHIOPLUSPLUS_WITH_JSON=OFF`, the entry points still exist and throw naming the flag (`pipeline_has_json()` / `mio_pipeline_has_json()` / `_core.__has_json__` report which build you have). Wheels, the release CLI binaries and the from-source builds all carry it; the conan/vcpkg packages currently do not (the submodule is not in a source export — the Eigen rule), so there the C ABI entry points fail by name.
 
-**Python's `run_pipeline` is deliberately a pure-Python twin** dispatching
-over the public Python API rather than the C++ engine: it inherits every
-operation's C++/numpy parity contract *and* the per-format Python fallbacks
-(a gmsh `$Periodic` input still runs), and it works on an sdist install with
-no submodule. `_core.run_pipeline_file`/`_core.run_pipeline_json` expose the
-C++ engine too, and `tests/python/test_pipeline.py` pins the two engines'
-outputs — and the transcribed op/key table (`_core.pipeline_op_table()`) —
-against each other.
+**Python's `run_pipeline` is deliberately a pure-Python twin** dispatching over the public Python API rather than the C++ engine: it inherits every operation's C++/numpy parity contract *and* the per-format Python fallbacks (a gmsh `$Periodic` input still runs), and it works on an sdist install with no submodule. `_core.run_pipeline_file`/`_core.run_pipeline_json` expose the C++ engine too, and `tests/python/test_pipeline.py` pins the two engines' outputs — and the transcribed op/key table (`_core.pipeline_op_table()`) — against each other.
 
 ## Per-surface entry points
 
@@ -186,20 +130,13 @@ against each other.
 | WASM | `runPipeline(settings)` — object \| JSON text \| MEMFS `.json` path (no nlohmann in the wasm build; `JSON.parse` does the text forms) |
 | MCP | tool `pipeline(settings_path, input_path?, output_path?)` — the sandbox covers the paths *inside* the document too |
 
-The flat ABI (C/Fortran/Julia/R) carries **JSON text only** and reports
-status + `mio_last_error()`; the structured report is a recorded follow-up.
+The flat ABI (C/Fortran/Julia/R) carries **JSON text only** and reports status + `mio_last_error()`; the structured report is a recorded follow-up.
 
 ## Follow-ups (recorded, not implemented)
 
-- **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step
-  `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with
-  `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these.
-  (v9.12.0's [sequences](sequences.md) added the *input*-list and
-  `{step}`-output halves of this for the transient case, but a step that
-  consumes or produces several meshes at once is still out of scope.)
+- **Multi-mesh steps**: `Merge`/`Interpolate`/`UndoGreen` would need per-step `Inputs: [paths]`, and `Split`/partition-to-pieces an `Output.Pattern` with `{key}`/`{part}` — the v2 schema sketch; today the CLI verbs cover these. (v9.12.0's [sequences](sequences.md) added the *input*-list and `{step}`-output halves of this for the transient case, but a step that consumes or produces several meshes at once is still out of scope.)
 - A **C ABI report accessor** (caller-buffer JSON string of the run report).
-- conan/vcpkg packages shipping the parser via a registry
-  `nlohmann_json/3.12.0` dependency instead of the submodule.
+- conan/vcpkg packages shipping the parser via a registry `nlohmann_json/3.12.0` dependency instead of the submodule.
 
 ## `Voxelize`
 
@@ -207,12 +144,9 @@ status + `mio_last_error()`; the structured report is a recorded follow-up.
 { "Op": "Voxelize", "Resolution": [64, 64, 64], "Fill": "surface" }
 ```
 
-Keys: `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `Fill`,
-`AttachOccupancy`, `MaxCells`, `Sign`. Reports `NumOccupied`.
+Keys: `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `Fill`, `AttachOccupancy`, `MaxCells`, `Sign`. Reports `NumOccupied`.
 
-It and `ComputeSdf` are the only steps that **replace** their input's geometry
-rather than transforming it — read a skin, voxelize it, write a grid. See
-[`doc/voxelize.md`](voxelize.md).
+It and `ComputeSdf` are the only steps that **replace** their input's geometry rather than transforming it — read a skin, voxelize it, write a grid. See [`doc/voxelize.md`](voxelize.md).
 
 ## `ComputeSdf`
 
@@ -220,11 +154,6 @@ rather than transforming it — read a skin, voxelize it, write a grid. See
 { "Op": "ComputeSdf", "Structure": "octree", "RootResolution": 8, "MaxDepth": 4 }
 ```
 
-Keys: `Structure` ("voxel" | "octree"), `Resolution`, `CellSize`, `Bounds`,
-`Padding`, `PaddingRelative`, `RootResolution`, `MaxDepth`, `BandCells`,
-`RecordLevels`, `MaxCells`, `Sign`, `Location`, `Band`. Reports `MaxDepth` and
-`NumBanded`.
+Keys: `Structure` ("voxel" | "octree"), `Resolution`, `CellSize`, `Bounds`, `Padding`, `PaddingRelative`, `RootResolution`, `MaxDepth`, `BandCells`, `RecordLevels`, `MaxCells`, `Sign`, `Location`, `Band`. Reports `MaxDepth` and `NumBanded`.
 
-`Resolution`/`CellSize` size a **voxel** grid and are an error with
-`"Structure": "octree"`, whose finest cell is `RootResolution / 2^MaxDepth` and
-is therefore already determined. See [`doc/sdf.md`](sdf.md).
+`Resolution`/`CellSize` size a **voxel** grid and are an error with `"Structure": "octree"`, whose finest cell is `RootResolution / 2^MaxDepth` and is therefore already determined. See [`doc/sdf.md`](sdf.md).

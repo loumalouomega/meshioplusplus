@@ -246,9 +246,21 @@ def _smooth_py(
     diverge macroscopically rather than by round-off. Rather than ship a second,
     subtly different guard, the fallback raises when one is requested.
     """
+    if method == "odt":
+        # Unlike laplacian/taubin, ODT is C++-core only unconditionally, not
+        # merely under guard_inversion=True: an unguarded ODT step can invert
+        # a tet near a concave boundary, so the method is only meaningful
+        # guarded, and the guard itself is the same discrete-branch-on-a-sign
+        # this reference already declines to duplicate above.
+        raise NotImplementedError(
+            "meshio++: smooth: method='odt' is C++-core only and has no "
+            "pure-numpy fallback -- install a build with the compiled "
+            "meshioplusplus._core extension"
+        )
     if method not in _METHODS:
         raise ValueError(
-            f"meshio++: smooth: unknown method {method!r} (expected 'laplacian' or 'taubin')"
+            f"meshio++: smooth: unknown method {method!r} "
+            f"(expected 'laplacian', 'taubin' or 'odt')"
         )
     if guard_inversion:
         raise NotImplementedError(
@@ -337,14 +349,22 @@ def smooth(
     """Smooth a mesh's point coordinates, leaving topology and data intact.
 
     :param mesh: the mesh to smooth (never modified).
-    :param method: ``"taubin"`` (default, shrink-free) or ``"laplacian"``
-        (stronger per pass, but shrinks the mesh).
+    :param method: ``"taubin"`` (default, shrink-free), ``"laplacian"``
+        (stronger per pass, but shrinks the mesh), or ``"odt"``
+        (optimal-Delaunay-triangulation smoothing: each free interior tet
+        vertex moves toward the volume-weighted average of its incident
+        tets' circumcenters -- **tet-only**, raises on any other block; see
+        ``doc/smooth.md#odt-smoothing``. C++-core only, no numpy fallback,
+        unlike the other two methods).
     :param iterations: how many iterations to run; for Taubin one iteration is
         two passes (``+lambda_`` then ``mu``).
     :param lambda_: relaxation factor in ``(0, 1)``. **Negative means "this
-        method's own default"** -- ``0.5`` for Laplacian, ``0.33`` for Taubin.
-        The trailing underscore is because ``lambda`` is a Python keyword.
+        method's own default"** -- ``0.5`` for Laplacian, ``0.33`` for
+        Taubin, ``0.9`` for ODT (a near-full step, damped rather than
+        exactly ``1.0``). The trailing underscore is because ``lambda`` is a
+        Python keyword.
     :param mu: Taubin's un-shrinking factor; must satisfy ``mu < -lambda_ < 0``.
+        Silently ignored by ``"laplacian"`` and ``"odt"``.
     :param fix_boundary: pin nodes lying on a boundary facet (default on --
         without it the domain's own shape changes).
     :param preserve_features: additionally pin boundary nodes where incident

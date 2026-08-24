@@ -24,11 +24,13 @@ def add_args(parser):
     parser.add_argument(
         "--method",
         type=str,
-        choices=["taubin", "laplacian"],
+        choices=["taubin", "laplacian", "odt"],
         default="taubin",
         help=(
-            "smoothing operator: taubin (shrink-free, default) or "
-            "laplacian (stronger per pass, shrinks volume)"
+            "smoothing operator: taubin (shrink-free, default), "
+            "laplacian (stronger per pass, shrinks volume), or "
+            "odt (optimal-Delaunay-triangulation smoothing -- tet-only, "
+            "C++-core only with no pure-Python fallback)"
         ),
     )
     parser.add_argument(
@@ -48,7 +50,7 @@ def add_args(parser):
         help=(
             "relaxation factor of the smoothing pass, in (0, 1); "
             "the default depends on --method (0.5 for laplacian, "
-            "0.33 for taubin)"
+            "0.33 for taubin, 0.9 for odt)"
         ),
     )
     parser.add_argument(

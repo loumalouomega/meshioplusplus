@@ -23,11 +23,14 @@ from . import (
     _interpolate,
     _isosurface,
     _merge,
+    _optimize_volume,
     _partition,
     _pipeline,
     _quality,
     _refine,
     _regions,
+    _remesh,
+    _remesh_volume,
     _reorder,
     _sdf,
     _slice,
@@ -241,6 +244,27 @@ def main(argv=None):
     )
     _decimate_volume.add_args(parser)
     parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "remesh",
+        help="Replace a surface's triangulation with a new, well-shaped one (ACVD)",
+    )
+    _remesh.add_args(parser)
+    parser.set_defaults(func=_remesh.remesh_cmd)
+
+    parser = subparsers.add_parser(
+        "remesh-volume",
+        help="Retetrahedralize a volume (or closed surface) by isosurface stuffing",
+    )
+    _remesh_volume.add_args(parser)
+    parser.set_defaults(func=_remesh_volume.remesh_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "optimize-volume",
+        help="ODT-remesh a tetrahedral mesh (relocate vertices + flip connectivity)",
+    )
+    _optimize_volume.add_args(parser)
+    parser.set_defaults(func=_optimize_volume.optimize_volume_cmd)
 
     parser = subparsers.add_parser(
         "partition",

@@ -28,3 +28,45 @@ license: MIT
 # source available; private use carries no obligation). The C++ core, the C
 # API it calls and the R binding in bindings/r/ are all MIT. See
 # bindings/julia/LICENSE.
+#
+# The isotropic clustering engine behind the `remesh` operation
+# (src/cpp/src/operations/remesh.cpp) is derived from pyacvd
+# (https://github.com/pyvista/pyacvd), MIT License, Copyright (c) 2017-2024
+# The PyVista Developers -- itself an independent implementation of the
+# published research of S. Valette and J.-M. Chassery, not of the CeCILL-B
+# licensed ACVD project (https://github.com/valette/ACVD), which this
+# codebase never reads code from and never vendors. remesh's optional
+# quadric-driven ("feature-preserving") metric has no pyacvd counterpart and
+# is an original synthesis built on this project's own pre-existing
+# Garland-Heckbert quadric machinery (detail/decimate_common.hpp). See
+# doc/remesh.md for the full attribution and licence reasoning.
+#
+# The `remesh_volume` operation (src/cpp/src/operations/remesh_volume.cpp)
+# is implemented from the PUBLISHED DESCRIPTION only of:
+#   J. Labelle and J. R. Shewchuk, "Isosurface Stuffing: Fast Tetrahedral
+#   Meshes with Good Dihedral Angles", ACM Transactions on Graphics
+#   (SIGGRAPH 2007), 26(3), Article 57.
+# Neither the paper's own reference implementation (Stellar, non-commercial
+# licence) nor TetGen (AGPL-3.0, also by Shewchuk) is read or vendored here.
+# The 12-tet body-centered-cubic lattice tetrahedralization used is this
+# project's own derivation (a deliberately simpler alternative to the
+# paper's own construction), independently verified and algebraically
+# pinned rather than transcribed. See doc/remesh_volume.md for the full
+# attribution and licence reasoning.
+#
+# SmoothMethod::Odt (src/cpp/src/operations/smooth.cpp) cites the
+# variational-tetrahedral-meshing literature (e.g. P. Alliez et al.,
+# "Variational Tetrahedral Meshing", SIGGRAPH 2005) for the optimal-Delaunay-
+# triangulation energy it minimizes; CGAL's GPL-licensed Mesh_3
+# implementation is not read.
+#
+# The `optimize_volume` operation (src/cpp/src/operations/optimize_volume.cpp)
+# implements the local-mesh-improvement-by-swapping rule from the PUBLISHED
+# DESCRIPTION only of:
+#   L. A. Freitag and C. Ollivier-Gooch, "Tetrahedral mesh improvement using
+#   swapping and smoothing", International Journal for Numerical Methods in
+#   Engineering, 40(21), 1997, pp. 3979-4002.
+# A topological flip (2-3 / 3-2) is applied only when it strictly raises the
+# worst incident element quality, using signed-volume tests alone -- no
+# in-sphere / orientation predicate kernel, and no external mesh library, is
+# read or vendored. See doc/optimize_volume.md.

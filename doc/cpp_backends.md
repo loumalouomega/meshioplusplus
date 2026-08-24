@@ -80,7 +80,7 @@ mp.GetSubModelPart("gmsh_physical_1");  // built from integer tag arrays
 - **Elements vs Conditions**: blocks whose topological dimension equals the mesh's maximum become Elements, lower-dimension blocks Conditions (the Kratos convention, matching the [mdpa](formats/mdpa.md) reader/writer), each kind Id-numbered 1..N in block order with default Kratos names (`Element3D4N`, `SurfaceCondition3D3N`, ... — `backends/kratos_names.hpp`).
 - **Tags → SubModelParts**: integer cell-data under well-known names (`gmsh:physical`, `su2:tag`, `medit:ref`, `cell_tags`, ...) automatically become SubModelParts named `<key>_<value>` containing the tagged entities and their nodes. Disable with `mesh.SetBuildSubModelPartsFromTags(false)` before the first `GetModelPart()` call. The tag arrays also stay as elemental/conditional data, so writer round-trips are byte-identical.
 
-  Since v9.2.0 the pass can also be narrowed **per key**, which matters for `.mdpa`: a Kratos properties id is read as a `gmsh:physical` cell tag, so a deck with one sub model part comes back with `gmsh_physical_0` beside it — material assignment surfacing as a group. For a genuine gmsh file that same inference is wanted, so the key stays in the table and the consumer says which meaning applies:
+Since v9.2.0 the pass can also be narrowed **per key**, which matters for `.mdpa`: a Kratos properties id is read as a `gmsh:physical` cell tag, so a deck with one sub model part comes back with `gmsh_physical_0` beside it — material assignment surfacing as a group. For a genuine gmsh file that same inference is wanted, so the key stays in the table and the consumer says which meaning applies:
 
   ```cpp
   mesh.ExcludeTagSubModelPartKey("gmsh:physical");   // everything else still applies
@@ -88,7 +88,7 @@ mp.GetSubModelPart("gmsh_physical_1");  // built from integer tag arrays
   mesh.TagSubModelPartKeys();                        // the effective set
   ```
 
-  An empty allow-list restores the default. Both setters re-materialize, so they may be called after `GetModelPart()`.
+An empty allow-list restores the default. Both setters re-materialize, so they may be called after `GetModelPart()`.
 
 - **Property sets → `Properties`** (v9.2.0): `Begin Properties` bodies read from a `.mdpa` ride on the mesh (`AddPropertySet`/`GetPropertySet`) and materialize as `ModelPart::Properties` blocks with **real values**, not just ids — which is what makes `to_model_part`'s "apply property" overload transfer material data. They are keyed by id rather than by entity index, so no operation ever has to remap them; shape-preserving operations (`clean`, `smooth`, `transform`, `attach_quality`, the data ops) carry them through, while restructuring and multi-input ones (`merge`, `crop`, `split`, `partition`) do not.
 - **point/cell data** become simplified per-entity variables (`mp.GetNodalData("temperature")`, `mp.GetElementalData(...)`, `mp.GetNodalValue("temperature", nodeId)`).
@@ -128,17 +128,9 @@ One CMake branch defining `MESHIOPLUSPLUS_MESH_BACKEND_<NAME>`, one `#elif` in `
 
 Three things a Kratos consumer needs that used to be lost on the way through.
 
-**Entity names.** `GeometricalEntity` carries an optional Kratos registration
-name (`Name()`/`HasName()`); empty means "derive it from the cell type", which is
-what every caller got before. It matters because deriving is lossy in one
-direction only: `SmallDisplacementElement3D4N` resolves to `Tetrahedra4`, but
-`Tetrahedra4` only ever derives back to the canonical `Element3D4N`.
+**Entity names.** `GeometricalEntity` carries an optional Kratos registration name (`Name()`/`HasName()`); empty means "derive it from the cell type", which is what every caller got before. It matters because deriving is lossy in one direction only: `SmallDisplacementElement3D4N` resolves to `Tetrahedra4`, but `Tetrahedra4` only ever derives back to the canonical `Element3D4N`.
 
-Names are stored as interned `const std::string*` from a root-owned
-`detail::NamePool`, not owned strings: there is one distinct name per *block* but
-one entity per *cell*, so an owned string would add ~320 MB to a 10 M-element
-model part. `std::unordered_set` is node-based, so the pointers survive both
-rehashing and a `ModelPart` move.
+Names are stored as interned `const std::string*` from a root-owned `detail::NamePool`, not owned strings: there is one distinct name per *block* but one entity per *cell*, so an owned string would add ~320 MB to a 10 M-element model part. `std::unordered_set` is node-based, so the pointers survive both rehashing and a `ModelPart` move.
 
 On the mesh backend they ride per block:
 
@@ -150,17 +142,8 @@ for (std::size_t b = 0; b < m.NumCellBlocks(); ++b)
 ModelPart& r_mp = m.GetModelPart();   // entities now carry the real names
 ```
 
-`SetBlockEntityName`/`BlockEntityName` are KRATOS-only extras, not part of the
-uniform mesh API — no other backend has a ModelPart to spell names for. This is
-the same "fast-consumer surface" shape as NATIVE's `PointsData()`/`ConnSpan()`.
+`SetBlockEntityName`/`BlockEntityName` are KRATOS-only extras, not part of the uniform mesh API — no other backend has a ModelPart to spell names for. This is the same "fast-consumer surface" shape as NATIVE's `PointsData()`/`ConnSpan()`.
 
-**Properties.** `ModelPart` has a real Properties store
-(`CreateNewProperties`/`GetProperties`/`Properties()`), and `Materialize()` reads
-each entity's properties id from the `gmsh:physical` cell_data instead of leaving
-every entity on properties 0. The values are `PropertyValue` key/value pairs
-(`meshioplusplus/properties.hpp`), shared with MDPA so there is one
-representation. Turning them into typed Kratos `Variable<T>`s is the consumer's
-job — see the applier overload in [`doc/cpp_api.md`](cpp_api.md).
+**Properties.** `ModelPart` has a real Properties store (`CreateNewProperties`/`GetProperties`/`Properties()`), and `Materialize()` reads each entity's properties id from the `gmsh:physical` cell_data instead of leaving every entity on properties 0. The values are `PropertyValue` key/value pairs (`meshioplusplus/properties.hpp`), shared with MDPA so there is one representation. Turning them into typed Kratos `Variable<T>`s is the consumer's job — see the applier overload in [`doc/cpp_api.md`](cpp_api.md).
 
-**Nesting.** SubModelPart nesting now survives the staging round trip, flattened
-into region names with `/` — see [`doc/regions.md`](regions.md#nested-groups-the--convention).
+**Nesting.** SubModelPart nesting now survives the staging round trip, flattened into region names with `/` — see [`doc/regions.md`](regions.md#nested-groups-the--convention).

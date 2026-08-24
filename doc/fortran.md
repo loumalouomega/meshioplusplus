@@ -91,8 +91,7 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 
 ## Selective reads and file summaries
 
-`read` takes optional `points_only`, `arrays` and `time_step`, and the module-level
-`mio_read_metadata` returns a `type(mio_metadata)`:
+`read` takes optional `points_only`, `arrays` and `time_step`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
 
 ```fortran
 type(mio_mesh) :: m
@@ -108,23 +107,15 @@ print *, meta%fell_back_to_full_read      ! .true. => the file was read in full
 print *, size(meta%time_values)           ! how many steps `time_step` may name
 ```
 
-`time_step` picks a step of a multi-step file (0 = the first, negative counts from the end).
-Out of range is an error naming the available count, never a silent clamp;
-`meta%time_values` is allocated to size 0 for a format with no time concept.
+`time_step` picks a step of a multi-step file (0 = the first, negative counts from the end). Out of range is an error naming the available count, never a silent clamp; `meta%time_values` is allocated to size 0 for a format with no time concept.
 
-A zero-sized `arrays` means *no* arrays, which is distinct from omitting the argument (every
-array). Names are trimmed and NUL-terminated internally; the copies outlive the call.
+A zero-sized `arrays` means *no* arrays, which is distinct from omitting the argument (every array). Names are trimmed and NUL-terminated internally; the copies outlive the call.
 
-`meta%cell_blocks` is an array of `type(mio_cell_block_info)`, and the name lists use the
-exported `STRBUF_LEN` convention, as `split` and `data_info` do.
+`meta%cell_blocks` is an array of `type(mio_cell_block_info)`, and the name lists use the exported `STRBUF_LEN` convention, as `split` and `data_info` do.
 
 ## Transient (time-series) XDMF writing
 
-`type(mio_xdmf_series)` is the write half of what `time_step` and
-`meta%time_values` expose above, and the one writer `m%write()` cannot express:
-a series is a **stateful** multi-call object, so it gets its own handle rather
-than a `write` argument. The grid goes out once and each solve appends a cheap
-step. See [XDMF time series](/xdmf_time_series).
+`type(mio_xdmf_series)` is the write half of what `time_step` and `meta%time_values` expose above, and the one writer `m%write()` cannot express: a series is a **stateful** multi-call object, so it gets its own handle rather than a `write` argument. The grid goes out once and each solve appends a cheap step. See [XDMF time series](/xdmf_time_series).
 
 ```fortran
 type(mio_mesh) :: m
@@ -147,42 +138,25 @@ call series%free()
 | Lifecycle | `series%create(path [, data_format, gzip_level])`, `series%free()`, `series%is_valid()` |
 | Writing | `series%write_points_cells(mesh)`, `series%write_data(time, mesh)`, `series%finalize()`, `series%num_steps()` |
 
-`data_format` is `'HDF'` (the default; needs an HDF5-enabled build), `'XML'`
-(everything inline in the `.xdmf`) or `'Binary'`; `gzip_level` applies to
-`'HDF'` datasets only and is negative (no compression) by default. An unknown
-format, or `'HDF'` against a library built without HDF5, fails through
-`stat`/`errmsg` like every other fallible procedure.
+`data_format` is `'HDF'` (the default; needs an HDF5-enabled build), `'XML'` (everything inline in the `.xdmf`) or `'Binary'`; `gzip_level` applies to `'HDF'` datasets only and is negative (no compression) by default. An unknown format, or `'HDF'` against a library built without HDF5, fails through `stat`/`errmsg` like every other fallible procedure.
 
 Two things worth knowing before reading the result back:
 
-- the `.xdmf` light data is **buffered until the series is finalized**, so the
-  file is only readable after `series%finalize()` (or `series%free()`, which
-  finalizes first);
-- `free()` swallows a write failure during that implicit finalize — call
-  `finalize()` explicitly, with `stat`, to see one.
+- the `.xdmf` light data is **buffered until the series is finalized**, so the file is only readable after `series%finalize()` (or `series%free()`, which finalizes first);
+- `free()` swallows a write failure during that implicit finalize — call `finalize()` explicitly, with `stat`, to see one.
 
-Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no
-finalizer. Reading a finished series back is the ordinary `m%read(path,
-time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.
+Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finalizer. Reading a finished series back is the ordinary `m%read(path, time_step=k)`, with `mio_read_metadata(path)%time_values` reporting the steps.
 
 ## v9.1.0 additions
 
 - `m%read(..., lenient=.true.)` — see [`doc/selective_read.md`](selective_read.md).
-- XDMF series: `s%flush()`, `s%finalized()`, and
-  `s%create(..., mode='append', auto_flush=...)`.
+- XDMF series: `s%flush()`, `s%finalized()`, and `s%create(..., mode='append', auto_flush=...)`.
 
-**Gap, deliberate:** there is no Fortran counterpart to the solver-array
-`write_data` overload. An array of derived types holding interop pointers is a
-poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it
-can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as
-for every flat binding.
+**Gap, deliberate:** there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as for every flat binding.
 
 ## Sequences (transient / multi-file datasets)
 
-`type(mio_sequence)` wraps the C API's ordered plan over a set of files (or the
-steps inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu`
-precedes `out_10.vtu`; nothing is read until `%read_step`, and the sequence
-caches nothing, so a 500-step dataset is traversable without materialising it.
+`type(mio_sequence)` wraps the C API's ordered plan over a set of files (or the steps inside one multi-step file). Ordering is natural-numeric, so `out_9.vtu` precedes `out_10.vtu`; nothing is read until `%read_step`, and the sequence caches nothing, so a 500-step dataset is traversable without materialising it.
 
 ```fortran
 type(mio_sequence) :: seq
@@ -202,9 +176,6 @@ call mio_timeseries_to_sequence('series.xdmf', 'step_{step}.vtu')  ! fan-out
 call mio_sequence_pipeline_run_file('transient.json')              ! per-step chain
 ```
 
-Indices are 1-based, like every other Fortran accessor, and handles are freed
-explicitly (`%free()`) exactly as `mio_mesh` is — there is no finalizer. Every
-fallible procedure takes the usual optional `stat`/`errmsg`.
+Indices are 1-based, like every other Fortran accessor, and handles are freed explicitly (`%free()`) exactly as `mio_mesh` is — there is no finalizer. Every fallible procedure takes the usual optional `stat`/`errmsg`.
 
-See [sequences](sequences.md) for the ordering rule, the time-value precedence
-and the streaming guarantee.
+See [sequences](sequences.md) for the ordering rule, the time-value precedence and the streaming guarantee.

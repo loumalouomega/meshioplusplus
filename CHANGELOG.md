@@ -8,6 +8,190 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.14.0 (2026-08-24)
+
+**Roadmap §1's "ODT" bullet closed in full** — v10.13.0 shipped ODT
+*smoothing* (`SmoothMethod::Odt`, positions only, fixed connectivity); this
+release adds the connectivity-changing half, genuine ODT *remeshing*.
+
+- **`optimize_volume`** (new operation, `operations/optimize_volume.{hpp,cpp}`,
+  [`doc/optimize_volume.md`](doc/optimize_volume.md)) — raises a tetrahedral
+  mesh's worst element quality by *ODT remeshing*: it alternates the ODT
+  vertex relocation (reused from `smooth`'s `method="odt"`) with
+  quality-improving topological **flips** (2-3 and 3-2), so both the vertex
+  positions and the connectivity change. The missing third member of a trio
+  whose other two each do half the job: `SmoothMethod::Odt` moves points on
+  fixed connectivity, `remesh_volume` discards the input's tets for a fresh
+  lattice mesh. **Predicate-free** (in-posture): a flip is applied only when a
+  pure signed-volume test finds the local configuration convex AND the minimum
+  scaled Jacobian over the new tets strictly beats the minimum over the tets it
+  replaces (Freitag & Ollivier-Gooch's improvement rule, monotone in worst
+  quality and hence terminating) — no in-sphere/Delaunay predicate. The flips
+  touch only interior faces/edges, so with `preserve_boundary` the boundary
+  surface is byte-identical to the input's (watertight in ⇒ watertight out);
+  the point set is invariant, so `point_data`/`field_data` and Point regions
+  carry while `cell_data`/Cell/Side regions are dropped. Tet-only; C++-core
+  only (no numpy fallback, the flip acceptance being a discrete sign/near-tie
+  branch); byte-identical across mesh backends and thread counts. Shipped
+  across every binding surface — Python `optimize_volume`, C
+  `mio_optimize_volume`, Fortran `m%optimize_volume`, Julia `optimize_volume`,
+  R `mio_optimize_volume`, WASM `optimizeVolume`, the `optimize-volume` CLI
+  verb in both CLIs, an `OptimizeVolume` settings-pipeline step, and an
+  `optimize_volume` MCP tool. Tier C additive (a wholly new
+  header/`.cpp`/C entry point) — no ABI bump (`MESHIOPLUSPLUS_ABI_VERSION`
+  stays 10); `OptimizeVolumeOptions` is pinned in `test_abi_layout.cpp` from
+  this release.
+
+## v10.13.0 (2026-08-23)
+
+**Roadmap §1 closed in full** — the last remaining bullet, "Volumetric
+CVD/ODT", closes by a different algorithm than the one named (honestly
+reported as such, not as a literal Delaunay/CVD implementation), plus a
+separate closure of the "ODT" half by name.
+
+- **`remesh_volume`** (new operation, `operations/remesh_volume.{hpp,cpp}`,
+  [`doc/remesh_volume.md`](doc/remesh_volume.md)) — retetrahedralizes a
+  volume mesh (or a closed surface) at a caller-chosen resolution by
+  isosurface stuffing (Labelle & Shewchuk, SIGGRAPH 2007, implemented from
+  the published description only) over a body-centered cubic (BCC) lattice.
+  `remesh`'s volumetric sibling: nothing else in this repo can *raise* a
+  tet mesh's quality at a chosen resolution. Every uncut lattice tet has a
+  dihedral angle from a fixed, mesh-size-independent set; `warp_fraction`
+  (default `0.35`) moves lattice vertices near the surface onto it, trading
+  a small, *measured* chance of non-manifold boundary edges (reported as
+  `num_non_manifold_edges`) for substantially better boundary tet quality —
+  `0` disables warping for an exactly watertight but lower-quality boundary.
+  Unlike `remesh`, accepts a volume mesh directly (its boundary is
+  extracted internally). Shipped across every binding surface (Python, C
+  API, Fortran, Julia, R, WASM, both CLIs, the settings pipeline, MCP) in
+  one release.
+- **`SmoothMethod::Odt`** (`smooth(mesh, method="odt")`,
+  [`doc/smooth.md#odt-smoothing`](doc/smooth.md#odt-smoothing)) —
+  optimal-Delaunay-triangulation smoothing on `smooth`'s existing, fixed
+  connectivity: each free interior tet vertex moves to the closed-form
+  volume-weighted average of its incident tets' circumcenters. Tet-only;
+  closes the "ODT" half of the roadmap bullet's name honestly as
+  *smoothing*, not *remeshing*. Needed no new `SmoothOptions` field (reuses
+  the existing negative-`lambda`-means-"this method's own default"
+  sentinel, default `0.9`) and no C API/Fortran/Julia/R/WASM code changes
+  beyond the method string, since every surface already passes it through
+  unchanged. C++-core only, no numpy fallback (unlike `laplacian`/`taubin`).
+- **`MESHIOPLUSPLUS_ABI_VERSION` 9→10.** `remesh_volume` alone is Tier C (a
+  wholly new header). The bump is caused by `SmoothMethod::Odt`: giving
+  `SmoothMethod` an explicit `: std::uint8_t` underlying type for the first
+  time (previously the scoped-enum default `int`) is a Tier A layout
+  change under `doc/abi.md`'s own rule, independent of the appended `Odt`
+  enumerator itself or of `SmoothOptions` gaining no new field.
+  `SmoothOptions` is pinned in `tests/cpp/test_abi_layout.cpp` for the
+  first time as a result.
+
+## v10.12.0 (2026-08-20)
+
+**Roadmap §1 closed** — the anisotropic metric ships, closing the last
+bullet with a clean scope boundary (Volumetric CVD/ODT remains, explicitly
+"not a follow-on task; a project in its own right").
+
+- **`remesh` anisotropic metric** (`metric="anisotropic"`,
+  `RemeshOptions::mMaxAnisotropy` / `max_anisotropy`, default `4.0`, a
+  measured value) — clusters shaped by a local curvature tensor rather than
+  isotropic distance, elongating along low-curvature directions and staying
+  compact across sharp ones. Built on the same per-vertex curvature fit
+  `mGradation` already computes (widened to keep the principal directions
+  instead of collapsing them to a scalar magnitude); packs into the exact
+  10-double accumulator `metric="quadric"` already uses, so it costs the
+  same per-move solve and needed no new per-cluster storage. The two
+  existing `RemeshMetric` branch sites were also converted from implicit
+  `if/quadric-else` pairs to explicit exhaustive `switch`es with no
+  `default:`, so a future metric is a compiler error instead of a silent
+  misclassification.
+- Shipped across every `remesh` binding surface: Python, both CLIs
+  (`--max-anisotropy`), the settings pipeline (`MaxAnisotropy` step
+  param), the MCP tool, and WASM directly against the C++ API; C, Fortran,
+  Julia and R via a new `mio_remesh_ex`/`mio_remesh_opts` growth path (the
+  `mio_refine_ex` precedent), since the flat `mio_remesh` function had no
+  room left to grow a second time. Plain `mio_remesh` is unchanged and now
+  delegates internally.
+- **Breaking (ABI):** `RemeshOptions` gained a member (`mMaxAnisotropy`) and
+  `RemeshMetric` gained an enumerator (`Anisotropic`) — the member is what
+  moves it, a Tier A layout change (an *existing* struct, not a wholly new
+  header) per `doc/abi.md`'s own criterion — so `MESHIOPLUSPLUS_ABI_VERSION`
+  moves 8 → 9 and the installed C++ variants' `SOVERSION` moves with it; the
+  C, Fortran, Julia and R surfaces stay at `SOVERSION 0` (the flat ABI's own
+  append-only-`reserved` contract, via the new `mio_remesh_ex` growth path,
+  is unaffected). See [`doc/abi.md`](doc/abi.md).
+
+See [`doc/remesh.md`](doc/remesh.md).
+
+## v10.11.0 (2026-08-19)
+
+**Roadmap §1 advanced further** — curvature gradation and boundaries/output
+manifoldness are shipped, closing two of the four bullets left open after
+v10.10.0; the anisotropic metric (now unblocked) and the volumetric
+counterpart remain open.
+
+- **`remesh` curvature gradation** (`RemeshOptions::mGradation` /
+  `gradation`) — a per-item density weight `area * kappa^gamma` that
+  concentrates clusters where the surface bends more sharply, via a new
+  local osculating-paraboloid curvature estimator over each vertex's
+  1-ring (reusing the clustering's own node-adjacency graph, no new
+  neighbourhood machinery). `gradation = 0.0` (the default) disables
+  gradation entirely — curvature is never computed — and reproduces plain
+  area weighting byte-for-byte, so every pre-existing test and example is
+  unaffected. Applies identically under both `metric="isotropic"` and
+  `metric="quadric"`.
+- **`remesh` boundaries and output manifoldness**
+  (`RemeshOptions::mPreserveBoundary` / `preserve_boundary`, default
+  `True`) — an open surface's boundary vertices are now detected, seeded
+  before the interior, and pinned, with a second, optional `line` dual
+  cell block emitted along every boundary edge whose endpoints land in
+  different clusters. Non-manifold "bowtie" output vertices are now
+  detected and reported separately from disconnected clusters
+  (`RemeshResult::mNumNonManifoldVertices`, distinct from the existing
+  `mNumIsolatedClusters`), both repaired by the same regrow-and-reminimise
+  loop. A clean-room design, not a reproduction of ACVD's own
+  boundary-fixing algorithm.
+- Both extensions shipped across every `remesh` binding surface in one
+  release: Python, C API, Fortran, Julia, R, WASM, both CLIs (`--gradation`,
+  `--no-preserve-boundary`), the settings pipeline (`Gradation`,
+  `PreserveBoundary` step params), and the MCP tool. See
+  [`doc/remesh.md`](doc/remesh.md).
+
+## v10.10.0 (2026-08-19)
+
+**Roadmap §1 advanced** — isotropic CVD remeshing and the ACVDQ
+feature-preserving metric are shipped; curvature gradation, the anisotropic
+metric, boundary/manifoldness protection and the volumetric counterpart
+remain open.
+
+- **`remesh`** (`operations/remesh.hpp`, [`doc/remesh.md`](doc/remesh.md))
+  — isotropic and feature-preserving surface remeshing by approximated
+  centroidal Voronoi diagram (ACVD) clustering: replaces a surface mesh's
+  own triangulation with a new, near-uniformly-sized, well-shaped one at a
+  caller-chosen vertex count. The one resolution-changing operation that
+  does not work on the input's own triangulation — `refine`/`decimate`/
+  `subdivide`/`agglomerate`/`smooth` all inherit the input's element
+  shapes, so none of them can *raise* a badly-shaped surface's quality at
+  every target count; `remesh` partitions the surface into clusters and
+  builds the dual, so output quality is a property of the clustering
+  rather than the input. Two metrics: `"isotropic"` (default, area-weighted
+  centroidal distance) and `"quadric"` (Garland-Heckbert quadric error,
+  preserves sharp edges/corners, reusing this repo's own pre-existing
+  quadric machinery rather than a second QEM implementation). The output
+  has no correspondence to the input — new points, new connectivity — so
+  `point_data`/`cell_data`/named regions are dropped and `field_data`
+  carries through; compose with `interpolate`/`conservative_interpolate`
+  to transfer a field onto the result. C++-core only, with no numpy
+  fallback: the energy-minimisation loop's move-acceptance test is
+  inherently sequential, so a second implementation could silently diverge
+  into a different clustering rather than a last-ulp difference. Ships on
+  every binding surface: Python, the C API, Fortran, Julia, R, WASM
+  (`remesh`, reachable as a `convertSurfaceOps`/pipeline step too), both
+  CLIs, and an MCP tool. **Attribution**: the isotropic clustering engine
+  is derived from [pyacvd](https://github.com/pyvista/pyacvd) (MIT,
+  (c) 2017-2024 The PyVista Developers) — an independent implementation of
+  Valette & Chassery's published research, not of ACVD's own CeCILL-B
+  source, which this project never reads or vendors; see `CITATION.cff`.
+
 ## v10.9.0 (2026-08-19)
 
 **Roadmap §1 closed** — second derivatives / Hessian was the section's last

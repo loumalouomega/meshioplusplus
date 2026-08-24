@@ -62,24 +62,49 @@ NDArray smooth_owned_copy(const NDArray& rArr) {
 // --- resolved iteration parameters ------------------------------------------
 
 struct SmoothParams {
+    SmoothMethod mMethod = SmoothMethod::Laplacian;
     double mLambda = 0.0;
     double mMu = 0.0;
     int mNumPasses = 0;
+    // Retained alongside mMethod (never a substitute for a switch on it):
+    // Taubin's every-other-pass +lambda/-mu alternation is the one piece of
+    // per-pass logic still cheaper as a bool than a re-dispatch on mMethod
+    // inside the hot loop -- see phase 4 below.
     bool mTaubin = false;
 };
 
 // Validate the options and expand the method-dependent lambda sentinel.
+//
+// Every branch here is an explicit switch (mMethod) with NO default: case --
+// the RemeshMetric precedent from last cycle, adopted because the previous
+// shape (a single `p.mTaubin = mMethod == Taubin` bool, with "not Taubin"
+// standing in for Laplacian everywhere downstream) would have made a third
+// enumerator silently take the Laplacian branch: plausible output, wrong
+// method, no diagnostic. -Wswitch now catches the next enumerator at compile
+// time instead.
 SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
     SmoothParams p;
+    p.mMethod = rOptions.mMethod;
     p.mTaubin = rOptions.mMethod == SmoothMethod::Taubin;
     p.mLambda = rOptions.mLambda;
-    if (p.mLambda < 0.0)
-        p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
+    if (p.mLambda < 0.0) {
+        switch (rOptions.mMethod) {
+            case SmoothMethod::Laplacian:
+                p.mLambda = 0.5;
+                break;
+            case SmoothMethod::Taubin:
+                p.mLambda = 0.33;
+                break;
+            case SmoothMethod::Odt:
+                p.mLambda = 0.9;
+                break;
+        }  // the sentinel: each method's own default
+    }
     if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
         throw std::invalid_argument("meshio++: smooth: lambda must lie in (0, 1); got " +
                                     std::to_string(p.mLambda));
 
-    if (p.mTaubin) {
+    if (rOptions.mMethod == SmoothMethod::Taubin) {
         p.mMu = rOptions.mMu;
         // mu < -lambda < 0 is what makes the pass pair a low-pass filter rather
         // than an amplifier; without it Taubin diverges instead of preserving.
@@ -88,9 +113,21 @@ SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
                 "meshio++: smooth: taubin requires mu < -lambda < 0; got mu=" +
                 std::to_string(p.mMu) + ", lambda=" + std::to_string(p.mLambda));
     }
+    // Laplacian and Odt silently ignore mu (documented in SmoothOptions::mMu):
+    // making only the newest method strict about an already-established
+    // silently-ignored field would be a worse inconsistency than either rule
+    // applied uniformly.
 
     const int iterations = rOptions.mIterations > 0 ? rOptions.mIterations : 0;
-    p.mNumPasses = p.mTaubin ? iterations * 2 : iterations;
+    switch (rOptions.mMethod) {
+        case SmoothMethod::Taubin:
+            p.mNumPasses = iterations * 2;  // +lambda then mu, per iteration
+            break;
+        case SmoothMethod::Laplacian:
+        case SmoothMethod::Odt:
+            p.mNumPasses = iterations;
+            break;
+    }
     return p;
 }
 
@@ -791,6 +828,81 @@ void smooth_pin_unknown_topology(const Mesh& rMesh, std::size_t n,
     }
 }
 
+// --- ODT: tet-only scope check + circumcenter --------------------------------
+
+// ODT's closed-form vertex update needs a genuine circumsphere per incident
+// tet, which only a linear tetra has -- no other 3D cell type (hex/wedge/
+// pyramid, any quadratic family, a polyhedron) has one at all. Reject every
+// construct outside that scope by name before any node moves; the same shape
+// as decimate_volume.cpp's own dv_check_blocks for its identical tet-only
+// restriction (a separate, private copy here rather than a shared helper --
+// the two operations' error prefixes and follow-up advice genuinely differ).
+void smooth_check_odt_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains a polyhedron cell block -- run convert_cells(mode='simplexify') first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains ragged cell block '" +
+                std::string(cb.Type()) + "'");
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains 3D cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh contains "
+            "non-3D cell block '" +
+            std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle after smoothing; drop it first, e.g. "
+            "via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' requires at least one tetra cell block");
+}
+
+// Circumcenter of tetrahedron (p0, p1, p2, p3): the point equidistant from all
+// four corners, found from the three equal-distance planes |x-p1|^2=|x-p0|^2,
+// |x-p2|^2=|x-p0|^2, |x-p3|^2=|x-p0|^2, which linearize into A*o=b with rows
+// `2*(p_k - p0)` and `b_k = |p_k|^2 - |p0|^2`. Solved by Cramer's rule via
+// `detail::det3` (this file's own vocabulary, not `quality.cpp`'s unrelated
+// -- and file-private, hence unreachable from here -- `quality_solve3`; the
+// two are independently derived from the same textbook construction rather
+// than one transcribing the other). Pinned against a regular tetrahedron's
+// closed-form circumcenter in `Smooth.OdtCircumcenterMatchesClosedFormOnARegularTetra`.
+bool smooth_tet_circumcenter(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
+                             double eps, Vec3& rOut) {
+    const Vec3 a0 = detail::vec3_scale(detail::vec3_sub(p1, p0), 2.0);
+    const Vec3 a1 = detail::vec3_scale(detail::vec3_sub(p2, p0), 2.0);
+    const Vec3 a2 = detail::vec3_scale(detail::vec3_sub(p3, p0), 2.0);
+    const Vec3 rhs = {detail::vec3_norm_sq(p1) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p2) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p3) - detail::vec3_norm_sq(p0)};
+    const double d = detail::det3(a0, a1, a2);
+    if (std::fabs(d) < eps)
+        return false;
+    for (int k = 0; k < 3; ++k) {
+        Vec3 c0 = a0, c1 = a1, c2 = a2;
+        c0[k] = rhs[0];
+        c1[k] = rhs[1];
+        c2[k] = rhs[2];
+        rOut[k] = detail::det3(c0, c1, c2) / d;
+    }
+    return true;
+}
+
 }  // namespace
 
 SmoothMethod smooth_method_from_name(const std::string& rName) {
@@ -798,8 +910,10 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
         return SmoothMethod::Laplacian;
     if (rName == "taubin")
         return SmoothMethod::Taubin;
+    if (rName == "odt")
+        return SmoothMethod::Odt;
     throw std::invalid_argument("meshio++: smooth: unknown method '" + rName +
-                                "' (expected 'laplacian' or 'taubin')");
+                                "' (expected 'laplacian', 'taubin' or 'odt')");
 }
 
 SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
@@ -811,6 +925,13 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         throw std::invalid_argument("meshio++: smooth: frozen mask has " +
                                     std::to_string(rOptions.mFrozen.size()) +
                                     " entries but the mesh has " + std::to_string(n) + " points");
+
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    if (is_odt)
+        smooth_check_odt_blocks(rMesh);
+    // Degenerate-tet / degenerate-circumsphere threshold, matching
+    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
+    constexpr double kOdtEps = 1e-14;
 
     // --- phase 0: coordinates as a flat double buffer ---
     const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
@@ -852,10 +973,19 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
 
     // --- phase 3: the inversion guard's tables ---
+    // Also built, unconditionally, when method == Odt: under Odt's tet-only
+    // scope this table is exactly the tet corner list, so its node -> cell
+    // incidence serves double duty -- ODT's own target computation (phase 4)
+    // AND the inversion guard, with no second CSR anywhere. This is the
+    // reason ODT was scoped tet-only rather than left general: a general
+    // vertex -> incident-cell structure already existed here for the guard,
+    // and restricting the scope is what let it be reused rather than
+    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
+    // node incidence, which this file has no other use for).
     SmoothCellTable cells;
     SmoothCsr incidence;
     const bool guard = rOptions.mGuardInversion;
-    if (guard) {
+    if (guard || is_odt) {
         cells = smooth_build_cell_table(rMesh, n, dim == 2);
         incidence = smooth_build_incidence(cells, n);
     }
@@ -870,33 +1000,91 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
             const std::size_t o = i * 3;
-            const std::int64_t b = csr.mXadj[i];
-            const std::int64_t e = csr.mXadj[i + 1];
-            if (frozen[i] || b == e) {
+
+            if (frozen[i]) {
                 cur[o] = prev[o];
                 cur[o + 1] = prev[o + 1];
                 cur[o + 2] = prev[o + 2];
                 return;
             }
-            // Summed in ascending neighbour id (the adjacency rows are sorted),
-            // which is what pins the FP accumulation order across backends and
-            // thread counts.
-            Vec3 sum = {0.0, 0.0, 0.0};
-            for (std::int64_t k = b; k < e; ++k) {
-                const std::size_t p =
-                    static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
-                sum[0] += prev[p];
-                sum[1] += prev[p + 1];
-                sum[2] += prev[p + 2];
+
+            // The move target: an edge-neighbour mean for Laplacian/Taubin,
+            // the volume-weighted circumcenter average of incident tets for
+            // Odt. `has_target` is each method's own "isolated node" case
+            // (no edge neighbours; no tet contributed a valid circumcenter),
+            // which both leave the node exactly where it was.
+            Vec3 target = {0.0, 0.0, 0.0};
+            bool has_target = false;
+            if (is_odt) {
+                const std::int64_t ib = incidence.mXadj[i];
+                const std::int64_t ie = incidence.mXadj[i + 1];
+                // Accumulated over incident tets in ascending cell index
+                // (the incidence rows are built by ascending cell, per
+                // smooth_build_incidence), which pins the FP order the same
+                // way the edge-mean branch pins ascending neighbour id.
+                double sum_v = 0.0;
+                Vec3 sum_wc = {0.0, 0.0, 0.0};
+                for (std::int64_t k = ib; k < ie; ++k) {
+                    const std::size_t c =
+                        static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
+                    const std::int64_t cb = cells.mCornerOffset[c];
+                    const SmoothCornerReader at{&prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)],
+                                                -1, nullptr};
+                    const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
+                    Vec3 cc;
+                    if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
+                        continue;  // degenerate tet: no circumsphere, no contribution
+                    const Vec3 coords[4] = {p0, p1, p2, p3};
+                    const double vol = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                    if (vol < kOdtEps)
+                        continue;
+                    sum_v += vol;
+                    sum_wc[0] += vol * cc[0];
+                    sum_wc[1] += vol * cc[1];
+                    sum_wc[2] += vol * cc[2];
+                }
+                has_target = sum_v > kOdtEps;
+                if (has_target) {
+                    const double inv = 1.0 / sum_v;
+                    target = {sum_wc[0] * inv, sum_wc[1] * inv, sum_wc[2] * inv};
+                }
+            } else {
+                const std::int64_t b = csr.mXadj[i];
+                const std::int64_t e = csr.mXadj[i + 1];
+                has_target = b != e;
+                if (has_target) {
+                    // Summed in ascending neighbour id (the adjacency rows are
+                    // sorted), which is what pins the FP accumulation order
+                    // across backends and thread counts.
+                    Vec3 sum = {0.0, 0.0, 0.0};
+                    for (std::int64_t k = b; k < e; ++k) {
+                        const std::size_t p =
+                            static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                        sum[0] += prev[p];
+                        sum[1] += prev[p + 1];
+                        sum[2] += prev[p + 2];
+                    }
+                    const double inv = 1.0 / static_cast<double>(e - b);
+                    target = {sum[0] * inv, sum[1] * inv, sum[2] * inv};
+                }
             }
-            const double inv = 1.0 / static_cast<double>(e - b);
-            // For a 2D mesh every z is exactly +0.0, so this reduces to
-            // 0.0 + factor * (0.0 - 0.0) and the z column stays bit-exactly
-            // +0.0 through arbitrarily many passes -- no masking needed.
+
+            if (!has_target) {
+                cur[o] = prev[o];
+                cur[o + 1] = prev[o + 1];
+                cur[o + 2] = prev[o + 2];
+                return;
+            }
+
+            // For a 2D Laplacian/Taubin mesh every z is exactly +0.0, so this
+            // reduces to 0.0 + factor * (0.0 - 0.0) and the z column stays
+            // bit-exactly +0.0 through arbitrarily many passes -- no masking
+            // needed. Odt is tet-only, so dim == 3 always and this note does
+            // not apply there.
             const Vec3 cand = {
-                prev[o] + factor * (sum[0] * inv - prev[o]),
-                prev[o + 1] + factor * (sum[1] * inv - prev[o + 1]),
-                prev[o + 2] + factor * (sum[2] * inv - prev[o + 2]),
+                prev[o] + factor * (target[0] - prev[o]),
+                prev[o + 1] + factor * (target[1] - prev[o + 1]),
+                prev[o + 2] + factor * (target[2] - prev[o + 2]),
             };
 
             if (guard) {

@@ -404,6 +404,9 @@ export type ErrorMethod = 'zz';
 /** `estimateError`'s marking policy. See doc/error.md. */
 export type ErrorMarking = 'none' | 'absolute' | 'fraction' | 'dorfler';
 
+/** `remesh`'s clustering objective. See doc/remesh.md. */
+export type RemeshMetric = 'isotropic' | 'quadric' | 'anisotropic';
+
 /** One data array's location: `point_data`, `cell_data`, or `field_data`. */
 export type DataLocation = 'point' | 'cell' | 'field';
 
@@ -441,8 +444,11 @@ export type MergeDataPolicy = 'intersection' | 'fill';
 /** Element-representation conversion performed by `convertCells`. */
 export type ConvertCellsMode = 'linearize' | 'simplexify' | 'elevate';
 
-/** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free. */
-export type SmoothMethod = 'laplacian' | 'taubin';
+/** Smoothing operator applied by `smooth`. `'taubin'` is shrink-free.
+ *  `'odt'` (optimal-Delaunay-triangulation smoothing) is tet-only and
+ *  moves each free interior vertex toward the volume-weighted average of
+ *  its incident tets' circumcenters. See doc/smooth.md. */
+export type SmoothMethod = 'laplacian' | 'taubin' | 'odt';
 
 /**
  * How `refine` resolves the hanging nodes a partial refinement leaves behind.
@@ -1392,6 +1398,134 @@ export interface MeshioPlusPlusModule {
     marked?: string,
     overwrite?: boolean,
   ): { mesh: Mesh; globalError: number; numSkipped: number; numMarked: number };
+
+  /**
+   * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+   * clustering: replace its triangulation with a new, near-uniformly-sized,
+   * well-shaped one at `numClusters` vertices. Unlike every other
+   * resolution-changing operation, the output has NEW points and NEW
+   * connectivity with no correspondence to the input — `point_data`,
+   * `cell_data` and named regions are dropped, `field_data` is carried.
+   *
+   * `metric` is `"isotropic"` (default; area-weighted centroidal distance,
+   * fast, rounds sharp features), `"quadric"` (Garland-Heckbert quadric
+   * error, preserves sharp edges/corners at extra cost per candidate move),
+   * or `"anisotropic"` (clusters shaped by a local curvature tensor —
+   * elongated along low-curvature directions, compact across sharp ones —
+   * see `maxAnisotropy`). `subdivide` defaults to automatic (`-1`): the
+   * smallest count of uniform `refine` passes reaching `subsampleRatio`
+   * items per cluster, capped at `maxSubdivide`; `0` disables subdivision.
+   * `gradation` is the curvature-gradation exponent `gamma` in the item
+   * weight `area * kappa^gamma` (`0.0`, the default, disables gradation
+   * entirely and reproduces plain area weighting). `preserveBoundary`
+   * (default `true`) detects the input's open boundary (if any), seeds it
+   * before the interior, and emits a `line` dual cell along boundary edges
+   * whose endpoints land in different clusters — a no-op on a closed mesh.
+   * `maxAnisotropy` (default `4.0`, a measured value) is, under
+   * `metric = "anisotropic"`, the maximum ratio between the two in-plane
+   * target edge lengths a curvature tensor may request; `1.0` recovers the
+   * isotropic shape exactly. Must be at least `1.0`, and an error to set
+   * away from the default under any other metric.
+   * `numIsolatedClusters` and `numNonManifoldVertices` are two distinct
+   * causes of non-manifold output (disconnected clusters vs. "bowtie"
+   * vertices) that repair could not fully fix; check both rather than
+   * assuming.
+   * @throws {Error} on a cluster count below 4 or above the subdivided
+   *   input's vertex count, or on any block outside the surface scope (3D
+   *   volume cells, higher-order cells, ragged polygon/polyhedron blocks).
+   */
+  remesh(
+    mesh: Mesh,
+    numClusters: number,
+    subdivide?: number,
+    subsampleRatio?: number,
+    maxSubdivide?: number,
+    maxIterations?: number,
+    maxRepairPasses?: number,
+    metric?: RemeshMetric,
+    gradation?: number,
+    preserveBoundary?: boolean,
+    maxAnisotropy?: number,
+  ): {
+    mesh: Mesh;
+    numClusters: number;
+    numIterations: number;
+    subdivideApplied: number;
+    numIsolatedClusters: number;
+    numNonManifoldVertices: number;
+  };
+
+  /**
+   * Retetrahedralize a volume mesh (or a closed surface) at a caller-chosen
+   * resolution by isosurface stuffing — the volumetric sibling of `remesh`.
+   * Unlike `remesh`, this accepts a VOLUME mesh directly (its boundary is
+   * extracted internally) as well as a closed surface. Same
+   * no-correspondence-with-the-input output contract as `remesh`: new
+   * points, new connectivity, `point_data`/`cell_data`/named regions
+   * dropped, `field_data` carried.
+   *
+   * Exactly one of `resolution`/`cellSize` must be given, sizing a body-
+   * centered cubic (BCC) lattice whose uncut tets have dihedral angles from
+   * a fixed, mesh-size-independent set. `warpFraction` (default `0.35`)
+   * moves lattice vertices near the surface onto it, trading a small,
+   * measured chance of non-manifold boundary edges (reported as
+   * `numNonManifoldEdges`) for substantially better boundary tet quality;
+   * `0` disables warping and gives an exactly watertight but lower-quality
+   * boundary. See doc/remesh_volume.md for the measured tradeoff.
+   * @throws {Error} when neither or both of `resolution`/`cellSize` are
+   *   set, on a non-positive resolution/cell size, on a negative
+   *   `warpFraction`, when the root lattice would exceed `maxCells`, when
+   *   the cut output would exceed `maxTets`, and on any input the boundary
+   *   extraction itself refuses.
+   */
+  remeshVolume(
+    mesh: Mesh,
+    resolution?: number[] | null,
+    cellSize?: number,
+    bounds?: number[] | null,
+    padding?: number,
+    paddingRelative?: number,
+    maxCells?: number,
+    maxTets?: number,
+    warpFraction?: number,
+    sign?: SdfSign,
+    watertightCheck?: SdfWatertightCheck,
+  ): {
+    mesh: Mesh;
+    numTets: number;
+    numVerticesWarped: number;
+    numTetsRejected: number;
+    numNonManifoldEdges: number;
+  };
+
+  /**
+   * ODT-remesh a tetrahedral mesh: raise its worst element quality by
+   * relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+   * The genuine "ODT remeshing" sibling of `remeshVolume` (which generates a
+   * fresh lattice mesh) and of `smooth` method `"odt"` (which only moves
+   * points on fixed connectivity). Tet-only. The point set is invariant, so
+   * point_data/field_data and Point regions carry; cell_data + Cell/Side
+   * regions are dropped. With `preserveBoundary` the boundary surface is
+   * exactly preserved. See doc/optimize_volume.md.
+   * @throws {Error} when the mesh contains a non-`tetra` block or no tetra.
+   */
+  optimizeVolume(
+    mesh: Mesh,
+    maxIterations?: number,
+    relocate?: boolean,
+    flip?: boolean,
+    preserveBoundary?: boolean,
+    minImprovement?: number,
+  ): {
+    mesh: Mesh;
+    numFlips: number;
+    num23Flips: number;
+    num32Flips: number;
+    numVerticesMoved: number;
+    numTets: number;
+    minQualityBefore: number;
+    minQualityAfter: number;
+  };
 
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];

@@ -113,16 +113,11 @@ Everything the C++ `Mesh` cannot hold makes the reader **throw `ReadError` namin
 
 ## Properties, entity names and lenient reads (v9.1.0)
 
-The C++ reader used to throw on a non-empty `Begin Properties` body — which
-essentially every production deck has — so the C++ path handled geometry-only
-files. Three changes fix that.
+The C++ reader used to throw on a non-empty `Begin Properties` body — which essentially every production deck has — so the C++ path handled geometry-only files. Three changes fix that.
 
 ### `MdpaInfo`: the side channel
 
-Properties bodies and per-block Kratos entity names have no place on the `Mesh`:
-`NDArray` has ten numeric dtypes and no string one, so `CONSTITUTIVE_LAW
-LinearElastic3DLaw` has no `field_data` representation at all. They travel in a
-typed side-channel struct instead — the `MedInfo`/`ExodusInfo` pattern:
+Properties bodies and per-block Kratos entity names have no place on the `Mesh`: `NDArray` has ten numeric dtypes and no string one, so `CONSTITUTIVE_LAW LinearElastic3DLaw` has no `field_data` representation at all. They travel in a typed side-channel struct instead — the `MedInfo`/`ExodusInfo` pattern:
 
 ```cpp
 meshioplusplus::MdpaInfo info;
@@ -133,32 +128,18 @@ meshioplusplus::write_mdpa("out.mdpa", mesh, info);   // properties and names re
 
 `read_mdpa(path)` and `write_mdpa(path, mesh)` are unchanged.
 
-**Since v9.2.0 you rarely need an `MdpaInfo` for the properties.** The bodies are
-carried on the `Mesh` itself, through the uniform API's `AddPropertySet` /
-`GetPropertySet` (see [the C++ API](../cpp_api.md)), so a plain
+**Since v9.2.0 you rarely need an `MdpaInfo` for the properties.** The bodies are carried on the `Mesh` itself, through the uniform API's `AddPropertySet` / `GetPropertySet` (see [the C++ API](../cpp_api.md)), so a plain
 
 ```cpp
 meshioplusplus::Mesh mesh = meshioplusplus::registry_read("model.mdpa", "mdpa", {});
 meshioplusplus::write_mdpa("out.mdpa", mesh);      // material data preserved
 ```
 
-round-trips them — and under the KRATOS backend `mesh.GetModelPart()` hands back
-`Properties` blocks with real values rather than bare ids, which is what makes
-`to_model_part`'s "apply property" overload transfer anything. Through v9.1.0 the
-bodies rode this side channel *only*, and nothing reachable from
-`registry_readers()` could ask for one, so every registry-based consumer — which
-is all of them — got the ids and no material data.
+round-trips them — and under the KRATOS backend `mesh.GetModelPart()` hands back `Properties` blocks with real values rather than bare ids, which is what makes `to_model_part`'s "apply property" overload transfer anything. Through v9.1.0 the bodies rode this side channel *only*, and nothing reachable from `registry_readers()` could ask for one, so every registry-based consumer — which is all of them — got the ids and no material data.
 
-`MdpaInfo` keeps two jobs the mesh channel deliberately does not do: it preserves
-the **file order** of the blocks (the mesh canonicalizes them to ascending id),
-and it carries `mEntityNames` and `mSkippedConstructs`. When both are supplied,
-the `MdpaInfo` wins.
+`MdpaInfo` keeps two jobs the mesh channel deliberately does not do: it preserves the **file order** of the blocks (the mesh canonicalizes them to ascending id), and it carries `mEntityNames` and `mSkippedConstructs`. When both are supplied, the `MdpaInfo` wins.
 
-Property sets do not cross a boundary where the mesh is materialized in the host
-language — the Python numpy `Mesh`, WASM's JS objects, the C API's `mio_mesh`
-accessors — since a `PropertySet` has no numpy or embind analogue. File-to-file
-paths (`mio_read`/`mio_write`, the WASM `convert`, the native CLI) keep them,
-because the `Mesh` never leaves the core.
+Property sets do not cross a boundary where the mesh is materialized in the host language — the Python numpy `Mesh`, WASM's JS objects, the C API's `mio_mesh` accessors — since a `PropertySet` has no numpy or embind analogue. File-to-file paths (`mio_read`/`mio_write`, the WASM `convert`, the native CLI) keep them, because the `Mesh` never leaves the core.
 
 Values are typed where they can be and verbatim where they cannot:
 
@@ -169,159 +150,46 @@ Values are typed where they can be and verbatim where they cannot:
 | `CONSTITUTIVE_LAW LinearElastic3DLaw` | `mText`, verbatim |
 | `LOCAL_AXES [3] (1.0, 0.0, 0.0)` | `mText`, verbatim |
 
-The text fallback is not a gap to close later: it is what makes an unrecognized
-value **lossless**, since it is re-emitted byte for byte, and it is what the
-pure-Python reference does (`float()` fails, keep the raw string).
+The text fallback is not a gap to close later: it is what makes an unrecognized value **lossless**, since it is re-emitted byte for byte, and it is what the pure-Python reference does (`float()` fails, keep the raw string).
 
 ### Entity names
 
-`MdpaInfo::mEntityNames` holds one `{mName, mIsCondition}` per cell block. It
-matters because the derivation is lossy in one direction only:
-`SmallDisplacementElement3D4N` resolves to `tetra` through the longest-suffix
-fallback, but `tetra` only ever derives back to the canonical `Element3D4N`.
-Without the info, a round trip renames every application element.
+`MdpaInfo::mEntityNames` holds one `{mName, mIsCondition}` per cell block. It matters because the derivation is lossy in one direction only: `SmallDisplacementElement3D4N` resolves to `tetra` through the longest-suffix fallback, but `tetra` only ever derives back to the canonical `Element3D4N`. Without the info, a round trip renames every application element.
 
-The reader's block-splitting key includes the entity name, so two adjacent
-`SmallDisplacementElement3D4N` and `TotalLagrangianElement3D4N` blocks — both
-`tetra` — stay separate rather than collapsing onto one name.
+The reader's block-splitting key includes the entity name, so two adjacent `SmallDisplacementElement3D4N` and `TotalLagrangianElement3D4N` blocks — both `tetra` — stay separate rather than collapsing onto one name.
 
 ### `Properties` declarations on write
 
-The writer emitted a single hard-coded `Begin Properties 0` while the entity rows
-wrote their `gmsh:physical` value as the property id, so a tagged mesh produced a
-file referencing undeclared properties, which Kratos's own `ModelPartIO` rejects.
-Without an `MdpaInfo` the writer emits the mesh's own property sets when it has
-any (v9.2.0), plus one **empty** block per referenced id no set covers; with none
-at all, one empty block per distinct id the rows reference, ascending. A mesh
-whose ids are all 0 — every mesh with no `gmsh:physical` — still emits exactly
-the same two lines as before.
+The writer emitted a single hard-coded `Begin Properties 0` while the entity rows wrote their `gmsh:physical` value as the property id, so a tagged mesh produced a file referencing undeclared properties, which Kratos's own `ModelPartIO` rejects. Without an `MdpaInfo` the writer emits the mesh's own property sets when it has any (v9.2.0), plus one **empty** block per referenced id no set covers; with none at all, one empty block per distinct id the rows reference, ascending. A mesh whose ids are all 0 — every mesh with no `gmsh:physical` — still emits exactly the same two lines as before.
 
 ### `--lenient`
 
-`ReadOptions::mLenient` (`--lenient` on the native CLI) downgrades the remaining
-rejections — `Table`, `Geometries`, `Mesh`, `Constraints`, non-empty
-`SubModelPartData`/`Tables`/`Geometries`/`Constraints`, a non-numeric
-`ModelPartData` value — to a warning plus a skip, recorded in
-`MdpaInfo::mSkippedConstructs`. What still throws, even under `mLenient`:
-a duplicate node id, a malformed row, an unknown entity name, and
-connectivity naming a node that does not exist — skipping any of those would
-return a mesh that is quietly wrong rather than merely incomplete.
+`ReadOptions::mLenient` (`--lenient` on the native CLI) downgrades the remaining rejections — `Table`, `Geometries`, `Mesh`, `Constraints`, non-empty `SubModelPartData`/`Tables`/`Geometries`/`Constraints`, a non-numeric `ModelPartData` value — to a warning plus a skip, recorded in `MdpaInfo::mSkippedConstructs`. What still throws, even under `mLenient`: a duplicate node id, a malformed row, an unknown entity name, and connectivity naming a node that does not exist — skipping any of those would return a mesh that is quietly wrong rather than merely incomplete.
 
-Note that **arbitrary node ids are not on that list and need no `mLenient`**:
-accepting them is strictly more *correct*, not more lenient, so a plain strict
-read handles a gapped deck. Both readers agree on one exactly — points in file
-order, connectivity resolved to the same rows, `point_data` keyed by the real
-file id — which `tests/python/test_mdpa.py::test_cpp_and_python_agree_on_gapped_ids`
-pins against a deck kept textually identical to the gtest suite's. The one
-remaining divergence is a *mixed* `Nodes` block (some rows with ids, some
-without): the C++ reader accepts it under the "a bare row takes its position"
-rule, while the reference reader's `np.loadtxt` is rectangular and rejects it.
+Note that **arbitrary node ids are not on that list and need no `mLenient`**: accepting them is strictly more *correct*, not more lenient, so a plain strict read handles a gapped deck. Both readers agree on one exactly — points in file order, connectivity resolved to the same rows, `point_data` keyed by the real file id — which `tests/python/test_mdpa.py::test_cpp_and_python_agree_on_gapped_ids` pins against a deck kept textually identical to the gtest suite's. The one remaining divergence is a *mixed* `Nodes` block (some rows with ids, some without): the C++ reader accepts it under the "a bare row takes its position" rule, while the reference reader's `np.loadtxt` is rectangular and rejects it.
 
-`meshioplusplus.mdpa.read` remains the pure-Python reference reader and is
-unaffected by all of the above; it already carries this content in
-`mesh.misc_data` and `field_data["properties_<id>"]`.
+`meshioplusplus.mdpa.read` remains the pure-Python reference reader and is unaffected by all of the above; it already carries this content in `mesh.misc_data` and `field_data["properties_<id>"]`.
 
 ## Original ids preserved on write (v9.14.0)
 
-The read-side arbitrary-id support above (v9.13.0) closed the *read* half of
-roadmap `doc/roadmap.md`'s MDPA section; v9.14.0 closes the *write* half:
-node/element/condition ids read from a gapped or non-monotonic deck now
-survive a re-write, instead of both writers unconditionally renumbering to
-`1..n`.
+The read-side arbitrary-id support above (v9.13.0) closed the *read* half of roadmap `doc/roadmap.md`'s MDPA section; v9.14.0 closes the *write* half: node/element/condition ids read from a gapped or non-monotonic deck now survive a re-write, instead of both writers unconditionally renumbering to `1..n`.
 
-**The carrier is ordinary data, not a new `Mesh` slot.** The uniform mesh API
-has no id-translation layer — `Mesh::Points()`/`Conn()` are dense 0-based
-arrays where "point index `i`" *is* row `i` — so there is nowhere on the
-`Mesh` itself to remember a file's original numbering. Both readers instead
-attach it as:
+**The carrier is ordinary data, not a new `Mesh` slot.** The uniform mesh API has no id-translation layer — `Mesh::Points()`/`Conn()` are dense 0-based arrays where "point index `i`" *is* row `i` — so there is nowhere on the `Mesh` itself to remember a file's original numbering. Both readers instead attach it as:
 
 - `point_data["mdpa:id"]` — Int64, one entry per point, in read (row) order.
-- `cell_data["mdpa:id"]` — Int64, one array per cell block (C++) / one array
-  per meshio cell type (the Python reference's existing nesting), the
-  original element/condition id.
+- `cell_data["mdpa:id"]` — Int64, one array per cell block (C++) / one array per meshio cell type (the Python reference's existing nesting), the original element/condition id.
 
-**Attached only when it matters.** Node ids get the array exactly when
-`node_ids_dense` (the read-side lazy map) ever flipped to `false` — i.e. the
-file's ids were not already `1..n`. Elements and conditions get it exactly
-when either kind's own independent 1-based file-order counter ever disagreed
-with a row's actual id. A sequential (or id-less) deck therefore picks up no
-`mdpa:id` at all, and a re-write of it takes the *exact* old code path —
-byte-identical output, not merely equivalent. This is the same "only when it
-matters" contract the read-side feature established, applied to the write
-side.
+**Attached only when it matters.** Node ids get the array exactly when `node_ids_dense` (the read-side lazy map) ever flipped to `false` — i.e. the file's ids were not already `1..n`. Elements and conditions get it exactly when either kind's own independent 1-based file-order counter ever disagreed with a row's actual id. A sequential (or id-less) deck therefore picks up no `mdpa:id` at all, and a re-write of it takes the *exact* old code path — byte-identical output, not merely equivalent. This is the same "only when it matters" contract the read-side feature established, applied to the write side.
 
-**Both writers honour the array when present**, falling back to the old
-renumbering when it is absent, the wrong length, or (for `cell_data`) missing
-from any one block/type — never partially honouring it, since that would risk
-assigning the same id to two different entities. A **duplicate value** in
-either array is a hard `WriteError` — two nodes (or two elements, or two
-conditions; elements and conditions have independent Kratos id namespaces, so
-an element and a condition may legitimately share a numeric id) claiming one
-id would silently produce an ambiguous file, which is unrepresentable rather
-than merely incomplete, the same class of error the reader's duplicate-id
-`ReadError` already covers.
+**Both writers honour the array when present**, falling back to the old renumbering when it is absent, the wrong length, or (for `cell_data`) missing from any one block/type — never partially honouring it, since that would risk assigning the same id to two different entities. A **duplicate value** in either array is a hard `WriteError` — two nodes (or two elements, or two conditions; elements and conditions have independent Kratos id namespaces, so an element and a condition may legitimately share a numeric id) claiming one id would silently produce an ambiguous file, which is unrepresentable rather than merely incomplete, the same class of error the reader's duplicate-id `ReadError` already covers.
 
-**Every place a node or entity is referenced elsewhere in the file resolves
-through the same written id**, not a bare `row + 1`/original id — this is
-what actually makes the feature correct rather than half-working:
-connectivity, `NodalData`/`ElementalData`/`ConditionalData` row keys, and
-`SubModelPart` node/element/condition lists. Getting only the `Nodes` block
-itself right while leaving connectivity on `+ 1` was the first, wrong
-implementation of this feature during development — caught by
-`test_cpp_and_python_agree_on_gapped_ids`'s round-trip check failing with
-`"connectivity refers to node id 1, which the file's Nodes block does not
-define"` the moment a re-read was attempted, which is why every gtest/pytest
-case here re-reads the written file rather than only inspecting it.
+**Every place a node or entity is referenced elsewhere in the file resolves through the same written id**, not a bare `row + 1`/original id — this is what actually makes the feature correct rather than half-working: connectivity, `NodalData`/`ElementalData`/`ConditionalData` row keys, and `SubModelPart` node/element/condition lists. Getting only the `Nodes` block itself right while leaving connectivity on `+ 1` was the first, wrong implementation of this feature during development — caught by `test_cpp_and_python_agree_on_gapped_ids`'s round-trip check failing with `"connectivity refers to node id 1, which the file's Nodes block does not define"` the moment a re-read was attempted, which is why every gtest/pytest case here re-reads the written file rather than only inspecting it.
 
-**A real correctness bug surfaced and got fixed along the way.** The Python
-reference reader has always stored `SubModelPartElements`/`Conditions`
-membership as the *original*, unconverted file ids
-(`misc_data["submodelpart_info"][name]["elements_raw"/"conditions_raw"]`).
-Before v9.14.0, the writer re-emitted those raw ids **verbatim** — which was
-already wrong whenever a plain read→write renumbered entities (the
-pre-v9.14.0 universal case) or reclassified one across the Elements/Conditions
-boundary (`_compute_blocks_name`'s dimension heuristic can turn a `Condition`
-into an `Element`, as happens to
-`tests/python/input/mdpa/test_submodelparts_hierarchical.mdpa`'s lone
-`LineCondition3D2N`): the emitted `SubModelPartConditions` entry could name an
-id that does not exist anywhere in the very file being written, or that now
-belongs to a different block kind — a real, reproducible corrupt-file bug
-that predates this feature and was invisible because the round-trip test
-covering that fixture only ever compared parsed-back `misc_data`, never
-validated that the written file's own cross-references resolved. The fix:
-each raw id is resolved through `misc_data["reader_element_ids_info"]`/
-`["reader_condition_ids_info"]` (original id → `(meshio_type, local_idx)`,
-captured at read time) and then through the writer's own
-`mdpa_written_entity_ids` (that same key → the id actually written this
-time, whether preserved or freshly renumbered), so the emitted reference is
-always real. An id that fails to resolve (only possible if the mesh was
-edited between read and write) is warned about and dropped rather than
-emitted dangling; a mesh with no reader info at all — never read via this
-module — falls back to writing the raw id verbatim, matching the pre-fix
-behaviour for that case. `Begin Mesh`'s `MeshElements`/`Conditions` sub-blocks
-are a narrower, **deliberately unfixed** instance of the same historical
-shortcut: an existing test (`test_roundtrip_all_blocks`) asserts they carry
-the raw ids verbatim, specifically so two independent reads' `misc_data`
-compare equal, so that one path keeps its documented, tested behaviour rather
-than being changed as a side effect of this work; `MeshNodes` (a node
-reference, not an entity reference) *does* resolve through the preserved
-node ids, since nothing tests the old `+ 1` behaviour there.
+**A real correctness bug surfaced and got fixed along the way.** The Python reference reader has always stored `SubModelPartElements`/`Conditions` membership as the *original*, unconverted file ids (`misc_data["submodelpart_info"][name]["elements_raw"/"conditions_raw"]`). Before v9.14.0, the writer re-emitted those raw ids **verbatim** — which was already wrong whenever a plain read→write renumbered entities (the pre-v9.14.0 universal case) or reclassified one across the Elements/Conditions boundary (`_compute_blocks_name`'s dimension heuristic can turn a `Condition` into an `Element`, as happens to `tests/python/input/mdpa/test_submodelparts_hierarchical.mdpa`'s lone `LineCondition3D2N`): the emitted `SubModelPartConditions` entry could name an id that does not exist anywhere in the very file being written, or that now belongs to a different block kind — a real, reproducible corrupt-file bug that predates this feature and was invisible because the round-trip test covering that fixture only ever compared parsed-back `misc_data`, never validated that the written file's own cross-references resolved. The fix: each raw id is resolved through `misc_data["reader_element_ids_info"]`/`["reader_condition_ids_info"]` (original id → `(meshio_type, local_idx)`, captured at read time) and then through the writer's own `mdpa_written_entity_ids` (that same key → the id actually written this time, whether preserved or freshly renumbered), so the emitted reference is always real. An id that fails to resolve (only possible if the mesh was edited between read and write) is warned about and dropped rather than emitted dangling; a mesh with no reader info at all — never read via this module — falls back to writing the raw id verbatim, matching the pre-fix behaviour for that case. `Begin Mesh`'s `MeshElements`/`Conditions` sub-blocks are a narrower, **deliberately unfixed** instance of the same historical shortcut: an existing test (`test_roundtrip_all_blocks`) asserts they carry the raw ids verbatim, specifically so two independent reads' `misc_data` compare equal, so that one path keeps its documented, tested behaviour rather than being changed as a side effect of this work; `MeshNodes` (a node reference, not an entity reference) *does* resolve through the preserved node ids, since nothing tests the old `+ 1` behaviour there.
 
-**C++ writer duplicate/fallback rules**, mirrored exactly by the Python
-reference writer:
+**C++ writer duplicate/fallback rules**, mirrored exactly by the Python reference writer:
 
-- Node ids: honoured when `HasPointData("mdpa:id")` and its size matches
-  `NumPoints()`; a duplicate value throws.
-- Entity ids: honoured when `HasCellData("mdpa:id")` and `CellDataNumBlocks`
-  equals the block count, **and** every individual block's array length
-  matches that block's cell count (checked up front; any mismatch disables
-  preservation for the whole write rather than partially trusting it). A
-  duplicate value throws, checked separately within elements and within
-  conditions.
+- Node ids: honoured when `HasPointData("mdpa:id")` and its size matches `NumPoints()`; a duplicate value throws.
+- Entity ids: honoured when `HasCellData("mdpa:id")` and `CellDataNumBlocks` equals the block count, **and** every individual block's array length matches that block's cell count (checked up front; any mismatch disables preservation for the whole write rather than partially trusting it). A duplicate value throws, checked separately within elements and within conditions.
 
-**What is still out of scope**: geometries and `Begin Mesh` blocks are
-Python-reference-only, non-standard mesh attributes (`mesh.geometries_block`,
-`mesh.misc_data["meshes"]`); their entity-id lists (as opposed to node
-references, which are fixed) keep their pre-existing behaviour rather than
-gaining the same resolution machinery `SubModelPart` got. This closes
-roadmap `doc/roadmap.md`'s MDPA section in full.
+**What is still out of scope**: geometries and `Begin Mesh` blocks are Python-reference-only, non-standard mesh attributes (`mesh.geometries_block`, `mesh.misc_data["meshes"]`); their entity-id lists (as opposed to node references, which are fixed) keep their pre-existing behaviour rather than gaining the same resolution machinery `SubModelPart` got. This closes roadmap `doc/roadmap.md`'s MDPA section in full.

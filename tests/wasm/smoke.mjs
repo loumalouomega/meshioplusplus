@@ -870,6 +870,119 @@ step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     assert.ok(m.readMesh('/dec.vtp').cells[0].data.length / 3 < 48);
 });
 
+step('remesh: produces the requested cluster count on a closed surface', () => {
+    // Unlike every other geometry op, the output has NO correspondence to
+    // the input -- new points, new connectivity -- so it is asserted purely
+    // on shape/counters, never against the input's own point/cell ids.
+    const skin = m.extractSkin(cube, true);
+    const out = m.remesh(skin, 40);
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'triangle');
+    assert.equal(out.numClusters, 40);
+    assert.equal(out.mesh.points.length / 3, 40);
+    assert.ok(out.subdivideApplied > 0, 'the cube skin cannot support 40 clusters unsubdivided');
+    assert.ok(out.numIterations >= 0);
+    assert.equal(out.numIsolatedClusters, 0);
+    assert.ok(out.numNonManifoldVertices >= 0);
+
+    // The quadric ("feature-preserving") metric is accepted too.
+    const outQ = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'quadric');
+    assert.equal(outQ.numClusters, 40);
+
+    // gradation/preserveBoundary reach the C++ core and are honoured.
+    const outG = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'isotropic', 1.5, false);
+    assert.equal(outG.numClusters, 40);
+
+    // The anisotropic metric + maxAnisotropy are accepted too.
+    const outA = m.remesh(skin, 40, -1, 10.0, 4, 100, 10, 'anisotropic', 0.0, true, 3.0);
+    assert.equal(outA.mesh.cells[0].type, 'triangle');
+    assert.ok(outA.numClusters > 0);
+});
+
+step('remesh rejects a volume mesh and a too-small cluster count', () => {
+    assert.throws(() => m.remesh(cube, 10), /extract_surface/);
+    const skin = m.extractSkin(cube, true);
+    assert.throws(() => m.remesh(skin, 3));
+});
+
+step('remesh is reachable as a convertSurfaceOps pipeline step', () => {
+    m.writeMesh('/remesh.vtu', m.extractSkin(cube, true));
+    const out = m.convertSurfaceOps('/remesh.vtu', '/remesh.vtp', [
+        { op: 'remesh', numClusters: 30, metric: 'quadric', gradation: 1.0 },
+    ]);
+    assert.equal(out.steps[0].op, 'remesh');
+    assert.equal(out.steps[0].numClusters, 30);
+    assert.equal(m.readMesh('/remesh.vtp').points.length / 3, 30);
+
+    // MaxAnisotropy joins Gradation/PreserveBoundary in the same step key
+    // list -- reachable through the identical generic dispatch.
+    const outA = m.convertSurfaceOps('/remesh.vtu', '/remesh_aniso.vtp', [
+        { op: 'remesh', numClusters: 30, metric: 'anisotropic', maxAnisotropy: 3.0 },
+    ]);
+    assert.equal(outA.steps[0].op, 'remesh');
+    assert.ok(m.readMesh('/remesh_aniso.vtp').points.length / 3 > 0);
+});
+
+step('remeshVolume: retetrahedralizes a volume mesh directly', () => {
+    // Unlike remesh, remeshVolume accepts a VOLUME mesh directly (no
+    // extractSkin needed first) -- its boundary is extracted internally.
+    const out = m.remeshVolume(cube, null, 0.4, null, 0, 0.1, 20000000, 20000000, 0.35,
+        'pseudonormal', 'off');
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.numTets > 0);
+    assert.equal(out.numTets, out.mesh.cells[0].data.length / 4);
+    assert.ok(out.numVerticesWarped >= 0);
+    assert.ok(out.numTetsRejected >= 0);
+    assert.ok(out.numNonManifoldEdges >= 0);
+
+    // Also accepts a closed SURFACE directly, extractSkin's own output.
+    const skin = m.extractSkin(cube, true);
+    const outFromSurface = m.remeshVolume(skin, null, 0.4, null, 0, 0.1, 20000000, 20000000, 0.35,
+        'pseudonormal', 'off');
+    assert.ok(outFromSurface.numTets > 0);
+});
+
+step('remeshVolume is reachable as a convertSurfaceOps pipeline step', () => {
+    // convertSurfaceOps always ends on a boundary extraction (it is the
+    // viewer's rendering pipeline), so the VTP output is the tet mesh's own
+    // triangle boundary, not the tet mesh itself -- unlike the plain
+    // runPipeline test above, which writes exactly what the pipeline
+    // produced. The step's own counters are what actually prove the op ran.
+    m.writeMesh('/rvol.vtu', cube);
+    const out = m.convertSurfaceOps('/rvol.vtu', '/rvol.vtp', [
+        { op: 'remeshVolume', cellSize: 0.4, watertightCheck: 'off' },
+    ]);
+    assert.equal(out.steps[0].op, 'remeshVolume');
+    assert.ok(out.steps[0].numTets > 0);
+    const rendered = m.readMesh('/rvol.vtp');
+    assert.equal(rendered.cells[0].type, 'triangle');
+    assert.ok(rendered.cells[0].data.length > 0);
+});
+
+step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
+    // A tetra mesh (simplexified hex cube). optimizeVolume relocates vertices
+    // and flips connectivity; the boundary is preserved and no cell inverts.
+    const tetCube = m.convertCells(cube, 'simplexify');
+    const out = m.optimizeVolume(tetCube, 5, true, true, true, 1e-6);
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.numTets > 0);
+    assert.equal(out.mesh.points.length, tetCube.points.length); // point set invariant
+    assert.ok(out.minQualityAfter >= out.minQualityBefore - 1e-9); // monotone
+    assert.ok(out.numFlips >= 0 && out.num23Flips >= 0 && out.num32Flips >= 0);
+});
+
+step('optimizeVolume is reachable as a convertSurfaceOps pipeline step', () => {
+    const tetCube = m.convertCells(cube, 'simplexify');
+    m.writeMesh('/ovol.vtu', tetCube);
+    const out = m.convertSurfaceOps('/ovol.vtu', '/ovol.vtp', [
+        { op: 'optimizeVolume', maxIterations: 3 },
+    ]);
+    assert.equal(out.steps[0].op, 'optimizeVolume');
+    assert.ok(out.steps[0].numTets > 0);
+});
+
 step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/sub.vtu', cube);
     const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
@@ -939,6 +1052,18 @@ step('smooth: taubin defaults leave a structured hex block alone', () => {
 
 step('smooth rejects an unknown method', () => {
     assert.throws(() => m.smooth(cube, 'not-a-method'));
+});
+
+step("smooth: method 'odt' moves a tet mesh's free vertices", () => {
+    // ODT is tet-only, unlike taubin/laplacian, which run on the hex cube.
+    const tets = m.convertCells(cube, 'simplexify');
+    const out = m.smooth(tets, 'odt', 3, -1, -0.34, false, false, 30, true);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.equal(out.mesh.points.length, tets.points.length);
+    assert.ok(out.numNodesMoved >= 0);
+
+    // ODT refuses a non-tet block by name, rather than silently ignoring it.
+    assert.throws(() => m.smooth(cube, 'odt'), /tet/);
 });
 
 step('interpolate: transfers fields onto a target mesh', () => {
@@ -1480,6 +1605,9 @@ step('every binding is reachable through the wrapper', () => {
         'agglomerate',
         'refine',
         'decimate',
+        'remesh',
+        'remeshVolume',
+        'optimizeVolume',
         'partition',
         'partitionLabels',
         // Regular grids and signed distance. `grid` is the only binding here

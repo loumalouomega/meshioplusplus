@@ -75,6 +75,9 @@
  *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
  *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
+ *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
+ *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
+ *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
  *
  * ### This is the ONE place the number is written
  *
@@ -93,7 +96,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 7
+#define MESHIOPLUSPLUS_ABI_VERSION 10
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -6579,6 +6582,32 @@ MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
 /// the parity contract with the numpy twins.
 MESHIOPLUSPLUS_API double decim_quadric_error(const double* q, double x, double y, double z);
 
+/**
+ * @brief Solves for the point minimizing `x^T Q x` (a symmetric 4x4 quadric
+ * in homogeneous form), via the cofactor (adjugate) form of the upper-left
+ * 3x3 system, falling back to a caller-supplied point when the system is
+ * ill-conditioned.
+ *
+ * Hoisted out of `decim_place`'s `DecimatePlacement::Optimal` branch so a
+ * second caller (surface remeshing's quadric-driven cluster placement) can
+ * share the identical solve rather than re-deriving it -- two independent
+ * transcriptions of a cofactor solve and its ill-conditioning bound are
+ * exactly the kind of arithmetic that drifts silently. `decim_place` calls
+ * this with the edge midpoint as `pFallback`; a cluster's quadric placement
+ * calls it with the cluster's own area-weighted centroid.
+ *
+ * @param q The 10-entry `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric.
+ * @param pFallback The point used when the system is ill-conditioned
+ *        (`|det| <= 1e-12 * max|A_ij|^3`, the same scale-invariant bound
+ *        `decim_place` has always used) -- an exactly planar patch is
+ *        singular *by construction*, so this is the expected hot path there,
+ *        not a defect.
+ * @param pOut Filled with the solved point, or a copy of `pFallback`.
+ * @return `true` if the direct solve was used, `false` if `pFallback` was.
+ */
+MESHIOPLUSPLUS_API bool decim_quadric_optimal_point(const double q[10], const double pFallback[3],
+                                                    double pOut[3]);
+
 /// A placement result: the surviving vertex's position and quadric error.
 struct DecimPlaced {
     double mX[3] = {0.0, 0.0, 0.0};
@@ -10189,6 +10218,46 @@ struct DistanceHit {
 MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
     const SurfaceDistanceOptions& rOptions);
+
+/// What `query_closest_points` resolved a single query point to. A new,
+/// additive type (Tier C) rather than a field added to `DistanceHit` -- see
+/// that function's own doc comment for why.
+struct ClosestPointHit {
+    Vec3 mPoint{0.0, 0.0, 0.0};     ///< The nearest point on the soup.
+    double mDistance = 0.0;         ///< Its distance from the query (unsigned).
+    std::int64_t mSourceCell = -1;  ///< The input cell it came from, or -1 (empty soup only).
+    bool mFound = false;            ///< False only when the soup has no triangles at all.
+};
+
+/**
+ * @brief The actual nearest POINT on the soup to each of @p rPoints, not just
+ * its distance.
+ *
+ * `query_distances`'s own `PointTriangleHit` already computes this internally
+ * (`best_hit.mPoint`) and then discards it, keeping only the distance and the
+ * sign -- which is all `sample_distance`/`distance_to_surface` ever needed.
+ * `remesh_volume`'s warp step is the first caller that needs the point itself
+ * (to move a lattice vertex onto the surface, not merely learn how far it
+ * is), hence this sibling function rather than growing `DistanceHit`, whose
+ * layout is an ABI boundary (`doc/abi.md`) this header already participates
+ * in. Both functions share the identical bucket-grid nearest-triangle search
+ * (`sd_nearest_triangle`, private to `surface_distance.cpp`) so they cannot
+ * disagree about which triangle is nearest.
+ *
+ * No banding and no sign here -- a warp threshold is the caller's own
+ * decision (`remesh_volume.cpp`'s own threshold, compared against
+ * `mDistance` after the fact), and a warp target has no notion of inside or
+ * outside to report.
+ *
+ * @param rQuery the accelerator built by `build_distance_query`.
+ * @param rPoints the query points.
+ * @return one hit per query point, `mFound == false` only when the soup this
+ *         query was built from has no triangles (impossible in practice,
+ *         since `build_distance_query` itself refuses an empty soup, but the
+ *         field exists so a caller need not assume).
+ */
+MESHIOPLUSPLUS_API std::vector<ClosestPointHit> query_closest_points(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -18755,6 +18824,191 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/optimize_volume.hpp =====
+/**
+ * @file optimize_volume.hpp
+ * @brief Improve a tetrahedral mesh's element quality by ODT *remeshing* --
+ * relocating vertices AND changing connectivity -- without any Delaunay /
+ * in-sphere predicate.
+ *
+ * This is the genuine "ODT remeshing" the roadmap's volumetric bullet named.
+ * Its two siblings each do half the job and are deliberately kept separate:
+ *
+ *  - `SmoothMethod::Odt` (`operations/smooth.hpp`) is ODT *smoothing* -- it
+ *    moves each free interior tet vertex to the volume-weighted circumcenter
+ *    average of its incident tets, on the mesh's **fixed** connectivity. It
+ *    cannot fix a badly *connected* tetrahedralization (a sliver that no
+ *    vertex motion removes), only a badly *placed* one.
+ *  - `remesh_volume` (`operations/remesh_volume.hpp`) *generates* a fresh tet
+ *    mesh from a signed-distance lattice (surface-in, volume-out); it discards
+ *    the input's tets entirely rather than improving them.
+ *
+ * `optimize_volume` is the missing third member: it takes an existing tet mesh
+ * and raises its worst-element quality by alternating the ODT vertex
+ * relocation above with quality-improving topological **flips** (2-3 and 3-2),
+ * so both the vertex positions and the connectivity change. That is what makes
+ * it *remeshing* rather than *smoothing*, and it is the resolution-preserving
+ * quality optimiser `refine`/`decimate_volume` are not (`refine` subdivides
+ * the input's own possibly-bad cells; `decimate_volume` can only remove them).
+ *
+ * ### Why predicate-free (the in-posture design)
+ *
+ * The roadmap rejects the literal Delaunay/ODT-remeshing method because a
+ * robust 3D Delaunay kernel needs in-sphere/orientation predicates, exactly
+ * where this project's dependency-free posture stops paying (Geogram is a
+ * large dependency; TetGen/CGAL's `Mesh_3` are AGPL/GPL). This operation needs
+ * **none** of that. A flip is applied iff, using only the *signed volume* of
+ * the candidate tets (`detail::cell_volume_from_corners`/`detail::det3`):
+ *
+ *   1. every new tet is non-degenerate and the local configuration is convex
+ *      (a pure signed-volume test -- NO in-sphere test), and
+ *   2. the **minimum** quality (scaled Jacobian) over the new tets strictly
+ *      exceeds the minimum over the tets it replaces, by `mMinImprovement`.
+ *
+ * Criterion 2 is Freitag & Ollivier-Gooch's improvement rule: because every
+ * accepted flip strictly raises a bounded quantity (the worst incident
+ * quality), the process is **monotone in worst quality** and therefore
+ * terminates -- no Delaunay optimality argument, and no predicate, is needed.
+ *
+ * ### Boundary is invariant by construction
+ *
+ * A 2-3 flip acts only on an *interior* triangular face (shared by two tets);
+ * a 3-2 flip only on an *interior* edge (all its incident faces interior).
+ * Neither ever touches a boundary face. Combined with `mPreserveBoundary`
+ * pinning boundary vertices during relocation, the output's boundary surface
+ * is **byte-identical** to the input's: watertight in => watertight out, with
+ * none of the coincident-edge risk `remesh_volume`'s surface warp carries. It
+ * is both a design guarantee and a test oracle.
+ *
+ * ### What survives
+ *
+ * The **point set is invariant** -- relocation moves points, flips only
+ * reconnect them, and no point is ever added or removed -- so `point_data`,
+ * `field_data` and named **Point** regions carry through unchanged. `cell_data`
+ * has no correspondence across a flip (a 2-3 flip replaces two cells with
+ * three) and is **dropped with a warning**, as are named Cell and Side
+ * regions; the output is a single `tetra` block. This is more generous than
+ * `remesh_volume` (which drops point data too, having a genuinely new point
+ * set), and it is honest: what is preserved is exactly what a preserved point
+ * set can preserve.
+ *
+ * ### Determinism
+ *
+ * Per-tet quality and the face/edge adjacency of each sweep are built in
+ * `parallel_for` into disjoint slots; the flip-application loop is **serial**,
+ * in ascending (cell, local face/edge) order, because a flip mutates shared
+ * incidence (`decimate_volume`'s greedy-loop reasoning). Output is
+ * byte-identical across the three mesh backends and across thread counts.
+ *
+ * **C++-core only, no numpy fallback.** The flip acceptance is a discrete
+ * branch on the sign of a volume and on a near-tie quality comparison; a second
+ * independent implementation could land on the other side of such a tie and
+ * diverge into a different connectivity, not a last-ulp difference -- the same
+ * reasoning `subdivide`/`agglomerate`/`decimate_volume`/`remesh_volume` state.
+ * `_optimize_volume.py` raises `NotImplementedError` by name when the compiled
+ * core is unavailable, for any input.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. An operation, not a file format -- deliberately not in the registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `optimize_volume`.
+struct OptimizeVolumeOptions {
+    /// How many optimisation sweeps to run; each sweep is one ODT relocation
+    /// pass followed by one flip pass. The loop stops early once a sweep both
+    /// moves no vertex past its tolerance and accepts no flip (a fixed point).
+    int mMaxIterations = 10;
+
+    /// Run the ODT vertex-relocation half of each sweep. With this off and
+    /// `mFlip` on, the operation is a pure connectivity optimiser (flips only);
+    /// with both off it is a no-op returning an equivalent mesh.
+    bool mRelocate = true;
+
+    /// Run the topological-flip half of each sweep. With this off and
+    /// `mRelocate` on, the operation reduces to ODT *smoothing*
+    /// (`SmoothMethod::Odt`) -- kept as a knob so the two halves are
+    /// separately testable, not as a recommended mode.
+    bool mFlip = true;
+
+    /// Pin boundary vertices during relocation (passed straight to
+    /// `smooth`'s `mFixBoundary`). Default true: the flips never touch the
+    /// boundary, so with this on the boundary surface is exactly preserved.
+    /// Setting it false lets boundary vertices drift off the surface, the same
+    /// caveat `smooth` documents -- there is no surface re-projection here.
+    bool mPreserveBoundary = true;
+
+    /// The strict quality gain, in scaled-Jacobian units, a flip must deliver
+    /// to be accepted: `min(quality of new tets) > min(quality of replaced
+    /// tets) + mMinImprovement`. A small positive value both guarantees
+    /// progress (monotone worst quality) and prevents cycling on ties.
+    double mMinImprovement = 1e-6;
+
+    /// Optional caller-supplied pin mask for the relocation half: either empty
+    /// (no extra pins) or of length `NumPoints()`, a non-zero entry pinning
+    /// that vertex. Forwarded to `smooth`'s `mFrozen`. Deliberately not exposed
+    /// on the flat C ABI, a documented gap like `smooth`'s / `decimate`'s own
+    /// `frozen`.
+    std::vector<std::uint8_t> mFrozen;
+};
+
+/// The result of `optimize_volume`: the improved mesh plus what the run did.
+struct OptimizeVolumeResult {
+    /// The optimised mesh: a single `tetra` block, the same point set moved,
+    /// `point_data`/`field_data`/Point regions carried, `cell_data`/Cell/Side
+    /// regions dropped.
+    Mesh mMesh;
+
+    /// Total flips accepted (`mNum23Flips + mNum32Flips`).
+    std::int64_t mNumFlips = 0;
+    /// 2-3 flips accepted (an interior face's two tets became three).
+    std::int64_t mNum23Flips = 0;
+    /// 3-2 flips accepted (an interior edge's three tets became two).
+    std::int64_t mNum32Flips = 0;
+
+    /// Vertices whose final position differs from their input position by more
+    /// than a bbox-relative tolerance (from the relocation half).
+    std::int64_t mNumVerticesMoved = 0;
+
+    /// Tets in the output mesh.
+    std::int64_t mNumTets = 0;
+
+    /// Minimum scaled Jacobian over the input tets (orientation-normalised: an
+    /// input tet is measured on its positively-oriented reordering, so a
+    /// negatively-stored but well-shaped tet reads as good, and a degenerate
+    /// one as 0).
+    double mMinQualityBefore = 0.0;
+    /// Minimum scaled Jacobian over the output tets, same convention. Never
+    /// less than `mMinQualityBefore`.
+    double mMinQualityAfter = 0.0;
+};
+
+/**
+ * @brief ODT-remesh a tetrahedral mesh: relocate vertices and flip
+ *        connectivity to raise the worst element quality.
+ * @param rMesh a tetra-only volume mesh (one or more `tetra` blocks).
+ * @param rOptions the sweep count, which halves to run, boundary policy and
+ *        the flip-acceptance threshold.
+ * @return the improved mesh (single `tetra` block) plus flip/move counters and
+ *         the before/after worst quality.
+ * @throws std::invalid_argument when the mesh contains a non-`tetra` 3D block
+ *         (run `convert_cells(mode='simplexify')` first), a ragged/polyhedron
+ *         block, a non-3D block alongside the tets (drop it via `split`), or no
+ *         tetra block at all -- the same tet-only scope `smooth`'s ODT method
+ *         and `decimate_volume` enforce.
+ */
+MESHIOPLUSPLUS_API OptimizeVolumeResult optimize_volume(const Mesh& rMesh,
+                                                        const OptimizeVolumeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/optimize_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/partition.hpp =====
 /**
  * @file partition.hpp
@@ -19305,6 +19559,632 @@ MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/remesh.hpp =====
+/**
+ * @file remesh.hpp
+ * @brief Isotropic and feature-preserving surface remeshing by approximated
+ * centroidal Voronoi diagram (ACVD) clustering: replace a surface mesh's
+ * triangulation with a new, near-uniformly-sized, well-shaped one at a
+ * caller-chosen vertex count.
+ *
+ * This is the one resolution operation that does not work on the input's own
+ * triangulation. `refine` subdivides the input's cells, `decimate` collapses
+ * its edges, `subdivide`/`agglomerate` restructure it into polyhedra, `smooth`
+ * moves its points -- all of them inherit the input's element shapes. QEM
+ * decimation in particular can only *remove* elements, so a badly-shaped input
+ * stays badly-shaped at every target count. `remesh` instead partitions the
+ * surface into `mNumClusters` compact regions of near-equal area (or, under
+ * `RemeshMetric::Quadric`, near-equal quadric error) and builds the **dual**
+ * of that partition, so output element quality is a property of the
+ * clustering rather than of the input.
+ *
+ * **Attribution.** The clustering engine (seeding, energy minimisation, the
+ * cluster-repair passes, the dual triangulation) is derived from
+ * `pyvista/pyacvd`'s `src/clustering.cpp` and `src/pyacvd/clustering.py`
+ * (nanobind, MIT, (c) 2017-2024 The PyVista Developers) -- an independent
+ * implementation of Valette & Chassery's published *research*, not of
+ * ACVD's own CeCILL-B source, which this project never reads code from and
+ * never vendors (see "Feature-preserving metric" below and doc/remesh.md for
+ * the licence reasoning). `RemeshMetric::Quadric` has no pyacvd counterpart --
+ * pyacvd implements only the isotropic variant -- and is a fresh synthesis
+ * over meshio++'s own pre-existing Garland-Heckbert quadric machinery
+ * (`detail/decimate_common.hpp`, shared with `decimate`/`decimate_volume`).
+ *
+ * **The isotropic algorithm** (Valette & Chassery, CGF 2004). Each input
+ * vertex is an "item" carrying a weight (one third of its incident triangle
+ * area, so the weights sum to the surface area) and a weighted position. A
+ * cluster holds only two accumulators -- `sgamma = sum(w * x)` and
+ * `srho = sum(w)` -- which is what makes testing a candidate move O(1) and the
+ * whole method fast:
+ *
+ *   - **Seeding** grows `mNumClusters` regions breadth-first from the lowest
+ *     unassigned vertex, each absorbing neighbours until it reaches its share
+ *     of the remaining area. Deliberately *deterministic*: unlike pyacvd this
+ *     uses no RNG at all, so a given mesh always yields the same clustering.
+ *   - **Energy minimisation** sweeps the edges whose endpoints lie in
+ *     different clusters and, for each, compares the current badness against
+ *     moving either endpoint across. Under `Isotropic` the objective
+ *     `sum(|sgamma_c|^2 / srho_c)` is *maximised* (equivalently, a "badness"
+ *     `-sum(...)` is minimised, the uniform framing both metrics share); this
+ *     is equivalent to minimising the centroidal Voronoi energy but avoids
+ *     recomputing centroids. A cluster flagged unmodified in the previous
+ *     sweep is skipped, so late sweeps are cheap.
+ *   - **Repair** is not optional: seeding can leave vertices unassigned (a
+ *     pocket the fronts never reached) and minimisation can split a cluster
+ *     into disconnected components. Unassigned vertices are grown into from
+ *     their neighbours; a split cluster keeps its largest component and the
+ *     rest are re-grown, alternating with further minimisation sweeps up to
+ *     `mMaxRepairPasses`.
+ *   - **The dual** places one output vertex at each cluster's representative
+ *     point (area-weighted centroid under `Isotropic`, see below under
+ *     `Quadric`) and emits one triangle for every input triangle whose three
+ *     vertices lie in three *distinct* clusters, deduplicated. Winding is
+ *     fixed by comparing each output triangle's normal against the mean input
+ *     normal of the clusters it joins.
+ *
+ * **Feature-preserving metric** (`RemeshMetric::Quadric`, "ACVDQ" in the
+ * literature's naming, roadmap-named "the same clustering driven by a quadric
+ * error metric"). This project has no access to and does not read ACVD's own
+ * `vtkQEMetricForClustering.h` (CeCILL-B, VTK-bound) -- the design below is
+ * built entirely from the general "metric-dependent discrete Voronoi diagram"
+ * concept (Valette, Chassery & Prost, IEEE TVCG 2008) plus meshio++'s own,
+ * already-shipped Garland-Heckbert quadric primitives
+ * (`detail::decim_face_planes`/`decim_accumulate_quadrics`/
+ * `decim_quadric_error`/`decim_quadric_optimal_point`, the last hoisted out of
+ * `decimate`'s edge-collapse placement solve specifically so this operation
+ * can share it rather than re-derive it -- "a new metric, not a second QEM
+ * implementation"). Each cluster carries a 10-entry quadric *in addition to*
+ * `sgamma`/`srho` (kept in both metrics -- cheap, and `Quadric` needs the
+ * isotropic centroid as its solve's ill-conditioning fallback), accumulated
+ * with the same O(1)-per-move update shape. The per-move badness becomes the
+ * summed quadric error of the two affected clusters, each evaluated at its own
+ * `decim_quadric_optimal_point`; the dual's vertex placement likewise moves
+ * from the area-weighted centroid to that same optimal point. A flat region's
+ * quadric is near-singular in-plane and degenerates to the centroid (the same
+ * ill-conditioning fallback `decimate` already relies on); a crease or corner's
+ * quadric is not, and pins the representative point onto the feature instead
+ * of smearing it toward a centroid -- which is the entire quality difference
+ * between the two metrics.
+ *
+ * **Anisotropic metric** (`RemeshMetric::Anisotropic`, `mMaxAnisotropy`).
+ * Also built from the Valette/Chassery/Prost TVCG 2008 concept above -- the
+ * same paper, not a second attribution. Each vertex's curvature fit
+ * (`remesh_vertex_curvature`, shared with `mGradation`) already computes the
+ * principal curvatures `kappa1`/`kappa2` and their tangent-plane directions;
+ * this metric is the one consumer that keeps the directions instead of
+ * collapsing them to `max(|kappa1|, |kappa2|)`. A per-vertex SPD tensor `M`
+ * is built with in-plane eigenvalues proportional to curvature magnitude
+ * (short target edges across a sharp bend, long ones along a flat one),
+ * ratio clamped to `mMaxAnisotropy`, normal eigenvalue pinned to the sharper
+ * in-plane one (keeps clusters on the surface), then rescaled to `det(M) = 1`
+ * -- the metric only reshapes clusters, it never rescales the objective, so
+ * it composes cleanly with `mGradation` (density) and stays comparable
+ * vertex-to-vertex regardless of the surface's absolute curvature magnitude.
+ * `M = I` exactly wherever the surface is locally flat or `mMaxAnisotropy ==
+ * 1.0`. Algebraically, `E(v) = sum(w * (x-v)^T M (x-v))` expands to the same
+ * `x^T A x + 2 b.x + c` form the quadric metric already accumulates and
+ * minimises via `decim_quadric_optimal_point` -- so this packs into the
+ * *same* 10-entry accumulator, needs no new per-cluster storage, and the
+ * per-move cost is identical to `Quadric`'s.
+ *
+ * **Subdivision matters more than iteration count.** The clustering is a
+ * *discrete* approximation of a centroidal Voronoi diagram whose resolution is
+ * the number of items per cluster, so a target near the input vertex count
+ * gives poor results until the input is refined. `mSubdivide` applies that many
+ * uniform `refine` passes first (each multiplying the triangle count by four);
+ * `remesh_suggest_subdivide` reports how many are needed to reach
+ * `mSubsampleRatio` items per cluster.
+ *
+ * **Surface only, triangles out.** The operating type is `triangle`; `quad` and
+ * rectangular `polygon` blocks are triangulated first via
+ * `convert_cells(Simplexify)`. A mesh containing 3D volume cells throws by name
+ * pointing at `extract_surface` (the volumetric CVD/ODT problem is genuinely
+ * different, not a silent skin); higher-order cells throw pointing at
+ * `convert_cells(Linearize)`; ragged polygon/polyhedron and `line`/`vertex`
+ * blocks throw by name. This mirrors `decimate`'s scope exactly.
+ *
+ * **What does NOT survive.** The output is a new mesh with new vertices and new
+ * connectivity, so -- unlike every other operation in this layer -- there is no
+ * meaningful point or cell map, and `point_data`, `cell_data` and named regions
+ * are **dropped** (`warn_regions_dropped` is called, never silent). Transfer a
+ * field onto the result with `interpolate` or `conservative_interpolate`, which
+ * is exactly the composition those operations exist for. `field_data` passes
+ * through verbatim.
+ *
+ * **Curvature gradation** (`mGradation`, the roadmap's `area * kappa^gamma`
+ * density weight). Each item's clustering weight is normally its plain
+ * triangle-fan area; when `mGradation` (the exponent `gamma`) is non-zero, the
+ * weight becomes `area * max(kappa, kappa_floor)^gamma`, where `kappa` is a
+ * per-vertex curvature magnitude from a local osculating-paraboloid fit over
+ * the vertex's 1-ring (`remesh_vertex_curvature`, built on the same
+ * `detail::NodeAdjacency` graph the edge sweep already uses -- no separate
+ * neighbourhood machinery). `kappa_floor` is a small internal fraction of the
+ * mesh's own maximum curvature, guarding against an exact-zero weight
+ * degenerating a flat vertex's cluster membership. This is the **single**
+ * weight threaded everywhere `sgamma`/`srho`/the badness/the final placement
+ * already use, under both metrics unchanged -- gradation is orthogonal to the
+ * `Isotropic`/`Quadric` choice, not a third metric. `mGradation == 0.0` (the
+ * default) means `kappa^0 == 1` identically, so curvature is never even
+ * computed and every existing weight is reproduced byte-for-byte.
+ *
+ * **Boundaries** (`mPreserveBoundary`, default **true** -- a no-op, and so
+ * free, on the closed meshes most callers and every pre-existing test use).
+ * An open surface's boundary vertices are detected once
+ * (`remesh_boundary_info`, a local edge-use-count pass: a triangle edge used
+ * by exactly one face is a boundary edge) and seeded **before** the general
+ * interior BFS, walking each boundary chain/loop first so a cluster's
+ * boundary segment is anchored contiguously rather than being absorbed
+ * piecemeal by whichever interior cluster reaches it first -- the "pinned"
+ * half of the roadmap's "boundary items pinned and extra dual elements
+ * inserted along the boundary." The second half is dual-side: a genuine
+ * boundary edge whose two endpoints land in different clusters emits a `line`
+ * cell between those two clusters' representative points (deduplicated by
+ * cluster-id pair, the same idiom the triangle dual already uses), so the
+ * output gains a second, optional `line` cell block carrying the boundary
+ * polyline -- without it, a boundary-adjacent triangle simply has no "third
+ * neighbour" across the missing side and is silently dropped from the
+ * triangle dual, leaving no coherent output boundary at all.
+ *
+ * This is a clean-room design achieving the roadmap's stated boundary goals,
+ * built from this project's own conventions (the pinning idiom `decimate`/
+ * `smooth` already use, the dedup idiom the triangle dual already uses) --
+ * not a reproduction of ACVD's own boundary-fixing algorithm, whose source
+ * this project does not read (see the licence reasoning above).
+ *
+ * **Topology is not preserved.** Two surface sheets closer together than a
+ * cluster can merge, and the genus can change. This is inherent to dualising a
+ * discrete Voronoi partition, not an implementation limit -- a target vertex
+ * count far below the feature scale will visibly simplify topology.
+ *
+ * **Output manifoldness is best-effort.** The dual of a discrete Voronoi
+ * partition need not be 2-manifold, for two distinct reasons, reported
+ * separately. Disconnected clusters (`mNumIsolatedClusters`) are the
+ * `remesh_split_disconnected` repair loop's own concern, unchanged from
+ * v10.10.0. Non-manifold **output vertices** (`mNumNonManifoldVertices`) are
+ * a second, independent cause -- a vertex whose incident dual-triangle fan
+ * does not form a single loop (interior) or open chain (boundary), i.e. a
+ * "bowtie" -- detected by `remesh_detect_nonmanifold_vertices` and folded
+ * into the **same** repair loop already driving disconnected-cluster repair
+ * (its implicated clusters are unassigned and regrown/reminimised alongside
+ * whatever `remesh_split_disconnected` already found, up to
+ * `mMaxRepairPasses`), rather than a second, separate loop. Either counter
+ * non-zero means a pathological input still produced non-manifold output;
+ * check both rather than assuming.
+ *
+ * **Determinism, and no numpy twin.** Seeding is RNG-free, the energy sweep
+ * visits edges in a fixed order and is **serial** (the objective is inherently
+ * sequential -- every accepted move changes the accumulators the next test
+ * reads), and the setup passes fill disjoint slots in parallel with a fixed FP
+ * order. Output is therefore byte-identical across the three mesh backends and
+ * thread counts, but there is deliberately **no numpy twin**: a single near-tie
+ * decided differently by an independent implementation diverges into a
+ * different clustering, not a last-ulp difference, the same reasoning that
+ * makes `subdivide`/`agglomerate`/`decimate_volume`/`conservative_interpolate`
+ * C++-core-only. `_remesh.py` raises `NotImplementedError` by name when `_core`
+ * is unavailable, for any input.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format -- it is deliberately not in
+ * the format registry.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The clustering objective driving `remesh`.
+enum class RemeshMetric : std::uint8_t {
+    /// Area-weighted centroidal distance (Valette & Chassery, CGF 2004). Fast,
+    /// robust, and rounds sharp features.
+    Isotropic,
+    /// Garland-Heckbert quadric error ("ACVDQ" in the literature). Preserves
+    /// sharp edges and corners at the cost of one extra 10-entry accumulator
+    /// per cluster and a 3x3 solve per candidate move.
+    Quadric,
+    /// Clusters shaped by a local curvature tensor rather than isotropic
+    /// distance (Valette, Chassery & Prost, IEEE TVCG 2008 -- the same paper
+    /// `Quadric` cites): elongated features get elongated elements. Packs
+    /// into the same 10-entry accumulator `Quadric` uses, so it costs the
+    /// same per-move solve; see `RemeshOptions::mMaxAnisotropy`.
+    Anisotropic,
+};
+
+/// A fixed underlying type, checked below, so appending a future enumerator
+/// stays a Tier C addition (doc/abi.md) rather than accidentally widening
+/// the type an already-compiled consumer stored.
+static_assert(sizeof(RemeshMetric) == 1,
+              "meshio++ ABI: RemeshMetric's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
+
+/**
+ * @brief Parses a metric name.
+ * @param rName One of `"isotropic"`, `"quadric"`, `"anisotropic"`
+ *        (case-sensitive, as elsewhere in the operations layer).
+ * @return The matching enumerator.
+ * @throws std::invalid_argument if the name is not recognised.
+ */
+MESHIOPLUSPLUS_API RemeshMetric remesh_metric_from_name(const std::string& rName);
+
+/// Default for `RemeshOptions::mMaxAnisotropy` -- meaningful only under
+/// `RemeshMetric::Anisotropic`, but a single named constant so the header's
+/// default and the "you set this under the wrong metric" guard in
+/// `remesh.cpp` cannot drift apart. Chosen by measurement, not a round
+/// number: on a near-umbilic input (the icosahedron test fixture, whose
+/// TRUE surface is a sphere -- equal principal curvatures everywhere, so
+/// the metric has no genuine anisotropy signal to read, only discretisation
+/// noise), a swept `max_anisotropy` of 1/2/4/10 produced 0/0/1/18 clusters
+/// short of a 120-cluster target -- energy minimisation can fully absorb a
+/// seeded cluster into its neighbours (not a disconnection `mMaxRepairPasses`
+/// helps with; `RemeshResult::mNumClusters` is already documented as "never
+/// higher", and more repair passes measurably did not change the count
+/// here). `4.0` keeps that near-worst-case shortfall to a single cluster
+/// while still giving genuinely anisotropic surfaces (a cylinder, a fillet)
+/// real elongation headroom; a caller expecting to hit an exact count on
+/// nearly-umbilic geometry should still prefer something closer to `2.0`.
+inline constexpr double kRemeshDefaultMaxAnisotropy = 4.0;
+
+/// Options for `remesh`.
+struct RemeshOptions {
+    /// Number of clusters, i.e. the number of vertices the output aims for.
+    /// Must be at least 4 (fewer cannot bound a surface) and no more than the
+    /// number of vertices of the subdivided input.
+    std::int64_t mNumClusters = 0;
+
+    /// Uniform `refine` passes applied to the input before clustering, each
+    /// multiplying the triangle count by four. `-1` (the default) picks the
+    /// smallest count reaching `mSubsampleRatio` items per cluster, capped at
+    /// `mMaxSubdivide`; `0` disables subdivision entirely.
+    int mSubdivide = -1;
+
+    /// Items per cluster targeted by automatic subdivision. Higher is a finer
+    /// discrete approximation and a slower run.
+    double mSubsampleRatio = 10.0;
+
+    /// Ceiling on automatically chosen subdivision, so a tiny input and a large
+    /// cluster count cannot silently allocate an enormous intermediate mesh.
+    /// Ignored when `mSubdivide` is set explicitly.
+    int mMaxSubdivide = 4;
+
+    /// Maximum energy-minimisation sweeps per pass. The loop also stops early
+    /// as soon as a sweep changes nothing.
+    int mMaxIterations = 100;
+
+    /// How many times to alternate "split disconnected clusters, minimise
+    /// again" after the first minimisation. `0` skips repair of disconnected
+    /// clusters entirely (the fast, lower-quality mode).
+    int mMaxRepairPasses = 10;
+
+    /// The clustering objective. See `RemeshMetric`.
+    RemeshMetric mMetric = RemeshMetric::Isotropic;
+
+    /// Curvature-gradation exponent `gamma` in the item weight
+    /// `area * kappa^gamma`. `0.0` (the default) disables gradation entirely
+    /// (curvature is not even computed) and reproduces plain area weighting.
+    /// Positive values concentrate clusters where the surface bends more
+    /// sharply.
+    double mGradation = 0.0;
+
+    /// Detect the input's open boundary (if any) and seed it before the
+    /// interior, then emit a `line` dual cell along every boundary edge whose
+    /// endpoints land in different clusters. A no-op, and so free, whenever
+    /// the input has no boundary edges (e.g. every mesh in this repo's own
+    /// closed-surface tests).
+    bool mPreserveBoundary = true;
+
+    /// Under `RemeshMetric::Anisotropic`, the maximum ratio between the two
+    /// in-plane target edge lengths (long axis / short axis) a per-vertex
+    /// curvature tensor is allowed to request; `1.0` recovers the isotropic
+    /// shape exactly. Must be `>= 1.0`. An error to set away from
+    /// `kRemeshDefaultMaxAnisotropy` under any other metric -- there is
+    /// nothing for it to shape, so a silently-ignored value would be a
+    /// caller mistake with no diagnostic.
+    double mMaxAnisotropy = kRemeshDefaultMaxAnisotropy;
+};
+
+/// The result of `remesh`.
+struct RemeshResult {
+    /// The remeshed surface: exactly one `triangle` block, new points and new
+    /// connectivity. `point_data`, `cell_data` and regions are dropped;
+    /// `field_data` is carried.
+    Mesh mMesh;
+
+    /// Clusters actually produced, i.e. `mMesh.NumPoints()`. It can be lower
+    /// than `RemeshOptions::mNumClusters` when the surface cannot be split that
+    /// finely (small or disconnected input); it is never higher.
+    std::int64_t mNumClusters = 0;
+
+    /// Energy-minimisation sweeps performed, summed over every pass. Reaching
+    /// `mMaxIterations` on the first pass means the run was truncated rather
+    /// than converged.
+    std::int64_t mNumIterations = 0;
+
+    /// Subdivision passes actually applied (the resolved value of
+    /// `RemeshOptions::mSubdivide`).
+    int mSubdivideApplied = 0;
+
+    /// Clusters still disconnected after `mMaxRepairPasses`. Non-zero means the
+    /// output may be non-manifold near those clusters.
+    std::int64_t mNumIsolatedClusters = 0;
+
+    /// Output vertices whose incident dual-triangle fan is still not a single
+    /// loop/chain (a "bowtie") after `mMaxRepairPasses`. Non-zero means the
+    /// output may be non-manifold at those vertices -- a distinct cause from
+    /// `mNumIsolatedClusters`, reported separately.
+    std::int64_t mNumNonManifoldVertices = 0;
+};
+
+/**
+ * @brief Suggests a subdivision count for a target cluster count.
+ * @param NumPoints Vertices of the input surface.
+ * @param NumClusters Target cluster count.
+ * @param SubsampleRatio Items per cluster to aim for.
+ * @param MaxSubdivide Ceiling on the returned value.
+ * @return The smallest count in `[0, MaxSubdivide]` reaching the ratio.
+ */
+MESHIOPLUSPLUS_API int remesh_suggest_subdivide(std::int64_t NumPoints, std::int64_t NumClusters,
+                                                double SubsampleRatio, int MaxSubdivide);
+
+/**
+ * @brief Remeshes a surface uniformly by ACVD clustering.
+ * @param rMesh The surface mesh to remesh (never modified).
+ * @param rOptions Cluster count, subdivision, iteration limits and metric.
+ * @return The remeshed all-triangle mesh and the run summary.
+ * @throws std::invalid_argument on a cluster count below 4 or above the
+ *         subdivided input's vertex count, on a non-positive limit, on
+ *         `mMaxAnisotropy < 1.0`, on `mMaxAnisotropy` set away from its
+ *         default under a non-`Anisotropic` metric, and on any block outside
+ *         the surface scope: 3D volume cells (use `extract_surface` first),
+ *         higher-order cells (linearize first), ragged polygon/polyhedron
+ *         blocks, and `line`/`vertex` blocks.
+ */
+MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/remesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
+/**
+ * @file remesh_volume.hpp
+ * @brief Retetrahedralize a volume (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing: a body-centered cubic (BCC) lattice,
+ * warped onto the surface, then cut.
+ *
+ * The volumetric sibling of `remesh` -- the same relationship `decimate_volume`
+ * has to `decimate`, and the roadmap's own framing of this bullet. Nothing
+ * else in this repo can *raise* the quality of a tetrahedral mesh at a chosen
+ * target resolution: `refine` subdivides the input's own (possibly bad) cells,
+ * `decimate_volume` can only remove elements, `smooth` (see
+ * `SmoothMethod::Odt`) only moves points. `remesh_volume` instead discards the
+ * input's own tetrahedra entirely and generates a fresh lattice-based mesh,
+ * so output element quality is a property of the lattice construction, not of
+ * the input.
+ *
+ * ### Why a lattice rather than Delaunay/CVD/ODT remeshing
+ *
+ * The roadmap bullet this closes names "optimal Delaunay triangulation / CVD
+ * in 3D" -- the literal 3D counterpart of `remesh.hpp`'s own surface
+ * clustering. That method needs robust orientation/in-sphere predicates,
+ * which is exactly where this project's dependency-free posture stops paying
+ * (the same trade `doc/roadmap.md`'s Delaunay-meshing bullet already
+ * records): the permissive candidates are large new dependencies (Geogram),
+ * and the smaller ones (TetGen, CGAL's `Mesh_3`) are AGPL/GPL, a poor fit for
+ * an MIT project even as an optional dependency. Isosurface stuffing needs no
+ * predicate at all -- only a signed-distance field, which this repo already
+ * has (`sample_distance`/`distance_to_surface`, `operations/sdf.hpp`) -- and
+ * gives every uncut lattice tet a dihedral angle from a small FIXED set
+ * (below) rather than an unbounded, mesh-dependent one, so it closes the
+ * bullet's *capability* (retetrahedralize at a chosen resolution with good
+ * element quality) even though it is not the named method.
+ * `SmoothMethod::Odt` (`operations/smooth.hpp`) closes the "ODT" half of the
+ * bullet's name honestly and separately: ODT *smoothing* on an existing tet
+ * mesh's fixed connectivity, not ODT *remeshing*.
+ *
+ * ### The algorithm
+ *
+ * 1. **Lattice.** A body-centered cubic lattice -- two interleaved simple
+ *    cubic lattices, the second offset by half a cell on every axis -- is
+ *    generated over the (padded) bounding box, sized exactly like
+ *    `SdfOptions`' own `mResolution`/`mCellSize`/`mBounds`/`mPadding`/
+ *    `mPaddingRelative` vocabulary (reused verbatim, not reinvented, since
+ *    `remesh_volume` is a lattice generator exactly as `compute_sdf` is);
+ *    `mResolution` is validated to resolve to genuinely CUBIC cells (a
+ *    non-cube bounding box combined with a per-axis resolution can otherwise
+ *    resolve to a rectangular lattice, which the construction below assumes
+ *    away) -- named by error, never silently distorted.
+ *
+ *    Its natural tetrahedralization -- 12 congruent tets per cell, each
+ *    cell's body-center connected across one fixed diagonal of each of the
+ *    cell's 6 faces -- gives every UNCUT tet dihedral angles from the fixed
+ *    set {45, 60, 90, 120} degrees, independent of cell size (every cell is a
+ *    translate of the same unit construction). This is this project's OWN
+ *    derivation, not a transcription of Labelle & Shewchuk's own
+ *    tetrahedralization (which is not read): the paper reports a tighter
+ *    {60, 90, 120} set for its own construction, and this one is a
+ *    deliberately simpler, independently-verified alternative that still
+ *    delivers a small, mesh-size-independent bound rather than an unbounded
+ *    one -- honestly reported as what it is, not as a reproduction of the
+ *    paper's exact angles. The 12-tet table is DERIVED and algebraically
+ *    pinned in `remesh_volume.cpp` (tiling with no gap or overlap,
+ *    orientation, volume-sum, and the dihedral set itself), never
+ *    transcribed from anywhere.
+ * 2. **Classify.** Every lattice vertex gets a signed distance to the surface
+ *    (`sample_distance`'s own machinery) and an inside/outside LABEL from
+ *    that sign, fixed for the rest of the algorithm.
+ * 3. **Warp.** A lattice vertex within `mWarpFraction * h` of the surface
+ *    (`h` the lattice's own cell size -- every incident edge's length is a
+ *    fixed multiple of `h` regardless of vertex type, so one uniform
+ *    threshold covers both the A and B sublattices) is moved (its LABEL is
+ *    unchanged) onto the nearest point on the surface -- this is what
+ *    removes the slivers a naive cut would otherwise produce near the
+ *    boundary. Warping is load-bearing,
+ *    not an optimization: disabling it (`mWarpFraction = 0`) still produces a
+ *    watertight, correctly-oriented mesh, but with arbitrarily bad dihedral
+ *    angles on boundary-adjacent tets -- plain marching tetrahedra's usual
+ *    failure mode.
+ * 4. **Cut.** A tet whose 4 vertices share one label is kept whole (using
+ *    each vertex's current, possibly-warped position) or discarded. A
+ *    straddling tet is cut by the same sign-mask case table marching
+ *    tetrahedra uses (`detail/marching.hpp`'s sibling for VOLUME rather than
+ *    surface output): each crossing edge gets one cut point, reusing an
+ *    incident vertex's warped position when one of the edge's two endpoints
+ *    was warped (which is the common case near a well-resolved surface,
+ *    and is what carries the quality benefit of warping into the cut
+ *    region), falling back to a fresh linear-interpolation point along the
+ *    edge otherwise (`detail/marching.hpp`'s own convention) -- so a cut
+ *    tet's boundary is always an honest approximation of the true crossing,
+ *    never expanded by a warp that moved a vertex further than its own edge.
+ *    This is a considered simplification of the paper's own two-threshold,
+ *    priority-ordered warp/cut interaction (see doc/remesh_volume.md), kept
+ *    honestly distinct from a claim of literal fidelity to it; the achieved
+ *    dihedral-angle improvement over an unwarped cut is MEASURED, not merely
+ *    asserted from the paper, exactly as `RemeshOptions::mMaxAnisotropy`'s own
+ *    default was. Reusing a warped vertex's position for every cut edge it
+ *    touches is also what can leave a SMALL number of the output's own
+ *    boundary edges non-manifold on some inputs, at `mWarpFraction > 0` only
+ *    -- reported as `RemeshVolumeResult::mNumNonManifoldEdges` rather than
+ *    hidden, and always exactly 0 at `mWarpFraction = 0` (a plain cut has no
+ *    such reuse to create the defect). See that field's own doc comment and
+ *    doc/remesh_volume.md for the measured magnitude.
+ *
+ * Determinism follows the repo's standard phase split: signed distances and
+ * warps are computed in parallel into disjoint per-vertex slots; cut points
+ * are deduplicated by a SERIAL, ascending-edge-key pass (the
+ * `refine.cpp`/`surface.cpp` idiom), so two lattice tets sharing a face agree
+ * bit-for-bit on that face's cut points and the output is watertight by
+ * construction, not by luck.
+ *
+ * ### What does NOT survive
+ *
+ * Identical to `remesh`: the output has entirely new points and new
+ * connectivity, so there is no point or cell map, and `point_data`/
+ * `cell_data`/regions are dropped (`warn_regions_dropped`, never silent);
+ * `field_data` carries through. Compose with `interpolate`/
+ * `conservative_interpolate` to transfer a field onto the result.
+ *
+ * ### Scope
+ *
+ * Accepts a volume mesh (its boundary is extracted internally via
+ * `extract_surface`, which is closed by construction) OR a closed surface
+ * directly (triangle/quad/rectangular-polygon, exactly `build_triangle_soup`'s
+ * own scope) -- unlike plain `remesh`, which only ever works on a surface and
+ * throws on a volume input. The BOUNDARY of the result is therefore only ever
+ * as good as the lattice resolution and the warp step can make it; a caller
+ * wanting a genuinely high-quality boundary composes with `extract_surface`
+ * + `remesh` on the result rather than expecting this operation to build one
+ * in.
+ *
+ * Standard C++ and the uniform mesh API only, so it compiles under every mesh
+ * backend. This is an operation, not a file format -- it is deliberately not
+ * in the format registry.
+ */
+
+// System includes
+#include <cstdint>
+#include <optional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `remesh_volume`. Mirrors `SdfOptions`' lattice-sizing
+/// vocabulary field-for-field (this operation, like `compute_sdf`, is a
+/// lattice generator) but never embeds `SdfOptions` itself: `SdfOptions`
+/// carries octree-specific fields (`mRootResolution`, `mMaxDepth`,
+/// `mBandCells`, `mRecordLevels`) this operation has no use for -- there is
+/// no adaptive refinement here, only one fixed-resolution BCC lattice.
+struct RemeshVolumeOptions {
+    /// Cell counts per axis of the ROOT (pre-cut) BCC lattice; unset derives
+    /// them from `mCellSize`. Exactly one of `mResolution`/`mCellSize` must be
+    /// set, `SdfOptions`' own rule.
+    std::optional<std::array<std::int64_t, 3>> mResolution;
+    /// Cubic cell size of the root lattice; unset derives it from `mResolution`.
+    std::optional<double> mCellSize;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the surface's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box
+    /// diagonal. A lattice that stops exactly at the surface leaves nowhere
+    /// for a fully-outside cell to exist, hence the non-zero default -- the
+    /// same reasoning `SdfOptions::mPaddingRelative` states.
+    double mPaddingRelative = 0.1;
+    /// Refuse to generate a root lattice with more cells than this, naming
+    /// the option -- checked BEFORE any lattice is built, `SdfOptions::mMaxCells`'s
+    /// own contract.
+    std::int64_t mMaxCells = 20000000;
+    /// Refuse an output with more tets than this, naming the option --
+    /// checked AFTER cutting, since the true output count (unlike the root
+    /// lattice's) depends on how much of the lattice the surface excludes and
+    /// cannot be bounded in advance without doing the work.
+    std::int64_t mMaxTets = 20000000;
+
+    /// Fraction of a lattice vertex's own shortest incident edge length within
+    /// which it may be warped onto the surface. `0` disables warping entirely
+    /// (a plain, unwarped marching-tetrahedra cut of the BCC lattice --
+    /// watertight and correctly oriented, but with arbitrarily bad boundary
+    /// dihedral angles); see `doc/remesh_volume.md` for the measured
+    /// sweep this default was chosen from.
+    double mWarpFraction = 0.35;
+
+    /// Sign, region restriction and watertight-check policy for every surface
+    /// query this operation makes. Embedded by value on purpose, and the
+    /// reason this whole header ships complete: growing
+    /// `SurfaceDistanceOptions` later would move everything after it here
+    /// (`SdfOptions::mDistance`'s own documented ABI caveat).
+    SurfaceDistanceOptions mDistance;
+};
+
+/// The result of `remesh_volume`: the generated tet mesh and what was found.
+struct RemeshVolumeResult {
+    Mesh mMesh;                ///< The output mesh, a single `tetra` block.
+    SurfaceQuality mQuality;   ///< The surface verdict (see `surface_watertight_check`).
+    std::int64_t mNumTets = 0;         ///< Tets emitted.
+    std::int64_t mNumVerticesWarped = 0;  ///< Lattice vertices moved onto the surface.
+    std::int64_t mNumTetsRejected = 0;    ///< Cut sub-tets discarded as degenerate.
+    /// Non-manifold edges of the OUTPUT tet mesh's own boundary (via
+    /// `extract_surface` + `surface_watertight_check` on `mMesh` itself, not
+    /// the input surface `mQuality` reports on). `mWarpFraction = 0` gives a
+    /// mathematically watertight cut and this is always 0 there -- pinned by
+    /// `AWarplessCutIsExactlyWatertight`. A nonzero `mWarpFraction` reuses a
+    /// warped lattice vertex's position for every cut edge it touches
+    /// (`rvol_cut_tet`'s doc comment), and on some inputs this can leave a
+    /// small number of coincident-but-topologically-distinct boundary edges
+    /// near the warped region -- MEASURED here rather than silently accepted:
+    /// `doc/remesh_volume.md` records the swept magnitude (small and bounded
+    /// relative to the output's own boundary edge count on every fixture
+    /// tried) and a caller needing an exactly watertight result should check
+    /// this counter, or fall back to `mWarpFraction = 0` / post-process with
+    /// `clean(weld=true)`.
+    std::int64_t mNumNonManifoldEdges = 0;
+};
+
+/**
+ * @brief Retetrahedralize @p rMesh at a caller-chosen resolution by isosurface
+ *        stuffing.
+ * @param rMesh a volume mesh (its boundary is extracted via `extract_surface`)
+ *        or a closed surface (`build_triangle_soup`'s own scope: triangle,
+ *        quad, rectangular polygon).
+ * @param rOptions the lattice to generate, the warp fraction, and the surface
+ *        query policy.
+ * @return the output tet mesh plus the surface verdict and counters.
+ * @throws std::invalid_argument when neither or both of `mResolution` and
+ *         `mCellSize` are set, on a non-positive resolution/cell size, on a
+ *         negative `mWarpFraction`, when the root lattice would exceed
+ *         `mMaxCells`, when the cut output would exceed `mMaxTets`, and on
+ *         any input `build_triangle_soup`/`extract_surface` itself refuses
+ *         (a higher-order or ragged surface block, an empty surface).
+ */
+MESHIOPLUSPLUS_API RemeshVolumeResult remesh_volume(const Mesh& rMesh,
+                                                    const RemeshVolumeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/reorder.hpp =====
 /**
  * @file operations/reorder.hpp
@@ -20063,15 +20943,35 @@ MESHIOPLUSPLUS_API Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = 
 namespace meshioplusplus {
 
 /// Which smoothing operator to apply.
-enum class SmoothMethod {
+///
+/// Fixed `: std::uint8_t` underlying type (the `RemeshMetric`/`CellType`
+/// precedent) so a width change is a mechanical ABI check, not a silent
+/// layout shift; every dispatch site in `smooth.cpp` is an exhaustive
+/// `switch (SmoothMethod)` with **no `default:`**, so `-Wswitch` catches the
+/// next enumerator at compile time rather than a reader having to -- the
+/// hazard `remesh.cpp`'s own metric branches were converted away from.
+enum class SmoothMethod : std::uint8_t {
     Laplacian,  ///< `x <- x + lambda * L(x)`. Simple and strong; shrinks volume.
     Taubin,     ///< A `+lambda` then `-mu` pass pair per iteration. Shrink-free.
+    /// Optimal Delaunay Triangulation: each free interior vertex moves to the
+    /// volume-weighted circumcenter combination that minimises the local ODT
+    /// energy (Alliez et al. 2005; Chen & Xu) -- **tet-only**, throwing by
+    /// name on any other cell type, unlike `Laplacian`/`Taubin` which work on
+    /// any mesh. `mMu` is silently ignored, matching `Laplacian`.
+    Odt,
 };
+
+/// `sizeof(SmoothMethod)` mirror of the primary guard in `test_abi_layout.cpp`
+/// -- the `RemeshMetric` precedent, so a width change is caught here too.
+static_assert(sizeof(SmoothMethod) == 1,
+              "meshio++ ABI: SmoothMethod's underlying type changed width. "
+              "Appending enumerators is safe and expected; widening "
+              "`: std::uint8_t` is a Tier A break (doc/abi.md).");
 
 /**
  * @brief Parses a smoothing method name.
- * @param rName One of `"laplacian"`, `"taubin"` (case-sensitive, as elsewhere
- *        in the operations layer).
+ * @param rName One of `"laplacian"`, `"taubin"`, `"odt"` (case-sensitive, as
+ *        elsewhere in the operations layer).
  * @return The matching enumerator.
  * @throws std::invalid_argument if the name is not recognised.
  */
@@ -20083,19 +20983,28 @@ struct SmoothOptions {
     SmoothMethod mMethod = SmoothMethod::Taubin;
 
     /// How many iterations to run. For `Taubin` one iteration is **two** passes
-    /// (`+mLambda` then `mMu`). Zero or less returns an unchanged clone.
+    /// (`+mLambda` then `mMu`); for `Laplacian`/`Odt` one iteration is one pass.
+    /// Zero or less returns an unchanged clone.
     int mIterations = 10;
 
     /// Relaxation factor of the smoothing pass, which must lie in `(0, 1)`.
     /// **Negative means "this method's own default"**: `0.5` for `Laplacian`,
-    /// `0.33` for `Taubin`. The sensible default genuinely differs between the
-    /// two methods, and a factor of zero or less is never a meaningful request,
-    /// so a negative sentinel is total; two separate fields would instead let a
-    /// caller set the one the chosen method ignores.
+    /// `0.33` for `Taubin`, `0.9` for `Odt` (a near-full step toward the local
+    /// ODT energy minimiser -- damped rather than exactly `1.0` so an
+    /// overshoot past a concave boundary is a rejected inversion-guard move
+    /// rather than a hard failure). The sensible default genuinely differs
+    /// per method, and a factor of zero or less is never a meaningful
+    /// request, so a negative sentinel is total; separate fields would
+    /// instead let a caller set the ones the chosen method ignores.
     double mLambda = -1.0;
 
     /// `Taubin` only: the un-shrinking factor, which must satisfy
-    /// `mMu < -mLambda < 0`. Ignored by `Laplacian`.
+    /// `mMu < -mLambda < 0`. Silently ignored by `Laplacian` **and** `Odt` --
+    /// deliberately not a named-error option like `RemeshOptions::mMaxAnisotropy`,
+    /// since making only the newest method strict about an ignored field
+    /// while its sibling stays silent would be a worse inconsistency than
+    /// either rule applied uniformly, and changing `Laplacian`'s established
+    /// behaviour here would be breaking.
     double mMu = -0.34;
 
     /// Pin every node lying on a boundary facet. Almost always what you want:
@@ -21546,7 +22455,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 8
+#define MESHIOPLUSPLUS_VERSION_MINOR 14
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -21556,7 +22465,7 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.8.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.14.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -37646,40 +38555,48 @@ DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t 
         return out;
     }
 
-    bool solved = false;
     if (rCtx.mPlacement == DecimatePlacement::Optimal) {
-        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
-        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
-        // planar patch A is singular by construction, so the midpoint fallback
-        // is the hot path there -- expected, not a defect.
-        const double c00 = q[4] * q[7] - q[5] * q[5];
-        const double c01 = q[2] * q[5] - q[1] * q[7];
-        const double c02 = q[1] * q[5] - q[2] * q[4];
-        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-        double scale = std::abs(q[0]);
-        scale = std::max(scale, std::abs(q[1]));
-        scale = std::max(scale, std::abs(q[2]));
-        scale = std::max(scale, std::abs(q[4]));
-        scale = std::max(scale, std::abs(q[5]));
-        scale = std::max(scale, std::abs(q[7]));
-        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-            const double c11 = q[0] * q[7] - q[2] * q[2];
-            const double c12 = q[1] * q[2] - q[0] * q[5];
-            const double c22 = q[0] * q[4] - q[1] * q[1];
-            const double inv = 1.0 / det;
-            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
-            solved = true;
-        }
-    }
-    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
+        const double midpoint[3] = {(xa[0] + xb[0]) * 0.5, (xa[1] + xb[1]) * 0.5,
+                                     (xa[2] + xb[2]) * 0.5};
+        decim_quadric_optimal_point(q, midpoint, out.mX);
+    } else {  // Midpoint
         out.mX[0] = (xa[0] + xb[0]) * 0.5;
         out.mX[1] = (xa[1] + xb[1]) * 0.5;
         out.mX[2] = (xa[2] + xb[2]) * 0.5;
     }
     out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
     return out;
+}
+
+bool decim_quadric_optimal_point(const double q[10], const double pFallback[3], double pOut[3]) {
+    // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
+    // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
+    // planar patch A is singular by construction, so the fallback is the hot
+    // path there -- expected, not a defect.
+    const double c00 = q[4] * q[7] - q[5] * q[5];
+    const double c01 = q[2] * q[5] - q[1] * q[7];
+    const double c02 = q[1] * q[5] - q[2] * q[4];
+    const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
+    double scale = std::abs(q[0]);
+    scale = std::max(scale, std::abs(q[1]));
+    scale = std::max(scale, std::abs(q[2]));
+    scale = std::max(scale, std::abs(q[4]));
+    scale = std::max(scale, std::abs(q[5]));
+    scale = std::max(scale, std::abs(q[7]));
+    if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
+        const double c11 = q[0] * q[7] - q[2] * q[2];
+        const double c12 = q[1] * q[2] - q[0] * q[5];
+        const double c22 = q[0] * q[4] - q[1] * q[1];
+        const double inv = 1.0 / det;
+        pOut[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
+        pOut[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
+        pOut[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+        return true;
+    }
+    pOut[0] = pFallback[0];
+    pOut[1] = pFallback[1];
+    pOut[2] = pFallback[2];
+    return false;
 }
 
 void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,
@@ -40425,8 +41342,14 @@ RtplTypeTable rtpl_hexahedron_table() {
 /// re-derived.
 const std::vector<std::array<std::uint8_t, 4>>& rtpl_even_perms() {
     static const std::vector<std::array<std::uint8_t, 4>> perms = [] {
+        // `v` is `int`, not `std::uint8_t`, deliberately: GCC 13's
+        // -Wstringop-overflow analysis of std::next_permutation inlined over a
+        // byte-sized std::array iterator has a known false-positive blowup
+        // (exponential warning/offset enumeration, observed OOM-killing an
+        // arm64 CI runner) -- widening the working type sidesteps the buggy
+        // codegen path without changing the permutations generated.
         std::vector<std::array<std::uint8_t, 4>> out;
-        std::array<std::uint8_t, 4> v{0, 1, 2, 3};
+        std::array<int, 4> v{0, 1, 2, 3};
         do {
             int inversions = 0;
             for (std::size_t i = 0; i < 4; ++i)
@@ -40434,7 +41357,8 @@ const std::vector<std::array<std::uint8_t, 4>>& rtpl_even_perms() {
                     if (v[i] > v[j])
                         ++inversions;
             if (inversions % 2 == 0)
-                out.push_back(v);
+                out.push_back({static_cast<std::uint8_t>(v[0]), static_cast<std::uint8_t>(v[1]),
+                               static_cast<std::uint8_t>(v[2]), static_cast<std::uint8_t>(v[3])});
         } while (std::next_permutation(v.begin(), v.end()));
         return out;
     }();
@@ -41344,6 +42268,75 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     return q;
 }
 
+namespace {
+
+// The bucket-grid nearest-triangle search shared by query_distances and
+// query_closest_points, extracted verbatim from what used to be inline in
+// query_distances (a pure refactor -- query_distances' own test suite is the
+// regression guard that its output is unchanged). @p MaxShell caps expansion,
+// used by query_distances to stop early under a band; a plain search (as
+// query_closest_points needs) passes the int64 max.
+struct SdNearestTriangle {
+    std::int64_t mTri = -1;
+    PointTriangleHit mHit;
+};
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
+    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+
+    double best_d2 = std::numeric_limits<double>::infinity();
+    std::int64_t best_tri = -1;
+    PointTriangleHit best_hit;
+
+    // The largest shell radius that can still reach an occupied bucket. Note
+    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
+    // mean "no more candidates" for a query far outside it -- without this
+    // bound the loop would stop early on exactly those points.
+    std::int64_t reach = 0;
+    if (!rQuery.mGrid.Empty()) {
+        const GridKey lo = rQuery.mGrid.OccupiedLo();
+        const GridKey hi = rQuery.mGrid.OccupiedHi();
+        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
+        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
+        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
+        reach = std::max(dx, std::max(dy, dz));
+    }
+    if (reach > MaxShell)
+        reach = MaxShell;
+
+    for (std::int64_t r = 0; r <= reach; ++r) {
+        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
+        // away, so once that bound exceeds the best found there is nothing
+        // left to find.
+        if (r >= 1 && best_tri >= 0) {
+            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
+            if (bound > 0.0 && bound * bound > best_d2)
+                break;
+        }
+        rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
+            for (std::int64_t t : rIds) {
+                const std::size_t ti = static_cast<std::size_t>(t);
+                const PointTriangleHit hit = closest_point_on_triangle(
+                    rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
+                    rSoup.mCorners[ti * 3 + 2]);
+                // The total order that makes the accelerator unobservable:
+                // distance first, then the triangle id, so two equidistant
+                // triangles always resolve the same way regardless of which
+                // bucket happened to be visited first.
+                if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
+                    best_d2 = hit.mDistanceSq;
+                    best_tri = t;
+                    best_hit = hit;
+                }
+            }
+        });
+    }
+    return {best_tri, best_hit};
+}
+
+}  // namespace
+
 std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
                                          const std::vector<Vec3>& rPoints,
                                          const SurfaceDistanceOptions& rOptions) {
@@ -41372,55 +42365,10 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const GridKey centre = rQuery.mGrid.KeyOf(query.data());
-
-        double best_d2 = std::numeric_limits<double>::infinity();
-        std::int64_t best_tri = -1;
-        PointTriangleHit best_hit;
-
-        // The largest shell radius that can still reach an occupied bucket. Note
-        // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-        // mean "no more candidates" for a query far outside it -- without this
-        // bound the loop would stop early on exactly those points.
-        std::int64_t reach = 0;
-        if (!rQuery.mGrid.Empty()) {
-            const GridKey lo = rQuery.mGrid.OccupiedLo();
-            const GridKey hi = rQuery.mGrid.OccupiedHi();
-            const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-            const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-            const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-            reach = std::max(dx, std::max(dy, dz));
-        }
-        if (reach > max_shell)
-            reach = max_shell;
-
-        for (std::int64_t r = 0; r <= reach; ++r) {
-            // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-            // away, so once that bound exceeds the best found there is nothing
-            // left to find.
-            if (r >= 1 && best_tri >= 0) {
-                const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-                if (bound > 0.0 && bound * bound > best_d2)
-                    break;
-            }
-            rQuery.mGrid.ForEachInShell(centre, r, [&](const std::vector<std::int64_t>& rIds) {
-                for (std::int64_t t : rIds) {
-                    const std::size_t ti = static_cast<std::size_t>(t);
-                    const PointTriangleHit hit = closest_point_on_triangle(
-                        query, soup.mCorners[ti * 3 + 0], soup.mCorners[ti * 3 + 1],
-                        soup.mCorners[ti * 3 + 2]);
-                    // The total order that makes the accelerator unobservable:
-                    // distance first, then the triangle id, so two equidistant
-                    // triangles always resolve the same way regardless of which
-                    // bucket happened to be visited first.
-                    if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
-                        best_d2 = hit.mDistanceSq;
-                        best_tri = t;
-                        best_hit = hit;
-                    }
-                }
-            });
-        }
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const std::int64_t best_tri = found.mTri;
+        const PointTriangleHit& best_hit = found.mHit;
+        const double best_d2 = best_hit.mDistanceSq;
 
         DistanceHit& res = out[p];
         if (best_tri < 0) {
@@ -41501,6 +42449,29 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         }
         const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
         res.mSignedDistance = side < 0.0 ? -dist : dist;
+    });
+
+    return out;
+}
+
+std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
+                                                   const std::vector<Vec3>& rPoints) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<ClosestPointHit> out(n);
+
+    parallel_for(n, [&](std::size_t p) {
+        const SdNearestTriangle found = sd_nearest_triangle(
+            rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+        ClosestPointHit& res = out[p];
+        if (found.mTri < 0) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
     return out;
@@ -76798,6 +77769,571 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/optimize_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kOvPrefix = "meshio++: optimize_volume: ";
+
+// --- tet-only scope check (the smooth ODT / decimate_volume shape) -----------
+
+void optvol_check_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                std::string(kOvPrefix) +
+                "operates on tet-only meshes, but the mesh contains a polyhedron cell block -- "
+                "run convert_cells(mode='simplexify') first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                std::string(kOvPrefix) +
+                "operates on tet-only meshes, but the mesh contains ragged cell block '" +
+                std::string(cb.Type()) + "'");
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                std::string(kOvPrefix) +
+                "operates on tet-only meshes, but the mesh contains 3D cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
+        throw std::invalid_argument(
+            std::string(kOvPrefix) +
+            "operates on tet-only meshes, but the mesh contains non-3D cell block '" +
+            std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle; drop it first, e.g. via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(std::string(kOvPrefix) +
+                                    "requires at least one tetra cell block");
+}
+
+// --- tiny geometry over a flat xyz buffer ------------------------------------
+
+inline Vec3 optvol_point(const std::vector<double>& rXyz, std::int64_t v) {
+    const std::size_t o = static_cast<std::size_t>(v) * 3;
+    return {rXyz[o], rXyz[o + 1], rXyz[o + 2]};
+}
+
+// Six times the signed volume of tetra (p0,p1,p2,p3): triple product of the
+// three edges out of p0. Sign is the orientation, magnitude 6*|volume|; used
+// for both the convexity/validity tests and the tiling checks (no division,
+// no in-sphere test anywhere).
+inline double optvol_svol6(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3) {
+    return detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                  detail::vec3_sub(p3, p0));
+}
+
+// det of the three UNIT outgoing edges at a corner -- the per-corner factor of
+// the scaled Jacobian (quality.cpp's quality_det_unit3, re-derived here rather
+// than reached into its anonymous namespace). NaN on a zero-length edge.
+inline double optvol_det_unit3(const Vec3& u, const Vec3& v, const Vec3& w, double eps) {
+    const double lu = detail::vec3_norm(u), lv = detail::vec3_norm(v), lw = detail::vec3_norm(w);
+    if (lu < eps || lv < eps || lw < eps)
+        return std::numeric_limits<double>::quiet_NaN();
+    return detail::triple_product(detail::vec3_scale(u, 1.0 / lu), detail::vec3_scale(v, 1.0 / lv),
+                                  detail::vec3_scale(w, 1.0 / lw));
+}
+
+// Orientation-normalised scaled Jacobian in [0, 1]: the tet is measured on its
+// positively-oriented reordering, so a negatively-stored but well-shaped tet
+// reads as good and a degenerate one as 0. This is exactly the metric
+// `compute_quality`/`quality` reports for a tetra (`sqrt(2) * min corner det of
+// unit outgoing edges`), so the before/after numbers this operation reports
+// line up with what a user sees from `quality`.
+double optvol_quality(const Vec3& q0, const Vec3& q1, const Vec3& q2, const Vec3& q3,
+                      double eps_len) {
+    Vec3 p0 = q0, p1 = q1, p2 = q2, p3 = q3;
+    if (optvol_svol6(p0, p1, p2, p3) < 0.0)
+        std::swap(p2, p3);  // reorder to positive orientation
+    const double j0 = optvol_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                       detail::vec3_sub(p3, p0), eps_len);
+    const double j1 = optvol_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+                                       detail::vec3_sub(p3, p1), eps_len);
+    const double j2 = optvol_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+                                       detail::vec3_sub(p3, p2), eps_len);
+    const double j3 = optvol_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+                                       detail::vec3_sub(p1, p3), eps_len);
+    if (!(std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3)))
+        return 0.0;
+    const double sj = std::sqrt(2.0) * std::min({j0, j1, j2, j3});
+    return std::isfinite(sj) && sj > 0.0 ? sj : 0.0;
+}
+
+using Tet = std::array<std::int64_t, 4>;
+
+double optvol_quality_tet(const std::vector<double>& rXyz, const Tet& t, double eps_len) {
+    return optvol_quality(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]),
+                          optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]), eps_len);
+}
+
+// Store a tet in positive orientation (swap the last two corners if needed).
+inline Tet optvol_orient_positive(const std::vector<double>& rXyz, Tet t) {
+    if (optvol_svol6(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]), optvol_point(rXyz, t[2]),
+                     optvol_point(rXyz, t[3])) < 0.0)
+        std::swap(t[2], t[3]);
+    return t;
+}
+
+// FNV-1a hash for small int64 arrays (face/edge keys).
+template <std::size_t K>
+struct OptvolArrHash {
+    std::size_t operator()(const std::array<std::int64_t, K>& a) const {
+        std::size_t h = 1469598103934665603ull;
+        for (std::size_t i = 0; i < K; ++i) {
+            h ^= static_cast<std::size_t>(a[i]);
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+};
+
+std::array<std::int64_t, 3> optvol_face_key(std::int64_t a, std::int64_t b, std::int64_t c) {
+    std::array<std::int64_t, 3> f{a, b, c};
+    std::sort(f.begin(), f.end());
+    return f;
+}
+std::array<std::int64_t, 2> optvol_edge_key(std::int64_t a, std::int64_t b) {
+    return a < b ? std::array<std::int64_t, 2>{a, b} : std::array<std::int64_t, 2>{b, a};
+}
+
+// The three corners of tet `t` other than local corner `lf`, IN t's own order
+// (so their winding relative to the apex t[lf] is preserved).
+std::array<std::int64_t, 3> optvol_face_ordered(const Tet& t, int lf) {
+    std::array<std::int64_t, 3> f{};
+    int w = 0;
+    for (int k = 0; k < 4; ++k)
+        if (k != lf)
+            f[w++] = t[k];
+    return f;
+}
+
+// --- 2-3 sub-pass ------------------------------------------------------------
+// Every interior triangular face shared by two tets is a candidate: replace the
+// two tets with three around the segment joining their apexes, iff the segment
+// lies inside the (convex) union -- a pure signed-volume test -- and the worst
+// of the three new tets is strictly better than the worst of the two old ones.
+std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets,
+                            double min_improve, double eps_len, double eps_vol6) {
+    const std::size_t nt = rTets.size();
+    std::vector<std::uint8_t> alive(nt, 1);
+
+    // face key -> up to two (tet index, apex node id)
+    std::unordered_map<std::array<std::int64_t, 3>, std::array<std::pair<std::size_t, std::int64_t>, 2>,
+                       OptvolArrHash<3>>
+        face_map;
+    std::unordered_map<std::array<std::int64_t, 3>, std::uint8_t, OptvolArrHash<3>> face_count;
+    face_map.reserve(nt * 4);
+    face_count.reserve(nt * 4);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (int lf = 0; lf < 4; ++lf) {
+            const auto fo = optvol_face_ordered(rTets[t], lf);
+            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
+            std::uint8_t& cnt = face_count[key];
+            if (cnt < 2)
+                face_map[key][cnt] = {t, rTets[t][lf]};
+            ++cnt;
+        }
+
+    std::vector<Tet> new_tets;
+    std::int64_t applied = 0;
+    for (std::size_t t = 0; t < nt; ++t) {
+        if (!alive[t])
+            continue;
+        for (int lf = 0; lf < 4; ++lf) {
+            const auto fo = optvol_face_ordered(rTets[t], lf);
+            const auto key = optvol_face_key(fo[0], fo[1], fo[2]);
+            if (face_count[key] != 2)
+                continue;  // boundary or non-manifold face
+            const auto& pair = face_map[key];
+            std::size_t u = pair[0].first == t ? pair[1].first : pair[0].first;
+            std::int64_t e = pair[0].first == t ? pair[1].second : pair[0].second;
+            if (u == t || u < t || !alive[u])
+                continue;  // process each interior face once, from the lower-id tet
+            const std::int64_t d = rTets[t][lf];
+
+            // Orient the face so (f0,f1,f2,d) is positive; then a valid flip
+            // needs e strictly on the far side (svol6 negative). The three new
+            // tets are (f0,f1,e,d), (f1,f2,e,d), (f2,f0,e,d) -- positively
+            // oriented in a convex union, and at least one non-positive in a
+            // non-convex one (the predicate-free convexity test). Winding pinned
+            // by OptimizeVolume.TwentyThreeFlipWindingIsPositiveOnAConvexUnion.
+            std::int64_t f0 = fo[0], f1 = fo[1], f2 = fo[2];
+            const Vec3 pf0 = optvol_point(rXyz, f0), pf1 = optvol_point(rXyz, f1),
+                       pf2 = optvol_point(rXyz, f2), pd = optvol_point(rXyz, d),
+                       pe = optvol_point(rXyz, e);
+            if (optvol_svol6(pf0, pf1, pf2, pd) < 0.0) {
+                std::swap(f1, f2);
+            }
+            const Vec3 g0 = optvol_point(rXyz, f0), g1 = optvol_point(rXyz, f1),
+                       g2 = optvol_point(rXyz, f2);
+            if (optvol_svol6(g0, g1, g2, pe) >= -eps_vol6)
+                continue;  // apex e not strictly on the opposite side
+            const Tet A{f0, f1, e, d}, B{f1, f2, e, d}, C{f2, f0, e, d};
+            const double vA = optvol_svol6(g0, g1, pe, pd);
+            const double vB = optvol_svol6(g1, g2, pe, pd);
+            const double vC = optvol_svol6(g2, g0, pe, pd);
+            if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
+                continue;  // non-convex union -> invalid flip
+            const double q_new = std::min(
+                {optvol_quality_tet(rXyz, A, eps_len), optvol_quality_tet(rXyz, B, eps_len),
+                 optvol_quality_tet(rXyz, C, eps_len)});
+            const double q_old = std::min(optvol_quality_tet(rXyz, rTets[t], eps_len),
+                                          optvol_quality_tet(rXyz, rTets[u], eps_len));
+            if (q_new <= q_old + min_improve)
+                continue;
+            alive[t] = 0;
+            alive[u] = 0;
+            new_tets.push_back(A);
+            new_tets.push_back(B);
+            new_tets.push_back(C);
+            ++applied;
+            break;  // t is now dead
+        }
+    }
+
+    // compact: surviving originals (ascending) then this pass's new tets
+    std::vector<Tet> out;
+    out.reserve(nt + new_tets.size());
+    for (std::size_t t = 0; t < nt; ++t)
+        if (alive[t])
+            out.push_back(rTets[t]);
+    for (const Tet& t : new_tets)
+        out.push_back(t);
+    rTets.swap(out);
+    return applied;
+}
+
+// --- 3-2 sub-pass ------------------------------------------------------------
+// Every interior edge shared by exactly three tets forming a ring is a
+// candidate: replace the three tets with two capping the ring triangle, iff the
+// two caps tile the same trigonal bipyramid (a signed-volume tiling test) and
+// the worse cap beats the worst of the three old tets.
+std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets,
+                            double min_improve, double eps_len, double eps_vol6) {
+    const std::size_t nt = rTets.size();
+    std::vector<std::uint8_t> alive(nt, 1);
+
+    std::unordered_map<std::array<std::int64_t, 2>, std::vector<std::size_t>, OptvolArrHash<2>>
+        edge_map;
+    edge_map.reserve(nt * 6);
+    static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    for (std::size_t t = 0; t < nt; ++t)
+        for (auto& ev : kEdges)
+            edge_map[optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]])].push_back(t);
+
+    // deterministic iteration order over edge keys
+    std::vector<std::array<std::int64_t, 2>> keys;
+    keys.reserve(edge_map.size());
+    for (const auto& kv : edge_map)
+        keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+
+    std::vector<Tet> new_tets;
+    std::int64_t applied = 0;
+    for (const auto& ek : keys) {
+        const std::int64_t uu = ek[0], vv = ek[1];
+        // the alive tets on this edge
+        std::array<std::size_t, 3> ring_tets{};
+        int nr = 0;
+        bool too_many = false;
+        for (std::size_t t : edge_map[ek]) {
+            if (!alive[t])
+                continue;
+            if (nr >= 3) {
+                too_many = true;
+                break;
+            }
+            ring_tets[nr++] = t;
+        }
+        if (too_many || nr != 3)
+            continue;
+        // ring vertices: nodes != u,v across the three tets; must be exactly
+        // three distinct, each appearing in exactly two tets.
+        std::array<std::int64_t, 3> others{};
+        std::array<int, 3> ocount{0, 0, 0};
+        int no = 0;
+        bool bad = false;
+        for (int r = 0; r < 3 && !bad; ++r)
+            for (int k = 0; k < 4; ++k) {
+                const std::int64_t nd = rTets[ring_tets[r]][k];
+                if (nd == uu || nd == vv)
+                    continue;
+                int idx = -1;
+                for (int o = 0; o < no; ++o)
+                    if (others[o] == nd)
+                        idx = o;
+                if (idx < 0) {
+                    if (no >= 3) {
+                        bad = true;
+                        break;
+                    }
+                    others[no] = nd;
+                    ocount[no] = 1;
+                    ++no;
+                } else {
+                    ++ocount[idx];
+                }
+            }
+        if (bad || no != 3 || ocount[0] != 2 || ocount[1] != 2 || ocount[2] != 2)
+            continue;
+
+        std::int64_t a = others[0], b = others[1], c = others[2];
+        const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
+        Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b), pc = optvol_point(rXyz, c);
+        if (optvol_svol6(pa, pb, pc, pu) < 0.0) {
+            std::swap(b, c);
+            std::swap(pb, pc);
+        }
+        // u on the positive side of (a,b,c); a valid removal needs v strictly on
+        // the far side, and the two caps must tile the three old tets.
+        if (optvol_svol6(pa, pb, pc, pv) >= -eps_vol6)
+            continue;
+        const double vcap1 = optvol_svol6(pa, pb, pc, pu);  // > 0
+        const double vcap2 = optvol_svol6(pa, pc, pb, pv);  // stored orientation, should be > 0
+        if (vcap1 <= eps_vol6 || vcap2 <= eps_vol6)
+            continue;
+        double old_sum = 0.0;
+        for (int r = 0; r < 3; ++r)
+            old_sum += std::fabs(optvol_svol6(
+                optvol_point(rXyz, rTets[ring_tets[r]][0]), optvol_point(rXyz, rTets[ring_tets[r]][1]),
+                optvol_point(rXyz, rTets[ring_tets[r]][2]),
+                optvol_point(rXyz, rTets[ring_tets[r]][3])));
+        const double new_sum = vcap1 + vcap2;
+        if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
+            continue;  // not a clean tiling -> non-convex / invalid
+        const Tet cap1{a, b, c, uu}, cap2{a, c, b, vv};
+        const double q_new =
+            std::min(optvol_quality_tet(rXyz, cap1, eps_len), optvol_quality_tet(rXyz, cap2, eps_len));
+        double q_old = 1.0;
+        for (int r = 0; r < 3; ++r)
+            q_old = std::min(q_old, optvol_quality_tet(rXyz, rTets[ring_tets[r]], eps_len));
+        if (q_new <= q_old + min_improve)
+            continue;
+        for (int r = 0; r < 3; ++r)
+            alive[ring_tets[r]] = 0;
+        new_tets.push_back(cap1);
+        new_tets.push_back(cap2);
+        ++applied;
+    }
+
+    std::vector<Tet> out;
+    out.reserve(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        if (alive[t])
+            out.push_back(rTets[t]);
+    for (const Tet& t : new_tets)
+        out.push_back(t);
+    rTets.swap(out);
+    return applied;
+}
+
+// --- ODT relocation half (delegates to smooth's SmoothMethod::Odt) -----------
+// Build a single-tetra-block Float64 mesh from the working buffers, run one ODT
+// relocation pass through `smooth` (reusing all of its boundary/feature/frozen
+// pinning and inversion guard), and read the moved points back into `rXyz`.
+// Float64 throughout so a Float32 input mesh does not accumulate one rounding
+// per sweep -- the single cast happens once, at final emission.
+void optvol_relocate(std::vector<double>& rXyz, const std::vector<Tet>& rTets,
+                     const OptimizeVolumeOptions& rOptions) {
+    const std::size_t n = rXyz.size() / 3;
+    Mesh tmp;
+    NDArray pts = NDArray::Uninit(DType::Float64, {n, 3});
+    std::memcpy(pts.Data(), rXyz.data(), rXyz.size() * sizeof(double));
+    tmp.AssignPoints(std::move(pts));
+    NDArray conn = NDArray::Uninit(DType::Int64, {rTets.size(), 4});
+    std::int64_t* cd = conn.As<std::int64_t>();
+    for (std::size_t t = 0; t < rTets.size(); ++t)
+        for (int k = 0; k < 4; ++k)
+            cd[t * 4 + k] = rTets[t][k];
+    tmp.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+
+    SmoothOptions so;
+    so.mMethod = SmoothMethod::Odt;
+    so.mIterations = 1;
+    so.mFixBoundary = rOptions.mPreserveBoundary;
+    so.mGuardInversion = true;
+    so.mFrozen = rOptions.mFrozen;
+    SmoothResult sr = smooth(tmp, so);
+
+    const NDArray& mp = sr.mMesh.Points();
+    for (std::size_t i = 0; i < n * 3; ++i)
+        rXyz[i] = detail::read_double(mp, i);
+}
+
+}  // namespace
+
+OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOptions& rOptions) {
+    optvol_check_blocks(rMesh);
+
+    OptimizeVolumeResult result;
+    const std::size_t n = static_cast<std::size_t>(rMesh.NumPoints());
+    const std::size_t dim = rMesh.PointDim();
+
+    // --- working buffers ------------------------------------------------------
+    std::vector<double> xyz(n * 3, 0.0);
+    {
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+        });
+    }
+    const std::vector<double> xyz0 = xyz;  // for the moved-count at the end
+
+    std::vector<Tet> tets;
+    {
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        tets.resize(static_cast<std::size_t>(detail::total_cells(bases)));
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const NDArray& conn = cb.Conn();
+            const std::size_t nc = cb.NumCells();
+            const std::size_t base = static_cast<std::size_t>(bases[bi]);
+            for (std::size_t c = 0; c < nc; ++c)
+                for (std::size_t k = 0; k < 4; ++k)
+                    tets[base + c][k] = detail::read_int(conn, c * 4 + k);
+            ++bi;
+        }
+    }
+
+    // Scale-relative epsilons (bbox diagonal), so validity is scale-invariant.
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    if (n > 0) {
+        for (int d = 0; d < 3; ++d)
+            lo[d] = hi[d] = xyz[d];
+        for (std::size_t i = 1; i < n; ++i)
+            for (int d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], xyz[i * 3 + d]);
+                hi[d] = std::max(hi[d], xyz[i * 3 + d]);
+            }
+    }
+    const double L = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                               (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double eps_len = (L > 0.0 ? L : 1.0) * 1e-14;
+    const double eps_vol6 = (L > 0.0 ? L * L * L : 1.0) * 1e-14;
+
+    auto min_quality = [&](const std::vector<Tet>& ts) {
+        double m = 1.0;
+        for (const Tet& t : ts)
+            m = std::min(m, optvol_quality_tet(xyz, t, eps_len));
+        return ts.empty() ? 0.0 : m;
+    };
+    result.mMinQualityBefore = min_quality(tets);
+
+    // --- the optimisation loop ------------------------------------------------
+    for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+        std::int64_t moved_before = 0;
+        if (rOptions.mRelocate) {
+            const std::vector<double> before = xyz;
+            optvol_relocate(xyz, tets, rOptions);
+            for (std::size_t i = 0; i < n; ++i) {
+                const double dx = xyz[i * 3] - before[i * 3];
+                const double dy = xyz[i * 3 + 1] - before[i * 3 + 1];
+                const double dz = xyz[i * 3 + 2] - before[i * 3 + 2];
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-12 * (L > 0.0 ? L : 1.0))
+                    ++moved_before;
+            }
+        }
+        std::int64_t flips_this_sweep = 0;
+        if (rOptions.mFlip) {
+            const std::int64_t n23 =
+                optvol_pass_23(xyz, tets, rOptions.mMinImprovement, eps_len, eps_vol6);
+            const std::int64_t n32 =
+                optvol_pass_32(xyz, tets, rOptions.mMinImprovement, eps_len, eps_vol6);
+            result.mNum23Flips += n23;
+            result.mNum32Flips += n32;
+            flips_this_sweep = n23 + n32;
+        }
+        result.mNumFlips += flips_this_sweep;
+        if (moved_before == 0 && flips_this_sweep == 0)
+            break;  // fixed point
+    }
+
+    result.mMinQualityAfter = min_quality(tets);
+    result.mNumTets = static_cast<std::int64_t>(tets.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const double dx = xyz[i * 3] - xyz0[i * 3];
+        const double dy = xyz[i * 3 + 1] - xyz0[i * 3 + 1];
+        const double dz = xyz[i * 3 + 2] - xyz0[i * 3 + 2];
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-9 * (L > 0.0 ? L : 1.0))
+            ++result.mNumVerticesMoved;
+    }
+
+    // --- emit: single tetra block, points invariant --------------------------
+    Mesh& out = result.mMesh;
+    {
+        const NDArray& points = rMesh.Points();
+        NDArray np = NDArray::Uninit(points.Dtype(), {n, dim});
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            T* dst = np.As<T>();
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t d = 0; d < dim; ++d)
+                    dst[i * dim + d] = d < 3 ? static_cast<T>(xyz[i * 3 + d])
+                                             : static_cast<T>(detail::read_double(points, i * dim + d));
+        });
+        out.AssignPoints(std::move(np));
+    }
+    {
+        NDArray block = NDArray::Uninit(DType::Int64, {tets.size(), 4});
+        std::int64_t* dst = block.As<std::int64_t>();
+        for (std::size_t t = 0; t < tets.size(); ++t) {
+            const Tet ot = optvol_orient_positive(xyz, tets[t]);
+            for (int k = 0; k < 4; ++k)
+                dst[t * 4 + k] = ot[k];
+        }
+        out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
+    }
+
+    // point_data + field_data + Point regions carry (point set is invariant);
+    // cell_data + Cell/Side regions are dropped -- flips have no cell map.
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    std::size_t dropped_cell_regions = 0;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(rMesh.NumRegions()); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind == RegionKind::Point)
+            out.AddRegion(Region(r.mName, r.mKind, r.mDim, r.mTag, detail::data_owned_copy(r.mEntries)));
+        else
+            ++dropped_cell_regions;
+    }
+    if (!rMesh.CellDataNames().empty())
+        log::warn("{}dropped {} cell_data array(s): a flip has no cell correspondence",
+                  kOvPrefix, rMesh.CellDataNames().size());
+    if (dropped_cell_regions > 0)
+        log::warn("{}dropped {} Cell/Side region(s): a flip has no cell correspondence", kOvPrefix,
+                  dropped_cell_regions);
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/optimize_volume.cpp =====
 // ===== begin src/cpp/src/operations/partition.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -77724,6 +79260,14 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"Remesh",
+         {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
+        {"RemeshVolume",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
+          "WarpFraction", "Sign", "WatertightCheck"}},
+        {"OptimizeVolume",
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -78123,6 +79667,93 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(er.mMesh);
+    }
+    if (op == "Remesh") {
+        // Unlike every other step, the output has NO correspondence to the
+        // input: new points, new connectivity. point_data/cell_data/regions
+        // are dropped (remesh's own contract), field_data carries through.
+        RemeshOptions opts;
+        opts.mNumClusters = static_cast<std::int64_t>(pipe_number(rStep, "NumClusters", 0));
+        opts.mSubdivide = static_cast<int>(pipe_number(rStep, "Subdivide", -1));
+        opts.mSubsampleRatio = pipe_number(rStep, "SubsampleRatio", 10.0);
+        opts.mMaxSubdivide = static_cast<int>(pipe_number(rStep, "MaxSubdivide", 4));
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 100));
+        opts.mMaxRepairPasses = static_cast<int>(pipe_number(rStep, "MaxRepairPasses", 10));
+        opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
+        opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMaxAnisotropy = pipe_number(rStep, "MaxAnisotropy", kRemeshDefaultMaxAnisotropy);
+        RemeshResult rr = remesh(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumClusters", static_cast<double>(rr.mNumClusters)},
+             {"NumIterations", static_cast<double>(rr.mNumIterations)},
+             {"SubdivideApplied", static_cast<double>(rr.mSubdivideApplied)},
+             {"NumIsolatedClusters", static_cast<double>(rr.mNumIsolatedClusters)},
+             {"NumNonManifoldVertices", static_cast<double>(rr.mNumNonManifoldVertices)}});
+        if (rr.mNumIsolatedClusters > 0 || rr.mNumNonManifoldVertices > 0)
+            rReport.mWarnings.push_back(
+                "remesh: " + std::to_string(rr.mNumIsolatedClusters) +
+                " isolated cluster(s), " + std::to_string(rr.mNumNonManifoldVertices) +
+                " non-manifold vertex/vertices could not be repaired; output may be "
+                "non-manifold near them");
+        return std::move(rr.mMesh);
+    }
+    if (op == "RemeshVolume") {
+        // Remesh's volumetric sibling: same no-correspondence-with-the-input
+        // contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        RemeshVolumeOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 20000000.0));
+        opts.mWarpFraction = pipe_number(rStep, "WarpFraction", 0.35);
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mWatertightCheck =
+            sdf_watertight_check_from_name(pipe_text(rStep, "WatertightCheck", "warn"));
+        RemeshVolumeResult rv = remesh_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTets", static_cast<double>(rv.mNumTets)},
+                        {"NumVerticesWarped", static_cast<double>(rv.mNumVerticesWarped)},
+                        {"NumTetsRejected", static_cast<double>(rv.mNumTetsRejected)},
+                        {"NumNonManifoldEdges", static_cast<double>(rv.mNumNonManifoldEdges)}});
+        if (rv.mNumNonManifoldEdges > 0)
+            rReport.mWarnings.push_back(
+                "remesh_volume: " + std::to_string(rv.mNumNonManifoldEdges) +
+                " non-manifold boundary edge(s), from warping (see doc/remesh_volume.md)");
+        return std::move(rv.mMesh);
+    }
+    if (op == "OptimizeVolume") {
+        // ODT remeshing: relocate vertices AND flip connectivity (2-3/3-2). The
+        // point set is invariant, so point_data/field_data and Point regions
+        // carry; cell_data + Cell/Side regions are dropped (a flip has no cell
+        // map).
+        OptimizeVolumeOptions opts;
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mRelocate = pipe_flag(rStep, "Relocate", true);
+        opts.mFlip = pipe_flag(rStep, "Flip", true);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        OptimizeVolumeResult ov = optimize_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlips", static_cast<double>(ov.mNumFlips)},
+                        {"Num23Flips", static_cast<double>(ov.mNum23Flips)},
+                        {"Num32Flips", static_cast<double>(ov.mNum32Flips)},
+                        {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
+                        {"NumTets", static_cast<double>(ov.mNumTets)},
+                        {"MinQualityBefore", ov.mMinQualityBefore},
+                        {"MinQualityAfter", ov.mMinQualityAfter}});
+        return std::move(ov.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does
@@ -80937,6 +82568,2199 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/refine.cpp =====
+// ===== begin src/cpp/src/operations/remesh.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Anonymous-namespace helpers are uniquely prefixed `remesh_` because the
+// amalgamation concatenates every operations TU into one translation unit.
+
+/// The triangulated working surface: flat corner ids plus Float64 coordinates.
+struct RemeshSurface {
+    std::vector<std::int64_t> mCorners;  ///< `3 * mNumFaces` corner ids.
+    std::vector<double> mXyz;            ///< `3 * mNumPoints` coordinates.
+    std::size_t mNumFaces = 0;
+    std::size_t mNumPoints = 0;
+};
+
+/// Rejects everything outside the surface scope, by name. Mirrors
+/// `decim_check_blocks` -- the two operations have deliberately identical
+/// scope, so their diagnostics should read the same way.
+void remesh_check_blocks(const Mesh& rMesh) {
+    int max_dim = -1;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                "meshio++: remesh: cannot remesh polyhedron cell block '" + cb.Type() +
+                "'; this operation is surface-only (use extract_surface first)");
+        const CellType ct = cell_type_from_name(cb.Type());
+        max_dim = std::max(max_dim, cell_type_dimension(ct));
+    }
+    if (max_dim == 3)
+        throw std::invalid_argument(
+            "meshio++: remesh: mesh contains 3D volume cells; this operation is surface-only "
+            "(use extract_surface first, or decimate_volume for a tetrahedral mesh)");
+    if (max_dim < 2)
+        throw std::invalid_argument("meshio++: remesh: mesh contains no surface (2D) cell block");
+
+    for (const auto cb : rMesh.CellRange()) {
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (cell_type_dimension(ct) != 2)
+            throw std::invalid_argument(
+                "meshio++: remesh: cannot remesh a mesh mixing cell block '" + cb.Type() +
+                "' with its surface blocks; split the mesh first");
+        if (cb.IsRagged())
+            throw std::invalid_argument("meshio++: remesh: cannot remesh ragged cell block '" +
+                                        cb.Type() + "'");
+        if (ct != CellType::Triangle && ct != CellType::Quad && ct != CellType::Polygon)
+            throw std::invalid_argument(
+                "meshio++: remesh: cannot remesh higher-order cell block '" + cb.Type() +
+                "'; call convert_cells(Linearize) first");
+    }
+}
+
+/// Flattens an all-triangle mesh into the working surface.
+RemeshSurface remesh_build_surface(const Mesh& rMesh) {
+    RemeshSurface s;
+    s.mNumPoints = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    s.mXyz.assign(s.mNumPoints * 3, 0.0);
+    const NDArray& points = rMesh.Points();
+    for (std::size_t i = 0; i < s.mNumPoints; ++i)
+        for (std::size_t d = 0; d < dim && d < 3; ++d)
+            s.mXyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+
+    for (const auto cb : rMesh.CellRange()) {
+        if (cell_type_from_name(cb.Type()) != CellType::Triangle)
+            throw std::invalid_argument(
+                "meshio++: remesh: internal error: simplexified block '" + cb.Type() +
+                "' is not a triangle block");
+        const std::size_t nc = cb.NumCells();
+        const NDArray& conn = cb.Conn();
+        for (std::size_t c = 0; c < nc; ++c)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const std::int64_t v = detail::read_int(conn, c * 3 + k);
+                if (v < 0 || static_cast<std::size_t>(v) >= s.mNumPoints)
+                    throw std::invalid_argument(
+                        "meshio++: remesh: connectivity references point " + std::to_string(v) +
+                        ", which is outside the mesh's " + std::to_string(s.mNumPoints) +
+                        " points");
+                s.mCorners.push_back(v);
+            }
+        s.mNumFaces += nc;
+    }
+    return s;
+}
+
+/// Per-item weight (a third of the incident triangle area, so the weights sum
+/// to the surface area -- unless curvature gradation rescales it, see below)
+/// and the weighted position each cluster accumulates.
+///
+/// When `Gradation != 0.0` and `rCurvature` is non-empty, `rArea` (which
+/// becomes the general "item weight" from this point on, not literal area,
+/// everywhere it is used downstream -- seeding, badness, final placement)
+/// is rescaled to `area * max(kappa, kappa_floor)^Gradation`, where
+/// `kappa_floor` is a small internal fraction of the mesh's own maximum
+/// curvature -- a defensive floor, not a tunable, guarding against an
+/// exact-zero weight degenerating a flat vertex's cluster membership (the
+/// same weight-clamping idea the real ACVD reference documents for its own
+/// isotropic weighting). A perfectly flat mesh (`kappa` identically zero
+/// everywhere) leaves `rArea` untouched -- there is nothing to grade.
+void remesh_item_weights(const RemeshSurface& rS, const std::vector<double>& rCurvature,
+                         double Gradation, std::vector<double>& rArea,
+                         std::vector<double>& rWeighted) {
+    rArea.assign(rS.mNumPoints, 0.0);
+    rWeighted.assign(rS.mNumPoints * 3, 0.0);
+
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const std::int64_t i0 = rS.mCorners[f * 3];
+        const std::int64_t i1 = rS.mCorners[f * 3 + 1];
+        const std::int64_t i2 = rS.mCorners[f * 3 + 2];
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(i0) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(i1) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(i2) * 3;
+
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                             e0[0] * e1[1] - e0[1] * e1[0]};
+        const double area = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+
+        rArea[static_cast<std::size_t>(i0)] += area;
+        rArea[static_cast<std::size_t>(i1)] += area;
+        rArea[static_cast<std::size_t>(i2)] += area;
+    }
+
+    if (Gradation != 0.0 && !rCurvature.empty()) {
+        double kappa_max = 0.0;
+        for (const double k : rCurvature)
+            kappa_max = std::max(kappa_max, k);
+        if (kappa_max > 0.0) {
+            const double kappa_floor = kappa_max * 1e-3;
+            for (std::size_t i = 0; i < rS.mNumPoints; ++i)
+                rArea[i] *= std::pow(std::max(rCurvature[i], kappa_floor), Gradation);
+        }
+    }
+
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i)
+        for (int d = 0; d < 3; ++d)
+            rWeighted[i * 3 + d] = rArea[i] * rS.mXyz[i * 3 + d];
+}
+
+/// Each vertex's own accumulated quadric (sum of its incident face planes),
+/// via `detail/decimate_common.hpp`'s existing, already-tested machinery.
+/// Empty (never computed) when `Metric == Isotropic`, which never reads it.
+std::vector<double> remesh_vertex_quadrics(const RemeshSurface& rS, RemeshMetric Metric) {
+    if (Metric != RemeshMetric::Quadric)
+        return {};
+    detail::DecimFaces faces;
+    faces.mCorners = rS.mCorners;
+    faces.mBlockBase = {0};
+    faces.mNumFaces = rS.mNumFaces;
+
+    const detail::DecimCsr csr = detail::decim_vertex_faces_csr(faces, rS.mNumPoints);
+    std::vector<double> quad_k;
+    std::vector<double> normals;
+    detail::decim_face_planes(faces, rS.mXyz, quad_k, normals);
+    return detail::decim_accumulate_quadrics(csr, rS.mNumPoints, quad_k);
+}
+
+/// Each vertex's own curvature-tensor quadric (`RemeshMetric::Anisotropic`
+/// only), packed into the SAME 10-entry layout `remesh_vertex_quadrics`
+/// builds for `Quadric` mode -- the sibling that construction, not a second
+/// accumulator shape. `E(v) = sum(w * (x-v)^T M (x-v))` expands to
+/// `x^T A x + 2 b.x + c` with `A = sum(w*M)`, `b = -sum(w*M*x)`, `c =
+/// sum(w * x^T M x)` -- exactly `decim_quadric_error`'s own convention, so
+/// the same `decim_quadric_optimal_point` solves it with no new solver.
+/// `rArea` must already be computed (the item weight): folded in HERE
+/// rather than in `remesh_vertex_curvature`, which has no notion of
+/// clustering weights and is also used, tensor-free, under `mGradation`
+/// alone.
+std::vector<double> remesh_vertex_metrics(const RemeshSurface& rS,
+                                          const std::vector<double>& rTensors,
+                                          const std::vector<double>& rArea) {
+    std::vector<double> quad(rS.mNumPoints * 10, 0.0);
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const double* m = rTensors.data() + i * 6;  // [xx,xy,xz,yy,yz,zz]
+        const double* x = rS.mXyz.data() + i * 3;
+        const double w = rArea[i];
+
+        const double mx0 = m[0] * x[0] + m[1] * x[1] + m[2] * x[2];
+        const double mx1 = m[1] * x[0] + m[3] * x[1] + m[4] * x[2];
+        const double mx2 = m[2] * x[0] + m[4] * x[1] + m[5] * x[2];
+        const double c_term = w * (x[0] * mx0 + x[1] * mx1 + x[2] * mx2);
+
+        double* q = quad.data() + i * 10;
+        q[0] = w * m[0];
+        q[1] = w * m[1];
+        q[2] = w * m[2];
+        q[3] = -w * mx0;
+        q[4] = w * m[3];
+        q[5] = w * m[4];
+        q[6] = -w * mx1;
+        q[7] = w * m[5];
+        q[8] = -w * mx2;
+        q[9] = c_term;
+    }
+    return quad;
+}
+
+/// Area-weighted unit normal at each vertex, from its incident face normals
+/// (the per-vertex analogue of `remesh_cluster_normals` below). Only computed
+/// when curvature gradation is requested.
+std::vector<double> remesh_vertex_normals(const RemeshSurface& rS) {
+    std::vector<double> nrm(rS.mNumPoints * 3, 0.0);
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                             e0[0] * e1[1] - e0[1] * e1[0]};
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t vi = static_cast<std::size_t>(rS.mCorners[f * 3 + k]);
+            for (int d = 0; d < 3; ++d)
+                nrm[vi * 3 + d] += c[d];
+        }
+    }
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const double len = std::sqrt(nrm[i * 3] * nrm[i * 3] + nrm[i * 3 + 1] * nrm[i * 3 + 1] +
+                                     nrm[i * 3 + 2] * nrm[i * 3 + 2]);
+        if (len > 0.0)
+            for (int d = 0; d < 3; ++d)
+                nrm[i * 3 + d] /= len;
+    }
+    return nrm;
+}
+
+/// Solves the symmetric 3x3 system `M x = b` via Cramer's rule with explicit
+/// 3x3 determinants (never the cofactor/adjugate shortcut -- this system has
+/// no special structure to exploit, unlike `decim_quadric_optimal_point`'s).
+/// Returns `false` (leaving `pOut` untouched) when the system is
+/// ill-conditioned relative to its own scale.
+bool remesh_solve_sym3(double m00, double m01, double m02, double m11, double m12, double m22,
+                       double b0, double b1, double b2, double pOut[3]) {
+    const double det = m00 * (m11 * m22 - m12 * m12) - m01 * (m01 * m22 - m12 * m02) +
+                       m02 * (m01 * m12 - m11 * m02);
+    double scale = std::abs(m00);
+    scale = std::max(scale, std::abs(m01));
+    scale = std::max(scale, std::abs(m02));
+    scale = std::max(scale, std::abs(m11));
+    scale = std::max(scale, std::abs(m12));
+    scale = std::max(scale, std::abs(m22));
+    if (std::abs(det) <= 1e-12 * (scale * scale * scale))
+        return false;
+
+    const double det0 = b0 * (m11 * m22 - m12 * m12) - m01 * (b1 * m22 - m12 * b2) +
+                        m02 * (b1 * m12 - m11 * b2);
+    const double det1 = m00 * (b1 * m22 - m12 * b2) - b0 * (m01 * m22 - m12 * m02) +
+                        m02 * (m01 * b2 - b1 * m02);
+    const double det2 = m00 * (m11 * b2 - b1 * m12) - m01 * (m01 * b2 - b1 * m02) +
+                        b0 * (m01 * m12 - m11 * m02);
+    pOut[0] = det0 / det;
+    pOut[1] = det1 / det;
+    pOut[2] = det2 / det;
+    return true;
+}
+
+/// Per-vertex curvature magnitude via a local osculating-paraboloid fit over
+/// the 1-ring (the same `detail::NodeAdjacency` graph the edge sweep already
+/// builds -- no separate neighbourhood machinery). At vertex `v` with unit
+/// normal `n` and tangent basis `(u, w)`, each 1-ring neighbour is projected
+/// into local `(u, w, h)` coordinates (`h` = height out of the tangent
+/// plane) and `h = a*u^2 + b*u*w + c*w^2` is fit by least squares; `kappa` is
+/// the larger-magnitude eigenvalue of `[[2a, b], [b, 2c]]` (the dominant
+/// bend). A low-valence (<3) or near-degenerate neighbourhood falls back to
+/// `kappa = 0` -- the same ill-conditioning-means-flat convention
+/// `decim_quadric_optimal_point` already established.
+///
+/// `pTensors`, when non-null, is filled with the SAME fit's principal
+/// directions instead of discarding them: `RemeshMetric::Anisotropic`'s only
+/// consumer. Six doubles per vertex, the upper triangle `[xx,xy,xz,yy,yz,zz]`
+/// of a world-space symmetric 3x3 -- see `remesh_vertex_metrics` for what it
+/// is built into. Every early-return path below (low valence, zero normal,
+/// degenerate tangent, ill-conditioned fit) writes the identity, matching
+/// `kappa = 0`'s "flat" convention: no curvature signal, no shape signal.
+std::vector<double> remesh_vertex_curvature(const RemeshSurface& rS,
+                                            const detail::NodeAdjacency& rAdj,
+                                            const std::vector<double>& rNormals,
+                                            std::vector<double>* pTensors = nullptr,
+                                            double MaxAnisotropy = kRemeshDefaultMaxAnisotropy) {
+    if (pTensors) {
+        pTensors->assign(rS.mNumPoints * 6, 0.0);
+        for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+            (*pTensors)[i * 6] = 1.0;
+            (*pTensors)[i * 6 + 3] = 1.0;
+            (*pTensors)[i * 6 + 5] = 1.0;
+        }
+    }
+    std::vector<double> kappa(rS.mNumPoints, 0.0);
+    for (std::size_t i = 0; i < rS.mNumPoints; ++i) {
+        const std::int64_t lo = rAdj.mXadj[i];
+        const std::int64_t hi = rAdj.mXadj[i + 1];
+        if (hi - lo < 3)
+            continue;
+
+        const double* p0 = rS.mXyz.data() + i * 3;
+        const double* n = rNormals.data() + i * 3;
+        if (n[0] == 0.0 && n[1] == 0.0 && n[2] == 0.0)
+            continue;  // an unreferenced or degenerate-fan vertex
+
+        // An orthonormal tangent basis (u, w) perpendicular to n: seed u from
+        // whichever coordinate axis is least aligned with n (so the
+        // Gram-Schmidt subtraction below never nearly cancels), then
+        // Gram-Schmidt it against n and take w = n x u.
+        const double ax[3] = {1.0, 0.0, 0.0};
+        const double ay[3] = {0.0, 1.0, 0.0};
+        const double* seed = (std::abs(n[0]) < 0.9) ? ax : ay;
+        const double dp = seed[0] * n[0] + seed[1] * n[1] + seed[2] * n[2];
+        double u[3] = {seed[0] - dp * n[0], seed[1] - dp * n[1], seed[2] - dp * n[2]};
+        const double ulen = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+        if (ulen <= 0.0)
+            continue;
+        u[0] /= ulen;
+        u[1] /= ulen;
+        u[2] /= ulen;
+        const double w[3] = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2],
+                             n[0] * u[1] - n[1] * u[0]};
+
+        double m00 = 0.0, m01 = 0.0, m02 = 0.0, m11 = 0.0, m12 = 0.0, m22 = 0.0;
+        double b0 = 0.0, b1 = 0.0, b2 = 0.0;
+        for (std::int64_t k = lo; k < hi; ++k) {
+            const std::size_t j = static_cast<std::size_t>(rAdj.mAdj[static_cast<std::size_t>(k)]);
+            const double d[3] = {rS.mXyz[j * 3] - p0[0], rS.mXyz[j * 3 + 1] - p0[1],
+                                 rS.mXyz[j * 3 + 2] - p0[2]};
+            const double du = d[0] * u[0] + d[1] * u[1] + d[2] * u[2];
+            const double dw = d[0] * w[0] + d[1] * w[1] + d[2] * w[2];
+            const double dh = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+            const double r0 = du * du, r1 = du * dw, r2 = dw * dw;
+            m00 += r0 * r0;
+            m01 += r0 * r1;
+            m02 += r0 * r2;
+            m11 += r1 * r1;
+            m12 += r1 * r2;
+            m22 += r2 * r2;
+            b0 += r0 * dh;
+            b1 += r1 * dh;
+            b2 += r2 * dh;
+        }
+
+        double abc[3];
+        if (!remesh_solve_sym3(m00, m01, m02, m11, m12, m22, b0, b1, b2, abc))
+            continue;  // ill-conditioned -> kappa stays 0
+
+        // Principal curvatures = eigenvalues of [[2a, b], [b, 2c]].
+        const double a = abc[0], b = abc[1], c = abc[2];
+        const double tr = 2.0 * a + 2.0 * c;
+        const double det2x2 = 4.0 * a * c - b * b;
+        const double disc = std::max(0.0, tr * tr - 4.0 * det2x2);
+        const double sq = std::sqrt(disc);
+        const double k1 = 0.5 * (tr + sq);
+        const double k2 = 0.5 * (tr - sq);
+        kappa[i] = std::max(std::abs(k1), std::abs(k2));
+
+        if (pTensors) {
+            // The 2x2 eigenvector for k1 in the local (u, w) frame is
+            // proportional to (b, k1 - 2a) -- or (k1 - 2c, b) when that is
+            // better conditioned. k2's eigenvector is its exact in-plane
+            // perpendicular: symmetric matrices with distinct eigenvalues
+            // have orthogonal eigenvectors, so this needs no second solve.
+            // At an umbilic (k1 == k2) any orthogonal pair is equally valid,
+            // since only the OUTER PRODUCTS e*e^T enter the tensor below --
+            // e and -e give the same e*e^T, and an umbilic's ratio is 1
+            // regardless of which pair is picked.
+            const double tensor_eps = 1e-20 * (a * a + b * b + c * c + 1.0);
+            double alpha = b, beta = k1 - 2.0 * a;
+            double len2 = alpha * alpha + beta * beta;
+            if (len2 < tensor_eps) {
+                alpha = k1 - 2.0 * c;
+                beta = b;
+                len2 = alpha * alpha + beta * beta;
+            }
+            if (len2 < tensor_eps) {
+                alpha = 1.0;
+                beta = 0.0;
+                len2 = 1.0;
+            }
+            const double inv_len = 1.0 / std::sqrt(len2);
+            alpha *= inv_len;
+            beta *= inv_len;
+
+            // World-space unit vectors: e1 for the k1 direction, e2 its
+            // in-plane perpendicular (the k2 direction).
+            const double e1[3] = {alpha * u[0] + beta * w[0], alpha * u[1] + beta * w[1],
+                                  alpha * u[2] + beta * w[2]};
+            const double e2[3] = {-beta * u[0] + alpha * w[0], -beta * u[1] + alpha * w[1],
+                                  -beta * u[2] + alpha * w[2]};
+
+            const double k1_abs = std::abs(k1), k2_abs = std::abs(k2);
+            const bool k1_is_sharp = k1_abs >= k2_abs;
+            const double hi_kappa = k1_is_sharp ? k1_abs : k2_abs;
+            const double lo_kappa = k1_is_sharp ? k2_abs : k1_abs;
+            const double* e_hi = k1_is_sharp ? e1 : e2;
+            const double* e_lo = k1_is_sharp ? e2 : e1;
+
+            // Length ratio (long axis / short axis) the tensor targets,
+            // clamped to MaxAnisotropy. hi_kappa == 0 means no curvature
+            // signal at all (an isotropic point), so ratio == 1; hi_kappa >
+            // 0 with lo_kappa == 0 (the canonical cylinder) goes straight to
+            // the clamp rather than dividing by zero -- the same formula's
+            // limit, not a special case grafted on.
+            double ratio = 1.0;
+            if (hi_kappa > 0.0)
+                ratio = (lo_kappa > 0.0)
+                            ? std::min(std::sqrt(hi_kappa / lo_kappa), MaxAnisotropy)
+                            : MaxAnisotropy;
+
+            // Unit-determinant SPD tensor: in-plane eigenvalues (lam_hi,
+            // lam_lo), normal eigenvalue pinned to lam_hi (keeps clusters on
+            // the surface, no sharper than the sharpest in-plane direction
+            // already demands) -- the pre-scale determinant is ratio^4, so
+            // scaling every eigenvalue by ratio^(-4/3) makes det == 1 while
+            // preserving the ratio itself (see remesh.hpp's doc comment).
+            // ratio == 1 (flat, or MaxAnisotropy == 1.0) makes both
+            // eigenvalues exactly 1.0, i.e. M == I.
+            const double lam_hi = std::pow(ratio, 2.0 / 3.0);
+            const double lam_lo = std::pow(ratio, -4.0 / 3.0);
+
+            for (int r = 0; r < 3; ++r)
+                for (int cc = r; cc < 3; ++cc) {
+                    const double m_rc = lam_hi * (e_hi[r] * e_hi[cc] + n[r] * n[cc]) +
+                                        lam_lo * e_lo[r] * e_lo[cc];
+                    const std::size_t idx =
+                        static_cast<std::size_t>(r == 0 ? cc : (r == 1 ? cc + 2 : 5));
+                    (*pTensors)[i * 6 + idx] = m_rc;
+                }
+        }
+    }
+    return kappa;
+}
+
+/// The undirected edge list of the adjacency graph, each edge once with
+/// `lo < hi`, in ascending `(lo, hi)` order -- the sweep order, hence part of
+/// the determinism contract.
+std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
+                                              std::size_t NumPoints) {
+    std::vector<std::int64_t> edges;
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        for (std::int64_t k = rAdj.mXadj[i]; k < rAdj.mXadj[i + 1]; ++k) {
+            const std::int64_t j = rAdj.mAdj[static_cast<std::size_t>(k)];
+            if (j > static_cast<std::int64_t>(i)) {
+                edges.push_back(static_cast<std::int64_t>(i));
+                edges.push_back(j);
+            }
+        }
+    return edges;
+}
+
+/// The input's open boundary: an edge used by exactly one triangle is a
+/// boundary edge; a vertex is a boundary vertex iff it is an endpoint of at
+/// least one. A local, self-contained edge-use-count pass -- deliberately
+/// NOT shared with `decimate.cpp`'s own `decim_build_edges`, whose header
+/// comment already scopes that helper to decimate's two current callers
+/// only ("stays private to decimate.cpp ... neither concept applies" to the
+/// other one). `std::map` (not a hash map) is deliberate: it costs nothing
+/// here and gives a canonical, deterministic edge-visitation order for free.
+struct RemeshBoundaryInfo {
+    std::vector<std::uint8_t> mIsBoundaryVertex;  ///< size NumPoints.
+    std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
+};
+
+RemeshBoundaryInfo remesh_boundary_info(const RemeshSurface& rS) {
+    RemeshBoundaryInfo info;
+    info.mIsBoundaryVertex.assign(rS.mNumPoints, 0);
+    std::map<std::pair<std::int64_t, std::int64_t>, int> use_count;
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const std::int64_t v[3] = {rS.mCorners[f * 3], rS.mCorners[f * 3 + 1],
+                                   rS.mCorners[f * 3 + 2]};
+        for (int k = 0; k < 3; ++k) {
+            std::int64_t a = v[k], b = v[(k + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            ++use_count[{a, b}];
+        }
+    }
+    for (const auto& [edge, count] : use_count) {
+        if (count == 1) {
+            info.mBoundaryEdges.push_back(edge);
+            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.first)] = 1;
+            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.second)] = 1;
+        }
+    }
+    return info;
+}
+
+/// The vertex visitation order `remesh_seed_clusters` picks its next seed
+/// from: every boundary vertex (ascending id) before every interior vertex
+/// (ascending id) when `rIsBoundaryVertex` names any, else plain ascending
+/// id -- reproducing today's order exactly. This is the "pinned" half of
+/// boundary preservation: a boundary vertex is always available to become a
+/// seed before an interior one, so a cluster's boundary segment is anchored
+/// early rather than being absorbed piecemeal by whichever interior cluster
+/// reaches it first during the general BFS growth that follows unchanged.
+std::vector<std::int64_t> remesh_seed_order(std::size_t NumPoints,
+                                            const std::vector<std::uint8_t>& rIsBoundaryVertex) {
+    std::vector<std::int64_t> order;
+    order.reserve(NumPoints);
+    if (rIsBoundaryVertex.empty()) {
+        for (std::size_t i = 0; i < NumPoints; ++i)
+            order.push_back(static_cast<std::int64_t>(i));
+        return order;
+    }
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (rIsBoundaryVertex[i])
+            order.push_back(static_cast<std::int64_t>(i));
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (!rIsBoundaryVertex[i])
+            order.push_back(static_cast<std::int64_t>(i));
+    return order;
+}
+
+/// Grows `NumClusters` seeds breadth-first from the next unassigned vertex in
+/// `rOrder`, each absorbing neighbours until it holds its share of the
+/// remaining area. RNG-free by construction, unlike pyacvd. `rOrder` is
+/// plain ascending-id order unless boundary preservation reorders it (see
+/// `remesh_seed_order`); this function itself has no boundary-specific logic
+/// at all -- it only ever asks "what's the next free vertex in this order."
+void remesh_seed_clusters(std::vector<std::int64_t>& rClusters, const detail::NodeAdjacency& rAdj,
+                          const std::vector<double>& rArea,
+                          const std::vector<std::int64_t>& rOrder, std::int64_t NumClusters,
+                          std::size_t NumPoints) {
+    double area_remain = 0.0;
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        area_remain += rArea[i];
+
+    const double target = area_remain / static_cast<double>(NumClusters);
+    std::size_t next_free = 0;
+    std::vector<std::int64_t> ring;
+    std::vector<std::int64_t> next;
+
+    for (std::int64_t c = 0; c < NumClusters; ++c) {
+        const double t_area = area_remain - target * static_cast<double>(NumClusters - c - 1);
+        double c_area = 0.0;
+
+        while (next_free < NumPoints &&
+               rClusters[static_cast<std::size_t>(rOrder[next_free])] != -1)
+            ++next_free;
+        if (next_free >= NumPoints)
+            break;
+        const std::size_t seed_v = static_cast<std::size_t>(rOrder[next_free]);
+
+        c_area += rArea[seed_v];
+        rClusters[seed_v] = c;
+        ring.clear();
+        ring.push_back(static_cast<std::int64_t>(seed_v));
+
+        while (!ring.empty()) {
+            next.clear();
+            for (const std::int64_t p : ring)
+                for (std::int64_t k = rAdj.mXadj[static_cast<std::size_t>(p)];
+                     k < rAdj.mXadj[static_cast<std::size_t>(p) + 1]; ++k) {
+                    const std::int64_t nbr = rAdj.mAdj[static_cast<std::size_t>(k)];
+                    const std::size_t un = static_cast<std::size_t>(nbr);
+                    if (rClusters[un] == -1 && rArea[un] + c_area < t_area) {
+                        c_area += rArea[un];
+                        rClusters[un] = c;
+                        next.push_back(nbr);
+                    }
+                }
+            ring.swap(next);
+        }
+        area_remain -= c_area;
+    }
+}
+
+/// Propagates cluster ids across edges into vertices the seeding never
+/// reached. Returns true when some vertex is still unassigned afterwards.
+bool remesh_grow_null(const std::vector<std::int64_t>& rEdges,
+                      std::vector<std::int64_t>& rClusters) {
+    const std::size_t n_edges = rEdges.size() / 2;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (std::size_t e = 0; e < n_edges; ++e) {
+            const std::size_t a = static_cast<std::size_t>(rEdges[2 * e]);
+            const std::size_t b = static_cast<std::size_t>(rEdges[2 * e + 1]);
+            if (rClusters[a] == -1 && rClusters[b] != -1) {
+                rClusters[a] = rClusters[b];
+                changed = true;
+            } else if (rClusters[b] == -1 && rClusters[a] != -1) {
+                rClusters[b] = rClusters[a];
+                changed = true;
+            }
+        }
+    }
+    for (const std::int64_t c : rClusters)
+        if (c == -1)
+            return true;
+    return false;
+}
+
+/// Isotropic centroid of a cluster from its raw accumulators -- the shared
+/// ill-conditioning fallback the quadric solve always has available.
+inline void remesh_centroid_of(const double* pSgamma, double Srho, double pOut[3]) {
+    if (Srho > 0.0) {
+        pOut[0] = pSgamma[0] / Srho;
+        pOut[1] = pSgamma[1] / Srho;
+        pOut[2] = pSgamma[2] / Srho;
+    } else {
+        pOut[0] = pOut[1] = pOut[2] = 0.0;
+    }
+}
+
+/// Quadric error of a cluster whose combined quadric is `pQ`, evaluated at
+/// its own optimal point (`pCentroidFallback` used when that solve is
+/// ill-conditioned -- an exactly planar cluster, the expected case).
+inline double remesh_quadric_badness(const double* pQ, const double* pCentroidFallback) {
+    double pt[3];
+    detail::decim_quadric_optimal_point(pQ, pCentroidFallback, pt);
+    return detail::decim_quadric_error(pQ, pt[0], pt[1], pt[2]);
+}
+
+/// The "badness to minimize" of a cluster GAINING (`Adding = true`) or LOSING
+/// (`Adding = false`) one item, evaluated from its CURRENT accumulators
+/// without mutating them -- an O(1) trial, mode-dispatched behind one uniform
+/// scalar: isotropic badness is `-|sgamma|^2/srho` (a sign flip of the
+/// maximized energy form, so accepting the lower badness is exactly
+/// accepting the higher energy -- no behaviour change from that framing);
+/// quadric badness is the summed quadric error at the candidate cluster's own
+/// optimal point.
+double remesh_trial_badness(RemeshMetric Metric, const double* pSgamma, double Srho,
+                            const double* pQuad, const double* pItemWeighted, double ItemArea,
+                            const double* pItemQuad, bool Adding) {
+    const double sign = Adding ? 1.0 : -1.0;
+    double new_sgamma[3] = {pSgamma[0] + sign * pItemWeighted[0],
+                            pSgamma[1] + sign * pItemWeighted[1],
+                            pSgamma[2] + sign * pItemWeighted[2]};
+    const double new_srho = Srho + sign * ItemArea;
+    const double iso_badness = -(new_sgamma[0] * new_sgamma[0] + new_sgamma[1] * new_sgamma[1] +
+                                 new_sgamma[2] * new_sgamma[2]) /
+                               new_srho;
+
+    switch (Metric) {
+    case RemeshMetric::Isotropic:
+        return iso_badness;
+    case RemeshMetric::Quadric: {
+        // Quadric mode ADDS the quadric flatness error to the isotropic
+        // compactness term rather than using the quadric error alone --
+        // measured (see remesh.hpp's doc comment): pure quadric-error
+        // badness has no compactness pull at all, since a cluster confined
+        // to a common plane can grow arbitrarily thin and snake-like along a
+        // low-curvature direction without its quadric error rising, which
+        // repeatedly produced disconnected, non-manifold clusters even after
+        // every repair pass (17 of 150 clusters still split on a smooth
+        // closed sphere in gtest). The isotropic term is the SAME
+        // `-|sgamma|^2/srho` form `Isotropic` mode uses on its own -- both
+        // terms are area-weighted squared-distance-like quantities
+        // (dimensionally consistent, no free blend weight to tune), and
+        // their sum keeps the compactness pull that prevents pathological
+        // elongation while still rewarding flatness/feature alignment where
+        // a real crease or corner makes the quadric term the deciding
+        // factor.
+        double new_quad[10];
+        for (int k = 0; k < 10; ++k)
+            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+        double centroid[3];
+        remesh_centroid_of(new_sgamma, new_srho, centroid);
+        return iso_badness + remesh_quadric_badness(new_quad, centroid);
+    }
+    case RemeshMetric::Anisotropic: {
+        // The per-vertex curvature tensor is SPD (never rank-deficient the
+        // way a flat quadric is), so unlike `Quadric` this metric's own
+        // error term already penalises spread in every direction -- just
+        // anisotropically -- and is used PURE, not additively stabilised.
+        // See remesh.hpp's doc comment and doc/remesh.md for the measurement
+        // that justified this (mNumIsolatedClusters/mNumNonManifoldVertices
+        // swept across mMaxAnisotropy on the fixtures below).
+        double new_quad[10];
+        for (int k = 0; k < 10; ++k)
+            new_quad[k] = pQuad[k] + sign * pItemQuad[k];
+        double centroid[3];
+        remesh_centroid_of(new_sgamma, new_srho, centroid);
+        return remesh_quadric_badness(new_quad, centroid);
+    }
+    }
+    // Unreachable: every RemeshMetric enumerator is handled above, and
+    // -Wswitch (no `default:`) makes a future enumerator a compile error
+    // here rather than a silent quadric/anisotropic misclassification.
+    return iso_badness;
+}
+
+/// The accumulators one cluster carries. `mQuad` is filled and read only
+/// under `RemeshMetric::Quadric`; `Isotropic` mode never touches it.
+struct RemeshState {
+    std::vector<double> mSgamma;  ///< `3 * n_clus`, sum of weighted positions.
+    std::vector<double> mSrho;    ///< `n_clus`, sum of weights.
+    std::vector<double> mBadness; ///< `n_clus`, the metric's own badness.
+    std::vector<double> mQuad;    ///< `10 * n_clus`, quadric mode only.
+    std::vector<std::int64_t> mCount;
+};
+
+RemeshState remesh_init_state(const std::vector<std::int64_t>& rClusters,
+                              const std::vector<double>& rArea,
+                              const std::vector<double>& rWeighted,
+                              const std::vector<double>& rVertexQuad, RemeshMetric Metric,
+                              std::int64_t NumClusters, std::size_t NumPoints) {
+    RemeshState st;
+    const std::size_t n_clus = static_cast<std::size_t>(NumClusters);
+    st.mSgamma.assign(n_clus * 3, 0.0);
+    st.mSrho.assign(n_clus, 0.0);
+    st.mBadness.assign(n_clus, 0.0);
+    st.mCount.assign(n_clus, 0);
+    // The 10-double accumulator is shared by both Quadric and Anisotropic
+    // (the latter packs a per-vertex curvature-tensor quadric into the exact
+    // same layout, see remesh_vertex_metrics) -- Isotropic is the one metric
+    // that never reads it.
+    const bool needs_quad = Metric != RemeshMetric::Isotropic;
+    if (needs_quad)
+        st.mQuad.assign(n_clus * 10, 0.0);
+
+    for (std::size_t i = 0; i < NumPoints; ++i) {
+        const std::size_t c = static_cast<std::size_t>(rClusters[i]);
+        st.mSrho[c] += rArea[i];
+        st.mSgamma[c * 3] += rWeighted[i * 3];
+        st.mSgamma[c * 3 + 1] += rWeighted[i * 3 + 1];
+        st.mSgamma[c * 3 + 2] += rWeighted[i * 3 + 2];
+        ++st.mCount[c];
+        if (needs_quad)
+            for (int k = 0; k < 10; ++k)
+                st.mQuad[c * 10 + static_cast<std::size_t>(k)] +=
+                    rVertexQuad[i * 10 + static_cast<std::size_t>(k)];
+    }
+    for (std::size_t c = 0; c < n_clus; ++c) {
+        const double iso = -(st.mSgamma[c * 3] * st.mSgamma[c * 3] +
+                             st.mSgamma[c * 3 + 1] * st.mSgamma[c * 3 + 1] +
+                             st.mSgamma[c * 3 + 2] * st.mSgamma[c * 3 + 2]) /
+                           st.mSrho[c];
+        switch (Metric) {
+        case RemeshMetric::Isotropic:
+            st.mBadness[c] = iso;
+            break;
+        case RemeshMetric::Quadric: {
+            double centroid[3];
+            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+            st.mBadness[c] = iso + remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+            break;
+        }
+        case RemeshMetric::Anisotropic: {
+            double centroid[3];
+            remesh_centroid_of(st.mSgamma.data() + c * 3, st.mSrho[c], centroid);
+            st.mBadness[c] = remesh_quadric_badness(st.mQuad.data() + c * 10, centroid);
+            break;
+        }
+        }
+    }
+    return st;
+}
+
+/// Moves item `Item` from `From` to `To`: updates every accumulator, then
+/// recomputes both clusters' badness under `Metric` from the updated state
+/// (not the trial value already computed by the caller, to keep this
+/// function correct on its own).
+void remesh_commit(RemeshState& rSt, std::vector<std::int64_t>& rClusters,
+                   const std::vector<double>& rArea, const std::vector<double>& rWeighted,
+                   const std::vector<double>& rVertexQuad, RemeshMetric Metric, std::size_t Item,
+                   std::int64_t From, std::int64_t To) {
+    const std::size_t uf = static_cast<std::size_t>(From);
+    const std::size_t ut = static_cast<std::size_t>(To);
+    rClusters[Item] = To;
+    --rSt.mCount[uf];
+    ++rSt.mCount[ut];
+    rSt.mSrho[ut] += rArea[Item];
+    rSt.mSrho[uf] -= rArea[Item];
+    for (int d = 0; d < 3; ++d) {
+        rSt.mSgamma[ut * 3 + d] += rWeighted[Item * 3 + d];
+        rSt.mSgamma[uf * 3 + d] -= rWeighted[Item * 3 + d];
+    }
+    switch (Metric) {
+    case RemeshMetric::Isotropic:
+        rSt.mBadness[uf] = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                             rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                             rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                           rSt.mSrho[uf];
+        rSt.mBadness[ut] = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                             rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                             rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                           rSt.mSrho[ut];
+        break;
+    case RemeshMetric::Quadric:
+    case RemeshMetric::Anisotropic: {
+        for (int k = 0; k < 10; ++k) {
+            rSt.mQuad[ut * 10 + static_cast<std::size_t>(k)] +=
+                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+            rSt.mQuad[uf * 10 + static_cast<std::size_t>(k)] -=
+                rVertexQuad[Item * 10 + static_cast<std::size_t>(k)];
+        }
+        double cen_f[3], cen_t[3];
+        remesh_centroid_of(rSt.mSgamma.data() + uf * 3, rSt.mSrho[uf], cen_f);
+        remesh_centroid_of(rSt.mSgamma.data() + ut * 3, rSt.mSrho[ut], cen_t);
+        // Quadric adds the isotropic compactness term back in (see
+        // remesh_trial_badness); Anisotropic's own SPD tensor already
+        // penalises spread in every direction and uses the quadric error
+        // pure.
+        double iso_f = 0.0, iso_t = 0.0;
+        if (Metric == RemeshMetric::Quadric) {
+            iso_f = -(rSt.mSgamma[uf * 3] * rSt.mSgamma[uf * 3] +
+                     rSt.mSgamma[uf * 3 + 1] * rSt.mSgamma[uf * 3 + 1] +
+                     rSt.mSgamma[uf * 3 + 2] * rSt.mSgamma[uf * 3 + 2]) /
+                   rSt.mSrho[uf];
+            iso_t = -(rSt.mSgamma[ut * 3] * rSt.mSgamma[ut * 3] +
+                     rSt.mSgamma[ut * 3 + 1] * rSt.mSgamma[ut * 3 + 1] +
+                     rSt.mSgamma[ut * 3 + 2] * rSt.mSgamma[ut * 3 + 2]) /
+                   rSt.mSrho[ut];
+        }
+        rSt.mBadness[uf] = iso_f + remesh_quadric_badness(rSt.mQuad.data() + uf * 10, cen_f);
+        rSt.mBadness[ut] = iso_t + remesh_quadric_badness(rSt.mQuad.data() + ut * 10, cen_t);
+        break;
+    }
+    }
+}
+
+/// Sweeps the boundary edges until nothing moves or `MaxIterations` is
+/// reached. Serial by necessity: each accepted move changes the accumulators
+/// the next test reads. Clusters unmodified in the previous sweep are
+/// skipped.
+std::int64_t remesh_minimize(const std::vector<std::int64_t>& rEdges,
+                             std::vector<std::int64_t>& rClusters,
+                             const std::vector<double>& rArea,
+                             const std::vector<double>& rWeighted,
+                             const std::vector<double>& rVertexQuad, RemeshMetric Metric,
+                             RemeshState& rSt, std::int64_t NumClusters, int MaxIterations) {
+    const std::size_t n_edges = rEdges.size() / 2;
+    const std::size_t n_clus = static_cast<std::size_t>(NumClusters);
+    std::vector<char> mod_cur(n_clus, 1);
+    std::vector<char> mod_next(n_clus, 0);
+
+    std::int64_t iterations = 0;
+    bool changed = true;
+    while (changed && iterations < MaxIterations) {
+        changed = false;
+        std::fill(mod_next.begin(), mod_next.end(), 0);
+
+        for (std::size_t e = 0; e < n_edges; ++e) {
+            const std::size_t pa = static_cast<std::size_t>(rEdges[2 * e]);
+            const std::size_t pb = static_cast<std::size_t>(rEdges[2 * e + 1]);
+            const std::int64_t ca = rClusters[pa];
+            const std::int64_t cb = rClusters[pb];
+            if (ca == cb)
+                continue;
+            const std::size_t uca = static_cast<std::size_t>(ca);
+            const std::size_t ucb = static_cast<std::size_t>(cb);
+            if (!mod_cur[uca] && !mod_cur[ucb])
+                continue;
+
+            // A cluster of one item may not be emptied -- losing its last
+            // item would divide by a zero srho (or leave a rank-deficient
+            // empty quadric) and delete the cluster outright.
+            const bool can_move_a = rSt.mCount[uca] > 1;
+            const bool can_move_b = rSt.mCount[ucb] > 1;
+            const double badness_orig = rSt.mBadness[uca] + rSt.mBadness[ucb];
+
+            // Both Quadric and Anisotropic read the 10-double accumulator;
+            // only Isotropic never touches it (see remesh_init_state).
+            const bool needs_quad = Metric != RemeshMetric::Isotropic;
+            const double* q_a = needs_quad ? rSt.mQuad.data() + uca * 10 : nullptr;
+            const double* q_b = needs_quad ? rSt.mQuad.data() + ucb * 10 : nullptr;
+            const double* item_q_b = needs_quad ? rVertexQuad.data() + pb * 10 : nullptr;
+            const double* item_q_a = needs_quad ? rVertexQuad.data() + pa * 10 : nullptr;
+
+            // Candidate 1: move b into a (b leaves its own cluster).
+            double badness_move_b = badness_orig;  // sentinel: "no better than orig"
+            if (can_move_b)
+                badness_move_b =
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
+                                         q_a, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                                         /*Adding=*/true) +
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
+                                         q_b, rWeighted.data() + pb * 3, rArea[pb], item_q_b,
+                                         /*Adding=*/false);
+
+            // Candidate 2: move a into b (a leaves its own cluster).
+            double badness_move_a = badness_orig;
+            if (can_move_a)
+                badness_move_a =
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + uca * 3, rSt.mSrho[uca],
+                                         q_a, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                                         /*Adding=*/false) +
+                    remesh_trial_badness(Metric, rSt.mSgamma.data() + ucb * 3, rSt.mSrho[ucb],
+                                         q_b, rWeighted.data() + pa * 3, rArea[pa], item_q_a,
+                                         /*Adding=*/true);
+
+            // Accept the strictly better candidate; ties resolve toward moving
+            // b -- a fixed, documented rule (this repo's determinism contract
+            // requires one), not an accident of evaluation order.
+            if (can_move_b && badness_move_b < badness_orig && badness_move_b <= badness_move_a) {
+                remesh_commit(rSt, rClusters, rArea, rWeighted, rVertexQuad, Metric, pb, cb, ca);
+                mod_next[uca] = mod_next[ucb] = 1;
+                changed = true;
+            } else if (can_move_a && badness_move_a < badness_orig) {
+                remesh_commit(rSt, rClusters, rArea, rWeighted, rVertexQuad, Metric, pa, ca, cb);
+                mod_next[uca] = mod_next[ucb] = 1;
+                changed = true;
+            }
+        }
+        mod_cur.swap(mod_next);
+        ++iterations;
+    }
+    return iterations;
+}
+
+/// Finds clusters split into several connected components, keeps the largest
+/// (lowest starting vertex on a tie) and unassigns the rest. Returns how many
+/// clusters were split.
+std::int64_t remesh_split_disconnected(const detail::NodeAdjacency& rAdj,
+                                       std::vector<std::int64_t>& rClusters,
+                                       std::int64_t NumClusters, std::size_t NumPoints) {
+    std::vector<char> visited(NumPoints, 0);
+    std::vector<std::vector<std::int64_t>> components;
+    std::vector<std::int64_t> best_size(static_cast<std::size_t>(NumClusters), -1);
+    std::vector<std::int64_t> best_comp(static_cast<std::size_t>(NumClusters), -1);
+    std::vector<std::int64_t> owner;
+    std::vector<std::int64_t> stack;
+
+    for (std::size_t seed = 0; seed < NumPoints; ++seed) {
+        if (visited[seed] || rClusters[seed] < 0)
+            continue;
+        const std::int64_t c = rClusters[seed];
+        std::vector<std::int64_t> comp;
+        stack.clear();
+        stack.push_back(static_cast<std::int64_t>(seed));
+        visited[seed] = 1;
+        while (!stack.empty()) {
+            const std::int64_t p = stack.back();
+            stack.pop_back();
+            comp.push_back(p);
+            for (std::int64_t k = rAdj.mXadj[static_cast<std::size_t>(p)];
+                 k < rAdj.mXadj[static_cast<std::size_t>(p) + 1]; ++k) {
+                const std::int64_t nbr = rAdj.mAdj[static_cast<std::size_t>(k)];
+                const std::size_t un = static_cast<std::size_t>(nbr);
+                if (!visited[un] && rClusters[un] == c) {
+                    visited[un] = 1;
+                    stack.push_back(nbr);
+                }
+            }
+        }
+        const std::int64_t size = static_cast<std::int64_t>(comp.size());
+        const std::size_t uc = static_cast<std::size_t>(c);
+        if (size > best_size[uc]) {
+            best_size[uc] = size;
+            best_comp[uc] = static_cast<std::int64_t>(components.size());
+        }
+        owner.push_back(c);
+        components.push_back(std::move(comp));
+    }
+
+    std::int64_t num_split = 0;
+    std::vector<char> counted(static_cast<std::size_t>(NumClusters), 0);
+    for (std::size_t ci = 0; ci < components.size(); ++ci) {
+        const std::size_t uc = static_cast<std::size_t>(owner[ci]);
+        if (best_comp[uc] == static_cast<std::int64_t>(ci))
+            continue;
+        for (const std::int64_t p : components[ci])
+            rClusters[static_cast<std::size_t>(p)] = -1;
+        if (!counted[uc]) {
+            counted[uc] = 1;
+            ++num_split;
+        }
+    }
+    return num_split;
+}
+
+/// Compacts cluster ids to `[0, out)` preserving ascending order, returning the
+/// number that survived.
+std::int64_t remesh_renumber(std::vector<std::int64_t>& rClusters, std::int64_t NumClusters,
+                             std::size_t NumPoints) {
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(NumClusters), -1);
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (rClusters[i] >= 0)
+            remap[static_cast<std::size_t>(rClusters[i])] = 1;
+    std::int64_t out = 0;
+    for (std::size_t c = 0; c < static_cast<std::size_t>(NumClusters); ++c)
+        if (remap[c] > 0)
+            remap[c] = out++;
+    for (std::size_t i = 0; i < NumPoints; ++i)
+        if (rClusters[i] >= 0)
+            rClusters[i] = remap[static_cast<std::size_t>(rClusters[i])];
+    return out;
+}
+
+/// The output vertex position of each FINAL (post-renumber) cluster: a fresh
+/// accumulation pass keyed on the renumbered `rClusters` array (the old
+/// `RemeshState`'s accumulators are indexed by the pre-renumber id space and
+/// cannot be reused here). Isotropic mode's position is the area-weighted
+/// centroid; quadric mode's is `decim_quadric_optimal_point` of the summed
+/// per-cluster quadric, falling back to that same centroid.
+std::vector<double> remesh_final_positions(const std::vector<std::int64_t>& rClusters,
+                                           const std::vector<double>& rArea,
+                                           const std::vector<double>& rWeighted,
+                                           const std::vector<double>& rVertexQuad,
+                                           RemeshMetric Metric, std::int64_t NumClusters,
+                                           std::size_t NumPoints) {
+    const std::size_t n_clus = static_cast<std::size_t>(NumClusters);
+    std::vector<double> sgamma(n_clus * 3, 0.0);
+    std::vector<double> srho(n_clus, 0.0);
+    std::vector<double> quad;
+    const bool needs_quad = Metric != RemeshMetric::Isotropic;
+    if (needs_quad)
+        quad.assign(n_clus * 10, 0.0);
+
+    for (std::size_t i = 0; i < NumPoints; ++i) {
+        const std::size_t c = static_cast<std::size_t>(rClusters[i]);
+        srho[c] += rArea[i];
+        for (int d = 0; d < 3; ++d)
+            sgamma[c * 3 + d] += rWeighted[i * 3 + d];
+        if (needs_quad)
+            for (int k = 0; k < 10; ++k)
+                quad[c * 10 + static_cast<std::size_t>(k)] +=
+                    rVertexQuad[i * 10 + static_cast<std::size_t>(k)];
+    }
+
+    std::vector<double> out(n_clus * 3, 0.0);
+    for (std::size_t c = 0; c < n_clus; ++c) {
+        double centroid[3];
+        remesh_centroid_of(sgamma.data() + c * 3, srho[c], centroid);
+        switch (Metric) {
+        case RemeshMetric::Isotropic:
+            out[c * 3] = centroid[0];
+            out[c * 3 + 1] = centroid[1];
+            out[c * 3 + 2] = centroid[2];
+            break;
+        case RemeshMetric::Quadric:
+        case RemeshMetric::Anisotropic: {
+            // Both metrics place the dual vertex at their own quadric's
+            // optimal point -- Anisotropic's quadric already encodes the
+            // curvature-tensor shape, so no separate placement rule exists.
+            double pt[3];
+            detail::decim_quadric_optimal_point(quad.data() + c * 10, centroid, pt);
+            out[c * 3] = pt[0];
+            out[c * 3 + 1] = pt[1];
+            out[c * 3 + 2] = pt[2];
+            break;
+        }
+        }
+    }
+    return out;
+}
+
+/// Mean unit normal of each cluster, used only to orient the dual triangles.
+/// Metric-agnostic: it reads the input surface's own triangle normals, never
+/// a cluster's quadric.
+std::vector<double> remesh_cluster_normals(const RemeshSurface& rS,
+                                           const std::vector<std::int64_t>& rClusters,
+                                           std::int64_t NumClusters) {
+    std::vector<double> nrm(static_cast<std::size_t>(NumClusters) * 3, 0.0);
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3]) * 3;
+        const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 1]) * 3;
+        const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(rS.mCorners[f * 3 + 2]) * 3;
+        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
+        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
+        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
+                             e0[0] * e1[1] - e0[1] * e1[0]};
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t uc = static_cast<std::size_t>(rClusters[static_cast<std::size_t>(
+                rS.mCorners[f * 3 + k])]);
+            for (int d = 0; d < 3; ++d)
+                nrm[uc * 3 + d] += c[d];
+        }
+    }
+    for (std::size_t c = 0; c < static_cast<std::size_t>(NumClusters); ++c) {
+        const double len = std::sqrt(nrm[c * 3] * nrm[c * 3] + nrm[c * 3 + 1] * nrm[c * 3 + 1] +
+                                     nrm[c * 3 + 2] * nrm[c * 3 + 2]);
+        if (len > 0.0)
+            for (int d = 0; d < 3; ++d)
+                nrm[c * 3 + d] /= len;
+    }
+    return nrm;
+}
+
+/// The deduplicated set of (sorted) cluster-id triples the current
+/// clustering's dual would have as triangles -- topology only, no
+/// positions/winding. Shared by `remesh_dual_faces` (which adds those on
+/// top, and is only ever called once every vertex is resolved) and the
+/// repair loop's non-manifold check (which may call this on a NOT-yet-fully
+/// resolved cluster array -- `remesh_split_disconnected` unassigns vertices
+/// back to `-1` and this may be read before the next `remesh_grow_null`
+/// re-fills them, so a face touching any still-unassigned corner is skipped
+/// outright: with no valid output vertex for that corner yet, it cannot
+/// contribute to even a provisional dual).
+std::vector<std::array<std::int64_t, 3>> remesh_dual_triangle_keys(
+    const RemeshSurface& rS, const std::vector<std::int64_t>& rClusters) {
+    std::vector<std::array<std::int64_t, 3>> keys;
+    keys.reserve(rS.mNumFaces);
+    for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
+        std::array<std::int64_t, 3> t = {
+            rClusters[static_cast<std::size_t>(rS.mCorners[f * 3])],
+            rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + 1])],
+            rClusters[static_cast<std::size_t>(rS.mCorners[f * 3 + 2])]};
+        if (t[0] < 0 || t[1] < 0 || t[2] < 0)
+            continue;  // a corner has no cluster yet
+        std::sort(t.begin(), t.end());
+        if (t[0] == t[1] || t[1] == t[2])
+            continue;  // the face does not join three distinct clusters
+        keys.push_back(t);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+/// Builds the dual: one triangle per deduplicated key from
+/// `remesh_dual_triangle_keys`, wound to agree with the mean normal of its
+/// three clusters.
+std::vector<std::int64_t> remesh_dual_faces(const RemeshSurface& rS,
+                                            const std::vector<std::int64_t>& rClusters,
+                                            const std::vector<double>& rPositions,
+                                            const std::vector<double>& rNormals) {
+    const std::vector<std::array<std::int64_t, 3>> keys =
+        remesh_dual_triangle_keys(rS, rClusters);
+
+    std::vector<std::int64_t> out;
+    out.reserve(keys.size() * 3);
+    for (const auto& t : keys) {
+        double ref[3] = {0.0, 0.0, 0.0};
+        for (int k = 0; k < 3; ++k)
+            for (int d = 0; d < 3; ++d)
+                ref[d] += rNormals[static_cast<std::size_t>(t[k]) * 3 + d];
+
+        const double* a = rPositions.data() + static_cast<std::size_t>(t[0]) * 3;
+        const double* b = rPositions.data() + static_cast<std::size_t>(t[1]) * 3;
+        const double* c = rPositions.data() + static_cast<std::size_t>(t[2]) * 3;
+        const double e0[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double e1[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        const double nx = e0[1] * e1[2] - e0[2] * e1[1];
+        const double ny = e0[2] * e1[0] - e0[0] * e1[2];
+        const double nz = e0[0] * e1[1] - e0[1] * e1[0];
+        const double dot = nx * ref[0] + ny * ref[1] + nz * ref[2];
+
+        if (dot < 0.0) {
+            out.push_back(t[2]);
+            out.push_back(t[1]);
+            out.push_back(t[0]);
+        } else {
+            out.push_back(t[0]);
+            out.push_back(t[1]);
+            out.push_back(t[2]);
+        }
+    }
+    return out;
+}
+
+/// One `line` cell per genuine input boundary edge whose two endpoints land
+/// in different clusters, connecting those two clusters' representative
+/// points -- deduplicated by unordered cluster-id pair, the same idiom
+/// `remesh_dual_triangle_keys` already uses for the triangle dual. Without
+/// this, a boundary-adjacent input triangle simply has no "third neighbour"
+/// across the missing side and is silently dropped from the triangle dual,
+/// leaving no coherent output boundary at all -- this is the "extra dual
+/// elements... inserted along the boundary" half of boundary preservation.
+std::vector<std::int64_t> remesh_dual_boundary_edges(
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& rBoundaryEdges,
+    const std::vector<std::int64_t>& rClusters) {
+    std::vector<std::pair<std::int64_t, std::int64_t>> keys;
+    keys.reserve(rBoundaryEdges.size());
+    for (const auto& [a, b] : rBoundaryEdges) {
+        std::int64_t ca = rClusters[static_cast<std::size_t>(a)];
+        std::int64_t cb = rClusters[static_cast<std::size_t>(b)];
+        if (ca == cb)
+            continue;
+        if (ca > cb)
+            std::swap(ca, cb);
+        keys.push_back({ca, cb});
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+    std::vector<std::int64_t> out;
+    out.reserve(keys.size() * 2);
+    for (const auto& [ca, cb] : keys) {
+        out.push_back(ca);
+        out.push_back(cb);
+    }
+    return out;
+}
+
+/// Output (cluster) vertices whose incident dual-triangle fan is NOT a
+/// single loop (interior vertex, closed fan) or open chain (boundary
+/// vertex, open fan) -- a "bowtie." `rKeys` is `remesh_dual_triangle_keys`'
+/// own output, so this works identically whether called on the FINAL
+/// (post-renumber, contiguous) cluster space or the repair loop's CURRENT
+/// (possibly-gapped) one -- it only ever asks about ids that actually
+/// appear in `rKeys`.
+///
+/// For vertex `v`, each incident triangle `(v, a, b)` contributes the
+/// "opposite edge" `(a, b)` (the edge not touching `v`); manifold means
+/// those opposite edges, viewed as a graph on `v`'s neighbours, are a
+/// single simple cycle (every node degree 2) or a single simple path
+/// (exactly two nodes of degree 1, the open chain's ends, the rest degree
+/// 2) -- checked as: no node of degree > 2, either 0 or 2 nodes of degree
+/// 1, and one connected component spanning every opposite edge.
+std::vector<std::uint8_t> remesh_detect_nonmanifold_vertices(
+    const std::vector<std::array<std::int64_t, 3>>& rKeys, std::int64_t NumClusters) {
+    const std::size_t n_clus = static_cast<std::size_t>(NumClusters);
+    std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> incident(n_clus);
+    for (const auto& t : rKeys) {
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t v = t[k], a = t[(k + 1) % 3], b = t[(k + 2) % 3];
+            incident[static_cast<std::size_t>(v)].push_back({a, b});
+        }
+    }
+
+    std::vector<std::uint8_t> bad(n_clus, 0);
+    for (std::size_t v = 0; v < n_clus; ++v) {
+        const auto& edges = incident[v];
+        if (edges.size() < 2)
+            continue;  // 0 or 1 incident dual triangle is trivially fine
+
+        std::map<std::int64_t, std::vector<std::int64_t>> adj;
+        for (const auto& [a, b] : edges) {
+            adj[a].push_back(b);
+            adj[b].push_back(a);
+        }
+
+        bool ok = true;
+        int deg1_count = 0;
+        for (const auto& [node, nbrs] : adj) {
+            if (nbrs.size() > 2) {
+                ok = false;
+                break;
+            }
+            if (nbrs.size() == 1)
+                ++deg1_count;
+        }
+        if (ok && deg1_count != 0 && deg1_count != 2)
+            ok = false;
+        if (ok) {
+            std::set<std::int64_t> visited;
+            std::vector<std::int64_t> stack = {edges[0].first};
+            visited.insert(edges[0].first);
+            while (!stack.empty()) {
+                const std::int64_t cur = stack.back();
+                stack.pop_back();
+                for (const std::int64_t nb : adj.at(cur))
+                    if (visited.insert(nb).second)
+                        stack.push_back(nb);
+            }
+            if (visited.size() != adj.size())
+                ok = false;
+        }
+        if (!ok)
+            bad[v] = 1;
+    }
+    return bad;
+}
+
+}  // namespace
+
+RemeshMetric remesh_metric_from_name(const std::string& rName) {
+    if (rName == "isotropic")
+        return RemeshMetric::Isotropic;
+    if (rName == "quadric")
+        return RemeshMetric::Quadric;
+    if (rName == "anisotropic")
+        return RemeshMetric::Anisotropic;
+    throw std::invalid_argument("meshio++: remesh: unknown metric '" + rName +
+                                "' (expected 'isotropic', 'quadric' or 'anisotropic')");
+}
+
+int remesh_suggest_subdivide(std::int64_t NumPoints, std::int64_t NumClusters,
+                             double SubsampleRatio, int MaxSubdivide) {
+    if (NumPoints <= 0 || NumClusters <= 0 || MaxSubdivide <= 0)
+        return 0;
+    const double target = SubsampleRatio * static_cast<double>(NumClusters);
+    double have = static_cast<double>(NumPoints);
+    int n = 0;
+    while (have < target && n < MaxSubdivide) {
+        // A uniform triangle refinement quadruples the face count; the vertex
+        // count grows to roughly 4x too on a large mesh (V - E + F is fixed,
+        // and each pass adds one vertex per edge).
+        have *= 4.0;
+        ++n;
+    }
+    return n;
+}
+
+RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
+    if (rOptions.mNumClusters < 4)
+        throw std::invalid_argument(
+            "meshio++: remesh: num_clusters must be at least 4, got " +
+            std::to_string(rOptions.mNumClusters) +
+            " (fewer vertices cannot bound a closed surface)");
+    if (rOptions.mMaxIterations <= 0)
+        throw std::invalid_argument("meshio++: remesh: max_iterations must be positive, got " +
+                                    std::to_string(rOptions.mMaxIterations));
+    if (rOptions.mMaxRepairPasses < 0)
+        throw std::invalid_argument(
+            "meshio++: remesh: max_repair_passes must not be negative, got " +
+            std::to_string(rOptions.mMaxRepairPasses));
+    if (rOptions.mSubsampleRatio <= 0.0)
+        throw std::invalid_argument("meshio++: remesh: subsample_ratio must be positive");
+    if (rOptions.mMetric == RemeshMetric::Anisotropic && rOptions.mMaxAnisotropy < 1.0)
+        throw std::invalid_argument(
+            "meshio++: remesh: max_anisotropy must be at least 1.0, got " +
+            std::to_string(rOptions.mMaxAnisotropy));
+    if (rOptions.mMetric != RemeshMetric::Anisotropic &&
+        rOptions.mMaxAnisotropy != kRemeshDefaultMaxAnisotropy)
+        throw std::invalid_argument(
+            "meshio++: remesh: max_anisotropy is only meaningful under "
+            "metric=\"anisotropic\" (there is nothing for it to shape under '" +
+            std::string(rOptions.mMetric == RemeshMetric::Isotropic ? "isotropic" : "quadric") +
+            "')");
+
+    remesh_check_blocks(rMesh);
+    detail::warn_regions_dropped(rMesh, "remesh");
+
+    RemeshResult result;
+    const RemeshMetric metric = rOptions.mMetric;
+
+    // Triangulate, then subdivide. Both are existing operations: a quad or a
+    // rectangular polygon block is fanned by convert_cells, and the
+    // subsampling step is exactly a uniform refine pass.
+    Mesh work =
+        convert_cells(rMesh, {ConvertCellsMode::Simplexify, /*mRecordParentIds=*/false}).mMesh;
+
+    int subdivide = rOptions.mSubdivide;
+    if (subdivide < 0)
+        subdivide = remesh_suggest_subdivide(static_cast<std::int64_t>(work.NumPoints()),
+                                             rOptions.mNumClusters, rOptions.mSubsampleRatio,
+                                             rOptions.mMaxSubdivide);
+    if (subdivide > 0) {
+        RefineOptions ropts;
+        ropts.mLevels = subdivide;
+        work = refine(work, ropts).mMesh;
+    }
+    result.mSubdivideApplied = subdivide;
+
+    RemeshSurface surf = remesh_build_surface(work);
+    if (surf.mNumFaces == 0)
+        throw std::invalid_argument("meshio++: remesh: mesh has no triangles to remesh");
+    if (rOptions.mNumClusters > static_cast<std::int64_t>(surf.mNumPoints))
+        throw std::invalid_argument(
+            "meshio++: remesh: num_clusters (" + std::to_string(rOptions.mNumClusters) +
+            ") exceeds the " + std::to_string(surf.mNumPoints) +
+            " vertices available after subdivision; raise subdivide or lower num_clusters");
+
+    // Adjacency is needed by curvature (1-ring) as well as the edge sweep and
+    // seeding below, so it is built once, up front, with no dependency on the
+    // item weights that follow.
+    const detail::NodeAdjacency adj =
+        detail::build_node_adjacency(work, surf.mNumPoints, detail::NodeAdjacencyKind::Edge);
+    const std::vector<std::int64_t> edges = remesh_unique_edges(adj, surf.mNumPoints);
+
+    std::vector<double> curvature;
+    std::vector<double> curvature_tensors;  // Anisotropic only, 6 doubles/vertex
+    if (rOptions.mGradation != 0.0 || metric == RemeshMetric::Anisotropic) {
+        const std::vector<double> vertex_normals = remesh_vertex_normals(surf);
+        curvature = remesh_vertex_curvature(
+            surf, adj, vertex_normals,
+            metric == RemeshMetric::Anisotropic ? &curvature_tensors : nullptr,
+            rOptions.mMaxAnisotropy);
+    }
+    std::vector<double> area;
+    std::vector<double> weighted;
+    remesh_item_weights(surf, curvature, rOptions.mGradation, area, weighted);
+    // Anisotropic packs its per-vertex curvature tensor into the accumulator
+    // AFTER item weights exist (it needs rArea); Quadric's plain
+    // face-quadric accumulation needs no weight at all.
+    const std::vector<double> vertex_quad = metric == RemeshMetric::Anisotropic
+                                                ? remesh_vertex_metrics(surf, curvature_tensors, area)
+                                                : remesh_vertex_quadrics(surf, metric);
+
+    const RemeshBoundaryInfo boundary =
+        rOptions.mPreserveBoundary ? remesh_boundary_info(surf) : RemeshBoundaryInfo{};
+    const std::vector<std::int64_t> seed_order =
+        remesh_seed_order(surf.mNumPoints, boundary.mIsBoundaryVertex);
+
+    std::vector<std::int64_t> clusters(surf.mNumPoints, -1);
+    remesh_seed_clusters(clusters, adj, area, seed_order, rOptions.mNumClusters, surf.mNumPoints);
+    if (remesh_grow_null(edges, clusters))
+        for (std::size_t i = 0; i < surf.mNumPoints; ++i)
+            if (clusters[i] == -1)
+                clusters[i] = 0;
+
+    RemeshState state = remesh_init_state(clusters, area, weighted, vertex_quad, metric,
+                                          rOptions.mNumClusters, surf.mNumPoints);
+    result.mNumIterations =
+        remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
+                        rOptions.mNumClusters, rOptions.mMaxIterations);
+
+    // Repair: a minimisation sweep can leave a cluster in two pieces, or the
+    // dual can come out non-manifold at some vertex even with every cluster
+    // itself connected -- two distinct causes, both folded into the same
+    // split/re-grow/re-minimise loop and both reported separately at the end.
+    // The non-manifold check runs on the CURRENT (possibly-gapped,
+    // pre-renumber) cluster id space via remesh_dual_triangle_keys, which
+    // makes no assumption of contiguity.
+    auto unassign_bad_clusters = [&](const std::vector<std::uint8_t>& rBad) {
+        for (std::size_t i = 0; i < surf.mNumPoints; ++i)
+            if (clusters[i] >= 0 && rBad[static_cast<std::size_t>(clusters[i])])
+                clusters[i] = -1;
+    };
+
+    std::int64_t disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
+                                                          surf.mNumPoints);
+    std::vector<std::uint8_t> bad_vertices = remesh_detect_nonmanifold_vertices(
+        remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+    std::int64_t nonmanifold =
+        std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
+    if (nonmanifold > 0)
+        unassign_bad_clusters(bad_vertices);
+
+    for (int pass = 0; pass < rOptions.mMaxRepairPasses && (disconnected > 0 || nonmanifold > 0);
+        ++pass) {
+        if (remesh_grow_null(edges, clusters))
+            for (std::size_t i = 0; i < surf.mNumPoints; ++i)
+                if (clusters[i] == -1)
+                    clusters[i] = 0;
+        state = remesh_init_state(clusters, area, weighted, vertex_quad, metric,
+                                  rOptions.mNumClusters, surf.mNumPoints);
+        result.mNumIterations +=
+            remesh_minimize(edges, clusters, area, weighted, vertex_quad, metric, state,
+                            rOptions.mNumClusters, rOptions.mMaxIterations);
+        disconnected = remesh_split_disconnected(adj, clusters, rOptions.mNumClusters,
+                                                 surf.mNumPoints);
+        bad_vertices = remesh_detect_nonmanifold_vertices(
+            remesh_dual_triangle_keys(surf, clusters), rOptions.mNumClusters);
+        nonmanifold = std::count(bad_vertices.begin(), bad_vertices.end(), std::uint8_t{1});
+        if (nonmanifold > 0)
+            unassign_bad_clusters(bad_vertices);
+    }
+    result.mNumIsolatedClusters = disconnected;
+    if (remesh_grow_null(edges, clusters))
+        for (std::size_t i = 0; i < surf.mNumPoints; ++i)
+            if (clusters[i] == -1)
+                clusters[i] = 0;
+
+    const std::int64_t n_clus =
+        remesh_renumber(clusters, rOptions.mNumClusters, surf.mNumPoints);
+    result.mNumClusters = n_clus;
+    if (n_clus < rOptions.mNumClusters)
+        log::warn("remesh: produced {} clusters of the {} requested (the surface could not be "
+                  "split more finely)",
+                  n_clus, rOptions.mNumClusters);
+
+    // The honest, final, vertex-level manifoldness count: whatever repair
+    // could not fix, checked once more on the true final (renumbered)
+    // clustering -- distinct in kind from mNumIsolatedClusters, which the
+    // loop above already tracks at cluster granularity.
+    const std::vector<std::uint8_t> final_bad = remesh_detect_nonmanifold_vertices(
+        remesh_dual_triangle_keys(surf, clusters), n_clus);
+    result.mNumNonManifoldVertices =
+        std::count(final_bad.begin(), final_bad.end(), std::uint8_t{1});
+
+    const std::vector<double> positions = remesh_final_positions(
+        clusters, area, weighted, vertex_quad, metric, n_clus, surf.mNumPoints);
+    const std::vector<double> normals = remesh_cluster_normals(surf, clusters, n_clus);
+    const std::vector<std::int64_t> faces = remesh_dual_faces(surf, clusters, positions, normals);
+    const std::vector<std::int64_t> boundary_lines =
+        rOptions.mPreserveBoundary
+            ? remesh_dual_boundary_edges(boundary.mBoundaryEdges, clusters)
+            : std::vector<std::int64_t>{};
+
+    Mesh& out = result.mMesh;
+    {
+        NDArray pts = NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(n_clus), 3});
+        double* dst = pts.As<double>();
+        for (std::size_t i = 0; i < static_cast<std::size_t>(n_clus) * 3; ++i)
+            dst[i] = positions[i];
+        out.AssignPoints(std::move(pts));
+    }
+    {
+        const std::size_t nf = faces.size() / 3;
+        NDArray conn = NDArray::Uninit(DType::Int64, {nf, 3});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < faces.size(); ++i)
+            dst[i] = faces[i];
+        out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(conn));
+    }
+    if (!boundary_lines.empty()) {
+        const std::size_t nl = boundary_lines.size() / 2;
+        NDArray lconn = NDArray::Uninit(DType::Int64, {nl, 2});
+        std::int64_t* dst = lconn.As<std::int64_t>();
+        for (std::size_t i = 0; i < boundary_lines.size(); ++i)
+            dst[i] = boundary_lines[i];
+        out.AddCellBlock(cell_type_name(CellType::Line), std::move(lconn));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, rMesh.FieldData(name));
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/remesh.cpp =====
+// ===== begin src/cpp/src/operations/remesh_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kRvolPrefix = "meshio++: remesh_volume: ";
+
+// --- exact-position weld key -------------------------------------------------
+//
+// Multiple crossing edges incident to the SAME warped lattice vertex each get
+// their OWN fresh point (Resolve()'s own design, see its doc comment) that
+// nonetheless lands at the IDENTICAL warped-target position -- confirmed by
+// RemeshVolume.OutputIsWatertightAndPositivelyOriented, whose non-manifold
+// edges traced back to exactly this. Welding those AFTER every tet's winding
+// is already fixed (remesh_volume's own weld pass, below) is what makes the
+// fix safe: merging two ids changes only which id a face references, never
+// any tet's corner order, so it cannot reopen the winding-consistency problem
+// a vertex-level SHARED id (tried and reverted -- see git history) did. Keyed
+// on the exact bit pattern (the `SurfaceEdgeKeyHash` mixing constant and
+// shape), not a tolerance: these positions are not merely close, they are the
+// SAME `mFinalPosition[...]` value read twice, so exact equality is both
+// sufficient and the more conservative choice (a tolerance could weld two
+// genuinely distinct nearby crossings that happen to be close by coincidence).
+struct RvolPosKey {
+    std::int64_t mBits[3];
+    bool operator==(const RvolPosKey& rOther) const {
+        return mBits[0] == rOther.mBits[0] && mBits[1] == rOther.mBits[1] &&
+               mBits[2] == rOther.mBits[2];
+    }
+};
+struct RvolPosKeyHash {
+    std::size_t operator()(const RvolPosKey& rKey) const {
+        std::size_t h = 0;
+        for (std::int64_t b : rKey.mBits)
+            h ^= std::hash<std::int64_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+RvolPosKey rvol_pos_key(const Vec3& rP) {
+    RvolPosKey key;
+    static_assert(sizeof(double) == sizeof(std::int64_t), "double/int64 size mismatch");
+    for (int i = 0; i < 3; ++i) {
+        double v = rP[static_cast<std::size_t>(i)];
+        std::memcpy(&key.mBits[i], &v, sizeof(v));
+    }
+    return key;
+}
+
+// --- the BCC 12-tet local table ---------------------------------------------
+//
+// Local corner indices 0-7 are the standard hexahedron corner layout
+// (0=(0,0,0), 1=(1,0,0), 2=(1,1,0), 3=(0,1,0), 4=(0,0,1), 5=(1,0,1),
+// 6=(1,1,1), 7=(0,1,1)); index 8 is the cell's own body center (0.5,0.5,0.5).
+// Each of the cell's 6 faces is split into 2 triangles by ONE fixed diagonal
+// (the one connecting its two lattice-index-lowest and lattice-index-highest
+// corners, in the face's own local (u,v) parametrization -- a rule stated
+// purely in terms of the FACE's own global coordinates, so two cells sharing
+// a face independently compute the identical diagonal with no adjacency
+// bookkeeping), and each resulting triangle is connected to the center.
+//
+// DERIVED and algebraically pinned (never transcribed from anywhere): the 12
+// entries tile the unit cell exactly (sum of |volume| == 1, every point of
+// the cell belongs to exactly one tet -- RemeshVolume.BccTableTilesTheUnitCellWithNoGapOrOverlap),
+// every entry is positively oriented (RemeshVolume.BccTableIsPositivelyOriented),
+// and every tet's 6 dihedral angles are exactly {45, 60, 60, 90, 120}
+// degrees, independent of cell size (RemeshVolume.BccTableDihedralAnglesAreFixed)
+// -- NOT Labelle & Shewchuk's own reported {60, 90, 120} set, since this is
+// an independent derivation of the same general idea rather than a
+// transcription of their (unread) construction; see remesh_volume.hpp's file
+// doc comment.
+constexpr std::array<std::array<int, 3>, 12> kBccLocalTets = {{
+    {0, 7, 3},
+    {0, 4, 7},
+    {1, 2, 6},
+    {1, 6, 5},
+    {0, 1, 5},
+    {0, 5, 4},
+    {3, 6, 2},
+    {3, 7, 6},
+    {0, 2, 1},
+    {0, 3, 2},
+    {4, 5, 6},
+    {4, 6, 7},
+}};
+
+// --- lattice generation ------------------------------------------------------
+
+// The root BCC lattice: every point (A-lattice corners, then B-lattice
+// centers), and every root tet as 4 point ids, already positively oriented
+// (kBccLocalTets's own guarantee, since every cell is a translate of the same
+// unit construction).
+struct RvolLattice {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mTets;
+    std::int64_t mNumLatticeIds() const { return static_cast<std::int64_t>(mPoints.size()); }
+};
+
+RvolLattice rvol_build_lattice(const detail::LatticeSpec& rSpec) {
+    RvolLattice lat;
+    const std::int64_t nx = rSpec.mDims[0];
+    const std::int64_t ny = rSpec.mDims[1];
+    const std::int64_t nz = rSpec.mDims[2];
+    if (nx <= 0 || ny <= 0 || nz <= 0)
+        return lat;
+
+    const std::array<double, 3>& o = rSpec.mOrigin;
+    const std::array<double, 3>& h = rSpec.mSpacing;
+
+    const std::int64_t nax = nx + 1, nay = ny + 1, naz = nz + 1;
+    const std::int64_t numA = nax * nay * naz;
+    const std::int64_t numB = nx * ny * nz;
+
+    auto a_id = [&](std::int64_t i, std::int64_t j, std::int64_t k) {
+        return (i * nay + j) * naz + k;
+    };
+    auto b_id = [&](std::int64_t i, std::int64_t j, std::int64_t k) {
+        return numA + (i * ny + j) * nz + k;
+    };
+
+    lat.mPoints.resize(static_cast<std::size_t>(numA + numB));
+    for (std::int64_t i = 0; i < nax; ++i)
+        for (std::int64_t j = 0; j < nay; ++j)
+            for (std::int64_t k = 0; k < naz; ++k)
+                lat.mPoints[static_cast<std::size_t>(a_id(i, j, k))] =
+                    Vec3{o[0] + static_cast<double>(i) * h[0], o[1] + static_cast<double>(j) * h[1],
+                        o[2] + static_cast<double>(k) * h[2]};
+    for (std::int64_t i = 0; i < nx; ++i)
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t k = 0; k < nz; ++k)
+                lat.mPoints[static_cast<std::size_t>(b_id(i, j, k))] =
+                    Vec3{o[0] + (static_cast<double>(i) + 0.5) * h[0],
+                        o[1] + (static_cast<double>(j) + 0.5) * h[1],
+                        o[2] + (static_cast<double>(k) + 0.5) * h[2]};
+
+    lat.mTets.reserve(static_cast<std::size_t>(numB) * 12);
+    for (std::int64_t i = 0; i < nx; ++i)
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t k = 0; k < nz; ++k) {
+                const std::int64_t corner[8] = {
+                    a_id(i, j, k),         a_id(i + 1, j, k),         a_id(i + 1, j + 1, k),
+                    a_id(i, j + 1, k),     a_id(i, j, k + 1),         a_id(i + 1, j, k + 1),
+                    a_id(i + 1, j + 1, k + 1), a_id(i, j + 1, k + 1)};
+                const std::int64_t centre = b_id(i, j, k);
+                for (const auto& t : kBccLocalTets)
+                    lat.mTets.push_back({centre, corner[t[0]], corner[t[1]], corner[t[2]]});
+            }
+    return lat;
+}
+
+// --- classify + warp ---------------------------------------------------------
+
+// Every lattice vertex's inside/outside LABEL (from its ORIGINAL signed
+// distance, fixed for the rest of the algorithm), its raw signed distance
+// (needed by a fresh cut point's interpolation parameter), whether it was
+// warped, and its FINAL (possibly-warped) position.
+struct RvolClassification {
+    std::vector<std::uint8_t> mInside;
+    std::vector<std::uint8_t> mWarped;
+    std::vector<double> mDistance;
+    std::vector<Vec3> mFinalPosition;
+};
+
+RvolClassification rvol_classify_and_warp(const RvolLattice& rLattice,
+                                          const detail::DistanceQuery& rQuery,
+                                          const SurfaceDistanceOptions& rDistOpts,
+                                          double WarpThreshold, std::int64_t& rNumWarped) {
+    const std::size_t n = rLattice.mPoints.size();
+    RvolClassification c;
+    c.mInside.resize(n);
+    c.mWarped.assign(n, 0);
+    c.mDistance.resize(n);
+    c.mFinalPosition = rLattice.mPoints;
+    rNumWarped = 0;
+    if (n == 0)
+        return c;
+
+    const std::vector<detail::DistanceHit> hits =
+        detail::query_distances(rQuery, rLattice.mPoints, rDistOpts);
+    for (std::size_t i = 0; i < n; ++i) {
+        c.mDistance[i] = hits[i].mSignedDistance;
+        c.mInside[i] = hits[i].mSignedDistance <= 0.0 ? 1 : 0;
+    }
+
+    if (!(WarpThreshold > 0.0))
+        return c;
+
+    std::vector<std::size_t> candidates;
+    for (std::size_t i = 0; i < n; ++i)
+        if (std::fabs(c.mDistance[i]) <= WarpThreshold)
+            candidates.push_back(i);
+    if (candidates.empty())
+        return c;
+
+    std::vector<Vec3> qpts(candidates.size());
+    for (std::size_t ci = 0; ci < candidates.size(); ++ci)
+        qpts[ci] = rLattice.mPoints[candidates[ci]];
+    const std::vector<detail::ClosestPointHit> chits = detail::query_closest_points(rQuery, qpts);
+
+    std::int64_t warped = 0;
+    for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+        if (!chits[ci].mFound)
+            continue;
+        const std::size_t i = candidates[ci];
+        c.mWarped[i] = 1;
+        c.mFinalPosition[i] = chits[ci].mPoint;
+        ++warped;
+    }
+    rNumWarped = warped;
+    return c;
+}
+
+// --- cut: resolve one crossing edge to a point id ----------------------------
+
+// Resolves a crossing edge (one endpoint inside, one outside -- the caller's
+// contract, never checked here) to a point id in the combined id space:
+// [0, numLatticeIds) are original lattice vertices (kept whole or REUSED as a
+// cut point when warped -- see the file doc comment for why reuse is safe:
+// warping never moves a vertex past its own edges); ids at or beyond
+// numLatticeIds are fresh points, one per distinct crossing edge, deduped by
+// the sorted endpoint-id pair (the `refine.cpp`/`surface.cpp` phase-split
+// idiom's dedup key, applied here to a SERIAL pass rather than a parallel
+// fill + serial dedup, since the classify/warp pass above -- not this one --
+// is the genuinely expensive step; see the file doc comment).
+class RvolCutResolver {
+public:
+    RvolCutResolver(const RvolLattice& rLattice, const RvolClassification& rClass)
+        : mrLattice(rLattice), mrClass(rClass) {}
+
+    // Every crossing edge gets exactly one FRESH point id, deduped by the
+    // sorted endpoint-id pair -- the plain marching-tetrahedra rule, which is
+    // what makes watertightness a structural consequence of global,
+    // edge-keyed dedup rather than something this function has to reason
+    // about per case. Warping affects only WHERE that point sits (reusing an
+    // incident endpoint's own warp target when available), never WHETHER it
+    // is a distinct point -- deliberately a genuinely FRESH point every time,
+    // even when it coincides exactly with another edge's own fresh point
+    // (both incident to the same warped vertex): any scheme that instead
+    // SHARES one id across multiple edges was tried and rejected here (see
+    // git history) -- sharing by the warped vertex's own id collapsed a
+    // straddling tet's kept corner onto its own cut point when that same
+    // vertex was both kept and a cut-point source; sharing by a SEPARATE id
+    // per warped vertex avoided that but broke winding CONSISTENCY between
+    // neighbouring tets instead (RemeshVolume.OutputIsWatertightAndPositivelyOriented
+    // caught both, first as non-manifold edges, then as inconsistently wound
+    // pairs). Genuinely-coincident fresh points are instead welded AFTER
+    // every tet is built (see remesh_volume's own weld pass below), which
+    // touches only WHICH id a face uses, never any tet's already-decided
+    // winding.
+    std::int64_t Resolve(std::int64_t Inside, std::int64_t Outside) {
+        const std::int64_t lo = Inside < Outside ? Inside : Outside;
+        const std::int64_t hi = Inside < Outside ? Outside : Inside;
+        const detail::SurfaceEdgeKey key{lo, hi};
+        auto it = mEdgeToNew.find(key);
+        if (it != mEdgeToNew.end())
+            return it->second;
+
+        Vec3 np;
+        if (mrClass.mWarped[static_cast<std::size_t>(Inside)]) {
+            np = mrClass.mFinalPosition[static_cast<std::size_t>(Inside)];
+        } else if (mrClass.mWarped[static_cast<std::size_t>(Outside)]) {
+            np = mrClass.mFinalPosition[static_cast<std::size_t>(Outside)];
+        } else {
+            const double du = mrClass.mDistance[static_cast<std::size_t>(Inside)];
+            const double dv = mrClass.mDistance[static_cast<std::size_t>(Outside)];
+            double t = (du - dv) != 0.0 ? du / (du - dv) : 0.5;
+            if (!(t > 0.0 && t < 1.0))
+                t = 0.5;  // a near-tangent crossing: the safe interior fallback
+            const Vec3& pu = mrLattice.mPoints[static_cast<std::size_t>(Inside)];
+            const Vec3& pv = mrLattice.mPoints[static_cast<std::size_t>(Outside)];
+            np = {pu[0] + t * (pv[0] - pu[0]), pu[1] + t * (pv[1] - pu[1]),
+                 pu[2] + t * (pv[2] - pu[2])};
+        }
+        const std::int64_t id = NewPoint(np);
+        mEdgeToNew.emplace(key, id);
+        return id;
+    }
+
+    const std::vector<Vec3>& NewPositions() const { return mNewPositions; }
+
+    // The position of ANY id in the combined space: an original lattice
+    // vertex (using its current, possibly-warped position) or a fresh cut
+    // point this resolver created.
+    const Vec3& PositionOf(std::int64_t Id) const {
+        return Id < mrLattice.mNumLatticeIds()
+                  ? mrClass.mFinalPosition[static_cast<std::size_t>(Id)]
+                  : mNewPositions[static_cast<std::size_t>(Id - mrLattice.mNumLatticeIds())];
+    }
+
+private:
+    std::int64_t NewPoint(const Vec3& rPos) {
+        const std::int64_t id =
+            mrLattice.mNumLatticeIds() + static_cast<std::int64_t>(mNewPositions.size());
+        mNewPositions.push_back(rPos);
+        return id;
+    }
+
+    const RvolLattice& mrLattice;
+    const RvolClassification& mrClass;
+    std::unordered_map<detail::SurfaceEdgeKey, std::int64_t, detail::SurfaceEdgeKeyHash>
+        mEdgeToNew;
+    std::vector<Vec3> mNewPositions;
+};
+
+// --- cut: the sign-mask case table -------------------------------------------
+//
+// Every sub-case's TOPOLOGY (which corners survive, which edges are cut, how
+// the cut region decomposes into tets) is derived and numerically pinned --
+// tested by comparing the emitted sub-tets' total signed volume against an
+// independently-computed expected value (RemeshVolume.CutCaseTopologyIsExact)
+// -- never transcribed. Two facts are load-bearing and both are pinned by a
+// dedicated test rather than trusted from the derivation alone:
+//
+// 1-inside / 3-inside: with `k` the single distinguished corner's index into
+// the root tet's own 4-entry array and "others" the remaining 3 in their
+// ORIGINAL array order, that natural order gives a POSITIVELY oriented result
+// only for EVEN k (0 or 2); ODD k (1 or 3) needs the last two of "others"
+// swapped. This is a parity fact about the tet corner numbering (a cyclic
+// rotation by one position is an odd permutation of 4 elements), not an
+// approximation -- RemeshVolume.CutCaseTableIsCorrectlyOrientedForEveryVertexPosition
+// checks all 4 positions explicitly.
+//
+// 2-inside: with the inside pair's ascending indices (i0, i1) and the outside
+// pair's ascending indices (j0, j1), the outside pair's order must be
+// SWAPPED exactly when (i0, i1) is (0, 2) or (1, 3) -- the tet's two
+// "diagonal" (non-adjacent-in-array) vertex pairs -- and used as-is for the
+// other 4 of the 6 possible pairings. Same test covers all 6.
+// Rejects a degenerate (near-zero or negative) tet -- possible only from an
+// ill-conditioned cut near a tangency, never from a whole (count==0/4) tet,
+// whose sign is already guaranteed by kBccLocalTets.
+bool rvol_tet_ok(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, double Eps) {
+    const Vec3 d1{p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+    const Vec3 d2{p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+    const Vec3 d3{p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]};
+    const double v = d1[0] * (d2[1] * d3[2] - d2[2] * d3[1]) -
+                     d1[1] * (d2[0] * d3[2] - d2[2] * d3[0]) +
+                     d1[2] * (d2[0] * d3[1] - d2[1] * d3[0]);
+    return v > Eps;
+}
+
+void rvol_cut_tet(const std::array<std::int64_t, 4>& rV, const RvolClassification& rClass,
+                  RvolCutResolver& rResolver, std::vector<std::array<std::int64_t, 4>>& rOut) {
+    bool lab[4];
+    int count = 0;
+    for (int i = 0; i < 4; ++i) {
+        lab[i] = rClass.mInside[static_cast<std::size_t>(rV[static_cast<std::size_t>(i)])] != 0;
+        if (lab[i])
+            ++count;
+    }
+    if (count == 0)
+        return;
+    if (count == 4) {
+        rOut.push_back(rV);
+        return;
+    }
+
+    // Checks each candidate tet's sign and swaps its own last two corners if
+    // negative -- a purely WITHIN-tet reordering that cannot change which
+    // vertices any face uses, so it cannot reopen a cross-tet consistency
+    // problem. Declared once here so both the count==3 and count==2 branches
+    // below share it.
+    auto push_oriented = [&](std::int64_t p0, std::int64_t p1, std::int64_t p2, std::int64_t p3) {
+        if (rvol_tet_ok(rResolver.PositionOf(p0), rResolver.PositionOf(p1),
+                        rResolver.PositionOf(p2), rResolver.PositionOf(p3), 0.0))
+            rOut.push_back({p0, p1, p2, p3});
+        else
+            rOut.push_back({p0, p1, p3, p2});
+    };
+
+    if (count == 1) {
+        // The single inside vertex is unambiguous (there is only one
+        // candidate), so unlike count==2/3 below, no GLOBAL-vertex-id rule is
+        // needed here: which 3 outside neighbours it pairs with -- and hence
+        // which 3 faces get emitted -- is fixed by the LABELS alone, and
+        // their internal order affects only this one tet's own winding
+        // (fixed by push_oriented), never which faces exist.
+        int k = -1;
+        for (int i = 0; i < 4; ++i)
+            if (lab[i]) {
+                k = i;
+                break;
+            }
+        const std::int64_t pk = rV[static_cast<std::size_t>(k)];
+        const std::int64_t pb = rV[static_cast<std::size_t>((k + 1) % 4)];
+        const std::int64_t pc = rV[static_cast<std::size_t>((k + 2) % 4)];
+        const std::int64_t pd = rV[static_cast<std::size_t>((k + 3) % 4)];
+        const std::int64_t e1 = rResolver.Resolve(pk, pb);
+        const std::int64_t e2 = rResolver.Resolve(pk, pc);
+        const std::int64_t e3 = rResolver.Resolve(pk, pd);
+        push_oriented(pk, e1, e2, e3);
+        return;
+    }
+
+    if (count == 3) {
+        // The single outside vertex pk is unambiguous, but the 3 INSIDE
+        // vertices (b, c, d) are not: which one plays the "far corner" that
+        // recurs in every sub-tet is exactly the same kind of ambiguity
+        // count==2's hub choice has below, and for the identical reason
+        // (a neighbouring tet sharing a 2-inside face sees the same two
+        // global ids at different local slots) must be resolved by GLOBAL
+        // vertex id, not local array position. Sorted ascending by global id
+        // (B0, B1, B2), the "inside" region is a triangular prism with ends
+        // (B0, B1, B2) and (cut(B0,pk), cut(B1,pk), cut(B2,pk)) -- the exact
+        // topological shape count==2's own prism has (2 triangular ends, 3
+        // quad sides), split by the identical canonical "staircase" formula,
+        // confirmed to agree with count==2's own diagonal choice on every
+        // shared 2-inside-type face (RemeshVolume.OutputIsWatertightAndPositivelyOriented
+        // is what actually caught this cross-case disagreement -- a
+        // same-case self-consistency check alone, which an earlier version
+        // of this branch already passed, could not).
+        std::int64_t inside_ids[3];
+        std::int64_t pk = -1;
+        int ii = 0;
+        for (int i = 0; i < 4; ++i)
+            if (lab[i])
+                inside_ids[ii++] = rV[static_cast<std::size_t>(i)];
+            else
+                pk = rV[static_cast<std::size_t>(i)];
+        std::sort(inside_ids, inside_ids + 3);
+        const std::int64_t b0 = inside_ids[0], b1 = inside_ids[1], b2 = inside_ids[2];
+        const std::int64_t e0 = rResolver.Resolve(b0, pk);
+        const std::int64_t e1 = rResolver.Resolve(b1, pk);
+        const std::int64_t e2 = rResolver.Resolve(b2, pk);
+        push_oriented(b0, b1, b2, e2);
+        push_oriented(b0, b1, e2, e1);
+        push_oriented(b0, e1, e2, e0);
+        return;
+    }
+
+    // count == 2. Which of the 2 inside vertices becomes the "hub" (the one
+    // appearing in all 3 sub-tets) is genuinely ambiguous from this tet's
+    // own local vertex order alone -- and MUST be resolved by a rule that
+    // depends only on the two GLOBAL vertex ids, never on which of the four
+    // local array slots (0-3) they happen to occupy in THIS root tet.
+    // A neighbouring lattice tet sharing this same face sees the identical
+    // two global ids but very likely at DIFFERENT local slots (each root
+    // tet's own 4-vertex order comes from kBccLocalTets independently), so a
+    // local-index-based hub choice picks OPPOSITE diagonals for the two
+    // tets' shared quad face -- caught by
+    // RemeshVolume.OutputIsWatertightAndPositivelyOriented's non-manifold-edge
+    // count staying stubbornly nonzero even after the face-sharing bug above
+    // was fixed. Smaller global id = hub ("a"), for both the inside and the
+    // outside pair -- an arbitrary but, critically, GLOBALLY CONSISTENT rule.
+    std::int64_t inside_ids[2], outside_ids[2];
+    int ii = 0, jj = 0;
+    for (int i = 0; i < 4; ++i)
+        if (lab[i])
+            inside_ids[ii++] = rV[static_cast<std::size_t>(i)];
+        else
+            outside_ids[jj++] = rV[static_cast<std::size_t>(i)];
+    if (inside_ids[0] > inside_ids[1])
+        std::swap(inside_ids[0], inside_ids[1]);
+    if (outside_ids[0] > outside_ids[1])
+        std::swap(outside_ids[0], outside_ids[1]);
+    const std::int64_t pa = inside_ids[0], pb = inside_ids[1];
+    const std::int64_t pc = outside_ids[0], pd = outside_ids[1];
+    const std::int64_t eac = rResolver.Resolve(pa, pc);
+    const std::int64_t ead = rResolver.Resolve(pa, pd);
+    const std::int64_t ebc = rResolver.Resolve(pb, pc);
+    const std::int64_t ebd = rResolver.Resolve(pb, pd);
+    // The standard "staircase fan" split of a triangular prism whose two
+    // triangular ends are (pa, eac, ead) and (pb, ebc, ebd) (corresponding
+    // vertex-for-vertex: pa<->pb, eac<->ebc, ead<->ebd) -- the identical
+    // canonical formula count==3 above uses, verified against an
+    // independently-computed convex-hull volume AND checked for no face
+    // shared by more than 2 of the 3 tets (a stronger, and as it turned out
+    // necessary, check than volume-sum alone; see the git history for the
+    // face-sharing bug this replaced). Global-id ordering fixes WHICH points
+    // are used (for cross-tet consistency); push_oriented (declared above)
+    // fixes each candidate's winding independently.
+    push_oriented(pa, eac, ead, ebd);
+    push_oriented(pa, eac, ebd, ebc);
+    push_oriented(pa, ebc, ebd, pb);
+}
+
+// Does the mesh contain a 3D or polyhedron block? Selects whether the input is
+// treated as a volume (its boundary is extracted) or a surface (used as-is).
+bool rvol_has_volume_cells(const Mesh& rMesh) {
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            return true;
+        if (!cb.IsRagged() && cell_type_dimension(cell_type_from_name(cb.Type())) == 3)
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+RemeshVolumeResult remesh_volume(const Mesh& rMesh, const RemeshVolumeOptions& rOptions) {
+    if (!(rOptions.mWarpFraction >= 0.0))
+        throw std::invalid_argument(std::string(kRvolPrefix) + "warp_fraction must not be "
+                                    "negative, got " +
+                                    std::to_string(rOptions.mWarpFraction));
+
+    const bool is_volume = rvol_has_volume_cells(rMesh);
+    const Mesh surface_owner = is_volume ? extract_surface(rMesh) : Mesh{};
+    const Mesh& surface = is_volume ? surface_owner : rMesh;
+
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(surface, rOptions.mDistance.mSurfaceRegion);
+
+    detail::LatticeRequest req;
+    req.mResolution = rOptions.mResolution;
+    req.mCellSize = rOptions.mCellSize;
+    req.mBounds = rOptions.mBounds;
+    req.mPadding = rOptions.mPadding;
+    req.mPaddingRelative = rOptions.mPaddingRelative;
+    req.mMaxCells = rOptions.mMaxCells;
+    const detail::LatticeSpec spec = detail::lattice_resolve(surface, req, kRvolPrefix);
+
+    // The BCC construction assumes a genuinely cubic cell; a per-axis
+    // mResolution over a non-cube bounding box can resolve to a rectangular
+    // one, which would silently distort every dihedral-angle guarantee this
+    // operation makes. Named rather than allowed through.
+    if (spec.mDims[0] > 0 && spec.mDims[1] > 0 && spec.mDims[2] > 0) {
+        const double h0 = spec.mSpacing[0];
+        const double tol = 1e-9 * (h0 > 0.0 ? h0 : 1.0);
+        if (std::fabs(spec.mSpacing[1] - h0) > tol || std::fabs(spec.mSpacing[2] - h0) > tol)
+            throw std::invalid_argument(
+                std::string(kRvolPrefix) +
+                "the resolved lattice cell is not cubic (spacing " + std::to_string(spec.mSpacing[0]) +
+                ", " + std::to_string(spec.mSpacing[1]) + ", " + std::to_string(spec.mSpacing[2]) +
+                ") -- a per-axis resolution over a non-cube bounding box does not fit this "
+                "operation's fixed BCC cell; use cell_size instead");
+    }
+
+    detail::warn_regions_dropped(rMesh, "remesh_volume");
+
+    RemeshVolumeResult result;
+    result.mQuality = detail::soup_quality(soup);
+    if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Error && !result.mQuality.mWatertight)
+        throw std::invalid_argument(std::string(kRvolPrefix) + "the surface is not watertight "
+                                    "(boundary_edges=" +
+                                    std::to_string(result.mQuality.mBoundaryEdges) +
+                                    ", non_manifold_edges=" +
+                                    std::to_string(result.mQuality.mNonManifoldEdges) +
+                                    ", inconsistent_pairs=" +
+                                    std::to_string(result.mQuality.mInconsistentPairs) + ")");
+    else if (rOptions.mDistance.mWatertightCheck == SdfWatertightCheck::Warn &&
+            !result.mQuality.mWatertight)
+        log::warn("remesh_volume: the surface is not watertight; signs may be unreliable "
+                  "near the defect");
+
+    const detail::DistanceQuery query = detail::build_distance_query(soup, rOptions.mDistance);
+    const RvolLattice lattice = rvol_build_lattice(spec);
+
+    const double h = spec.mSpacing[0];
+    std::int64_t num_warped = 0;
+    const RvolClassification cls = rvol_classify_and_warp(
+        lattice, query, rOptions.mDistance, rOptions.mWarpFraction * h, num_warped);
+    result.mNumVerticesWarped = num_warped;
+
+    // --- cut: SERIAL, ascending root-tet order -- see rvol_build_lattice's
+    // doc comment above for why this pass, unlike the classify/warp one
+    // above it, does not need to be parallel.
+    RvolCutResolver resolver(lattice, cls);
+    std::vector<std::array<std::int64_t, 4>> raw_tets;
+    raw_tets.reserve(lattice.mTets.size());
+    std::int64_t num_rejected = 0;
+    // A cut tet may reference a point resolver.Resolve() has not yet created
+    // (impossible for a WHOLE tet, but possible for a cut one), so validation
+    // must happen only after every Resolve() call for that root tet has run --
+    // hence the per-root-tet scratch buffer rather than validating in place.
+    std::vector<std::array<std::int64_t, 4>> scratch;
+    auto point_at = [&](std::int64_t id) -> const Vec3& { return resolver.PositionOf(id); };
+    for (const auto& t : lattice.mTets) {
+        scratch.clear();
+        rvol_cut_tet(t, cls, resolver, scratch);
+        for (const auto& tt : scratch) {
+            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
+                            1e-15 * h * h * h))
+                raw_tets.push_back(tt);
+            else
+                ++num_rejected;
+        }
+    }
+    // --- weld: exact-position dedup of fresh points, then re-check for any
+    // tet that welding itself made degenerate (two of its own corners
+    // collapsing onto one welded id) -- see RvolPosKey's own doc comment for
+    // why this is the safe place to fix duplicate coincident points, and
+    // why it is exact rather than tolerance-based.
+    const std::int64_t num_lattice = lattice.mNumLatticeIds();
+    {
+        const std::vector<Vec3>& fresh = resolver.NewPositions();
+        std::unordered_map<RvolPosKey, std::int64_t, RvolPosKeyHash> pos_to_first;
+        std::vector<std::int64_t> fresh_remap(fresh.size());
+        for (std::size_t i = 0; i < fresh.size(); ++i) {
+            const RvolPosKey key = rvol_pos_key(fresh[i]);
+            auto it = pos_to_first.find(key);
+            if (it == pos_to_first.end()) {
+                pos_to_first.emplace(key, static_cast<std::int64_t>(i));
+                fresh_remap[i] = static_cast<std::int64_t>(i);
+            } else {
+                fresh_remap[i] = it->second;
+            }
+        }
+        std::vector<std::array<std::int64_t, 4>> welded;
+        welded.reserve(raw_tets.size());
+        for (const auto& t : raw_tets) {
+            std::array<std::int64_t, 4> tt = t;
+            for (std::int64_t& id : tt)
+                if (id >= num_lattice)
+                    id = num_lattice + fresh_remap[static_cast<std::size_t>(id - num_lattice)];
+            if (rvol_tet_ok(point_at(tt[0]), point_at(tt[1]), point_at(tt[2]), point_at(tt[3]),
+                            1e-15 * h * h * h))
+                welded.push_back(tt);
+            else
+                ++num_rejected;
+        }
+        raw_tets = std::move(welded);
+    }
+    result.mNumTetsRejected = num_rejected;
+
+    if (static_cast<std::int64_t>(raw_tets.size()) > rOptions.mMaxTets)
+        throw std::invalid_argument(
+            std::string(kRvolPrefix) + "the cut output has " + std::to_string(raw_tets.size()) +
+            " tets, exceeding max_tets (" + std::to_string(rOptions.mMaxTets) +
+            "); coarsen the lattice or raise max_tets");
+
+    // --- compact: used lattice vertices (in ascending original id) + the
+    // resolver's fresh points (already in deterministic assignment order) ---
+    std::vector<std::uint8_t> used(static_cast<std::size_t>(num_lattice), 0);
+    for (const auto& t : raw_tets)
+        for (std::int64_t id : t)
+            if (id < num_lattice)
+                used[static_cast<std::size_t>(id)] = 1;
+
+    std::vector<std::int64_t> remap(static_cast<std::size_t>(num_lattice), -1);
+    std::vector<Vec3> out_points;
+    out_points.reserve(raw_tets.size());  // a reasonable-order estimate
+    for (std::int64_t i = 0; i < num_lattice; ++i)
+        if (used[static_cast<std::size_t>(i)]) {
+            remap[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(out_points.size());
+            out_points.push_back(cls.mFinalPosition[static_cast<std::size_t>(i)]);
+        }
+    const std::int64_t new_base = static_cast<std::int64_t>(out_points.size());
+    for (const Vec3& p : resolver.NewPositions())
+        out_points.push_back(p);
+
+    auto final_id = [&](std::int64_t id) -> std::int64_t {
+        if (id < num_lattice)
+            return remap[static_cast<std::size_t>(id)];
+        return new_base + (id - num_lattice);
+    };
+
+    result.mNumTets = static_cast<std::int64_t>(raw_tets.size());
+
+    Mesh& out = result.mMesh;
+    {
+        NDArray pts = NDArray::Uninit(DType::Float64, {out_points.size(), std::size_t{3}});
+        double* dst = pts.As<double>();
+        for (std::size_t i = 0; i < out_points.size(); ++i)
+            for (int d = 0; d < 3; ++d)
+                dst[i * 3 + static_cast<std::size_t>(d)] = out_points[i][static_cast<std::size_t>(d)];
+        out.AssignPoints(std::move(pts));
+    }
+    {
+        NDArray conn = NDArray::Uninit(DType::Int64, {raw_tets.size(), std::size_t{4}});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < raw_tets.size(); ++i)
+            for (int c = 0; c < 4; ++c)
+                dst[i * 4 + static_cast<std::size_t>(c)] = final_id(raw_tets[i][static_cast<std::size_t>(c)]);
+        if (!raw_tets.empty())
+            out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, rMesh.FieldData(name));
+
+    // Measure, don't assume: report the OUTPUT mesh's own boundary
+    // manifoldness rather than trust the warp/cut construction blindly (see
+    // RemeshVolumeResult::mNumNonManifoldEdges' doc comment). Skipped for an
+    // empty result, which extract_surface refuses.
+    if (!raw_tets.empty())
+        result.mNumNonManifoldEdges = surface_watertight_check(extract_surface(out)).mNonManifoldEdges;
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/remesh_volume.cpp =====
 // ===== begin src/cpp/src/operations/reorder.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -82668,24 +86492,49 @@ NDArray smooth_owned_copy(const NDArray& rArr) {
 // --- resolved iteration parameters ------------------------------------------
 
 struct SmoothParams {
+    SmoothMethod mMethod = SmoothMethod::Laplacian;
     double mLambda = 0.0;
     double mMu = 0.0;
     int mNumPasses = 0;
+    // Retained alongside mMethod (never a substitute for a switch on it):
+    // Taubin's every-other-pass +lambda/-mu alternation is the one piece of
+    // per-pass logic still cheaper as a bool than a re-dispatch on mMethod
+    // inside the hot loop -- see phase 4 below.
     bool mTaubin = false;
 };
 
 // Validate the options and expand the method-dependent lambda sentinel.
+//
+// Every branch here is an explicit switch (mMethod) with NO default: case --
+// the RemeshMetric precedent from last cycle, adopted because the previous
+// shape (a single `p.mTaubin = mMethod == Taubin` bool, with "not Taubin"
+// standing in for Laplacian everywhere downstream) would have made a third
+// enumerator silently take the Laplacian branch: plausible output, wrong
+// method, no diagnostic. -Wswitch now catches the next enumerator at compile
+// time instead.
 SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
     SmoothParams p;
+    p.mMethod = rOptions.mMethod;
     p.mTaubin = rOptions.mMethod == SmoothMethod::Taubin;
     p.mLambda = rOptions.mLambda;
-    if (p.mLambda < 0.0)
-        p.mLambda = p.mTaubin ? 0.33 : 0.5;  // the sentinel: each method's own default
+    if (p.mLambda < 0.0) {
+        switch (rOptions.mMethod) {
+            case SmoothMethod::Laplacian:
+                p.mLambda = 0.5;
+                break;
+            case SmoothMethod::Taubin:
+                p.mLambda = 0.33;
+                break;
+            case SmoothMethod::Odt:
+                p.mLambda = 0.9;
+                break;
+        }  // the sentinel: each method's own default
+    }
     if (!(p.mLambda > 0.0 && p.mLambda < 1.0))
         throw std::invalid_argument("meshio++: smooth: lambda must lie in (0, 1); got " +
                                     std::to_string(p.mLambda));
 
-    if (p.mTaubin) {
+    if (rOptions.mMethod == SmoothMethod::Taubin) {
         p.mMu = rOptions.mMu;
         // mu < -lambda < 0 is what makes the pass pair a low-pass filter rather
         // than an amplifier; without it Taubin diverges instead of preserving.
@@ -82694,9 +86543,21 @@ SmoothParams smooth_resolve_params(const SmoothOptions& rOptions) {
                 "meshio++: smooth: taubin requires mu < -lambda < 0; got mu=" +
                 std::to_string(p.mMu) + ", lambda=" + std::to_string(p.mLambda));
     }
+    // Laplacian and Odt silently ignore mu (documented in SmoothOptions::mMu):
+    // making only the newest method strict about an already-established
+    // silently-ignored field would be a worse inconsistency than either rule
+    // applied uniformly.
 
     const int iterations = rOptions.mIterations > 0 ? rOptions.mIterations : 0;
-    p.mNumPasses = p.mTaubin ? iterations * 2 : iterations;
+    switch (rOptions.mMethod) {
+        case SmoothMethod::Taubin:
+            p.mNumPasses = iterations * 2;  // +lambda then mu, per iteration
+            break;
+        case SmoothMethod::Laplacian:
+        case SmoothMethod::Odt:
+            p.mNumPasses = iterations;
+            break;
+    }
     return p;
 }
 
@@ -83397,6 +87258,81 @@ void smooth_pin_unknown_topology(const Mesh& rMesh, std::size_t n,
     }
 }
 
+// --- ODT: tet-only scope check + circumcenter --------------------------------
+
+// ODT's closed-form vertex update needs a genuine circumsphere per incident
+// tet, which only a linear tetra has -- no other 3D cell type (hex/wedge/
+// pyramid, any quadratic family, a polyhedron) has one at all. Reject every
+// construct outside that scope by name before any node moves; the same shape
+// as decimate_volume.cpp's own dv_check_blocks for its identical tet-only
+// restriction (a separate, private copy here rather than a shared helper --
+// the two operations' error prefixes and follow-up advice genuinely differ).
+void smooth_check_odt_blocks(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains a polyhedron cell block -- run convert_cells(mode='simplexify') first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains ragged cell block '" +
+                std::string(cb.Type()) + "'");
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh "
+                "contains 3D cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' operates on tet-only meshes, but the mesh contains "
+            "non-3D cell block '" +
+            std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle after smoothing; drop it first, e.g. "
+            "via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(
+            "meshio++: smooth: method 'odt' requires at least one tetra cell block");
+}
+
+// Circumcenter of tetrahedron (p0, p1, p2, p3): the point equidistant from all
+// four corners, found from the three equal-distance planes |x-p1|^2=|x-p0|^2,
+// |x-p2|^2=|x-p0|^2, |x-p3|^2=|x-p0|^2, which linearize into A*o=b with rows
+// `2*(p_k - p0)` and `b_k = |p_k|^2 - |p0|^2`. Solved by Cramer's rule via
+// `detail::det3` (this file's own vocabulary, not `quality.cpp`'s unrelated
+// -- and file-private, hence unreachable from here -- `quality_solve3`; the
+// two are independently derived from the same textbook construction rather
+// than one transcribing the other). Pinned against a regular tetrahedron's
+// closed-form circumcenter in `Smooth.OdtCircumcenterMatchesClosedFormOnARegularTetra`.
+bool smooth_tet_circumcenter(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
+                             double eps, Vec3& rOut) {
+    const Vec3 a0 = detail::vec3_scale(detail::vec3_sub(p1, p0), 2.0);
+    const Vec3 a1 = detail::vec3_scale(detail::vec3_sub(p2, p0), 2.0);
+    const Vec3 a2 = detail::vec3_scale(detail::vec3_sub(p3, p0), 2.0);
+    const Vec3 rhs = {detail::vec3_norm_sq(p1) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p2) - detail::vec3_norm_sq(p0),
+                      detail::vec3_norm_sq(p3) - detail::vec3_norm_sq(p0)};
+    const double d = detail::det3(a0, a1, a2);
+    if (std::fabs(d) < eps)
+        return false;
+    for (int k = 0; k < 3; ++k) {
+        Vec3 c0 = a0, c1 = a1, c2 = a2;
+        c0[k] = rhs[0];
+        c1[k] = rhs[1];
+        c2[k] = rhs[2];
+        rOut[k] = detail::det3(c0, c1, c2) / d;
+    }
+    return true;
+}
+
 }  // namespace
 
 SmoothMethod smooth_method_from_name(const std::string& rName) {
@@ -83404,8 +87340,10 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
         return SmoothMethod::Laplacian;
     if (rName == "taubin")
         return SmoothMethod::Taubin;
+    if (rName == "odt")
+        return SmoothMethod::Odt;
     throw std::invalid_argument("meshio++: smooth: unknown method '" + rName +
-                                "' (expected 'laplacian' or 'taubin')");
+                                "' (expected 'laplacian', 'taubin' or 'odt')");
 }
 
 SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
@@ -83417,6 +87355,13 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         throw std::invalid_argument("meshio++: smooth: frozen mask has " +
                                     std::to_string(rOptions.mFrozen.size()) +
                                     " entries but the mesh has " + std::to_string(n) + " points");
+
+    const bool is_odt = params.mMethod == SmoothMethod::Odt;
+    if (is_odt)
+        smooth_check_odt_blocks(rMesh);
+    // Degenerate-tet / degenerate-circumsphere threshold, matching
+    // quality.cpp's own `eps = 1e-14` for the analogous cofactor solve.
+    constexpr double kOdtEps = 1e-14;
 
     // --- phase 0: coordinates as a flat double buffer ---
     const std::vector<double> original = smooth_read_coords(rMesh, n, dim);
@@ -83458,10 +87403,19 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
 
     // --- phase 3: the inversion guard's tables ---
+    // Also built, unconditionally, when method == Odt: under Odt's tet-only
+    // scope this table is exactly the tet corner list, so its node -> cell
+    // incidence serves double duty -- ODT's own target computation (phase 4)
+    // AND the inversion guard, with no second CSR anywhere. This is the
+    // reason ODT was scoped tet-only rather than left general: a general
+    // vertex -> incident-cell structure already existed here for the guard,
+    // and restricting the scope is what let it be reused rather than
+    // duplicated (e.g. via detail/cell_adjacency.hpp's differently-keyed
+    // node incidence, which this file has no other use for).
     SmoothCellTable cells;
     SmoothCsr incidence;
     const bool guard = rOptions.mGuardInversion;
-    if (guard) {
+    if (guard || is_odt) {
         cells = smooth_build_cell_table(rMesh, n, dim == 2);
         incidence = smooth_build_incidence(cells, n);
     }
@@ -83476,33 +87430,91 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
             const std::size_t o = i * 3;
-            const std::int64_t b = csr.mXadj[i];
-            const std::int64_t e = csr.mXadj[i + 1];
-            if (frozen[i] || b == e) {
+
+            if (frozen[i]) {
                 cur[o] = prev[o];
                 cur[o + 1] = prev[o + 1];
                 cur[o + 2] = prev[o + 2];
                 return;
             }
-            // Summed in ascending neighbour id (the adjacency rows are sorted),
-            // which is what pins the FP accumulation order across backends and
-            // thread counts.
-            Vec3 sum = {0.0, 0.0, 0.0};
-            for (std::int64_t k = b; k < e; ++k) {
-                const std::size_t p =
-                    static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
-                sum[0] += prev[p];
-                sum[1] += prev[p + 1];
-                sum[2] += prev[p + 2];
+
+            // The move target: an edge-neighbour mean for Laplacian/Taubin,
+            // the volume-weighted circumcenter average of incident tets for
+            // Odt. `has_target` is each method's own "isolated node" case
+            // (no edge neighbours; no tet contributed a valid circumcenter),
+            // which both leave the node exactly where it was.
+            Vec3 target = {0.0, 0.0, 0.0};
+            bool has_target = false;
+            if (is_odt) {
+                const std::int64_t ib = incidence.mXadj[i];
+                const std::int64_t ie = incidence.mXadj[i + 1];
+                // Accumulated over incident tets in ascending cell index
+                // (the incidence rows are built by ascending cell, per
+                // smooth_build_incidence), which pins the FP order the same
+                // way the edge-mean branch pins ascending neighbour id.
+                double sum_v = 0.0;
+                Vec3 sum_wc = {0.0, 0.0, 0.0};
+                for (std::int64_t k = ib; k < ie; ++k) {
+                    const std::size_t c =
+                        static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
+                    const std::int64_t cb = cells.mCornerOffset[c];
+                    const SmoothCornerReader at{&prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)],
+                                                -1, nullptr};
+                    const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
+                    Vec3 cc;
+                    if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
+                        continue;  // degenerate tet: no circumsphere, no contribution
+                    const Vec3 coords[4] = {p0, p1, p2, p3};
+                    const double vol = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                    if (vol < kOdtEps)
+                        continue;
+                    sum_v += vol;
+                    sum_wc[0] += vol * cc[0];
+                    sum_wc[1] += vol * cc[1];
+                    sum_wc[2] += vol * cc[2];
+                }
+                has_target = sum_v > kOdtEps;
+                if (has_target) {
+                    const double inv = 1.0 / sum_v;
+                    target = {sum_wc[0] * inv, sum_wc[1] * inv, sum_wc[2] * inv};
+                }
+            } else {
+                const std::int64_t b = csr.mXadj[i];
+                const std::int64_t e = csr.mXadj[i + 1];
+                has_target = b != e;
+                if (has_target) {
+                    // Summed in ascending neighbour id (the adjacency rows are
+                    // sorted), which is what pins the FP accumulation order
+                    // across backends and thread counts.
+                    Vec3 sum = {0.0, 0.0, 0.0};
+                    for (std::int64_t k = b; k < e; ++k) {
+                        const std::size_t p =
+                            static_cast<std::size_t>(csr.mAdj[static_cast<std::size_t>(k)]) * 3;
+                        sum[0] += prev[p];
+                        sum[1] += prev[p + 1];
+                        sum[2] += prev[p + 2];
+                    }
+                    const double inv = 1.0 / static_cast<double>(e - b);
+                    target = {sum[0] * inv, sum[1] * inv, sum[2] * inv};
+                }
             }
-            const double inv = 1.0 / static_cast<double>(e - b);
-            // For a 2D mesh every z is exactly +0.0, so this reduces to
-            // 0.0 + factor * (0.0 - 0.0) and the z column stays bit-exactly
-            // +0.0 through arbitrarily many passes -- no masking needed.
+
+            if (!has_target) {
+                cur[o] = prev[o];
+                cur[o + 1] = prev[o + 1];
+                cur[o + 2] = prev[o + 2];
+                return;
+            }
+
+            // For a 2D Laplacian/Taubin mesh every z is exactly +0.0, so this
+            // reduces to 0.0 + factor * (0.0 - 0.0) and the z column stays
+            // bit-exactly +0.0 through arbitrarily many passes -- no masking
+            // needed. Odt is tet-only, so dim == 3 always and this note does
+            // not apply there.
             const Vec3 cand = {
-                prev[o] + factor * (sum[0] * inv - prev[o]),
-                prev[o + 1] + factor * (sum[1] * inv - prev[o + 1]),
-                prev[o + 2] + factor * (sum[2] * inv - prev[o + 2]),
+                prev[o] + factor * (target[0] - prev[o]),
+                prev[o + 1] + factor * (target[1] - prev[o + 1]),
+                prev[o + 2] + factor * (target[2] - prev[o + 2]),
             };
 
             if (guard) {

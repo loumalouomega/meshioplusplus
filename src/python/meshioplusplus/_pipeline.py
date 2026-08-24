@@ -41,9 +41,12 @@ from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
 from ._hessian import hessian
 from ._isosurface import isosurface
+from ._optimize_volume import optimize_volume
 from ._partition import partition_labels
 from ._quality import attach_quality
 from ._refine import refine
+from ._remesh import remesh
+from ._remesh_volume import remesh_volume
 from ._reorder import reorder
 from ._sdf import compute_sdf
 from ._skin import extract_skin
@@ -107,6 +110,37 @@ _OP_TABLE = {
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
     "Hessian": ("Array", "Method", "Location", "Output"),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
+    "Remesh": (
+        "NumClusters",
+        "Subdivide",
+        "SubsampleRatio",
+        "MaxSubdivide",
+        "MaxIterations",
+        "MaxRepairPasses",
+        "Metric",
+        "Gradation",
+        "PreserveBoundary",
+        "MaxAnisotropy",
+    ),
+    "RemeshVolume": (
+        "Resolution",
+        "CellSize",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "MaxCells",
+        "MaxTets",
+        "WarpFraction",
+        "Sign",
+        "WatertightCheck",
+    ),
+    "OptimizeVolume": (
+        "MaxIterations",
+        "Relocate",
+        "Flip",
+        "PreserveBoundary",
+        "MinImprovement",
+    ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
         "Resolution",
@@ -515,6 +549,87 @@ def _apply_step(mesh, step, steps, warnings):
                 f"estimate_error: {report['num_skipped']} cell(s) could not be "
                 "evaluated and are NaN"
             )
+    elif op == "Remesh":
+        # Unlike every other step, the output has NO correspondence to the
+        # input: new points, new connectivity. point_data/cell_data/regions
+        # are dropped (remesh's own contract), field_data carries through.
+        n_subdivide = _number(step, "Subdivide", -1)
+        mesh, report = remesh(
+            mesh,
+            int(_number(step, "NumClusters", 0)),
+            subdivide=None if n_subdivide < 0 else int(n_subdivide),
+            subsample_ratio=_number(step, "SubsampleRatio", 10.0),
+            max_subdivide=int(_number(step, "MaxSubdivide", 4)),
+            max_iterations=int(_number(step, "MaxIterations", 100)),
+            max_repair_passes=int(_number(step, "MaxRepairPasses", 10)),
+            metric=_text(step, "Metric", "isotropic"),
+            gradation=_number(step, "Gradation", 0.0),
+            preserve_boundary=_flag(step, "PreserveBoundary", True),
+            max_anisotropy=_number(step, "MaxAnisotropy", 4.0),
+            return_report=True,
+        )
+        entry["NumClusters"] = float(report["num_clusters"])
+        entry["NumIterations"] = float(report["num_iterations"])
+        entry["SubdivideApplied"] = float(report["subdivide_applied"])
+        entry["NumIsolatedClusters"] = float(report["num_isolated_clusters"])
+        entry["NumNonManifoldVertices"] = float(report["num_non_manifold_vertices"])
+        if (
+            report["num_isolated_clusters"] > 0
+            or report["num_non_manifold_vertices"] > 0
+        ):
+            warnings.append(
+                f"remesh: {report['num_isolated_clusters']} isolated cluster(s), "
+                f"{report['num_non_manifold_vertices']} non-manifold vertex/vertices could "
+                "not be repaired; output may be non-manifold near them"
+            )
+    elif op == "RemeshVolume":
+        # Remesh's volumetric sibling: same no-correspondence-with-the-input
+        # contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        resolution = _dvec(step, "Resolution")
+        bounds = _dvec(step, "Bounds")
+        mesh, report = remesh_volume(
+            mesh,
+            resolution=None if not resolution else [int(v) for v in resolution],
+            cell_size=_number(step, "CellSize", 0.0) if "CellSize" in step else None,
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.1),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            max_tets=int(_number(step, "MaxTets", 20000000.0)),
+            warp_fraction=_number(step, "WarpFraction", 0.35),
+            sign=_text(step, "Sign", "pseudonormal"),
+            watertight_check=_text(step, "WatertightCheck", "warn"),
+            return_report=True,
+        )
+        entry["NumTets"] = float(report["num_tets"])
+        entry["NumVerticesWarped"] = float(report["num_vertices_warped"])
+        entry["NumTetsRejected"] = float(report["num_tets_rejected"])
+        entry["NumNonManifoldEdges"] = float(report["num_non_manifold_edges"])
+        if report["num_non_manifold_edges"] > 0:
+            warnings.append(
+                f"remesh_volume: {report['num_non_manifold_edges']} non-manifold boundary "
+                "edge(s), from warping (see doc/remesh_volume.md)"
+            )
+    elif op == "OptimizeVolume":
+        # ODT remeshing: relocate vertices AND flip connectivity (2-3/3-2). The
+        # point set is invariant, so point_data/field_data and Point regions
+        # carry; cell_data + Cell/Side regions are dropped.
+        mesh, report = optimize_volume(
+            mesh,
+            max_iterations=int(_number(step, "MaxIterations", 10.0)),
+            relocate=_flag(step, "Relocate", True),
+            flip=_flag(step, "Flip", True),
+            preserve_boundary=_flag(step, "PreserveBoundary", True),
+            min_improvement=_number(step, "MinImprovement", 1e-6),
+            return_report=True,
+        )
+        entry["NumFlips"] = float(report["num_flips"])
+        entry["Num23Flips"] = float(report["num_23_flips"])
+        entry["Num32Flips"] = float(report["num_32_flips"])
+        entry["NumVerticesMoved"] = float(report["num_vertices_moved"])
+        entry["NumTets"] = float(report["num_tets"])
+        entry["MinQualityBefore"] = float(report["min_quality_before"])
+        entry["MinQualityAfter"] = float(report["min_quality_after"])
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")
         bounds = _dvec(step, "Bounds")

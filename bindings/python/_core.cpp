@@ -108,6 +108,9 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -1350,6 +1353,100 @@ PYBIND11_MODULE(_core, m) {
         py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
         py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
 
+    // Volumetric retetrahedralization by isosurface stuffing -- the
+    // volumetric sibling of `remesh`, generating an entirely new tet mesh
+    // (no point/cell maps, point_data/cell_data/regions dropped) rather than
+    // working on the input's own cells. Same lattice-sizing and distance
+    // kwargs as `compute_sdf`, since it is a lattice generator too. See
+    // operations/remesh_volume.hpp and doc/remesh_volume.md.
+    m.def(
+        "remesh_volume",
+        [](py::object pymesh, py::object resolution, py::object cell_size, py::object bounds,
+           double padding, double padding_relative, std::int64_t max_cells, std::int64_t max_tets,
+           double warp_fraction, const std::string& sign, const std::string& weight,
+           const std::string& watertight_check, const std::string& surface_region,
+           double grid_cell_size, double max_winding_work) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshVolumeOptions options;
+            if (!resolution.is_none())
+                options.mResolution = resolution.cast<std::array<std::int64_t, 3>>();
+            if (!cell_size.is_none())
+                options.mCellSize = cell_size.cast<double>();
+            if (!bounds.is_none())
+                options.mBounds = bounds.cast<std::array<double, 6>>();
+            options.mPadding = padding;
+            options.mPaddingRelative = padding_relative;
+            options.mMaxCells = max_cells;
+            options.mMaxTets = max_tets;
+            options.mWarpFraction = warp_fraction;
+            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
+            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mDistance.mWatertightCheck =
+                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
+            options.mDistance.mSurfaceRegion = surface_region;
+            options.mDistance.mGridCellSize = grid_cell_size;
+            options.mDistance.mMaxWindingWork = max_winding_work;
+            meshioplusplus::RemeshVolumeResult r = meshioplusplus::remesh_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::dict q;
+            q["boundary_edges"] = r.mQuality.mBoundaryEdges;
+            q["non_manifold_edges"] = r.mQuality.mNonManifoldEdges;
+            q["inconsistent_pairs"] = r.mQuality.mInconsistentPairs;
+            q["degenerate_triangles"] = r.mQuality.mDegenerateTriangles;
+            q["watertight"] = r.mQuality.mWatertight;
+            out["input_quality"] = q;
+            out["num_tets"] = r.mNumTets;
+            out["num_vertices_warped"] = r.mNumVerticesWarped;
+            out["num_tets_rejected"] = r.mNumTetsRejected;
+            out["num_non_manifold_edges"] = r.mNumNonManifoldEdges;
+            return out;
+        },
+        py::arg("mesh"), py::arg("resolution") = py::none(), py::arg("cell_size") = py::none(),
+        py::arg("bounds") = py::none(), py::arg("padding") = 0.0,
+        py::arg("padding_relative") = 0.1, py::arg("max_cells") = 20000000,
+        py::arg("max_tets") = 20000000, py::arg("warp_fraction") = 0.35,
+        py::arg("sign") = "pseudonormal", py::arg("weight") = "angle",
+        py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
+        py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+
+    // ODT remeshing: raise a tet mesh's worst element quality by relocating
+    // vertices AND flipping connectivity (2-3/3-2, predicate-free). The point
+    // set is invariant, so point_data/field_data and Point regions carry;
+    // cell_data + Cell/Side regions are dropped. See
+    // operations/optimize_volume.hpp and doc/optimize_volume.md.
+    m.def(
+        "optimize_volume",
+        [](py::object pymesh, int max_iterations, bool relocate, bool flip, bool preserve_boundary,
+           double min_improvement, py::object frozen) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::OptimizeVolumeOptions options;
+            options.mMaxIterations = max_iterations;
+            options.mRelocate = relocate;
+            options.mFlip = flip;
+            options.mPreserveBoundary = preserve_boundary;
+            options.mMinImprovement = min_improvement;
+            if (!frozen.is_none())
+                options.mFrozen = frozen.cast<std::vector<std::uint8_t>>();
+            meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_flips"] = r.mNumFlips;
+            out["num_23_flips"] = r.mNum23Flips;
+            out["num_32_flips"] = r.mNum32Flips;
+            out["num_vertices_moved"] = r.mNumVerticesMoved;
+            out["num_tets"] = r.mNumTets;
+            out["min_quality_before"] = r.mMinQualityBefore;
+            out["min_quality_after"] = r.mMinQualityAfter;
+            return out;
+        },
+        py::arg("mesh"), py::arg("max_iterations") = 10, py::arg("relocate") = true,
+        py::arg("flip") = true, py::arg("preserve_boundary") = true,
+        py::arg("min_improvement") = 1e-6, py::arg("frozen") = py::none());
+
     // Field differential operators: the gradient / divergence / curl of a
     // point_data field, by Green-Gauss or least squares. `component` is negative
     // for "every component" -- note this is the OPPOSITE of isosurface's
@@ -1440,6 +1537,48 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("array"), py::arg("method") = "zz", py::arg("marking") = "none",
         py::arg("marking_value") = 0.0, py::arg("output") = "", py::arg("marked_name") = "",
         py::arg("overwrite") = false);
+
+    // Isotropic / feature-preserving surface remeshing by approximated
+    // centroidal Voronoi diagram clustering. Output is a brand-new,
+    // unrelated mesh (no point/cell maps, unlike decimate_volume) with
+    // point_data/cell_data/regions dropped, so the dict carries only the
+    // mesh plus the run's scalar counters. See operations/remesh.hpp.
+    m.def(
+        "remesh",
+        [](py::object pymesh, std::int64_t num_clusters, int subdivide, double subsample_ratio,
+           int max_subdivide, int max_iterations, int max_repair_passes,
+           const std::string& metric, double gradation, bool preserve_boundary,
+           double max_anisotropy) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshOptions options;
+            options.mNumClusters = num_clusters;
+            options.mSubdivide = subdivide;
+            options.mSubsampleRatio = subsample_ratio;
+            options.mMaxSubdivide = max_subdivide;
+            options.mMaxIterations = max_iterations;
+            options.mMaxRepairPasses = max_repair_passes;
+            options.mMetric = meshioplusplus::remesh_metric_from_name(metric);
+            options.mGradation = gradation;
+            options.mPreserveBoundary = preserve_boundary;
+            options.mMaxAnisotropy = max_anisotropy;
+            meshioplusplus::RemeshResult r = meshioplusplus::remesh(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_clusters"] = r.mNumClusters;
+            out["num_iterations"] = r.mNumIterations;
+            out["subdivide_applied"] = r.mSubdivideApplied;
+            out["num_isolated_clusters"] = r.mNumIsolatedClusters;
+            out["num_non_manifold_vertices"] = r.mNumNonManifoldVertices;
+            return out;
+        },
+        py::arg("mesh"), py::arg("num_clusters"), py::arg("subdivide") = -1,
+        py::arg("subsample_ratio") = 10.0, py::arg("max_subdivide") = 4,
+        py::arg("max_iterations") = 100, py::arg("max_repair_passes") = 10,
+        py::arg("metric") = "isotropic", py::arg("gradation") = 0.0,
+        py::arg("preserve_boundary") = true,
+        py::arg("max_anisotropy") = meshioplusplus::kRemeshDefaultMaxAnisotropy);
 
     // The settings.json pipeline (read -> operation chain -> write), run
     // entirely in C++ against file paths. Bound for parity tests and for

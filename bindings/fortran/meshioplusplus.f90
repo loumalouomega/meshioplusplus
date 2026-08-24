@@ -300,6 +300,68 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
+    !> Interop mirror of C `mio_remesh_opts`. Field order and types are ABI
+    !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved`/`reserved_d` are padding for additive growth and
+    !> must stay zero. `metric` is a C string, so it needs the same
+    !> TARGET-buffer + c_loc idiom `region`/`predicate_array` use in
+    !> mio_refine_opts_t -- see mesh_remesh below.
+    type, bind(c) :: mio_remesh_opts_t
+        integer(c_int64_t) :: num_clusters = 0
+        integer(c_int32_t) :: subdivide = -1
+        integer(c_int32_t) :: max_subdivide = 4
+        real(c_double) :: subsample_ratio = 10.0_c_double
+        integer(c_int32_t) :: max_iterations = 100
+        integer(c_int32_t) :: max_repair_passes = 10
+        type(c_ptr) :: metric = c_null_ptr
+        real(c_double) :: gradation = 0.0_c_double
+        integer(c_int32_t) :: preserve_boundary = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        real(c_double) :: max_anisotropy = 4.0_c_double
+        real(c_double) :: reserved_d(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_remesh_report`. Field order/types are ABI.
+    type, bind(c) :: mio_remesh_report_t
+        integer(c_int64_t) :: num_clusters = 0
+        integer(c_int64_t) :: num_iterations = 0
+        integer(c_int32_t) :: subdivide_applied = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_isolated_clusters = 0
+        integer(c_int64_t) :: num_non_manifold_vertices = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_remesh_volume_opts`. Field order and types are
+    !> ABI and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved` is padding for additive growth and must stay zero.
+    !> `distance` is embedded by value, the `mio_compute_sdf_opts_t` precedent
+    !> above -- its own `reserved` tail absorbs future growth without shifting
+    !> anything here.
+    type, bind(c) :: mio_remesh_volume_opts_t
+        type(c_ptr) :: resolution = c_null_ptr
+        type(c_ptr) :: bounds = c_null_ptr
+        real(c_double) :: cell_size = 0.0_c_double
+        real(c_double) :: padding = 0.0_c_double
+        real(c_double) :: padding_relative = 0.1_c_double
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int64_t) :: max_tets = 20000000
+        real(c_double) :: warp_fraction = 0.35_c_double
+        integer(c_int64_t) :: reserved(6) = 0
+        type(mio_sdf_opts_t) :: distance
+    end type
+
+    !> Interop mirror of C `mio_remesh_volume_report`. Field order/types ABI.
+    type, bind(c) :: mio_remesh_volume_report_t
+        type(mio_surface_quality) :: input_quality
+        integer(c_int64_t) :: num_tets = 0
+        integer(c_int64_t) :: num_vertices_warped = 0
+        integer(c_int64_t) :: num_tets_rejected = 0
+        integer(c_int64_t) :: num_non_manifold_edges = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_xdmf_series_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h exactly;
     !> `reserved` is padding for additive growth and must stay zero.
@@ -369,6 +431,7 @@ module meshioplusplus
         procedure :: transform => mesh_transform
         procedure :: clean => mesh_clean
         procedure :: smooth => mesh_smooth
+        procedure :: optimize_volume => mesh_optimize_volume
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
         procedure :: crop_predicate => mesh_crop_predicate
@@ -377,6 +440,8 @@ module meshioplusplus
         procedure :: gradient => mesh_gradient
         procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
+        procedure :: remesh => mesh_remesh
+        procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
         procedure :: subdivide => mesh_subdivide
@@ -970,6 +1035,18 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        function c_mio_optimize_volume(h, maxiter, relocate, flip, presb, minimp, nflips, n23, &
+                                       n32, nmoved, ntets, qbefore, qafter) &
+                bind(c, name="mio_optimize_volume") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            integer(c_int), value :: maxiter, relocate, flip, presb
+            real(c_double), value :: minimp
+            integer(c_int64_t), intent(out) :: nflips, n23, n32, nmoved, ntets
+            real(c_double), intent(out) :: qbefore, qafter
+            type(c_ptr) :: r
+        end function
+
         function c_mio_crop_bbox(h, lo, hi, mode, record_ids) &
                 bind(c, name="mio_crop_bbox") result(r)
             import :: c_ptr, c_int, c_double
@@ -1044,6 +1121,54 @@ module meshioplusplus
             integer(c_int), value :: overwrite
             real(c_double), intent(out) :: global_error
             integer(c_int64_t), intent(out) :: n_skipped, n_marked
+            type(c_ptr) :: r
+        end function
+        function c_mio_remesh(h, num_clusters, subdivide, subsample_ratio, max_subdivide, &
+                              max_iterations, max_repair_passes, metric, gradation, &
+                              preserve_boundary, num_clusters_out, num_iterations, &
+                              subdivide_applied, num_isolated_clusters, &
+                              num_non_manifold_vertices) &
+                bind(c, name="mio_remesh") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_char, c_double
+            type(c_ptr), value :: h
+            integer(c_int64_t), value :: num_clusters
+            integer(c_int), value :: subdivide, max_subdivide, max_iterations, max_repair_passes
+            real(c_double), value :: subsample_ratio
+            character(kind=c_char), dimension(*), intent(in) :: metric
+            real(c_double), value :: gradation
+            integer(c_int), value :: preserve_boundary
+            integer(c_int64_t), intent(out) :: num_clusters_out, num_iterations
+            integer(c_int), intent(out) :: subdivide_applied
+            integer(c_int64_t), intent(out) :: num_isolated_clusters
+            integer(c_int64_t), intent(out) :: num_non_manifold_vertices
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_remesh_opts_init(opts) bind(c, name="mio_remesh_opts_init")
+            import :: mio_remesh_opts_t
+            type(mio_remesh_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_remesh_ex(h, opts, report) bind(c, name="mio_remesh_ex") result(r)
+            import :: c_ptr, mio_remesh_opts_t, mio_remesh_report_t
+            type(c_ptr), value :: h
+            type(mio_remesh_opts_t), intent(in) :: opts
+            type(mio_remesh_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_remesh_volume_opts_init(opts) &
+                bind(c, name="mio_remesh_volume_opts_init")
+            import :: mio_remesh_volume_opts_t
+            type(mio_remesh_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_remesh_volume_ex(h, opts, report) &
+                bind(c, name="mio_remesh_volume_ex") result(r)
+            import :: c_ptr, mio_remesh_volume_opts_t, mio_remesh_volume_report_t
+            type(c_ptr), value :: h
+            type(mio_remesh_volume_opts_t), intent(in) :: opts
+            type(mio_remesh_volume_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -2881,6 +3006,60 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
+    !> (2-3/3-2, predicate-free). Tet-only. The point set is invariant, so
+    !> point_data and named Point regions carry; cell_data and Cell/Side
+    !> regions are dropped. See doc/optimize_volume.md.
+    function mesh_optimize_volume(self, max_iterations, relocate, flip, preserve_boundary, &
+                                  min_improvement, num_flips, num_23_flips, num_32_flips, &
+                                  num_vertices_moved, num_tets, min_quality_before, &
+                                  min_quality_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: max_iterations
+        logical, intent(in), optional :: relocate, flip, preserve_boundary
+        real(real64), intent(in), optional :: min_improvement
+        integer(int64), intent(out), optional :: num_flips, num_23_flips, num_32_flips, &
+                                                 num_vertices_moved, num_tets
+        real(real64), intent(out), optional :: min_quality_before, min_quality_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cmaxiter, crel, cflip, cpresb
+        real(c_double) :: cminimp
+        integer(c_int64_t) :: nflips, n23, n32, nmoved, ntets
+        real(c_double) :: qbefore, qafter
+        cmaxiter = 10
+        if (present(max_iterations)) cmaxiter = int(max_iterations, c_int)
+        crel = 1
+        if (present(relocate)) then
+            if (.not. relocate) crel = 0
+        end if
+        cflip = 1
+        if (present(flip)) then
+            if (.not. flip) cflip = 0
+        end if
+        cpresb = 1
+        if (present(preserve_boundary)) then
+            if (.not. preserve_boundary) cpresb = 0
+        end if
+        cminimp = 1.0e-6_c_double
+        if (present(min_improvement)) cminimp = real(min_improvement, c_double)
+        out%handle = c_mio_optimize_volume(self%handle, cmaxiter, crel, cflip, cpresb, cminimp, &
+                                           nflips, n23, n32, nmoved, ntets, qbefore, qafter)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('optimize_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_flips)) num_flips = int(nflips, int64)
+        if (present(num_23_flips)) num_23_flips = int(n23, int64)
+        if (present(num_32_flips)) num_32_flips = int(n32, int64)
+        if (present(num_vertices_moved)) num_vertices_moved = int(nmoved, int64)
+        if (present(num_tets)) num_tets = int(ntets, int64)
+        if (present(min_quality_before)) min_quality_before = real(qbefore, real64)
+        if (present(min_quality_after)) min_quality_after = real(qafter, real64)
+        call clear_status(stat, errmsg)
+    end function
+
     !> Crop the mesh to an axis-aligned bounding box. `lo`/`hi` are the box
     !> corners (3 each). `mode` is "all" (default) or "any". Returns the crop.
     function mesh_crop_bbox(self, lo, hi, mode, record_ids, stat, errmsg) result(out)
@@ -3179,6 +3358,172 @@ contains
         if (present(global_error)) global_error = real(cerror, real64)
         if (present(num_skipped)) num_skipped = int(nskip, int64)
         if (present(num_marked)) num_marked = int(nmark, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+    !> clustering: replace its triangulation with a new, near-uniformly-sized,
+    !> well-shaped one at `num_clusters` vertices. Unlike every other
+    !> resolution-changing procedure on this type, the output has NEW points
+    !> and NEW connectivity with no correspondence to `self` -- point/cell
+    !> data and named regions are dropped, field data is carried.
+    !>
+    !> `metric` is "isotropic" (default; area-weighted centroidal distance),
+    !> "quadric" (Garland-Heckbert quadric error, preserves sharp edges and
+    !> corners), or "anisotropic" (clusters shaped by a local curvature
+    !> tensor -- see `max_anisotropy`). `subdivide` defaults to automatic
+    !> (the smallest count reaching `subsample_ratio` items per cluster,
+    !> capped at `max_subdivide`); pass 0 to disable subdivision.
+    !>
+    !> Goes through mio_remesh_ex/mio_remesh_opts rather than the flat
+    !> mio_remesh -- the mio_refine_ex precedent, needed because mio_remesh
+    !> is a flat C function with no room to grow (it already changed once).
+    function mesh_remesh(self, num_clusters, subdivide, subsample_ratio, max_subdivide, &
+                         max_iterations, max_repair_passes, metric, gradation, &
+                         preserve_boundary, max_anisotropy, num_iterations, subdivide_applied, &
+                         num_isolated_clusters, num_non_manifold_vertices, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in) :: num_clusters
+        integer, intent(in), optional :: subdivide, max_subdivide, max_iterations
+        integer, intent(in), optional :: max_repair_passes
+        real(real64), intent(in), optional :: subsample_ratio
+        character(*), intent(in), optional :: metric
+        real(real64), intent(in), optional :: gradation
+        logical, intent(in), optional :: preserve_boundary
+        real(real64), intent(in), optional :: max_anisotropy
+        integer(int64), intent(out), optional :: num_iterations, num_isolated_clusters
+        integer, intent(out), optional :: subdivide_applied
+        integer(int64), intent(out), optional :: num_non_manifold_vertices
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_remesh_opts_t) :: opts
+        type(mio_remesh_report_t) :: report
+        ! NUL-terminated copy must outlive the call, so it is held here
+        ! rather than built inline; c_loc needs it contiguous and TARGET --
+        ! the region_buf/array_buf idiom mesh_refine already uses.
+        character(kind=c_char, len=STRBUF_LEN), target :: metric_buf
+
+        call c_mio_remesh_opts_init(opts)
+        opts%num_clusters = int(num_clusters, c_int64_t)
+        if (present(subdivide)) opts%subdivide = int(subdivide, c_int32_t)
+        if (present(subsample_ratio)) opts%subsample_ratio = real(subsample_ratio, c_double)
+        if (present(max_subdivide)) opts%max_subdivide = int(max_subdivide, c_int32_t)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int32_t)
+        if (present(max_repair_passes)) opts%max_repair_passes = int(max_repair_passes, c_int32_t)
+        if (present(metric)) then
+            metric_buf = trim(metric)//c_null_char
+            opts%metric = c_loc(metric_buf(1:1))
+        end if
+        if (present(gradation)) opts%gradation = real(gradation, c_double)
+        if (present(preserve_boundary)) then
+            if (.not. preserve_boundary) opts%preserve_boundary = 0
+        end if
+        if (present(max_anisotropy)) opts%max_anisotropy = real(max_anisotropy, c_double)
+
+        res = c_mio_remesh_ex(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('remesh', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_iterations)) num_iterations = int(report%num_iterations, int64)
+        if (present(subdivide_applied)) subdivide_applied = int(report%subdivide_applied)
+        if (present(num_isolated_clusters)) &
+            num_isolated_clusters = int(report%num_isolated_clusters, int64)
+        if (present(num_non_manifold_vertices)) &
+            num_non_manifold_vertices = int(report%num_non_manifold_vertices, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Retetrahedralize this mesh (a volume mesh, or a closed surface) at a
+    !> caller-chosen resolution by isosurface stuffing -- remesh's volumetric
+    !> sibling. Unlike `remesh`, `self` may be a VOLUME mesh directly (its
+    !> boundary is extracted internally) as well as a closed surface. Same
+    !> no-correspondence-with-`self` output contract: new points, new
+    !> connectivity, point/cell data and named regions dropped, field data
+    !> carried.
+    !>
+    !> Exactly one of `resolution`/`cell_size` must be given. `warp_fraction`
+    !> (default 0.35) trades a small, measured chance of non-manifold
+    !> boundary edges (reported in `num_non_manifold_edges`) for
+    !> substantially better boundary tet quality; 0 disables warping. See
+    !> doc/remesh_volume.md for the measured tradeoff.
+    function mesh_remesh_volume(self, resolution, cell_size, bounds, padding, &
+                                padding_relative, max_cells, max_tets, warp_fraction, sign, &
+                                watertight_check, num_vertices_warped, num_tets_rejected, &
+                                num_non_manifold_edges, quality, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: resolution(3)
+        real(real64), intent(in), optional :: cell_size, bounds(6)
+        real(real64), intent(in), optional :: padding, padding_relative, warp_fraction
+        integer(int64), intent(in), optional :: max_cells, max_tets
+        character(*), intent(in), optional :: sign, watertight_check
+        integer(int64), intent(out), optional :: num_vertices_warped, num_tets_rejected
+        integer(int64), intent(out), optional :: num_non_manifold_edges
+        type(mio_surface_quality), intent(out), optional :: quality
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_remesh_volume_opts_t) :: opts
+        type(mio_remesh_volume_report_t) :: report
+        ! The buffers the option pointers reference must outlive the call,
+        ! the mesh_compute_sdf idiom above.
+        integer(c_int64_t), target :: res_buf(3)
+        real(c_double), target :: bounds_buf(6)
+        integer(c_int32_t) :: code
+
+        call c_mio_remesh_volume_opts_init(opts)
+        if (present(resolution)) then
+            res_buf = int(resolution, c_int64_t)
+            opts%resolution = c_loc(res_buf(1))
+        end if
+        if (present(cell_size)) opts%cell_size = real(cell_size, c_double)
+        if (present(bounds)) then
+            bounds_buf = real(bounds, c_double)
+            opts%bounds = c_loc(bounds_buf(1))
+        end if
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(padding_relative)) opts%padding_relative = real(padding_relative, c_double)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(max_tets)) opts%max_tets = int(max_tets, c_int64_t)
+        if (present(warp_fraction)) opts%warp_fraction = real(warp_fraction, c_double)
+        if (present(sign)) then
+            code = sdf_sign_code(sign)
+            if (code < 0) then
+                call handle_failure('remesh_volume', 'unknown sign '//trim(sign), stat, errmsg)
+                return
+            end if
+            opts%distance%sign = code
+        end if
+        if (present(watertight_check)) then
+            select case (trim(watertight_check))
+            case ('off'); opts%distance%watertight_check = 0
+            case ('', 'warn'); opts%distance%watertight_check = 1
+            case ('error'); opts%distance%watertight_check = 2
+            case default
+                call handle_failure('remesh_volume', &
+                                    'unknown watertight check '//trim(watertight_check), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+
+        res = c_mio_remesh_volume_ex(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('remesh_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_vertices_warped)) &
+            num_vertices_warped = int(report%num_vertices_warped, int64)
+        if (present(num_tets_rejected)) num_tets_rejected = int(report%num_tets_rejected, int64)
+        if (present(num_non_manifold_edges)) &
+            num_non_manifold_edges = int(report%num_non_manifold_edges, int64)
+        if (present(quality)) quality = report%input_quality
         call clear_status(stat, errmsg)
     end function
 

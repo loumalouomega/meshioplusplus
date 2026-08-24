@@ -310,6 +310,69 @@ TEST(Pipeline, RunPipelineEndToEndTyped) {
     std::filesystem::remove(out_path);
 }
 
+TEST(Pipeline, RemeshStepProducesANewMeshWithTheRequestedClusterCount) {
+    // A regular octahedron -- the smallest closed 2-manifold triangle mesh.
+    std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                            {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
+                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+    const Mesh octa = mt::make_mesh(pts, "triangle", conn);
+
+    const std::string in_path = mt::temp_path("_pipe_remesh_in.vtk");
+    const std::string out_path = mt::temp_path("_pipe_remesh_out.vtk");
+    meshioplusplus::registry_writers().at("vtk")(in_path, octa);
+
+    Pipeline pipeline;
+    pipeline.mInput.mPath = in_path;
+    pipeline.mSteps = {
+        step("Remesh", {{"NumClusters", std::int64_t(30)}, {"Metric", std::string("quadric")}})};
+    pipeline.mOutput.mPath = out_path;
+    PipelineReport report = meshioplusplus::run_pipeline(pipeline);
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    ASSERT_FALSE(report.mSteps[0].mCounters.empty());
+    EXPECT_EQ(report.mSteps[0].mCounters[0].first, "NumClusters");
+    EXPECT_EQ(report.mSteps[0].mCounters[0].second, 30.0);
+
+    Mesh back = meshioplusplus::registry_read(out_path, "vtk", {});
+    EXPECT_EQ(back.NumPoints(), 30u);
+    std::filesystem::remove(in_path);
+    std::filesystem::remove(out_path);
+}
+
+TEST(Pipeline, RemeshVolumeStepProducesATetraMesh) {
+    std::vector<std::vector<double>> pts = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                            {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    std::vector<std::vector<std::int64_t>> conn = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
+                                                    {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
+    const Mesh octa = mt::make_mesh(pts, "triangle", conn);
+
+    const std::string in_path = mt::temp_path("_pipe_remesh_volume_in.vtk");
+    const std::string out_path = mt::temp_path("_pipe_remesh_volume_out.vtk");
+    meshioplusplus::registry_writers().at("vtk")(in_path, octa);
+
+    Pipeline pipeline;
+    pipeline.mInput.mPath = in_path;
+    pipeline.mSteps = {step("RemeshVolume", {{"CellSize", 0.4},
+                                             {"WatertightCheck", std::string("off")}})};
+    pipeline.mOutput.mPath = out_path;
+    PipelineReport report = meshioplusplus::run_pipeline(pipeline);
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    bool found_num_tets = false;
+    for (const auto& counter : report.mSteps[0].mCounters)
+        if (counter.first == "NumTets") {
+            found_num_tets = true;
+            EXPECT_GT(counter.second, 0.0);
+        }
+    EXPECT_TRUE(found_num_tets);
+
+    Mesh back = meshioplusplus::registry_read(out_path, "vtk", {});
+    EXPECT_GT(back.NumPoints(), 0u);
+    ASSERT_EQ(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).Type(), "tetra");
+    std::filesystem::remove(in_path);
+    std::filesystem::remove(out_path);
+}
+
 TEST(Pipeline, RunPipelineValidatesBeforeReading) {
     Pipeline pipeline;
     pipeline.mInput.mPath = "/definitely/not/a/real/file.vtk";

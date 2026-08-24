@@ -65,6 +65,9 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 
 namespace meshioplusplus {
 
@@ -245,6 +248,14 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"Remesh",
+         {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
+        {"RemeshVolume",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
+          "WarpFraction", "Sign", "WatertightCheck"}},
+        {"OptimizeVolume",
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -644,6 +655,93 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(er.mMesh);
+    }
+    if (op == "Remesh") {
+        // Unlike every other step, the output has NO correspondence to the
+        // input: new points, new connectivity. point_data/cell_data/regions
+        // are dropped (remesh's own contract), field_data carries through.
+        RemeshOptions opts;
+        opts.mNumClusters = static_cast<std::int64_t>(pipe_number(rStep, "NumClusters", 0));
+        opts.mSubdivide = static_cast<int>(pipe_number(rStep, "Subdivide", -1));
+        opts.mSubsampleRatio = pipe_number(rStep, "SubsampleRatio", 10.0);
+        opts.mMaxSubdivide = static_cast<int>(pipe_number(rStep, "MaxSubdivide", 4));
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 100));
+        opts.mMaxRepairPasses = static_cast<int>(pipe_number(rStep, "MaxRepairPasses", 10));
+        opts.mMetric = remesh_metric_from_name(pipe_text(rStep, "Metric", "isotropic"));
+        opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMaxAnisotropy = pipe_number(rStep, "MaxAnisotropy", kRemeshDefaultMaxAnisotropy);
+        RemeshResult rr = remesh(mesh, opts);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumClusters", static_cast<double>(rr.mNumClusters)},
+             {"NumIterations", static_cast<double>(rr.mNumIterations)},
+             {"SubdivideApplied", static_cast<double>(rr.mSubdivideApplied)},
+             {"NumIsolatedClusters", static_cast<double>(rr.mNumIsolatedClusters)},
+             {"NumNonManifoldVertices", static_cast<double>(rr.mNumNonManifoldVertices)}});
+        if (rr.mNumIsolatedClusters > 0 || rr.mNumNonManifoldVertices > 0)
+            rReport.mWarnings.push_back(
+                "remesh: " + std::to_string(rr.mNumIsolatedClusters) +
+                " isolated cluster(s), " + std::to_string(rr.mNumNonManifoldVertices) +
+                " non-manifold vertex/vertices could not be repaired; output may be "
+                "non-manifold near them");
+        return std::move(rr.mMesh);
+    }
+    if (op == "RemeshVolume") {
+        // Remesh's volumetric sibling: same no-correspondence-with-the-input
+        // contract, same lattice-sizing vocabulary as Voxelize/ComputeSdf.
+        RemeshVolumeOptions opts;
+        const std::vector<std::int64_t> resolution = pipe_ivec(rStep, "Resolution");
+        if (resolution.size() == 3)
+            opts.mResolution =
+                std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        if (pipe_find(rStep, "CellSize") != nullptr)
+            opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 20000000.0));
+        opts.mWarpFraction = pipe_number(rStep, "WarpFraction", 0.35);
+        opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mDistance.mWatertightCheck =
+            sdf_watertight_check_from_name(pipe_text(rStep, "WatertightCheck", "warn"));
+        RemeshVolumeResult rv = remesh_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTets", static_cast<double>(rv.mNumTets)},
+                        {"NumVerticesWarped", static_cast<double>(rv.mNumVerticesWarped)},
+                        {"NumTetsRejected", static_cast<double>(rv.mNumTetsRejected)},
+                        {"NumNonManifoldEdges", static_cast<double>(rv.mNumNonManifoldEdges)}});
+        if (rv.mNumNonManifoldEdges > 0)
+            rReport.mWarnings.push_back(
+                "remesh_volume: " + std::to_string(rv.mNumNonManifoldEdges) +
+                " non-manifold boundary edge(s), from warping (see doc/remesh_volume.md)");
+        return std::move(rv.mMesh);
+    }
+    if (op == "OptimizeVolume") {
+        // ODT remeshing: relocate vertices AND flip connectivity (2-3/3-2). The
+        // point set is invariant, so point_data/field_data and Point regions
+        // carry; cell_data + Cell/Side regions are dropped (a flip has no cell
+        // map).
+        OptimizeVolumeOptions opts;
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mRelocate = pipe_flag(rStep, "Relocate", true);
+        opts.mFlip = pipe_flag(rStep, "Flip", true);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        OptimizeVolumeResult ov = optimize_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlips", static_cast<double>(ov.mNumFlips)},
+                        {"Num23Flips", static_cast<double>(ov.mNum23Flips)},
+                        {"Num32Flips", static_cast<double>(ov.mNum32Flips)},
+                        {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
+                        {"NumTets", static_cast<double>(ov.mNumTets)},
+                        {"MinQualityBefore", ov.mMinQualityBefore},
+                        {"MinQualityAfter", ov.mMinQualityAfter}});
+        return std::move(ov.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does

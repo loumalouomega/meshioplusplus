@@ -172,5 +172,45 @@ MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
     const SurfaceDistanceOptions& rOptions);
 
+/// What `query_closest_points` resolved a single query point to. A new,
+/// additive type (Tier C) rather than a field added to `DistanceHit` -- see
+/// that function's own doc comment for why.
+struct ClosestPointHit {
+    Vec3 mPoint{0.0, 0.0, 0.0};     ///< The nearest point on the soup.
+    double mDistance = 0.0;         ///< Its distance from the query (unsigned).
+    std::int64_t mSourceCell = -1;  ///< The input cell it came from, or -1 (empty soup only).
+    bool mFound = false;            ///< False only when the soup has no triangles at all.
+};
+
+/**
+ * @brief The actual nearest POINT on the soup to each of @p rPoints, not just
+ * its distance.
+ *
+ * `query_distances`'s own `PointTriangleHit` already computes this internally
+ * (`best_hit.mPoint`) and then discards it, keeping only the distance and the
+ * sign -- which is all `sample_distance`/`distance_to_surface` ever needed.
+ * `remesh_volume`'s warp step is the first caller that needs the point itself
+ * (to move a lattice vertex onto the surface, not merely learn how far it
+ * is), hence this sibling function rather than growing `DistanceHit`, whose
+ * layout is an ABI boundary (`doc/abi.md`) this header already participates
+ * in. Both functions share the identical bucket-grid nearest-triangle search
+ * (`sd_nearest_triangle`, private to `surface_distance.cpp`) so they cannot
+ * disagree about which triangle is nearest.
+ *
+ * No banding and no sign here -- a warp threshold is the caller's own
+ * decision (`remesh_volume.cpp`'s own threshold, compared against
+ * `mDistance` after the fact), and a warp target has no notion of inside or
+ * outside to report.
+ *
+ * @param rQuery the accelerator built by `build_distance_query`.
+ * @param rPoints the query points.
+ * @return one hit per query point, `mFound == false` only when the soup this
+ *         query was built from has no triangles (impossible in practice,
+ *         since `build_distance_query` itself refuses an empty soup, but the
+ *         field exists so a caller need not assume).
+ */
+MESHIOPLUSPLUS_API std::vector<ClosestPointHit> query_closest_points(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
+
 }  // namespace detail
 }  // namespace meshioplusplus

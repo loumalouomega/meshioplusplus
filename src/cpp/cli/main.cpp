@@ -72,6 +72,9 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -457,10 +460,19 @@ void print_usage(std::ostream& os) {
           "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  decimate-volume         Reduce a tet mesh's cell count (QEM tet-edge collapse)\n"
           "                            exactly one of --ratio/--target-cells/--max-error\n"
+          "  remesh                  Replace a surface's triangulation with a new,\n"
+          "                            well-shaped one (ACVD clustering); --num-clusters\n"
+          "                            is required, --metric isotropic|quadric|anisotropic\n"
+          "  remesh-volume           Retetrahedralize a volume (or closed surface) by\n"
+          "                            isosurface stuffing; --cell-size or --resolution\n"
+          "                            is required, --warp-fraction trades boundary\n"
+          "                            quality for a small chance of non-manifold edges\n"
+          "  optimize-volume         ODT-remesh a tetrahedral mesh: relocate vertices and\n"
+          "                            flip connectivity (2-3/3-2) to raise element quality\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
-          "  smooth                  Relax node positions (Laplacian / Taubin)\n"
+          "  smooth                  Relax node positions (Laplacian / Taubin / ODT)\n"
           "  interpolate             Sample data arrays from a source mesh onto a target\n"
           "                            (nearest / barycentric; --arrays a,b names them)\n"
           "  conservative-interpolate Mass-preserving (overlap-measure weighted) transfer\n"
@@ -1815,6 +1827,165 @@ int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_remesh(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"num-clusters", {}, true},
+                                  {"subdivide", {}, true},
+                                  {"subsample-ratio", {}, true},
+                                  {"max-subdivide", {}, true},
+                                  {"iterations", {}, true},
+                                  {"repair-passes", {}, true},
+                                  {"metric", {}, true},
+                                  {"gradation", {}, true},
+                                  {"no-preserve-boundary", {}, false},
+                                  {"max-anisotropy", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remesh requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "num-clusters"))
+        throw std::runtime_error("remesh: --num-clusters is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::RemeshOptions options;
+    options.mNumClusters = std::stoll(opt_value(p, "num-clusters"));
+    options.mSubdivide = std::stoi(opt_value(p, "subdivide", "-1"));
+    options.mSubsampleRatio = std::stod(opt_value(p, "subsample-ratio", "10"));
+    options.mMaxSubdivide = std::stoi(opt_value(p, "max-subdivide", "4"));
+    options.mMaxIterations = std::stoi(opt_value(p, "iterations", "100"));
+    options.mMaxRepairPasses = std::stoi(opt_value(p, "repair-passes", "10"));
+    options.mMetric = meshioplusplus::remesh_metric_from_name(opt_value(p, "metric", "isotropic"));
+    options.mGradation = std::stod(opt_value(p, "gradation", "0"));
+    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    options.mMaxAnisotropy = std::stod(
+        opt_value(p, "max-anisotropy", std::to_string(meshioplusplus::kRemeshDefaultMaxAnisotropy)));
+
+    auto r = meshioplusplus::remesh(mesh, options);
+    if (!has_flag(p, "quiet")) {
+        std::cout << "remeshed to " << r.mNumClusters << " clusters\n";
+        std::cout << "  iterations:               " << r.mNumIterations << "\n";
+        std::cout << "  subdivide passes applied: " << r.mSubdivideApplied << "\n";
+        std::cout << "  isolated clusters:        " << r.mNumIsolatedClusters << "\n";
+        std::cout << "  non-manifold vertices:    " << r.mNumNonManifoldVertices << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"resolution", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"max-tets", {}, true},
+                                  {"warp-fraction", {}, true},
+                                  {"sign", {}, true},
+                                  {"watertight-check", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remesh-volume requires exactly INFILE and OUTFILE");
+
+    const bool has_res = p.values.count("resolution") != 0;
+    const bool has_cell = p.values.count("cell-size") != 0;
+    if (has_res == has_cell)
+        throw std::runtime_error("remesh-volume: give exactly one of --resolution and --cell-size");
+
+    meshioplusplus::RemeshVolumeOptions options;
+    if (has_res) {
+        auto v = parse_doubles(opt_value(p, "resolution"));
+        if (v.size() != 3)
+            throw std::runtime_error("remesh-volume: --resolution expects 'nx,ny,nz'");
+        options.mResolution = std::array<std::int64_t, 3>{{static_cast<std::int64_t>(v[0]),
+                                                           static_cast<std::int64_t>(v[1]),
+                                                           static_cast<std::int64_t>(v[2])}};
+    } else {
+        options.mCellSize = std::stod(opt_value(p, "cell-size"));
+    }
+    // Negatives need the --bounds= form, voxelize's own parser rule.
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("remesh-volume: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    if (p.values.count("padding"))
+        options.mPadding = std::stod(opt_value(p, "padding"));
+    if (p.values.count("padding-relative"))
+        options.mPaddingRelative = std::stod(opt_value(p, "padding-relative"));
+    if (p.values.count("max-cells"))
+        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    if (p.values.count("max-tets"))
+        options.mMaxTets = std::stoll(opt_value(p, "max-tets"));
+    // A negative value is rejected by the operation itself, naming the
+    // option; --warp-fraction=-0.1 form is needed for a caller to trigger it.
+    options.mWarpFraction = std::stod(opt_value(p, "warp-fraction", "0.35"));
+    options.mDistance.mSign =
+        meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mDistance.mWatertightCheck =
+        meshioplusplus::sdf_watertight_check_from_name(opt_value(p, "watertight-check", "warn"));
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::RemeshVolumeResult r = meshioplusplus::remesh_volume(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "retetrahedralized\n";
+        std::cout << "  tets emitted:             " << r.mNumTets << "\n";
+        std::cout << "  vertices warped:          " << r.mNumVerticesWarped << "\n";
+        std::cout << "  tets rejected (degen.):   " << r.mNumTetsRejected << "\n";
+        std::cout << "  non-manifold edges:       " << r.mNumNonManifoldEdges << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"max-iterations", {}, true},
+                                  {"no-relocate", {}, false},
+                                  {"no-flip", {}, false},
+                                  {"no-preserve-boundary", {}, false},
+                                  {"min-improvement", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("optimize-volume requires exactly INFILE and OUTFILE");
+
+    meshioplusplus::OptimizeVolumeOptions options;
+    if (p.values.count("max-iterations"))
+        options.mMaxIterations = static_cast<int>(std::stoll(opt_value(p, "max-iterations")));
+    options.mRelocate = !has_flag(p, "no-relocate");
+    options.mFlip = !has_flag(p, "no-flip");
+    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    // A negative value is rejected/ignored by the operation; --min-improvement=
+    // form is needed for a caller to pass one.
+    options.mMinImprovement = std::stod(opt_value(p, "min-improvement", "0.000001"));
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "ODT-remeshed\n";
+        std::cout << "  flips (2-3 / 3-2):        " << r.mNumFlips << " (" << r.mNum23Flips << " / "
+                  << r.mNum32Flips << ")\n";
+        std::cout << "  vertices moved:           " << r.mNumVerticesMoved << "\n";
+        std::cout << "  tets:                     " << r.mNumTets << "\n";
+        std::cout << "  min quality before/after: " << r.mMinQualityBefore << " / "
+                  << r.mMinQualityAfter << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_smooth(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -3125,6 +3296,12 @@ int main(int argc, char** argv) {
             return cmd_decimate(rest);
         if (cmd == "decimate-volume")
             return cmd_decimate_volume(rest);
+        if (cmd == "remesh")
+            return cmd_remesh(rest);
+        if (cmd == "remesh-volume")
+            return cmd_remesh_volume(rest);
+        if (cmd == "optimize-volume")
+            return cmd_optimize_volume(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")

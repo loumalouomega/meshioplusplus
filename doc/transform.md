@@ -1,12 +1,6 @@
 # Affine transform
 
-`meshioplusplus.transform(mesh, ...)` applies a geometric transform to a mesh's
-point coordinates — translate, scale (per-axis or uniform), rotate (axis +
-angle), a general 4×4 affine matrix, or a unit-scale factor. Only the points
-change; connectivity, `cell_data`, `field_data`, and (by default) `point_data`
-are carried through. It is a mesh **operation** (like
-[reordering](/reorder) and [quality metrics](/mesh_quality)), not a file format,
-and uses only standard C++/numpy, so it runs under every mesh backend.
+`meshioplusplus.transform(mesh, ...)` applies a geometric transform to a mesh's point coordinates — translate, scale (per-axis or uniform), rotate (axis + angle), a general 4×4 affine matrix, or a unit-scale factor. Only the points change; connectivity, `cell_data`, `field_data`, and (by default) `point_data` are carried through. It is a mesh **operation** (like [reordering](/reorder) and [quality metrics](/mesh_quality)), not a file format, and uses only standard C++/numpy, so it runs under every mesh backend.
 
 ![A surface mesh rotated 45° about x, coloured by its original height](/images/transform_rotate.png)
 
@@ -36,16 +30,13 @@ meshioplusplus.write("part_moved.vtu", t)
 | `scale_units` | a scalar unit-conversion factor |
 | `rotate_vector_data` | when true, rotate vector (dim 3) / tensor (dim 9) `point_data` by the linear part; off by default |
 
-Several builders compose (in the fixed order units → scale → rotate →
-translate). An orientation-reversing transform (negative determinant of the 3×3
-linear block) logs a warning that cell orientation may be flipped.
+Several builders compose (in the fixed order units → scale → rotate → translate). An orientation-reversing transform (negative determinant of the 3×3 linear block) logs a warning that cell orientation may be flipped.
 
 ## What changes
 
 - **Points** are transformed by `p' = M · [x, y, z, 1]`.
 - **Connectivity**, **`cell_data`**, and **`field_data`** are unchanged.
-- **`point_data`** is copied unchanged unless `rotate_vector_data=True`, which
-  rotates arrays whose trailing dimension is 3 (`R·v`) or 9 (`R·A·Rᵀ`).
+- **`point_data`** is copied unchanged unless `rotate_vector_data=True`, which rotates arrays whose trailing dimension is 3 (`R·v`) or 9 (`R·A·Rᵀ`).
 - **`point_sets` / `cell_sets`** pass through unchanged (indices are stable).
 
 ## CLI
@@ -58,15 +49,10 @@ meshioplusplus transform in.vtu out.vtu --matrix m00,...,m33
 meshioplusplus transform in.vtu out.vtu --scale-units 0.001
 ```
 
-Give exactly one transform source. Values that begin with `-` (e.g. a negative
-translation) need the `--translate=-1,0,0` form so argparse doesn't read them as
-a flag. See the [CLI reference](/cli).
+Give exactly one transform source. Values that begin with `-` (e.g. a negative translation) need the `--translate=-1,0,0` form so argparse doesn't read them as a flag. See the [CLI reference](/cli).
 
 ## Other languages
 
-- **C API** — `mio_transform(mesh, matrix[16], rotate_vector_data)`. See the
-  [C API reference](/c_api).
-- **Fortran** — `mesh%transform(matrix, rotate_vector_data=...)`. See the
-  [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `transform(mesh, matrix, rotateVectorData)`.
-  See the [WebAssembly reference](/wasm).
+- **C API** — `mio_transform(mesh, matrix[16], rotate_vector_data)`. See the [C API reference](/c_api).
+- **Fortran** — `mesh%transform(matrix, rotate_vector_data=...)`. See the [Fortran reference](/fortran).
+- **WebAssembly / JavaScript** — `transform(mesh, matrix, rotateVectorData)`. See the [WebAssembly reference](/wasm).

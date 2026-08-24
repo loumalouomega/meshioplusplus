@@ -496,6 +496,21 @@ test_that("clean, smooth and crop work", {
   expect_gte(s$max_displacement, 0)
   mio_release(s$mesh)
 
+  # method="odt": tet-only, C++-core only. `m`'s own block is "tetra".
+  so <- mio_smooth(m, method = "odt", iterations = 1L, fix_boundary = FALSE,
+                   preserve_features = FALSE)
+  expect_equal(mio_num_points(so$mesh), 5)
+  expect_equal(mio_num_cells(so$mesh), 2)
+  expect_gte(so$num_nodes_moved, 0)
+  mio_release(so$mesh)
+
+  # optimize_volume: ODT remeshing (relocate + flip connectivity), tet-only.
+  ov <- mio_optimize_volume(m, max_iterations = 5L)
+  expect_equal(mio_num_points(ov$mesh), 5) # the point set is invariant
+  expect_gte(ov$num_flips, 0)
+  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  mio_release(ov$mesh)
+
   b <- mio_crop_bbox(m, c(-1, -1, -1), c(10, 10, 10))
   expect_equal(mio_num_cells(b), 2) # the box holds everything
   mio_release(b)
@@ -960,4 +975,54 @@ test_that("crop_predicate keeps the cells a data comparison selects", {
   # per cell and has nothing for an all/any rule to reduce.
   expect_error(mio_crop_predicate(f$mesh, "sdf:distance", compare = "~"))
   expect_error(mio_crop_predicate(f$mesh, "nope"))
+})
+
+test_that("remesh replaces a surface's triangulation by ACVD clustering", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  r <- mio_remesh(cube, 10)
+  on.exit(mio_release(r$mesh), add = TRUE)
+  expect_equal(mio_cell_block_type(r$mesh, 1), "triangle")
+  expect_equal(mio_num_points(r$mesh), r$num_clusters)
+  expect_gte(r$num_isolated_clusters, 0)
+  expect_gte(r$num_non_manifold_vertices, 0)
+
+  # gradation/preserve_boundary are accepted and reach the C API; a closed
+  # mesh's boundary handling is a no-op either way.
+  q <- mio_remesh(cube, 10, metric = "quadric", gradation = 1.5, preserve_boundary = FALSE)
+  on.exit(mio_release(q$mesh), add = TRUE)
+  expect_gt(mio_num_cells(q$mesh), 0)
+
+  # The anisotropic metric + max_anisotropy go through mio_remesh_ex.
+  a <- mio_remesh(cube, 10, metric = "anisotropic", max_anisotropy = 3.0)
+  on.exit(mio_release(a$mesh), add = TRUE)
+  expect_gt(mio_num_cells(a$mesh), 0)
+  expect_gte(a$num_non_manifold_vertices, 0)
+
+  # max_anisotropy away from the default under a non-anisotropic metric is
+  # guarded, not silently ignored.
+  expect_error(mio_remesh(cube, 10, metric = "isotropic", max_anisotropy = 2.0))
+
+  expect_error(mio_remesh(cube, 3))
+})
+
+test_that("remesh_volume retetrahedralizes by isosurface stuffing", {
+  cube <- cube_surface()
+  on.exit(mio_release(cube))
+
+  # Unlike remesh, remesh_volume accepts the closed surface directly and
+  # returns a tetra mesh.
+  r <- mio_remesh_volume(cube, cell_size = 0.4, watertight_check = "off")
+  on.exit(mio_release(r$mesh), add = TRUE)
+  expect_equal(mio_cell_block_type(r$mesh, 1), "tetra")
+  expect_gt(r$num_tets, 0)
+  expect_equal(r$num_tets, mio_num_cells(r$mesh))
+  expect_gte(r$num_vertices_warped, 0)
+  expect_gte(r$num_tets_rejected, 0)
+  expect_gte(r$num_non_manifold_edges, 0)
+  expect_true(r$input_quality$watertight)
+
+  # Neither resolution nor cell_size given is rejected by name.
+  expect_error(mio_remesh_volume(cube))
 })

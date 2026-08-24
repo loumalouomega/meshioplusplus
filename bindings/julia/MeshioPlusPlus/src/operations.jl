@@ -154,9 +154,16 @@ end
 Relax the point coordinates toward their edge-neighbour centroids. Topology and
 every data value pass through unchanged — only the points move.
 
+`method` is `"taubin"` (default, shrink-free), `"laplacian"` (stronger per
+pass, shrinks the mesh), or `"odt"` (optimal-Delaunay-triangulation
+smoothing — tet-only, raises on any other block; moves each free interior
+vertex toward the volume-weighted average of its incident tets'
+circumcenters).
+
 A **negative `lambda` means "this method's own default"**: 0.5 for
-`"laplacian"`, 0.33 for `"taubin"`. Taubin additionally needs
-`mu < -lambda < 0`. See `doc/smooth.md`.
+`"laplacian"`, 0.33 for `"taubin"`, 0.9 for `"odt"`. Taubin additionally
+needs `mu < -lambda < 0`; `mu` is silently ignored by `"laplacian"` and
+`"odt"`. See `doc/smooth.md`.
 
 The `frozen` pin mask of the C++ API is **not reachable across the C ABI** (a
 documented flat-ABI gap shared with Fortran).
@@ -175,6 +182,39 @@ function smooth(m::Mesh; method::AbstractString="taubin", iterations::Integer=10
                 moved, disp, skipped)
     (mesh=Mesh(_check_ptr(ptr)), num_nodes_moved=Int(moved[]),
      max_displacement=Float64(disp[]), num_skipped_inversion=Int(skipped[]))
+end
+
+"""
+    optimize_volume(mesh; max_iterations=10, relocate=true, flip=true,
+                    preserve_boundary=true, min_improvement=1e-6)
+        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_vertices_moved,
+              num_tets, min_quality_before, min_quality_after)
+
+ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
+vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine "ODT
+remeshing" sibling of [`remesh_volume`](@ref) (which generates a fresh lattice
+mesh) and of `smooth(method="odt")` (which only moves points on fixed
+connectivity). Tet-only, raises on any other block. The point set is invariant,
+so point data and named Point regions carry; cell data and Cell/Side regions are
+dropped. With `preserve_boundary` the boundary surface is exactly preserved.
+See `doc/optimize_volume.md`.
+"""
+function optimize_volume(m::Mesh; max_iterations::Integer=10, relocate::Bool=true,
+                         flip::Bool=true, preserve_boundary::Bool=true,
+                         min_improvement::Real=1e-6)
+    nflips = Ref{Int64}(0); n23 = Ref{Int64}(0); n32 = Ref{Int64}(0)
+    nmoved = Ref{Int64}(0); ntets = Ref{Int64}(0)
+    qb = Ref{Cdouble}(0.0); qa = Ref{Cdouble}(0.0)
+    ptr = ccall(_sym(:mio_optimize_volume), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cint, Cint, Cint, Cint, Cdouble,
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64},
+                 Ptr{Cdouble}, Ptr{Cdouble}),
+                _handle(m), Cint(max_iterations), relocate ? Cint(1) : Cint(0),
+                flip ? Cint(1) : Cint(0), preserve_boundary ? Cint(1) : Cint(0),
+                Float64(min_improvement), nflips, n23, n32, nmoved, ntets, qb, qa)
+    (mesh=Mesh(_check_ptr(ptr)), num_flips=Int(nflips[]), num_23_flips=Int(n23[]),
+     num_32_flips=Int(n32[]), num_vertices_moved=Int(nmoved[]), num_tets=Int(ntets[]),
+     min_quality_before=Float64(qb[]), min_quality_after=Float64(qa[]))
 end
 
 # --- subsetting --------------------------------------------------------------
@@ -422,6 +462,157 @@ function estimate_error(m::Mesh, array::AbstractString; method=:zz, marking=:non
                 output, marked, overwrite ? Cint(1) : Cint(0), global_error, skipped, nmarked)
     (mesh=Mesh(_check_ptr(ptr)), global_error=Float64(global_error[]),
      num_skipped=Int(skipped[]), num_marked=Int(nmarked[]))
+end
+
+"""
+    remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
+           max_subdivide=4, max_iterations=100, max_repair_passes=10,
+           metric=:isotropic, gradation=0.0, preserve_boundary=true,
+           max_anisotropy=4.0)
+        -> (; mesh, num_clusters, num_iterations, subdivide_applied,
+             num_isolated_clusters, num_non_manifold_vertices)
+
+Remesh a surface uniformly by approximated centroidal Voronoi diagram (ACVD)
+clustering: replace its triangulation with a new, near-uniformly-sized,
+well-shaped one at `num_clusters` vertices. Unlike every other
+resolution-changing operation, the output has NEW points and NEW
+connectivity with no correspondence to `mesh` — point/cell data and named
+regions are dropped, field data is carried.
+
+`metric` is `:isotropic` (default; area-weighted centroidal distance, fast,
+rounds sharp features), `:quadric` (Garland-Heckbert quadric error,
+preserves sharp edges/corners at extra cost per candidate move), or
+`:anisotropic` (clusters shaped by a local curvature tensor — elongated
+along low-curvature directions — see `max_anisotropy`). `subdivide` defaults
+to automatic (`-1`): the smallest count of uniform `refine` passes reaching
+`subsample_ratio` items per cluster, capped at `max_subdivide`; `0` disables
+subdivision. `gradation` is the curvature-gradation exponent `gamma` in the
+item weight `area * kappa^gamma`; `0.0` (default) disables gradation
+entirely and reproduces plain area weighting. `preserve_boundary` (default
+`true`) detects the input's open boundary (if any), seeds it before the
+interior, and emits a `line` dual cell along boundary edges whose endpoints
+land in different clusters — a no-op on a closed mesh. `max_anisotropy`
+(default `4.0`, a measured value — see `kRemeshDefaultMaxAnisotropy`'s doc
+comment in `remesh.hpp`) is, under `metric=:anisotropic`, the maximum ratio
+between the two in-plane target edge lengths a curvature tensor may
+request; `1.0` recovers the isotropic shape exactly. Must be at least `1.0`,
+and an error to set away from the default under any other metric.
+`num_isolated_clusters` and `num_non_manifold_vertices` are two distinct
+causes of non-manifold output (disconnected clusters vs. "bowtie" vertices)
+that repair could not fully fix; check both rather than assuming.
+
+Goes through `mio_remesh_ex`/`mio_remesh_opts` rather than the flat
+`mio_remesh` — the `refine`/`mio_refine_ex` precedent, needed because
+`mio_remesh` is a flat C function with no room to grow (it already changed
+once).
+
+Attribution: the isotropic clustering engine is derived from
+[pyacvd](https://github.com/pyvista/pyacvd) (MIT, (c) 2017-2024 The PyVista
+Developers), itself an independent implementation of the published research
+of S. Valette and J.-M. Chassery, not of the CeCILL-B licensed ACVD project.
+See `doc/remesh.md`.
+"""
+function remesh(m::Mesh, num_clusters::Integer; subdivide::Integer=-1,
+                subsample_ratio::Real=10.0, max_subdivide::Integer=4,
+                max_iterations::Integer=100, max_repair_passes::Integer=10,
+                metric::Symbol=:isotropic, gradation::Real=0.0,
+                preserve_boundary::Bool=true, max_anisotropy::Real=4.0)
+    metric_c = Vector{UInt8}(codeunits(String(metric)))
+    push!(metric_c, 0x00)
+    report = Ref{_CRemeshReport}()
+    ptr = GC.@preserve metric_c begin
+        opts = _CRemeshOpts(Int64(num_clusters), Int32(subdivide), Int32(max_subdivide),
+                            Cdouble(subsample_ratio), Int32(max_iterations),
+                            Int32(max_repair_passes), Cstring(pointer(metric_c)),
+                            Cdouble(gradation), preserve_boundary ? Int32(1) : Int32(0),
+                            Int32(0), Cdouble(max_anisotropy),
+                            (Cdouble(0), Cdouble(0), Cdouble(0)),
+                            (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_remesh_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshOpts}, Ptr{_CRemeshReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_clusters=Int(rep.num_clusters),
+     num_iterations=Int(rep.num_iterations), subdivide_applied=Int(rep.subdivide_applied),
+     num_isolated_clusters=Int(rep.num_isolated_clusters),
+     num_non_manifold_vertices=Int(rep.num_non_manifold_vertices))
+end
+
+"""
+    remesh_volume(mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
+                  padding=0.0, padding_relative=0.1, max_cells=20_000_000,
+                  max_tets=20_000_000, warp_fraction=0.35, sign=:pseudonormal,
+                  watertight_check=:warn)
+        -> (; mesh, num_tets, num_vertices_warped, num_tets_rejected,
+             num_non_manifold_edges, input_quality)
+
+Retetrahedralize `mesh` (a volume mesh, or a closed surface) at a
+caller-chosen resolution by isosurface stuffing — the volumetric sibling of
+[`remesh`](@ref). Unlike `remesh`, `mesh` may be a VOLUME mesh directly (its
+boundary is extracted internally) as well as a closed surface. Same
+no-correspondence-with-the-input output contract as `remesh`: new points, new
+connectivity, `point_data`/`cell_data`/named regions dropped, `field_data`
+carried.
+
+Exactly one of `resolution`/`cell_size` must be given, sizing a
+body-centered cubic (BCC) lattice whose uncut tets have dihedral angles from
+a fixed, mesh-size-independent set. `warp_fraction` (default `0.35`) moves
+lattice vertices near the surface onto it, trading a small, measured chance
+of non-manifold boundary edges (reported as `num_non_manifold_edges`) for
+substantially better boundary tet quality; `0` disables warping and gives an
+exactly watertight but lower-quality boundary. See `doc/remesh_volume.md`
+for the measured tradeoff.
+
+Attribution: implemented from the PUBLISHED DESCRIPTION of Labelle &
+Shewchuk, "Isosurface Stuffing" (SIGGRAPH 2007) only — neither the paper's
+own reference implementation (Stellar) nor TetGen (AGPL-3.0) is read or
+vendored here. See `doc/remesh_volume.md`.
+"""
+function remesh_volume(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
+                       padding::Real=0.0, padding_relative::Real=0.1,
+                       max_cells::Integer=20_000_000, max_tets::Integer=20_000_000,
+                       warp_fraction::Real=0.35, sign=:pseudonormal, weight=:angle,
+                       watertight_check=:warn, surface_region::AbstractString="",
+                       grid_cell_size::Real=0.0, max_winding_work::Real=2.0e9)
+    res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
+    (resolution === nothing || length(res) == 3) ||
+        throw(ArgumentError("resolution must have three entries"))
+    bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
+    (bounds === nothing || length(bnd) == 6) ||
+        throw(ArgumentError("bounds must have six entries"))
+
+    region_buf = Vector{UInt8}(codeunits(String(surface_region)))
+    push!(region_buf, 0x00)
+    report = Ref{_CRemeshVolumeReport}()
+    ptr = GC.@preserve res bnd region_buf begin
+        inner = _sdf_opts(; sign, weight, location=:corner, band=0.0,
+                          record_closest_cell=false, record_inside=false, watertight_check,
+                          surface_region, grid_cell_size, max_winding_work, region_buf)
+        opts = _CRemeshVolumeOpts(isempty(res) ? Ptr{Int64}(C_NULL) : pointer(res),
+                                  isempty(bnd) ? Ptr{Cdouble}(C_NULL) : pointer(bnd),
+                                  Cdouble(cell_size === nothing ? 0.0 : cell_size),
+                                  Cdouble(padding), Cdouble(padding_relative),
+                                  Int64(max_cells), Int64(max_tets), Cdouble(warp_fraction),
+                                  (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)),
+                                  inner)
+        ccall(_sym(:mio_remesh_volume_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshVolumeOpts}, Ptr{_CRemeshVolumeReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    q = rep.input_quality
+    (mesh=Mesh(r), num_tets=Int(rep.num_tets),
+     num_vertices_warped=Int(rep.num_vertices_warped),
+     num_tets_rejected=Int(rep.num_tets_rejected),
+     num_non_manifold_edges=Int(rep.num_non_manifold_edges),
+     input_quality=(boundary_edges=Int(q.boundary_edges),
+                    non_manifold_edges=Int(q.non_manifold_edges),
+                    inconsistent_pairs=Int(q.inconsistent_pairs),
+                    degenerate_triangles=Int(q.degenerate_triangles),
+                    watertight=q.watertight != 0))
 end
 
 # --- combining / comparing ---------------------------------------------------

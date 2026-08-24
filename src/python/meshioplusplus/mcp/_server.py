@@ -995,6 +995,134 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def remesh(
+        input_path: str,
+        output_path: str,
+        num_clusters: int,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        subdivide: Optional[int] = None,
+        subsample_ratio: float = 10.0,
+        max_subdivide: int = 4,
+        max_iterations: int = 100,
+        max_repair_passes: int = 10,
+        metric: str = "isotropic",
+        gradation: float = 0.0,
+        preserve_boundary: bool = True,
+        max_anisotropy: float = 4.0,
+    ) -> dict:
+        """Replace a surface mesh's triangulation with a new,
+        near-uniformly-sized, well-shaped one at num_clusters vertices
+        (approximated centroidal Voronoi diagram clustering). Unlike every
+        other resolution-changing tool, the output has NO correspondence to
+        the input -- point_data/cell_data/named regions are dropped,
+        field_data is carried; use interpolate/conservative_interpolate to
+        transfer a field onto the result. metric is "isotropic" (default,
+        fast, rounds sharp features), "quadric" (Garland-Heckbert error,
+        preserves sharp edges/corners), or "anisotropic" (clusters shaped by
+        a local curvature tensor, elongated along low-curvature directions --
+        see max_anisotropy). gradation is the curvature-gradation exponent
+        gamma in the item weight area * kappa**gamma (0.0 default disables
+        gradation). preserve_boundary (default True) seeds and pins the
+        input's open boundary and emits a line dual cell along it, a no-op
+        on a closed mesh. max_anisotropy (default 4.0) is, under
+        metric="anisotropic", the maximum ratio between the two in-plane
+        target edge lengths a curvature tensor may request; 1.0 recovers
+        the isotropic shape; an error to set away from the default under
+        any other metric."""
+        return _guard(
+            _tools.tool_remesh,
+            input_path=input_path,
+            output_path=output_path,
+            num_clusters=num_clusters,
+            input_format=input_format,
+            output_format=output_format,
+            subdivide=subdivide,
+            subsample_ratio=subsample_ratio,
+            max_subdivide=max_subdivide,
+            max_iterations=max_iterations,
+            max_repair_passes=max_repair_passes,
+            metric=metric,
+            max_anisotropy=max_anisotropy,
+            gradation=gradation,
+            preserve_boundary=preserve_boundary,
+        )
+
+    @server.tool()
+    def remesh_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.1,
+        max_cells: int = 20000000,
+        max_tets: int = 20000000,
+        warp_fraction: float = 0.35,
+        watertight_check: str = "warn",
+    ) -> dict:
+        """Retetrahedralize a volume mesh (or closed surface) at a chosen
+        resolution by isosurface stuffing -- the volumetric sibling of remesh.
+        Give exactly one of resolution (nx, ny, nz) or cell_size. Like remesh,
+        the output has NO correspondence to the input -- point_data/cell_data/
+        named regions are dropped, field_data is carried. warp_fraction (0-1,
+        default 0.35) trades boundary tet quality for a small, measured chance
+        of non-manifold boundary edges (reported as num_non_manifold_edges);
+        0 gives an exactly watertight but lower-quality boundary."""
+        return _guard(
+            _tools.tool_remesh_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            max_cells=max_cells,
+            max_tets=max_tets,
+            warp_fraction=warp_fraction,
+            watertight_check=watertight_check,
+        )
+
+    @server.tool()
+    def optimize_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        max_iterations: int = 10,
+        relocate: bool = True,
+        flip: bool = True,
+        preserve_boundary: bool = True,
+        min_improvement: float = 1e-6,
+    ) -> dict:
+        """ODT-remesh a tetrahedral mesh: raise its worst element quality by
+        relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+        The genuine "ODT remeshing" sibling of remesh_volume (which generates a
+        fresh lattice mesh) and of smooth method="odt" (which only moves points
+        on fixed connectivity). Tet-only and C++-core-only. The point set is
+        invariant, so point_data and named Point regions carry; cell_data and
+        Cell/Side regions are dropped. With preserve_boundary the boundary
+        surface is exactly preserved."""
+        return _guard(
+            _tools.tool_optimize_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            max_iterations=max_iterations,
+            relocate=relocate,
+            flip=flip,
+            preserve_boundary=preserve_boundary,
+            min_improvement=min_improvement,
+        )
+
+    @server.tool()
     def smooth(
         input_path: str,
         output_path: str,
@@ -1009,9 +1137,11 @@ def _register_operations(server: FastMCP) -> None:
         feature_angle: float = 30.0,
         guard_inversion: bool = True,
     ) -> dict:
-        """Smooth point coordinates (taubin, the feature-preserving default, or
-        laplacian). Pure coordinate move; boundary and feature nodes pinned by
-        default. lambda_factor < 0 means the method's own default."""
+        """Smooth point coordinates (taubin, the feature-preserving default;
+        laplacian; or odt, optimal-Delaunay-triangulation smoothing, tet-only
+        and C++-core-only with no pure-Python fallback). Pure coordinate move;
+        boundary and feature nodes pinned by default. lambda_factor < 0 means
+        the method's own default."""
         return _guard(
             _tools.tool_smooth,
             input_path=input_path,

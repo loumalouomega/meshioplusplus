@@ -187,40 +187,48 @@ DecimPlaced decim_place(const DecimPlaceCtx& rCtx, std::int64_t a, std::int64_t 
         return out;
     }
 
-    bool solved = false;
     if (rCtx.mPlacement == DecimatePlacement::Optimal) {
-        // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
-        // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
-        // planar patch A is singular by construction, so the midpoint fallback
-        // is the hot path there -- expected, not a defect.
-        const double c00 = q[4] * q[7] - q[5] * q[5];
-        const double c01 = q[2] * q[5] - q[1] * q[7];
-        const double c02 = q[1] * q[5] - q[2] * q[4];
-        const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-        double scale = std::abs(q[0]);
-        scale = std::max(scale, std::abs(q[1]));
-        scale = std::max(scale, std::abs(q[2]));
-        scale = std::max(scale, std::abs(q[4]));
-        scale = std::max(scale, std::abs(q[5]));
-        scale = std::max(scale, std::abs(q[7]));
-        if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-            const double c11 = q[0] * q[7] - q[2] * q[2];
-            const double c12 = q[1] * q[2] - q[0] * q[5];
-            const double c22 = q[0] * q[4] - q[1] * q[1];
-            const double inv = 1.0 / det;
-            out.mX[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-            out.mX[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-            out.mX[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
-            solved = true;
-        }
-    }
-    if (!solved) {  // Midpoint, or Optimal's ill-conditioned fallback
+        const double midpoint[3] = {(xa[0] + xb[0]) * 0.5, (xa[1] + xb[1]) * 0.5,
+                                     (xa[2] + xb[2]) * 0.5};
+        decim_quadric_optimal_point(q, midpoint, out.mX);
+    } else {  // Midpoint
         out.mX[0] = (xa[0] + xb[0]) * 0.5;
         out.mX[1] = (xa[1] + xb[1]) * 0.5;
         out.mX[2] = (xa[2] + xb[2]) * 0.5;
     }
     out.mErr = decim_quadric_error(q, out.mX[0], out.mX[1], out.mX[2]);
     return out;
+}
+
+bool decim_quadric_optimal_point(const double q[10], const double pFallback[3], double pOut[3]) {
+    // Minimize E: solve A x = -bvec with A the quadric's upper-left 3x3 and
+    // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
+    // planar patch A is singular by construction, so the fallback is the hot
+    // path there -- expected, not a defect.
+    const double c00 = q[4] * q[7] - q[5] * q[5];
+    const double c01 = q[2] * q[5] - q[1] * q[7];
+    const double c02 = q[1] * q[5] - q[2] * q[4];
+    const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
+    double scale = std::abs(q[0]);
+    scale = std::max(scale, std::abs(q[1]));
+    scale = std::max(scale, std::abs(q[2]));
+    scale = std::max(scale, std::abs(q[4]));
+    scale = std::max(scale, std::abs(q[5]));
+    scale = std::max(scale, std::abs(q[7]));
+    if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
+        const double c11 = q[0] * q[7] - q[2] * q[2];
+        const double c12 = q[1] * q[2] - q[0] * q[5];
+        const double c22 = q[0] * q[4] - q[1] * q[1];
+        const double inv = 1.0 / det;
+        pOut[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
+        pOut[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
+        pOut[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+        return true;
+    }
+    pOut[0] = pFallback[0];
+    pOut[1] = pFallback[1];
+    pOut[2] = pFallback[2];
+    return false;
 }
 
 void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCorners,

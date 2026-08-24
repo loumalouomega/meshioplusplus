@@ -78,8 +78,7 @@ Permutations are derived from the SIDS element-numbering-conventions edge/face t
 
 ## Data mapping
 
-Since v9.9.0, `point_data` and `cell_data` round-trip through `FlowSolution_t`
-nodes; before that a CGNS export silently dropped every field.
+Since v9.9.0, `point_data` and `cell_data` round-trip through `FlowSolution_t` nodes; before that a CGNS export silently dropped every field.
 
 | meshio++ | CGNS |
 |---|---|
@@ -87,19 +86,9 @@ nodes; before that a CGNS export silently dropped every field.
 | `cell_data` | `FlowSolutionCells` (`FlowSolution_t`), `GridLocation` = `CellCenter` |
 | `field_data` | — (neither per-vertex nor per-cell; not written) |
 
-Each array becomes one `DataArray_t` child, `R8`, with one value per vertex or
-per zone cell. On read, `GridLocation` is honoured (absent ⇒ `Vertex`, the SIDS
-default) and an array whose length disagrees with `NVertex`/`NCell` is a
-`ReadError` naming it.
+Each array becomes one `DataArray_t` child, `R8`, with one value per vertex or per zone cell. On read, `GridLocation` is honoured (absent ⇒ `Vertex`, the SIDS default) and an array whose length disagrees with `NVertex`/`NCell` is a `ReadError` naming it.
 
-**Multi-component arrays are split, because CGNS has no component concept.**
-There is no `NumberOfComponents` anywhere in the SIDS — one `DataArray_t` is one
-scalar. A k-component meshio++ array is therefore written as k sibling nodes
-named `<name>_0 .. <name>_{k-1}` and re-joined on read from a *contiguous*
-`0..k-1` run. This is a documented meshio++ convention, not something SIDS
-specifies (the same class of deliberate extension as `zstd` for VTU). Anything
-that is not a contiguous run — a lone `foo_7`, a gap — stays a scalar under its
-own literal name, since guessing would invent components.
+**Multi-component arrays are split, because CGNS has no component concept.** There is no `NumberOfComponents` anywhere in the SIDS — one `DataArray_t` is one scalar. A k-component meshio++ array is therefore written as k sibling nodes named `<name>_0 .. <name>_{k-1}` and re-joined on read from a *contiguous* `0..k-1` run. This is a documented meshio++ convention, not something SIDS specifies (the same class of deliberate extension as `zstd` for VTU). Anything that is not a contiguous run — a lone `foo_7`, a gap — stays a scalar under its own literal name, since guessing would invent components.
 
 ```
 Zone1/
@@ -114,107 +103,42 @@ Zone1/
     material/" data"       R8, float64[NCell]
 ```
 
-**`cell_data` needs a single-dimension mesh.** A `CellCenter` array is
-per-*zone*, but meshio++'s `cell_data` is per-*block* — and only blocks at
-`CellDim` are zone cells. Concatenating block-major is therefore only well
-defined when every block is at `CellDim`; for a mixed-dimension mesh (tets plus
-boundary triangles, say) there is no way to distribute the zone-wide array back
-across the blocks on read without inventing values, so `cell_data` is skipped
-with a warning rather than written wrongly. Geometry is unaffected. On read the
-array is split back by each section's cell count in `ElementRange` order.
+**`cell_data` needs a single-dimension mesh.** A `CellCenter` array is per-*zone*, but meshio++'s `cell_data` is per-*block* — and only blocks at `CellDim` are zone cells. Concatenating block-major is therefore only well defined when every block is at `CellDim`; for a mixed-dimension mesh (tets plus boundary triangles, say) there is no way to distribute the zone-wide array back across the blocks on read without inventing values, so `cell_data` is skipped with a warning rather than written wrongly. Geometry is unaffected. On read the array is split back by each section's cell count in `ElementRange` order.
 
-**`FlowSolution_t` is only read for a single-zone file.** Across several zones
-the arrays would have to be concatenated in whatever order the zones happen to
-be listed in, and a solution present on only some zones has no defensible
-filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own
-writer always emits one zone.
+**`FlowSolution_t` is only read for a single-zone file.** Across several zones the arrays would have to be concatenated in whatever order the zones happen to be listed in, and a solution present on only some zones has no defensible filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own writer always emits one zone.
 
 ## Polyhedral cells (`NGON_n` / `NFACE_n`)
 
-Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, with
-no optional dependency — so polyhedral CGNS works in the default build, the PyPI
-wheels and the WASM artifact. A `polyhedron<N>` block becomes an `NGON_n` face
-list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning
-"traverse this face reversed"); a jagged `polygon<N>` block is itself a face
-list, so it becomes an `NGON_n` on its own.
+Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, with no optional dependency — so polyhedral CGNS works in the default build, the PyPI wheels and the WASM artifact. A `polyhedron<N>` block becomes an `NGON_n` face list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning "traverse this face reversed"); a jagged `polygon<N>` block is itself a face list, so it becomes an `NGON_n` on its own.
 
 Three rules are worth knowing:
 
-- **`NGON_n` is written before the `NFACE_n` sections that reference it**, and
-  its faces are deduplicated across the *polyhedral* blocks only. A mesh mixing
-  hexahedra with polyhedra keeps ordinary `HEXA_8` sections for the former —
-  putting their faces in the pool would leave `NGON_n` elements that no cell
-  references.
-- **On read, an `NGON_n` becomes `polygon<N>` cells only when no `NFACE_n`
-  references it.** Otherwise it is the shared face pool, not a set of cells, and
-  emitting it as cells would duplicate every polyhedron's geometry.
-- **Only the CGNS ≥ 4.0 layout is read** (`ElementStartOffset` beside
-  `ElementConnectivity`). A CGNS 3.x file prefixes each row with its own length
-  inline instead; normalising the two is exactly what `cg_poly_elements_read`
-  exists for, so such a file is refused **by name**, pointing at the
-  [cgnslib backend](#the-optional-cgnslib-backend), rather than misread. A file meshio++
-  writes with a face-based section declares `CGNSLibraryVersion` 4.0 for the
-  same reason — below that, cgnslib itself reads `NGON_n` the 3.x way.
+- **`NGON_n` is written before the `NFACE_n` sections that reference it**, and its faces are deduplicated across the *polyhedral* blocks only. A mesh mixing hexahedra with polyhedra keeps ordinary `HEXA_8` sections for the former — putting their faces in the pool would leave `NGON_n` elements that no cell references.
+- **On read, an `NGON_n` becomes `polygon<N>` cells only when no `NFACE_n` references it.** Otherwise it is the shared face pool, not a set of cells, and emitting it as cells would duplicate every polyhedron's geometry.
+- **Only the CGNS ≥ 4.0 layout is read** (`ElementStartOffset` beside `ElementConnectivity`). A CGNS 3.x file prefixes each row with its own length inline instead; normalising the two is exactly what `cg_poly_elements_read` exists for, so such a file is refused **by name**, pointing at the [cgnslib backend](#the-optional-cgnslib-backend), rather than misread. A file meshio++ writes with a face-based section declares `CGNSLibraryVersion` 4.0 for the same reason — below that, cgnslib itself reads `NGON_n` the 3.x way.
 
 ::: warning No pure-Python path
-The h5py twin deliberately does not implement this; it raises naming the
-compiled core. The writer deduplicates faces and repairs each cell's winding,
-and that repair is a discrete branch on the sign of an enclosed volume — two
-implementations of such a branch can land on opposite sides for a
-near-degenerate cell and then diverge macroscopically, the same reasoning that
-keeps `smooth`'s inversion guard out of its numpy fallback. `_core` ships in
-every wheel, so this is not a practical restriction.
+The h5py twin deliberately does not implement this; it raises naming the compiled core. The writer deduplicates faces and repairs each cell's winding, and that repair is a discrete branch on the sign of an enclosed volume — two implementations of such a branch can land on opposite sides for a near-degenerate cell and then diverge macroscopically, the same reasoning that keeps `smooth`'s inversion guard out of its numpy fallback. `_core` ships in every wheel, so this is not a practical restriction.
 :::
 
 ## The optional cgnslib backend
 
-Since v9.18.0 meshio++ can additionally read CGNS through the **official CGNS
-library** (cgnslib, the Mid-Level Library), behind
-`-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`. It is **OFF by default and bring-your-own**
-(`CGNS_ROOT`) — never vendored, never downloaded, exactly the policy
-[KaHIP](/partition) follows. cgnslib is Zlib-licensed and ships its own CMake
-config package, so no Find module is needed and the exported meshio++ package
-stays relocatable.
+Since v9.18.0 meshio++ can additionally read CGNS through the **official CGNS library** (cgnslib, the Mid-Level Library), behind `-DMESHIOPLUSPLUS_WITH_CGNSLIB=ON`. It is **OFF by default and bring-your-own** (`CGNS_ROOT`) — never vendored, never downloaded, exactly the policy [KaHIP](/partition) follows. cgnslib is Zlib-licensed and ships its own CMake config package, so no Find module is needed and the exported meshio++ package stays relocatable.
 
-The backend is **additive**: everything above still works without it, byte for
-byte. What it adds is two things the raw-HDF5 reader cannot have at all:
+The backend is **additive**: everything above still works without it, byte for byte. What it adds is two things the raw-HDF5 reader cannot have at all:
 
-- **ADF-container files.** `.cgns` has two on-disk containers, HDF5 and ADF.
-  The reader above speaks HDF5 directly, so an ADF file is unreachable by
-  construction rather than merely unimplemented — and much of the real-world
-  corpus is ADF.
-- **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces as node
-  lists; `NFACE_n` lists each cell as **signed** face ids, where the sign means
-  "traverse this face reversed" (CGNS's way of orienting a shared face outward
-  from each of the two cells that use it). They map to `polyhedron<N>` blocks,
-  grouped by unique node count like the OpenFOAM and EnSight readers.
-  `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0
-  `ElementStartOffset` split, which is the most error-prone part of the
-  encoding and the single strongest reason to use the MLL here.
+- **ADF-container files.** `.cgns` has two on-disk containers, HDF5 and ADF. The reader above speaks HDF5 directly, so an ADF file is unreachable by construction rather than merely unimplemented — and much of the real-world corpus is ADF.
+- **`NGON_n` / `NFACE_n` polyhedral sections.** `NGON_n` lists faces as node lists; `NFACE_n` lists each cell as **signed** face ids, where the sign means "traverse this face reversed" (CGNS's way of orienting a shared face outward from each of the two cells that use it). They map to `polyhedron<N>` blocks, grouped by unique node count like the OpenFOAM and EnSight readers. `cg_poly_elements_read` also absorbs the CGNS 3.x-vs-4.0 `ElementStartOffset` split, which is the most error-prone part of the encoding and the single strongest reason to use the MLL here.
 
-**Routing.** Read goes through the MLL whenever it is built — the input is not
-ours and the MLL is strictly more capable — with one narrow exception: the
-pre-v9.8.0 legacy layout, which has no ADF node attributes and which the MLL
-rejects, falls through to the hand-rolled path. That is a *specific* fallback,
-not a blanket catch, so a genuine MLL error still surfaces. **Write is
-untouched** and stays on the hand-rolled path: switching engines for meshes it
-already handles would churn bytes for no benefit and would cost the
-C++/Python byte-parity oracle. A useful consequence is that on a cgnslib build
-the whole CGNS test suite becomes a cross-engine check for free.
+**Routing.** Read goes through the MLL whenever it is built — the input is not ours and the MLL is strictly more capable — with one narrow exception: the pre-v9.8.0 legacy layout, which has no ADF node attributes and which the MLL rejects, falls through to the hand-rolled path. That is a *specific* fallback, not a blanket catch, so a genuine MLL error still surfaces. **Write is untouched** and stays on the hand-rolled path: switching engines for meshes it already handles would churn bytes for no benefit and would cost the C++/Python byte-parity oracle. A useful consequence is that on a cgnslib build the whole CGNS test suite becomes a cross-engine check for free.
 
-**The Python reference reader is h5py-based** and so has neither capability. It
-is not a fallback for them either: `meshioplusplus.cgns.read` re-raises rather
-than falling back when the file is not HDF5, because the reference reader would
-report a confusing signature error instead of the real one.
+**The Python reference reader is h5py-based** and so has neither capability. It is not a fallback for them either: `meshioplusplus.cgns.read` re-raises rather than falling back when the file is not HDF5, because the reference reader would report a confusing signature error instead of the real one.
 
-`_core.__has_cgnslib__` (Python) and `cgns_has_cgnslib()` (C++) report whether
-the backend is present; `read_cgns_mll` always exists and throws naming the
-CMake flag when it is not.
+`_core.__has_cgnslib__` (Python) and `cgns_has_cgnslib()` (C++) report whether the backend is present; `read_cgns_mll` always exists and throws naming the CMake flag when it is not.
 
 ### Getting cgnslib
 
-It is plain C with a CMake build and works on every platform meshio++ targets,
-Windows/MSVC included — there is nothing Unix-specific about it.
+It is plain C with a CMake build and works on every platform meshio++ targets, Windows/MSVC included — there is nothing Unix-specific about it.
 
 | | |
 | --- | --- |
@@ -224,9 +148,7 @@ Windows/MSVC included — there is nothing Unix-specific about it.
 | conda-forge | `cgns` — note the package omits the `libz.so` dev symlink its own exported CMake target names, and its cgnslib is linked against conda's HDF5, so take **both** from the same prefix |
 | From source | `cmake -DCGNS_ENABLE_HDF5=ON`; point meshio++ at it with `CGNS_ROOT` or `CGNS_DIR` |
 
-meshio++'s own Windows CI leg builds every native path off and exercises the
-Python fallbacks, so no optional C++ dependency is tested there — that is a CI
-policy of this repository, not a limitation of cgnslib.
+meshio++'s own Windows CI leg builds every native path off and exercises the Python fallbacks, so no optional C++ dependency is tested there — that is a CI policy of this repository, not a limitation of cgnslib.
 
 ## Quirks & limitations
 
@@ -246,4 +168,4 @@ policy of this repository, not a limitation of cgnslib.
   3. **Geometric ordering oracle** (`tests/cpp/test_cgns.cpp`'s `CgnsOrdering` suite): builds a reference element with nodes at their true SIDS-defined positions — computed independently of the permutation tables — and asserts the raw written bytes place each node where SIDS says it belongs, plus a pure-computation check that every table entry is a genuine involution. This is what catches a wrong permutation; a round trip through only our own reader and writer cannot, since a self-inverse permutation makes `read(write(m)) == m` even when the table is wrong.
   4. **Real cgnslib**: a reference `.cgns` written end to end by **cgnslib 4.5.2** is committed under [`tests/python/meshes/cgns/`](../../tests/python/meshes/cgns/README.md) (Git LFS) and read unconditionally by both readers; and `test_cgnscheck_accepts_our_output` runs cgnslib's own conformance checker over what we write for every supported type. `cgnscheck` reports **zero errors**. It does report style *warnings* — no `Family_t` on the zone, no `DataClass_t` on the arrays, and "not a CGNS data-name identifier" for any field whose name is not one of SIDS's standard names (`Density`, `VelocityX`, …) — which are recommendations, not conformance failures; meshio++ preserves the caller's own field names rather than renaming them to fit SIDS's vocabulary.
 
-  Layer 4 is **opt-in**: `cgnscheck` is not a pip/apt dependency of this repo, so that test skips (with an explicit, actionable reason naming the conda-forge install) where the binary is absent — including in CI. The committed fixture in the same layer needs nothing external and always runs. What still cannot be verified anywhere: that ParaView actually *renders* the output, and a semantically-plausible-but-wrong ordering for a type no geometric test covers.
+Layer 4 is **opt-in**: `cgnscheck` is not a pip/apt dependency of this repo, so that test skips (with an explicit, actionable reason naming the conda-forge install) where the binary is absent — including in CI. The committed fixture in the same layer needs nothing external and always runs. What still cannot be verified anywhere: that ParaView actually *renders* the output, and a semantically-plausible-but-wrong ordering for a type no geometric test covers.

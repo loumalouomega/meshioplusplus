@@ -437,6 +437,34 @@ program test_fortran_api
         call check(st /= 0, 'smooth rejects an unknown method')
 
         call relaxed%free()
+
+        ! ODT (optimal-Delaunay-triangulation smoothing): tet-only, C++-core
+        ! only, moves free vertices toward incident-tet circumcenters. `m`'s
+        ! own cell block is 'tetra' (set up above), so this is in scope.
+        relaxed = m%smooth('odt', 1, fix_boundary=.false., preserve_features=.false., &
+                           nodes_moved=moved, max_displacement=max_disp, stat=st)
+        call check(st == 0, 'smooth accepts method=odt on a tet mesh')
+        call check(relaxed%num_points() == n0, 'odt smooth preserves the point count')
+        call check(moved >= 0_int64, 'odt smooth reported a node-moved count')
+        call relaxed%free()
+    end block
+
+    ! -- optimize_volume: ODT remeshing (relocate + flip connectivity) --
+    block
+        type(mio_mesh) :: opt
+        integer(int64) :: nflips, n23, n32, nmoved, ntets, n0
+        real(real64) :: qb, qa
+        integer :: st
+
+        n0 = m%num_points()
+        opt = m%optimize_volume(max_iterations=5, num_flips=nflips, num_23_flips=n23, &
+                                num_32_flips=n32, num_vertices_moved=nmoved, num_tets=ntets, &
+                                min_quality_before=qb, min_quality_after=qa, stat=st)
+        call check(st == 0, 'optimize_volume succeeded on a tet mesh')
+        call check(opt%num_points() == n0, 'optimize_volume preserves the point set')
+        call check(nflips >= 0_int64, 'optimize_volume reported a flip count')
+        call check(qa >= qb - 1.0e-12_real64, 'optimize_volume never lowers worst quality')
+        call opt%free()
     end block
 
     ! -- interpolate: cross-mesh field transfer --
@@ -671,6 +699,88 @@ program test_fortran_api
 
         call coarse%free()
         call fan%free()
+    end block
+
+    ! -- remesh: ACVD surface remeshing (a brand-new mesh, no maps) --
+    block
+        type(mio_mesh) :: octa, out, out_q, out_a, bad
+        integer(int64) :: niter, niso, nnm
+        integer :: subapp, st
+        real(real64) :: octa_points(3, 6)
+        integer(int64) :: octa_conn(3, 8)
+
+        ! A regular octahedron: the smallest closed 2-manifold triangle mesh
+        ! with no coplanar faces.
+        octa_points = reshape([1.0_real64, 0.0_real64, 0.0_real64, &
+                               -1.0_real64, 0.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, -1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               0.0_real64, 0.0_real64, -1.0_real64], [3, 6])
+        octa_conn = reshape([1_int64, 3_int64, 5_int64, 3_int64, 2_int64, 5_int64, &
+                             2_int64, 4_int64, 5_int64, 4_int64, 1_int64, 5_int64, &
+                             3_int64, 1_int64, 6_int64, 2_int64, 3_int64, 6_int64, &
+                             4_int64, 2_int64, 6_int64, 1_int64, 4_int64, 6_int64], [3, 8])
+        call octa%create()
+        call octa%set_points(octa_points)
+        call octa%add_cell_block('triangle', octa_conn)
+
+        out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
+                          num_isolated_clusters=niso, stat=st)
+        call check(st == 0, 'remesh succeeded')
+        call check(out%num_points() == 30_int64, 'remesh produced 30 clusters')
+        call check(subapp > 0, 'remesh auto-subdivided (6 vertices cannot support 30 clusters)')
+        call check(niter >= 0_int64, 'remesh reported an iteration count')
+        call check(niso >= 0_int64, 'remesh reported an isolated-cluster count')
+
+        ! The quadric ("feature-preserving") metric is accepted too.
+        out_q = octa%remesh(30_int64, metric='quadric', stat=st)
+        call check(st == 0, 'remesh accepts the quadric metric')
+
+        ! The anisotropic metric + max_anisotropy go through mio_remesh_ex.
+        out_a = octa%remesh(30_int64, metric='anisotropic', max_anisotropy=3.0_real64, &
+                            num_non_manifold_vertices=nnm, stat=st)
+        call check(st == 0, 'remesh accepts the anisotropic metric')
+        call check(out_a%num_points() > 0_int64, 'anisotropic remesh produced clusters')
+        call check(nnm >= 0_int64, 'remesh reported a non-manifold-vertex count')
+
+        ! Too few clusters is rejected by name.
+        bad = octa%remesh(3_int64, stat=st)
+        call check(st /= 0, 'remesh rejects a too-small cluster count')
+
+        call out%free()
+        call out_q%free()
+        call out_a%free()
+
+        ! -- remesh_volume: isosurface stuffing, remesh's volumetric sibling --
+        block
+            type(mio_mesh) :: rv_out, rv_bad
+            integer(int64) :: warped, rejected, nonmanifold
+            type(mio_surface_quality) :: q
+            integer :: rv_st
+
+            ! Unlike remesh, remesh_volume accepts the closed surface (octa)
+            ! directly and returns a tetra mesh.
+            rv_out = octa%remesh_volume(cell_size=0.4_real64, watertight_check='off', &
+                                        num_vertices_warped=warped, num_tets_rejected=rejected, &
+                                        num_non_manifold_edges=nonmanifold, quality=q, stat=rv_st)
+            call check(rv_st == 0, 'remesh_volume succeeded')
+            call check(rv_out%num_points() > 0_int64, 'remesh_volume produced points')
+            call check(rv_out%num_cell_blocks() == 1, 'remesh_volume produced one cell block')
+            call check(rv_out%cell_block_type(1) == 'tetra', 'remesh_volume produced tets')
+            call check(warped >= 0_int64, 'remesh_volume reported a warped-vertex count')
+            call check(rejected >= 0_int64, 'remesh_volume reported a rejected-tet count')
+            call check(nonmanifold >= 0_int64, 'remesh_volume reported a non-manifold-edge count')
+            call check(q%watertight /= 0, 'remesh_volume reported the input as watertight')
+
+            ! Neither resolution nor cell_size given is rejected by name.
+            rv_bad = octa%remesh_volume(stat=rv_st)
+            call check(rv_st /= 0, 'remesh_volume rejects a missing resolution/cell_size')
+
+            call rv_out%free()
+        end block
+
+        call octa%free()
     end block
 
     ! -- partition: N balanced pieces + flat labels --

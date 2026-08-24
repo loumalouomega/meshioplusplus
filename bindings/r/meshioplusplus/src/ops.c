@@ -118,6 +118,34 @@ SEXP R_mio_smooth(SEXP mesh, SEXP method, SEXP iterations, SEXP lambda, SEXP mu,
     return res;
 }
 
+SEXP R_mio_optimize_volume(SEXP mesh, SEXP max_iterations, SEXP relocate, SEXP flip,
+                           SEXP preserve_boundary, SEXP min_improvement) {
+    int64_t nflips = 0, n23 = 0, n32 = 0, nmoved = 0, ntets = 0;
+    double qbefore = 0.0, qafter = 0.0;
+    mio_mesh *out = mio_optimize_volume(
+        mio_r_mesh(mesh), mio_r_int(max_iterations, "max_iterations"),
+        mio_r_bool(relocate, "relocate"), mio_r_bool(flip, "flip"),
+        mio_r_bool(preserve_boundary, "preserve_boundary"),
+        mio_r_double(min_improvement, "min_improvement"), &nflips, &n23, &n32, &nmoved, &ntets,
+        &qbefore, &qafter);
+    if (out == NULL) mio_r_fail("optimize_volume");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP v0 = PROTECT(Rf_ScalarReal((double)nflips));
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)n23));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)n32));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)nmoved));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)ntets));
+    SEXP v5 = PROTECT(Rf_ScalarReal(qbefore));
+    SEXP v6 = PROTECT(Rf_ScalarReal(qafter));
+    const char *names[] = {"mesh",     "num_flips",          "num_23_flips",
+                           "num_32_flips", "num_vertices_moved", "num_tets",
+                           "min_quality_before", "min_quality_after"};
+    SEXP values[] = {mo, v0, v1, v2, v3, v4, v5, v6};
+    SEXP res = PROTECT(mio_r_named_list(8, names, values));
+    UNPROTECT(9);
+    return res;
+}
+
 /* --- subsetting --------------------------------------------------------- */
 
 SEXP R_mio_crop_bbox(SEXP mesh, SEXP lo, SEXP hi, SEXP mode, SEXP record_ids) {
@@ -237,6 +265,48 @@ SEXP R_mio_estimate_error(SEXP mesh, SEXP array, SEXP method, SEXP marking, SEXP
     SEXP values[] = {mo, ge, sk, mk};
     SEXP res = PROTECT(mio_r_named_list(4, names, values));
     UNPROTECT(5);
+    return res;
+}
+
+/* Goes through mio_remesh_ex/mio_remesh_opts rather than the flat mio_remesh
+   -- the R_mio_refine/mio_refine_ex precedent above, needed because
+   mio_remesh is a flat C function with no room to grow (it already changed
+   once). Unlike Julia/Fortran, R links the real C header, so mio_remesh_opts
+   is used directly -- no hand-mirrored struct to keep in sync. */
+SEXP R_mio_remesh(SEXP mesh, SEXP num_clusters, SEXP subdivide, SEXP subsample_ratio,
+                  SEXP max_subdivide, SEXP max_iterations, SEXP max_repair_passes, SEXP metric,
+                  SEXP gradation, SEXP preserve_boundary, SEXP max_anisotropy) {
+    mio_remesh_opts opts;
+    mio_remesh_report report;
+    mio_mesh *out;
+
+    mio_remesh_opts_init(&opts);
+    opts.num_clusters = (int64_t)mio_r_int(num_clusters, "num_clusters");
+    opts.subdivide = (int32_t)mio_r_int(subdivide, "subdivide");
+    opts.max_subdivide = (int32_t)mio_r_int(max_subdivide, "max_subdivide");
+    opts.subsample_ratio = mio_r_double(subsample_ratio, "subsample_ratio");
+    opts.max_iterations = (int32_t)mio_r_int(max_iterations, "max_iterations");
+    opts.max_repair_passes = (int32_t)mio_r_int(max_repair_passes, "max_repair_passes");
+    opts.metric = mio_r_opt_string(metric);
+    opts.gradation = mio_r_double(gradation, "gradation");
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary") ? 1 : 0;
+    opts.max_anisotropy = mio_r_double(max_anisotropy, "max_anisotropy");
+
+    out = mio_remesh_ex(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("remesh");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    /* R has no native int64, so the counters come back as doubles -- the
+       mio_gradient wrapper's rule. */
+    SEXP nc = PROTECT(Rf_ScalarReal((double)report.num_clusters));
+    SEXP ni = PROTECT(Rf_ScalarReal((double)report.num_iterations));
+    SEXP sa = PROTECT(Rf_ScalarReal((double)report.subdivide_applied));
+    SEXP iso = PROTECT(Rf_ScalarReal((double)report.num_isolated_clusters));
+    SEXP nm = PROTECT(Rf_ScalarReal((double)report.num_non_manifold_vertices));
+    const char *names[] = {"mesh", "num_clusters", "num_iterations", "subdivide_applied",
+                           "num_isolated_clusters", "num_non_manifold_vertices"};
+    SEXP values[] = {mo, nc, ni, sa, iso, nm};
+    SEXP res = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
     return res;
 }
 
@@ -1352,6 +1422,74 @@ SEXP R_mio_compute_sdf(SEXP mesh, SEXP structure, SEXP resolution, SEXP cell_siz
     UNPROTECT(8);
     return res_list;
 }
+
+/* Retetrahedralize a volume mesh (or closed surface) by isosurface stuffing
+   -- remesh's volumetric sibling. Same "R links the real C header, no
+   hand-mirrored struct" note as R_mio_remesh above; `distance` is set
+   directly rather than through fill_sdf_opts, whose location/band/
+   record_inside fields remesh_volume never reads. */
+SEXP R_mio_remesh_volume(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds,
+                         SEXP padding, SEXP padding_relative, SEXP max_cells, SEXP max_tets,
+                         SEXP warp_fraction, SEXP sign, SEXP watertight_check,
+                         SEXP surface_region, SEXP grid_cell_size, SEXP max_winding_work) {
+    mio_remesh_volume_opts opts;
+    mio_remesh_volume_report report;
+    mio_mesh *out;
+
+    mio_remesh_volume_opts_init(&opts);
+
+    /* The buffers the option pointers reference must outlive the call, the
+       R_mio_compute_sdf idiom above. */
+    int64_t res[3];
+    double bnd[6];
+    if (Rf_xlength(resolution) > 0) {
+        SEXP r = PROTECT(Rf_coerceVector(resolution, REALSXP));
+        if (Rf_xlength(r) != 3) {
+            UNPROTECT(1);
+            Rf_error("`resolution` must have exactly 3 elements");
+        }
+        for (int i = 0; i < 3; ++i) res[i] = (int64_t)REAL(r)[i];
+        UNPROTECT(1);
+        opts.resolution = res;
+    }
+    if (Rf_xlength(bounds) > 0) {
+        SEXP b = PROTECT(Rf_coerceVector(bounds, REALSXP));
+        if (Rf_xlength(b) != 6) {
+            UNPROTECT(1);
+            Rf_error("`bounds` must have exactly 6 elements");
+        }
+        memcpy(bnd, REAL(b), 6 * sizeof(double));
+        UNPROTECT(1);
+        opts.bounds = bnd;
+    }
+    opts.cell_size = mio_r_double(cell_size, "cell_size");
+    opts.padding = mio_r_double(padding, "padding");
+    opts.padding_relative = mio_r_double(padding_relative, "padding_relative");
+    opts.max_cells = mio_r_int64(max_cells, "max_cells");
+    opts.max_tets = mio_r_int64(max_tets, "max_tets");
+    opts.warp_fraction = mio_r_double(warp_fraction, "warp_fraction");
+    opts.distance.sign = (int32_t)mio_r_int(sign, "sign");
+    opts.distance.watertight_check = (int32_t)mio_r_int(watertight_check, "watertight_check");
+    opts.distance.surface_region = mio_r_opt_string(surface_region);
+    opts.distance.grid_cell_size = mio_r_double(grid_cell_size, "grid_cell_size");
+    opts.distance.max_winding_work = mio_r_double(max_winding_work, "max_winding_work");
+
+    out = mio_remesh_volume_ex(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("remesh_volume");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nt = PROTECT(Rf_ScalarReal((double)report.num_tets));
+    SEXP nw = PROTECT(Rf_ScalarReal((double)report.num_vertices_warped));
+    SEXP nr = PROTECT(Rf_ScalarReal((double)report.num_tets_rejected));
+    SEXP nm = PROTECT(Rf_ScalarReal((double)report.num_non_manifold_edges));
+    SEXP ql = PROTECT(quality_list(&report.input_quality));
+    const char *names[] = {"mesh", "num_tets", "num_vertices_warped", "num_tets_rejected",
+                           "num_non_manifold_edges", "input_quality"};
+    SEXP values[] = {mo, nt, nw, nr, nm, ql};
+    SEXP res_list = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res_list;
+}
+
 
 SEXP R_mio_surface_watertight_check(SEXP mesh) {
     mio_surface_quality q;

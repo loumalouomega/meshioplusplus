@@ -1,11 +1,6 @@
 # Data summary (`data_info`)
 
-`meshioplusplus.data_info(mesh)` reports a per-array summary of everything a
-mesh's data maps carry, without modifying it. It is the **data** view that
-complements the topological [`info`](/cli#meshioplusplus-info) verb and the
-geometric [`stats`](/stats): `info` tells you about points and cells, `stats`
-about the shape they occupy, and `data_info` about the fields attached to them.
-It is a [data operation](/data_operations), not a file format.
+`meshioplusplus.data_info(mesh)` reports a per-array summary of everything a mesh's data maps carry, without modifying it. It is the **data** view that complements the topological [`info`](/cli#meshioplusplus-info) verb and the geometric [`stats`](/stats): `info` tells you about points and cells, `stats` about the shape they occupy, and `data_info` about the fields attached to them. It is a [data operation](/data_operations), not a file format.
 
 ```python
 import meshioplusplus as mp
@@ -19,8 +14,7 @@ for a in mp.data_info(mesh):
 
 ## Returned fields
 
-`data_info` returns a list of dicts, ordered `point_data`, then `cell_data`,
-then `field_data`, each group sorted by name. Each dict carries:
+`data_info` returns a list of dicts, ordered `point_data`, then `cell_data`, then `field_data`, each group sorted by name. Each dict carries:
 
 | Key | Meaning |
 | --- | --- |
@@ -37,11 +31,7 @@ then `field_data`, each group sorted by name. Each dict carries:
 | `num_nan` / `num_inf` / `num_finite` | value counts |
 | `inconsistent_blocks` | `True` if a `cell_data` array's blocks disagree in component count |
 
-Unlike the other data operations, `data_info` **never raises** on non-finite
-values — it counts them, which is the point of the report. They are still
-excluded from `min`/`max`/`mean`, per the
-[NaN policy](/data_operations#nan-policy). An inconsistent `cell_data` array is
-likewise reported rather than raised, so the rest of the summary stays usable.
+Unlike the other data operations, `data_info` **never raises** on non-finite values — it counts them, which is the point of the report. They are still excluded from `min`/`max`/`mean`, per the [NaN policy](/data_operations#nan-policy). An inconsistent `cell_data` array is likewise reported rather than raised, so the rest of the summary stays usable.
 
 ## CLI
 
@@ -59,19 +49,10 @@ meshioplusplus data info mesh.vtu --json    # machine-readable JSON
   cell_data   mat                  f8        1        3            1            3            2     0     0
 ```
 
-The Python CLI and the native binary produce the same table. See the
-[CLI reference](/cli#meshioplusplus-data).
+The Python CLI and the native binary produce the same table. See the [CLI reference](/cli#meshioplusplus-data).
 
 ## Other languages
 
-- **C API** — `mio_data_info_create(mesh)` returns an opaque `mio_data_info*`;
-  read it with `mio_data_info_count`, `mio_data_info_name` (caller-buffer
-  protocol), `mio_data_info_entry` (fills a `mio_data_array_info` struct) and
-  `mio_data_info_component`, then release it with `mio_data_info_free`.
-  See the [C API reference](/c_api).
-- **Fortran** — `arrays = m%data_info(keys=names)` returns an array of
-  `mio_data_array_info` plus, optionally, the matching names. See the
-  [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `dataInfo(mesh)` returns an array of objects
-  with camelCase keys (`numEntries`, `numComponents`, `minPerComponent`, …).
-  See the [WebAssembly reference](/wasm).
+- **C API** — `mio_data_info_create(mesh)` returns an opaque `mio_data_info*`; read it with `mio_data_info_count`, `mio_data_info_name` (caller-buffer protocol), `mio_data_info_entry` (fills a `mio_data_array_info` struct) and `mio_data_info_component`, then release it with `mio_data_info_free`. See the [C API reference](/c_api).
+- **Fortran** — `arrays = m%data_info(keys=names)` returns an array of `mio_data_array_info` plus, optionally, the matching names. See the [Fortran reference](/fortran).
+- **WebAssembly / JavaScript** — `dataInfo(mesh)` returns an array of objects with camelCase keys (`numEntries`, `numComponents`, `minPerComponent`, …). See the [WebAssembly reference](/wasm).

@@ -175,6 +175,28 @@ def test_decimate_volume_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_optimize_volume_pipeline_step(settings_env):
+    """OptimizeVolume dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair and, like Subdivide/Agglomerate/DecimateVolume, has
+    no numpy fallback, so both engines call the same underlying
+    `_core.optimize_volume` and must produce byte-identical output."""
+    settings = make_settings(
+        settings_env, [{"Op": "OptimizeVolume", "MaxIterations": 3}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    step = report["steps"][0]
+    assert step["op"] == "OptimizeVolume"
+    for k in ("NumFlips", "NumTets", "MinQualityBefore", "MinQualityAfter"):
+        assert k in step
+    out = meshioplusplus.read(settings_env["out"])
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_estimate_error_pipeline_step(settings_env):
     """EstimateError dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike
@@ -234,6 +256,145 @@ def test_hessian_pipeline_step(settings_env):
         assert cpp_report["steps"][0]["op"] == "Hessian"
         out_cpp = meshioplusplus.read(settings["Output"]["Path"])
         assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
+def test_remesh_pipeline_step(tmp_path):
+    """Remesh is the one step whose output has no correspondence to the
+    input (new points, new connectivity), unlike every other step
+    _OP_TABLE/pipeline_op_table dispatch. It needs its own surface fixture
+    since settings_env's tet mesh is out of remesh's scope."""
+    octa = meshioplusplus.Mesh(
+        np.array(
+            [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "triangle",
+                np.array(
+                    [
+                        [0, 2, 4],
+                        [2, 1, 4],
+                        [1, 3, 4],
+                        [3, 0, 4],
+                        [2, 0, 5],
+                        [1, 2, 5],
+                        [3, 1, 5],
+                        [0, 3, 5],
+                    ],
+                    dtype=np.int64,
+                ),
+            )
+        ],
+    )
+    in_path = tmp_path / "octa.vtu"
+    meshioplusplus.write(str(in_path), octa)
+    out_path = tmp_path / "out.vtu"
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [{"Op": "Remesh", "NumClusters": 30, "Metric": "quadric"}],
+        "Output": {"Path": str(out_path)},
+    }
+
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "Remesh"
+    assert report["steps"][0]["NumClusters"] == 30
+    out = meshioplusplus.read(str(out_path))
+    assert out.points.shape[0] == 30
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "Remesh"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert out_cpp.points.shape[0] == 30
+
+    # MaxAnisotropy joins Gradation/PreserveBoundary in the same step key
+    # list -- reachable through the identical dispatch, no new pipeline code.
+    aniso_out_path = tmp_path / "out_aniso.vtu"
+    aniso_settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [
+            {
+                "Op": "Remesh",
+                "NumClusters": 30,
+                "Metric": "anisotropic",
+                "MaxAnisotropy": 3.0,
+            }
+        ],
+        "Output": {"Path": str(aniso_out_path)},
+    }
+    aniso_report = meshioplusplus.run_pipeline(aniso_settings)
+    assert aniso_report["steps"][0]["op"] == "Remesh"
+    assert aniso_report["steps"][0]["NumClusters"] == 30
+    aniso_out = meshioplusplus.read(str(aniso_out_path))
+    assert aniso_out.points.shape[0] == 30
+
+    if hasattr(_core, "run_pipeline_json"):
+        aniso_settings["Output"]["Path"] = str(tmp_path / "out_aniso_cpp.vtu")
+        aniso_cpp_report = _core.run_pipeline_json(json.dumps(aniso_settings))
+        assert aniso_cpp_report["steps"][0]["op"] == "Remesh"
+        aniso_out_cpp = meshioplusplus.read(aniso_settings["Output"]["Path"])
+        np.testing.assert_array_equal(aniso_out.points, aniso_out_cpp.points)
+
+
+@pytest.mark.skipif(_core is None, reason="remesh_volume has no pure-Python fallback")
+def test_remesh_volume_pipeline_step(tmp_path):
+    """RemeshVolume is Remesh's volumetric sibling and shares its
+    no-correspondence-with-the-input output contract; same surface fixture
+    as test_remesh_pipeline_step, since it accepts either a volume or a
+    closed surface."""
+    octa = meshioplusplus.Mesh(
+        np.array(
+            [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+            dtype=float,
+        ),
+        [
+            (
+                "triangle",
+                np.array(
+                    [
+                        [0, 2, 4],
+                        [2, 1, 4],
+                        [1, 3, 4],
+                        [3, 0, 4],
+                        [2, 0, 5],
+                        [1, 2, 5],
+                        [3, 1, 5],
+                        [0, 3, 5],
+                    ],
+                    dtype=np.int64,
+                ),
+            )
+        ],
+    )
+    in_path = tmp_path / "octa.vtu"
+    meshioplusplus.write(str(in_path), octa)
+    out_path = tmp_path / "out.vtu"
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(in_path)},
+        "Operations": [
+            {"Op": "RemeshVolume", "CellSize": 0.4, "WatertightCheck": "off"}
+        ],
+        "Output": {"Path": str(out_path)},
+    }
+
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["op"] == "RemeshVolume"
+    assert report["steps"][0]["NumTets"] > 0
+    out = meshioplusplus.read(str(out_path))
+    assert out.points.shape[0] > 0
+    assert out.cells[0].type == "tetra"
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["op"] == "RemeshVolume"
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert out_cpp.cells[0].type == "tetra"
 
 
 def test_run_pipeline_accepts_path_text_and_dict(settings_env, tmp_path):

@@ -65,11 +65,14 @@ from .. import (
     interpolate,
     isosurface,
     merge,
+    optimize_volume,
     partition,
     point_data_to_cell_data,
     read,
     read_metadata,
     refine,
+    remesh,
+    remesh_volume,
     reorder,
     run_pipeline,
     sample_distance,
@@ -1203,6 +1206,109 @@ def tool_decimate_volume(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_remesh(
+    input_path,
+    output_path,
+    num_clusters,
+    input_format=None,
+    output_format=None,
+    subdivide=None,
+    subsample_ratio=10.0,
+    max_subdivide=4,
+    max_iterations=100,
+    max_repair_passes=10,
+    metric="isotropic",
+    gradation=0.0,
+    preserve_boundary=True,
+    max_anisotropy=4.0,
+):
+    """Replace a surface's triangulation with a new, well-shaped one (ACVD
+    clustering). The output has NO correspondence to the input -- point/cell
+    data and named regions are dropped, field data is carried."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh(
+        mesh,
+        num_clusters,
+        subdivide=subdivide,
+        subsample_ratio=subsample_ratio,
+        max_subdivide=max_subdivide,
+        max_iterations=max_iterations,
+        max_repair_passes=max_repair_passes,
+        metric=metric,
+        gradation=gradation,
+        preserve_boundary=preserve_boundary,
+        max_anisotropy=max_anisotropy,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_remesh_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.1,
+    max_cells=20000000,
+    max_tets=20000000,
+    warp_fraction=0.35,
+    watertight_check="warn",
+):
+    """Retetrahedralize a volume mesh (or closed surface) at a chosen
+    resolution by isosurface stuffing -- the volumetric sibling of `remesh`.
+    The output has NO correspondence to the input -- point/cell data and
+    named regions are dropped, field data is carried. Exactly one of
+    `resolution`/`cell_size` must be given."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh_volume(
+        mesh,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        max_cells=max_cells,
+        max_tets=max_tets,
+        warp_fraction=warp_fraction,
+        watertight_check=watertight_check,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_optimize_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    max_iterations=10,
+    relocate=True,
+    flip=True,
+    preserve_boundary=True,
+    min_improvement=1e-6,
+):
+    """ODT-remesh a tetrahedral mesh: raise its worst element quality by
+    relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+    Tet-only and C++-core-only (no pure-Python fallback). The point set is
+    invariant, so point data and named Point regions carry; cell data and
+    Cell/Side regions are dropped (a flip has no cell correspondence)."""
+    mesh = _load(input_path, input_format)
+    out, report = optimize_volume(
+        mesh,
+        max_iterations=max_iterations,
+        relocate=relocate,
+        flip=flip,
+        preserve_boundary=preserve_boundary,
+        min_improvement=min_improvement,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_smooth(
     input_path,
     output_path,
@@ -1217,7 +1323,8 @@ def tool_smooth(
     feature_angle=30.0,
     guard_inversion=True,
 ):
-    """Smooth point coordinates (taubin | laplacian); geometry-only move."""
+    """Smooth point coordinates (taubin | laplacian | odt); geometry-only
+    move. odt is tet-only and C++-core-only (no pure-Python fallback)."""
     mesh = _load(input_path, input_format)
     out, report = smooth(
         mesh,
@@ -1894,6 +2001,15 @@ TOOL_REGISTRY = OrderedDict(
         (
             "decimate_volume",
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
+        ),
+        ("remesh", {"fn": tool_remesh, "wraps": ("remesh",), "gated": None}),
+        (
+            "remesh_volume",
+            {"fn": tool_remesh_volume, "wraps": ("remesh_volume",), "gated": None},
+        ),
+        (
+            "optimize_volume",
+            {"fn": tool_optimize_volume, "wraps": ("optimize_volume",), "gated": None},
         ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),

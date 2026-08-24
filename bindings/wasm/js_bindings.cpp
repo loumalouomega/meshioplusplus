@@ -124,6 +124,9 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/remesh.hpp"
+#include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2098,6 +2101,122 @@ val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std:
 }
 
 /**
+ * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+ * clustering: replace its triangulation with a new, near-uniformly-sized,
+ * well-shaped one at `numClusters` vertices. Unlike every other
+ * resolution-changing operation the output has NEW points and NEW
+ * connectivity with no correspondence to the input -- point/cell data and
+ * named regions are dropped, field data is carried. See doc/remesh.md.
+ */
+val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
+             double subsampleRatio, int maxSubdivide, int maxIterations, int maxRepairPasses,
+             const std::string& rMetric, double gradation, bool preserveBoundary,
+             double maxAnisotropy) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemeshOptions options;
+        options.mNumClusters = numClusters;
+        options.mSubdivide = subdivide;
+        options.mSubsampleRatio = subsampleRatio;
+        options.mMaxSubdivide = maxSubdivide;
+        options.mMaxIterations = maxIterations;
+        options.mMaxRepairPasses = maxRepairPasses;
+        options.mMetric = meshioplusplus::remesh_metric_from_name(rMetric);
+        options.mGradation = gradation;
+        options.mPreserveBoundary = preserveBoundary;
+        options.mMaxAnisotropy = maxAnisotropy;
+        meshioplusplus::RemeshResult r = meshioplusplus::remesh(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numClusters", static_cast<double>(r.mNumClusters));
+        out.set("numIterations", static_cast<double>(r.mNumIterations));
+        out.set("subdivideApplied", static_cast<double>(r.mSubdivideApplied));
+        out.set("numIsolatedClusters", static_cast<double>(r.mNumIsolatedClusters));
+        out.set("numNonManifoldVertices", static_cast<double>(r.mNumNonManifoldVertices));
+        return out;
+    });
+}
+
+/**
+ * Retetrahedralize a volume mesh (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing -- remesh's volumetric sibling. Same
+ * no-correspondence output contract (new points, new connectivity;
+ * point/cell data and named regions are dropped, field data is carried).
+ * `resolution`/`cellSize`/`bounds` share `voxelize_js`'s own convention:
+ * `resolution` is a length-3 array or undefined/null, `cellSize <= 0` means
+ * unset, `bounds` is a length-6 array or undefined/null. See
+ * doc/remesh_volume.md.
+ */
+val remesh_volume_js(const val& rMeshObj, const val& rResolution, double cellSize,
+                     const val& rBounds, double padding, double paddingRelative, double maxCells,
+                     double maxTets, double warpFraction, const std::string& rSign,
+                     const std::string& rWatertightCheck) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemeshVolumeOptions options;
+        if (!rResolution.isUndefined() && !rResolution.isNull() &&
+            rResolution["length"].as<unsigned>() == 3)
+            options.mResolution = std::array<std::int64_t, 3>{
+                {static_cast<std::int64_t>(rResolution[0].as<double>()),
+                 static_cast<std::int64_t>(rResolution[1].as<double>()),
+                 static_cast<std::int64_t>(rResolution[2].as<double>())}};
+        if (cellSize > 0.0)
+            options.mCellSize = cellSize;
+        if (!rBounds.isUndefined() && !rBounds.isNull() && rBounds["length"].as<unsigned>() == 6) {
+            std::array<double, 6> b{};
+            for (unsigned i = 0; i < 6; ++i)
+                b[i] = rBounds[i].as<double>();
+            options.mBounds = b;
+        }
+        options.mPadding = padding;
+        options.mPaddingRelative = paddingRelative;
+        options.mMaxCells = static_cast<std::int64_t>(maxCells);
+        options.mMaxTets = static_cast<std::int64_t>(maxTets);
+        options.mWarpFraction = warpFraction;
+        options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+        options.mDistance.mWatertightCheck =
+            meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+        meshioplusplus::RemeshVolumeResult r =
+            meshioplusplus::remesh_volume(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTets", static_cast<double>(r.mNumTets));
+        out.set("numVerticesWarped", static_cast<double>(r.mNumVerticesWarped));
+        out.set("numTetsRejected", static_cast<double>(r.mNumTetsRejected));
+        out.set("numNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges));
+        return out;
+    });
+}
+
+/**
+ * @brief ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
+ * (2-3/3-2, predicate-free). The point set is invariant, so point_data/
+ * field_data and Point regions carry; cell_data + Cell/Side regions are
+ * dropped. See operations/optimize_volume.hpp and doc/optimize_volume.md.
+ */
+val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate, bool flip,
+                       bool preserveBoundary, double minImprovement) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::OptimizeVolumeOptions options;
+        options.mMaxIterations = static_cast<int>(maxIterations);
+        options.mRelocate = relocate;
+        options.mFlip = flip;
+        options.mPreserveBoundary = preserveBoundary;
+        options.mMinImprovement = minImprovement;
+        meshioplusplus::OptimizeVolumeResult r =
+            meshioplusplus::optimize_volume(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlips", static_cast<double>(r.mNumFlips));
+        out.set("num23Flips", static_cast<double>(r.mNum23Flips));
+        out.set("num32Flips", static_cast<double>(r.mNum32Flips));
+        out.set("numVerticesMoved", static_cast<double>(r.mNumVerticesMoved));
+        out.set("numTets", static_cast<double>(r.mNumTets));
+        out.set("minQualityBefore", r.mMinQualityBefore);
+        out.set("minQualityAfter", r.mMinQualityAfter);
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -2945,6 +3064,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("gradient", &gradient_js);
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
+    emscripten::function("remesh", &remesh_js);
+    emscripten::function("remeshVolume", &remesh_volume_js);
+    emscripten::function("optimizeVolume", &optimize_volume_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

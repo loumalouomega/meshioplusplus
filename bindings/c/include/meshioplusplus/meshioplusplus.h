@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 9
+#define MIO_VERSION_MINOR 14
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -1020,6 +1020,141 @@ MIO_API mio_mesh* mio_estimate_error(const mio_mesh* mesh, const char* array_nam
                                      const char* marked_name, int overwrite,
                                      double* global_error, int64_t* num_skipped,
                                      int64_t* num_marked);
+
+/**
+ * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
+ * clustering: replace its triangulation with a new, near-uniformly-sized,
+ * well-shaped one at a caller-chosen vertex count. Unlike every other
+ * resolution-changing operation this does not work on the input's own
+ * triangulation, so the output has NEW points and NEW connectivity with no
+ * correspondence to the input -- point_data/cell_data/named regions are
+ * dropped, field_data is carried. See doc/remesh.md.
+ * @param mesh                input surface mesh.
+ * @param num_clusters        number of clusters, i.e. output vertices aimed
+ *                             for; must be >= 4 and <= the subdivided
+ *                             input's vertex count.
+ * @param subdivide            uniform refine passes applied before
+ *                             clustering (each multiplies triangle count by
+ *                             4); negative picks the smallest count reaching
+ *                             subsample_ratio items/cluster, capped at
+ *                             max_subdivide; 0 disables subdivision.
+ * @param subsample_ratio      items per cluster targeted by automatic
+ *                             subdivision.
+ * @param max_subdivide        ceiling on automatic subdivision (ignored when
+ *                             subdivide is set explicitly).
+ * @param max_iterations       maximum energy-minimisation sweeps per pass.
+ * @param max_repair_passes    "split disconnected clusters, minimise again"
+ *                             passes; 0 skips repair.
+ * @param metric               NULL, "" or "isotropic" (area-weighted
+ *                             centroidal distance) selects the default;
+ *                             "quadric" selects the Garland-Heckbert
+ *                             quadric-error, feature-preserving metric.
+ * @param gradation            curvature-gradation exponent gamma in the item
+ *                             weight area * kappa^gamma; 0.0 disables
+ *                             gradation (curvature is not even computed) and
+ *                             reproduces plain area weighting.
+ * @param preserve_boundary    nonzero (default behaviour) detects the
+ *                             input's open boundary (if any), seeds it
+ *                             before the interior, and emits a `line` dual
+ *                             cell along every boundary edge whose endpoints
+ *                             land in different clusters; a no-op on a
+ *                             closed mesh either way.
+ * @param num_clusters_out     optional out: clusters actually produced
+ *                             (mesh->NumPoints(); may be lower than
+ *                             num_clusters, never higher).
+ * @param num_iterations       optional out: energy-minimisation sweeps
+ *                             performed, summed over every repair pass.
+ * @param subdivide_applied    optional out: subdivision passes actually
+ *                             applied (the resolved value of subdivide).
+ * @param num_isolated_clusters optional out: clusters still disconnected
+ *                             after repair; non-zero means the output may be
+ *                             non-manifold near them.
+ * @param num_non_manifold_vertices optional out: output vertices whose
+ *                             incident dual-triangle fan is still not a
+ *                             single loop/chain after repair; a distinct
+ *                             cause of non-manifold output from
+ *                             num_isolated_clusters, reported separately.
+ * @return the remeshed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh(const mio_mesh* mesh, int64_t num_clusters, int subdivide,
+                             double subsample_ratio, int max_subdivide, int max_iterations,
+                             int max_repair_passes, const char* metric, double gradation,
+                             int preserve_boundary, int64_t* num_clusters_out,
+                             int64_t* num_iterations, int* subdivide_applied,
+                             int64_t* num_isolated_clusters,
+                             int64_t* num_non_manifold_vertices);
+
+/**
+ * Options for `mio_remesh_ex`; use `mio_remesh_opts_init` to get the same
+ * defaults as `mio_remesh`. Append-only: new fields consume `reserved`
+ * slots so `sizeof` never changes for an already-compiled consumer -- see
+ * `mio_refine_opts`.
+ */
+typedef struct mio_remesh_opts {
+    /** Number of clusters, i.e. output vertices aimed for. */
+    int64_t num_clusters;
+    /** Uniform refine passes before clustering; negative = automatic. */
+    int32_t subdivide;
+    /** Ceiling on automatic subdivision. */
+    int32_t max_subdivide;
+    /** Items per cluster targeted by automatic subdivision. */
+    double subsample_ratio;
+    /** Maximum energy-minimisation sweeps per pass. */
+    int32_t max_iterations;
+    /** "Split disconnected clusters, minimise again" passes. */
+    int32_t max_repair_passes;
+    /** NULL/"" = "isotropic"; "quadric" or "anisotropic" select the others. */
+    const char* metric;
+    /** Curvature-gradation exponent gamma; 0.0 disables gradation. */
+    double gradation;
+    /** Nonzero (default) detects/pins the input's open boundary. */
+    int32_t preserve_boundary;
+    int32_t reserved_pad; /**< must be zero; keeps the double tail aligned */
+    /**
+     * Under metric="anisotropic", the maximum ratio between the two in-plane
+     * target edge lengths a per-vertex curvature tensor may request; `1.0`
+     * recovers the isotropic shape exactly. Must be >= 1.0. An error to set
+     * away from `mio_remesh_opts_init`'s default under any other metric.
+     */
+    double max_anisotropy;
+    double reserved_d[3]; /**< must be zero; room for additive double growth */
+    int64_t reserved[4];  /**< must be zero; room for additive int64 growth */
+} mio_remesh_opts;
+
+/** Zero-initialize remesh options to the same defaults as `mio_remesh`. */
+MIO_API void mio_remesh_opts_init(mio_remesh_opts* opts);
+
+/** Output counters from `mio_remesh_ex`; every field is always written. */
+typedef struct mio_remesh_report {
+    /** Clusters actually produced; may be lower than requested, never higher. */
+    int64_t num_clusters;
+    /** Energy-minimisation sweeps performed, summed over every pass. */
+    int64_t num_iterations;
+    /** Subdivision passes actually applied (the resolved value of subdivide). */
+    int32_t subdivide_applied;
+    int32_t reserved_pad; /**< must be zero; keeps the int64 tail aligned */
+    /** Clusters still disconnected after repair. */
+    int64_t num_isolated_clusters;
+    /** Output vertices whose incident dual-triangle fan is still not a
+     *  single loop/chain after repair -- distinct from num_isolated_clusters. */
+    int64_t num_non_manifold_vertices;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_remesh_report;
+
+/**
+ * Remesh a surface, `mio_remesh`'s options-struct growth path -- the
+ * `mio_refine_ex`/`mio_refine_opts` shape, needed because `mio_remesh`
+ * itself is a flat function with no room to grow (it already changed once).
+ * @param mesh   input surface mesh.
+ * @param opts   options; NULL means every field at its `mio_remesh_opts_init`
+ *               default (which still requires `num_clusters` to be set, so a
+ *               NULL `opts` is only useful after `mio_remesh_opts_init` sets
+ *               it -- pass a real struct in practice).
+ * @param report optional out: the run summary; NULL to ignore it.
+ * @return the remeshed mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_ex(const mio_mesh* mesh, const mio_remesh_opts* opts,
+                                mio_remesh_report* report);
 
 /**
  * Crop a mesh to an axis-aligned bounding box (keep cells inside the box).
@@ -2059,6 +2194,142 @@ MIO_API mio_mesh* mio_compute_sdf(const mio_mesh* surface, const mio_compute_sdf
                                   int64_t dims_out[3], double origin_out[3],
                                   double spacing_out[3], int64_t* max_depth_out,
                                   int64_t* num_banded, mio_surface_quality* quality);
+
+/**
+ * Options for mio_remesh_volume_ex.
+ *
+ * ABI NOTE: the same append-only discipline as mio_compute_sdf_opts, which
+ * this mirrors: `distance` is embedded BY VALUE (not flattened, unlike
+ * mio_voxel_opts's sign/watertight_check-only fields) because
+ * RemeshVolumeOptions, like SdfOptions, needs the FULL SurfaceDistanceOptions
+ * surface, not just two of its fields -- and mio_sdf_opts carries its own
+ * `reserved` tail, so growing it never shifts anything in THIS struct.
+ * Always zero-initialize through mio_remesh_volume_opts_init().
+ *
+ * Unlike mio_remesh (which has both a flat function and this options-struct
+ * growth path, because mio_remesh shipped flat first and grew once), this
+ * operation ships ONLY the options-struct form: a brand-new entry point has
+ * no back-compat flat signature to keep, so there is nothing to repeat.
+ *
+ * Exactly ONE of `resolution` and `cell_size` must be given, `mio_voxel_opts`'s
+ * own rule.
+ */
+typedef struct mio_remesh_volume_opts {
+    /** Cell counts (three entries), or NULL when sizing by cell_size. */
+    const int64_t* resolution;
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the mesh's own. */
+    const double* bounds;
+    /** Cubic cell size of the root lattice, or <= 0 when sizing by resolution. */
+    double cell_size;
+    /** Grow the box by this on every side, in world units. */
+    double padding;
+    /** Grow the box by this fraction of its diagonal; the default is 0.1. */
+    double padding_relative;
+    /** Refuse to generate a root lattice above this many cells; <= 0 lifts the limit. */
+    int64_t max_cells;
+    /** Refuse an output with more tets than this. UNLIKE max_cells, this has
+     *  no "<= 0 lifts the limit" escape hatch -- the check is unconditional,
+     *  so 0 or a negative value refuses any non-empty output. Leave it at
+     *  mio_remesh_volume_opts_init()'s default (20000000) unless a smaller
+     *  budget is genuinely wanted. */
+    int64_t max_tets;
+    /** Fraction of a lattice vertex's shortest incident edge within which it
+     *  may be warped onto the surface; 0 disables warping. */
+    double warp_fraction;
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    /** Sign, region restriction and watertight-check policy for every
+     *  surface query. Embedded by value, as in C++ -- see the ABI note above. */
+    mio_sdf_opts distance;
+} mio_remesh_volume_opts;
+
+/** Zero-initialize remesh_volume options to their default values. */
+MIO_API void mio_remesh_volume_opts_init(mio_remesh_volume_opts* opts);
+
+/**
+ * Output counters and the surface verdict from mio_remesh_volume_ex; every
+ * field is always written.
+ */
+typedef struct mio_remesh_volume_report {
+    /** The verdict for the INPUT surface (or the extracted boundary of an
+     *  input volume mesh), not the output. */
+    mio_surface_quality input_quality;
+    /** Tets emitted. */
+    int64_t num_tets;
+    /** Lattice vertices moved onto the surface. */
+    int64_t num_vertices_warped;
+    /** Cut sub-tets discarded as degenerate. */
+    int64_t num_tets_rejected;
+    /**
+     * Non-manifold edges of the OUTPUT tet mesh's own boundary. `warp_fraction
+     * == 0` gives a mathematically watertight cut and this is always 0 there.
+     * A nonzero `warp_fraction` reuses a warped lattice vertex's position for
+     * every cut edge it touches, which on some inputs can leave a small
+     * number of coincident-but-topologically-distinct boundary edges near the
+     * warped region -- MEASURED and reported here rather than hidden. See
+     * doc/remesh_volume.md for the measured magnitude on this repo's own test
+     * fixtures. A caller needing an exactly watertight result should check
+     * this counter, or fall back to `warp_fraction = 0` / post-process with
+     * mio_clean(weld=true).
+     */
+    int64_t num_non_manifold_edges;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_remesh_volume_report;
+
+/**
+ * Retetrahedralize a volume (or a closed surface) at a caller-chosen
+ * resolution by isosurface stuffing -- the volumetric sibling of mio_remesh,
+ * generating an entirely new tet mesh rather than working on the input's own
+ * cells. See doc/remesh_volume.md for the algorithm and its measured
+ * warp/quality tradeoff.
+ *
+ * @param mesh   a volume mesh (its boundary is extracted internally) or a
+ *               closed surface (triangle, quad, rectangular polygon).
+ * @param opts   options; NULL is an error, since a resolution or cell size
+ *               must be given -- mio_voxelize's own rule.
+ * @param report optional out: the run's counters and input surface verdict;
+ *               NULL to ignore it.
+ * @return the retetrahedralized mesh, a single tetra block (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_volume_opts* opts,
+                                       mio_remesh_volume_report* report);
+
+/**
+ * ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
+ * vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine
+ * "ODT remeshing" sibling of mio_remesh_volume_ex (which generates a fresh
+ * lattice mesh) and of mio_smooth method "odt" (which only moves points on
+ * fixed connectivity). Tet-only. The point set is invariant, so point_data and
+ * named Point regions carry; cell_data and Cell/Side regions are dropped (a
+ * flip has no cell correspondence). With preserve_boundary the boundary surface
+ * is exactly preserved. See doc/optimize_volume.md.
+ *
+ * Like mio_smooth this is a plain function with scalar counter out-params
+ * rather than an opts/result struct; the pin mask (`mFrozen`) is not exposed on
+ * the flat ABI, a documented gap like mio_smooth's own `frozen`.
+ *
+ * @param mesh              a tetra-only volume mesh.
+ * @param max_iterations    optimisation sweeps; stops early at a fixed point.
+ * @param relocate          nonzero to run the ODT vertex-relocation half.
+ * @param flip              nonzero to run the topological-flip half.
+ * @param preserve_boundary nonzero to pin boundary vertices during relocation.
+ * @param min_improvement   the strict scaled-Jacobian gain a flip must deliver.
+ * @param num_flips         receives the total flips accepted (2-3 + 3-2).
+ * @param num_23_flips      receives the 2-3 flips accepted.
+ * @param num_32_flips      receives the 3-2 flips accepted.
+ * @param num_vertices_moved receives the vertices the relocation half moved.
+ * @param num_tets          receives the output tet count.
+ * @param min_quality_before receives the input min scaled Jacobian.
+ * @param min_quality_after  receives the output min scaled Jacobian.
+ * @return the optimised mesh, a single tetra block (free with mio_mesh_free),
+ *         or NULL on failure. Every out-param is optional (pass NULL to skip).
+ */
+MIO_API mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relocate,
+                                      int flip, int preserve_boundary, double min_improvement,
+                                      int64_t* num_flips, int64_t* num_23_flips,
+                                      int64_t* num_32_flips, int64_t* num_vertices_moved,
+                                      int64_t* num_tets, double* min_quality_before,
+                                      double* min_quality_after);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

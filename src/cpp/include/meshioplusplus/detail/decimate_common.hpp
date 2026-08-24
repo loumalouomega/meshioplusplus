@@ -125,6 +125,32 @@ MESHIOPLUSPLUS_API void decim_mark_features(const DecimCsr& rCsr, std::size_t n,
 /// the parity contract with the numpy twins.
 MESHIOPLUSPLUS_API double decim_quadric_error(const double* q, double x, double y, double z);
 
+/**
+ * @brief Solves for the point minimizing `x^T Q x` (a symmetric 4x4 quadric
+ * in homogeneous form), via the cofactor (adjugate) form of the upper-left
+ * 3x3 system, falling back to a caller-supplied point when the system is
+ * ill-conditioned.
+ *
+ * Hoisted out of `decim_place`'s `DecimatePlacement::Optimal` branch so a
+ * second caller (surface remeshing's quadric-driven cluster placement) can
+ * share the identical solve rather than re-deriving it -- two independent
+ * transcriptions of a cofactor solve and its ill-conditioning bound are
+ * exactly the kind of arithmetic that drifts silently. `decim_place` calls
+ * this with the edge midpoint as `pFallback`; a cluster's quadric placement
+ * calls it with the cluster's own area-weighted centroid.
+ *
+ * @param q The 10-entry `[aa,ab,ac,ad,bb,bc,bd,cc,cd,dd]` quadric.
+ * @param pFallback The point used when the system is ill-conditioned
+ *        (`|det| <= 1e-12 * max|A_ij|^3`, the same scale-invariant bound
+ *        `decim_place` has always used) -- an exactly planar patch is
+ *        singular *by construction*, so this is the expected hot path there,
+ *        not a defect.
+ * @param pOut Filled with the solved point, or a copy of `pFallback`.
+ * @return `true` if the direct solve was used, `false` if `pFallback` was.
+ */
+MESHIOPLUSPLUS_API bool decim_quadric_optimal_point(const double q[10], const double pFallback[3],
+                                                    double pOut[3]);
+
 /// A placement result: the surviving vertex's position and quadric error.
 struct DecimPlaced {
     double mX[3] = {0.0, 0.0, 0.0};
