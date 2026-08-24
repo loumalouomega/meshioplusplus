@@ -17,26 +17,26 @@ with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
 
 ```
 <!--
-Written by meshio++ v10.16.0
+Written by meshio++ v10.17.0
 Converted from bracket.msh (gmsh)
 Operation: clean(weld=true)
 Timestamp: 2026-08-24T15:00:00Z
 -->
 ```
 
-With no scope open, output is byte-for-byte what v10.15.0 wrote — the default has not moved. This page is the design note `doc/roadmap.md` section 1 asked for before implementing bullets 2 through 7; it also is the reference for the mechanism itself.
+With no scope open, output is byte-for-byte what v10.15.0 wrote — the default has not moved. This page is the design note `doc/roadmap.md` section 1 asked for, and the reference for the mechanism itself. Section 1 is now closed in full: v10.15.0 normalized the credit line, v10.16.0 added the record, v10.17.0 added read-back and the remaining language bindings.
 
 ## The gap this closes, and the one it does not
 
 Section 1's [audit-and-normalize bullet](./roadmap.md) (v10.15.0) fixed the drift in the one line every writer already emitted. It said nothing about what a file was converted *from*, what ran on it, or which of this library's many documented per-format compromises — `Side` regions with no equivalent, a permuted node order, a 2D point silently padded to 3D — were accepted while writing it. That is the gap this page closes: bullets 2 ("where the record lives"), 3 ("what it contains"), 4 ("the operation chain"), 5 ("determinism and the timestamp"), 6 ("round-trip safety") and 7 ("formats that admit no comment").
 
-**Bullet 8 (surfacing provenance on read) is out of scope here.** The record this page describes is write-side only; reading a file's own embedded block back into a report — so `info`/`read_metadata` can show it — is real, useful, separate work, deferred to keep this change bounded.
+**v10.17.0 closed the read side too** (bullet 8), so §1 is now complete and the section has been removed from the roadmap. See [Reading a block back](#reading-a-block-back) below.
 
 ## Two decisions the roadmap's own wording left in tension
 
 The roadmap bullets, read together, ask for two things that cannot both hold.
 
-**Bullet 3 asks the file to record "which surface actually wrote it (C++ core, numpy fallback, or a named binding)."** Bullet 5 requires the C++ core and its Python fallback to emit **character-identical** bytes — the same invariant that drove the whole v10.15.0 change, since a `(C++ core)`-vs-`v{version}` split in the old per-writer strings was exactly what made the fallback boundary visible in output bytes. An engine marker is that same mistake with a different name. This page resolves the tension in favour of byte-identity: which engine ran is a fact about the *process*, not the *mesh*, and it costs nothing to report through `current_record()`/`scope.get()` instead — see [Reading back what was recorded](#reading-back-what-was-recorded) below. Nothing in the file distinguishes the two engines.
+**Bullet 3 asks the file to record "which surface actually wrote it (C++ core, numpy fallback, or a named binding)."** Bullet 5 requires the C++ core and its Python fallback to emit **character-identical** bytes — the same invariant that drove the whole v10.15.0 change, since a `(C++ core)`-vs-`v{version}` split in the old per-writer strings was exactly what made the fallback boundary visible in output bytes. An engine marker is that same mistake with a different name. This page resolves the tension in favour of byte-identity: which engine ran is a fact about the *process*, not the *mesh*, and it costs nothing to report through `current_record()`/`scope.get()` instead — see [Reading the live record](#reading-the-live-record-mid-write) below. Nothing in the file distinguishes the two engines.
 
 **The record defaults to opt-in, not on.** The roadmap does not settle this explicitly, but v10.15.0's tag is unconditional and this page's richer block is not: opening no scope reproduces v10.15.0's bytes exactly, which is what keeps `tests/python/test_io_baseline.py`'s pinned hashes and every existing cross-engine parity claim (`test_tikz.py`, `test_svg.py`, `test_gmsh.py`, `test_mdpa.py`) untouched by this change rather than needing new exemptions. It also means round-trip safety (bullet 6, below) only has to hold for callers who asked for the block in the first place.
 
@@ -118,7 +118,7 @@ No reader in this library retains any slot a provenance-bearing writer uses. The
 
 `Mode::Off` (the default) always renders just the tag, at every tier. `Mode::BestEffort` renders the full block at `Block` and degrades silently to the tag everywhere else — a `SingleLine`/`Bounded` slot cannot structurally hold more, and a `None` slot cannot hold even the tag (which is why no writer at that tier calls this machinery at all; nothing changed there since v10.15.0). `Mode::Required` is identical to `BestEffort` at every tier **except** `None`, where it raises `WriteError` naming the format. This is the resolution of `write_options.hpp`'s standing rule — "an option a format cannot honour is an error, never silently ignored" — that keeps `Required` from being unusable: degrading to the honest maximum a structurally smaller slot can hold is not a failure to report; having nothing to write at all is.
 
-## Reading back what was recorded
+## Reading the live record, mid-write
 
 A scope's `Get()`/`get()` returns the live record at any point while it is open — including the one fact this page deliberately keeps out of every file, which engine rendered it:
 
@@ -128,18 +128,60 @@ with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
     print(s.get())  # Record(source_path=..., operations=[...], notes=[...], ...)
 ```
 
+## Reading a block back
+
+A file's own block comes back through the ordinary summary call — no second entry point, no second file open:
+
+```python
+meta = mp.read_metadata("bracket.vtu")
+meta["provenance"]              # ['Written by meshio++ v10.17.0', 'Converted from ...', ...]
+meta["provenance_recognised"]   # True when the first line is our own tag format
+```
+
+```
+$ meshioplusplus info --fast bracket.vtu
+  ...
+  Provenance:
+    Written by meshio++ v10.17.0
+    Converted from bracket.msh (gmsh)
+    Operation: Clean(Weld=true)
+    Timestamp: 2026-08-24T15:00:00Z
+```
+
+### One scanner, not forty-four parsers
+
+The block's *content* lines are format-independent by construction — only the comment punctuation wrapping them differs — so recovery is a single pass over the file's head bytes rather than a parser per format: strip whatever marker the format uses (`#`, `!`, `*`, `$`, `%`, `//`, PLY's `comment `, an XML `<!--`), then keep the lines matching the six shapes the renderer emits. `detail::read_provenance_lines` lives beside the renderer it inverts, which is what stops the two drifting.
+
+Three wrapping shapes need more than a leading-marker strip, and each earns its place: a keyword slot that *wraps* the text (Tecplot's `TITLE = "…"`, Ansys's `(1 "…")`), where the closing punctuation is removed only because that opener put it there — never unconditionally, since `Converted from x (fmt)` and `Operation: Clean(Weld=true)` both end in a legitimate `)`; a box-drawn banner (OpenFOAM), whose credit sits in an interior `|`-delimited cell rather than at the line's start; and a NUL-padded fixed-width binary slot (STL's 80-byte header, EnSight's `str80`), handled by treating NUL as a line break so the same line-oriented scan finds it.
+
+**Exodus is the one format the scanner does not serve**: its block rides a netCDF `title` attribute rather than the head bytes, so `read_exodus_metadata` reads it there — it already has the file open for `mTimeValues` — and hands it to the same scanner, so the two paths cannot disagree about what counts as a block.
+
+### Raw lines, not a re-parsed record
+
+Read-back deliberately returns the block's lines as found, plus a `recognised` flag, rather than re-parsing them into a `ProvenanceRecord`. A block can have been hand-edited, truncated by a `Bounded` slot, or written by a later release carrying fields this build has never heard of; handing back what is actually there — and saying separately whether it *starts* like ours — cannot silently drop or mis-attribute any of those. `recognised` is false both for a file with no block and for one carrying a comment that merely looks like a header, which is the honest distinction between "meshio++ wrote this" and "something left a comment here".
+
+### Never re-emitted
+
+Nothing carries a read block into a write: writers render from the live record only. That is what makes [round-trip safety](#round-trip-safety) structural rather than a rule each writer must remember — converting a file through N provenance-opted-in steps leaves one block, not N, and the first file's source never leaks into the second.
+
 ## Language surfaces
 
 | Surface | Entry points |
 |---|---|
 | C++ | `meshioplusplus::detail::ProvenanceScope`, `provenance_note`, `provenance_set_source`, `provenance_set_target`, `provenance_add_operation`, `current_provenance()` (`detail/provenance.hpp`) |
 | Python | `meshioplusplus._provenance.scope`, `.note`, `.set_source`, `.set_target`, `.add_operation`, `.current_record()` |
-| C API | `mio_provenance_scope_begin`/`_end`, `mio_provenance_note`, `mio_provenance_set_source`, `mio_provenance_set_target` |
+| C API | `mio_provenance_scope_begin`/`_end`, `mio_provenance_note`, `mio_provenance_set_source`, `mio_provenance_set_target`; read-back via `mio_read_metadata_num_provenance_lines`/`_provenance_line`/`_provenance_recognised` |
+| Fortran | `mio_provenance_begin`/`_end`, `mio_provenance_note`, `mio_provenance_source`, `mio_provenance_target`, and the `MIO_PROVENANCE_*` mode constants |
+| Julia | `provenance(f, mode)` (a `do`-block form; the scope closes even if `f` throws), `provenance_note`, `provenance_source`, `provenance_target` |
+| R | `mio_with_provenance(expr, mode)` (paired with `on.exit`), `mio_provenance_note`, `mio_provenance_source`, `mio_provenance_target` |
+| WASM | `withProvenance(mode, fn)` (a callback form; the scope closes even if `fn` throws), plus `provenanceNote`/`provenanceSetSource`/`provenanceSetTarget` and `readProvenance(path)` |
 
-The C API mirrors the C++/Python shape exactly, with the one adjustment every C ABI in this library makes for a stateful, multi-call object: `mio_provenance_scope_begin`/`_end` are two separate calls rather than RAII, backed by a thread-local stack on the binding side (the identical shape the Python bridge already uses) so a scope survives between them. Fortran, Julia, R and WASM bindings are a recorded follow-up, not yet shipped as of v10.16.0 — the same staged-rollout precedent `decimate_volume`'s bindings followed.
+A scope cannot cross an ABI boundary as RAII, so every non-C++ surface has to give the begin/end pair a lifetime of its own. Each does it in its own idiom rather than exposing the raw pair: Julia a `do`-block, R an `on.exit`-paired wrapper, WASM a callback — all three close the scope even when the body throws, which is the whole reason they exist. Fortran keeps the explicit pair, matching this module's own explicit `m%free()` convention. The C ABI itself is backed by a thread-local stack of owned scopes on the binding side, the identical shape the Python bridge uses.
 
 ## What this page does not cover
 
-- **Reading a file's own provenance block back on read** (roadmap bullet 8) — genuinely separate work, deferred.
-- **Instrumenting the remaining ~60-80 conversion-assumption call sites** — mechanical, one `provenance_note` call per existing warning, not attempted exhaustively here (see [Conversion assumptions](#conversion-assumptions) above).
-- **Fortran/Julia/R/WASM bindings for the scope API** — the C ABI exists and is what those bindings would ride; none has been written yet.
+- **Instrumenting every conversion-assumption call site.** The mechanism and the category vocabulary are settled, and the sites where *both* engines share a lossy path are wired (OFF, PLY, STL, UNV, CGNS) along with the C++-only ones (MDPA, MED, OpenFOAM). What is not done is a format-by-format sweep of the rest.
+
+  Two findings from doing this much are worth carrying into that work. First, most `warn()` calls are **not** conversion assumptions — the majority are reader-side diagnostics or user-error messages, and sweeping them in indiscriminately would fill a block with things that are not assumptions at all. Second, some are simply **stale**: `avsucd`'s "can only write one cell data array" fires while *both* engines demonstrably write every array, so wiring it would have recorded a loss that does not happen. Each site needs checking, not translating.
+
+  `tests/python/test_provenance.py::test_engines_record_the_same_notes` is the guard for that work: it asserts that wherever both engines write a given mesh, they record the same notes, so a one-sided addition fails at the format that caused it.
