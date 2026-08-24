@@ -472,3 +472,191 @@ def test_warn_regions_dropped_records_a_note(tmp_path):
         extract_surface(mesh)
         notes = s.get().notes
     assert any(n.category == "regions-dropped" for n in notes)
+
+
+# ---------------------------------------------------------------------------
+# Read-back (v10.17.0) -- roadmap #1's last bullet. See
+# doc/provenance.md#reading-a-block-back.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,text",
+    [
+        (
+            "hash",
+            "# Written by meshio++ v1.2.3\n# Converted from in.vtu (vtu)\nv 0 0 0\n",
+        ),
+        ("bang", "!PERMAS DataFile\n! Written by meshio++ v1.2.3\n$STRUCTURE\n"),
+        ("xml-inline", '<?xml version="1.0"?>\n<!--Written by meshio++ v1.2.3-->\n'),
+        ("xml-block", "<!--\nWritten by meshio++ v1.2.3\nTimestamp: X\n-->\n"),
+        ("tecplot", 'TITLE = "Written by meshio++ v1.2.3"\nVARIABLES = "X"\n'),
+        ("ansys", '(1 "Written by meshio++ v1.2.3")\n(2 3)\n'),
+        ("openfoam", "|   \\\\  /    A nd  | Written by meshio++ v1.2.3        |\n"),
+    ],
+)
+def test_scanner_handles_every_slot_shape(label, text):
+    lines_found, recognised = _provenance.scan_provenance_text(text)
+    assert recognised, label
+    assert lines_found[0] == "Written by meshio++ v1.2.3", label
+
+
+def test_scanner_keeps_parentheses_that_belong_to_the_content():
+    """The bug this pins: an unconditional trailing-')' strip (needed for
+    Ansys's `(1 "...")`) silently truncates every line legitimately ending in
+    one."""
+    lines_found, _ = _provenance.scan_provenance_text(
+        "# Written by meshio++ v1.2.3\n"
+        "# Converted from in.vtu (vtu)\n"
+        "# Operation: Clean(Weld=true)\n"
+    )
+    assert lines_found[1] == "Converted from in.vtu (vtu)"
+    assert lines_found[2] == "Operation: Clean(Weld=true)"
+
+
+def test_scanner_is_honest_about_foreign_and_absent_blocks(tmp_path):
+    assert _provenance.scan_provenance_text("v 0 0 0\n") == ([], False)
+    assert _provenance.scan_provenance_text("# Created by SomeTool 3.2\n") == (
+        [],
+        False,
+    )
+    # A missing file is "nothing found", never an exception.
+    assert _provenance.read_provenance_lines(tmp_path / "nope.obj") == ([], False)
+
+
+def test_default_write_recovers_exactly_the_tag(tmp_path):
+    out = tmp_path / "off.obj"
+    mp.write(str(out), TRI)
+    meta = mp.read_metadata(str(out))
+    assert meta["provenance_recognised"] is True
+    assert meta["provenance"] == [_provenance.TAG]
+
+
+def test_scoped_write_round_trips_the_whole_block(tmp_path):
+    out = tmp_path / "on.obj"
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.set_source("in.msh", "gmsh")
+        _provenance.note("regions-dropped", "Side regions dropped")
+        mp.write(str(out), TRI)
+
+    meta = mp.read_metadata(str(out))
+    assert meta["provenance_recognised"] is True
+    assert meta["provenance"][0] == _provenance.TAG
+    assert any("in.msh" in line for line in meta["provenance"])
+    assert any("regions-dropped" in line for line in meta["provenance"])
+
+
+def test_a_read_block_is_never_re_emitted(tmp_path):
+    """What makes "replace, never append" structural rather than a rule: a
+    writer renders from the live record only, so converting N times leaves one
+    block, not N."""
+    first, second = tmp_path / "1.obj", tmp_path / "2.obj"
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.set_source("original.msh", "gmsh")
+        mp.write(str(first), TRI)
+
+    mesh = mp.read(str(first))
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.set_source("second.msh", "gmsh")
+        mp.write(str(second), mesh)
+
+    lines_found = mp.read_metadata(str(second))["provenance"]
+    tags = [line for line in lines_found if line.startswith("Written by meshio++ v")]
+    assert len(tags) == 1, "the block accumulated across a convert"
+    assert not any("original.msh" in line for line in lines_found)
+
+
+def test_cpp_and_python_scanners_agree(tmp_path):
+    """`_provenance.scan_provenance_text` is a twin of the C++ scanner; a file
+    scanned by either must yield the same lines."""
+    out = tmp_path / "agree.obj"
+    with _provenance.scope(_provenance.Mode.BEST_EFFORT):
+        _provenance.set_source("in.vtu", "vtu")
+        _provenance.add_operation("Clean(Weld=true)")
+        mp.write(str(out), TRI)
+
+    cpp_lines, cpp_ok = _core.read_provenance_lines(str(out))
+    py_lines, py_ok = _provenance.scan_provenance_text(
+        out.read_bytes().replace(b"\0", b"\n").decode("utf-8", "replace")
+    )
+    assert list(cpp_lines) == py_lines
+    assert bool(cpp_ok) == py_ok
+
+
+# ---------------------------------------------------------------------------
+# Cross-engine note parity (the guard for the assumption sweep). The character-
+# identity guarantee means that wherever BOTH engines write a given mesh
+# successfully, they must record the same conversion assumptions -- so widening
+# `provenance_note` coverage one format at a time cannot silently desynchronise
+# them.
+# ---------------------------------------------------------------------------
+
+
+# (format, _core writer, python writer, extension). Meshes are supplied per
+# case so each can carry whatever the format's own lossy path needs.
+def _note_parity_cases():
+    from meshioplusplus.avsucd import _avsucd
+    from meshioplusplus.cgns import _cgns
+    from meshioplusplus.flac3d import _flac3d
+    from meshioplusplus.mphtxt import _mphtxt
+    from meshioplusplus.off import _off
+    from meshioplusplus.ply import _ply
+    from meshioplusplus.stl import _stl
+    from meshioplusplus.tetgen import _tetgen
+    from meshioplusplus.unv import _unv
+
+    # A mesh mixing a surface block with a volume block: the shape that makes
+    # surface-only formats drop something, and volume formats drop the rest.
+    mixed = mp.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        [("triangle", np.array([[0, 1, 2]])), ("tetra", np.array([[0, 1, 2, 3]]))],
+    )
+    return [
+        ("off", mixed, ".off", _core.off_write, _off.write),
+        ("unv", mixed, ".unv", _core.unv_write, _unv.write),
+        (
+            "stl",
+            mixed,
+            ".stl",
+            lambda p, m: _core.stl_write(p, m, False, True),
+            lambda p, m: _stl.write(p, m, binary=False),
+        ),
+        (
+            "ply",
+            mixed,
+            ".ply",
+            lambda p, m: _core.ply_write(p, m, False, True),
+            lambda p, m: _ply.write(p, m, binary=False),
+        ),
+        ("avsucd", mixed, ".avs", _core.avsucd_write, _avsucd.write),
+        ("mphtxt", mixed, ".mphtxt", _core.mphtxt_write, _mphtxt.write),
+        ("tetgen", mixed, ".node", _core.tetgen_write, _tetgen.write),
+        (
+            "flac3d",
+            mixed,
+            ".f3grid",
+            lambda p, m: _core.flac3d_write(p, m, "%.16e", False),
+            lambda p, m: _flac3d.write(p, m, binary=False),
+        ),
+        ("cgns", mixed, ".cgns", _core.cgns_write, _cgns.write),
+    ]
+
+
+@pytest.mark.parametrize("name", [c[0] for c in _note_parity_cases()])
+def test_engines_record_the_same_notes(tmp_path, name):
+    case = next(c for c in _note_parity_cases() if c[0] == name)
+    _, mesh, ext, cpp_write, py_write = case
+
+    def notes_from(write, path):
+        with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
+            try:
+                write(str(path), mesh)
+            except Exception:
+                return None  # this engine cannot write it; nothing to compare
+            return [(n.category, n.detail) for n in s.get().notes]
+
+    cpp_notes = notes_from(cpp_write, tmp_path / f"cpp{ext}")
+    py_notes = notes_from(py_write, tmp_path / f"py{ext}")
+    if cpp_notes is None or py_notes is None:
+        pytest.skip(f"{name}: only one engine writes this mesh, nothing to compare")
+    assert sorted(cpp_notes) == sorted(py_notes)

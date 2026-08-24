@@ -3481,3 +3481,58 @@ TEST(CApi, ProvenanceScopeEndWithNoneOpenIsANoOp) {
     mio_provenance_scope_end();  // must not crash
     SUCCEED();
 }
+
+TEST(CApi, ProvenanceReadBackThroughMetadata) {
+    mio_mesh* m = capi_cube_surface();
+    const std::string path = mt::temp_path("_capi_rb.obj");
+
+    ASSERT_EQ(mio_provenance_scope_begin(MIO_PROVENANCE_BEST_EFFORT), MIO_OK);
+    mio_provenance_set_source("in.msh", "gmsh");
+    mio_provenance_note("regions-dropped", "Side regions dropped");
+    ASSERT_EQ(mio_write(path.c_str(), m, "obj"), MIO_OK);
+    mio_provenance_scope_end();
+
+    mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "obj");
+    ASSERT_NE(meta, nullptr);
+    EXPECT_EQ(mio_read_metadata_provenance_recognised(meta), 1);
+    const int64_t n = mio_read_metadata_num_provenance_lines(meta);
+    ASSERT_GE(n, 3);
+
+    bool saw_source = false, saw_note = false;
+    char buf[512];
+    for (int64_t i = 0; i < n; ++i) {
+        ASSERT_GT(mio_read_metadata_provenance_line(meta, i, buf, sizeof(buf)), 0);
+        std::string line(buf);
+        if (line.find("in.msh") != std::string::npos)
+            saw_source = true;
+        if (line.find("regions-dropped") != std::string::npos)
+            saw_note = true;
+    }
+    EXPECT_TRUE(saw_source);
+    EXPECT_TRUE(saw_note);
+
+    // Out-of-range and NULL are errors, not silent zeros.
+    EXPECT_EQ(mio_read_metadata_provenance_line(meta, n, buf, sizeof(buf)), -1);
+    EXPECT_EQ(mio_read_metadata_num_provenance_lines(nullptr), -1);
+    EXPECT_EQ(mio_read_metadata_provenance_recognised(nullptr), -1);
+
+    mio_read_metadata_free(meta);
+    mio_mesh_free(m);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(CApi, ProvenanceReadBackIsHonestAboutAForeignFile) {
+    const std::string path = mt::temp_path("_capi_foreign.obj");
+    {
+        std::ofstream f(path);
+        f << "# Created by SomeOtherTool 3.2\nv 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n";
+    }
+    mio_read_metadata* meta = mio_read_metadata_create(path.c_str(), "obj");
+    ASSERT_NE(meta, nullptr);
+    EXPECT_EQ(mio_read_metadata_provenance_recognised(meta), 0);
+    EXPECT_EQ(mio_read_metadata_num_provenance_lines(meta), 0);
+    mio_read_metadata_free(meta);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}

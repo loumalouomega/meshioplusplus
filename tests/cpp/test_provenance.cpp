@@ -30,6 +30,8 @@
 #include "meshioplusplus/formats/nastran.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/read_options.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -299,4 +301,145 @@ TEST(Provenance, OffWriterRecordsDroppedCellTypes) {
     EXPECT_TRUE(found);
     std::error_code ec;
     std::filesystem::remove(path, ec);
+}
+
+// ---------------------------------------------------------------------------
+// Read-back (v10.17.0): recovering a file's own block. Roadmap #1's last
+// bullet -- see doc/provenance.md#reading-a-block-back.
+// ---------------------------------------------------------------------------
+
+TEST(Provenance, ScannerHandlesEverySlotShape) {
+    // One scanner serves every format because render_block's CONTENT lines are
+    // format-independent; only the wrapping differs. Each case below is a real
+    // writer's wrapping.
+    struct Case {
+        const char* mLabel;
+        const char* mText;
+    };
+    const Case cases[] = {
+        {"hash", "# Written by meshio++ v1.2.3\n# Converted from in.vtu (vtu)\nv 0 0 0\n"},
+        {"bang", "!PERMAS DataFile\n! Written by meshio++ v1.2.3\n$STRUCTURE\n"},
+        {"xml-inline", "<?xml version=\"1.0\"?>\n<!--Written by meshio++ v1.2.3-->\n<VTKFile>\n"},
+        {"xml-block", "<!--\nWritten by meshio++ v1.2.3\nTimestamp: X\n-->\n"},
+        {"tecplot", "TITLE = \"Written by meshio++ v1.2.3\"\nVARIABLES = \"X\"\n"},
+        {"ansys", "(1 \"Written by meshio++ v1.2.3\")\n(2 3)\n"},
+        {"openfoam", "|   \\\\  /    A nd           | Written by meshio++ v1.2.3            |\n"},
+    };
+    for (const Case& c : cases) {
+        auto r = meshioplusplus::detail::scan_provenance_text(c.mText);
+        EXPECT_TRUE(r.mRecognised) << c.mLabel;
+        ASSERT_FALSE(r.mLines.empty()) << c.mLabel;
+        EXPECT_EQ(r.mLines[0], "Written by meshio++ v1.2.3") << c.mLabel;
+    }
+}
+
+// The bug this pins: an unconditional trailing-')' strip (added for Ansys's
+// `(1 "...")`) silently truncated every line that legitimately ends in one.
+TEST(Provenance, ScannerKeepsParenthesesThatBelongToTheContent) {
+    auto r = meshioplusplus::detail::scan_provenance_text(
+        "# Written by meshio++ v1.2.3\n"
+        "# Converted from in.vtu (vtu)\n"
+        "# Operation: Clean(Weld=true)\n");
+    ASSERT_EQ(r.mLines.size(), 3u);
+    EXPECT_EQ(r.mLines[1], "Converted from in.vtu (vtu)");
+    EXPECT_EQ(r.mLines[2], "Operation: Clean(Weld=true)");
+}
+
+TEST(Provenance, ScannerIsHonestAboutForeignAndAbsentBlocks) {
+    EXPECT_FALSE(meshioplusplus::detail::scan_provenance_text("v 0 0 0\nf 1 2 3\n").mRecognised);
+    auto foreign = meshioplusplus::detail::scan_provenance_text("# Created by SomeTool 3.2\n");
+    EXPECT_FALSE(foreign.mRecognised);
+    EXPECT_TRUE(foreign.mLines.empty());
+    // A missing file is "nothing found", never a throw -- this enriches a
+    // summary and must not be able to fail one.
+    EXPECT_NO_THROW(meshioplusplus::detail::read_provenance_lines("/nonexistent/nope.obj"));
+}
+
+TEST(Provenance, DefaultWriteRecoversExactlyTheTag) {
+    std::string path = mt::temp_path("_rb_off.obj");
+    meshioplusplus::write_obj(path, mt::tri_mesh());
+    auto meta = meshioplusplus::registry_read_metadata(path, "obj", meshioplusplus::ReadOptions{});
+    EXPECT_TRUE(meta.mProvenanceRecognised);
+    ASSERT_EQ(meta.mProvenance.size(), 1u);
+    EXPECT_EQ(meta.mProvenance[0], meshioplusplus::detail::kProvenanceTag);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Provenance, ScopedWriteRoundTripsTheWholeBlock) {
+    std::string path = mt::temp_path("_rb_on.obj");
+    {
+        ProvenanceScope scope(ProvenanceMode::BestEffort);
+        meshioplusplus::detail::provenance_set_source("in.msh", "gmsh");
+        meshioplusplus::detail::provenance_note("regions-dropped", "Side regions dropped");
+        meshioplusplus::write_obj(path, mt::tri_mesh());
+    }
+    auto meta = meshioplusplus::registry_read_metadata(path, "obj", meshioplusplus::ReadOptions{});
+    EXPECT_TRUE(meta.mProvenanceRecognised);
+    ASSERT_GE(meta.mProvenance.size(), 3u);
+    EXPECT_EQ(meta.mProvenance[0], meshioplusplus::detail::kProvenanceTag);
+    bool saw_source = false, saw_note = false;
+    for (const auto& l : meta.mProvenance) {
+        if (l.find("in.msh") != std::string::npos)
+            saw_source = true;
+        if (l.find("regions-dropped") != std::string::npos)
+            saw_note = true;
+    }
+    EXPECT_TRUE(saw_source);
+    EXPECT_TRUE(saw_note);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+// The property that makes "replace, never append" structural rather than a
+// rule a writer has to remember: nothing carries a read block into a write.
+TEST(Provenance, AReadBlockIsNeverReEmitted) {
+    std::string first = mt::temp_path("_rb_1.obj");
+    {
+        ProvenanceScope scope(ProvenanceMode::BestEffort);
+        meshioplusplus::detail::provenance_set_source("original.msh", "gmsh");
+        meshioplusplus::write_obj(first, mt::tri_mesh());
+    }
+    meshioplusplus::Mesh m = meshioplusplus::read_obj(first);
+
+    std::string second = mt::temp_path("_rb_2.obj");
+    {
+        ProvenanceScope scope(ProvenanceMode::BestEffort);
+        meshioplusplus::detail::provenance_set_source("second.msh", "gmsh");
+        meshioplusplus::write_obj(second, m);
+    }
+    auto meta =
+        meshioplusplus::registry_read_metadata(second, "obj", meshioplusplus::ReadOptions{});
+    std::size_t tags = 0;
+    bool saw_original = false;
+    for (const auto& l : meta.mProvenance) {
+        if (l.rfind("Written by meshio++ v", 0) == 0)
+            ++tags;
+        if (l.find("original.msh") != std::string::npos)
+            saw_original = true;
+    }
+    EXPECT_EQ(tags, 1u) << "the block accumulated across a convert";
+    EXPECT_FALSE(saw_original) << "the first file's source leaked into the second";
+    std::error_code ec;
+    std::filesystem::remove(first, ec);
+    std::filesystem::remove(second, ec);
+}
+
+// OpenFOAM is the one slot with trailing structure (a fixed-width cell closed
+// by '|'), so it gets its own end-to-end case rather than only the synthetic
+// one above.
+TEST(Provenance, OpenfoamBannerRoundTrips) {
+    std::string dir = mt::temp_path("_rb_of");
+    {
+        ProvenanceScope scope(ProvenanceMode::BestEffort);
+        meshioplusplus::OpenFoamInfo info;
+        meshioplusplus::write_openfoam(dir, mt::hex_mesh(), info);
+    }
+    auto r = meshioplusplus::detail::read_provenance_lines(dir + "/constant/polyMesh/points");
+    EXPECT_TRUE(r.mRecognised);
+    ASSERT_FALSE(r.mLines.empty());
+    EXPECT_EQ(r.mLines[0], meshioplusplus::detail::kProvenanceTag)
+        << "the banner's padding or closing '|' leaked into the recovered line";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

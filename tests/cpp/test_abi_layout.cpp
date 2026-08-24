@@ -116,7 +116,7 @@ MIO_ABI_LAYOUT(meshioplusplus::ReadOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 256, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 288, 8);
 
 // ProvenanceNote/ProvenanceRecord (v10.16.0, detail/provenance.hpp) -- pinned
 // from the release that introduces them, the RefineOptions/RemeshOptions
