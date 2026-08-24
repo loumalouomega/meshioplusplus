@@ -426,7 +426,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    os << "TITLE = \"" << detail::kProvenanceTag << "\"\n";
+    os << "TITLE = \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";

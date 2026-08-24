@@ -4,11 +4,11 @@ I/O for PERMAS dat files.
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 permas_to_meshio_type = {
     "PLOT1": "vertex",
@@ -231,7 +231,7 @@ def write(filename, mesh):
 
     with open_file(filename, "wt") as f:
         f.write("!PERMAS DataFile Version 18.0\n")
-        f.write(f"! {_PROVENANCE_TAG}\n")
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "! "))
         f.write("$ENTER COMPONENT NAME=DFLT_COMP\n")
         f.write("$STRUCTURE\n")
         f.write("$COOR\n")

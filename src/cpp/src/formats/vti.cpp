@@ -248,7 +248,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--" << detail::kProvenanceTag << "-->\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
     // that is the whole reason this format is worth having for a grid.
     os << "<ImageData WholeExtent=\"" << ext.str() << "\" Origin=\"" << vti_num(spec.mOrigin[0])

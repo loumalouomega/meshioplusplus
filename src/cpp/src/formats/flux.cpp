@@ -207,7 +207,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     const bool has_ref = rMesh.HasCellData("pf3:ref");
 
     char buf[128];
-    f << " " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, " ");
     auto hdr = [&](long long v, const char* label) {
         std::snprintf(buf, sizeof(buf), "%8lld           %s\n", v, label);
         f << buf;

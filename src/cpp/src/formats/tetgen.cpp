@@ -247,7 +247,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         if (nattr + nref > 0) {
             fh << "# attribute and marker names: ";
             bool first = true;
@@ -308,7 +308,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         }
         const std::size_t nattr = attr_keys.size();
 
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         if (nattr > 0) {
             fh << "# attribute names: ";
             bool first = true;

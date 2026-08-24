@@ -166,7 +166,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     os << "$ " << kSentinel << "\n";
-    os << "$ " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "$ ");
     os << "BEGIN BULK\n";
 
     // Points: fixed-large GRID*.

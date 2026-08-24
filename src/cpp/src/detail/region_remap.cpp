@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -225,6 +226,10 @@ void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName) {
         "{}: {} named region(s) dropped — the output cells and points are newly "
         "created and have no correspondence with the input's",
         rOpName, n);
+    provenance_note("regions-dropped",
+                    rOpName + ": " + std::to_string(n) +
+                        " named region(s) dropped -- the output cells and points are "
+                        "newly created and have no correspondence with the input's");
 }
 
 }  // namespace detail

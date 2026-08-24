@@ -220,7 +220,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     f << "!PERMAS DataFile Version 18.0\n";
-    f << "! " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "! ");
     f << "$ENTER COMPONENT NAME=DFLT_COMP\n";
     f << "$STRUCTURE\n";
     f << "$COOR\n";

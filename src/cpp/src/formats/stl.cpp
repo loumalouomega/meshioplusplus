@@ -311,7 +311,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     if (binary) {
         char header[80];
         std::memset(header, '\0', 80);
-        const char* msg = detail::kProvenanceTag;
+        const std::string msg_str = detail::provenance_lines(detail::SlotTier::Bounded)[0];
+        const char* msg = msg_str.c_str();
         std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());

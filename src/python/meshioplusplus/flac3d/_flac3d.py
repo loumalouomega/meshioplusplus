@@ -9,11 +9,11 @@ import struct
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 meshio_only = {
     "zone": {
@@ -433,7 +433,7 @@ def write(filename, mesh: Mesh, float_fmt: str = ".16e", binary: bool = False):
             # Don't know what these values represent
             f.write(struct.pack("<2I", 1375135718, 3))
         else:
-            f.write(f"* {_PROVENANCE_TAG}\n")
+            f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "* "))
 
         _write_points(f, mesh.points, binary, float_fmt)
         # Make gid an array such that its value can be persitently altered

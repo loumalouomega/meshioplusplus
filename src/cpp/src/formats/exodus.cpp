@@ -914,7 +914,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 
     // global attributes
     {
-        std::string title = detail::kProvenanceTag;
+        auto title_lines = detail::provenance_lines(detail::SlotTier::Block);
+        std::string title = title_lines[0];
+        for (std::size_t i = 1; i < title_lines.size(); ++i) {
+            title += '\n';
+            title += title_lines[i];
+        }
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);
         float v = 5.1f;

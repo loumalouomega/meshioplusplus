@@ -299,7 +299,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         csum += sz;
     }
 
-    os << "# " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     os << num_nodes << " " << num_cells << " " << nsum << " " << csum << " 0\n";
 
     const NDArray& points = rMesh.Points();

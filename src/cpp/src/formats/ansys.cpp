@@ -339,7 +339,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
 
     char hbuf[128];
-    fh << "(1 \"" << detail::kProvenanceTag << "\")\n";
+    fh << "(1 \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\")\n";
     std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
     fh << hbuf;
 

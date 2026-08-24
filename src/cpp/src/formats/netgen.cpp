@@ -389,7 +389,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
             per_dim[d] += static_cast<std::int64_t>(cb.NumCells());
     }
 
-    f << "# " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     f << "mesh3d\n\n";
     f << "dimension\n" << dimension << "\n\n";
     f << "geomtype\n0\n";

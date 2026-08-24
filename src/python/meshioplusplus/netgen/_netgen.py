@@ -5,10 +5,10 @@ I/O for Netgen mesh files
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._files import open_file
 from .._mesh import Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def _fast_forward_over_blank_lines(f):
@@ -384,7 +384,7 @@ def write_buffer(f, mesh, float_fmt):
     for cell_block in mesh.cells:
         cells_per_dim[cell_block.dim] += len(cell_block)
 
-    f.write(f"# {_PROVENANCE_TAG}\n")
+    f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
     f.write("mesh3d\n\n")
 
     f.write("dimension\n")

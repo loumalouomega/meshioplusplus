@@ -422,7 +422,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     }
 
     // ASCII
-    f << "* " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "* ");
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {

@@ -7,11 +7,11 @@ from itertools import count
 
 import numpy as np
 
+from .. import _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 abaqus_to_meshio_type = {
     # trusses
@@ -536,7 +536,7 @@ def write(
     with open_file(filename, "wt") as f:
         f.write("*HEADING\n")
         f.write("Abaqus DataFile Version 6.14\n")
-        f.write(f"{_PROVENANCE_TAG}\n")
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, ""))
         f.write("*NODE\n")
         fmt = ", ".join(["{}"] + ["{:" + float_fmt + "}"] * mesh.points.shape[1]) + "\n"
         for k, x in enumerate(mesh.points):

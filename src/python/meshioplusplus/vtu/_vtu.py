@@ -11,10 +11,10 @@ import zlib
 
 import numpy as np
 
+from .. import _provenance
 from .._common import info, join_strings, raw_from_cell_data, replace_space, warn
 from .._exceptions import CorruptionError, ReadError
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
 
 
@@ -966,7 +966,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         # vtu polyhedron data format
         return data, data_size_per_cell.tolist()
 
-    comment = ET.Comment(_PROVENANCE_TAG)
+    comment = ET.Comment("\n".join(_provenance.lines(_provenance.SlotTier.BLOCK)))
     vtk_file.insert(1, comment)
 
     grid = ET.SubElement(vtk_file, "UnstructuredGrid")

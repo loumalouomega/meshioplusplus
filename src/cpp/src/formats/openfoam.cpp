@@ -913,7 +913,7 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
     // The credit cell is fixed-width (48 chars before the closing box edge) so
     // the banner stays aligned regardless of how long the release string is.
-    std::string credit = detail::kProvenanceTag;
+    std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
     if (credit.size() < 48)
         credit.append(48 - credit.size(), ' ');
     rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"

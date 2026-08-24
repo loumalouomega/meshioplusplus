@@ -9059,7 +9059,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 15
+#define MESHIOPLUSPLUS_VERSION_MINOR 16
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9069,7 +9069,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.15.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.16.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -9082,24 +9082,61 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 // ===== begin src/cpp/include/meshioplusplus/detail/provenance.hpp =====
 /**
  * @file detail/provenance.hpp
- * @brief The single owner of the one-line provenance credit every format
- * writer emits.
+ * @brief The provenance record every writer renders into its own header slot.
  *
- * Before this header existed, ~25 writers spelled their own version of this
- * line inline, and the two engines drifted three ways at once: the C++ side
- * said `(C++ core)` and carried no version, the Python side said `v{version}`
- * and carried no engine marker, and several Python writers still said
- * `meshio` (a stale-fork artifact) rather than `meshio++`. The Python twin
- * lives at `meshioplusplus/_provenance.py`; the two must keep emitting
- * character-identical text (`tests/python/test_provenance.py` pins this),
- * which is only possible if both sides read the tag from one place rather
- * than composing it locally.
+ * ### Two layers
  *
- * This is deliberately the *whole* feature for now — see `doc/roadmap.md`
- * §1's "audit and normalize" bullet. It carries the writer version and
- * nothing else: no source format, no operation chain, no timestamp. Those
- * are separate, larger design questions the roadmap defers on purpose.
+ * `kProvenanceTag` (v10.15.0) is the unconditional one-line credit: it is
+ * always emitted, by both engines, character-identically. Nothing about it
+ * changed here.
+ *
+ * The `Record`/`Scope` surface (v10.16.0) is the **opt-in** richer block --
+ * source, target, the operation chain and the conversion assumptions accepted
+ * on the way. `Mode::Off` is the default, so a caller who asks for nothing
+ * gets byte-for-byte what v10.15.0 wrote.
+ *
+ * ### Why a scoped context rather than `WriteOptions`
+ *
+ * `registry_write_ex` is the documented "single owner of write-this-format-
+ * with-these-parameters", so `WriteOptions` looks like the obvious home. It is
+ * not: only four write paths reach it (the native CLI, `mio_write_ex`, the
+ * pipeline and the sequence driver). The Python path
+ * (`_helpers.write` -> the format shim -> `_core.<fmt>_write` -> the per-format
+ * free function), the WASM path (the `registry_writers()` lambdas) and plain
+ * `mio_write` all bypass it entirely -- so a `WriteOptions`-borne record would
+ * be invisible from the primary user surface. Growing `WriteOptions` is also a
+ * Tier A ABI change, and growing `mio_write_opts` only preserves `sizeof`
+ * where `sizeof(void*) == 8`.
+ *
+ * A context solves all of that at once, because writers read it exactly where
+ * they already read `kProvenanceTag` -- inside their own bodies -- so no
+ * signature anywhere has to change.
+ *
+ * **Thread-local, not process-global.** This is the `set_buffer_allocator`
+ * shape (`ndarray.hpp`) with one deliberate difference: writes are not
+ * serialized against each other, so a process-global record would let one
+ * write's provenance leak into a concurrent write on another thread. The
+ * scope is RAII and restores the previous record on destruction, so nesting
+ * works and an exception cannot strand it.
+ *
+ * ### Slot tiers
+ *
+ * Formats differ in what their header slot can physically hold, and the
+ * difference is not a preference -- a binary STL header is 80 bytes and the
+ * VTK legacy title is one line. `SlotTier` classifies it, and `render()`
+ * degrades accordingly. `Mode::Required` turns that degradation into an error
+ * instead, which is how `write_options.hpp`'s standing rule ("an option a
+ * format cannot honour is an error, never silently ignored") is honoured
+ * without making a provenance request fail on a third of the format table by
+ * default.
  */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
 
 // Project includes
 
@@ -9109,6 +9146,190 @@ namespace detail {
 /// The canonical one-line provenance tag every writer emits, wrapped in each
 /// format's own comment syntax at each writer's existing header position.
 inline constexpr const char* kProvenanceTag = "Written by meshio++ v" MESHIOPLUSPLUS_VERSION_STRING;
+
+/// How much provenance a writer should render.
+enum class ProvenanceMode : std::uint8_t {
+    /// Only `kProvenanceTag` -- exactly what v10.15.0 wrote. The default.
+    Off = 0,
+    /// The full block where the slot allows it, degrading silently otherwise.
+    BestEffort = 1,
+    /// The full block, or a `WriteError` naming the format whose slot cannot
+    /// hold one.
+    Required = 2,
+};
+
+/// What a format's header slot can physically hold.
+enum class SlotTier : std::uint8_t {
+    /// No free-text slot at all (`wkt`, `ugrid`, the HDF5 containers, ...).
+    None = 0,
+    /// One line, hard-capped in bytes (binary STL's 80, EnSight's `str80`).
+    Bounded = 1,
+    /// Exactly one line (the VTK legacy title, Tecplot's `TITLE=`, ...).
+    SingleLine = 2,
+    /// Arbitrarily many lines (every `#`/`!`/`*`/`$`/`%`/`//` comment syntax,
+    /// PLY `comment`, XML `<!--`, Abaqus `*HEADING`, the OpenFOAM banner).
+    Block = 3,
+};
+
+/// One conversion assumption accepted on the way to the output file.
+///
+/// `mCategory` is a short stable slug (`"regions-dropped"`, `"node-order"`,
+/// `"dtype"`, ...) so a consumer can filter without parsing prose;
+/// `mDetail` is the human-readable specifics.
+struct ProvenanceNote {
+    std::string mCategory;
+    std::string mDetail;
+};
+
+/**
+ * @brief Everything the record can carry.
+ *
+ * Deliberately **not** carrying which engine rendered it. The roadmap asks
+ * for that diagnostic, but it contradicts the harder guarantee that the C++
+ * core and its numpy twins emit character-identical bytes -- an engine marker
+ * is precisely the `(C++ core)`-vs-`v{version}` drift v10.15.0 removed. It is
+ * reported through `current_provenance()` instead, where it costs nothing.
+ */
+struct ProvenanceRecord {
+    /// Where the mesh was read from, when a single call spans read and write.
+    std::string mSourcePath;
+    /// The source format, with its detected sub-version where one exists
+    /// (`"gmsh 4.1"`, `"med 4"`).
+    std::string mSourceFormat;
+
+    /// The resolved target format.
+    std::string mTargetFormat;
+    /// The encoding actually used, not the one requested (`"ascii"`/`"binary"`).
+    std::string mEncoding;
+    /// The block codec actually used, where the format has one.
+    std::string mCodec;
+    /// The float format actually used, where the writer takes one.
+    std::string mFloatFormat;
+
+    /// The operation chain, in order, each rendered as `op(key=value, ...)`.
+    std::vector<std::string> mOperations;
+
+    /// The conversion assumptions accepted, in the order they were made.
+    std::vector<ProvenanceNote> mNotes;
+
+    /// ISO-8601 UTC to the second, or empty when suppressed.
+    std::string mTimestamp;
+};
+
+/**
+ * @brief Installs @p rRecord as the active record for the current thread.
+ *
+ * RAII: the previous record (if any) is restored on destruction, so scopes
+ * nest and an exception in the middle of a write cannot strand one. Move-only
+ * -- a copied scope would restore twice.
+ */
+class MESHIOPLUSPLUS_API ProvenanceScope {
+public:
+    ProvenanceScope(ProvenanceMode mode, ProvenanceRecord record);
+    explicit ProvenanceScope(ProvenanceMode mode) : ProvenanceScope(mode, ProvenanceRecord{}) {}
+    ~ProvenanceScope();
+
+    ProvenanceScope(const ProvenanceScope&) = delete;
+    ProvenanceScope& operator=(const ProvenanceScope&) = delete;
+    ProvenanceScope(ProvenanceScope&&) = delete;
+    ProvenanceScope& operator=(ProvenanceScope&&) = delete;
+
+    /// The record as it stands now, including every `provenance_note()` made
+    /// since the scope opened. This is where a caller reads back what was
+    /// recorded -- including facts (like which engine ran) deliberately kept
+    /// out of the file.
+    const ProvenanceRecord& Get() const;
+
+private:
+    bool mHadPrevious;
+    ProvenanceRecord mPrevious;
+    ProvenanceMode mPreviousMode;
+};
+
+/// The active mode for this thread (`Off` when no scope is open).
+MESHIOPLUSPLUS_API ProvenanceMode current_provenance_mode();
+
+/// The active record for this thread; empty when no scope is open.
+MESHIOPLUSPLUS_API const ProvenanceRecord& current_provenance();
+
+/**
+ * @brief Records one conversion assumption against the active scope.
+ *
+ * A **no-op outside a scope**, which is what lets it be called
+ * unconditionally from a writer or an operation without either of them
+ * knowing whether anyone is listening. Duplicate `(category, detail)` pairs
+ * are collapsed: a per-cell warning must not produce a per-cell record.
+ */
+MESHIOPLUSPLUS_API void provenance_note(std::string_view category, std::string_view detail);
+
+/// Sets a field on the active record. No-ops outside a scope.
+///@{
+MESHIOPLUSPLUS_API void provenance_set_source(std::string_view path, std::string_view format);
+MESHIOPLUSPLUS_API void provenance_set_target(std::string_view format, std::string_view encoding,
+                                              std::string_view codec,
+                                              std::string_view float_format);
+MESHIOPLUSPLUS_API void provenance_add_operation(std::string_view rendered);
+///@}
+
+/**
+ * @brief The lines a writer should emit, without any comment prefix.
+ *
+ * Always at least `kProvenanceTag`, as line 0. What follows depends on both
+ * @p tier and the active `ProvenanceMode`:
+ *
+ *  - `Off` (the default, no scope open): always just the tag. This is the
+ *    whole reason every writer touched here keeps producing v10.15.0's exact
+ *    bytes until a caller opts in.
+ *  - `BestEffort`: the full block (source, target, operations, notes,
+ *    timestamp -- one per line) when `tier == Block`; otherwise just the tag,
+ *    silently -- a `SingleLine`/`Bounded` slot structurally cannot hold more
+ *    than one line, and a `None` slot cannot hold even that (so a writer with
+ *    no slot at all simply never calls this function, the v10.15.0 rule).
+ *  - `Required`: identical to `BestEffort` for `Block`/`SingleLine`/`Bounded`
+ *    -- degrading to the tag on a slot that structurally cannot hold more is
+ *    not a failure, it is the honest maximum that slot can ever offer, and
+ *    the caller already knows that from `doc/formats.md`'s tier column.
+ *    `SlotTier::None` is the one genuine failure: there is nothing to write
+ *    at all, so this throws.
+ *
+ * @param tier what the calling format's slot can hold.
+ * @throws WriteError under `Mode::Required` when @p tier is `SlotTier::None`.
+ */
+MESHIOPLUSPLUS_API std::vector<std::string> provenance_lines(SlotTier tier);
+
+/**
+ * @brief `provenance_lines(tier)`, each line prefixed with @p prefix and
+ * newline-terminated, ready to stream to a writer's `std::ostream`.
+ *
+ * Covers the common case -- every `#`/`!`/`*`/`$`/`//`-style line comment,
+ * PLY's `comment ` keyword, and Abaqus's unprefixed `*HEADING` body (pass an
+ * empty prefix). Formats whose slot wraps differently (XML's `<!--...-->`,
+ * Ansys's split `(0 "...")`/`(1 "...")` records, Nastran's sentinel needing
+ * to stay first, Exodus's single netCDF attribute) call `provenance_lines`
+ * directly instead.
+ */
+MESHIOPLUSPLUS_API std::string provenance_render_lines(SlotTier tier, std::string_view prefix);
+
+/**
+ * @brief `provenance_lines(tier)` wrapped as one XML comment.
+ *
+ * A single line renders as `<!--line-->` -- byte-identical to what every
+ * `<!--...-->` writer emitted before this existed. Multiple lines render as
+ * one comment spanning them (`<!--\nline\nline\n-->`) rather than one
+ * `<!--...-->` per line, since a document with a repeated warning-worthy
+ * substring is otherwise indistinguishable from several unrelated comments.
+ */
+MESHIOPLUSPLUS_API std::string provenance_render_xml_comment(SlotTier tier);
+
+/**
+ * @brief The timestamp `ProvenanceScope` stamps a record with by default.
+ *
+ * Honours `SOURCE_DATE_EPOCH` (the reproducible-builds convention) so a
+ * byte-comparable build can pin it; returns empty when
+ * `MESHIOPLUSPLUS_PROVENANCE_TIMESTAMP=off`. Host and user are never
+ * recorded -- these files get shared.
+ */
+MESHIOPLUSPLUS_API std::string provenance_timestamp();
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -41058,6 +41279,254 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/projection.cpp =====
+// ===== begin src/cpp/src/detail/provenance.cpp =====
+#include <algorithm>
+#include <cstdlib>
+#include <ctime>
+#include <mutex>
+
+// Project includes
+
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// Thread-local active state. A raw pointer (never owning) so `ProvenanceScope`
+/// -- which does own the record -- can point it at its own storage while it is
+/// alive and null it on destruction; that is what makes "no scope open" free
+/// to check from every writer without touching a mutex.
+thread_local ProvenanceRecord* g_active_record = nullptr;
+thread_local ProvenanceMode g_active_mode = ProvenanceMode::Off;
+
+const ProvenanceRecord& empty_record() {
+    static const ProvenanceRecord r;
+    return r;
+}
+
+}  // namespace
+
+ProvenanceMode current_provenance_mode() {
+    return g_active_mode;
+}
+
+const ProvenanceRecord& current_provenance() {
+    return g_active_record ? *g_active_record : empty_record();
+}
+
+ProvenanceScope::ProvenanceScope(ProvenanceMode mode, ProvenanceRecord record)
+    : mHadPrevious(g_active_record != nullptr),
+      mPrevious(mHadPrevious ? *g_active_record : ProvenanceRecord{}),
+      mPreviousMode(g_active_mode) {
+    // Stamp the timestamp now, once, rather than lazily at render time: a
+    // caller reading Get() mid-write should see the same instant the file
+    // will (if it records one at all), and a lazy stamp taken once per
+    // render call would let a single write's block disagree with itself
+    // across formats sharing one scope (never happens today, but "the
+    // timestamp is fixed for the life of the scope" is the simpler contract
+    // to keep, and it costs one clock read).
+    if (record.mTimestamp.empty())
+        record.mTimestamp = provenance_timestamp();
+    // The record this scope owns lives for the scope's lifetime, heap-backed
+    // so the thread-local pointer stays valid across the constructor's
+    // return; every note()/set_* call afterwards mutates it in place rather
+    // than copying.
+    g_active_record = new ProvenanceRecord(std::move(record));
+    g_active_mode = mode;
+}
+
+ProvenanceScope::~ProvenanceScope() {
+    delete g_active_record;
+    if (mHadPrevious) {
+        g_active_record = new ProvenanceRecord(std::move(mPrevious));
+    } else {
+        g_active_record = nullptr;
+    }
+    g_active_mode = mPreviousMode;
+}
+
+const ProvenanceRecord& ProvenanceScope::Get() const {
+    return current_provenance();
+}
+
+void provenance_note(std::string_view category, std::string_view detail) {
+    if (!g_active_record)
+        return;
+    for (const auto& n : g_active_record->mNotes)
+        if (n.mCategory == category && n.mDetail == detail)
+            return;  // collapse duplicates -- a per-cell warning must not
+                     // produce a per-cell record.
+    g_active_record->mNotes.push_back(ProvenanceNote{std::string(category), std::string(detail)});
+}
+
+void provenance_set_source(std::string_view path, std::string_view format) {
+    if (!g_active_record)
+        return;
+    g_active_record->mSourcePath = std::string(path);
+    g_active_record->mSourceFormat = std::string(format);
+}
+
+void provenance_set_target(std::string_view format, std::string_view encoding,
+                           std::string_view codec, std::string_view float_format) {
+    if (!g_active_record)
+        return;
+    g_active_record->mTargetFormat = std::string(format);
+    g_active_record->mEncoding = std::string(encoding);
+    g_active_record->mCodec = std::string(codec);
+    g_active_record->mFloatFormat = std::string(float_format);
+}
+
+void provenance_add_operation(std::string_view rendered) {
+    if (!g_active_record)
+        return;
+    g_active_record->mOperations.emplace_back(rendered);
+}
+
+namespace {
+
+std::string render_block(const ProvenanceRecord& rRecord) {
+    std::vector<std::string> lines;
+    if (!rRecord.mSourcePath.empty() || !rRecord.mSourceFormat.empty()) {
+        std::string line = "Converted from ";
+        line += rRecord.mSourcePath.empty() ? "(in-memory)" : rRecord.mSourcePath;
+        if (!rRecord.mSourceFormat.empty())
+            line += " (" + rRecord.mSourceFormat + ")";
+        lines.push_back(std::move(line));
+    }
+    if (!rRecord.mTargetFormat.empty()) {
+        std::string line = "Written as " + rRecord.mTargetFormat;
+        std::vector<std::string> extras;
+        if (!rRecord.mEncoding.empty())
+            extras.push_back(rRecord.mEncoding);
+        if (!rRecord.mCodec.empty())
+            extras.push_back("codec=" + rRecord.mCodec);
+        if (!rRecord.mFloatFormat.empty())
+            extras.push_back("float_format=" + rRecord.mFloatFormat);
+        if (!extras.empty()) {
+            line += " (";
+            for (std::size_t i = 0; i < extras.size(); ++i) {
+                if (i)
+                    line += ", ";
+                line += extras[i];
+            }
+            line += ")";
+        }
+        lines.push_back(std::move(line));
+    }
+    for (const auto& op : rRecord.mOperations)
+        lines.push_back("Operation: " + op);
+    for (const auto& note : rRecord.mNotes)
+        lines.push_back("Note [" + note.mCategory + "]: " + note.mDetail);
+    if (!rRecord.mTimestamp.empty())
+        lines.push_back("Timestamp: " + rRecord.mTimestamp);
+
+    std::string out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i)
+            out += '\n';
+        out += lines[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> provenance_lines(SlotTier tier) {
+    std::vector<std::string> out{kProvenanceTag};
+
+    const ProvenanceMode mode = g_active_record ? g_active_mode : ProvenanceMode::Off;
+    if (mode == ProvenanceMode::Off)
+        return out;
+
+    if (tier == SlotTier::None) {
+        if (mode == ProvenanceMode::Required)
+            throw WriteError(
+                "meshio++: provenance: this format's header slot cannot hold any "
+                "provenance -- Mode::Required cannot be honoured here");
+        return out;  // BestEffort on a slot-less format: nothing to add.
+    }
+
+    if (tier != SlotTier::Block)
+        return out;  // SingleLine/Bounded: the tag is the honest maximum, and
+                     // Required does not treat that as a failure (see the
+                     // header doc comment).
+
+    const ProvenanceRecord& record = current_provenance();
+    std::string block = render_block(record);
+    if (block.empty())
+        return out;  // nothing was ever recorded beyond the tag itself
+    // Split render_block's newline-joined text back into individual lines so
+    // each one can be comment-prefixed independently by the caller.
+    std::size_t start = 0;
+    while (start <= block.size()) {
+        std::size_t nl = block.find('\n', start);
+        if (nl == std::string::npos) {
+            out.push_back(block.substr(start));
+            break;
+        }
+        out.push_back(block.substr(start, nl - start));
+        start = nl + 1;
+    }
+    return out;
+}
+
+std::string provenance_render_lines(SlotTier tier, std::string_view prefix) {
+    std::string out;
+    for (const auto& line : provenance_lines(tier)) {
+        out += prefix;
+        out += line;
+        out += '\n';
+    }
+    return out;
+}
+
+std::string provenance_render_xml_comment(SlotTier tier) {
+    auto lines = provenance_lines(tier);
+    if (lines.size() == 1)
+        return "<!--" + lines[0] + "-->";
+    std::string out = "<!--\n";
+    for (const auto& line : lines) {
+        out += line;
+        out += '\n';
+    }
+    out += "-->";
+    return out;
+}
+
+std::string provenance_timestamp() {
+    if (const char* off = std::getenv("MESHIOPLUSPLUS_PROVENANCE_TIMESTAMP");
+        off != nullptr && std::string_view(off) == "off") {
+        // SOURCE_DATE_EPOCH, when also set, is a more specific ask than the
+        // blanket off switch and wins -- a reproducible-build pipeline that
+        // exports both wants the pinned epoch, not silence.
+        if (std::getenv("SOURCE_DATE_EPOCH") == nullptr)
+            return {};
+    }
+
+    std::time_t t;
+    if (const char* epoch = std::getenv("SOURCE_DATE_EPOCH")) {
+        char* end = nullptr;
+        long long v = std::strtoll(epoch, &end, 10);
+        t = (end != epoch) ? static_cast<std::time_t>(v) : std::time(nullptr);
+    } else {
+        t = std::time(nullptr);
+    }
+
+    std::tm tm_utc{};
+#if defined(_WIN32)
+    gmtime_s(&tm_utc, &t);
+#else
+    gmtime_r(&t, &tm_utc);
+#endif
+    char buf[32];
+    std::size_t n = std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+    return std::string(buf, n);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/provenance.cpp =====
 // ===== begin src/cpp/src/detail/refine_hierarchy.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -41770,6 +42239,10 @@ void warn_regions_dropped(const Mesh& rIn, const std::string& rOpName) {
         "{}: {} named region(s) dropped — the output cells and points are newly "
         "created and have no correspondence with the input's",
         rOpName, n);
+    provenance_note("regions-dropped",
+                    rOpName + ": " + std::to_string(n) +
+                        " named region(s) dropped -- the output cells and points are "
+                        "newly created and have no correspondence with the input's");
 }
 
 }  // namespace detail
@@ -44575,7 +45048,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
-    os << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "");
     os << "*NODE\n";
     {
         // Format node rows in parallel (snprintf per row, bytes unchanged),
@@ -44987,7 +45460,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
 
     char hbuf[128];
-    fh << "(1 \"" << detail::kProvenanceTag << "\")\n";
+    fh << "(1 \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\")\n";
     std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
     fh << hbuf;
 
@@ -45958,7 +46431,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         csum += sz;
     }
 
-    os << "# " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     os << num_nodes << " " << num_cells << " " << nsum << " " << csum << " 0\n";
 
     const NDArray& points = rMesh.Points();
@@ -49158,7 +49631,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     std::string out;
     out.reserve(200 + np * 42);
     out += "EnSight Gold Geometry File\n";
-    out += std::string(detail::kProvenanceTag) + "\n";
+    out += detail::provenance_lines(detail::SlotTier::Bounded)[0] + "\n";
     out += "node id assign\n";
     out += "element id assign\n";
     out += "part\n";
@@ -49261,7 +49734,7 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.reserve(80 * 8 + np * 12 + 64);
     ensight_append_str80(out, "C Binary");
     ensight_append_str80(out, "EnSight Gold Geometry File");
-    ensight_append_str80(out, detail::kProvenanceTag);
+    ensight_append_str80(out, detail::provenance_lines(detail::SlotTier::Bounded)[0]);
     ensight_append_str80(out, "node id assign");
     ensight_append_str80(out, "element id assign");
     ensight_append_str80(out, "part");
@@ -50270,7 +50743,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 
     // global attributes
     {
-        std::string title = detail::kProvenanceTag;
+        auto title_lines = detail::provenance_lines(detail::SlotTier::Block);
+        std::string title = title_lines[0];
+        for (std::size_t i = 1; i < title_lines.size(); ++i) {
+            title += '\n';
+            title += title_lines[i];
+        }
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);
         float v = 5.1f;
@@ -51046,7 +51524,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     }
 
     // ASCII
-    f << "* " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "* ");
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {
@@ -51289,7 +51767,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     const bool has_ref = rMesh.HasCellData("pf3:ref");
 
     char buf[128];
-    f << " " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, " ");
     auto hdr = [&](long long v, const char* label) {
         std::snprintf(buf, sizeof(buf), "%8lld           %s\n", v, label);
         f << buf;
@@ -57779,7 +58257,7 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 
     const bool has_geom = rMesh.HasCellData("mphtxt:geom");
 
-    f << "# " << detail::kProvenanceTag << "\n\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     f << "0 1\n";
     f << "1 # number of tags\n5 mesh1\n";
     f << "1 # number of types\n3 obj\n\n";
@@ -57975,7 +58453,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     os << "$ " << kSentinel << "\n";
-    os << "$ " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "$ ");
     os << "BEGIN BULK\n";
 
     // Points: fixed-large GRID*.
@@ -58546,7 +59024,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
             per_dim[d] += static_cast<std::int64_t>(cb.NumCells());
     }
 
-    f << "# " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     f << "mesh3d\n\n";
     f << "dimension\n" << dimension << "\n\n";
     f << "geomtype\n0\n";
@@ -58761,7 +59239,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    os << "# " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
@@ -58926,6 +59404,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     // OFF represents polygonal faces (triangle/quad/polygon); anything else is
     // skipped with a warning, matching the Python reference writer.
     std::size_t num_faces = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& t = cb.Type();
         if (t != "triangle" && t != "quad" && t != "polygon") {
@@ -58933,12 +59412,23 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
                 "OFF: '{}' cells are not representable (only triangle/quad/polygon "
                 "faces); skipping.",
                 t);
+            skipped_types.push_back(t);
             continue;
         }
         num_faces += cb.NumCells();
     }
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i) {
+            if (i)
+                joined += ", ";
+            joined += skipped_types[i];
+        }
+        detail::provenance_note("cells-dropped",
+                                "cell block(s) of type " + joined + " have no OFF equivalent");
+    }
 
-    os << "OFF\n# " << detail::kProvenanceTag << "\n\n";
+    os << "OFF\n" << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];
@@ -59856,7 +60346,7 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
     // The credit cell is fixed-width (48 chars before the closing box edge) so
     // the banner stays aligned regardless of how long the release string is.
-    std::string credit = detail::kProvenanceTag;
+    std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
     if (credit.size() < 48)
         credit.append(48 - credit.size(), ' ');
     rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
@@ -60549,7 +61039,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     f << "!PERMAS DataFile Version 18.0\n";
-    f << "! " << detail::kProvenanceTag << "\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "! ");
     f << "$ENTER COMPONENT NAME=DFLT_COMP\n";
     f << "$STRUCTURE\n";
     f << "$COOR\n";
@@ -61015,7 +61505,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
-    os << "comment " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "comment ");
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
@@ -61380,7 +61870,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     if (binary) {
         char header[80];
         std::memset(header, '\0', 80);
-        const char* msg = detail::kProvenanceTag;
+        const std::string msg_str = detail::provenance_lines(detail::SlotTier::Bounded)[0];
+        const char* msg = msg_str.c_str();
         std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
@@ -62508,7 +62999,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    os << "TITLE = \"" << detail::kProvenanceTag << "\"\n";
+    os << "TITLE = \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";
@@ -62781,7 +63272,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         if (nattr + nref > 0) {
             fh << "# attribute and marker names: ";
             bool first = true;
@@ -62842,7 +63333,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         }
         const std::size_t nattr = attr_keys.size();
 
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         if (nattr > 0) {
             fh << "# attribute names: ";
             bool first = true;
@@ -63530,7 +64021,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         std::ofstream fh(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
         triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
     }
@@ -63565,7 +64056,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     std::ofstream fh(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
-    fh << "# " << detail::kProvenanceTag << "\n";
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     const std::size_t npc = tri_type == "triangle6" ? 6 : 3;
     fh << ne << " " << npc << " " << cell_attr_keys.size() << "\n";
     std::int64_t id = 0;
@@ -63606,7 +64097,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
     std::ofstream fh(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-    fh << "# " << detail::kProvenanceTag << "\n";
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
     triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
 
@@ -65205,7 +65696,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--" << detail::kProvenanceTag << "-->\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
     // that is the whole reason this format is worth having for a grid.
     os << "<ImageData WholeExtent=\"" << ext.str() << "\" Origin=\"" << vti_num(spec.mOrigin[0])
@@ -65510,7 +66001,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     }
 
     os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
-    os << detail::kProvenanceTag << "\n";
+    os << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\n";
     os << (binary ? "BINARY\n" : "ASCII\n");
     os << "DATASET UNSTRUCTURED_GRID\n";
 
@@ -66186,7 +66677,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--" << detail::kProvenanceTag << "-->\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<PolyData>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
        << "\" NumberOfLines=\"" << lines.mOffsets.size()
@@ -66621,7 +67112,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--" << detail::kProvenanceTag << "-->\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
        << "\">\n";
@@ -79111,6 +79602,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <string>
 #include <utility>
 #include <variant>
@@ -79372,9 +79864,52 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     return nullptr;
 }
 
+/// Renders one pipeline step as `Op(Key=value, Key=value, ...)` for the
+/// provenance operation chain -- `mParams` is a `std::map`, so key order is
+/// already deterministic without a separate sort here.
+std::string pipe_render_op(const PipelineStep& rStep) {
+    std::ostringstream out;
+    out << rStep.mOp << "(";
+    bool first = true;
+    for (const auto& [key, value] : rStep.mParams) {
+        if (!first)
+            out << ", ";
+        first = false;
+        out << key << "=";
+        std::visit(
+            [&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, bool>) {
+                    out << (v ? "true" : "false");
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    out << v;
+                } else if constexpr (std::is_same_v<T, std::vector<double>> ||
+                                     std::is_same_v<T, std::vector<std::int64_t>> ||
+                                     std::is_same_v<T, std::vector<std::string>>) {
+                    out << "[";
+                    for (std::size_t i = 0; i < v.size(); ++i) {
+                        if (i)
+                            out << ", ";
+                        out << v[i];
+                    }
+                    out << "]";
+                } else {
+                    out << v;
+                }
+            },
+            value);
+    }
+    out << ")";
+    return out.str();
+}
+
 void pipe_push_step(PipelineReport& rReport, const PipelineStep& rStep,
                     std::vector<std::pair<std::string, double>> counters = {}) {
     rReport.mSteps.push_back(PipelineStepReport{rStep.mOp, std::move(counters)});
+    // A no-op when no provenance scope is open (the common case); when one
+    // is, this is what lets a written file's "Operation:" lines match the
+    // pipeline's own report instead of drifting from it.
+    detail::provenance_add_operation(pipe_render_op(rStep));
 }
 
 // --------------------------------------------------------------------------
@@ -80056,9 +80591,22 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         throw ReadError("meshio++: pipeline: no reader for format '" + rfmt + "'" + hint);
     }
 
+    // A no-op unless the caller opened a provenance scope around this call
+    // (see detail/provenance.hpp) -- the pipeline never opens one itself,
+    // consistent with the record being opt-in everywhere.
+    detail::provenance_set_source(rPipeline.mInput.mPath, rfmt);
+
     PipelineReport report;
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
     mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+
+    const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
+    const WriteOptions& wopts = rPipeline.mOutput.mOptions;
+    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
+                                : wopts.mEncoding == WriteEncoding::Binary ? "binary"
+                                                                           : "";
+    const char* codec_name = wopts.mCodecSet ? vtk_codec_name(wopts.mCodec) : "";
+    detail::provenance_set_target(out_fmt, encoding_name, codec_name, wopts.mFloatFormat);
 
     // Write through the parameterized single owner: an Output option the
     // format cannot honour is an error, never silently ignored.

@@ -10,11 +10,11 @@ import sys
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 # Reference dtypes
 ply_to_numpy_dtype = {
@@ -410,7 +410,9 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
         else:
             fh.write(b"format ascii 1.0\n")
 
-        fh.write(f"comment {_PROVENANCE_TAG}\n".encode())
+        fh.write(
+            _provenance.render_lines(_provenance.SlotTier.BLOCK, "comment ").encode()
+        )
 
         # counts
         fh.write(f"element vertex {mesh.points.shape[0]:d}\n".encode())
@@ -471,6 +473,11 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
 
             if has_cast:
                 warn("PLY doesn't support 64-bit integers. Casting down to 32-bit.")
+                _provenance.note(
+                    "dtype",
+                    "connectivity cast from int64 to int32 -- PLY has no 64-bit "
+                    "integer type",
+                )
 
             # assert that all cell dtypes are equal
             cell_dtype = None

@@ -600,7 +600,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
-    os << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "");
     os << "*NODE\n";
     {
         // Format node rows in parallel (snprintf per row, bytes unchanged),

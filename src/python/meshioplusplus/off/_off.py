@@ -6,11 +6,11 @@ I/O for the OFF surface format, cf.
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def read(filename):
@@ -79,6 +79,9 @@ def write(filename, mesh):
             "OFF requires 3D points, but 2D points given. "
             "Appending 0 as third component."
         )
+        _provenance.note(
+            "point-padding", "2D points padded with a zero third component"
+        )
         points = np.column_stack([mesh.points, np.zeros_like(mesh.points[:, 0])])
     else:
         points = mesh.points
@@ -88,12 +91,17 @@ def write(filename, mesh):
     if skip:
         string = ", ".join(item.type for item in skip)
         warn(f"OFF only supports triangle/quad/polygon cells. Skipping {string}.")
+        _provenance.note(
+            "cells-dropped", f"cell block(s) of type {string} have no OFF equivalent"
+        )
 
     num_faces = sum(len(c.data) for c in face_blocks)
 
     with open(filename, "wb") as fh:
         fh.write(b"OFF\n")
-        fh.write(f"# {_PROVENANCE_TAG}\n\n".encode())
+        fh.write(
+            (_provenance.render_lines(_provenance.SlotTier.BLOCK, "# ") + "\n").encode()
+        )
 
         # counts
         c = f"{mesh.points.shape[0]} {num_faces} {0}\n\n"

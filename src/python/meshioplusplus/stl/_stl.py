@@ -10,11 +10,11 @@ from typing import Union
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
-from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def read(filename):
@@ -262,7 +262,9 @@ def _write_ascii(filename, pts, normals):
 def _write_binary(filename, pts, normals):
     with open_file(filename, "wb") as fh:
         # 80-byte header data, NUL-padded to match the C++ writer exactly.
-        header = _PROVENANCE_TAG.encode().ljust(80, b"\0")
+        header = (
+            _provenance.lines(_provenance.SlotTier.BOUNDED)[0].encode().ljust(80, b"\0")
+        )
         fh.write(header)
 
         fh.write(np.array(len(pts)).astype("<u4"))

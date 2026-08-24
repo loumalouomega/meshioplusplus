@@ -185,7 +185,7 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 
     const bool has_geom = rMesh.HasCellData("mphtxt:geom");
 
-    f << "# " << detail::kProvenanceTag << "\n\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     f << "0 1\n";
     f << "1 # number of tags\n5 mesh1\n";
     f << "1 # number of types\n3 obj\n\n";

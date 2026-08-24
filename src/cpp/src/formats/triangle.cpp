@@ -357,7 +357,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         std::ofstream fh(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
-        fh << "# " << detail::kProvenanceTag << "\n";
+        fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
         triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
     }
@@ -392,7 +392,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     std::ofstream fh(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
-    fh << "# " << detail::kProvenanceTag << "\n";
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     const std::size_t npc = tri_type == "triangle6" ? 6 : 3;
     fh << ne << " " << npc << " " << cell_attr_keys.size() << "\n";
     std::int64_t id = 0;
@@ -433,7 +433,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
     std::ofstream fh(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-    fh << "# " << detail::kProvenanceTag << "\n";
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
     triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
 

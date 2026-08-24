@@ -441,7 +441,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
-    os << "comment " << detail::kProvenanceTag << "\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "comment ");
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
