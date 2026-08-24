@@ -11,7 +11,9 @@ try:
 except ImportError:  # pragma: no cover - a pure-Python build
     _core = None
 
-needs_core = pytest.mark.skipif(_core is None, reason="remesh has no pure-Python fallback")
+needs_core = pytest.mark.skipif(
+    _core is None, reason="remesh has no pure-Python fallback"
+)
 
 
 def _icosahedron():
@@ -188,7 +190,9 @@ def test_preserves_boundary_of_an_open_patch():
     patch = _open_square_patch()
     out, report = remesh(patch, 80, subdivide=0, return_report=True)
 
-    assert len(out.cells) == 2, "an open input should leave a second, boundary line block"
+    assert (
+        len(out.cells) == 2
+    ), "an open input should leave a second, boundary line block"
     assert out.cells[0].type == "triangle"
     assert out.cells[1].type == "line"
     assert out.cells[1].data.shape[0] > 0
@@ -223,7 +227,12 @@ def _cylinder_mesh(n_circ=24, n_axial=48, radius=1.0, height=8.0):
     faces = []
     for jj in range(n_axial):
         for i in range(n_circ):
-            v0, v1, v2, v3 = vid(i, jj), vid(i + 1, jj), vid(i + 1, jj + 1), vid(i, jj + 1)
+            v0, v1, v2, v3 = (
+                vid(i, jj),
+                vid(i + 1, jj),
+                vid(i + 1, jj + 1),
+                vid(i, jj + 1),
+            )
             faces.append([v0, v1, v2])
             faces.append([v0, v2, v3])
     return meshioplusplus.Mesh(pts, [("triangle", np.array(faces, dtype=np.int64))])
@@ -254,7 +263,12 @@ def test_anisotropic_metric_elongates_along_the_low_curvature_axis():
     iso_ratio = _axial_over_circumferential_ratio(iso, radius)
 
     aniso = remesh(
-        cyl, 200, subdivide=0, preserve_boundary=False, metric="anisotropic", max_anisotropy=8.0
+        cyl,
+        200,
+        subdivide=0,
+        preserve_boundary=False,
+        metric="anisotropic",
+        max_anisotropy=8.0,
     )
     aniso_ratio = _axial_over_circumferential_ratio(aniso, radius)
 
@@ -267,12 +281,19 @@ def test_anisotropic_metric_keeps_clusters_on_a_curved_surface():
     bump = _gaussian_bump(30, 1.0, amplitude, sigma)
 
     out = remesh(
-        bump, 150, subdivide=0, metric="anisotropic", max_anisotropy=6.0, preserve_boundary=True
+        bump,
+        150,
+        subdivide=0,
+        metric="anisotropic",
+        max_anisotropy=6.0,
+        preserve_boundary=True,
     )
     x, y, z = out.points[:, 0], out.points[:, 1], out.points[:, 2]
     target = amplitude * np.exp(-(x * x + y * y) / (sigma * sigma))
     dev = float(np.max(np.abs(z - target)))
-    assert dev < amplitude * 0.5, f"max vertical deviation from the true bump surface: {dev}"
+    assert (
+        dev < amplitude * 0.5
+    ), f"max vertical deviation from the true bump surface: {dev}"
 
 
 @needs_core

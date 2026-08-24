@@ -364,7 +364,8 @@ except ImportError:  # pragma: no cover - a pure-Python build
     _core = None
 
 needs_core_odt = pytest.mark.skipif(
-    _core is None, reason="method='odt' is C++-core only and has no pure-Python fallback"
+    _core is None,
+    reason="method='odt' is C++-core only and has no pure-Python fallback",
 )
 
 
@@ -408,7 +409,6 @@ def test_odt_improves_dihedral_angles_more_than_taubin():
 
     rng = np.random.default_rng(11)
     base = _tet_block(4)
-    interior = np.arange(base.points.shape[0])
     lo, hi = base.points.min(axis=0), base.points.max(axis=0)
     is_interior = np.all((base.points > lo + 0.1) & (base.points < hi - 0.1), axis=1)
 

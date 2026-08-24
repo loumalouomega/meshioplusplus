@@ -3,8 +3,12 @@ from .._remesh_volume import remesh_volume
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="volume mesh or closed surface file to be read from")
-    parser.add_argument("outfile", type=str, help="retetrahedralized mesh to be written to")
+    parser.add_argument(
+        "infile", type=str, help="volume mesh or closed surface file to be read from"
+    )
+    parser.add_argument(
+        "outfile", type=str, help="retetrahedralized mesh to be written to"
+    )
     parser.add_argument(
         "--input-format",
         "-i",
@@ -102,7 +106,9 @@ def remesh_volume_cmd(args):
     if args.bounds is not None:
         bounds = [float(x) for x in args.bounds.split(",")]
         if len(bounds) != 6:
-            raise ValueError("remesh-volume: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+            raise ValueError(
+                "remesh-volume: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'"
+            )
 
     out, report = remesh_volume(
         mesh,
