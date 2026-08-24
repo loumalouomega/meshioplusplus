@@ -61,8 +61,6 @@ from ._data_manage import data_drop, data_keep, data_manage, data_rename
 from ._dataset import DatasetEntry, DatasetManifest
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
-from ._remesh import remesh
-from ._remesh_volume import remesh_volume
 from ._diff import diff, meshes_equal
 from ._error import estimate_error
 from ._exceptions import ReadError, WriteError
@@ -113,11 +111,14 @@ from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
+from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._pipeline import run_pipeline
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._regions import Region
+from ._remesh import remesh
+from ._remesh_volume import remesh_volume
 from ._reorder import compute_bandwidth, reorder
 from ._sdf import (
     compute_sdf,
@@ -230,6 +231,7 @@ __all__ = [
     "decimate_volume",
     "remesh",
     "remesh_volume",
+    "optimize_volume",
     "grid",
     "voxelize",
     "sample_distance",

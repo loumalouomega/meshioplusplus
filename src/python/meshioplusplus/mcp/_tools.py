@@ -65,6 +65,7 @@ from .. import (
     interpolate,
     isosurface,
     merge,
+    optimize_volume,
     partition,
     point_data_to_cell_data,
     read,
@@ -1279,6 +1280,35 @@ def tool_remesh_volume(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_optimize_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    max_iterations=10,
+    relocate=True,
+    flip=True,
+    preserve_boundary=True,
+    min_improvement=1e-6,
+):
+    """ODT-remesh a tetrahedral mesh: raise its worst element quality by
+    relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+    Tet-only and C++-core-only (no pure-Python fallback). The point set is
+    invariant, so point data and named Point regions carry; cell data and
+    Cell/Side regions are dropped (a flip has no cell correspondence)."""
+    mesh = _load(input_path, input_format)
+    out, report = optimize_volume(
+        mesh,
+        max_iterations=max_iterations,
+        relocate=relocate,
+        flip=flip,
+        preserve_boundary=preserve_boundary,
+        min_improvement=min_improvement,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_smooth(
     input_path,
     output_path,
@@ -1976,6 +2006,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "remesh_volume",
             {"fn": tool_remesh_volume, "wraps": ("remesh_volume",), "gated": None},
+        ),
+        (
+            "optimize_volume",
+            {"fn": tool_optimize_volume, "wraps": ("optimize_volume",), "gated": None},
         ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),

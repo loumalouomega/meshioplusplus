@@ -30,6 +30,7 @@ from . import (
     _regions,
     _remesh,
     _remesh_volume,
+    _optimize_volume,
     _reorder,
     _sdf,
     _slice,
@@ -257,6 +258,13 @@ def main(argv=None):
     )
     _remesh_volume.add_args(parser)
     parser.set_defaults(func=_remesh_volume.remesh_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "optimize-volume",
+        help="ODT-remesh a tetrahedral mesh (relocate vertices + flip connectivity)",
+    )
+    _optimize_volume.add_args(parser)
+    parser.set_defaults(func=_optimize_volume.optimize_volume_cmd)
 
     parser = subparsers.add_parser(
         "partition",

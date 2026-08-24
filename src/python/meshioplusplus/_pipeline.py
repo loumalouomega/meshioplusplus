@@ -41,6 +41,7 @@ from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
 from ._hessian import hessian
 from ._isosurface import isosurface
+from ._optimize_volume import optimize_volume
 from ._partition import partition_labels
 from ._quality import attach_quality
 from ._refine import refine
@@ -132,6 +133,13 @@ _OP_TABLE = {
         "WarpFraction",
         "Sign",
         "WatertightCheck",
+    ),
+    "OptimizeVolume": (
+        "MaxIterations",
+        "Relocate",
+        "Flip",
+        "PreserveBoundary",
+        "MinImprovement",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -565,7 +573,10 @@ def _apply_step(mesh, step, steps, warnings):
         entry["SubdivideApplied"] = float(report["subdivide_applied"])
         entry["NumIsolatedClusters"] = float(report["num_isolated_clusters"])
         entry["NumNonManifoldVertices"] = float(report["num_non_manifold_vertices"])
-        if report["num_isolated_clusters"] > 0 or report["num_non_manifold_vertices"] > 0:
+        if (
+            report["num_isolated_clusters"] > 0
+            or report["num_non_manifold_vertices"] > 0
+        ):
             warnings.append(
                 f"remesh: {report['num_isolated_clusters']} isolated cluster(s), "
                 f"{report['num_non_manifold_vertices']} non-manifold vertex/vertices could "
@@ -599,6 +610,26 @@ def _apply_step(mesh, step, steps, warnings):
                 f"remesh_volume: {report['num_non_manifold_edges']} non-manifold boundary "
                 "edge(s), from warping (see doc/remesh_volume.md)"
             )
+    elif op == "OptimizeVolume":
+        # ODT remeshing: relocate vertices AND flip connectivity (2-3/3-2). The
+        # point set is invariant, so point_data/field_data and Point regions
+        # carry; cell_data + Cell/Side regions are dropped.
+        mesh, report = optimize_volume(
+            mesh,
+            max_iterations=int(_number(step, "MaxIterations", 10.0)),
+            relocate=_flag(step, "Relocate", True),
+            flip=_flag(step, "Flip", True),
+            preserve_boundary=_flag(step, "PreserveBoundary", True),
+            min_improvement=_number(step, "MinImprovement", 1e-6),
+            return_report=True,
+        )
+        entry["NumFlips"] = float(report["num_flips"])
+        entry["Num23Flips"] = float(report["num_23_flips"])
+        entry["Num32Flips"] = float(report["num_32_flips"])
+        entry["NumVerticesMoved"] = float(report["num_vertices_moved"])
+        entry["NumTets"] = float(report["num_tets"])
+        entry["MinQualityBefore"] = float(report["min_quality_before"])
+        entry["MinQualityAfter"] = float(report["min_quality_after"])
     elif op == "Voxelize":
         resolution = _dvec(step, "Resolution")
         bounds = _dvec(step, "Bounds")

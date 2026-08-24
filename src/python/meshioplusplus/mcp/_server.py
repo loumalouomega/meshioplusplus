@@ -1090,6 +1090,39 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def optimize_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        max_iterations: int = 10,
+        relocate: bool = True,
+        flip: bool = True,
+        preserve_boundary: bool = True,
+        min_improvement: float = 1e-6,
+    ) -> dict:
+        """ODT-remesh a tetrahedral mesh: raise its worst element quality by
+        relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+        The genuine "ODT remeshing" sibling of remesh_volume (which generates a
+        fresh lattice mesh) and of smooth method="odt" (which only moves points
+        on fixed connectivity). Tet-only and C++-core-only. The point set is
+        invariant, so point_data and named Point regions carry; cell_data and
+        Cell/Side regions are dropped. With preserve_boundary the boundary
+        surface is exactly preserved."""
+        return _guard(
+            _tools.tool_optimize_volume,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            max_iterations=max_iterations,
+            relocate=relocate,
+            flip=flip,
+            preserve_boundary=preserve_boundary,
+            min_improvement=min_improvement,
+        )
+
+    @server.tool()
     def smooth(
         input_path: str,
         output_path: str,

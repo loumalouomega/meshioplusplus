@@ -67,6 +67,7 @@
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 
 namespace meshioplusplus {
 
@@ -253,6 +254,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"RemeshVolume",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
           "WarpFraction", "Sign", "WatertightCheck"}},
+        {"OptimizeVolume",
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -717,6 +720,28 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 "remesh_volume: " + std::to_string(rv.mNumNonManifoldEdges) +
                 " non-manifold boundary edge(s), from warping (see doc/remesh_volume.md)");
         return std::move(rv.mMesh);
+    }
+    if (op == "OptimizeVolume") {
+        // ODT remeshing: relocate vertices AND flip connectivity (2-3/3-2). The
+        // point set is invariant, so point_data/field_data and Point regions
+        // carry; cell_data + Cell/Side regions are dropped (a flip has no cell
+        // map).
+        OptimizeVolumeOptions opts;
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mRelocate = pipe_flag(rStep, "Relocate", true);
+        opts.mFlip = pipe_flag(rStep, "Flip", true);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        OptimizeVolumeResult ov = optimize_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlips", static_cast<double>(ov.mNumFlips)},
+                        {"Num23Flips", static_cast<double>(ov.mNum23Flips)},
+                        {"Num32Flips", static_cast<double>(ov.mNum32Flips)},
+                        {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
+                        {"NumTets", static_cast<double>(ov.mNumTets)},
+                        {"MinQualityBefore", ov.mMinQualityBefore},
+                        {"MinQualityAfter", ov.mMinQualityAfter}});
+        return std::move(ov.mMesh);
     }
     if (op == "Voxelize") {
         // A regular grid around the mesh. Unlike every other step this one does

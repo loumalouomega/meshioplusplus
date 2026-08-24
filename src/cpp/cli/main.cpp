@@ -74,6 +74,7 @@
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -466,6 +467,8 @@ void print_usage(std::ostream& os) {
           "                            isosurface stuffing; --cell-size or --resolution\n"
           "                            is required, --warp-fraction trades boundary\n"
           "                            quality for a small chance of non-manifold edges\n"
+          "  optimize-volume         ODT-remesh a tetrahedral mesh: relocate vertices and\n"
+          "                            flip connectivity (2-3/3-2) to raise element quality\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}; --labels-only writes one\n"
           "                            file with the partition:part cell_data instead\n"
@@ -1943,6 +1946,46 @@ int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"max-iterations", {}, true},
+                                  {"no-relocate", {}, false},
+                                  {"no-flip", {}, false},
+                                  {"no-preserve-boundary", {}, false},
+                                  {"min-improvement", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("optimize-volume requires exactly INFILE and OUTFILE");
+
+    meshioplusplus::OptimizeVolumeOptions options;
+    if (p.values.count("max-iterations"))
+        options.mMaxIterations = static_cast<int>(std::stoll(opt_value(p, "max-iterations")));
+    options.mRelocate = !has_flag(p, "no-relocate");
+    options.mFlip = !has_flag(p, "no-flip");
+    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    // A negative value is rejected/ignored by the operation; --min-improvement=
+    // form is needed for a caller to pass one.
+    options.mMinImprovement = std::stod(opt_value(p, "min-improvement", "0.000001"));
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "ODT-remeshed\n";
+        std::cout << "  flips (2-3 / 3-2):        " << r.mNumFlips << " (" << r.mNum23Flips << " / "
+                  << r.mNum32Flips << ")\n";
+        std::cout << "  vertices moved:           " << r.mNumVerticesMoved << "\n";
+        std::cout << "  tets:                     " << r.mNumTets << "\n";
+        std::cout << "  min quality before/after: " << r.mMinQualityBefore << " / "
+                  << r.mMinQualityAfter << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_smooth(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -3257,6 +3300,8 @@ int main(int argc, char** argv) {
             return cmd_remesh(rest);
         if (cmd == "remesh-volume")
             return cmd_remesh_volume(rest);
+        if (cmd == "optimize-volume")
+            return cmd_optimize_volume(rest);
         if (cmd == "smooth")
             return cmd_smooth(rest);
         if (cmd == "interpolate")

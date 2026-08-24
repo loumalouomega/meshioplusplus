@@ -1498,6 +1498,35 @@ export interface MeshioPlusPlusModule {
     numNonManifoldEdges: number;
   };
 
+  /**
+   * ODT-remesh a tetrahedral mesh: raise its worst element quality by
+   * relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+   * The genuine "ODT remeshing" sibling of `remeshVolume` (which generates a
+   * fresh lattice mesh) and of `smooth` method `"odt"` (which only moves
+   * points on fixed connectivity). Tet-only. The point set is invariant, so
+   * point_data/field_data and Point regions carry; cell_data + Cell/Side
+   * regions are dropped. With `preserveBoundary` the boundary surface is
+   * exactly preserved. See doc/optimize_volume.md.
+   * @throws {Error} when the mesh contains a non-`tetra` block or no tetra.
+   */
+  optimizeVolume(
+    mesh: Mesh,
+    maxIterations?: number,
+    relocate?: boolean,
+    flip?: boolean,
+    preserveBoundary?: boolean,
+    minImprovement?: number,
+  ): {
+    mesh: Mesh;
+    numFlips: number;
+    num23Flips: number;
+    num32Flips: number;
+    numVerticesMoved: number;
+    numTets: number;
+    minQualityBefore: number;
+    minQualityAfter: number;
+  };
+
   /** Partition a mesh into submeshes by type, connected component, or tag. */
   split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
 
