@@ -8,6 +8,61 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.16.0 (2026-08-24)
+
+Closes roadmap section 1 in full except surfacing provenance on read
+(bullet 8, left open) -- the opt-in richer provenance record `doc/roadmap.md`
+called for after v10.15.0's audit-and-normalize pass. See
+`doc/provenance.md` for the full design note.
+
+- **Opt-in provenance record** (`detail/provenance.hpp` + `_provenance.py`)
+  -- a caller can now wrap a write in a scope
+  (`meshioplusplus::detail::ProvenanceScope` in C++,
+  `meshioplusplus._provenance.scope` in Python) to have a writer with a
+  free-text header slot render, alongside the unconditional one-line credit,
+  the source path/format, the target format/encoding/codec/float-format
+  actually used, the operation chain, the conversion assumptions accepted
+  along the way, and an ISO-8601 timestamp (`SOURCE_DATE_EPOCH`-aware, with
+  an explicit off switch). With no scope open, output is byte-for-byte what
+  v10.15.0 wrote -- the record is opt-in everywhere, so no existing
+  byte-pinned test needed an exemption.
+- **Thread-local scope, not a `WriteOptions` field** -- reconnaissance found
+  that only 4 of the write paths reach `registry_write_ex`
+  (`WriteOptions`'s home); Python's own path and WASM's both bypass it
+  entirely, and growing `WriteOptions` is a Tier A ABI change. The record
+  lives in a thread-local RAII-scoped context instead (the
+  `set_buffer_allocator` shape), read by every writer exactly where it
+  already read the v10.15.0 tag, so no writer signature changed.
+- **The Python<->C++ bridge** -- opening a scope from Python also opens a
+  matching one on the C++ side (`bindings/python/_core.cpp`'s
+  `provenance_scope_push`/`_pop`), and every note/set call mirrors into
+  both, so a scope opened from Python is honoured by the ~40 of 44 formats
+  whose write goes through the compiled writer, not just the pure-Python
+  fallbacks.
+- **`SlotTier`** (`None`/`Bounded`/`SingleLine`/`Block`) classifies what
+  each writer's own header slot can hold; `Mode::Required` raises only for
+  `SlotTier::None` (no slot at all) -- degrading to a smaller slot's honest
+  maximum is not treated as a failure.
+- **Deliberately no engine marker in the file** -- the roadmap asked for one,
+  but it directly contradicts the harder guarantee that the C++ core and its
+  Python fallback emit character-identical bytes. Which engine wrote a file
+  is reported through `current_provenance()`/`scope.get()` instead.
+- **Operation-chain sourcing** -- the settings pipeline (both the C++ engine
+  and Python's separate pure-Python engine) records each step it runs,
+  pinned to render identically across the two for the common parameter
+  shapes.
+- **Conversion-assumption capture wired at two reference sites** --
+  `detail::warn_regions_dropped` (the 9-operation choke point) and the OFF
+  writer's cell-type-skip warning, in both engines with matching wording.
+  Extending coverage to the remaining ~60-80 sites is recorded as
+  mechanical follow-up work, not attempted exhaustively here.
+- **C ABI**: `mio_provenance_scope_begin`/`_end`, `mio_provenance_note`,
+  `mio_provenance_set_source`, `mio_provenance_set_target`. Fortran/Julia/R/
+  WASM bindings are a recorded follow-up.
+- Tier C additive ABI change (new enums/structs/class/functions in
+  `detail/provenance.hpp`; `kProvenanceTag` itself is byte-identical to
+  v10.15.0) -- `MESHIOPLUSPLUS_ABI_VERSION` stays 10.
+
 ## v10.15.0 (2026-08-24)
 
 **Breaking:** normalized the one-line provenance credit every writer with a
