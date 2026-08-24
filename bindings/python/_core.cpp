@@ -14,12 +14,17 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
+// System includes
+#include <memory>
+#include <vector>
+
 // External includes
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -120,6 +125,27 @@
 #include "np_conversions.hpp"
 
 namespace py = pybind11;
+
+namespace meshioplusplus_py {
+
+/**
+ * @brief The thread-local stack of open provenance scopes bridged in from
+ * Python (see `_provenance.scope` and the `provenance_scope_push`/`_pop`
+ * bindings at the bottom of this file).
+ *
+ * Owning `unique_ptr`s so a pushed scope stays alive -- and its RAII
+ * destructor therefore does NOT fire -- until the matching pop, at which
+ * point popping the vector destroys it and its destructor restores the
+ * previous C++-side state exactly as a directly-nested `ProvenanceScope`
+ * would.
+ */
+inline std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>>&
+provenance_scope_stack() {
+    thread_local std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>> stack;
+    return stack;
+}
+
+}  // namespace meshioplusplus_py
 
 namespace {
 
@@ -2868,5 +2894,86 @@ finalizes.
           });
     m.def("netgen_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_netgen(path));
+    });
+
+    // Provenance bridge (v10.16.0): keeps Python's `_provenance.scope` and the
+    // C++ writers' `detail::ProvenanceScope` reading from the SAME thread-local
+    // state, so a scope opened from Python is honoured by every `_core.<fmt>_write`
+    // call -- without this, opting in from Python would silently produce Off-mode
+    // output for every C++-backed writer (~40 of the 44 formats), since C++'s own
+    // thread-local state is otherwise never told Python opened anything.
+    //
+    // A thread-local stack of owned scopes on this side mirrors Python's own list-
+    // based stack one-for-one: `push` constructs and keeps one alive, `pop`
+    // destroys the most recently pushed one (LIFO), which is what makes nesting
+    // work identically to a plain `ProvenanceScope` used directly from C++.
+    m.def("provenance_scope_push", [](int mode, py::dict record) {
+        using meshioplusplus::detail::ProvenanceMode;
+        using meshioplusplus::detail::ProvenanceNote;
+        using meshioplusplus::detail::ProvenanceRecord;
+        ProvenanceRecord rec;
+        auto get_str = [&](const char* key) -> std::string {
+            return record.contains(key) ? py::cast<std::string>(record[key]) : std::string();
+        };
+        rec.mSourcePath = get_str("source_path");
+        rec.mSourceFormat = get_str("source_format");
+        rec.mTargetFormat = get_str("target_format");
+        rec.mEncoding = get_str("encoding");
+        rec.mCodec = get_str("codec");
+        rec.mFloatFormat = get_str("float_format");
+        rec.mTimestamp = get_str("timestamp");
+        if (record.contains("operations"))
+            for (auto op : record["operations"])
+                rec.mOperations.push_back(py::cast<std::string>(op));
+        if (record.contains("notes"))
+            for (auto n : record["notes"]) {
+                auto pair = py::cast<py::tuple>(n);
+                rec.mNotes.push_back(
+                    ProvenanceNote{py::cast<std::string>(pair[0]), py::cast<std::string>(pair[1])});
+            }
+        meshioplusplus_py::provenance_scope_stack().push_back(
+            std::make_unique<meshioplusplus::detail::ProvenanceScope>(
+                static_cast<ProvenanceMode>(mode), std::move(rec)));
+    });
+    m.def("provenance_scope_pop", []() {
+        auto& stack = meshioplusplus_py::provenance_scope_stack();
+        if (!stack.empty())
+            stack.pop_back();
+    });
+    m.def("provenance_note", [](const std::string& category, const std::string& detail) {
+        meshioplusplus::detail::provenance_note(category, detail);
+    });
+    m.def("provenance_set_source", [](const std::string& path, const std::string& format) {
+        meshioplusplus::detail::provenance_set_source(path, format);
+    });
+    m.def("provenance_set_target", [](const std::string& format, const std::string& encoding,
+                                      const std::string& codec, const std::string& float_format) {
+        meshioplusplus::detail::provenance_set_target(format, encoding, codec, float_format);
+    });
+    m.def("provenance_add_operation", [](const std::string& rendered) {
+        meshioplusplus::detail::provenance_add_operation(rendered);
+    });
+    m.def("provenance_current_mode",
+          []() { return static_cast<int>(meshioplusplus::detail::current_provenance_mode()); });
+    m.def("provenance_current_record", []() {
+        const auto& rec = meshioplusplus::detail::current_provenance();
+        py::dict out;
+        out["source_path"] = rec.mSourcePath;
+        out["source_format"] = rec.mSourceFormat;
+        out["target_format"] = rec.mTargetFormat;
+        out["encoding"] = rec.mEncoding;
+        out["codec"] = rec.mCodec;
+        out["float_format"] = rec.mFloatFormat;
+        out["timestamp"] = rec.mTimestamp;
+        out["operations"] = rec.mOperations;
+        py::list notes;
+        for (const auto& n : rec.mNotes)
+            notes.append(py::make_tuple(n.mCategory, n.mDetail));
+        out["notes"] = notes;
+        return out;
+    });
+    m.def("provenance_lines", [](int tier) {
+        return meshioplusplus::detail::provenance_lines(
+            static_cast<meshioplusplus::detail::SlotTier>(tier));
     });
 }

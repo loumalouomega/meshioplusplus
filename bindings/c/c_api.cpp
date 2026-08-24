@@ -46,6 +46,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -102,6 +103,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -914,6 +916,55 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
         meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
     });
+}
+
+namespace {
+
+/// The thread-local stack of open provenance scopes -- the exact twin of the
+/// pybind bridge's `provenance_scope_stack()` (bindings/python/_core.cpp),
+/// needed for the identical reason: a C caller's begin/end calls are two
+/// separate ABI crossings, so something has to keep the scope alive between
+/// them rather than relying on C++ RAII across the boundary.
+std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>>& provenance_scope_stack() {
+    thread_local std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>> stack;
+    return stack;
+}
+
+}  // namespace
+
+mio_status mio_provenance_scope_begin(int mode) {
+    return guarded([&]() -> mio_status {
+        if (mode < 0 || mode > 2)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: unknown mio_provenance_mode " + std::to_string(mode));
+        provenance_scope_stack().push_back(
+            std::make_unique<meshioplusplus::detail::ProvenanceScope>(
+                static_cast<meshioplusplus::detail::ProvenanceMode>(mode)));
+        return MIO_OK;
+    });
+}
+
+void mio_provenance_scope_end(void) {
+    auto& stack = provenance_scope_stack();
+    if (!stack.empty())
+        stack.pop_back();
+}
+
+void mio_provenance_note(const char* category, const char* detail) {
+    if (!category || !detail)
+        return;
+    meshioplusplus::detail::provenance_note(category, detail);
+}
+
+void mio_provenance_set_source(const char* path, const char* format) {
+    meshioplusplus::detail::provenance_set_source(path ? path : "", format ? format : "");
+}
+
+void mio_provenance_set_target(const char* format, const char* encoding, const char* codec,
+                               const char* float_format) {
+    meshioplusplus::detail::provenance_set_target(format ? format : "", encoding ? encoding : "",
+                                                  codec ? codec : "",
+                                                  float_format ? float_format : "");
 }
 
 mio_status mio_convert(const char* in_path, const char* in_format, const char* out_path,
