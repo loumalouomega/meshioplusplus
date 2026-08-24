@@ -29,6 +29,7 @@
 // Project includes
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -421,7 +422,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     }
 
     // ASCII
-    f << "* FLAC3D grid produced by meshio++ (C++ core)\n";
+    f << "* " << detail::kProvenanceTag << "\n";
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {

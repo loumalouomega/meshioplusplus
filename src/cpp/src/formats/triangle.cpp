@@ -31,6 +31,7 @@
 // Project includes
 #include "meshioplusplus/formats/triangle.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 
@@ -356,7 +357,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         std::ofstream fh(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
         triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
     }
@@ -391,7 +392,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     std::ofstream fh(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
-    fh << "# This file was created by meshio++ (C++ core)\n";
+    fh << "# " << detail::kProvenanceTag << "\n";
     const std::size_t npc = tri_type == "triangle6" ? 6 : 3;
     fh << ne << " " << npc << " " << cell_attr_keys.size() << "\n";
     std::int64_t id = 0;
@@ -432,7 +433,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
     std::ofstream fh(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-    fh << "# This file was created by meshio++ (C++ core)\n";
+    fh << "# " << detail::kProvenanceTag << "\n";
     fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
     triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
 

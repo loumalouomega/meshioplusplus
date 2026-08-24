@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..__about__ import __version__
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 nastran_to_meshio_type = {
     "CELAS1": "vertex",
@@ -329,7 +329,7 @@ def write(filename, mesh, point_format="fixed-large", cell_format="fixed-small")
         points = mesh.points
 
     with open_file(filename, "w") as f:
-        f.write(f"$ Nastran file written by meshio++ v{__version__}\n")
+        f.write(f"$ {_PROVENANCE_TAG}\n")
         f.write("BEGIN BULK\n")
 
         # Points

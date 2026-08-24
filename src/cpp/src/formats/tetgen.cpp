@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/formats/tetgen.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -246,7 +247,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         if (nattr + nref > 0) {
             fh << "# attribute and marker names: ";
             bool first = true;
@@ -307,7 +308,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         }
         const std::size_t nattr = attr_keys.size();
 
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         if (nattr > 0) {
             fh << "# attribute names: ";
             bool first = true;

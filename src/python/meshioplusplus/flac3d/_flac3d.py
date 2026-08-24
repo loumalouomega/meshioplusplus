@@ -6,15 +6,14 @@ from __future__ import annotations
 
 import re
 import struct
-import time
 
 import numpy as np
 
-from ..__about__ import __version__ as version
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 meshio_only = {
     "zone": {
@@ -434,8 +433,7 @@ def write(filename, mesh: Mesh, float_fmt: str = ".16e", binary: bool = False):
             # Don't know what these values represent
             f.write(struct.pack("<2I", 1375135718, 3))
         else:
-            f.write(f"* FLAC3D grid produced by meshio++ v{version}\n")
-            f.write(f"* {time.ctime()}\n")
+            f.write(f"* {_PROVENANCE_TAG}\n")
 
         _write_points(f, mesh.points, binary, float_fmt)
         # Make gid an array such that its value can be persitently altered

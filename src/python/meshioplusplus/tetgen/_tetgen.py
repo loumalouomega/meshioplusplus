@@ -7,10 +7,10 @@ import pathlib
 
 import numpy as np
 
-from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def read(filename):
@@ -116,7 +116,7 @@ def write(filename, mesh, float_fmt=".16e"):
                 attr_keys = attr_keys[1:]
 
         nattr, nref = len(attr_keys), len(ref_keys)
-        fh.write(f"# This file was created by meshio v{__version__}\n")
+        fh.write(f"# {_PROVENANCE_TAG}\n")
         if (nattr + nref) > 0:
             fh.write(
                 "# attribute and marker names: {}\n".format(
@@ -152,7 +152,7 @@ def write(filename, mesh, float_fmt=".16e"):
                 attr_keys = ref_keys[:1] + attr_keys
 
         nattr = len(attr_keys)
-        fh.write(f"# This file was created by meshio v{__version__}\n")
+        fh.write(f"# {_PROVENANCE_TAG}\n")
         if nattr > 0:
             fh.write("# attribute names: {}\n".format(", ".join(attr_keys)))
         for id, c in enumerate(filter(lambda c: c.type == "tetra", mesh.cells)):

@@ -21,6 +21,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 ensight_to_meshio_type = {
     "point": "vertex",
@@ -417,7 +418,7 @@ def _str80(s):
 
 def _write_geo_ascii(fh, points, cells):
     fh.write(b"EnSight Gold Geometry File\n")
-    fh.write(b"Written by meshio++\n")
+    fh.write(f"{_PROVENANCE_TAG}\n".encode())
     fh.write(b"node id assign\n")
     fh.write(b"element id assign\n")
     fh.write(b"part\n")
@@ -442,7 +443,7 @@ def _write_geo_binary(fh, points, cells):
         raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
     fh.write(_str80("C Binary"))
     fh.write(_str80("EnSight Gold Geometry File"))
-    fh.write(_str80("Written by meshio++"))
+    fh.write(_str80(_PROVENANCE_TAG))
     fh.write(_str80("node id assign"))
     fh.write(_str80("element id assign"))
     fh.write(_str80("part"))

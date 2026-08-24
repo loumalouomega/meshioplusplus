@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -309,9 +310,9 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     if (binary) {
         char header[80];
-        std::memset(header, 'X', 80);
-        const char* msg = "meshio++ (C++ core) binary STL";
-        std::memcpy(header, msg, std::strlen(msg));
+        std::memset(header, '\0', 80);
+        const char* msg = detail::kProvenanceTag;
+        std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
         os.write(reinterpret_cast<const char*>(&n), 4);

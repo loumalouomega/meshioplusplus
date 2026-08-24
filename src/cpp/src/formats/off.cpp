@@ -27,6 +27,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/log.hpp"
@@ -155,7 +156,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
         num_faces += cb.NumCells();
     }
 
-    os << "OFF\n# Created by meshio++ (C++ core)\n\n";
+    os << "OFF\n# " << detail::kProvenanceTag << "\n\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];

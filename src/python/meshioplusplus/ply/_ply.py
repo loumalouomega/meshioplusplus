@@ -5,17 +5,16 @@ I/O for the PLY format, cf.
 """
 
 import collections
-import datetime
 import re
 import sys
 
 import numpy as np
 
-from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 # Reference dtypes
 ply_to_numpy_dtype = {
@@ -411,8 +410,7 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
         else:
             fh.write(b"format ascii 1.0\n")
 
-        now = datetime.datetime.now().isoformat()
-        fh.write(f"comment Created by meshio v{__version__}, {now}\n".encode())
+        fh.write(f"comment {_PROVENANCE_TAG}\n".encode())
 
         # counts
         fh.write(f"element vertex {mesh.points.shape[0]:d}\n".encode())

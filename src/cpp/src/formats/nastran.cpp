@@ -31,6 +31,7 @@
 // Project includes
 #include "meshioplusplus/formats/nastran.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 
@@ -165,6 +166,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     os << "$ " << kSentinel << "\n";
+    os << "$ " << detail::kProvenanceTag << "\n";
     os << "BEGIN BULK\n";
 
     // Points: fixed-large GRID*.

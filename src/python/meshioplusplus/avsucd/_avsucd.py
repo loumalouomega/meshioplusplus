@@ -5,10 +5,10 @@ I/O for AVS-UCD format, cf.
 
 import numpy as np
 
-from ..__about__ import __version__ as version
 from .._common import _pick_first_int_data, warn
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 meshio_to_avsucd_type = {
     "vertex": "pt",
@@ -152,8 +152,7 @@ def write(filename, mesh):
         mesh.points = np.column_stack([mesh.points, np.zeros_like(mesh.points[:, 0])])
 
     with open_file(filename, "w") as f:
-        # Write meshio version
-        f.write(f"# Written by meshio++ v{version}\n")
+        f.write(f"# {_PROVENANCE_TAG}\n")
 
         # Write first line
         num_nodes = len(mesh.points)

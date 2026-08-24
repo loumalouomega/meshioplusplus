@@ -31,6 +31,7 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -440,7 +441,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
-    os << "comment Created by meshio++ (C++ core)\n";
+    os << "comment " << detail::kProvenanceTag << "\n";
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)

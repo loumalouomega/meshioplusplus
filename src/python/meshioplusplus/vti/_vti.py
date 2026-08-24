@@ -27,6 +27,7 @@ import numpy as np
 from .._exceptions import ReadError, WriteError
 from .._grid import _lattice_py, lattice_from_mesh
 from .._mesh import Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 from ..vtu._vtu import (
     _COMPRESSION_TO_ATTR,
     VtuReader,
@@ -216,7 +217,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     if header_type != "UInt32":
         attrs += f' header_type="{header_type}"'
     lines.append(f"<VTKFile {attrs}>")
-    lines.append("<!--This file was created by meshio++-->")
+    lines.append(f"<!--{_PROVENANCE_TAG}-->")
 
     # %.17g, matching the C++ writer exactly: the stream default of six
     # significant digits would lose ~10 digits of a real origin, placing the grid

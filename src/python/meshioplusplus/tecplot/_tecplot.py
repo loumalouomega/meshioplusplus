@@ -6,11 +6,11 @@ I/O for Tecplot ASCII data format, cf.
 
 import numpy as np
 
-from ..__about__ import __version__ as version
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 zone_key_to_type = {
     "T": str,
@@ -465,7 +465,7 @@ def write(filename, mesh):
 
     with open_file(filename, "w") as f:
         # Title
-        f.write(f'TITLE = "Written by meshio++ v{version}"\n')
+        f.write(f'TITLE = "{_PROVENANCE_TAG}"\n')
 
         # Variables
         variables_str = ", ".join(f'"{var}"' for var in variables)

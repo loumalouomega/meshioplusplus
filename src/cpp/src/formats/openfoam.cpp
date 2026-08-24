@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -910,11 +911,18 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    // The credit cell is fixed-width (48 chars before the closing box edge) so
+    // the banner stays aligned regardless of how long the release string is.
+    std::string credit = detail::kProvenanceTag;
+    if (credit.size() < 48)
+        credit.append(48 - credit.size(), ' ');
     rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
            "| =========                 |                                                 |\n"
            "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
            "|  \\\\    /   O peration     |                                                 |\n"
-           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|   \\\\  /    A nd           | "
+        << credit
+        << "|\n"
            "|    \\\\/     M anipulation  |                                                 |\n"
            "\\*---------------------------------------------------------------------------*/\n"
            "FoamFile\n"

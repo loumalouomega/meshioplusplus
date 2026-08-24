@@ -8,11 +8,11 @@ import re
 
 import numpy as np
 
-from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def _skip_to(f, char):
@@ -390,7 +390,7 @@ def read(filename):  # noqa: C901
 def write(filename, mesh, binary=True):
     with open_file(filename, "wb") as fh:
         # header
-        fh.write(f'(1 "meshio++ {__version__}")\n'.encode())
+        fh.write(f'(1 "{_PROVENANCE_TAG}")\n'.encode())
 
         # dimension
         num_points, dim = mesh.points.shape

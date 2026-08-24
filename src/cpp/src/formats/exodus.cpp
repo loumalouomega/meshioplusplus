@@ -37,6 +37,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -913,7 +914,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 
     // global attributes
     {
-        std::string title = "Created by meshio++ (C++ core)";
+        std::string title = detail::kProvenanceTag;
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);
         float v = 5.1f;

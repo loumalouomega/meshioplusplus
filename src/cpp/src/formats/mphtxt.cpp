@@ -27,6 +27,7 @@
 // Project includes
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -184,7 +185,7 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 
     const bool has_geom = rMesh.HasCellData("mphtxt:geom");
 
-    f << "# Created by meshio++ (C++ core)\n\n";
+    f << "# " << detail::kProvenanceTag << "\n\n";
     f << "0 1\n";
     f << "1 # number of tags\n5 mesh1\n";
     f << "1 # number of types\n3 obj\n\n";

@@ -2,11 +2,11 @@ from functools import reduce
 
 import numpy as np
 
-from ..__about__ import __version__
 from .._common import info, join_strings, replace_space, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 from .._vtk_common import (
     Info,
     meshio_to_vtk_order,
@@ -531,7 +531,7 @@ def write(filename, mesh, binary=True):
 
     with open_file(filename, "wb") as f:
         f.write(b"# vtk DataFile Version 5.1\n")
-        f.write(f"written by meshio v{__version__}\n".encode())
+        f.write(f"{_PROVENANCE_TAG}\n".encode())
         f.write(("BINARY\n" if binary else "ASCII\n").encode())
         f.write(b"DATASET UNSTRUCTURED_GRID\n")
 

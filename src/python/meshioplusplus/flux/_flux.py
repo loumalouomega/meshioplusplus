@@ -18,6 +18,7 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 __all__ = ["read", "write"]
 
@@ -144,7 +145,7 @@ def write(filename, mesh):
     ref_data = mesh.cell_data.get("pf3:ref")
 
     with open_file(filename, "w") as f:
-        f.write(" File converted with meshio++\n")
+        f.write(f" {_PROVENANCE_TAG}\n")
         f.write(f"{dim:8d}           NOMBRE DE DIMENSIONS DU DECOUPAGE\n")
         f.write(f"{nel:8d}           NOMBRE  D'ELEMENTS\n")
         f.write(f"{counts['vol']:8d}           NOMBRE  D'ELEMENTS VOLUMIQUES\n")

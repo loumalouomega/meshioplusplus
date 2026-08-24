@@ -9004,6 +9004,115 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/version.hpp =====
+/**
+ * @file version.hpp
+ * @brief The **release** version, as compile-time macros, so a consumer can
+ * feature-detect with the preprocessor.
+ *
+ * ### Which version am I looking at?
+ *
+ * meshio++ answers three different questions with three different mechanisms,
+ * and they are not interchangeable:
+ *
+ *  | question | mechanism |
+ *  |----------|-----------|
+ *  | what did I **compile against**? | the macros here (and `MIO_VERSION_*` in the C header) |
+ *  | what am I **running against**?  | `mio_version()`, a runtime call into the linked library |
+ *  | are my headers **binary-compatible** with that library? | `MESHIOPLUSPLUS_ABI_VERSION` plus
+ * the link-time sentinel in `detail/abi_version_check.hpp` |
+ *
+ * With a shared library the first two genuinely can differ, which is the whole
+ * reason both exist. Use these macros to decide what to *compile*, and
+ * `mio_version()` to report what a user is actually running.
+ *
+ * ### Feature detection
+ *
+ * @code
+ * #include <meshioplusplus/version.hpp>
+ *
+ * #if MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0)
+ *     options.mCells = {12, 13};      // selective refinement, new in 9.5.0
+ * #endif
+ * @endcode
+ *
+ * The encoded `MESHIOPLUSPLUS_VERSION` integer is `major * 10000 + minor * 100 +
+ * patch`, so it orders exactly like the release does and can be compared
+ * directly when the macro is not expressive enough.
+ *
+ * ### Why hand-written rather than generated
+ *
+ * The same reason `abi_version.hpp` is: a consumer that never runs CMake -- the
+ * [single-header amalgamation](/single_header), pkg-config, a hand-written
+ * makefile -- must still be able to read it, and a `configure_file`d header
+ * living in the build tree would reach none of them. `CMakeLists.txt` therefore
+ * *parses* this file and hard-fails at configure time if it disagrees with
+ * `project(... VERSION ...)`, so the duplication cannot silently drift; the C
+ * header's `MIO_VERSION_*` twins are pinned by a `static_assert` in
+ * `bindings/c/c_api.cpp`.
+ *
+ * @note Bumping the release means editing this file too -- see the "Version
+ * bumps" section of `CLAUDE.md`. Forgetting is a configure-time error, not a
+ * wrong answer.
+ */
+
+/// Major component of the release version.
+#define MESHIOPLUSPLUS_VERSION_MAJOR 10
+/// Minor component of the release version.
+#define MESHIOPLUSPLUS_VERSION_MINOR 15
+/// Patch component of the release version.
+#define MESHIOPLUSPLUS_VERSION_PATCH 0
+
+/// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
+#define MESHIOPLUSPLUS_VERSION                                                   \
+    (MESHIOPLUSPLUS_VERSION_MAJOR * 10000 + MESHIOPLUSPLUS_VERSION_MINOR * 100 + \
+     MESHIOPLUSPLUS_VERSION_PATCH)
+
+/// The release version as a string literal, e.g. `"9.6.0"`.
+#define MESHIOPLUSPLUS_VERSION_STRING "10.15.0"
+
+/// Whether the headers being compiled against are at least `major.minor.patch`.
+#define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
+    (MESHIOPLUSPLUS_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
+
+/// Whether the headers being compiled against are older than `major.minor.patch`.
+#define MESHIOPLUSPLUS_VERSION_BEFORE(major, minor, patch) \
+    (!MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch))
+// ===== end src/cpp/include/meshioplusplus/version.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/provenance.hpp =====
+/**
+ * @file detail/provenance.hpp
+ * @brief The single owner of the one-line provenance credit every format
+ * writer emits.
+ *
+ * Before this header existed, ~25 writers spelled their own version of this
+ * line inline, and the two engines drifted three ways at once: the C++ side
+ * said `(C++ core)` and carried no version, the Python side said `v{version}`
+ * and carried no engine marker, and several Python writers still said
+ * `meshio` (a stale-fork artifact) rather than `meshio++`. The Python twin
+ * lives at `meshioplusplus/_provenance.py`; the two must keep emitting
+ * character-identical text (`tests/python/test_provenance.py` pins this),
+ * which is only possible if both sides read the tag from one place rather
+ * than composing it locally.
+ *
+ * This is deliberately the *whole* feature for now — see `doc/roadmap.md`
+ * §1's "audit and normalize" bullet. It carries the writer version and
+ * nothing else: no source format, no operation chain, no timestamp. Those
+ * are separate, larger design questions the roadmap defers on purpose.
+ */
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The canonical one-line provenance tag every writer emits, wrapped in each
+/// format's own comment syntax at each writer's existing header position.
+inline constexpr const char* kProvenanceTag = "Written by meshio++ v" MESHIOPLUSPLUS_VERSION_STRING;
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/provenance.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/refine_hierarchy.hpp =====
 /**
  * @file detail/refine_hierarchy.hpp
@@ -22400,81 +22509,6 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/skin.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/version.hpp =====
-/**
- * @file version.hpp
- * @brief The **release** version, as compile-time macros, so a consumer can
- * feature-detect with the preprocessor.
- *
- * ### Which version am I looking at?
- *
- * meshio++ answers three different questions with three different mechanisms,
- * and they are not interchangeable:
- *
- *  | question | mechanism |
- *  |----------|-----------|
- *  | what did I **compile against**? | the macros here (and `MIO_VERSION_*` in the C header) |
- *  | what am I **running against**?  | `mio_version()`, a runtime call into the linked library |
- *  | are my headers **binary-compatible** with that library? | `MESHIOPLUSPLUS_ABI_VERSION` plus
- * the link-time sentinel in `detail/abi_version_check.hpp` |
- *
- * With a shared library the first two genuinely can differ, which is the whole
- * reason both exist. Use these macros to decide what to *compile*, and
- * `mio_version()` to report what a user is actually running.
- *
- * ### Feature detection
- *
- * @code
- * #include <meshioplusplus/version.hpp>
- *
- * #if MESHIOPLUSPLUS_VERSION_AT_LEAST(9, 5, 0)
- *     options.mCells = {12, 13};      // selective refinement, new in 9.5.0
- * #endif
- * @endcode
- *
- * The encoded `MESHIOPLUSPLUS_VERSION` integer is `major * 10000 + minor * 100 +
- * patch`, so it orders exactly like the release does and can be compared
- * directly when the macro is not expressive enough.
- *
- * ### Why hand-written rather than generated
- *
- * The same reason `abi_version.hpp` is: a consumer that never runs CMake -- the
- * [single-header amalgamation](/single_header), pkg-config, a hand-written
- * makefile -- must still be able to read it, and a `configure_file`d header
- * living in the build tree would reach none of them. `CMakeLists.txt` therefore
- * *parses* this file and hard-fails at configure time if it disagrees with
- * `project(... VERSION ...)`, so the duplication cannot silently drift; the C
- * header's `MIO_VERSION_*` twins are pinned by a `static_assert` in
- * `bindings/c/c_api.cpp`.
- *
- * @note Bumping the release means editing this file too -- see the "Version
- * bumps" section of `CLAUDE.md`. Forgetting is a configure-time error, not a
- * wrong answer.
- */
-
-/// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 10
-/// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 14
-/// Patch component of the release version.
-#define MESHIOPLUSPLUS_VERSION_PATCH 0
-
-/// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
-#define MESHIOPLUSPLUS_VERSION                                                   \
-    (MESHIOPLUSPLUS_VERSION_MAJOR * 10000 + MESHIOPLUSPLUS_VERSION_MINOR * 100 + \
-     MESHIOPLUSPLUS_VERSION_PATCH)
-
-/// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.14.0"
-
-/// Whether the headers being compiled against are at least `major.minor.patch`.
-#define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
-    (MESHIOPLUSPLUS_VERSION >= ((major) * 10000 + (minor) * 100 + (patch)))
-
-/// Whether the headers being compiled against are older than `major.minor.patch`.
-#define MESHIOPLUSPLUS_VERSION_BEFORE(major, minor, patch) \
-    (!MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch))
-// ===== end src/cpp/include/meshioplusplus/version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/vtk_common.hpp =====
 /**
  * @file vtk_common.hpp
@@ -44541,7 +44575,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
-    os << "written by meshio++ (C++ core)\n";
+    os << detail::kProvenanceTag << "\n";
     os << "*NODE\n";
     {
         // Format node rows in parallel (snprintf per row, bytes unchanged),
@@ -44953,7 +44987,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
 
     char hbuf[128];
-    fh << "(1 \"meshio++ C++ core\")\n";
+    fh << "(1 \"" << detail::kProvenanceTag << "\")\n";
     std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
     fh << hbuf;
 
@@ -45924,7 +45958,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         csum += sz;
     }
 
-    os << "# Written by meshio++ (C++ core)\n";
+    os << "# " << detail::kProvenanceTag << "\n";
     os << num_nodes << " " << num_cells << " " << nsum << " " << csum << " 0\n";
 
     const NDArray& points = rMesh.Points();
@@ -49124,7 +49158,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     std::string out;
     out.reserve(200 + np * 42);
     out += "EnSight Gold Geometry File\n";
-    out += "Written by meshio++\n";
+    out += std::string(detail::kProvenanceTag) + "\n";
     out += "node id assign\n";
     out += "element id assign\n";
     out += "part\n";
@@ -49227,7 +49261,7 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.reserve(80 * 8 + np * 12 + 64);
     ensight_append_str80(out, "C Binary");
     ensight_append_str80(out, "EnSight Gold Geometry File");
-    ensight_append_str80(out, "Written by meshio++");
+    ensight_append_str80(out, detail::kProvenanceTag);
     ensight_append_str80(out, "node id assign");
     ensight_append_str80(out, "element id assign");
     ensight_append_str80(out, "part");
@@ -50236,7 +50270,7 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 
     // global attributes
     {
-        std::string title = "Created by meshio++ (C++ core)";
+        std::string title = detail::kProvenanceTag;
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);
         float v = 5.1f;
@@ -51012,7 +51046,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     }
 
     // ASCII
-    f << "* FLAC3D grid produced by meshio++ (C++ core)\n";
+    f << "* " << detail::kProvenanceTag << "\n";
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {
@@ -51255,7 +51289,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     const bool has_ref = rMesh.HasCellData("pf3:ref");
 
     char buf[128];
-    f << " File converted with meshio++ (C++ core)\n";
+    f << " " << detail::kProvenanceTag << "\n";
     auto hdr = [&](long long v, const char* label) {
         std::snprintf(buf, sizeof(buf), "%8lld           %s\n", v, label);
         f << buf;
@@ -57745,7 +57779,7 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
 
     const bool has_geom = rMesh.HasCellData("mphtxt:geom");
 
-    f << "# Created by meshio++ (C++ core)\n\n";
+    f << "# " << detail::kProvenanceTag << "\n\n";
     f << "0 1\n";
     f << "1 # number of tags\n5 mesh1\n";
     f << "1 # number of types\n3 obj\n\n";
@@ -57941,6 +57975,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     os << "$ " << kSentinel << "\n";
+    os << "$ " << detail::kProvenanceTag << "\n";
     os << "BEGIN BULK\n";
 
     // Points: fixed-large GRID*.
@@ -58511,7 +58546,7 @@ void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string
             per_dim[d] += static_cast<std::int64_t>(cb.NumCells());
     }
 
-    f << "# Generated by meshio++ (C++ core)\n";
+    f << "# " << detail::kProvenanceTag << "\n";
     f << "mesh3d\n\n";
     f << "dimension\n" << dimension << "\n\n";
     f << "geomtype\n0\n";
@@ -58726,7 +58761,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    os << "# Created by meshio++ (C++ core)\n";
+    os << "# " << detail::kProvenanceTag << "\n";
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
@@ -58903,7 +58938,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
         num_faces += cb.NumCells();
     }
 
-    os << "OFF\n# Created by meshio++ (C++ core)\n\n";
+    os << "OFF\n# " << detail::kProvenanceTag << "\n\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];
@@ -59819,11 +59854,18 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    // The credit cell is fixed-width (48 chars before the closing box edge) so
+    // the banner stays aligned regardless of how long the release string is.
+    std::string credit = detail::kProvenanceTag;
+    if (credit.size() < 48)
+        credit.append(48 - credit.size(), ' ');
     rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
            "| =========                 |                                                 |\n"
            "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
            "|  \\\\    /   O peration     |                                                 |\n"
-           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|   \\\\  /    A nd           | "
+        << credit
+        << "|\n"
            "|    \\\\/     M anipulation  |                                                 |\n"
            "\\*---------------------------------------------------------------------------*/\n"
            "FoamFile\n"
@@ -60507,7 +60549,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     const NDArray& points = rMesh.Points();
 
     f << "!PERMAS DataFile Version 18.0\n";
-    f << "!written by meshio++ (C++ core)\n";
+    f << "! " << detail::kProvenanceTag << "\n";
     f << "$ENTER COMPONENT NAME=DFLT_COMP\n";
     f << "$STRUCTURE\n";
     f << "$COOR\n";
@@ -60973,7 +61015,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     os << "ply\n";
     os << (binary ? "format binary_little_endian 1.0\n" : "format ascii 1.0\n");
-    os << "comment Created by meshio++ (C++ core)\n";
+    os << "comment " << detail::kProvenanceTag << "\n";
     os << "element vertex " << num_points << "\n";
     const char* dim_names[3] = {"x", "y", "z"};
     for (std::size_t k = 0; k < ncoord; ++k)
@@ -61337,9 +61379,9 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     if (binary) {
         char header[80];
-        std::memset(header, 'X', 80);
-        const char* msg = "meshio++ (C++ core) binary STL";
-        std::memcpy(header, msg, std::strlen(msg));
+        std::memset(header, '\0', 80);
+        const char* msg = detail::kProvenanceTag;
+        std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
         os.write(reinterpret_cast<const char*>(&n), 4);
@@ -62466,7 +62508,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    os << "TITLE = \"Written by meshio++ (C++ core)\"\n";
+    os << "TITLE = \"" << detail::kProvenanceTag << "\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";
@@ -62739,7 +62781,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         if (nattr + nref > 0) {
             fh << "# attribute and marker names: ";
             bool first = true;
@@ -62800,7 +62842,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         }
         const std::size_t nattr = attr_keys.size();
 
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         if (nattr > 0) {
             fh << "# attribute names: ";
             bool first = true;
@@ -63488,7 +63530,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         std::ofstream fh(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
-        fh << "# This file was created by meshio++ (C++ core)\n";
+        fh << "# " << detail::kProvenanceTag << "\n";
         fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
         triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
     }
@@ -63523,7 +63565,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     std::ofstream fh(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
-    fh << "# This file was created by meshio++ (C++ core)\n";
+    fh << "# " << detail::kProvenanceTag << "\n";
     const std::size_t npc = tri_type == "triangle6" ? 6 : 3;
     fh << ne << " " << npc << " " << cell_attr_keys.size() << "\n";
     std::int64_t id = 0;
@@ -63564,7 +63606,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
     std::ofstream fh(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-    fh << "# This file was created by meshio++ (C++ core)\n";
+    fh << "# " << detail::kProvenanceTag << "\n";
     fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
     triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
 
@@ -65163,7 +65205,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    os << "<!--" << detail::kProvenanceTag << "-->\n";
     // Origin/Spacing/WholeExtent ARE the geometry: no Points section exists, and
     // that is the whole reason this format is worth having for a grid.
     os << "<ImageData WholeExtent=\"" << ext.str() << "\" Origin=\"" << vti_num(spec.mOrigin[0])
@@ -65468,7 +65510,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     }
 
     os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
-    os << "written by meshio++ (C++ core)\n";
+    os << detail::kProvenanceTag << "\n";
     os << (binary ? "BINARY\n" : "ASCII\n");
     os << "DATASET UNSTRUCTURED_GRID\n";
 
@@ -66144,7 +66186,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    os << "<!--" << detail::kProvenanceTag << "-->\n";
     os << "<PolyData>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
        << "\" NumberOfLines=\"" << lines.mOffsets.size()
@@ -66579,7 +66621,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    os << "<!--" << detail::kProvenanceTag << "-->\n";
     os << "<UnstructuredGrid>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
        << "\">\n";

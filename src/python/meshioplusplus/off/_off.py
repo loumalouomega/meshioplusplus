@@ -10,6 +10,7 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._provenance import TAG as _PROVENANCE_TAG
 
 
 def read(filename):
@@ -92,7 +93,7 @@ def write(filename, mesh):
 
     with open(filename, "wb") as fh:
         fh.write(b"OFF\n")
-        fh.write(b"# Created by meshio++\n\n")
+        fh.write(f"# {_PROVENANCE_TAG}\n\n".encode())
 
         # counts
         c = f"{mesh.points.shape[0]} {num_faces} {0}\n\n"
