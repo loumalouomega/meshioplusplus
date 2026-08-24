@@ -126,6 +126,7 @@
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -2186,6 +2187,36 @@ val remesh_volume_js(const val& rMeshObj, const val& rResolution, double cellSiz
 }
 
 /**
+ * @brief ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
+ * (2-3/3-2, predicate-free). The point set is invariant, so point_data/
+ * field_data and Point regions carry; cell_data + Cell/Side regions are
+ * dropped. See operations/optimize_volume.hpp and doc/optimize_volume.md.
+ */
+val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate, bool flip,
+                       bool preserveBoundary, double minImprovement) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::OptimizeVolumeOptions options;
+        options.mMaxIterations = static_cast<int>(maxIterations);
+        options.mRelocate = relocate;
+        options.mFlip = flip;
+        options.mPreserveBoundary = preserveBoundary;
+        options.mMinImprovement = minImprovement;
+        meshioplusplus::OptimizeVolumeResult r =
+            meshioplusplus::optimize_volume(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlips", static_cast<double>(r.mNumFlips));
+        out.set("num23Flips", static_cast<double>(r.mNum23Flips));
+        out.set("num32Flips", static_cast<double>(r.mNum32Flips));
+        out.set("numVerticesMoved", static_cast<double>(r.mNumVerticesMoved));
+        out.set("numTets", static_cast<double>(r.mNumTets));
+        out.set("minQualityBefore", r.mMinQualityBefore);
+        out.set("minQualityAfter", r.mMinQualityAfter);
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
  * cell_data for the tag criterion (empty = auto-detect).
@@ -3035,6 +3066,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
+    emscripten::function("optimizeVolume", &optimize_volume_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

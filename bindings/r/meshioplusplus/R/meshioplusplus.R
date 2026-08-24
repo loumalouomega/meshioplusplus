@@ -718,6 +718,35 @@ mio_smooth <- function(mesh, method = "taubin", iterations = 10L, lambda = -1,
   )
 }
 
+#' ODT-remesh a tetrahedral mesh
+#'
+#' Raise a tetrahedral mesh's worst element quality by relocating vertices AND
+#' flipping connectivity (2-3/3-2, predicate-free). The genuine "ODT remeshing"
+#' sibling of [mio_remesh_volume()] (which generates a fresh lattice mesh) and
+#' of `mio_smooth(method = "odt")` (which only moves points on fixed
+#' connectivity). Tet-only. The point set is invariant, so point data and named
+#' Point regions carry; cell data and Cell/Side regions are dropped. With
+#' `preserve_boundary` the boundary surface is exactly preserved. See
+#' `doc/optimize_volume.md`.
+#'
+#' @param mesh a `mio_mesh` external pointer (tetra-only volume mesh).
+#' @param max_iterations optimisation sweeps; stops early at a fixed point.
+#' @param relocate run the ODT vertex-relocation half of each sweep.
+#' @param flip run the topological-flip half of each sweep.
+#' @param preserve_boundary pin boundary vertices during relocation.
+#' @param min_improvement strict scaled-Jacobian gain a flip must deliver.
+#' @return a named list with `mesh` and the counters `num_flips`,
+#'   `num_23_flips`, `num_32_flips`, `num_vertices_moved`, `num_tets`,
+#'   `min_quality_before`, `min_quality_after`.
+#' @export
+mio_optimize_volume <- function(mesh, max_iterations = 10L, relocate = TRUE, flip = TRUE,
+                                preserve_boundary = TRUE, min_improvement = 1e-6) {
+  .Call(
+    R_mio_optimize_volume, mesh, as.integer(max_iterations), isTRUE(relocate),
+    isTRUE(flip), isTRUE(preserve_boundary), as.numeric(min_improvement)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_crop_bbox <- function(mesh, lo, hi, mode = "all", record_ids = FALSE) {

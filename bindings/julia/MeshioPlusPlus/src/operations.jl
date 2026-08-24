@@ -184,6 +184,39 @@ function smooth(m::Mesh; method::AbstractString="taubin", iterations::Integer=10
      max_displacement=Float64(disp[]), num_skipped_inversion=Int(skipped[]))
 end
 
+"""
+    optimize_volume(mesh; max_iterations=10, relocate=true, flip=true,
+                    preserve_boundary=true, min_improvement=1e-6)
+        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_vertices_moved,
+              num_tets, min_quality_before, min_quality_after)
+
+ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
+vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine "ODT
+remeshing" sibling of [`remesh_volume`](@ref) (which generates a fresh lattice
+mesh) and of `smooth(method="odt")` (which only moves points on fixed
+connectivity). Tet-only, raises on any other block. The point set is invariant,
+so point data and named Point regions carry; cell data and Cell/Side regions are
+dropped. With `preserve_boundary` the boundary surface is exactly preserved.
+See `doc/optimize_volume.md`.
+"""
+function optimize_volume(m::Mesh; max_iterations::Integer=10, relocate::Bool=true,
+                         flip::Bool=true, preserve_boundary::Bool=true,
+                         min_improvement::Real=1e-6)
+    nflips = Ref{Int64}(0); n23 = Ref{Int64}(0); n32 = Ref{Int64}(0)
+    nmoved = Ref{Int64}(0); ntets = Ref{Int64}(0)
+    qb = Ref{Cdouble}(0.0); qa = Ref{Cdouble}(0.0)
+    ptr = ccall(_sym(:mio_optimize_volume), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cint, Cint, Cint, Cint, Cdouble,
+                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64},
+                 Ptr{Cdouble}, Ptr{Cdouble}),
+                _handle(m), Cint(max_iterations), relocate ? Cint(1) : Cint(0),
+                flip ? Cint(1) : Cint(0), preserve_boundary ? Cint(1) : Cint(0),
+                Float64(min_improvement), nflips, n23, n32, nmoved, ntets, qb, qa)
+    (mesh=Mesh(_check_ptr(ptr)), num_flips=Int(nflips[]), num_23_flips=Int(n23[]),
+     num_32_flips=Int(n32[]), num_vertices_moved=Int(nmoved[]), num_tets=Int(ntets[]),
+     min_quality_before=Float64(qb[]), min_quality_after=Float64(qa[]))
+end
+
 # --- subsetting --------------------------------------------------------------
 
 _crop_mode(mode::Symbol) = mode === :all ? Cint(0) : mode === :any ? Cint(1) :

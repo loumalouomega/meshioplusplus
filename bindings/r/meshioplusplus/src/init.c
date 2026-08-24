@@ -61,6 +61,7 @@ extern SEXP R_mio_quality_counts(SEXP);
 extern SEXP R_mio_transform(SEXP, SEXP, SEXP);
 extern SEXP R_mio_clean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_optimize_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -185,6 +186,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_transform, 3),
     CALLDEF(R_mio_clean, 6),
     CALLDEF(R_mio_smooth, 9),
+    CALLDEF(R_mio_optimize_volume, 6),
     CALLDEF(R_mio_crop_bbox, 5),
     CALLDEF(R_mio_crop_plane, 5),
     CALLDEF(R_mio_crop_predicate, 5),

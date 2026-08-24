@@ -118,6 +118,34 @@ SEXP R_mio_smooth(SEXP mesh, SEXP method, SEXP iterations, SEXP lambda, SEXP mu,
     return res;
 }
 
+SEXP R_mio_optimize_volume(SEXP mesh, SEXP max_iterations, SEXP relocate, SEXP flip,
+                           SEXP preserve_boundary, SEXP min_improvement) {
+    int64_t nflips = 0, n23 = 0, n32 = 0, nmoved = 0, ntets = 0;
+    double qbefore = 0.0, qafter = 0.0;
+    mio_mesh *out = mio_optimize_volume(
+        mio_r_mesh(mesh), mio_r_int(max_iterations, "max_iterations"),
+        mio_r_bool(relocate, "relocate"), mio_r_bool(flip, "flip"),
+        mio_r_bool(preserve_boundary, "preserve_boundary"),
+        mio_r_double(min_improvement, "min_improvement"), &nflips, &n23, &n32, &nmoved, &ntets,
+        &qbefore, &qafter);
+    if (out == NULL) mio_r_fail("optimize_volume");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP v0 = PROTECT(Rf_ScalarReal((double)nflips));
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)n23));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)n32));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)nmoved));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)ntets));
+    SEXP v5 = PROTECT(Rf_ScalarReal(qbefore));
+    SEXP v6 = PROTECT(Rf_ScalarReal(qafter));
+    const char *names[] = {"mesh",     "num_flips",          "num_23_flips",
+                           "num_32_flips", "num_vertices_moved", "num_tets",
+                           "min_quality_before", "min_quality_after"};
+    SEXP values[] = {mo, v0, v1, v2, v3, v4, v5, v6};
+    SEXP res = PROTECT(mio_r_named_list(8, names, values));
+    UNPROTECT(9);
+    return res;
+}
+
 /* --- subsetting --------------------------------------------------------- */
 
 SEXP R_mio_crop_bbox(SEXP mesh, SEXP lo, SEXP hi, SEXP mode, SEXP record_ids) {

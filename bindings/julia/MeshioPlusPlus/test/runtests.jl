@@ -549,6 +549,13 @@ end
     @test so.num_nodes_moved >= 0
     close(so.mesh)
 
+    # optimize_volume: ODT remeshing (relocate + flip connectivity), tet-only.
+    ov = optimize_volume(m; max_iterations=5)
+    @test num_points(ov.mesh) == 5                       # the point set is invariant
+    @test ov.num_flips >= 0
+    @test ov.min_quality_after >= ov.min_quality_before - 1e-12
+    close(ov.mesh)
+
     b = crop_bbox(m, [-1.0, -1.0, -1.0], [10.0, 10.0, 10.0])
     @test num_cells(b) == 2                   # the box holds everything
     close(b)

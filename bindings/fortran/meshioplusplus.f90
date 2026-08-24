@@ -431,6 +431,7 @@ module meshioplusplus
         procedure :: transform => mesh_transform
         procedure :: clean => mesh_clean
         procedure :: smooth => mesh_smooth
+        procedure :: optimize_volume => mesh_optimize_volume
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
         procedure :: crop_predicate => mesh_crop_predicate
@@ -1031,6 +1032,18 @@ module meshioplusplus
             real(c_double), value :: lambda, mu, fangle
             integer(c_int64_t), intent(out) :: nmoved, nskip
             real(c_double), intent(out) :: maxdisp
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_optimize_volume(h, maxiter, relocate, flip, presb, minimp, nflips, n23, &
+                                       n32, nmoved, ntets, qbefore, qafter) &
+                bind(c, name="mio_optimize_volume") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            integer(c_int), value :: maxiter, relocate, flip, presb
+            real(c_double), value :: minimp
+            integer(c_int64_t), intent(out) :: nflips, n23, n32, nmoved, ntets
+            real(c_double), intent(out) :: qbefore, qafter
             type(c_ptr) :: r
         end function
 
@@ -2990,6 +3003,60 @@ contains
         if (present(nodes_moved)) nodes_moved = int(nmoved, int64)
         if (present(max_displacement)) max_displacement = real(maxdisp, real64)
         if (present(skipped_inversion)) skipped_inversion = int(nskip, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
+    !> (2-3/3-2, predicate-free). Tet-only. The point set is invariant, so
+    !> point_data and named Point regions carry; cell_data and Cell/Side
+    !> regions are dropped. See doc/optimize_volume.md.
+    function mesh_optimize_volume(self, max_iterations, relocate, flip, preserve_boundary, &
+                                  min_improvement, num_flips, num_23_flips, num_32_flips, &
+                                  num_vertices_moved, num_tets, min_quality_before, &
+                                  min_quality_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: max_iterations
+        logical, intent(in), optional :: relocate, flip, preserve_boundary
+        real(real64), intent(in), optional :: min_improvement
+        integer(int64), intent(out), optional :: num_flips, num_23_flips, num_32_flips, &
+                                                 num_vertices_moved, num_tets
+        real(real64), intent(out), optional :: min_quality_before, min_quality_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cmaxiter, crel, cflip, cpresb
+        real(c_double) :: cminimp
+        integer(c_int64_t) :: nflips, n23, n32, nmoved, ntets
+        real(c_double) :: qbefore, qafter
+        cmaxiter = 10
+        if (present(max_iterations)) cmaxiter = int(max_iterations, c_int)
+        crel = 1
+        if (present(relocate)) then
+            if (.not. relocate) crel = 0
+        end if
+        cflip = 1
+        if (present(flip)) then
+            if (.not. flip) cflip = 0
+        end if
+        cpresb = 1
+        if (present(preserve_boundary)) then
+            if (.not. preserve_boundary) cpresb = 0
+        end if
+        cminimp = 1.0e-6_c_double
+        if (present(min_improvement)) cminimp = real(min_improvement, c_double)
+        out%handle = c_mio_optimize_volume(self%handle, cmaxiter, crel, cflip, cpresb, cminimp, &
+                                           nflips, n23, n32, nmoved, ntets, qbefore, qafter)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('optimize_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_flips)) num_flips = int(nflips, int64)
+        if (present(num_23_flips)) num_23_flips = int(n23, int64)
+        if (present(num_32_flips)) num_32_flips = int(n32, int64)
+        if (present(num_vertices_moved)) num_vertices_moved = int(nmoved, int64)
+        if (present(num_tets)) num_tets = int(ntets, int64)
+        if (present(min_quality_before)) min_quality_before = real(qbefore, real64)
+        if (present(min_quality_after)) min_quality_after = real(qafter, real64)
         call clear_status(stat, errmsg)
     end function
 

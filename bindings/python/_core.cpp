@@ -110,6 +110,7 @@
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -1410,6 +1411,41 @@ PYBIND11_MODULE(_core, m) {
         py::arg("sign") = "pseudonormal", py::arg("weight") = "angle",
         py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
         py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+
+    // ODT remeshing: raise a tet mesh's worst element quality by relocating
+    // vertices AND flipping connectivity (2-3/3-2, predicate-free). The point
+    // set is invariant, so point_data/field_data and Point regions carry;
+    // cell_data + Cell/Side regions are dropped. See
+    // operations/optimize_volume.hpp and doc/optimize_volume.md.
+    m.def(
+        "optimize_volume",
+        [](py::object pymesh, int max_iterations, bool relocate, bool flip, bool preserve_boundary,
+           double min_improvement, py::object frozen) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::OptimizeVolumeOptions options;
+            options.mMaxIterations = max_iterations;
+            options.mRelocate = relocate;
+            options.mFlip = flip;
+            options.mPreserveBoundary = preserve_boundary;
+            options.mMinImprovement = min_improvement;
+            if (!frozen.is_none())
+                options.mFrozen = frozen.cast<std::vector<std::uint8_t>>();
+            meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_flips"] = r.mNumFlips;
+            out["num_23_flips"] = r.mNum23Flips;
+            out["num_32_flips"] = r.mNum32Flips;
+            out["num_vertices_moved"] = r.mNumVerticesMoved;
+            out["num_tets"] = r.mNumTets;
+            out["min_quality_before"] = r.mMinQualityBefore;
+            out["min_quality_after"] = r.mMinQualityAfter;
+            return out;
+        },
+        py::arg("mesh"), py::arg("max_iterations") = 10, py::arg("relocate") = true,
+        py::arg("flip") = true, py::arg("preserve_boundary") = true,
+        py::arg("min_improvement") = 1e-6, py::arg("frozen") = py::none());
 
     // Field differential operators: the gradient / divergence / curl of a
     // point_data field, by Green-Gauss or least squares. `component` is negative

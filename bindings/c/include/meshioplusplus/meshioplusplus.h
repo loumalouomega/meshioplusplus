@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 13
+#define MIO_VERSION_MINOR 14
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -2293,6 +2293,43 @@ typedef struct mio_remesh_volume_report {
  */
 MIO_API mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_volume_opts* opts,
                                        mio_remesh_volume_report* report);
+
+/**
+ * ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
+ * vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine
+ * "ODT remeshing" sibling of mio_remesh_volume_ex (which generates a fresh
+ * lattice mesh) and of mio_smooth method "odt" (which only moves points on
+ * fixed connectivity). Tet-only. The point set is invariant, so point_data and
+ * named Point regions carry; cell_data and Cell/Side regions are dropped (a
+ * flip has no cell correspondence). With preserve_boundary the boundary surface
+ * is exactly preserved. See doc/optimize_volume.md.
+ *
+ * Like mio_smooth this is a plain function with scalar counter out-params
+ * rather than an opts/result struct; the pin mask (`mFrozen`) is not exposed on
+ * the flat ABI, a documented gap like mio_smooth's own `frozen`.
+ *
+ * @param mesh              a tetra-only volume mesh.
+ * @param max_iterations    optimisation sweeps; stops early at a fixed point.
+ * @param relocate          nonzero to run the ODT vertex-relocation half.
+ * @param flip              nonzero to run the topological-flip half.
+ * @param preserve_boundary nonzero to pin boundary vertices during relocation.
+ * @param min_improvement   the strict scaled-Jacobian gain a flip must deliver.
+ * @param num_flips         receives the total flips accepted (2-3 + 3-2).
+ * @param num_23_flips      receives the 2-3 flips accepted.
+ * @param num_32_flips      receives the 3-2 flips accepted.
+ * @param num_vertices_moved receives the vertices the relocation half moved.
+ * @param num_tets          receives the output tet count.
+ * @param min_quality_before receives the input min scaled Jacobian.
+ * @param min_quality_after  receives the output min scaled Jacobian.
+ * @return the optimised mesh, a single tetra block (free with mio_mesh_free),
+ *         or NULL on failure. Every out-param is optional (pass NULL to skip).
+ */
+MIO_API mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relocate,
+                                      int flip, int preserve_boundary, double min_improvement,
+                                      int64_t* num_flips, int64_t* num_23_flips,
+                                      int64_t* num_32_flips, int64_t* num_vertices_moved,
+                                      int64_t* num_tets, double* min_quality_before,
+                                      double* min_quality_after);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

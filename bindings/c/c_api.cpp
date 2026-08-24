@@ -99,6 +99,7 @@
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/version.hpp"
@@ -1046,6 +1047,39 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
             *max_displacement = r.mMaxDisplacement;
         if (skipped_inversion)
             *skipped_inversion = r.mNumSkippedInversion;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relocate, int flip,
+                              int preserve_boundary, double min_improvement, int64_t* num_flips,
+                              int64_t* num_23_flips, int64_t* num_32_flips,
+                              int64_t* num_vertices_moved, int64_t* num_tets,
+                              double* min_quality_before, double* min_quality_after) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::OptimizeVolumeOptions opts;
+        opts.mMaxIterations = max_iterations;
+        opts.mRelocate = relocate != 0;
+        opts.mFlip = flip != 0;
+        opts.mPreserveBoundary = preserve_boundary != 0;
+        opts.mMinImprovement = min_improvement;
+        meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh->mMesh, opts);
+        if (num_flips)
+            *num_flips = r.mNumFlips;
+        if (num_23_flips)
+            *num_23_flips = r.mNum23Flips;
+        if (num_32_flips)
+            *num_32_flips = r.mNum32Flips;
+        if (num_vertices_moved)
+            *num_vertices_moved = r.mNumVerticesMoved;
+        if (num_tets)
+            *num_tets = r.mNumTets;
+        if (min_quality_before)
+            *min_quality_before = r.mMinQualityBefore;
+        if (min_quality_after)
+            *min_quality_after = r.mMinQualityAfter;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

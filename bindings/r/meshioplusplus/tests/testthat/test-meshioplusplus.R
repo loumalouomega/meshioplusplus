@@ -504,6 +504,13 @@ test_that("clean, smooth and crop work", {
   expect_gte(so$num_nodes_moved, 0)
   mio_release(so$mesh)
 
+  # optimize_volume: ODT remeshing (relocate + flip connectivity), tet-only.
+  ov <- mio_optimize_volume(m, max_iterations = 5L)
+  expect_equal(mio_num_points(ov$mesh), 5) # the point set is invariant
+  expect_gte(ov$num_flips, 0)
+  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  mio_release(ov$mesh)
+
   b <- mio_crop_bbox(m, c(-1, -1, -1), c(10, 10, 10))
   expect_equal(mio_num_cells(b), 2) # the box holds everything
   mio_release(b)
