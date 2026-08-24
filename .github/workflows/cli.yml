@@ -32,7 +32,14 @@ on:
 
 env:
   # Every job builds the same portable configuration; only the toolchain and
-  # packaging step differ per OS.
+  # packaging step differ per OS. Every Build step's `-j` is explicitly bound
+  # to the runner's own core count -- a bare `-j` tells GNU Make (the
+  # generator here, since no Ninja is installed) to run UNLIMITED parallel
+  # recipes rather than one per core, and this repo's large per-operation
+  # translation units under -O2 spawned enough simultaneous gcc processes to
+  # OOM the runner VM (observed as "the hosted runner lost communication with
+  # the server" after ~45-48 minutes, hit on Linux arm64's smaller runner
+  # every time and on Linux x86_64 intermittently).
   CMAKE_COMMON_ARGS: >-
     -DCMAKE_BUILD_TYPE=Release
     -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
@@ -72,7 +79,7 @@ jobs:
       - name: Build
         run: |
           source /opt/rh/gcc-toolset-13/enable
-          cmake --build build --target meshioplusplus_cli -j
+          cmake --build build --target meshioplusplus_cli -j "$(nproc)"
 
       - name: Verify static runtime
         run: |
@@ -127,7 +134,7 @@ jobs:
       - name: Build
         run: |
           source /opt/rh/gcc-toolset-13/enable
-          cmake --build build --target meshioplusplus_cli -j
+          cmake --build build --target meshioplusplus_cli -j "$(nproc)"
 
       - name: Verify static runtime
         run: |
@@ -176,7 +183,7 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3
 
       - name: Build
-        run: cmake --build build --target meshioplusplus_cli -j
+        run: cmake --build build --target meshioplusplus_cli -j "$(sysctl -n hw.ncpu)"
 
       - name: Verify universal binary
         run: |
