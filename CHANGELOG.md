@@ -8,6 +8,40 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.14.0 (2026-08-24)
+
+**Roadmap §1's "ODT" bullet closed in full** — v10.13.0 shipped ODT
+*smoothing* (`SmoothMethod::Odt`, positions only, fixed connectivity); this
+release adds the connectivity-changing half, genuine ODT *remeshing*.
+
+- **`optimize_volume`** (new operation, `operations/optimize_volume.{hpp,cpp}`,
+  [`doc/optimize_volume.md`](doc/optimize_volume.md)) — raises a tetrahedral
+  mesh's worst element quality by *ODT remeshing*: it alternates the ODT
+  vertex relocation (reused from `smooth`'s `method="odt"`) with
+  quality-improving topological **flips** (2-3 and 3-2), so both the vertex
+  positions and the connectivity change. The missing third member of a trio
+  whose other two each do half the job: `SmoothMethod::Odt` moves points on
+  fixed connectivity, `remesh_volume` discards the input's tets for a fresh
+  lattice mesh. **Predicate-free** (in-posture): a flip is applied only when a
+  pure signed-volume test finds the local configuration convex AND the minimum
+  scaled Jacobian over the new tets strictly beats the minimum over the tets it
+  replaces (Freitag & Ollivier-Gooch's improvement rule, monotone in worst
+  quality and hence terminating) — no in-sphere/Delaunay predicate. The flips
+  touch only interior faces/edges, so with `preserve_boundary` the boundary
+  surface is byte-identical to the input's (watertight in ⇒ watertight out);
+  the point set is invariant, so `point_data`/`field_data` and Point regions
+  carry while `cell_data`/Cell/Side regions are dropped. Tet-only; C++-core
+  only (no numpy fallback, the flip acceptance being a discrete sign/near-tie
+  branch); byte-identical across mesh backends and thread counts. Shipped
+  across every binding surface — Python `optimize_volume`, C
+  `mio_optimize_volume`, Fortran `m%optimize_volume`, Julia `optimize_volume`,
+  R `mio_optimize_volume`, WASM `optimizeVolume`, the `optimize-volume` CLI
+  verb in both CLIs, an `OptimizeVolume` settings-pipeline step, and an
+  `optimize_volume` MCP tool. Tier C additive (a wholly new
+  header/`.cpp`/C entry point) — no ABI bump (`MESHIOPLUSPLUS_ABI_VERSION`
+  stays 10); `OptimizeVolumeOptions` is pinned in `test_abi_layout.cpp` from
+  this release.
+
 ## v10.13.0 (2026-08-23)
 
 **Roadmap §1 closed in full** — the last remaining bullet, "Volumetric
