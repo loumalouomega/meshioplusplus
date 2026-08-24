@@ -29,7 +29,7 @@ Lines starting `!` are comments and are skipped. A keyword line is `$KEYWORD[=..
 - `$NSET`/`$ESET` blocks are parsed (including `GENERATE`, expanding exactly 3 ids `start,end,step` via `np.arange` with an **exclusive** stop, i.e. literal Python `range` semantics rather than an inclusive PERMAS/Abaqus- style generate) but **the parsed sets are never attached to the returned Mesh** — this is a currently-dead read path.
 - Everything else is silently ignored ("too many PERMAS keywords to explicitly skip").
 
-Write emits: `!PERMAS DataFile Version 18.0`, a header line crediting meshio++ (`!written by meshio++ v<version>` from the Python writer, `!written by meshio++ (C++ core)` from the C++ writer), `$ENTER COMPONENT NAME=DFLT_COMP`, `$STRUCTURE`, `$COOR`, then node rows (sequential 1-based index, not the original PERMAS gid — none is tracked on write), then per element type a `!` separator + `$ELEMENT TYPE=...` + rows (`<running_id> <n1+1> ...`, id counting continuously across all cell blocks), then `$END STRUCTURE` / `$EXIT COMPONENT` / `$FIN`.
+Write emits: `!PERMAS DataFile Version 18.0`, a `! Written by meshio++ v<version>` provenance line (character-identical between the C++ and Python writers — see [`doc/formats.md`](../formats.md#provenance)), `$ENTER COMPONENT NAME=DFLT_COMP`, `$STRUCTURE`, `$COOR`, then node rows (sequential 1-based index, not the original PERMAS gid — none is tracked on write), then per element type a `!` separator + `$ELEMENT TYPE=...` + rows (`<running_id> <n1+1> ...`, id counting continuously across all cell blocks), then `$END STRUCTURE` / `$EXIT COMPONENT` / `$FIN`.
 
 ## Cell types
 
