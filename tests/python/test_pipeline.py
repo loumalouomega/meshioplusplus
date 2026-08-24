@@ -175,6 +175,28 @@ def test_decimate_volume_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_optimize_volume_pipeline_step(settings_env):
+    """OptimizeVolume dispatches generically off the same _OP_TABLE/
+    pipeline_op_table pair and, like Subdivide/Agglomerate/DecimateVolume, has
+    no numpy fallback, so both engines call the same underlying
+    `_core.optimize_volume` and must produce byte-identical output."""
+    settings = make_settings(
+        settings_env, [{"Op": "OptimizeVolume", "MaxIterations": 3}]
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    step = report["steps"][0]
+    assert step["op"] == "OptimizeVolume"
+    for k in ("NumFlips", "NumTets", "MinQualityBefore", "MinQualityAfter"):
+        assert k in step
+    out = meshioplusplus.read(settings_env["out"])
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_estimate_error_pipeline_step(settings_env):
     """EstimateError dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike
@@ -295,7 +317,12 @@ def test_remesh_pipeline_step(tmp_path):
         "Version": 1,
         "Input": {"Path": str(in_path)},
         "Operations": [
-            {"Op": "Remesh", "NumClusters": 30, "Metric": "anisotropic", "MaxAnisotropy": 3.0}
+            {
+                "Op": "Remesh",
+                "NumClusters": 30,
+                "Metric": "anisotropic",
+                "MaxAnisotropy": 3.0,
+            }
         ],
         "Output": {"Path": str(aniso_out_path)},
     }

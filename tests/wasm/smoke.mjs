@@ -960,6 +960,29 @@ step('remeshVolume is reachable as a convertSurfaceOps pipeline step', () => {
     assert.ok(rendered.cells[0].data.length > 0);
 });
 
+step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
+    // A tetra mesh (simplexified hex cube). optimizeVolume relocates vertices
+    // and flips connectivity; the boundary is preserved and no cell inverts.
+    const tetCube = m.convertCells(cube, 'simplexify');
+    const out = m.optimizeVolume(tetCube, 5, true, true, true, 1e-6);
+    assert.equal(out.mesh.cells.length, 1);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.numTets > 0);
+    assert.equal(out.mesh.points.length, tetCube.points.length); // point set invariant
+    assert.ok(out.minQualityAfter >= out.minQualityBefore - 1e-9); // monotone
+    assert.ok(out.numFlips >= 0 && out.num23Flips >= 0 && out.num32Flips >= 0);
+});
+
+step('optimizeVolume is reachable as a convertSurfaceOps pipeline step', () => {
+    const tetCube = m.convertCells(cube, 'simplexify');
+    m.writeMesh('/ovol.vtu', tetCube);
+    const out = m.convertSurfaceOps('/ovol.vtu', '/ovol.vtp', [
+        { op: 'optimizeVolume', maxIterations: 3 },
+    ]);
+    assert.equal(out.steps[0].op, 'optimizeVolume');
+    assert.ok(out.steps[0].numTets > 0);
+});
+
 step('subdivide is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/sub.vtu', cube);
     const out = m.convertSurfaceOps('/sub.vtu', '/sub.vtp', [{ op: 'subdivide' }]);
@@ -1584,6 +1607,7 @@ step('every binding is reachable through the wrapper', () => {
         'decimate',
         'remesh',
         'remeshVolume',
+        'optimizeVolume',
         'partition',
         'partitionLabels',
         // Regular grids and signed distance. `grid` is the only binding here

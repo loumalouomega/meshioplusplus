@@ -70,6 +70,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
@@ -189,6 +190,12 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 64, 8);
 // lesson applied in advance a second time. RemeshVolumeResult is
 // deliberately NOT pinned, embedding a `Mesh` like every other *Result.
 MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
+
+// OptimizeVolumeOptions is passed by const-ref through the exported
+// `optimize_volume()` -- pinned from the release that introduces it, the
+// RefineOptions/RemeshOptions "pin in advance" lesson. OptimizeVolumeResult is
+// deliberately NOT pinned, embedding a `Mesh` like every other *Result.
+MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 40, 8);
 
 // SmoothOptions is passed by const-ref through the exported `smooth()`, and
 // is pinned here for the FIRST time -- not because it grew a member (it

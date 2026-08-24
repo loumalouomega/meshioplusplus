@@ -449,6 +449,24 @@ program test_fortran_api
         call relaxed%free()
     end block
 
+    ! -- optimize_volume: ODT remeshing (relocate + flip connectivity) --
+    block
+        type(mio_mesh) :: opt
+        integer(int64) :: nflips, n23, n32, nmoved, ntets, n0
+        real(real64) :: qb, qa
+        integer :: st
+
+        n0 = m%num_points()
+        opt = m%optimize_volume(max_iterations=5, num_flips=nflips, num_23_flips=n23, &
+                                num_32_flips=n32, num_vertices_moved=nmoved, num_tets=ntets, &
+                                min_quality_before=qb, min_quality_after=qa, stat=st)
+        call check(st == 0, 'optimize_volume succeeded on a tet mesh')
+        call check(opt%num_points() == n0, 'optimize_volume preserves the point set')
+        call check(nflips >= 0_int64, 'optimize_volume reported a flip count')
+        call check(qa >= qb - 1.0e-12_real64, 'optimize_volume never lowers worst quality')
+        call opt%free()
+    end block
+
     ! -- interpolate: cross-mesh field transfer --
     block
         type(mio_mesh) :: sampled, bad

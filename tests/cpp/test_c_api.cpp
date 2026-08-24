@@ -1778,6 +1778,44 @@ TEST(CApi, SmoothRejectsBadArguments) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, OptimizeVolumeFlipsAndImproves) {
+    // The 2-tet fixture whose 2-3 flip raises the worst scaled Jacobian from
+    // ~0.066 to ~0.362 (see test_optimize_volume.cpp). relocate off so only the
+    // flip acts; every out-param is exercised.
+    const std::vector<double> pts = {0.0,    0.0,    0.0,    1.0,    0.0,   0.0,   0.3,   0.9,
+                                     0.0,    0.2252, 0.2808, 0.6977, 0.4659, 0.3149, -0.0367};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    std::int64_t nflips = -1, n23 = -1, n32 = -1, moved = -1, ntets = -1;
+    double qbefore = -1.0, qafter = -1.0;
+    mio_mesh* out = mio_optimize_volume(m, /*max_iterations=*/5, /*relocate=*/0, /*flip=*/1,
+                                        /*preserve_boundary=*/1, /*min_improvement=*/1e-6, &nflips,
+                                        &n23, &n32, &moved, &ntets, &qbefore, &qafter);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(n23, 1);
+    EXPECT_EQ(n32, 0);
+    EXPECT_EQ(nflips, 1);
+    EXPECT_EQ(ntets, 3);
+    EXPECT_EQ(mio_mesh_num_points(out), 5);  // point set invariant
+    EXPECT_GT(qafter, qbefore + 0.2);
+    mio_mesh_free(out);
+
+    // A non-tet mesh is refused by name; no exception crosses the ABI.
+    mio_mesh* q = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(q, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    const std::vector<std::int64_t> quad = {0, 1, 2, 3};
+    ASSERT_EQ(mio_mesh_add_cell_block(q, "quad", 1, 4, MIO_INT64, quad.data()), MIO_OK);
+    EXPECT_EQ(mio_optimize_volume(q, 5, 1, 1, 1, 1e-6, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    mio_mesh_free(q);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineHexIntoEight) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
                                      0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
