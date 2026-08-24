@@ -84,6 +84,7 @@ export default defineConfig({
           { text: "Volume decimation (QEM tet-edge collapse)", link: "/decimate_volume" },
           { text: "Surface remeshing (ACVD clustering)", link: "/remesh" },
           { text: "Volumetric remeshing (isosurface stuffing)", link: "/remesh_volume" },
+          { text: "ODT remeshing (relocate + flip connectivity)", link: "/optimize_volume" },
           { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },
           { text: "Interpolation (field transfer)", link: "/interpolate" },
           { text: "Conservative interpolation (mass-preserving)", link: "/conservative_interpolate" },

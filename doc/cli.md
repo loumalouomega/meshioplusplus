@@ -734,6 +734,34 @@ meshioplusplus remesh-volume surface.stl out.vtu --cell-size 0.3 --watertight-ch
 
 ---
 
+## meshioplusplus optimize-volume
+
+ODT-remesh a **tetrahedral** mesh: raise its worst element quality by relocating vertices AND flipping connectivity (2-3/3-2, predicate-free) — the genuine "ODT remeshing" sibling of `remesh-volume` (which generates a fresh lattice mesh) and of `smooth --method odt` (which only moves points on fixed connectivity). See [ODT remeshing](/optimize_volume).
+
+```sh
+meshioplusplus optimize-volume [options] INFILE OUTFILE
+```
+
+| Option | Description |
+| --- | --- |
+| `--max-iterations N` | optimisation sweeps (relocation + flips); stops early at a fixed point (default: 10) |
+| `--no-relocate` | skip the ODT vertex-relocation half (flips only) |
+| `--no-flip` | skip the topological-flip half (reduces to ODT smoothing) |
+| `--no-preserve-boundary` | allow boundary vertices to move during relocation (may drift off the surface) |
+| `--min-improvement E` | strict scaled-Jacobian gain a flip must deliver to be accepted (default: 1e-6) |
+| `--quiet`, `-q` | suppress the summary |
+
+The point set is invariant, so `point_data`/`field_data` and named Point regions carry through; `cell_data` and Cell/Side regions are dropped (a flip has no cell correspondence). With `--no-preserve-boundary` off (the default) the boundary surface is exactly preserved. Tet-only: a non-`tetra` block errors pointing at `convert-cells --mode simplexify`.
+
+**Examples:**
+
+```sh
+meshioplusplus optimize-volume volume.vtu optimized.vtu
+meshioplusplus optimize-volume volume.vtu optimized.vtu --max-iterations 20
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element shape (see [smoothing](/smooth)).
