@@ -8,6 +8,29 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.15.0 (2026-08-24)
+
+**Breaking:** normalized the one-line provenance credit every writer with a
+free-text header slot emits, per `doc/roadmap.md` section 1's "audit and
+normalize" bullet. ~25 writers previously hand-wrote their own version of the
+line and had drifted three ways: a stale `meshio` (not `meshio++`) name in
+several Python writers, a `(C++ core)`-vs-`v{version}` split that made the
+C++/Python fallback boundary visible in output bytes, and four writers
+(`obj`, `ply`, `exodus`, `flac3d`) embedding a wall-clock timestamp that made
+writing the same mesh twice produce different bytes. Every affected writer
+now emits one canonical line, `Written by meshio++ v<release>`, from a single
+source on each side (`detail::kProvenanceTag` in C++,
+`meshioplusplus._provenance.TAG` in Python), so the two engines are
+character-identical and output is deterministic. `nastran` is the one
+documented exception: its C++ reader is gated on a sentinel comment line the
+Python writer never emits, so the C++ file carries the sentinel followed by
+the tag while the Python file carries only the tag — see
+[`doc/formats/nastran.md`](doc/formats/nastran.md). `doc/formats.md` gained a
+Provenance section auditing every format's comment syntax, header position,
+and whether it carries the tag today, which is the reference for the rest of
+the roadmap section. Output bytes change for every affected format — anyone
+diffing or hashing written files should expect this.
+
 ## v10.14.0 (2026-08-24)
 
 **Roadmap §1's "ODT" bullet closed in full** — v10.13.0 shipped ODT
