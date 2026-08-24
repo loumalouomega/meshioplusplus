@@ -8,6 +8,57 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.17.0 (2026-08-24)
+
+Closes roadmap section 1 in full; the section has been removed from
+`doc/roadmap.md`. See `doc/provenance.md`.
+
+**ABI: `MESHIOPLUSPLUS_ABI_VERSION` 10 -> 11.** This is the one item a C++
+consumer must act on: `MeshMetadata` gained two fields (below), a Tier A
+layout change, so its `sizeof` moved 256 -> 288 and the C++ variant
+libraries' `SOVERSION` becomes 11. Recompile against the new headers; the C
+ABI is unaffected (`mio_read_metadata` is an opaque handle, so its new
+accessors are purely additive).
+
+- **Reading a provenance block back** -- `read_metadata()` now reports the
+  block a file carries as `provenance` (one line per entry, comment
+  punctuation stripped) plus `provenance_recognised`, and both CLIs' `info`
+  print a `Provenance:` section, labelled `(not written by meshio++)` when
+  the block does not start the way this library writes one. New
+  `MeshMetadata::mProvenance`/`mProvenanceRecognised`, C accessors
+  `mio_read_metadata_num_provenance_lines`/`_provenance_line`/
+  `_provenance_recognised`, and a WASM `readProvenance(path)`.
+- **One scanner, not forty-four parsers.** The rendered block's content lines
+  are format-independent by construction, so recovery is a single pass over
+  the file's head bytes rather than a parser per format. Three wrappings need
+  more than a leading-marker strip: a keyword slot that wraps the text
+  (Tecplot's `TITLE = "..."`, Ansys's `(1 "...")`), whose closing punctuation
+  is removed only because that opener put it there -- never unconditionally,
+  since `Converted from x (fmt)` legitimately ends in `)`; a box-drawn banner
+  (OpenFOAM); and a NUL-padded fixed-width binary slot (STL, EnSight).
+  Exodus is the one exception, its block riding a netCDF `title` attribute,
+  read natively and fed to the same scanner.
+- **Raw lines, not a re-parsed record.** A block can be hand-edited,
+  truncated by a fixed-width slot, or written by a later release carrying
+  unknown fields; returning what is there, plus a flag for whether it starts
+  like ours, cannot silently drop or mis-attribute any of those.
+- **Never re-emitted** -- writers render from the live record only, so
+  converting a file N times leaves one block, not N.
+- **Fortran, Julia, R and WASM bindings** for the scope API, each giving the
+  C ABI's begin/end pair a lifetime in its own idiom: Julia a `do`-block, R
+  an `on.exit`-paired `mio_with_provenance()`, WASM a
+  `withProvenance(mode, fn)` callback -- all three closing the scope even
+  when the body throws. Fortran keeps the explicit pair, matching its own
+  `m%free()` convention.
+- **Wider conversion-assumption coverage** (OFF, PLY, STL, UNV, CGNS in both
+  engines; MDPA, MED, OpenFOAM in the C++ writers), guarded by a new
+  cross-engine test asserting that wherever both engines write a mesh they
+  record the same notes. Deliberately not an exhaustive sweep: most `warn()`
+  calls are reader-side or user-error diagnostics rather than conversion
+  assumptions, and some are stale -- `avsucd`'s "can only write one cell data
+  array" fires while both engines demonstrably write every array. Each site
+  needs checking, not translating; `doc/provenance.md` records this.
+
 ## v10.16.0 (2026-08-24)
 
 Closes roadmap section 1 in full except surfacing provenance on read
