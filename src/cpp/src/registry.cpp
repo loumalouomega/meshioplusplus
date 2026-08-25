@@ -41,6 +41,7 @@
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
+#include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
@@ -171,6 +172,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
+        // Write-only (gidpost has no read functions at all -- the reader is a
+        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // infers the flavour (ascii/binary/hdf5) from the path's extension.
+        {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
         // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
@@ -337,6 +342,16 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".off", "off"},
         {".post", "permas"},
         {".dato", "permas"},
+        // GiD postprocess. All four are compound extensions, and
+        // resolve_format() tries the longest suffix first, so ".post.msh"
+        // resolves to "gid" rather than falling through to ".msh" -> gmsh.
+        // Registered even when the build has no gidpost: write_gid() then
+        // throws naming the missing build flags, which is strictly better
+        // than ".post.msh" silently resolving to another format.
+        {".post.msh", "gid"},
+        {".post.res", "gid"},
+        {".post.bin", "gid"},
+        {".post.h5", "gid"},
         {".ply", "ply"},
         {".stl", "stl"},
         {".su2", "su2"},
@@ -374,9 +389,17 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
 
 namespace {
 
-std::string extension_of(const std::string& rPath) {
-    auto pos = rPath.find_last_of('.');
-    return pos == std::string::npos ? "" : rPath.substr(pos);
+// Longest compound extension first: ".post.msh" must win over ".msh" (gmsh),
+// or the GiD writer is unreachable by path alone. Walking from the FIRST dot
+// of the basename forward yields candidates in strictly decreasing length,
+// so the first hit is the longest match. The basename strip matters: a
+// directory component with a dot ("/home/.config/m.vtu") would otherwise
+// produce a nonsense first candidate. Behaviour-preserving for every
+// extension registered before the compound ones existed -- every one of them
+// is single-dot, so at most one candidate can ever match for those paths.
+std::string basename_of(const std::string& rPath) {
+    auto pos = rPath.find_last_of("/\\");
+    return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
 }
 
 }  // namespace
@@ -384,11 +407,16 @@ std::string extension_of(const std::string& rPath) {
 std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
     if (!rFormat.empty())
         return rFormat;
-    auto it = registry_extension_defaults().find(extension_of(rPath));
-    if (it == registry_extension_defaults().end())
-        throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
-                                        "' -- pass an explicit format argument");
-    return it->second;
+    const auto& defaults = registry_extension_defaults();
+    const std::string base = basename_of(rPath);
+    for (std::size_t pos = base.find('.'); pos != std::string::npos;
+         pos = base.find('.', pos + 1)) {
+        auto it = defaults.find(base.substr(pos));
+        if (it != defaults.end())
+            return it->second;
+    }
+    throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
+                                    "' -- pass an explicit format argument");
 }
 
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
