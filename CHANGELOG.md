@@ -20,6 +20,22 @@ libraries' `SOVERSION` becomes 11. Recompile against the new headers; the C
 ABI is unaffected (`mio_read_metadata` is an opaque handle, so its new
 accessors are purely additive).
 
+- **Provenance is now on by default.** An ordinary `write()` records the
+  conversion assumptions raised while it ran, with no scope needed (it
+  shipped opt-in in v10.16.0). The fields that need a caller to supply them
+  -- source, target, operation chain -- stay absent without a scope, and no
+  timestamp is added, so a write that loses nothing is byte-for-byte what
+  v10.15.0 produced and every byte-pinned test is untouched. Turn it off with
+  `MESHIOPLUSPLUS_PROVENANCE=off` or `set_default_provenance_mode(Off)`.
+- **Scope-less notes are bounded to the write that raised them.** Without
+  this a note had no lifetime: `extract_surface(A)` dropping a region put
+  `Note [regions-dropped]: extract_surface: ...` into an unrelated mesh B's
+  header. The public write entry points (`meshioplusplus.write`,
+  `registry_write_ex`, `mio_write`) now reset the scope-less record first. A
+  note raised *before* a write is dropped rather than misattributed -- use an
+  explicit scope spanning the operations and the write to capture those --
+  and the low-level C++ writers, called directly, still leave that to the
+  caller.
 - **Reading a provenance block back** -- `read_metadata()` now reports the
   block a file carries as `provenance` (one line per entry, comment
   punctuation stripped) plus `provenance_recognised`, and both CLIs' `info`
