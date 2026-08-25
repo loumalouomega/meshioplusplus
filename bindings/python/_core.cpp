@@ -48,6 +48,7 @@
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
+#include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
@@ -277,6 +278,16 @@ PYBIND11_MODULE(_core, m) {
     m.attr("__has_kahip__") = true;
 #else
     m.attr("__has_kahip__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_GIDPOST
+    m.attr("__has_gidpost__") = true;
+#else
+    m.attr("__has_gidpost__") = false;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_GIDPOST_HDF5
+    m.attr("__has_gidpost_hdf5__") = true;
+#else
+    m.attr("__has_gidpost_hdf5__") = false;
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_JSON
     m.attr("__has_json__") = true;
@@ -2876,6 +2887,20 @@ finalizes.
     m.def("freefem_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_freefem(path));
     });
+
+    // GiD postprocess writer, on a vendored gidpost (write-only -- gidpost
+    // has no read functions at all). `mode` is one of "auto"/"ascii"/
+    // "binary"/"hdf5", the flat-binding spelling of GidMode.
+    m.def(
+        "gid_write",
+        [](const std::string& path, py::object pymesh, const std::string& mode,
+           const std::string& analysis_name, double step) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_gid(path, meshioplusplus_py::py_to_mesh(pymesh, refs),
+                                      meshioplusplus::gid_mode_from_name(mode), analysis_name, step);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("mode") = "auto",
+        py::arg("analysis_name") = "meshio++", py::arg("step") = 1.0);
 
     // MFM (Modulef Formatted Mesh) writer / reader (.mfm).
     m.def("mfm_write",
