@@ -52734,6 +52734,24 @@ namespace {
 // tests/cpp/test_gid.cpp GidOrdering suite, which checks the RAW WRITTEN
 // FILE against GiD's own geometry, never a round trip (there is no reader).
 //
+// UNRESOLVED, and deliberately recorded rather than quietly settled:
+// CIMNE's own published figure for the 20-node hexahedron (the `hexa20.gif`
+// in the GiD reference manual's postprocess-format page) numbers the
+// mid-edge nodes bottom-ring, VERTICALS, top-ring -- i.e. exactly Kratos's
+// INTERNAL order, the order Kratos then permutes away from. Taken at face
+// value it says the identity mapping used here is wrong. It is not followed,
+// for two reasons: the figure is from the GiD 6-era manual and CIMNE's
+// current grammar dropped the mid-edge figures entirely, saying only
+// "hierarchical order ... vertex nodes first, then the middle ones"; and
+// Kratos's permutation is a production code path exercised against real GiD
+// for years and labelled a "workaround", i.e. added in response to an
+// observed problem. Documentary evidence loses to that. Settling it needs an
+// external oracle nobody here has -- a hexahedron20 file written by GiD
+// itself, or GiD rendering ours -- so the risk is stated in
+// doc/formats/gid.md instead of being hidden behind a confident comment.
+// NOTE the GidOrdering tests cannot adjudicate this: they pin that no
+// permutation is applied, not that none is needed.
+//
 // Anything not in this table -- hexahedron27/wedge15/pyramid13 (orderings
 // not independently verified above), polygon/polyhedron (GiD has no such
 // type), every VTK-Lagrange/higher-degree type -- throws by name rather than
@@ -53156,6 +53174,7 @@ void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&
 // ===== begin src/cpp/src/formats/gid_read.cpp =====
 #include <cstdint>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <string>
@@ -53195,6 +53214,32 @@ using gid_detail::gid_resolve_mode;
 // counterpart, AND their element rows are not all-integer (they embed a radius
 // and, for Circle, a normal vector), so they need a different row parser
 // entirely rather than merely a type name.
+/**
+ * @brief Case-insensitive ASCII comparison of a keyword token.
+ *
+ * GiD's own specification is explicit that the structural keywords are not
+ * case-sensitive -- "MESH, dimension, elemtype, nnode: are keywords that are
+ * not case-sensitive", and likewise for the `coordinates`/`end coordinates`
+ * and `elements`/`end elements` pairs. This is not a tolerance we are adding:
+ * the manual's own worked example writes `Coordinates` capitalised but closes
+ * it with a lower-case `end coordinates`, so a reader matching exact case
+ * rejects the specification's own example file.
+ *
+ * ASCII-only by construction (`std::tolower` with an `unsigned char` cast):
+ * every keyword in the grammar is ASCII, and a locale-sensitive fold would be
+ * both wrong and non-deterministic here.
+ */
+bool gid_keyword_is(const std::string& rTok, const char* pKeyword) {
+    std::size_t i = 0;
+    for (; i < rTok.size() && pKeyword[i] != '\0'; ++i) {
+        const auto a = static_cast<unsigned char>(rTok[i]);
+        const auto b = static_cast<unsigned char>(pKeyword[i]);
+        if (std::tolower(a) != std::tolower(b))
+            return false;
+    }
+    return i == rTok.size() && pKeyword[i] == '\0';
+}
+
 struct GidReadType {
     const char* mGidName;
     int mNumNodes;
@@ -53204,7 +53249,14 @@ struct GidReadType {
 const std::vector<GidReadType>& gid_read_type_table() {
     static const std::vector<GidReadType> table = {
         {"Point", 1, "vertex"},          {"Linear", 2, "line"},
-        {"Linear", 3, "line3"},          {"Triangle", 3, "triangle"},
+        {"Linear", 3, "line3"},
+        // GiD spells the 1-D type two ways and accepts both: gidpost -- CIMNE's
+        // own writer, vendored here -- emits "Linear" (gidpostFILES.c's
+        // strElementType), while CIMNE's current published grammar names it
+        // "Line". Files in the wild therefore carry either, so read both.
+        // The writer is unaffected: it goes through gidpost and emits "Linear".
+        {"Line", 2, "line"},             {"Line", 3, "line3"},
+        {"Triangle", 3, "triangle"},
         {"Triangle", 6, "triangle6"},    {"Quadrilateral", 4, "quad"},
         {"Quadrilateral", 8, "quad8"},   {"Quadrilateral", 9, "quad9"},
         {"Tetrahedra", 4, "tetra"},      {"Tetrahedra", 10, "tetra10"},
@@ -53216,7 +53268,7 @@ const std::vector<GidReadType>& gid_read_type_table() {
 
 std::string gid_meshio_type(const std::string& rGidName, int nnode) {
     for (const GidReadType& e : gid_read_type_table())
-        if (rGidName == e.mGidName && nnode == e.mNumNodes)
+        if (gid_keyword_is(rGidName, e.mGidName) && nnode == e.mNumNodes)
             return e.mMeshioName;
     throw ReadError("GiD: element type '" + rGidName + "' with Nnode " + std::to_string(nnode) +
                     " has no verified meshio++ mapping");
@@ -53274,6 +53326,28 @@ std::vector<std::string> gid_split(const std::string& rLine) {
     }
     return out;
 }
+
+/// True when `rLine` *starts* a keyword phrase such as "End Coordinates",
+/// ignoring case and collapsing the run of spaces between the two words.
+bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const char* pSecond) {
+    // Called once per row of every Coordinates/Elements/Values block, so the
+    // common case -- a data row, which never begins with the keyword's first
+    // letter -- must not pay for a tokenisation. Peek at the first non-space
+    // character before doing any allocation.
+    std::size_t i = 0;
+    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+        ++i;
+    if (i >= rLine.size() ||
+        std::tolower(static_cast<unsigned char>(rLine[i])) !=
+            std::tolower(static_cast<unsigned char>(pFirst[0])))
+        return false;
+
+    const std::vector<std::string> tok = gid_split(rLine);
+    if (tok.size() < 2)
+        return false;
+    return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
+}
+
 
 /// True when the line's first non-space character is `#`.
 ///
@@ -53389,7 +53463,7 @@ struct GidGaussSet {
 void gid_read_coordinates(GidLineCursor& rCur, GidStaged& rStaged) {
     std::string line;
     while (rCur.Next(line)) {
-        if (line.rfind("End Coordinates", 0) == 0)
+        if (gid_line_starts_with(line, "End", "Coordinates"))
             return;
         const std::vector<std::string> tok = gid_split(line);
         // gidpost's block writer always emits 3 coordinates, but the per-node
@@ -53415,7 +53489,7 @@ void gid_read_elements(GidLineCursor& rCur, GidBlock& rBlock) {
     std::string line;
     bool material_seen = false;
     while (rCur.Next(line)) {
-        if (line.rfind("End Elements", 0) == 0) {
+        if (gid_line_starts_with(line, "End", "Elements")) {
             if (!material_seen)
                 rBlock.mMaterial.clear();
             return;
@@ -53465,16 +53539,25 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
         if (tok.empty())
             continue;
 
-        if (tok[0] == "MESH") {
+        if (gid_keyword_is(tok[0], "MESH")) {
             // MESH "<name>" dimension <2|3> ElemType <T> Nnode <K>
             GidBlock block;
             std::string gid_type;
             int nnode = 0;
-            block.mMeshName = tok.size() > 1 ? tok[1] : std::string();
-            for (std::size_t i = 2; i + 1 < tok.size(); ++i) {
-                if (tok[i] == "ElemType")
+            // The name is OPTIONAL -- the specification's own example writes
+            // `MESH dimension 3 ElemType Linear Nnode 2` with none. It is a
+            // name exactly when it is not the next grammar keyword; taking
+            // tok[1] unconditionally names such a mesh "dimension", which then
+            // mis-binds any GaussPoints set that refers to a mesh by name.
+            std::size_t i = 1;
+            if (i < tok.size() && !gid_keyword_is(tok[i], "dimension")) {
+                block.mMeshName = tok[i];
+                ++i;
+            }
+            for (; i + 1 < tok.size(); ++i) {
+                if (gid_keyword_is(tok[i], "ElemType"))
                     gid_type = tok[i + 1];
-                else if (tok[i] == "Nnode")
+                else if (gid_keyword_is(tok[i], "Nnode"))
                     nnode = static_cast<int>(gid_to_int(tok[i + 1], "Nnode"));
             }
             if (gid_type.empty() || nnode <= 0)
@@ -53485,23 +53568,23 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
             continue;
         }
 
-        if (tok[0] == "Coordinates") {
+        if (gid_keyword_is(tok[0], "Coordinates")) {
             gid_read_coordinates(cur, rStaged);
             continue;
         }
-        if (tok[0] == "Elements") {
+        if (gid_keyword_is(tok[0], "Elements")) {
             if (rStaged.mBlocks.empty())
                 throw ReadError("GiD: Elements block before any MESH header");
             gid_read_elements(cur, rStaged.mBlocks.back());
             continue;
         }
-        if (tok[0] == "Group") {
+        if (gid_keyword_is(tok[0], "Group")) {
             // Mesh groups have no meshio++ counterpart yet (a documented
             // roadmap item); the MESH blocks inside are read normally, so only
             // the wrapper is ignored.
             continue;
         }
-        if (tok[0] == "End" || tok[0] == "Unit")
+        if (gid_keyword_is(tok[0], "End") || gid_keyword_is(tok[0], "Unit"))
             continue;  // "End Group"/"End Mesh"-style closers, and mesh units
         // Anything else at mesh scope is a construct we do not map; ignoring it
         // is safe because every block we DO map is self-delimiting.
@@ -53555,7 +53638,7 @@ void gid_read_values(GidLineCursor& rCur, GidResult& rResult) {
     bool first = true;
     std::int64_t last_id = 0;
     while (rCur.Next(line)) {
-        if (line.rfind("End Values", 0) == 0)
+        if (gid_line_starts_with(line, "End", "Values"))
             return;
         const std::vector<std::string> tok = gid_split(line);
         if (tok.empty())
@@ -53599,7 +53682,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
         if (tok.empty())
             continue;
 
-        if (tok[0] == "GaussPoints") {
+        if (gid_keyword_is(tok[0], "GaussPoints")) {
             // GaussPoints "<gp>" ElemType <T> ["<meshname>"]
             // There is NO OnMeshName keyword -- the mesh name is a bare
             // trailing quoted string, which is why it is found positionally.
@@ -53609,17 +53692,17 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 set.mMeshName = tok[4];
             std::string inner;
             while (cur.Next(inner)) {
-                if (inner.rfind("End GaussPoints", 0) == 0)
+                if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && it[0] == "Number" && it[1] == "Of")
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
             }
             rGauss[gp_name] = set;
             continue;
         }
 
-        if (tok[0] == "Result") {
+        if (gid_keyword_is(tok[0], "Result")) {
             // Result "<name>" "<analysis>" <step> <Type> <Location> ["<gp>"]
             if (tok.size() < 6)
                 throw ReadError("GiD: malformed Result header: " + line);
@@ -53636,12 +53719,12 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             std::string inner;
             while (cur.Next(inner)) {
                 const std::vector<std::string> it = gid_split(inner);
-                if (!it.empty() && it[0] == "Values") {
+                if (!it.empty() && gid_keyword_is(it[0], "Values")) {
                     gid_read_values(cur, res);
                     break;
                 }
                 if (!it.empty() &&
-                    (it[0] == "ResultRangesTable" || it[0] == "ComponentNames" || it[0] == "Unit"))
+                    (gid_keyword_is(it[0], "ResultRangesTable") || gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
                     continue;
                 throw ReadError("GiD: unexpected line in result '" + res.mName + "': " + inner);
             }
@@ -53649,11 +53732,11 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             continue;
         }
 
-        if (tok[0] == "ResultRangesTable") {
+        if (gid_keyword_is(tok[0], "ResultRangesTable")) {
             gid_skip_to_end(cur, "ResultRangesTable");
             continue;
         }
-        if (tok[0] == "ResultGroup") {
+        if (gid_keyword_is(tok[0], "ResultGroup")) {
             // A ResultGroup packs several results into one wide Values row.
             // meshio++ has never written one and unpacking it needs the
             // per-member ResultDescription dims; refuse by name rather than
@@ -53661,7 +53744,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             throw ReadError(
                 "GiD: ResultGroup blocks are not supported by this reader (a documented gap)");
         }
-        if (tok[0] == "OnGroup") {
+        if (gid_keyword_is(tok[0], "OnGroup")) {
             gid_skip_to_end(cur, "OnGroup");
             continue;
         }
@@ -54215,15 +54298,24 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
         if (tok.empty())
             continue;
 
-        if (tok[0] == "MESH") {
+        if (gid_keyword_is(tok[0], "MESH")) {
             GidBlock block;
             std::string gid_type;
             int nnode = 0;
-            block.mMeshName = tok.size() > 1 ? tok[1] : std::string();
-            for (std::size_t i = 2; i + 1 < tok.size(); ++i) {
-                if (tok[i] == "ElemType")
+            // The name is OPTIONAL -- the specification's own example writes
+            // `MESH dimension 3 ElemType Linear Nnode 2` with none. It is a
+            // name exactly when it is not the next grammar keyword; taking
+            // tok[1] unconditionally names such a mesh "dimension", which then
+            // mis-binds any GaussPoints set that refers to a mesh by name.
+            std::size_t i = 1;
+            if (i < tok.size() && !gid_keyword_is(tok[i], "dimension")) {
+                block.mMeshName = tok[i];
+                ++i;
+            }
+            for (; i + 1 < tok.size(); ++i) {
+                if (gid_keyword_is(tok[i], "ElemType"))
                     gid_type = tok[i + 1];
-                else if (tok[i] == "Nnode")
+                else if (gid_keyword_is(tok[i], "Nnode"))
                     nnode = static_cast<int>(gid_to_int(tok[i + 1], "Nnode"));
             }
             if (gid_type.empty() || nnode <= 0)
@@ -54262,7 +54354,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
             continue;
         }
 
-        if (tok[0] == "GaussPoints") {
+        if (gid_keyword_is(tok[0], "GaussPoints")) {
             GidGaussSet set;
             const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
             if (tok.size() >= 5)
@@ -54275,10 +54367,10 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 } catch (const ReadError&) {
                     break;
                 }
-                if (inner.rfind("End GaussPoints", 0) == 0)
+                if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && it[0] == "Number" && it[1] == "Of")
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
                 else if (it.empty())
                     cur.Seek(save);
@@ -54287,7 +54379,7 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
             continue;
         }
 
-        if (tok[0] == "Result") {
+        if (gid_keyword_is(tok[0], "Result")) {
             if (tok.size() < 6)
                 throw ReadError("GiD: malformed binary Result header: " + rec);
             GidResult res;

@@ -55,6 +55,14 @@ Files in the wild differ from meshio++'s own output in two ways, both observed i
 
 A trailing material column reads back as `cell_data["gmsh:physical"]` — the exact inverse of the key the writer consumes. `Nnode` from the `MESH` header is the **only** disambiguator for that column, since GiD writes no separator before it. An all-zero column means "no materials" and is deliberately *not* surfaced: the binary and HDF5 writers always emit one, so materializing it would invent data and make the three flavours disagree on a round trip.
 
+### Grammar conformance
+
+Three properties come from CIMNE's published grammar rather than from gidpost's behaviour. None is reachable through meshio++'s own writer — gidpost emits one fixed casing, always writes a mesh name, and always spells the 1-D type `Linear` — so a round trip cannot exercise any of them, and each is pinned by a hand-authored fixture instead.
+
+- **Keywords are case-insensitive.** GiD states this explicitly for `MESH`/`dimension`/`ElemType`/`Nnode` and for the `coordinates`/`end coordinates` and `elements`/`end elements` pairs. It is not a tolerance meshio++ adds: the manual's own worked example opens a block with `Coordinates` and closes it with `end coordinates`, so a case-sensitive reader rejects the specification's own example file.
+- **The mesh name is optional.** `MESH dimension 3 ElemType Linear Nnode 2` is legal (and is the manual's own second example). The name is taken only when the token after `MESH` is not the `dimension` keyword — reading it unconditionally names such a mesh `"dimension"`, which then lets a `GaussPoints` set declared `OnMesh "dimension"` bind to it and attach a result that does not belong to it.
+- **The 1-D type has two spellings.** gidpost — CIMNE's own writer, vendored here — emits `Linear`, while CIMNE's current published grammar names the type `Line`. Both are read; the writer is unaffected, since it goes through gidpost.
+
 ### What reading does not recover
 
 - **Gauss-point results with more than one point per element** are dropped with a warning. meshio++'s `cell_data` is `(n,)`/`(n,k)`, never per-node-within-cell — the same structural limit MED's ELNO/ELGA documents. Averaging or taking the first point would invent data.
@@ -76,7 +84,17 @@ GiD has exactly ten element types; higher-order variants share a type with a lar
 | `wedge` | `Prism` | 6 |
 | `pyramid` | `Pyramid` | 5 |
 
-Every entry is **identity** (no node permutation) — independently cross-checked against Kratos Multiphysics's own production GiD writer (`kratos/includes/gid_mesh_container.h`), whose only reordering is for `hexahedron20`, and whose own internal hexahedra20 convention turns out to differ from GiD's for a reason unrelated to meshio++: Kratos's own node order (corners, bottom ring, verticals, top ring) differs from GiD's (corners, bottom ring, top ring, verticals) — and GiD's convention is, edge for edge, identical to meshio++'s own `hexahedron20` table. Kratos's own geometry classes for `triangle6`/`tetra10`/`quad8` apply no reorder at all when writing to GiD, and their edge tables match meshio++'s own edge-for-edge too. Pinned by `tests/cpp/test_gid.cpp`'s `GidOrdering` suite, which checks the raw written file against GiD's own geometry — not a round trip through a reader that does not exist.
+Every entry is **identity** (no node permutation), cross-checked against Kratos Multiphysics's own production GiD writer (`kratos/includes/gid_mesh_container.h`). Kratos's only reordering is for `hexahedron20`, and it exists because Kratos's *internal* order (corners, bottom ring, verticals, top ring) differs from the order it writes to GiD (corners, bottom ring, top ring, verticals) — which is, edge for edge, meshio++'s own `hexahedron20` table, hence identity here. Kratos applies no reorder at all for `triangle6`/`tetra10`/`quad8`, and those edge tables match meshio++'s edge-for-edge too.
+
+::: warning `hexahedron20` — sources conflict, and this is unresolved
+CIMNE's own published figure for the 20-node hexahedron (`hexa20.gif`, in the GiD reference manual's postprocess-format page) numbers the mid-edge nodes **bottom ring, verticals, top ring** — that is, exactly Kratos's *internal* order, the one Kratos permutes away from before writing. Taken at face value, the figure says the identity mapping above is wrong.
+
+meshio++ follows Kratos, for two reasons. The figure is from the GiD 6-era manual, and CIMNE's current published grammar dropped the mid-edge figures entirely, saying only *"hierarchical order … vertex nodes first, then the middle ones"* — it specifies no mid-edge order at all. And Kratos's permutation is a production path exercised against real GiD for years, labelled a "workaround", i.e. added in response to an observed problem; that outweighs a superseded diagram.
+
+Settling it needs an external oracle: a `hexahedron20` file written by GiD itself, or GiD rendering meshio++'s output. Neither was available, so the risk is stated rather than hidden. `hexahedron8` and every lower-order type are unaffected — they have no mid-edge nodes — as are `tetra10`/`triangle6`/`quad8`/`quad9`, whose orderings are not in dispute.
+:::
+
+The `GidOrdering` suite in `tests/cpp/test_gid.cpp` pins that the writer applies **no permutation** — it emits slots in the order it was handed them. It deliberately does *not* claim to pin that meshio++'s order is GiD's: its expected positions are built from meshio++'s own edge table, so under an identity mapping the assertion is a tautology. Only an external oracle could close that gap.
 
 **Not yet supported** — throws a `WriteError` naming the type, never a guess: `hexahedron27`, `wedge15`, `pyramid13` (orderings not independently verified); `polygon`/`polyhedron` (GiD has no such type); every `VTK_LAGRANGE_*` and higher-degree Lagrange type.
 

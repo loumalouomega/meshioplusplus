@@ -293,3 +293,101 @@ def test_buffer_is_refused():
 
     with pytest.raises(Exception, match="multiple files"):
         meshioplusplus.read(io.BytesIO(b""), file_format="gid")
+
+
+# ---------------------------------------------------------------------------
+# Grammar conformance against CIMNE's published specification.
+#
+# These three cases come from the *current* official grammar rather than from
+# gidpost's behaviour, and none of them is reachable through our own writer --
+# gidpost emits exactly one casing, always writes a mesh name, and always
+# spells the 1-D type "Linear". So a round trip cannot exercise any of them,
+# which is precisely why they are hand-authored.
+# ---------------------------------------------------------------------------
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text)
+    return p
+
+
+def test_keywords_are_case_insensitive(tmp_path):
+    """CIMNE: "keywords ... are not case-sensitive".
+
+    The specification's own worked example opens with ``Coordinates`` and
+    closes with ``end coordinates``, so a case-sensitive reader rejects the
+    grammar's own example file.
+    """
+    path = _write(
+        tmp_path,
+        "mixed.post.msh",
+        'mesh "lower" DIMENSION 3 elemtype Triangle nnode 3\n'
+        "coordinates\n1 0.0 0.0 0.0\n2 1.0 0.0 0.0\n3 0.0 1.0 0.0\nEND COORDINATES\n"
+        "Elements\n1 1 2 3\nend elements\n",
+    )
+    mesh = meshioplusplus.gid.read(str(path))
+    assert len(mesh.points) == 3
+    assert mesh.cells[0].type == "triangle"
+
+
+def test_mesh_name_is_optional(tmp_path):
+    """A nameless header must parse. ``MESH dimension 3 ElemType Linear Nnode
+    2`` is the specification's own example."""
+    path = _write(
+        tmp_path,
+        "noname.post.msh",
+        "MESH    dimension 3 ElemType Triangle  Nnode 3\n"
+        "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nend coordinates\n"
+        "Elements\n1 1 2 3\nend elements\n",
+    )
+    mesh = meshioplusplus.gid.read(str(path))
+    assert len(mesh.points) == 3
+    assert mesh.cells[0].type == "triangle"
+
+
+def test_a_nameless_mesh_is_not_named_dimension(tmp_path):
+    """The observable consequence of the optional-name rule.
+
+    Parsing a nameless header alone cannot distinguish the two readings -- the
+    ``ElemType``/``Nnode`` scan finds its keywords either way -- so this pins
+    the one place the name is actually *used*: binding a ``GaussPoints`` set to
+    a block by mesh name. Taking ``tok[1]`` unconditionally names the mesh
+    "dimension", and a set declared ``OnMesh "dimension"`` then binds to it and
+    attaches a result that does not belong to it.
+    """
+    _write(
+        tmp_path,
+        "nm.post.msh",
+        "MESH dimension 3 ElemType Triangle Nnode 3\n"
+        "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nend coordinates\n"
+        "Elements\n1 1 2 3\nend elements\n",
+    )
+    _write(
+        tmp_path,
+        "nm.post.res",
+        "GiD Post Results File 1.2\n"
+        'GaussPoints "gp" ElemType Triangle "dimension"\n'
+        "Number Of Gauss Points: 1\n"
+        "Natural Coordinates: Internal\n"
+        "End GaussPoints\n"
+        'Result "q" "a" 1 Scalar OnGaussPoints "gp"\n'
+        "Values\n1 5\nEnd Values\n",
+    )
+    mesh = meshioplusplus.gid.read(str(tmp_path / "nm.post.msh"))
+    assert "q" not in mesh.cell_data
+
+
+@pytest.mark.parametrize("spelling", ["Linear", "Line"])
+def test_both_spellings_of_the_1d_type_are_read(tmp_path, spelling):
+    """gidpost emits "Linear"; CIMNE's current grammar names it "Line"."""
+    path = _write(
+        tmp_path,
+        f"{spelling}.post.msh",
+        f'MESH "l" dimension 3 ElemType {spelling} Nnode 2\n'
+        "Coordinates\n1 0 0 0\n2 1 0 0\nend coordinates\n"
+        "Elements\n1 1 2\nend elements\n",
+    )
+    mesh = meshioplusplus.gid.read(str(path))
+    assert mesh.cells[0].type == "line"
+    assert len(mesh.points) == 2

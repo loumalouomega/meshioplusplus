@@ -91,6 +91,24 @@ namespace {
 // tests/cpp/test_gid.cpp GidOrdering suite, which checks the RAW WRITTEN
 // FILE against GiD's own geometry, never a round trip (there is no reader).
 //
+// UNRESOLVED, and deliberately recorded rather than quietly settled:
+// CIMNE's own published figure for the 20-node hexahedron (the `hexa20.gif`
+// in the GiD reference manual's postprocess-format page) numbers the
+// mid-edge nodes bottom-ring, VERTICALS, top-ring -- i.e. exactly Kratos's
+// INTERNAL order, the order Kratos then permutes away from. Taken at face
+// value it says the identity mapping used here is wrong. It is not followed,
+// for two reasons: the figure is from the GiD 6-era manual and CIMNE's
+// current grammar dropped the mid-edge figures entirely, saying only
+// "hierarchical order ... vertex nodes first, then the middle ones"; and
+// Kratos's permutation is a production code path exercised against real GiD
+// for years and labelled a "workaround", i.e. added in response to an
+// observed problem. Documentary evidence loses to that. Settling it needs an
+// external oracle nobody here has -- a hexahedron20 file written by GiD
+// itself, or GiD rendering ours -- so the risk is stated in
+// doc/formats/gid.md instead of being hidden behind a confident comment.
+// NOTE the GidOrdering tests cannot adjudicate this: they pin that no
+// permutation is applied, not that none is needed.
+//
 // Anything not in this table -- hexahedron27/wedge15/pyramid13 (orderings
 // not independently verified above), polygon/polyhedron (GiD has no such
 // type), every VTK-Lagrange/higher-degree type -- throws by name rather than

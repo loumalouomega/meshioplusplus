@@ -137,11 +137,21 @@ void expect_point_near(const std::array<double, 3>& rGot, const std::vector<doub
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// GidOrdering: the written-bytes ordering oracle. Each test builds a cell
+// GidOrdering: the written-bytes *permutation* oracle. Each test builds a cell
 // whose points sit at geometrically-known positions with IDENTITY
 // connectivity, writes it, then re-parses the RAW file and checks where each
-// referenced point actually is -- independent of gid.cpp's own mapping
-// table, and (since gidpost has no reader) with no round trip possible.
+// referenced point actually is -- with no round trip involved, since gidpost
+// has no reader.
+//
+// WHAT THIS DOES AND DOES NOT PIN. It pins that the writer emits slots in the
+// order it was handed them: any permutation gid.cpp applied (or later starts
+// applying) fails here. It does NOT pin that meshio++'s order IS GiD's order,
+// and cannot: `pts` is built from meshio++'s own edge table, so for an
+// identity mapping the assertion reduces to pts[slot] == pts[slot]. Only an
+// external oracle -- a file GiD itself wrote, or GiD rendering our output --
+// can settle the convention, and neither is available here. See gid.cpp's
+// cell-type table for the evidence the mapping actually rests on, and
+// doc/formats/gid.md for the one case where the available sources conflict.
 // ---------------------------------------------------------------------------
 
 TEST(GidOrdering, Hexahedron20MatchesGidGeometry) {
@@ -462,6 +472,75 @@ TEST(GidRead, UnverifiedOrderingIsRefusedByName) {
 TEST(GidRead, MissingGeometryFileIsAnError) {
     EXPECT_THROW(meshioplusplus::read_gid(mt::temp_path(".post.msh")),
                  meshioplusplus::ReadError);
+}
+
+// --- Grammar conformance against CIMNE's published specification. ----------
+// None of these is reachable through our own writer (gidpost emits one fixed
+// casing, always writes a mesh name, and always spells the 1-D type
+// "Linear"), so a round trip cannot exercise them.
+
+TEST(GidRead, KeywordsAreCaseInsensitive) {
+    // GiD states this explicitly. The manual's own worked example opens a block
+    // with `Coordinates` and closes it with `end coordinates`, so a
+    // case-sensitive reader rejects the specification's own example file.
+    const std::string path = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(path);
+        f << "mesh \"lower\" DIMENSION 3 elemtype Triangle nnode 3\n"
+             "coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEND COORDINATES\n"
+             "Elements\n1 1 2 3\nend elements\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(path);
+    EXPECT_EQ(out.NumPoints(), 3u);
+    ASSERT_EQ(out.NumCellBlocks(), 1u);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle");
+}
+
+TEST(GidRead, ANamelessMeshIsNotNamedDimension) {
+    // The mesh name is optional. Parsing a nameless header alone cannot tell
+    // the two readings apart -- the ElemType/Nnode scan finds its keywords
+    // either way -- so this pins the one place the name is USED: binding a
+    // GaussPoints set to a block. Taking the token after MESH unconditionally
+    // names the mesh "dimension", and a set declared OnMesh "dimension" then
+    // binds to it and attaches a result that does not belong to it.
+    const std::string mesh_path = mt::temp_path(".post.msh");
+    const std::string res_path = mesh_path.substr(0, mesh_path.size() - 9) + ".post.res";
+    {
+        std::ofstream f(mesh_path);
+        f << "MESH dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n";
+    }
+    {
+        std::ofstream f(res_path);
+        f << "GiD Post Results File 1.2\n"
+             "GaussPoints \"gp\" ElemType Triangle \"dimension\"\n"
+             "Number Of Gauss Points: 1\n"
+             "Natural Coordinates: Internal\n"
+             "End GaussPoints\n"
+             "Result \"q\" \"a\" 1 Scalar OnGaussPoints \"gp\"\n"
+             "Values\n1 5\nEnd Values\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(mesh_path);
+    EXPECT_FALSE(out.HasCellData("q"));
+}
+
+TEST(GidRead, BothSpellingsOfTheOneDimensionalTypeAreRead) {
+    // gidpost emits "Linear"; CIMNE's current published grammar names the type
+    // "Line". Both are CIMNE's, so files in the wild carry either.
+    for (const char* spelling : {"Linear", "Line"}) {
+        const std::string path = mt::temp_path(".post.msh");
+        {
+            std::ofstream f(path);
+            f << "MESH \"l\" dimension 3 ElemType " << spelling
+              << " Nnode 2\n"
+                 "Coordinates\n1 0 0 0\n2 1 0 0\nEnd Coordinates\n"
+                 "Elements\n1 1 2\nEnd Elements\n";
+        }
+        const Mesh out = meshioplusplus::read_gid(path);
+        ASSERT_EQ(out.NumCellBlocks(), 1u) << spelling;
+        EXPECT_EQ(out.Cells(0).Type(), "line") << spelling;
+    }
 }
 
 TEST(GidRead, IsReadableRegardlessOfTheWriter) {
