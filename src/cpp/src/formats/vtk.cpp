@@ -27,6 +27,7 @@
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
@@ -181,7 +182,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
     }
 
     os << (v51 ? "# vtk DataFile Version 5.1\n" : "# vtk DataFile Version 4.2\n");
-    os << "written by meshio++ (C++ core)\n";
+    os << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\n";
     os << (binary ? "BINARY\n" : "ASCII\n");
     os << "DATASET UNSTRUCTURED_GRID\n";
 

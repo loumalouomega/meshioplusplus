@@ -8,6 +8,151 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.17.0 (2026-08-24)
+
+Closes roadmap section 1 in full; the section has been removed from
+`doc/roadmap.md`. See `doc/provenance.md`.
+
+**ABI: `MESHIOPLUSPLUS_ABI_VERSION` 10 -> 11.** This is the one item a C++
+consumer must act on: `MeshMetadata` gained two fields (below), a Tier A
+layout change, so its `sizeof` moved 256 -> 288 and the C++ variant
+libraries' `SOVERSION` becomes 11. Recompile against the new headers; the C
+ABI is unaffected (`mio_read_metadata` is an opaque handle, so its new
+accessors are purely additive).
+
+- **Provenance is now on by default.** An ordinary `write()` records the
+  conversion assumptions raised while it ran, with no scope needed (it
+  shipped opt-in in v10.16.0). The fields that need a caller to supply them
+  -- source, target, operation chain -- stay absent without a scope, and no
+  timestamp is added, so a write that loses nothing is byte-for-byte what
+  v10.15.0 produced and every byte-pinned test is untouched. Turn it off with
+  `MESHIOPLUSPLUS_PROVENANCE=off` or `set_default_provenance_mode(Off)`.
+- **Scope-less notes are bounded to the write that raised them.** Without
+  this a note had no lifetime: `extract_surface(A)` dropping a region put
+  `Note [regions-dropped]: extract_surface: ...` into an unrelated mesh B's
+  header. The public write entry points (`meshioplusplus.write`,
+  `registry_write_ex`, `mio_write`) now reset the scope-less record first. A
+  note raised *before* a write is dropped rather than misattributed -- use an
+  explicit scope spanning the operations and the write to capture those --
+  and the low-level C++ writers, called directly, still leave that to the
+  caller.
+- **Reading a provenance block back** -- `read_metadata()` now reports the
+  block a file carries as `provenance` (one line per entry, comment
+  punctuation stripped) plus `provenance_recognised`, and both CLIs' `info`
+  print a `Provenance:` section, labelled `(not written by meshio++)` when
+  the block does not start the way this library writes one. New
+  `MeshMetadata::mProvenance`/`mProvenanceRecognised`, C accessors
+  `mio_read_metadata_num_provenance_lines`/`_provenance_line`/
+  `_provenance_recognised`, and a WASM `readProvenance(path)`.
+- **One scanner, not forty-four parsers.** The rendered block's content lines
+  are format-independent by construction, so recovery is a single pass over
+  the file's head bytes rather than a parser per format. Three wrappings need
+  more than a leading-marker strip: a keyword slot that wraps the text
+  (Tecplot's `TITLE = "..."`, Ansys's `(1 "...")`), whose closing punctuation
+  is removed only because that opener put it there -- never unconditionally,
+  since `Converted from x (fmt)` legitimately ends in `)`; a box-drawn banner
+  (OpenFOAM); and a NUL-padded fixed-width binary slot (STL, EnSight).
+  Exodus is the one exception, its block riding a netCDF `title` attribute,
+  read natively and fed to the same scanner.
+- **Raw lines, not a re-parsed record.** A block can be hand-edited,
+  truncated by a fixed-width slot, or written by a later release carrying
+  unknown fields; returning what is there, plus a flag for whether it starts
+  like ours, cannot silently drop or mis-attribute any of those.
+- **Never re-emitted** -- writers render from the live record only, so
+  converting a file N times leaves one block, not N.
+- **Fortran, Julia, R and WASM bindings** for the scope API, each giving the
+  C ABI's begin/end pair a lifetime in its own idiom: Julia a `do`-block, R
+  an `on.exit`-paired `mio_with_provenance()`, WASM a
+  `withProvenance(mode, fn)` callback -- all three closing the scope even
+  when the body throws. Fortran keeps the explicit pair, matching its own
+  `m%free()` convention.
+- **Wider conversion-assumption coverage** (OFF, PLY, STL, UNV, CGNS in both
+  engines; MDPA, MED, OpenFOAM in the C++ writers), guarded by a new
+  cross-engine test asserting that wherever both engines write a mesh they
+  record the same notes. Deliberately not an exhaustive sweep: most `warn()`
+  calls are reader-side or user-error diagnostics rather than conversion
+  assumptions, and some are stale -- `avsucd`'s "can only write one cell data
+  array" fires while both engines demonstrably write every array. Each site
+  needs checking, not translating; `doc/provenance.md` records this.
+
+## v10.16.0 (2026-08-24)
+
+Closes roadmap section 1 in full except surfacing provenance on read
+(bullet 8, left open) -- the opt-in richer provenance record `doc/roadmap.md`
+called for after v10.15.0's audit-and-normalize pass. See
+`doc/provenance.md` for the full design note.
+
+- **Opt-in provenance record** (`detail/provenance.hpp` + `_provenance.py`)
+  -- a caller can now wrap a write in a scope
+  (`meshioplusplus::detail::ProvenanceScope` in C++,
+  `meshioplusplus._provenance.scope` in Python) to have a writer with a
+  free-text header slot render, alongside the unconditional one-line credit,
+  the source path/format, the target format/encoding/codec/float-format
+  actually used, the operation chain, the conversion assumptions accepted
+  along the way, and an ISO-8601 timestamp (`SOURCE_DATE_EPOCH`-aware, with
+  an explicit off switch). With no scope open, output is byte-for-byte what
+  v10.15.0 wrote -- the record is opt-in everywhere, so no existing
+  byte-pinned test needed an exemption.
+- **Thread-local scope, not a `WriteOptions` field** -- reconnaissance found
+  that only 4 of the write paths reach `registry_write_ex`
+  (`WriteOptions`'s home); Python's own path and WASM's both bypass it
+  entirely, and growing `WriteOptions` is a Tier A ABI change. The record
+  lives in a thread-local RAII-scoped context instead (the
+  `set_buffer_allocator` shape), read by every writer exactly where it
+  already read the v10.15.0 tag, so no writer signature changed.
+- **The Python<->C++ bridge** -- opening a scope from Python also opens a
+  matching one on the C++ side (`bindings/python/_core.cpp`'s
+  `provenance_scope_push`/`_pop`), and every note/set call mirrors into
+  both, so a scope opened from Python is honoured by the ~40 of 44 formats
+  whose write goes through the compiled writer, not just the pure-Python
+  fallbacks.
+- **`SlotTier`** (`None`/`Bounded`/`SingleLine`/`Block`) classifies what
+  each writer's own header slot can hold; `Mode::Required` raises only for
+  `SlotTier::None` (no slot at all) -- degrading to a smaller slot's honest
+  maximum is not treated as a failure.
+- **Deliberately no engine marker in the file** -- the roadmap asked for one,
+  but it directly contradicts the harder guarantee that the C++ core and its
+  Python fallback emit character-identical bytes. Which engine wrote a file
+  is reported through `current_provenance()`/`scope.get()` instead.
+- **Operation-chain sourcing** -- the settings pipeline (both the C++ engine
+  and Python's separate pure-Python engine) records each step it runs,
+  pinned to render identically across the two for the common parameter
+  shapes.
+- **Conversion-assumption capture wired at two reference sites** --
+  `detail::warn_regions_dropped` (the 9-operation choke point) and the OFF
+  writer's cell-type-skip warning, in both engines with matching wording.
+  Extending coverage to the remaining ~60-80 sites is recorded as
+  mechanical follow-up work, not attempted exhaustively here.
+- **C ABI**: `mio_provenance_scope_begin`/`_end`, `mio_provenance_note`,
+  `mio_provenance_set_source`, `mio_provenance_set_target`. Fortran/Julia/R/
+  WASM bindings are a recorded follow-up.
+- Tier C additive ABI change (new enums/structs/class/functions in
+  `detail/provenance.hpp`; `kProvenanceTag` itself is byte-identical to
+  v10.15.0) -- `MESHIOPLUSPLUS_ABI_VERSION` stays 10.
+
+## v10.15.0 (2026-08-24)
+
+**Breaking:** normalized the one-line provenance credit every writer with a
+free-text header slot emits, per `doc/roadmap.md` section 1's "audit and
+normalize" bullet. ~25 writers previously hand-wrote their own version of the
+line and had drifted three ways: a stale `meshio` (not `meshio++`) name in
+several Python writers, a `(C++ core)`-vs-`v{version}` split that made the
+C++/Python fallback boundary visible in output bytes, and four writers
+(`obj`, `ply`, `exodus`, `flac3d`) embedding a wall-clock timestamp that made
+writing the same mesh twice produce different bytes. Every affected writer
+now emits one canonical line, `Written by meshio++ v<release>`, from a single
+source on each side (`detail::kProvenanceTag` in C++,
+`meshioplusplus._provenance.TAG` in Python), so the two engines are
+character-identical and output is deterministic. `nastran` is the one
+documented exception: its C++ reader is gated on a sentinel comment line the
+Python writer never emits, so the C++ file carries the sentinel followed by
+the tag while the Python file carries only the tag — see
+[`doc/formats/nastran.md`](doc/formats/nastran.md). `doc/formats.md` gained a
+Provenance section auditing every format's comment syntax, header position,
+and whether it carries the tag today, which is the reference for the rest of
+the roadmap section. Output bytes change for every affected format — anyone
+diffing or hashing written files should expect this.
+
 ## v10.14.0 (2026-08-24)
 
 **Roadmap §1's "ODT" bullet closed in full** — v10.13.0 shipped ODT

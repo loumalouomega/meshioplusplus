@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -298,7 +299,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         csum += sz;
     }
 
-    os << "# Written by meshio++ (C++ core)\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     os << num_nodes << " " << num_cells << " " << nsum << " " << csum << " 0\n";
 
     const NDArray& points = rMesh.Points();

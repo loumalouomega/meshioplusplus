@@ -27,6 +27,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/log.hpp"
@@ -143,6 +144,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     // OFF represents polygonal faces (triangle/quad/polygon); anything else is
     // skipped with a warning, matching the Python reference writer.
     std::size_t num_faces = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& t = cb.Type();
         if (t != "triangle" && t != "quad" && t != "polygon") {
@@ -150,12 +152,23 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
                 "OFF: '{}' cells are not representable (only triangle/quad/polygon "
                 "faces); skipping.",
                 t);
+            skipped_types.push_back(t);
             continue;
         }
         num_faces += cb.NumCells();
     }
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i) {
+            if (i)
+                joined += ", ";
+            joined += skipped_types[i];
+        }
+        detail::provenance_note("cells-dropped",
+                                "cell block(s) of type " + joined + " have no OFF equivalent");
+    }
 
-    os << "OFF\n# Created by meshio++ (C++ core)\n\n";
+    os << "OFF\n" << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
     char buf[96];

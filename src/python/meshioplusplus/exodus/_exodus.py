@@ -6,12 +6,11 @@ See
 in particular Appendix A (page 171, Implementation of EXODUS II with netCDF).
 """
 
-import datetime
 import re
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
@@ -732,8 +731,7 @@ def write(filename, mesh):
 
     with netCDF4.Dataset(filename, "w") as rootgrp:
         # set global data
-        now = datetime.datetime.now().isoformat()
-        rootgrp.title = f"Created by meshio++ v{__version__}, {now}"
+        rootgrp.title = "\n".join(_provenance.lines(_provenance.SlotTier.BLOCK))
         rootgrp.version = np.float32(5.1)
         rootgrp.api_version = np.float32(5.1)
         rootgrp.floating_point_word_size = 8

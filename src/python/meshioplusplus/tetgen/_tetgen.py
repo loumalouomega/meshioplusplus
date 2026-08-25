@@ -7,7 +7,7 @@ import pathlib
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
@@ -116,7 +116,7 @@ def write(filename, mesh, float_fmt=".16e"):
                 attr_keys = attr_keys[1:]
 
         nattr, nref = len(attr_keys), len(ref_keys)
-        fh.write(f"# This file was created by meshio v{__version__}\n")
+        fh.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         if (nattr + nref) > 0:
             fh.write(
                 "# attribute and marker names: {}\n".format(
@@ -152,7 +152,7 @@ def write(filename, mesh, float_fmt=".16e"):
                 attr_keys = ref_keys[:1] + attr_keys
 
         nattr = len(attr_keys)
-        fh.write(f"# This file was created by meshio v{__version__}\n")
+        fh.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         if nattr > 0:
             fh.write("# attribute names: {}\n".format(", ".join(attr_keys)))
         for id, c in enumerate(filter(lambda c: c.type == "tetra", mesh.cells)):

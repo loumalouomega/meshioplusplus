@@ -11,7 +11,7 @@ import zlib
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import info, join_strings, raw_from_cell_data, replace_space, warn
 from .._exceptions import CorruptionError, ReadError
 from .._mesh import CellBlock, Mesh
@@ -966,7 +966,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         # vtu polyhedron data format
         return data, data_size_per_cell.tolist()
 
-    comment = ET.Comment(f"This file was created by meshio v{__version__}")
+    comment = ET.Comment("\n".join(_provenance.lines(_provenance.SlotTier.BLOCK)))
     vtk_file.insert(1, comment)
 
     grid = ET.SubElement(vtk_file, "UnstructuredGrid")

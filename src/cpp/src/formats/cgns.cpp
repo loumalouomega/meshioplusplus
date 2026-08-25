@@ -37,6 +37,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -947,6 +948,11 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                 "zone-wide CellCenter FlowSolution cannot be distributed back across them; {} "
                 "cell_data array(s) not written.",
                 cnames.size());
+            detail::provenance_note(
+                "data-dropped",
+                std::to_string(cnames.size()) +
+                    " cell_data array(s) not written -- CGNS's CellCenter FlowSolution is "
+                    "per-zone and this mesh mixes topological dimensions");
         } else if (!cnames.empty()) {
             h5::Hid sol = cgns_create_solution(zone, kCgnsCellSolution, "CellCenter");
             for (const std::string& name : cnames) {

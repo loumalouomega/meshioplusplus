@@ -27,6 +27,7 @@
 
 // Project includes
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
@@ -481,11 +482,25 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
 
 MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
                                     const ReadOptions& rOptions) {
+    // Best-effort, on every path: the block lives in the file's bytes, so
+    // unlike everything else in a summary it cannot come from
+    // `metadata_from_mesh`. A reader that fills it natively (exodus, whose
+    // block is a netCDF attribute rather than head bytes) wins -- hence the
+    // "only if still empty" test below rather than an unconditional overwrite.
+    auto fill_provenance = [&rPath](MeshMetadata& rMeta) {
+        if (!rMeta.mProvenance.empty())
+            return;
+        detail::ProvenanceReadResult found = detail::read_provenance_lines(rPath);
+        rMeta.mProvenance = std::move(found.mLines);
+        rMeta.mProvenanceRecognised = found.mRecognised;
+    };
+
     auto it = registry_metadata_readers().find(rFormat);
     if (it != registry_metadata_readers().end()) {
         try {
             MeshMetadata meta = it->second(rPath, rOptions);
             meta.mFormat = rFormat;
+            fill_provenance(meta);
             return meta;
         } catch (const meshioplusplus::ReadError&) {
             // A native summary can legitimately decline a construct it cannot
@@ -501,6 +516,7 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
     MeshMetadata meta = metadata_from_mesh(registry_full_reader(rFormat)(rPath));
     meta.mFellBackToFullRead = true;
     meta.mFormat = rFormat;
+    fill_provenance(meta);
     return meta;
 }
 

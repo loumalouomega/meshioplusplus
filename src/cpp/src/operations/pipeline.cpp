@@ -22,6 +22,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <string>
 #include <utility>
 #include <variant>
@@ -34,6 +35,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -318,9 +320,52 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     return nullptr;
 }
 
+/// Renders one pipeline step as `Op(Key=value, Key=value, ...)` for the
+/// provenance operation chain -- `mParams` is a `std::map`, so key order is
+/// already deterministic without a separate sort here.
+std::string pipe_render_op(const PipelineStep& rStep) {
+    std::ostringstream out;
+    out << rStep.mOp << "(";
+    bool first = true;
+    for (const auto& [key, value] : rStep.mParams) {
+        if (!first)
+            out << ", ";
+        first = false;
+        out << key << "=";
+        std::visit(
+            [&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, bool>) {
+                    out << (v ? "true" : "false");
+                } else if constexpr (std::is_same_v<T, std::string>) {
+                    out << v;
+                } else if constexpr (std::is_same_v<T, std::vector<double>> ||
+                                     std::is_same_v<T, std::vector<std::int64_t>> ||
+                                     std::is_same_v<T, std::vector<std::string>>) {
+                    out << "[";
+                    for (std::size_t i = 0; i < v.size(); ++i) {
+                        if (i)
+                            out << ", ";
+                        out << v[i];
+                    }
+                    out << "]";
+                } else {
+                    out << v;
+                }
+            },
+            value);
+    }
+    out << ")";
+    return out.str();
+}
+
 void pipe_push_step(PipelineReport& rReport, const PipelineStep& rStep,
                     std::vector<std::pair<std::string, double>> counters = {}) {
     rReport.mSteps.push_back(PipelineStepReport{rStep.mOp, std::move(counters)});
+    // A no-op when no provenance scope is open (the common case); when one
+    // is, this is what lets a written file's "Operation:" lines match the
+    // pipeline's own report instead of drifting from it.
+    detail::provenance_add_operation(pipe_render_op(rStep));
 }
 
 // --------------------------------------------------------------------------
@@ -1002,9 +1047,22 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         throw ReadError("meshio++: pipeline: no reader for format '" + rfmt + "'" + hint);
     }
 
+    // A no-op unless the caller opened a provenance scope around this call
+    // (see detail/provenance.hpp) -- the pipeline never opens one itself,
+    // consistent with the record being opt-in everywhere.
+    detail::provenance_set_source(rPipeline.mInput.mPath, rfmt);
+
     PipelineReport report;
     Mesh mesh = registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
     mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
+
+    const std::string out_fmt = resolve_format(rPipeline.mOutput.mPath, rPipeline.mOutput.mFormat);
+    const WriteOptions& wopts = rPipeline.mOutput.mOptions;
+    const char* encoding_name = wopts.mEncoding == WriteEncoding::Ascii    ? "ascii"
+                                : wopts.mEncoding == WriteEncoding::Binary ? "binary"
+                                                                           : "";
+    const char* codec_name = wopts.mCodecSet ? vtk_codec_name(wopts.mCodec) : "";
+    detail::provenance_set_target(out_fmt, encoding_name, codec_name, wopts.mFloatFormat);
 
     // Write through the parameterized single owner: an Output option the
     // format cannot honour is an error, never silently ignored.

@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -883,8 +884,8 @@ struct FoamFaceOrder {
  * conditions, which is strictly better than one that does not open.
  */
 bool foam_type_is_self_contained(const std::string& rType) {
-    return rType == "patch" || rType == "wall" || rType == "symmetry" ||
-           rType == "symmetryPlane" || rType == "empty" || rType == "wedge";
+    return rType == "patch" || rType == "wall" || rType == "symmetry" || rType == "symmetryPlane" ||
+           rType == "empty" || rType == "wedge";
 }
 
 /// Resolve the polyMesh directory. One function for both directions, so the
@@ -910,11 +911,18 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
 void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+    // The credit cell is fixed-width (48 chars before the closing box edge) so
+    // the banner stays aligned regardless of how long the release string is.
+    std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
+    if (credit.size() < 48)
+        credit.append(48 - credit.size(), ' ');
     rOs << "/*--------------------------------*- C++ -*----------------------------------*\\\n"
            "| =========                 |                                                 |\n"
            "| \\\\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |\n"
            "|  \\\\    /   O peration     |                                                 |\n"
-           "|   \\\\  /    A nd           | Written by meshio++                             |\n"
+           "|   \\\\  /    A nd           | "
+        << credit
+        << "|\n"
            "|    \\\\/     M anipulation  |                                                 |\n"
            "\\*---------------------------------------------------------------------------*/\n"
            "FoamFile\n"
@@ -940,7 +948,7 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
 struct FoamPatchAssignment {
     std::vector<std::int64_t> mFacePatch;
     std::vector<FoamPatchOut> mPatches;
-    std::int64_t mNumOrphan = 0;         ///< 2D cell matching no face at all
+    std::int64_t mNumOrphan = 0;          ///< 2D cell matching no face at all
     std::int64_t mNumInternalTagged = 0;  ///< 2D cell matching an INTERNAL face
 };
 
@@ -970,6 +978,10 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
                     "OpenFOAM: patch '{}' has type '{}', which needs dictionary entries meshio++ "
                     "does not carry; writing 'patch' instead so the case still loads",
                     p.mName, it->second);
+                detail::provenance_note(
+                    "data-dropped", "patch '" + p.mName + "' downgraded from type '" + it->second +
+                                        "' to 'patch' -- its companion dictionary entries "
+                                        "are not carried");
             }
         }
         fam_to_patch[fam] = out.mPatches.size();
@@ -1054,6 +1066,8 @@ FoamPatchAssignment foam_assign_patches(const Mesh& rMesh, const detail::GlobalF
         if (counts[p] == 0) {
             log::warn("OpenFOAM: patch '{}' has no faces and is not written",
                       out.mPatches[p].mName);
+            detail::provenance_note("regions-dropped", "patch '" + out.mPatches[p].mName +
+                                                           "' dropped -- it has no faces");
             continue;
         }
         remap[p] = static_cast<std::int64_t>(kept.size());
@@ -1133,11 +1147,9 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
         detail::Vec3 acc{0, 0, 0};
         std::size_t n = 0;
         for (std::size_t k = 0; k < rFaces.NumCellFaces(c); ++k) {
-            const std::size_t f =
-                static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
+            const std::size_t f = static_cast<std::size_t>(std::abs(rFaces.CellFaces(c)[k]) - 1);
             for (std::size_t j = 0; j < rFaces.FaceSize(f); ++j) {
-                const detail::Vec3 p =
-                    detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
+                const detail::Vec3 p = detail::read_point(rPoints, PointDim, rFaces.Face(f)[j]);
                 acc[0] += p[0];
                 acc[1] += p[1];
                 acc[2] += p[2];
@@ -1157,10 +1169,9 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
 
         // C2: internal faces first.
         if (is_internal != (rFaces.mNeighbour[f] >= 0))
-            return detail::format_compat(
-                "C2: face {} is {} but sits in the {} range", i,
-                rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
-                is_internal ? "internal" : "boundary");
+            return detail::format_compat("C2: face {} is {} but sits in the {} range", i,
+                                         rFaces.mNeighbour[f] >= 0 ? "internal" : "boundary",
+                                         is_internal ? "internal" : "boundary");
 
         // C7: node ids in range, ring big enough to bound an area.
         if (rFaces.FaceSize(f) < 3)
@@ -1168,8 +1179,7 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
         for (std::size_t k = 0; k < rFaces.FaceSize(f); ++k) {
             const std::int64_t id = rFaces.Face(f)[k];
             if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
-                return detail::format_compat("C7: face {} references node {}, out of range", i,
-                                             id);
+                return detail::format_compat("C7: face {} references node {}, out of range", i, id);
         }
 
         ring.clear();
@@ -1201,16 +1211,16 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
             // C4: normal points owner -> neighbour.
             const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
             const detail::Vec3& cn = centroid[static_cast<std::size_t>(rFaces.mNeighbour[f])];
-            const double d = nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) +
-                             nrm[2] * (cn[2] - co[2]);
+            const double d =
+                nrm[0] * (cn[0] - co[0]) + nrm[1] * (cn[1] - co[1]) + nrm[2] * (cn[2] - co[2]);
             if (!(d > 0.0))
                 return detail::format_compat(
                     "C4: internal face {} does not point from owner to neighbour", i);
         } else {
             // C5: boundary normal points out of the domain.
             const detail::Vec3& co = centroid[static_cast<std::size_t>(rFaces.mOwner[f])];
-            const double d = nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) +
-                             nrm[2] * (fc[2] - co[2]);
+            const double d =
+                nrm[0] * (fc[0] - co[0]) + nrm[1] * (fc[1] - co[1]) + nrm[2] * (fc[2] - co[2]);
             if (!(d > 0.0))
                 return detail::format_compat("C5: boundary face {} is wound inward", i);
         }
@@ -1228,12 +1238,12 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
             return detail::format_compat("C6: patch '{}' starts at {}, expected {}", patch.mName,
                                          patch.mStartFace, expect);
         for (std::int64_t i = patch.mStartFace; i < patch.mStartFace + patch.mNFaces; ++i) {
-            const std::size_t f = static_cast<std::size_t>(rOrder.mNewToOld[
-                static_cast<std::size_t>(i)]);
+            const std::size_t f =
+                static_cast<std::size_t>(rOrder.mNewToOld[static_cast<std::size_t>(i)]);
             if (rAssign.mFacePatch[f] != static_cast<std::int64_t>(p))
                 return detail::format_compat(
-                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i,
-                    patch.mName, rAssign.mFacePatch[f]);
+                    "C6: face {} sits in patch '{}'s range but belongs to patch {}", i, patch.mName,
+                    rAssign.mFacePatch[f]);
         }
         expect += patch.mNFaces;
     }
@@ -1276,21 +1286,32 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             "an owner and one neighbour",
             faces.mNumNonManifold));
     if (faces.mNumUnorientable > 0)
-        log::warn("OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
-                  "written with the winding they arrived with",
-                  faces.mNumUnorientable);
+        log::warn(
+            "OpenFOAM: {} cell(s) are not closed orientable surfaces; their faces are "
+            "written with the winding they arrived with",
+            faces.mNumUnorientable);
     if (faces.mNumFlipped > 0)
         log::info("OpenFOAM: rewound {} inverted cell(s) so their faces point outward",
                   faces.mNumFlipped);
 
     const FoamPatchAssignment assign = foam_assign_patches(rMesh, faces, rInfo);
-    if (assign.mNumOrphan > 0)
+    if (assign.mNumOrphan > 0) {
         log::warn("OpenFOAM: {} boundary cell(s) match no cell face and are not written",
                   assign.mNumOrphan);
-    if (assign.mNumInternalTagged > 0)
-        log::warn("OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
-                  "put such a face on a patch, so they are not written",
-                  assign.mNumInternalTagged);
+        detail::provenance_note("cells-dropped",
+                                std::to_string(assign.mNumOrphan) +
+                                    " boundary cell(s) dropped -- they match no cell face");
+    }
+    if (assign.mNumInternalTagged > 0) {
+        log::warn(
+            "OpenFOAM: {} boundary cell(s) coincide with an INTERNAL face; OpenFOAM cannot "
+            "put such a face on a patch, so they are not written",
+            assign.mNumInternalTagged);
+        detail::provenance_note("cells-dropped",
+                                std::to_string(assign.mNumInternalTagged) +
+                                    " boundary cell(s) dropped -- they coincide with an internal "
+                                    "face, which OpenFOAM cannot put on a patch");
+    }
 
     const FoamFaceOrder order = foam_order_faces(faces, assign);
     const std::string bad = foam_validate_order(faces, order, assign, rMesh.Points(),
@@ -1313,10 +1334,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     // Companion files this writer does not produce but OpenFOAM would read.
     // Leaving a stale one behind corrupts the case, so remove exactly these --
     // never the whole directory, which may hold a user's own files.
-    for (const char* name : {"cellZones", "faceZones", "pointZones", "meshModifiers",
-                             "boundaryProcAddressing", "cellProcAddressing",
-                             "faceProcAddressing", "pointProcAddressing", "cellLevel",
-                             "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+    for (const char* name :
+         {"cellZones", "faceZones", "pointZones", "meshModifiers", "boundaryProcAddressing",
+          "cellProcAddressing", "faceProcAddressing", "pointProcAddressing", "cellLevel",
+          "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
         std::error_code rc;
         if (fs::remove(poly / name, rc))
             log::info("OpenFOAM: removed stale {}", name);
@@ -1371,8 +1392,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         foam_write_header(f, "labelList", "neighbour");
         f << order.mNumInternal << "\n(\n";
         for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-            f << faces.mNeighbour[static_cast<std::size_t>(order.mNewToOld[
-                  static_cast<std::size_t>(i)])]
+            f << faces.mNeighbour[static_cast<std::size_t>(
+                     order.mNewToOld[static_cast<std::size_t>(i)])]
               << "\n";
         f << ")\n";
     }
@@ -1390,9 +1411,8 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
 
-    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)",
-              poly.string(), faces.NumCells(), order.mNewToOld.size(), order.mNumInternal,
-              order.mPatches.size());
+    log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
+              faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
 }
 
 }  // namespace meshioplusplus

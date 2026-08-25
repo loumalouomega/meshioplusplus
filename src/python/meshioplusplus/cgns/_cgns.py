@@ -19,6 +19,7 @@ import warnings
 
 import numpy as np
 
+from .. import _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
@@ -487,6 +488,12 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
                 "so a zone-wide CellCenter FlowSolution cannot be distributed back "
                 f"across them; {len(mesh.cell_data)} cell_data array(s) not written.",
                 stacklevel=2,
+            )
+            _provenance.note(
+                "data-dropped",
+                f"{len(mesh.cell_data)} cell_data array(s) not written -- CGNS's "
+                "CellCenter FlowSolution is per-zone and this mesh mixes topological "
+                "dimensions",
             )
         else:
             sol = _create_solution(zone, _CELL_SOLUTION, "CellCenter")

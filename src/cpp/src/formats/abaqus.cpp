@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
@@ -599,7 +600,7 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 
     os << "*HEADING\n";
     os << "Abaqus DataFile Version 6.14\n";
-    os << "written by meshio++ (C++ core)\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "");
     os << "*NODE\n";
     {
         // Format node rows in parallel (snprintf per row, bytes unchanged),

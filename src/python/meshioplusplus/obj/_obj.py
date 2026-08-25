@@ -3,11 +3,9 @@ I/O for the Wavefront .obj file format, cf.
 <https://en.wikipedia.org/wiki/Wavefront_.obj_file>.
 """
 
-import datetime
-
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._exceptions import WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
@@ -106,11 +104,7 @@ def write(filename, mesh):
             )
 
     with open_file(filename, "w") as f:
-        f.write(
-            "# Created by meshio++ v{}, {}\n".format(
-                __version__, datetime.datetime.now().isoformat()
-            )
-        )
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         for p in mesh.points:
             f.write(f"v {p[0]} {p[1]} {p[2]}\n")
 

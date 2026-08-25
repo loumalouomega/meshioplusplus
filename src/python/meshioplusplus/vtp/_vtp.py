@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
 from .._vtk_common import vtk_cells_from_data
@@ -298,7 +298,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     if header_type != "UInt32":
         out.append(f' header_type="{header_type}"')
     out.append(">\n")
-    out.append(f"<!--This file was created by meshio v{__version__}-->\n")
+    out.append(_provenance.render_xml_comment(_provenance.SlotTier.BLOCK) + "\n")
     out.append("<PolyData>\n")
     out.append(
         f'<Piece NumberOfPoints="{points.shape[0]}"'

@@ -19,6 +19,7 @@ import pathlib
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
@@ -203,7 +204,7 @@ def _write_node_ele(stem, mesh):
     attr_keys, ref_keys = _split_point_keys(mesh)
 
     with open(stem.with_suffix(".node"), "w") as fh:
-        fh.write("# This file was created by meshio++\n")
+        fh.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         fh.write(f"{len(mesh.points)} 2 {len(attr_keys)} {len(ref_keys)}\n")
         _write_node_rows(fh, mesh, attr_keys, ref_keys)
 
@@ -225,7 +226,7 @@ def _write_node_ele(stem, mesh):
 
     npc = 6 if "triangle6" in tri_types else 3
     with open(stem.with_suffix(".ele"), "w") as fh:
-        fh.write("# This file was created by meshio++\n")
+        fh.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         fh.write(f"{sum(len(c) for c in tri_blocks)} {npc} {len(cell_attr_keys)}\n")
         eid = 0
         for ci, cell_block in enumerate(mesh.cells):
@@ -245,7 +246,7 @@ def _write_poly(filename, mesh):
     seg_ref = next((k for k in sorted(mesh.cell_data.keys()) if ":ref" in k), None)
 
     with open(filename, "w") as fh:
-        fh.write("# This file was created by meshio++\n")
+        fh.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
         fh.write(f"{len(mesh.points)} 2 {len(attr_keys)} {len(ref_keys)}\n")
         _write_node_rows(fh, mesh, attr_keys, ref_keys)
 

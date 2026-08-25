@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -290,11 +291,16 @@ std::size_t stl_num_surface_blocks(const Mesh& rMesh) {
 void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool skin) {
     if (skin && has_skinnable_cells(rMesh)) {
         const std::size_t dropped = stl_num_surface_blocks(rMesh);
-        if (dropped > 0)
+        if (dropped > 0) {
             log::warn(
                 "STL: writing the extracted skin of the volume cells; {} pre-existing "
                 "non-volume cell block(s) dropped (pass skin=false for the legacy behavior).",
                 dropped);
+            detail::provenance_note("cells-dropped",
+                                    std::to_string(dropped) +
+                                        " non-volume cell block(s) dropped in favour of the "
+                                        "extracted skin of the volume cells");
+        }
         write_stl(rPath, stl_skin_triangles(rMesh), binary, /*skin=*/false);
         return;
     }
@@ -309,9 +315,10 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     if (binary) {
         char header[80];
-        std::memset(header, 'X', 80);
-        const char* msg = "meshio++ (C++ core) binary STL";
-        std::memcpy(header, msg, std::strlen(msg));
+        std::memset(header, '\0', 80);
+        const std::string msg_str = detail::provenance_lines(detail::SlotTier::Bounded)[0];
+        const char* msg = msg_str.c_str();
+        std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
         os.write(reinterpret_cast<const char*>(&n), 4);

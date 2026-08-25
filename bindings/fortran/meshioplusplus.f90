@@ -66,6 +66,9 @@ module meshioplusplus
     public :: mio_sniff_format
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
+    public :: mio_provenance_begin, mio_provenance_end
+    public :: mio_provenance_note, mio_provenance_source, mio_provenance_target
+    public :: MIO_PROVENANCE_OFF, MIO_PROVENANCE_BEST_EFFORT, MIO_PROVENANCE_REQUIRED
     public :: mio_interpolate
     public :: mio_conservative_interpolate
     public :: mio_undo_green
@@ -202,6 +205,11 @@ module meshioplusplus
     integer(c_int), parameter :: MIO_DATA_POINT = 0, MIO_DATA_CELL = 1, MIO_DATA_FIELD = 2
     integer(c_int), parameter :: MIO_WEIGHT_UNIFORM = 0, MIO_WEIGHT_MEASURE = 1
     integer(c_int), parameter :: MIO_COND_CLAMP = 0, MIO_COND_NORMALIZE = 1
+    !> Provenance modes (see doc/provenance.md). OFF is the default
+    !> everywhere: a writer emits only the one-line credit.
+    integer(c_int), parameter :: MIO_PROVENANCE_OFF = 0
+    integer(c_int), parameter :: MIO_PROVENANCE_BEST_EFFORT = 1
+    integer(c_int), parameter :: MIO_PROVENANCE_REQUIRED = 2
     integer(c_int), parameter :: MIO_COND_STANDARDIZE = 2
     integer(c_int), parameter :: MIO_SCOPE_COMPONENT = 0, MIO_SCOPE_MAGNITUDE = 1
     integer(c_int), parameter :: MIO_NAN_IGNORE = 0, MIO_NAN_REPLACE = 1, MIO_NAN_FAIL = 2
@@ -2190,6 +2198,36 @@ module meshioplusplus
             type(c_ptr), value :: s
             integer(c_size_t) :: n
         end function
+
+        ! Provenance (see doc/provenance.md). A scope cannot cross the ABI as
+        ! RAII, so the C surface is a begin/end pair; Fortran keeps that shape
+        ! explicitly, matching `mio_mesh`'s own explicit-free convention.
+        function c_mio_provenance_scope_begin(mode) &
+            bind(c, name="mio_provenance_scope_begin") result(r)
+            import :: c_int
+            integer(c_int), value :: mode
+            integer(c_int) :: r
+        end function
+
+        subroutine c_mio_provenance_scope_end() bind(c, name="mio_provenance_scope_end")
+        end subroutine
+
+        subroutine c_mio_provenance_note(cat, det) bind(c, name="mio_provenance_note")
+            import :: c_char
+            character(kind=c_char), dimension(*), intent(in) :: cat, det
+        end subroutine
+
+        subroutine c_mio_provenance_set_source(path, fmt) &
+            bind(c, name="mio_provenance_set_source")
+            import :: c_char
+            character(kind=c_char), dimension(*), intent(in) :: path, fmt
+        end subroutine
+
+        subroutine c_mio_provenance_set_target(fmt, enc, codec, ff) &
+            bind(c, name="mio_provenance_set_target")
+            import :: c_char
+            character(kind=c_char), dimension(*), intent(in) :: fmt, enc, codec, ff
+        end subroutine
     end interface
 
 contains
@@ -6277,6 +6315,53 @@ contains
         character(:), allocatable, intent(out), optional :: errmsg
         call handle_status(c_mio_sequence_pipeline_run_json(c_str(json_text)), &
                            'sequence_pipeline_run_json', stat, errmsg)
+    end subroutine
+
+    !> Open a provenance scope for this thread. Every mio write made before the
+    !> matching mio_provenance_end records the richer block; with no scope open
+    !> a writer emits only the one-line credit. Explicit begin/end rather than a
+    !> block construct, matching this module's own explicit m%free() convention.
+    subroutine mio_provenance_begin(mode, stat, errmsg)
+        integer, intent(in), optional :: mode
+        integer, intent(out), optional :: stat
+        character(len=:), allocatable, intent(out), optional :: errmsg
+        integer(c_int) :: m, rc
+        m = MIO_PROVENANCE_BEST_EFFORT
+        if (present(mode)) m = int(mode, c_int)
+        rc = c_mio_provenance_scope_begin(m)
+        call handle_status(rc, "mio_provenance_begin", stat, errmsg)
+    end subroutine
+
+    !> Close the most recently opened provenance scope. A stray call with none
+    !> open is a no-op.
+    subroutine mio_provenance_end()
+        call c_mio_provenance_scope_end()
+    end subroutine
+
+    !> Record one conversion assumption. A no-op outside a scope, so it is safe
+    !> to call unconditionally.
+    subroutine mio_provenance_note(category, detail)
+        character(*), intent(in) :: category, detail
+        call c_mio_provenance_note(c_str(category), c_str(detail))
+    end subroutine
+
+    !> Record where the mesh came from. A no-op outside a scope.
+    subroutine mio_provenance_source(path, format)
+        character(*), intent(in) :: path, format
+        call c_mio_provenance_set_source(c_str(path), c_str(format))
+    end subroutine
+
+    !> Record what was actually written (not what was requested). A no-op
+    !> outside a scope.
+    subroutine mio_provenance_target(format, encoding, codec, float_format)
+        character(*), intent(in) :: format
+        character(*), intent(in), optional :: encoding, codec, float_format
+        character(len=:), allocatable :: e, c, f
+        e = ""; c = ""; f = ""
+        if (present(encoding)) e = encoding
+        if (present(codec)) c = codec
+        if (present(float_format)) f = float_format
+        call c_mio_provenance_set_target(c_str(format), c_str(e), c_str(c), c_str(f))
     end subroutine
 
 end module meshioplusplus

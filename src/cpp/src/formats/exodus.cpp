@@ -37,6 +37,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
@@ -896,6 +897,22 @@ MeshMetadata read_exodus_metadata(const std::string& rPath, const ReadOptions& r
         ~Closer() { nc_close(mId); }
     } closer{ncid};
     meta.mTimeValues = exo_time_values(ncid);
+    // Exodus is the one format whose provenance block is NOT in the file's
+    // head bytes -- it rides the netCDF `title` global attribute -- so the
+    // generic scanner in `registry_read_metadata` cannot see it. Read it here,
+    // where the file is already open for the time values, and hand it to the
+    // same scanner so the two paths agree on what counts as a block.
+    {
+        // Probe first: `read_att_text` throws on a missing attribute, and a
+        // file with no `title` is an ordinary case, not an error.
+        std::size_t title_len = 0;
+        if (nc_inq_attlen(ncid, NC_GLOBAL, "title", &title_len) == NC_NOERR) {
+            detail::ProvenanceReadResult found =
+                detail::scan_provenance_text(read_att_text(ncid, NC_GLOBAL, "title"));
+            meta.mProvenance = std::move(found.mLines);
+            meta.mProvenanceRecognised = found.mRecognised;
+        }
+    }
     return meta;
 }
 
@@ -913,7 +930,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 
     // global attributes
     {
-        std::string title = "Created by meshio++ (C++ core)";
+        auto title_lines = detail::provenance_lines(detail::SlotTier::Block);
+        std::string title = title_lines[0];
+        for (std::size_t i = 1; i < title_lines.size(); ++i) {
+            title += '\n';
+            title += title_lines[i];
+        }
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);
         float v = 5.1f;

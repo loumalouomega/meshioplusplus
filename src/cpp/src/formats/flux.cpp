@@ -28,6 +28,7 @@
 // Project includes
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 
@@ -206,7 +207,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
     const bool has_ref = rMesh.HasCellData("pf3:ref");
 
     char buf[128];
-    f << " File converted with meshio++ (C++ core)\n";
+    f << detail::provenance_render_lines(detail::SlotTier::Block, " ");
     auto hdr = [&](long long v, const char* label) {
         std::snprintf(buf, sizeof(buf), "%8lld           %s\n", v, label);
         f << buf;

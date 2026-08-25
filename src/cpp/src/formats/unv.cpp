@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 
 namespace meshioplusplus {
 
@@ -508,6 +509,9 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         bool beam;
         if (!meshio_descriptor(cb.Type(), desc, beam)) {
             log::warn("UNV does not support '{}' cells. Skipping.", cb.Type());
+            detail::provenance_note(
+                "cells-dropped",
+                "cell block(s) of type " + std::string(cb.Type()) + " have no UNV equivalent");
             continue;
         }
         const NDArray& conn = cb.Conn();

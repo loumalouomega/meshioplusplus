@@ -43,6 +43,9 @@ from ._hessian import hessian
 from ._isosurface import isosurface
 from ._optimize_volume import optimize_volume
 from ._partition import partition_labels
+from ._provenance import add_operation as _prov_add_operation
+from ._provenance import set_source as _prov_set_source
+from ._provenance import set_target as _prov_set_target
 from ._quality import attach_quality
 from ._refine import refine
 from ._remesh import remesh
@@ -371,6 +374,24 @@ def _apply_transform(mesh, step):
     return transform(
         mesh, rotate_vector_data=_flag(step, "RotateData", False), **kwargs
     )
+
+
+def _render_op(step):
+    """Renders one step as ``Op(Key=value, Key=value, ...)`` for the
+    provenance operation chain -- the Python twin of `pipe_render_op` in
+    pipeline.cpp. Keys are sorted (the C++ side's std::map iteration order
+    is already sorted, so this is what keeps the two textually identical)."""
+    parts = []
+    for key in sorted(k for k in step if k != "Op"):
+        value = step[key]
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, list):
+            rendered = "[" + ", ".join(str(v) for v in value) + "]"
+        else:
+            rendered = str(value)
+        parts.append(f"{key}={rendered}")
+    return f"{step['Op']}(" + ", ".join(parts) + ")"
 
 
 def _apply_step(mesh, step, steps, warnings):
@@ -796,6 +817,10 @@ def _apply_step(mesh, step, steps, warnings):
         raise ValueError(f"meshio++: pipeline: unknown operation '{op}'")
 
     steps.append(entry)
+    # A no-op when no scope is open (the common case); mirrors what
+    # pipe_push_step does on the C++ side, from the step's own INPUT
+    # parameters (not the result entry above, which holds counters).
+    _prov_add_operation(_render_op(step))
     return mesh
 
 
@@ -972,11 +997,32 @@ def run_pipeline(settings, input_path=None, output_path=None):
 
     write_kwargs = _write_kwargs_from(out, out_path)
 
+    # A no-op unless the caller opened a provenance scope around this call
+    # (see meshioplusplus._provenance) -- the pipeline never opens one
+    # itself, matching the C++ engine's own posture (opt-in everywhere).
+    in_fmt = (
+        inp.get("Format")
+        or (_filetypes_from_path(pathlib.Path(str(in_path))) or [""])[0]
+    )
+    _prov_set_source(str(in_path), in_fmt)
+
     mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
 
     steps = []
     for step in steps_spec:
         mesh = _apply_step(mesh, step, steps, warnings)
+
+    out_fmt = (
+        out.get("Format")
+        or (_filetypes_from_path(pathlib.Path(str(out_path))) or [""])[0]
+    )
+    out_encoding = out.get("Encoding", "default")
+    _prov_set_target(
+        out_fmt,
+        "" if out_encoding in (None, "default") else out_encoding,
+        out.get("Codec") or "",
+        out.get("FloatFormat") or "",
+    )
 
     write(out_path, mesh, file_format=out.get("Format") or None, **write_kwargs)
     return {"steps": steps, "warnings": warnings}

@@ -36,6 +36,7 @@
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
@@ -746,7 +747,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     std::string out;
     out.reserve(200 + np * 42);
     out += "EnSight Gold Geometry File\n";
-    out += "Written by meshio++\n";
+    out += detail::provenance_lines(detail::SlotTier::Bounded)[0] + "\n";
     out += "node id assign\n";
     out += "element id assign\n";
     out += "part\n";
@@ -849,7 +850,7 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.reserve(80 * 8 + np * 12 + 64);
     ensight_append_str80(out, "C Binary");
     ensight_append_str80(out, "EnSight Gold Geometry File");
-    ensight_append_str80(out, "Written by meshio++");
+    ensight_append_str80(out, detail::provenance_lines(detail::SlotTier::Bounded)[0]);
     ensight_append_str80(out, "node id assign");
     ensight_append_str80(out, "element id assign");
     ensight_append_str80(out, "part");

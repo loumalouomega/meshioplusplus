@@ -11,6 +11,7 @@ and a per-element "geometric entity index" (exposed as
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
@@ -133,7 +134,7 @@ def write(filename, mesh):
     geom_data = mesh.cell_data.get("mphtxt:geom")
 
     with open_file(filename, "w") as f:
-        f.write("# Created by meshio++\n\n")
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# ") + "\n")
         f.write("0 1\n")  # version
         f.write("1 # number of tags\n5 mesh1\n")
         f.write("1 # number of types\n3 obj\n\n")

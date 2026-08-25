@@ -27,6 +27,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -84,7 +85,7 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
     os << ">\n";
-    os << "<!--This file was created by meshio++ (C++ core)-->\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
        << "\">\n";

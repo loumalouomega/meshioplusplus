@@ -7,7 +7,7 @@ from itertools import count
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError
 from .._files import open_file
@@ -536,7 +536,7 @@ def write(
     with open_file(filename, "wt") as f:
         f.write("*HEADING\n")
         f.write("Abaqus DataFile Version 6.14\n")
-        f.write(f"written by meshio++ v{__version__}\n")
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, ""))
         f.write("*NODE\n")
         fmt = ", ".join(["{}"] + ["{:" + float_fmt + "}"] * mesh.points.shape[1]) + "\n"
         for k, x in enumerate(mesh.points):

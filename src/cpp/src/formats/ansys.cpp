@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -338,7 +339,7 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
 
     char hbuf[128];
-    fh << "(1 \"meshio++ C++ core\")\n";
+    fh << "(1 \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\")\n";
     std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
     fh << hbuf;
 

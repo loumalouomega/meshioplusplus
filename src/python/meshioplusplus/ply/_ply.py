@@ -5,13 +5,12 @@ I/O for the PLY format, cf.
 """
 
 import collections
-import datetime
 import re
 import sys
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
@@ -401,6 +400,11 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
                 f"{dropped} pre-existing non-volume cell block(s) dropped "
                 "(pass skin=False for the legacy behavior)."
             )
+            _provenance.note(
+                "cells-dropped",
+                f"{dropped} non-volume cell block(s) dropped in favour of the "
+                "extracted skin of the volume cells",
+            )
         mesh = _extract_skin_py(mesh, linearize=True)
 
     with open_file(filename, "wb") as fh:
@@ -411,8 +415,9 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
         else:
             fh.write(b"format ascii 1.0\n")
 
-        now = datetime.datetime.now().isoformat()
-        fh.write(f"comment Created by meshio v{__version__}, {now}\n".encode())
+        fh.write(
+            _provenance.render_lines(_provenance.SlotTier.BLOCK, "comment ").encode()
+        )
 
         # counts
         fh.write(f"element vertex {mesh.points.shape[0]:d}\n".encode())
@@ -473,6 +478,11 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
 
             if has_cast:
                 warn("PLY doesn't support 64-bit integers. Casting down to 32-bit.")
+                _provenance.note(
+                    "dtype",
+                    "connectivity cast from int64 to int32 -- PLY has no 64-bit "
+                    "integer type",
+                )
 
             # assert that all cell dtypes are equal
             cell_dtype = None

@@ -46,6 +46,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -102,6 +103,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -820,6 +822,35 @@ int mio_read_metadata_fell_back(const mio_read_metadata* meta) {
     });
 }
 
+int64_t mio_read_metadata_num_provenance_lines(const mio_read_metadata* meta) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return static_cast<std::int64_t>(meta->mMeta.mProvenance.size());
+    });
+}
+
+int64_t mio_read_metadata_provenance_line(const mio_read_metadata* meta, int64_t index, char* out,
+                                          int64_t cap) {
+    return guarded_ptr(std::int64_t(-1), [&]() -> std::int64_t {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        const std::vector<std::string>& lines = meta->mMeta.mProvenance;
+        if (index < 0 || static_cast<std::size_t>(index) >= lines.size())
+            throw meshioplusplus::ReadError("meshio++: provenance line index " +
+                                            std::to_string(index) + " out of range");
+        return copy_string(lines[static_cast<std::size_t>(index)], out, cap);
+    });
+}
+
+int mio_read_metadata_provenance_recognised(const mio_read_metadata* meta) {
+    return guarded_ptr(-1, [&]() -> int {
+        if (!meta)
+            throw meshioplusplus::ReadError("meshio++: metadata handle is NULL");
+        return meta->mMeta.mProvenanceRecognised ? 1 : 0;
+    });
+}
+
 void mio_read_metadata_free(mio_read_metadata* meta) {
     delete meta;
 }
@@ -837,6 +868,7 @@ mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format)
         if (!path || !mesh)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
         std::string fmt = meshioplusplus::resolve_format(path, format_or_empty(format));
+        meshioplusplus::detail::provenance_begin_write();
         auto it = meshioplusplus::registry_writers().find(fmt);
         if (it == meshioplusplus::registry_writers().end())
             return fail(MIO_ERR_NOT_FOUND, unknown_format_message(fmt, /*for_write=*/true));
@@ -914,6 +946,55 @@ mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* form
         meshioplusplus::registry_write_ex(path, mesh->mMesh, format_or_empty(format), w);
         return MIO_OK;
     });
+}
+
+namespace {
+
+/// The thread-local stack of open provenance scopes -- the exact twin of the
+/// pybind bridge's `provenance_scope_stack()` (bindings/python/_core.cpp),
+/// needed for the identical reason: a C caller's begin/end calls are two
+/// separate ABI crossings, so something has to keep the scope alive between
+/// them rather than relying on C++ RAII across the boundary.
+std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>>& provenance_scope_stack() {
+    thread_local std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>> stack;
+    return stack;
+}
+
+}  // namespace
+
+mio_status mio_provenance_scope_begin(int mode) {
+    return guarded([&]() -> mio_status {
+        if (mode < 0 || mode > 2)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: unknown mio_provenance_mode " + std::to_string(mode));
+        provenance_scope_stack().push_back(
+            std::make_unique<meshioplusplus::detail::ProvenanceScope>(
+                static_cast<meshioplusplus::detail::ProvenanceMode>(mode)));
+        return MIO_OK;
+    });
+}
+
+void mio_provenance_scope_end(void) {
+    auto& stack = provenance_scope_stack();
+    if (!stack.empty())
+        stack.pop_back();
+}
+
+void mio_provenance_note(const char* category, const char* detail) {
+    if (!category || !detail)
+        return;
+    meshioplusplus::detail::provenance_note(category, detail);
+}
+
+void mio_provenance_set_source(const char* path, const char* format) {
+    meshioplusplus::detail::provenance_set_source(path ? path : "", format ? format : "");
+}
+
+void mio_provenance_set_target(const char* format, const char* encoding, const char* codec,
+                               const char* float_format) {
+    meshioplusplus::detail::provenance_set_target(format ? format : "", encoding ? encoding : "",
+                                                  codec ? codec : "",
+                                                  float_format ? float_format : "");
 }
 
 mio_status mio_convert(const char* in_path, const char* in_format, const char* out_path,
@@ -2516,7 +2597,7 @@ int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
 
 namespace {
 mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& rRegion,
-                                     mio_field_integral_info* out) {
+                                    mio_field_integral_info* out) {
     if (!out)
         return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
     out->num_components = static_cast<int64_t>(rRegion.mTotalPerComponent.size());
@@ -2526,8 +2607,8 @@ mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& r
 }
 
 mio_status fill_field_integral_component(const meshioplusplus::FieldIntegralRegion& rRegion,
-                                          int64_t comp, double* total, double* mean,
-                                          double* domain_measure, int64_t* num_nan) {
+                                         int64_t comp, double* total, double* mean,
+                                         double* domain_measure, int64_t* num_nan) {
     if (comp < 0 || static_cast<std::size_t>(comp) >= rRegion.mTotalPerComponent.size())
         return fail(MIO_ERR_INVALID_ARG, "meshio++: component index out of range");
     const std::size_t k = static_cast<std::size_t>(comp);
@@ -2620,8 +2701,8 @@ mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
         const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
         if (region < 0 || static_cast<std::size_t>(region) >= regions.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
-        return fill_field_integral_component(regions[static_cast<std::size_t>(region)], comp,
-                                             total, mean, domain_measure, num_nan);
+        return fill_field_integral_component(regions[static_cast<std::size_t>(region)], comp, total,
+                                             mean, domain_measure, num_nan);
     });
 }
 
@@ -3954,7 +4035,8 @@ meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& 
 }
 
 /// Translate the flat option struct into the core's RemeshVolumeOptions.
-meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(const mio_remesh_volume_opts& rOpts) {
+meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(
+    const mio_remesh_volume_opts& rOpts) {
     meshioplusplus::RemeshVolumeOptions options;
     if (rOpts.resolution != nullptr)
         options.mResolution = std::array<std::int64_t, 3>{

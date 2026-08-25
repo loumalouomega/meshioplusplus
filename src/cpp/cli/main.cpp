@@ -740,6 +740,14 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
             std::cout << ")\n";
         }
     }
+    if (!rMeta.mProvenance.empty()) {
+        // Say whose block it is: a file can carry a comment that merely looks
+        // like a header, and reporting that as meshio++'s would be a lie.
+        std::cout << "  Provenance"
+                  << (rMeta.mProvenanceRecognised ? "" : " (not written by meshio++)") << ":\n";
+        for (const std::string& line : rMeta.mProvenance)
+            std::cout << "    " << line << "\n";
+    }
     if (rMeta.mHasBBox) {
         std::cout << "  Bounding box: [" << rMeta.mBBoxMin[0] << ", " << rMeta.mBBoxMin[1] << ", "
                   << rMeta.mBBoxMin[2] << "] - [" << rMeta.mBBoxMax[0] << ", " << rMeta.mBBoxMax[1]

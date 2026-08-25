@@ -129,6 +129,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/types.hpp"
 
@@ -2050,7 +2051,7 @@ val gradient_js(const val& rMeshObj, const std::string& rArray, const std::strin
  * emits.
  */
 val hessian_js(const val& rMeshObj, const std::string& rArray, const std::string& rMethod,
-              const std::string& rLocation, const std::string& rOutput, bool overwrite) {
+               const std::string& rLocation, const std::string& rOutput, bool overwrite) {
     return with_js_errors([&]() -> val {
         meshioplusplus::HessianOptions options;
         options.mArrayName = rArray;
@@ -2108,10 +2109,9 @@ val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std:
  * connectivity with no correspondence to the input -- point/cell data and
  * named regions are dropped, field data is carried. See doc/remesh.md.
  */
-val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide,
-             double subsampleRatio, int maxSubdivide, int maxIterations, int maxRepairPasses,
-             const std::string& rMetric, double gradation, bool preserveBoundary,
-             double maxAnisotropy) {
+val remesh_js(const val& rMeshObj, std::int64_t numClusters, int subdivide, double subsampleRatio,
+              int maxSubdivide, int maxIterations, int maxRepairPasses, const std::string& rMetric,
+              double gradation, bool preserveBoundary, double maxAnisotropy) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RemeshOptions options;
         options.mNumClusters = numClusters;
@@ -3017,6 +3017,66 @@ void xdmf_series_free_js(int handle) {
 
 }  // namespace
 
+// --- Provenance (see doc/provenance.md) -----------------------------------
+//
+// Binds the C++ core directly (this package's pattern) rather than the flat C
+// ABI. Exposed as begin/end plus setters; `index.mjs` wraps them in a
+// `withProvenance(mode, fn)` callback so a throw inside the body cannot strand
+// the scope. A thread-local stack of owned scopes gives the two calls a
+// lifetime, exactly as the Python bridge and the C ABI already do -- the scope
+// object itself never crosses into JS.
+namespace {
+
+std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>>& js_provenance_stack() {
+    static std::vector<std::unique_ptr<meshioplusplus::detail::ProvenanceScope>> stack;
+    return stack;
+}
+
+void provenance_begin_js(int mode) {
+    with_js_errors([&]() {
+        if (mode < 0 || mode > 2)
+            throw meshioplusplus::WriteError("meshio++: unknown provenance mode " +
+                                             std::to_string(mode));
+        js_provenance_stack().push_back(std::make_unique<meshioplusplus::detail::ProvenanceScope>(
+            static_cast<meshioplusplus::detail::ProvenanceMode>(mode)));
+        return 0;
+    });
+}
+
+void provenance_end_js() {
+    auto& stack = js_provenance_stack();
+    if (!stack.empty())
+        stack.pop_back();
+}
+
+void provenance_note_js(std::string category, std::string detail) {
+    meshioplusplus::detail::provenance_note(category, detail);
+}
+
+void provenance_set_source_js(std::string path, std::string format) {
+    meshioplusplus::detail::provenance_set_source(path, format);
+}
+
+void provenance_set_target_js(std::string format, std::string encoding, std::string codec,
+                              std::string float_format) {
+    meshioplusplus::detail::provenance_set_target(format, encoding, codec, float_format);
+}
+
+val read_provenance_js(std::string path) {
+    return with_js_errors([&]() -> val {
+        auto found = meshioplusplus::detail::read_provenance_lines(path);
+        val lines = val::array();
+        for (std::size_t i = 0; i < found.mLines.size(); ++i)
+            lines.set(i, found.mLines[i]);
+        val out = val::object();
+        out.set("lines", lines);
+        out.set("recognised", found.mRecognised);
+        return out;
+    });
+}
+
+}  // namespace
+
 EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("readMesh", &read_mesh);
     emscripten::function("readMeshSelective", &read_mesh_selective);
@@ -3079,6 +3139,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("partition", &partition_js);
     emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);
+    emscripten::function("provenanceBegin", &provenance_begin_js);
+    emscripten::function("provenanceEnd", &provenance_end_js);
+    emscripten::function("provenanceNote", &provenance_note_js);
+    emscripten::function("provenanceSetSource", &provenance_set_source_js);
+    emscripten::function("provenanceSetTarget", &provenance_set_target_js);
+    emscripten::function("readProvenance", &read_provenance_js);
     emscripten::function("dataDrop", &data_drop_js);
     emscripten::function("dataKeep", &data_keep_js);
     emscripten::function("dataRename", &data_rename_js);

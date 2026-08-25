@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 14
+#define MIO_VERSION_MINOR 17
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -457,6 +457,30 @@ MIO_API mio_status mio_read_metadata_bbox(const mio_read_metadata* meta, double*
  */
 MIO_API int mio_read_metadata_fell_back(const mio_read_metadata* meta);
 
+/**
+ * The provenance block the file carries (v10.17.0), one line per entry, comment
+ * punctuation already stripped -- the read half of mio_provenance_*. Lines are
+ * returned as found rather than re-parsed into fields: a block can have been
+ * hand-edited, truncated by a fixed-width slot, or written by a later release
+ * carrying fields this build has never heard of.
+ * @return the number of lines, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_num_provenance_lines(const mio_read_metadata* meta);
+
+/**
+ * Copy provenance line `index` into `out` (NUL-terminated, truncated to `cap`).
+ * @return the required buffer size including the NUL, or -1 on error.
+ */
+MIO_API int64_t mio_read_metadata_provenance_line(const mio_read_metadata* meta, int64_t index,
+                                                  char* out, int64_t cap);
+
+/**
+ * Whether the block's first line is meshio++'s own tag format.
+ * @return 1 when it is, 0 when the file carries no block or one that does not
+ *         start the way this library writes one, -1 on error.
+ */
+MIO_API int mio_read_metadata_provenance_recognised(const mio_read_metadata* meta);
+
 /** Destroy a summary handle. Safe to call with NULL. */
 MIO_API void mio_read_metadata_free(mio_read_metadata* meta);
 
@@ -513,6 +537,48 @@ MIO_API void mio_write_opts_init(mio_write_opts* opts);
  */
 MIO_API mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                                 const mio_write_opts* opts);
+
+/**
+ * Provenance (v10.16.0, see detail/provenance.hpp for the full design): the
+ * opt-in richer block a writer with a free-text header slot can render
+ * (source, target, operation chain, conversion assumptions, timestamp)
+ * alongside the unconditional one-line tag every writer has emitted since
+ * v10.15.0. Mode is one of the mio_provenance_mode values below; Off (0)
+ * reproduces that unconditional tag exactly, which is what every mio_write
+ * call already does with no scope open.
+ */
+typedef enum mio_provenance_mode {
+    MIO_PROVENANCE_OFF = 0,         /**< the default: just the one-line tag */
+    MIO_PROVENANCE_BEST_EFFORT = 1, /**< the full block where the target slot allows it */
+    MIO_PROVENANCE_REQUIRED = 2     /**< the full block, or MIO_ERR_UNSUPPORTED naming why not */
+} mio_provenance_mode;
+
+/**
+ * Opens a provenance scope for the current thread. Nests: a later
+ * mio_provenance_scope_end() restores whatever was active before this call
+ * (including "nothing", the default). Every mio_write/mio_write_ex call made
+ * while a scope is open renders under it.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG if `mode` is not a mio_provenance_mode value.
+ */
+MIO_API mio_status mio_provenance_scope_begin(int mode);
+
+/** Closes the most recently opened scope. Call exactly once per matching
+ *  mio_provenance_scope_begin(); a stray call with none open is a no-op. */
+MIO_API void mio_provenance_scope_end(void);
+
+/** Records one conversion assumption against the active scope (a short
+ *  stable `category` slug plus a human-readable `detail`). A no-op outside a
+ *  scope, so it is safe to call unconditionally from any writer. Duplicate
+ *  (category, detail) pairs are collapsed. */
+MIO_API void mio_provenance_note(const char* category, const char* detail);
+
+/** Sets the source path/format on the active record. A no-op outside a scope. */
+MIO_API void mio_provenance_set_source(const char* path, const char* format);
+
+/** Sets the target format/encoding/codec/float_format on the active record
+ *  (pass "" for a field that does not apply). A no-op outside a scope. */
+MIO_API void mio_provenance_set_target(const char* format, const char* encoding,
+                                       const char* codec, const char* float_format);
 
 /** Read `in_path` and immediately write it to `out_path` (the CLI's
  *  `convert`), without materializing a handle for the caller. */

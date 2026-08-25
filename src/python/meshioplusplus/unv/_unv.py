@@ -13,6 +13,7 @@ A UNV file is a sequence of datasets, each delimited by a line whose content is
 
 import numpy as np
 
+from .. import _provenance
 from .._common import warn
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
@@ -421,6 +422,9 @@ def write(filename, mesh, code_aster=False, node_dataset=2411):
             t = cell_block.type
             if t not in _meshio_to_unv:
                 warn(f"UNV does not support '{t}' cells. Skipping.")
+                _provenance.note(
+                    "cells-dropped", f"cell block(s) of type {t} have no UNV equivalent"
+                )
                 elem_labels.append(None)
                 continue
             descriptor, is_beam = _meshio_to_unv[t]

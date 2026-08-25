@@ -27,6 +27,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 
@@ -185,7 +186,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    os << "# Created by meshio++ (C++ core)\n";
+    os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     char buf[96];
     for (std::size_t r = 0; r < num_points; ++r) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;

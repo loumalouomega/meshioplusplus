@@ -56,6 +56,7 @@
 
 // Project includes
 #include "meshioplusplus/abi_version.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -115,7 +116,16 @@ MIO_ABI_LAYOUT(meshioplusplus::ReadOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 256, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 288, 8);
+
+// ProvenanceNote/ProvenanceRecord (v10.16.0, detail/provenance.hpp) -- pinned
+// from the release that introduces them, the RefineOptions/RemeshOptions
+// "pin in advance" lesson: both are new structs a caller can construct and
+// pass across the ABI (ProvenanceScope's constructor takes a ProvenanceRecord
+// by value), so a later member addition here is exactly the kind of Tier A
+// change this file exists to catch mechanically.
+MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceNote, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 
 // The format side-channel structs. NONE of these was pinned before v9.20.0,
 // which is exactly what made growing one *look* free: `MedInfo` gained four

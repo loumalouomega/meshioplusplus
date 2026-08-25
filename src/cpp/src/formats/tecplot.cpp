@@ -32,6 +32,7 @@
 // Project includes
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -425,7 +426,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
-    os << "TITLE = \"Written by meshio++ (C++ core)\"\n";
+    os << "TITLE = \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\"\n";
     os << "VARIABLES = ";
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";

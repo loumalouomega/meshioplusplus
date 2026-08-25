@@ -6,7 +6,7 @@ I/O for Tecplot ASCII data format, cf.
 
 import numpy as np
 
-from ..__about__ import __version__ as version
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
@@ -465,7 +465,7 @@ def write(filename, mesh):
 
     with open_file(filename, "w") as f:
         # Title
-        f.write(f'TITLE = "Written by meshio++ v{version}"\n')
+        f.write(f'TITLE = "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}"\n')
 
         # Variables
         variables_str = ", ".join(f'"{var}"' for var in variables)

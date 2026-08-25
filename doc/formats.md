@@ -84,6 +84,68 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 ---
 
+## Provenance
+
+Since v10.15.0, every writer that carries a free-text header slot emits one canonical line, `Written by meshio++ v<release>` (`meshioplusplus._provenance.TAG` on the Python side, `detail::kProvenanceTag` on the C++ side — a single owner on each side, so the two engines emit character-identical bytes). Since v10.16.0 a caller can additionally opt into a richer block — source, target, the operation chain, conversion assumptions, a timestamp — rendered where a format's header slot can hold it; see [`doc/provenance.md`](./provenance.md) for the design and [`doc/roadmap.md`](./roadmap.md) section 1 for what remains open (reading the block back on read).
+
+Before this, roughly two dozen writers hand-wrote their own version of the line and had drifted three ways: a stale `meshio` (not `meshio++`) name in a handful of Python writers, a `(C++ core)`-vs-`v{version}` split that made the C++/Python fallback boundary visible in the output bytes, and three writers (`obj`, `ply`, `exodus`) embedding a wall-clock timestamp that made writing the same mesh twice produce different bytes.
+
+The table below is the audit this fixed: every format's comment syntax (if any), where a header may legally sit, and whether meshio++'s writer uses that slot today. A "—" in the last column means the format admits no free-text slot at all, or the slot it does admit (an ID/label field, a fixed keyword line) is a structural record rather than a place for a human-readable credit, and meshio++ does not write one there. The same classification, at the finer `SlotTier` granularity the opt-in block renders against (`None`/`Bounded`/`SingleLine`/`Block`), is [`doc/provenance.md`](./provenance.md#slot-tiers-and-the-moderequired-interaction)'s table -- this one stays the format-level audit.
+
+| Format | Comment syntax admitted | Where a header may sit | Emits the tag? |
+|---|---|---|---|
+| `abaqus` | `**`-prefixed lines; free text inside `*HEADING`'s data lines | Anywhere; writer uses `*HEADING` | Yes |
+| `ansys` | Section `(0 "text")` is the format's own comment section | Anywhere before `(0 ...)` sections | Yes (writer uses the `(1 "...")` program/version record, not a `(0 ...)` comment) |
+| `ansysInp` | `!` or `/` prefix | Anywhere | — |
+| `avsucd` | `#` prefix | Top of file | Yes |
+| `cgns` | None (HDF5/CGNS binary container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
+| `dex` | None — a fixed two-line header, the second ending in `#` | n/a (structural, not free text) | — |
+| `dolfin-xml` | XML `<!-- -->` | Anywhere in the document | — |
+| `ensight` | None named, but the `.geo` header's description line 2 is free text | Fixed line 2 of the `.geo` header | Yes |
+| `exodus` | netCDF root `title` attribute | n/a (one attribute, not a line) | Yes |
+| `flac3d` | `*` prefix | Top of file | Yes |
+| `flux` | None named — an unlabeled free-text line the reader skips (keyed lookup, not positional) | Top of file | Yes |
+| `freefem` | None (fixed positional numeric header) | n/a | — |
+| `gmsh` / `gmsh22` | `$Comments`/`$EndComments` section (spec-legal; our reader skips it, neither writer emits one) | Anywhere between sections | — |
+| `h5m` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
+| `hmf` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
+| `ip` | None (fixed positional numeric layout) | n/a | — |
+| `mdpa` | `//` prefix (Kratos/C++ style) | Anywhere | — |
+| `med` | HDF5 `DES` mesh-description field (user-overridable via `MedInfo.description`, not a provenance slot) | n/a | — (see the `med.md` note below) |
+| `medit` | `#` prefix | Anywhere | — |
+| `mff` | None (fixed positional numeric layout, no geometry) | n/a | — |
+| `mfm` | None (fixed positional numeric layout) | n/a | — |
+| `mphtxt` | `#` prefix | Top of file | Yes |
+| `nastran` | `$` prefix | Top of file, before `BEGIN BULK` | Yes (see the sentinel note below) |
+| `netgen` | `#` prefix | Top of file | Yes |
+| `neuroglancer` | None (binary chunked octree format) | n/a | — |
+| `obj` | `#` prefix | Top of file | Yes |
+| `off` | `#` prefix | After the `OFF` magic line | Yes |
+| `openfoam` | C-style `/* ... */`; the `FoamFile` banner's fixed-width credit cell is this writer's own convention | Top of file, inside the banner box | Yes (C++ writer only — no Python twin) |
+| `permas` | `!` prefix | Top of file | Yes |
+| `ply` | `comment ` prefix (the format's own keyword) | Anywhere in the header, before `end_header` | Yes |
+| `stl` | Binary: an 80-byte free header slot. ASCII: none (the `solid` line names the object, not a comment) | Binary: the first 80 bytes. ASCII: none | Yes (binary only) |
+| `su2` | `%` prefix | Anywhere | — |
+| `svg` | XML `<!-- -->` | Anywhere in the document | — |
+| `tecplot` | None named — the `TITLE = "..."` record is the nearest free-text slot | Top of file | Yes |
+| `tetgen` | `#` prefix | Top of each file (`.node`/`.ele`/`.poly`) | Yes |
+| `tikz` | `%` prefix (LaTeX/TikZ convention) | Anywhere | — |
+| `triangle` | `#` prefix | Top of each file (`.node`/`.ele`/`.poly`) | Yes |
+| `ugrid` | None (fixed columnar numeric format) | n/a | — |
+| `unv` | None general-purpose — dataset 2414's five ID-label records are a structural slot, not a comment | n/a | — |
+| `vti` | XML `<!-- -->` | Anywhere in the document | Yes |
+| `vtk` / `vtk42` / `vtk51` | The legacy format's title line (line 2, ≤256 chars) is the format's own free-text slot | Fixed line 2 | Yes |
+| `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
+| `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
+| `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
+| `xdmf` | XML `<!-- -->` | Anywhere in the document | — |
+
+Two formats carry a related but **structurally distinct** record that this table does not count as "the tag": `med`'s `DES` mesh-description field defaults to `"Mesh created with meshio++"` (both engines agree; user-overridable, so it is data, not a fixed credit) and `unv`'s dataset-2414 field-header records always read `meshioplusplus` on five fixed ID lines (a label field the format requires, not a comment).
+
+`nastran` is the one documented exception to "both engines emit character-identical bytes": the C++ *reader* only accepts a file carrying its own literal sentinel comment (`meshioplusplus-cpp-nastran`), so it does not misparse a real-world `.bdf`/`.fem`/`.nas` file or a Python-written one — see [`nastran.md`](./formats/nastran.md). The C++ writer emits that sentinel line first and the provenance tag as a second `$` line after it; the Python writer emits only the tag, never the sentinel.
+
+---
+
 ## Native acceleration and fallbacks
 
 meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:

@@ -1549,6 +1549,56 @@ step('Voxelize is a chainable pipeline step', () => {
     assert.equal(out.cells[0].data.length, 54 * 4);
 });
 
+step('provenance is opt-in, scoped, and readable back', () => {
+    const mesh = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+    };
+
+    // Default (no scope): exactly the one-line credit, unchanged since v10.15.0.
+    m.writeMesh('/off.obj', mesh, 'obj');
+    const off = m.readProvenance('/off.obj');
+    assert(off.recognised, 'default write should still carry the credit line');
+    assert(off.lines.length === 1, `default write leaked a block: ${off.lines}`);
+
+    // Scoped: the full block, and the scope closes on the way out.
+    m.withProvenance(1, () => {
+        m.provenanceSetSource('in.msh', 'gmsh');
+        m.provenanceNote('regions-dropped', 'Side regions have no OBJ equivalent');
+        m.writeMesh('/on.obj', mesh, 'obj');
+    });
+    const on = m.readProvenance('/on.obj');
+    assert(on.recognised, 'scoped write should be recognised');
+    assert(on.lines.some((l) => l.includes('in.msh')), 'source missing from block');
+    assert(
+        on.lines.some((l) => l.includes('regions-dropped')),
+        'note missing from block',
+    );
+
+    // The scope must not have survived the callback.
+    m.writeMesh('/after.obj', mesh, 'obj');
+    assert(
+        m.readProvenance('/after.obj').lines.length === 1,
+        'the scope leaked past withProvenance',
+    );
+
+    // A throw inside the body still closes the scope -- the whole reason
+    // withProvenance exists rather than raw begin/end.
+    try {
+        m.withProvenance(1, () => {
+            throw new Error('boom');
+        });
+    } catch (e) {
+        if (e.message !== 'boom') throw e;
+    }
+    m.writeMesh('/after2.obj', mesh, 'obj');
+    assert(
+        m.readProvenance('/after2.obj').lines.length === 1,
+        'a throw inside withProvenance stranded the scope',
+    );
+});
+
 step('every binding is reachable through the wrapper', () => {
     // Regression guard for the v7.2.1 class of bug: every binding must be
     // forwarded by src/index.mjs, not merely bound in js_bindings.cpp.
@@ -1567,6 +1617,13 @@ step('every binding is reachable through the wrapper', () => {
         'numNodesPerCell',
         'topologicalDimension',
         'availableFormats',
+        'withProvenance',
+        'provenanceBegin',
+        'provenanceEnd',
+        'provenanceNote',
+        'provenanceSetSource',
+        'provenanceSetTarget',
+        'readProvenance',
         'dataDrop',
         'dataKeep',
         'dataRename',

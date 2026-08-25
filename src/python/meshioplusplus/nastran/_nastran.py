@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError
 from .._files import open_file
@@ -329,7 +329,7 @@ def write(filename, mesh, point_format="fixed-large", cell_format="fixed-small")
         points = mesh.points
 
     with open_file(filename, "w") as f:
-        f.write(f"$ Nastran file written by meshio++ v{__version__}\n")
+        f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "$ "))
         f.write("BEGIN BULK\n")
 
         # Points

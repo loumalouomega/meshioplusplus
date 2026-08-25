@@ -151,6 +151,11 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
     a bounding box was computed -- absent rather than ``None``, so "not
     computed" cannot be mistaken for a real box at the origin.
 
+    ``provenance`` is the block the file carries (one line per entry, comment
+    punctuation stripped), always present and empty for a file with none;
+    ``provenance_recognised`` says whether its first line is meshio++'s own
+    tag format. See :doc:`provenance`.
+
     ``regions`` lists each named region's ``name``/``kind``/``dim``/``tag``/
     ``num_entries`` (not the entries themselves) -- always present, empty for a
     format that maps no regions or on a native metadata path that declined a
@@ -188,7 +193,17 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
             from ._sniff import sniff_format
 
             resolved_format = sniff_format(path) or None
-    return _metadata_from_mesh(mesh, resolved_format)
+    out = _metadata_from_mesh(mesh, resolved_format)
+    # Provenance lives in the file's bytes, so unlike everything else in a
+    # summary it cannot come from the Mesh -- fill it here, where the path is
+    # still in hand. A buffer has no path to scan and keeps the empty default.
+    if not is_buffer(filename, "r"):
+        from ._provenance import read_provenance_lines
+
+        lines_found, recognised = read_provenance_lines(filename)
+        out["provenance"] = lines_found
+        out["provenance_recognised"] = recognised
+    return out
 
 
 def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
@@ -236,6 +251,10 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
             }
             for r in getattr(mesh, "regions", [])
         ],
+        # Always present, matching the C++ path. Filled by `read_metadata`
+        # when it has a real path; a Mesh alone cannot supply it.
+        "provenance": [],
+        "provenance_recognised": False,
     }
     if len(mesh.points):
         pts = np.asarray(mesh.points, dtype=float)
@@ -396,4 +415,10 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
             pass
 
     # Write
+    # Bound scope-less provenance notes to this write, so a note raised by an
+    # earlier operation cannot attach itself to this file. No-op inside a
+    # caller's own scope. See _provenance.begin_write().
+    from ._provenance import begin_write
+
+    begin_write()
     return writer(filename, mesh, **kwargs)

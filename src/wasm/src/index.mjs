@@ -173,6 +173,13 @@ function resolveVariant(variant) {
  *            options?: object) => Mesh,
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
  *   stats: (mesh: Mesh) => object,
+ *   withProvenance: <T>(mode: number|null|undefined, fn: () => T) => T,
+ *   provenanceBegin: (mode?: number) => void,
+ *   provenanceEnd: () => void,
+ *   provenanceNote: (category: string, detail: string) => void,
+ *   provenanceSetSource: (path: string, format: string) => void,
+ *   provenanceSetTarget: (format: string, encoding?: string, codec?: string, floatFormat?: string) => void,
+ *   readProvenance: (path: string) => {lines: string[], recognised: boolean},
  *   dataDrop: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataKeep: (mesh: Mesh, location: string, names?: string[], ignoreMissing?: boolean) => Mesh,
  *   dataRename: (mesh: Mesh, location: string, from: string, to: string) => Mesh,
@@ -599,6 +606,27 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             weightsKey = '',
         ) => Module.partitionLabels(mesh, nparts, method, imbalance, mode, seed, weightsKey),
         stats: (mesh) => Module.stats(mesh),
+
+        // Provenance (see doc/provenance.md). The C++ scope is RAII, but two
+        // separate JS calls cannot be, so `withProvenance` pairs them in a
+        // try/finally -- a throw inside the body must not strand the scope.
+        // The raw begin/end are exposed too for a caller whose control flow
+        // does not fit a callback.
+        withProvenance: (mode, fn) => {
+            Module.provenanceBegin(mode ?? 1);
+            try {
+                return fn();
+            } finally {
+                Module.provenanceEnd();
+            }
+        },
+        provenanceBegin: (mode) => Module.provenanceBegin(mode ?? 1),
+        provenanceEnd: () => Module.provenanceEnd(),
+        provenanceNote: (category, detail) => Module.provenanceNote(category, detail),
+        provenanceSetSource: (path, format) => Module.provenanceSetSource(path, format),
+        provenanceSetTarget: (format, encoding, codec, floatFormat) =>
+            Module.provenanceSetTarget(format, encoding ?? '', codec ?? '', floatFormat ?? ''),
+        readProvenance: (path) => Module.readProvenance(path),
         // Data operations (see doc/data_operations.md): act on point_data /
         // cell_data / field_data only -- the geometry is never modified.
         dataDrop: (mesh, location, names = [], ignoreMissing = false) =>

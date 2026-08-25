@@ -39,6 +39,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -94,6 +95,8 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
 void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
                        const WriteOptions& rOptions) {
     const std::string fmt = resolve_format(rPath, rFormat);
+    // Bound scope-less notes to this write -- see provenance_begin_write().
+    detail::provenance_begin_write();
 
     // All-defaults goes straight through the registry, so the common path is
     // byte-for-byte what it always was (and picks up formats this file has no

@@ -8,7 +8,7 @@ import re
 
 import numpy as np
 
-from ..__about__ import __version__
+from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
@@ -390,7 +390,9 @@ def read(filename):  # noqa: C901
 def write(filename, mesh, binary=True):
     with open_file(filename, "wb") as fh:
         # header
-        fh.write(f'(1 "meshio++ {__version__}")\n'.encode())
+        fh.write(
+            f'(1 "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}")\n'.encode()
+        )
 
         # dimension
         num_points, dim = mesh.points.shape
