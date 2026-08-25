@@ -76,10 +76,10 @@ def _sha(path) -> str:
 
 # Regenerate with: pytest tests/python/test_io_baseline.py -k report -s
 BASELINE_HASHES = {
-    "vtu_ascii": "2efce92bee11baa7e13beb12aff6b53132e2311a23011a3c3d636eb634b7184d",
-    "vtu_binary_raw": "95ac05b12b8d2b37c084bb799c61a7ac732197db3bd649a1173301f012b3fab9",
-    "vtp_ascii": "a86225452433f4328aa512a3fa213b889147b22c735bb5f4057af53c2e81ec3e",
-    "vtp_binary_raw": "3bec696d552afc044e7d12501bcd5fc456a387645e5e8a4695d4e26bb834e632",
+    "vtu_ascii": "58c419f3ce63649123538509478e87c8af576c5ea5cadedca9cecf5c271464aa",
+    "vtu_binary_raw": "3c9d15678d0cefa878a36d4158c2abe69b0013f50e838d906ba96e1759689a4f",
+    "vtp_ascii": "2b0a146f6f90d4d5d331bbe6939c3d23ab6a195563c6badf0e08cc3a1784f39a",
+    "vtp_binary_raw": "1a337328823cad74932fc464f62a207e93fb7766239130e5585e243d37a9eab8",
 }
 
 

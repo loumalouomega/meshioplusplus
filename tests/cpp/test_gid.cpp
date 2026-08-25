@@ -21,6 +21,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 
@@ -311,7 +312,170 @@ TEST(GidWrite, ResultsReferenceGaussPointSets) {
     EXPECT_NE(content.find("OnGaussPoints \"gp_quad_0\""), std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Reader. Note the GidOrdering suite above is deliberately KEPT as a raw-bytes
+// oracle now that a reader exists: a reader+writer round trip is a weak oracle
+// that a consistently-wrong permutation survives, so it cannot replace it.
+// ---------------------------------------------------------------------------
+
+TEST(GidRead, AsciiRoundTrip) {
+    const Mesh in = mt::tri_mesh();
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, in, meshioplusplus::GidMode::Ascii);
+
+    const Mesh out = meshioplusplus::read_gid(path);
+    ASSERT_EQ(out.NumPoints(), in.NumPoints());
+    ASSERT_EQ(out.NumCellBlocks(), in.NumCellBlocks());
+    EXPECT_EQ(out.Cells(0).Type(), in.Cells(0).Type());
+    EXPECT_EQ(out.Cells(0).NumCells(), in.Cells(0).NumCells());
+    for (std::size_t i = 0; i < in.NumPoints() * in.PointDim(); ++i)
+        EXPECT_NEAR(meshioplusplus::detail::read_double(out.Points(), i),
+                    meshioplusplus::detail::read_double(in.Points(), i),
+                    1e-8);
+}
+
+TEST(GidRead, RepeatedNodeTablesAreDeduplicated) {
+    // Real files (Kratos's own GiD output) repeat the FULL node table in every
+    // MESH block; meshio++'s writer emits it once and writes empty Coordinates
+    // pairs thereafter. This shape is unreachable through our own writer, so it
+    // is spelled out by hand.
+    const std::string path = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(path);
+        f << "MESH \"a\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n"
+             "MESH \"b\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(path);
+    EXPECT_EQ(out.NumPoints(), 3u);  // 3, not 6
+    EXPECT_EQ(out.NumCellBlocks(), 2u);
+}
+
+TEST(GidRead, ElementIdsMayRestartPerBlock) {
+    // Element ids are NOT globally unique in real files -- gidpost's own block
+    // writer numbers 1..n per mesh. A reader keying results off one global map
+    // would mis-associate them.
+    const std::string path = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(path);
+        f << "MESH \"a\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 1 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n"
+             "MESH \"b\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\nEnd Coordinates\n"
+             "Elements\n1 2 4 3\n2 1 2 4\nEnd Elements\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(path);
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    EXPECT_EQ(out.Cells(0).NumCells(), 1u);
+    EXPECT_EQ(out.Cells(1).NumCells(), 2u);
+}
+
+TEST(GidRead, MaterialColumnIsDisambiguatedByNnode) {
+    // There is NO separator between connectivity and the optional trailing
+    // material id, so the row width against Nnode is the only disambiguator.
+    const std::string with_mat = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(with_mat);
+        f << "MESH \"a\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3 42\nEnd Elements\n";
+    }
+    const Mesh a = meshioplusplus::read_gid(with_mat);
+    ASSERT_TRUE(a.HasCellData("gmsh:physical"));
+    EXPECT_EQ(meshioplusplus::detail::read_int(a.CellData("gmsh:physical", 0), 0), 42);
+
+    const std::string without = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(without);
+        f << "MESH \"a\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n";
+    }
+    // No material information at all -- inventing an all-zero array would be
+    // data the file never carried.
+    EXPECT_FALSE(meshioplusplus::read_gid(without).HasCellData("gmsh:physical"));
+}
+
+TEST(GidRead, SuppressedRepeatedIdIsAContinuationRow) {
+    // gidpost omits a Values row's id when it repeats the previous row's, so a
+    // G>1 Gauss-point result writes the id once and the following rows begin
+    // with whitespace. Parsing must survive that (the result is then dropped,
+    // below, because meshio++ cannot represent per-point values).
+    const std::string mesh_path = mt::temp_path(".post.msh");
+    const std::string res_path = mesh_path.substr(0, mesh_path.size() - 3) + "res";
+    {
+        std::ofstream f(mesh_path);
+        f << "MESH \"s\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n";
+    }
+    {
+        std::ofstream f(res_path);
+        f << "GiD Post Results File 1.2\n"
+             "GaussPoints \"g2\" ElemType Triangle \"s\"\n"
+             "Number Of Gauss Points: 2\n"
+             "Natural Coordinates: Internal\nEnd GaussPoints\n"
+             "Result \"two\" \"a\" 1 Scalar OnGaussPoints \"g2\"\n"
+             "Values\n1 5\n 6\nEnd Values\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(mesh_path);
+    EXPECT_EQ(out.NumPoints(), 3u);
+    // Parsed without error, then dropped rather than averaged or truncated.
+    EXPECT_FALSE(out.HasCellData("two"));
+}
+
+TEST(GidRead, ResultsSiblingIsOptional) {
+    const std::string path = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(path);
+        f << "MESH \"s\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\nEnd Elements\n";
+    }
+    const Mesh out = meshioplusplus::read_gid(path);  // no .post.res exists
+    EXPECT_EQ(out.NumPoints(), 3u);
+    EXPECT_EQ(out.NumPointData(), 0u);
+}
+
+TEST(GidRead, UnverifiedOrderingIsRefusedByName) {
+    // hexahedron27/wedge15/pyramid13 are exactly the orderings the WRITER
+    // refuses; refusing them on read keeps the position consistent instead of
+    // guessing a permutation in one direction we decline to guess in the other.
+    const std::string path = mt::temp_path(".post.msh");
+    {
+        std::ofstream f(path);
+        f << "MESH \"h\" dimension 3 ElemType Hexahedra Nnode 27\n"
+             "Coordinates\n1 0 0 0\nEnd Coordinates\nElements\nEnd Elements\n";
+    }
+    try {
+        meshioplusplus::read_gid(path);
+        FAIL() << "expected a ReadError";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("Hexahedra"), std::string::npos) << e.what();
+    }
+}
+
+TEST(GidRead, MissingGeometryFileIsAnError) {
+    EXPECT_THROW(meshioplusplus::read_gid(mt::temp_path(".post.msh")),
+                 meshioplusplus::ReadError);
+}
+
+TEST(GidRead, IsReadableRegardlessOfTheWriter) {
+    // The reader needs no gidpost at all, so Ascii is readable in every build.
+    EXPECT_TRUE(meshioplusplus::gid_readable(meshioplusplus::GidMode::Ascii));
+}
+
 #else  // !MESHIOPLUSPLUS_HAS_GIDPOST
+
+TEST(GidRead, AsciiStaysReadableWithoutGidpost) {
+    // The whole point of keeping the reader outside gid.cpp's gidpost guard:
+    // a build that cannot WRITE GiD at all still reads the ascii flavour.
+    EXPECT_TRUE(meshioplusplus::gid_readable(meshioplusplus::GidMode::Ascii));
+}
 
 TEST(GidWrite, CompiledOutThrowsNamingTheFlag) {
     meshioplusplus::Mesh m;

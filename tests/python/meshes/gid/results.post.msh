@@ -1,0 +1,11 @@
+MESH "surf" dimension 3 ElemType Triangle Nnode 3
+Coordinates
+1 0 0 0
+2 1 0 0
+3 0 1 0
+4 1 1 0
+End Coordinates
+Elements
+1 1 2 3
+2 2 4 3
+End Elements
