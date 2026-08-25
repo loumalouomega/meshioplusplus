@@ -23,6 +23,8 @@
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
+#include "gid_common.hpp"
+
 namespace meshioplusplus {
 
 // Unconditional (needed whether or not gidpost itself is compiled in), the
@@ -146,31 +148,11 @@ void gid_check(int rc, const std::string& rWhat) {
         throw WriteError("GiD: " + rWhat + " failed (gidpost status " + std::to_string(rc) + ")");
 }
 
-bool gid_has_suffix(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
-}
-
-GidMode gid_resolve_mode(const std::string& rPath, GidMode mode) {
-    if (mode != GidMode::Auto)
-        return mode;
-    if (gid_has_suffix(rPath, ".post.bin"))
-        return GidMode::Binary;
-    if (gid_has_suffix(rPath, ".post.h5"))
-        return GidMode::Hdf5;
-    return GidMode::Ascii;
-}
-
-// "<stem>.post.msh" <-> "<stem>.post.res"; an arbitrary path is treated as
-// the stem itself (the ensight_case_geo_paths precedent, generalized to a
-// third case since gid's two known suffixes share the same length).
-std::pair<std::string, std::string> gid_ascii_paths(const std::string& rPath) {
-    if (gid_has_suffix(rPath, ".post.msh"))
-        return {rPath, rPath.substr(0, rPath.size() - 3) + "res"};
-    if (gid_has_suffix(rPath, ".post.res"))
-        return {rPath.substr(0, rPath.size() - 3) + "msh", rPath};
-    return {rPath + ".post.msh", rPath + ".post.res"};
-}
+// gid_has_suffix / gid_resolve_mode / gid_ascii_paths now live in the
+// format-private formats/gid_common.hpp, so the reader -- which must NOT be
+// behind this file's MESHIOPLUSPLUS_HAS_GIDPOST guard -- can share them.
+using gid_detail::gid_ascii_paths;
+using gid_detail::gid_resolve_mode;
 
 GiD_PostMode gid_post_mode(GidMode mode) {
     switch (mode) {

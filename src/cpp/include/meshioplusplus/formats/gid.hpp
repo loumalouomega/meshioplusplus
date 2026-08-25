@@ -18,16 +18,26 @@
 
 /**
  * @file gid.hpp
- * @brief GiD postprocess format writer, on a vendored gidpost 2.14 — write-only.
+ * @brief GiD postprocess format reader and writer.
  *
  * GiD (https://www.gidsimulation.com/) is a pre/postprocessor widely used in
- * the same FE community meshio++ serves. Its postprocess format is written
+ * the same FE community meshio++ serves. Its postprocess format is **written**
  * through CIMNE's gidpost C library, vendored as a hardcopy at
  * `src/cpp/third_party/gidpost/` (BSD-2-Clause-Views) — see that directory's
- * `README.meshioplusplus.md` for what was vendored and why. gidpost's public
- * API has **zero read functions**, so this is a write-only format: there is
- * no `read_gid`, and `registry_readers()` carries no entry for it (the
- * `svg`/`tikz`/`gmsh22` precedent).
+ * `README.meshioplusplus.md` for what was vendored and why.
+ *
+ * gidpost's public API has **zero read functions**, so the **reader** is
+ * meshio++'s own code against the on-disk grammar, entirely independent of the
+ * vendored library. That independence has a visible consequence worth stating
+ * up front: the reader's real dependencies are **per flavour** — ASCII needs
+ * nothing at all, the compressed-binary and gzipped-ASCII flavours need zlib,
+ * and the HDF5 flavour needs HDF5 — whereas *writing* any flavour needs
+ * gidpost, which is itself hard-gated on zlib. So `gid` is **readable in
+ * strictly more build configurations than it is writable**: the
+ * statically-linked release CLI binaries and the Windows wheels build with
+ * zlib off and cannot write GiD at all, yet still read the ASCII flavour.
+ * `gid_available` reports the write side, `gid_readable` the read side; they
+ * genuinely differ, which is why there are two.
  *
  * Three on-disk flavours, chosen by `GidMode` or inferred from the path:
  *  - **Ascii**: two sibling files, `<stem>.post.msh` (geometry) +
@@ -123,6 +133,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -161,6 +172,21 @@ MESHIOPLUSPLUS_API GidMode gid_mode_from_name(const std::string& rName);
 MESHIOPLUSPLUS_API bool gid_available(GidMode mode);
 
 /**
+ * @brief Whether this build can **read** @p mode.
+ *
+ * Deliberately distinct from @ref gid_available, which reports the *write*
+ * side. Reading needs no gidpost: `Ascii` is always readable, `Binary` needs
+ * `MESHIOPLUSPLUS_HAS_ZLIB` (the flavour is a gzip stream), and `Hdf5` needs
+ * `MESHIOPLUSPLUS_HAS_HDF5`. `GidMode::Auto` answers as `Ascii`, since that is
+ * what an unrecognized extension resolves to.
+ *
+ * @note `gid_available`'s meaning is the one it shipped with in v10.18.0 and
+ * is deliberately unchanged — silently redefining it to mean "readable" would
+ * be a behaviour change for an existing consumer.
+ */
+MESHIOPLUSPLUS_API bool gid_readable(GidMode mode);
+
+/**
  * @brief The CMake flags that would enable @p mode, for an actionable
  * error message.
  */
@@ -192,5 +218,55 @@ MESHIOPLUSPLUS_API void write_gid(const std::string& rPath, const Mesh& rMesh,
                                   GidMode mode = GidMode::Auto,
                                   const std::string& rAnalysisName = "meshio++",
                                   double stepValue = 1.0);
+
+/**
+ * @brief Read a GiD postprocess file.
+ *
+ * The flavour is resolved from @p rPath's extension and then **confirmed
+ * against the leading bytes**, because the extension alone cannot tell: a
+ * `.post.msh` may legitimately be gzipped (gidpost's `GiD_PostAsciiZipped`
+ * writes the same ASCII text through `gzprintf`), and a `.post.bin` is a gzip
+ * stream wrapping a binary record layout.
+ *
+ * **Sibling policy** (the `triangle` `.node`/`.ele` precedent): for the ASCII
+ * flavour the geometry file `<stem>.post.msh` is **mandatory** and the results
+ * file `<stem>.post.res` is **optional** — a mesh with no results file reads
+ * back as geometry only. Passing the `.post.res` path directly derives and
+ * reads the `.post.msh`; *its* absence is an error, since results alone carry
+ * no geometry.
+ *
+ * Real-world files differ from meshio++'s own output in two ways this reader
+ * handles deliberately, neither of which our writer can produce: the full node
+ * table may be **repeated in every `MESH` block** (rather than written once
+ * with empty blocks thereafter), and element ids may **restart at 1 per
+ * block** (rather than being globally unique). Node ids are therefore
+ * accumulated into one global table de-duplicated by id, and element ids are
+ * tracked per block.
+ *
+ * @param rPath the file to read (any of the four `.post.*` spellings).
+ * @param rOptions selective-read options. `mTimeStep` selects one step of a
+ *        multi-step results file and is honoured natively (it cannot be
+ *        emulated after the fact); `mMmap` is honoured for the ASCII flavour;
+ *        the narrowing options are left to the shared caller-side filter.
+ * @return the read Mesh.
+ * @throws ReadError on malformed input, on a cell type with no verified GiD
+ *         ordering (`hexahedron27`/`wedge15`/`pyramid13`) or no meshio++
+ *         mapping (`Sphere`/`Circle`), on an out-of-range time step, or when
+ *         this build cannot read the resolved flavour (naming the missing
+ *         CMake flag).
+ */
+MESHIOPLUSPLUS_API Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarize a GiD postprocess file without materializing its arrays.
+ *
+ * Reports point/cell counts and block shapes from the `MESH` headers, and the
+ * available step values from the results file. **Declines** — by throwing
+ * `ReadError` — for anything it cannot summarize cheaply, which costs the
+ * caller a slower full read rather than a failure (`registry_read_metadata`
+ * catches it and falls back).
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_gid_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOptions = {});
 
 }  // namespace meshioplusplus

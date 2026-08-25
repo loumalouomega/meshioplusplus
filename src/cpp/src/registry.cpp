@@ -87,6 +87,15 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
         {"freefem", meshioplusplus::read_freefem},
+        // UNGUARDED, unlike gid's writer entry: gidpost is write-only, so
+        // reading needs none of it. read_gid's real dependencies are per
+        // flavour (ascii: none, binary: zlib, hdf5: HDF5), which makes `gid`
+        // readable in strictly more build configurations than it is writable
+        // -- the release CLI binaries and Windows wheels build zlib-off and
+        // cannot write GiD at all, yet read the ascii flavour fine. For the
+        // same reason gid must NOT appear in registry_compiled_out(): there is
+        // no missing dependency to name.
+        {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
@@ -457,6 +466,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              return meshioplusplus::read_med(path, info, opts);
          }},
 #endif
+        {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
@@ -471,6 +481,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"exodus", meshioplusplus::read_exodus_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"gid", meshioplusplus::read_gid_metadata},
         {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},

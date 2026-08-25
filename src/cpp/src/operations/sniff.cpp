@@ -86,6 +86,17 @@ std::string sniff_format(const std::string& rPath) {
         return "vtk";
     if (sniff_starts_with(stripped, "$MeshFormat"))
         return "gmsh";
+    // GiD postprocess. The results file is self-identifying. The geometry file
+    // is matched on `MESH "` -- keyword, space AND opening quote -- because a
+    // bare "MESH " prefix is exactly the generic English token this file's own
+    // contract warns against claiming; the quote is what gidpost always writes
+    // and what makes the match unambiguous. Neither `.post.bin` (a deflated
+    // stream, no stable leading signature) nor `.post.h5` (the generic HDF5
+    // magic, which this file deliberately never claims) is sniffable.
+    if (sniff_starts_with(stripped, "GiD Post Results File"))
+        return "gid";
+    if (sniff_starts_with(stripped, "MESH \""))
+        return "gid";
     // PLY: "ply" on its own first line.
     if (sniff_starts_with(stripped, "ply\n") || sniff_starts_with(stripped, "ply\r") ||
         stripped == "ply")

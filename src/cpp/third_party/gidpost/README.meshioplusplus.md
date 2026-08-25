@@ -10,10 +10,32 @@ files in ASCII, compressed binary and HDF5. It backs meshio++'s `gid` writer
   in this directory (copied verbatim from upstream) and the notice requirements
   it carries — permissive, no obligation on the rest of this MIT repository
   beyond keeping the notice with this code.
-- **Vendored unmodified**: only line endings were normalized (CRLF -> LF); no
-  source line was edited. Anything meshio++ needs (`NDEBUG`, `ENABLE_HDF5`) is
-  supplied as a compile definition from `CMakeLists.txt`, never a source edit,
-  so a future version bump is a straight re-copy of `source/`.
+- **Vendored near-unmodified**: line endings were normalized (CRLF -> LF), and
+  `source/gidpostHDF5.c` carries **one two-part upstream bug fix** (below).
+  Everything else meshio++ needs (`NDEBUG`, `ENABLE_HDF5`) is supplied as a
+  compile definition from `CMakeLists.txt`, never a source edit.
+
+## The one source fix, and why (re-apply it on any version bump)
+
+Both parts are in `new_CurrentHdf5WriteData()` / `delete_CurrentHdf5WriteData()`
+in `source/gidpostHDF5.c`, and both are marked inline with `meshio++ fix`
+comments. Together they made gidpost's HDF5 flavour **single-use per process,
+and deadlock-prone afterwards**:
+
+1. `G_num_HDF5_files` was incremented on open but **never decremented** on
+   close, so it counted files *ever* opened rather than files *currently* open.
+   The second HDF5 file opened in a process -- even strictly after the first had
+   been closed -- therefore tripped the "more than one HDF5 file" thread-safety
+   check and was refused. It is now a file-scope static that
+   `delete_CurrentHdf5WriteData()` decrements.
+2. That refusal path did `return NULL` **without `_UNLOCK_`**, leaving gidpost's
+   process-global `pthread_mutex_t` held forever, so every subsequent gidpost
+   call in the process deadlocked -- including ones for the unrelated ASCII and
+   binary flavours.
+
+Found by meshio++'s own test suite, which writes several HDF5 files in one
+process; a single-file program never reaches either bug. Report upstream if
+gidpost gains an issue tracker.
 
 ## What was excluded, and why
 

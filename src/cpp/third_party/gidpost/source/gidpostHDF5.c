@@ -102,14 +102,21 @@ typedef struct _CurrentHdf5WriteData {
   MeshGroupData *mesh_group_data;
 } CurrentHdf5WriteData;
 
-CurrentHdf5WriteData *new_CurrentHdf5WriteData( void ) {
-  static int G_num_HDF5_files = 0;
+/* meshio++ fix (1 of 2): file scope, not a function-local static, so that
+   delete_CurrentHdf5WriteData() below can decrement it. See the note in
+   ../README.meshioplusplus.md. */
+static int G_num_HDF5_files = 0;
 
+CurrentHdf5WriteData *new_CurrentHdf5WriteData( void ) {
   /* if we are opening more than one HDF5 file, check for thread safety */
   _LOCK_;
   if ( G_num_HDF5_files == 1 ) {
     if ( GiD_IsThreadSafe_HDF5() <= 0 ) {
       fprintf( stderr, "GiDPost: HDF5 library is not thread safe. Using %s\n", GiD_GetHDF5Version() );
+      /* meshio++ fix (2 of 2): the original returned here WITHOUT unlocking,
+         leaving the process-global gidpost mutex held forever -- every later
+         gidpost call then deadlocked. */
+      _UNLOCK_;
       return NULL;
     }
   }
@@ -127,6 +134,14 @@ CurrentHdf5WriteData *new_CurrentHdf5WriteData( void ) {
 void delete_CurrentHdf5WriteData( CurrentHdf5WriteData *obj ) {
   delete_MeshGroupData( obj->mesh_group_data );
   free( obj );
+  /* meshio++ fix (1 of 2, cont.): the counter must track CURRENTLY-OPEN files,
+     not files ever opened. Upstream only ever incremented it, so the second
+     HDF5 file opened in a process -- even strictly after the first was closed
+     -- tripped the thread-safety check above and was refused. */
+  _LOCK_;
+  if ( G_num_HDF5_files > 0 )
+    G_num_HDF5_files--;
+  _UNLOCK_;
 }
 
 /* private functions */
