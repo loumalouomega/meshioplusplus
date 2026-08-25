@@ -18,6 +18,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
+| [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | — | ✓ | zlib (vendored gidpost; `hdf5` flavour additionally needs HDF5) |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
@@ -53,6 +54,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
 
 **Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio++ picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio++ tries the registered formats in order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
+
+**Note on `.post.*`:** extension resolution tries the *longest* matching suffix first, so a compound extension always wins over a shorter one that also matches — `.post.msh` resolves to `gid`, never falling through to `.msh`'s own `ansys`/`gmsh`/`freefem` candidates (even for a mesh carrying gmsh-native tags, which would otherwise steer a plain `.msh` write to `gmsh`); `.post` alone (no `.msh` suffix) still resolves to `permas`, unaffected.
 
 **Note on `.inp`:** `abaqus` and `ansysInp` both use `.inp`. `abaqus` is registered first, so plain extension-based dispatch resolves to Abaqus by default; pass `file_format="ansysInp"` (or call `meshioplusplus.ansysInp.read`/`write` directly) to select the Ansys/APDL reader for a `.inp` file.
 
@@ -106,6 +109,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `flac3d` | `*` prefix | Top of file | Yes |
 | `flux` | None named — an unlabeled free-text line the reader skips (keyed lookup, not positional) | Top of file | Yes |
 | `freefem` | None (fixed positional numeric header) | n/a | — |
+| `gid` | `# Name: value` "user attribute" lines (ascii/binary); an HDF5 group attribute (`hdf5` flavour) | One per mesh/result "block", via `GiD_fWriteMeshUserAttribute`/`GiD_fWriteResultUserAttribute` | Yes (ascii confirmed; the `hdf5` flavour's result-side attribute placement is not independently verified — see `gid.md`) |
 | `gmsh` / `gmsh22` | `$Comments`/`$EndComments` section (spec-legal; our reader skips it, neither writer emits one) | Anywhere between sections | — |
 | `h5m` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
 | `hmf` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
@@ -305,6 +309,18 @@ Abaqus is one of the three Phase-1 [named region](./regions.md) formats (with gm
 ### DOLFIN-XML (`.xml`)
 
 `meshioplusplus.dolfin.write(filename, mesh)` — no extra options. Both `point_data` (since v9.9.0, as `dim="0"` mesh functions) and `cell_data` are written to sibling `<stem>_<name>.xml` files; see [`dolfin.md`](./formats/dolfin.md#file-structure).
+
+### GiD (`.post.msh` / `.post.res`, `.post.bin`, `.post.h5`)
+
+```python
+meshioplusplus.gid.write(filename, mesh,
+    mode="auto",             # "auto", "ascii", "binary", or "hdf5"
+    analysis_name="meshio++",
+    step=1.0,
+)
+```
+
+Write-only — see [`gid.md`](./formats/gid.md).
 
 ---
 
