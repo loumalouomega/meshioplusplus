@@ -44,3 +44,9 @@ benchmark/*.ipynb linguist-generated=true
 # TikZ .tex files otherwise show up as a "TeX" sliver in the Languages bar.
 doc/icons/** linguist-vendored
 doc/logo/** linguist-vendored
+
+# Vendored gidpost 2.14 (CIMNE, BSD-2-Clause-Views) -- third-party C source,
+# not representative of this project's own C++/Python source. See
+# src/cpp/third_party/gidpost/README.meshioplusplus.md for what was vendored
+# and why.
+src/cpp/third_party/gidpost/** linguist-vendored

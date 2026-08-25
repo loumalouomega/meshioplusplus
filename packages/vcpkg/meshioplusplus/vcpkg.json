@@ -1,6 +1,6 @@
 {
   "name": "meshioplusplus",
-  "version": "10.17.0",
+  "version": "10.18.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "license": "MIT",
@@ -18,7 +18,8 @@
   "default-features": [
     "hdf5",
     "netcdf",
-    "zlib"
+    "zlib",
+    "gidpost"
   ],
   "features": {
     "hdf5": {
@@ -43,6 +44,18 @@
       "description": "VTU zlib compression path",
       "dependencies": [
         "zlib"
+      ]
+    },
+    "gidpost": {
+      "description": "GiD postprocess writer, on a vendored hardcopy of gidpost 2.14 (hard-gated on the zlib feature)",
+      "dependencies": [
+        {
+          "name": "meshioplusplus",
+          "default-features": false,
+          "features": [
+            "zlib"
+          ]
+        }
       ]
     },
     "zstd": {

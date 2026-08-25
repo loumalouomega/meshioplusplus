@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 10.17.0
+  VERSION 10.18.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -218,6 +218,35 @@ if(MESHIOPLUSPLUS_WITH_HDF5)
     endif()
   endif()
 endif()
+
+# gidpost's OPTIONAL HDF5 flavour needs the HDF5 *high-level* library
+# (H5LTset_attribute_string and friends, in libhdf5_hl) in addition to the
+# core C API every other HDF5-backed format here already links -- and unlike
+# those formats, gidpost's own hdf5c.c calls H5LT* directly. This is
+# deliberately a SEPARATE, best-effort probe rather than widening the
+# find_package(HDF5 COMPONENTS C) call above to add HL: requesting an
+# unavailable component there can flip the whole-package HDF5_FOUND false,
+# which would silently disable CGNS/HMF/H5M/MED/XDMF-HDF for every user on a
+# system that has hdf5_hl missing -- a blast radius far beyond gidpost's own
+# HDF5 flavour, which is what MESHIOPLUSPLUS_HAS_GIDPOST_HDF5 exists to gate
+# instead (Block A, below, auto-disables just that one flavour when this
+# probe comes up empty).
+if(HDF5_FOUND AND NOT EMSCRIPTEN)
+  set(_mio_hdf5_hl_hints "${HDF5_LIBRARY_DIRS}")
+  if(HDF5_C_LIBRARIES)
+    list(GET HDF5_C_LIBRARIES 0 _mio_hdf5_first_lib)
+    get_filename_component(_mio_hdf5_lib_dir "${_mio_hdf5_first_lib}" DIRECTORY)
+    list(APPEND _mio_hdf5_hl_hints "${_mio_hdf5_lib_dir}")
+  endif()
+  # No preceding set(MESHIOPLUSPLUS_HDF5_HL_LIBRARY ...): a plain set() of the
+  # SAME name as a find_library() cache variable shadows the cache entry for
+  # every later read in this directory scope, even though find_library()
+  # still (successfully) populates the cache -- reproduced in isolation, not
+  # a theoretical concern. NOTFOUND (find_library's own default when nothing
+  # is set yet) is what makes the plain `if(... AND MESHIOPLUSPLUS_HDF5_HL_LIBRARY)`
+  # checks below work correctly with no separate not-found variable needed.
+  find_library(MESHIOPLUSPLUS_HDF5_HL_LIBRARY NAMES hdf5_hl HINTS ${_mio_hdf5_hl_hints})
+endif()
 if(MESHIOPLUSPLUS_WITH_NETCDF)
   # Also look in ~/.local for a user-built netcdf-c (no-sudo installs).
   find_package(netCDF CONFIG QUIET HINTS $ENV{HOME}/.local/lib/cmake/netCDF)
@@ -243,6 +272,98 @@ option(MESHIOPLUSPLUS_WITH_POLYSCOPE
        OFF)
 
 # --------------------------------------------------------------------------
+# MESHIOPLUSPLUS_WITH_GIDPOST: the GiD postprocess writer, on a hardcopy of
+# CIMNE's gidpost 2.14 (src/cpp/third_party/gidpost, BSD-2-Clause-Views).
+#
+# Hard-gated on zlib, not by preference: gidpostInt.h includes <zlib.h>
+# UNCONDITIONALLY and the binary flavour is always deflated, so zlib is a
+# build prerequisite for the whole library, not for one of its three modes.
+#
+# NOT a FATAL_ERROR when zlib is missing, deliberately. Several existing CI
+# legs build with -DMESHIOPLUSPLUS_WITH_ZLIB=OFF on purpose (the statically-
+# linked release CLI binaries and the Windows wheels), and a configure-time
+# hard error would break all of them. This repo reserves FATAL_ERROR for a
+# contradiction the *user authored* (MESHIOPLUSPLUS_WITH_CGNSLIB without
+# MESHIOPLUSPLUS_WITH_HDF5, below); a default-ON option meeting an absent
+# optional dependency is the KaHIP/cgnslib "requested but not found -- will
+# raise by name" family instead. The no-silent-downgrade contract is kept at
+# RUN time: write_gid() always exists and throws naming both flags (the
+# partition_kahip_parts contract), and `gid` stays registered in
+# registry_writers()/registry_extension_defaults() so `.post.msh` can never
+# quietly resolve to gmsh. The *explicit* contradiction is caught earlier, in
+# build/configure.sh and build/configure-wasm.sh, where --with-gidpost is a
+# flag the user actually typed.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_WITH_GIDPOST
+       "Build the GiD postprocess writer (vendored gidpost; requires zlib)" ON)
+
+set(_mio_gidpost_dir "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/gidpost/source")
+set(_mio_gidpost_enabled OFF)
+set(_mio_gidpost_hdf5 OFF)
+set(_mio_gidpost_sources "")
+
+if(MESHIOPLUSPLUS_WITH_GIDPOST)
+  if(NOT EXISTS "${_mio_gidpost_dir}/gidpost.c")
+    message(STATUS "meshio++: gidpost sources not present - the 'gid' writer will raise")
+  elseif(NOT MESHIOPLUSPLUS_WITH_ZLIB)
+    message(STATUS "meshio++: gidpost needs zlib (MESHIOPLUSPLUS_WITH_ZLIB=OFF) - "
+                   "the 'gid' writer will raise by name")
+  elseif(NOT (EMSCRIPTEN OR ZLIB_FOUND))
+    message(STATUS "meshio++: gidpost needs zlib (not found) - "
+                   "the 'gid' writer will raise by name")
+  else()
+    set(_mio_gidpost_enabled ON)
+    set(_mio_gidpost_sources
+        "${_mio_gidpost_dir}/gidpost.c"
+        "${_mio_gidpost_dir}/gidpostFILES.c"
+        "${_mio_gidpost_dir}/gidpostHash.c"
+        "${_mio_gidpost_dir}/gidpostInt.c"
+        "${_mio_gidpost_dir}/hashtab.c"
+        "${_mio_gidpost_dir}/lookupa.c"
+        "${_mio_gidpost_dir}/recycle.c")
+
+    # The HDF5 flavour rides MESHIOPLUSPLUS_WITH_HDF5, but ALSO needs the HDF5
+    # high-level library specifically (gidpost's hdf5c.c calls H5LT* directly,
+    # unlike every other HDF5-backed format here) -- see the
+    # MESHIOPLUSPLUS_HDF5_HL_LIBRARY probe above. Two files are added AND a
+    # macro is defined -- both are required: gidpostHDF5.c does not self-gate
+    # (its own `#ifdef ENABLE_HDF5` is commented out) while the header it
+    # implements IS gated, so compiling it without ENABLE_HDF5 fails. Upstream
+    # source/CMakeLists.txt makes the same file list conditional.
+    if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND AND MESHIOPLUSPLUS_HDF5_HL_LIBRARY)
+      set(_mio_gidpost_hdf5 ON)
+      list(APPEND _mio_gidpost_sources
+           "${_mio_gidpost_dir}/gidpostHDF5.c"
+           "${_mio_gidpost_dir}/hdf5c.c")
+    elseif(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
+      message(STATUS "meshio++: gidpost's HDF5 flavour needs libhdf5_hl (not found) - "
+                     "the 'gid' writer will still build, minus GidMode::Hdf5")
+    endif()
+
+    # NDEBUG unconditionally, in every configuration:
+    #  * GiD_PostInit() printf()s "Debug version: ..." to stdout when NDEBUG is
+    #    absent (gidpost.c), which would corrupt CLI stdout in a Debug build;
+    #  * gidpost validates its own state machine with assert() throughout
+    #    (gidpostFILES.c, gidpostInt.c). An abort() inside a Python extension
+    #    or the WASM module kills the host instead of raising, which
+    #    contradicts this project's errors-are-exceptions contract. We
+    #    validate every argument before the call and check every return code,
+    #    so the asserts buy us nothing and cost us the process.
+    # ENABLE_HDF5 is set per-source, never target-wide: it is a foreign macro
+    # name and _mio_core_defs is applied PUBLIC.
+    set(_mio_gidpost_src_defs NDEBUG)
+    if(_mio_gidpost_hdf5)
+      list(APPEND _mio_gidpost_src_defs ENABLE_HDF5)
+    endif()
+    set_source_files_properties(${_mio_gidpost_sources}
+      PROPERTIES COMPILE_DEFINITIONS "${_mio_gidpost_src_defs}")
+
+    message(STATUS "meshio++: GiD postprocess writer enabled "
+                   "(gidpost 2.14, HDF5 flavour: ${_mio_gidpost_hdf5})")
+  endif()
+endif()
+
+# --------------------------------------------------------------------------
 # meshioplusplus_core_obj: the pybind11-free C++ core (format readers/writers + pugixml).
 # It is compiled once and shared by the Python extension (`_core`) and, when
 # MESHIOPLUSPLUS_BUILD_TESTS is on, the standalone GoogleTest binary. All include
@@ -252,6 +373,14 @@ option(MESHIOPLUSPLUS_WITH_POLYSCOPE
 file(GLOB_RECURSE MESHIOPLUSPLUS_CORE_SOURCES
     src/cpp/src/*.cpp
     src/cpp/third_party/pugixml/pugixml.cpp)
+
+# Vendored gidpost's C sources join the core source list rather than a target
+# of their own: that is what makes them inherit Emscripten's -sUSE_ZLIB=1 from
+# _mio_core_copts (without it there is no <zlib.h> at all on the wasm leg), and
+# it sidesteps install(EXPORT)'s refusal to export a target whose PRIVATE
+# static-library dependency is unexported (see meshioplusplus_add_core_variant
+# below).
+list(APPEND MESHIOPLUSPLUS_CORE_SOURCES ${_mio_gidpost_sources})
 
 add_library(meshioplusplus_core_obj OBJECT ${MESHIOPLUSPLUS_CORE_SOURCES})
 set_target_properties(meshioplusplus_core_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -511,6 +640,24 @@ if(MESHIOPLUSPLUS_WITH_JSON AND
        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/json/single_include)
 else()
   message(STATUS "meshio++: nlohmann/json not found/disabled - pipeline JSON parsing raises")
+endif()
+
+# gidpost's include dir is PRIVATE for pugixml's exact reason above: only
+# src/cpp/src/formats/gid.cpp names a GiD_ type, no installed header does, and
+# a PUBLIC entry would put the vendored copy on the include path of a
+# consumer that vendors its own gidpost -- Kratos does, at
+# external_libraries/gidpost. The MACRO is PUBLIC, as with HAS_JSON/HAS_EIGEN.
+if(_mio_gidpost_enabled)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_GIDPOST)
+  if(_mio_gidpost_hdf5)
+    list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_GIDPOST_HDF5)
+    # hdf5c.c calls H5LT* directly (see the MESHIOPLUSPLUS_HDF5_HL_LIBRARY
+    # probe above) -- the core C API alone (HDF5::HDF5 / HDF5_C_LIBRARIES,
+    # linked below for the other HDF5-backed formats) does not export those
+    # symbols.
+    list(APPEND _mio_core_libs "${MESHIOPLUSPLUS_HDF5_HL_LIBRARY}")
+  endif()
+  list(APPEND _mio_core_priv_incs "${_mio_gidpost_dir}")
 endif()
 
 # --------------------------------------------------------------------------
@@ -776,6 +923,10 @@ function(meshioplusplus_add_core_variant backend)
     # back in, and a missing annotation then fails a shared consumer's link
     # loudly rather than silently exporting the entire core.
     CXX_VISIBILITY_PRESET hidden
+    # Same reason, for the vendored gidpost C sources: without this, a shared
+    # core_kratos exports every GiD_* symbol and collides with the consumer's
+    # own vendored gidpost (Kratos vendors one at external_libraries/gidpost).
+    C_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     EXPORT_NAME core_${_lc})
   if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC)

@@ -11,6 +11,13 @@
 #
 # Notes on optional dependencies:
 #   * pugixml is vendored in-tree (src/cpp/third_party/pugixml) -- no requirement.
+#   * gidpost (the GiD postprocess writer's backend) is likewise vendored
+#     in-tree (src/cpp/third_party/gidpost) and IS exported below -- unlike
+#     Eigen/nlohmann-json, it is a hardcopy, not a submodule, so it is present
+#     in a source export and with_gidpost defaults True. It is hard-gated on
+#     zlib (gidpostInt.h includes <zlib.h> unconditionally): with with_zlib
+#     off, the CMake option auto-disables and the `gid` writer raises by name
+#     rather than failing the build.
 #   * Eigen is a git submodule (src/cpp/third_party/eigen), absent from a source
 #     export, so `with_eigen` defaults False and the MED transpose uses the
 #     hand-written fallback loop. Enabling it would need a small CMake change to
@@ -27,7 +34,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "10.17.0"
+    version = "10.18.0"
     license = "MIT"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
@@ -46,6 +53,7 @@ class MeshioplusplusConan(ConanFile):
         "with_lz4": [True, False],
         "with_kahip": [True, False],
         "with_cgnslib": [True, False],
+        "with_gidpost": [True, False],
         "with_eigen": [True, False],
         "with_json": [True, False],
         "fortran": [True, False],
@@ -70,6 +78,11 @@ class MeshioplusplusConan(ConanFile):
         # same policy as the CMake build). Off by default.
         "with_kahip": False,
         "with_cgnslib": False,
+        # Unlike with_eigen/with_json (submodules, off by default), gidpost is
+        # a vendored hardcopy that IS in exports_sources, so this defaults True
+        # like with_hdf5/with_netcdf/with_zlib -- consistent with the CMake
+        # option's own ON default.
+        "with_gidpost": True,
         "with_eigen": False,  # submodule not in a source export -> fallback transpose
         # Same reason as with_eigen: the nlohmann/json submodule is not in a
         # source export, so the pipeline JSON entry points raise by name.
@@ -91,6 +104,7 @@ class MeshioplusplusConan(ConanFile):
         "src/cpp/include/*",
         "src/cpp/src/*",
         "src/cpp/third_party/pugixml/*",
+        "src/cpp/third_party/gidpost/*",
         "bindings/c/*",
         "bindings/fortran/*",
         "cmake/*",
@@ -148,6 +162,9 @@ class MeshioplusplusConan(ConanFile):
         # this only flips the CMake flag and the consumer supplies CGNS_ROOT.
         tc.cache_variables["MESHIOPLUSPLUS_WITH_CGNSLIB"] = bool(
             self.options.with_cgnslib
+        )
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_GIDPOST"] = bool(
+            self.options.with_gidpost
         )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_EIGEN"] = bool(self.options.with_eigen)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_JSON"] = bool(self.options.with_json)

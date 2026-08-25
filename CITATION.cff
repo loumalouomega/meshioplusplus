@@ -70,3 +70,15 @@ license: MIT
 # worst incident element quality, using signed-volume tests alone -- no
 # in-sphere / orientation predicate kernel, and no external mesh library, is
 # read or vendored. See doc/optimize_volume.md.
+#
+# The `gid` writer (src/cpp/src/formats/gid.cpp) is built on a vendored
+# hardcopy of gidpost 2.14 (https://www.gidsimulation.com/), CIMNE's C
+# library for writing GiD postprocess files, at
+# src/cpp/third_party/gidpost/. Copyright (c) 2015-2024 CIMNE
+# (www.cimne.com), released under BSD-2-Clause-Views -- permissive, and
+# imposes no obligation on the rest of this repository beyond keeping the
+# licence notice with the vendored code (see that directory's LICENSE and
+# README.meshioplusplus.md, which also records what was excluded and why,
+# most notably gidpost's own Fortran binding and its `cfortran.h`-dependent
+# file, which carries a separate third-party distribution policy of its
+# own and is not vendored here).
