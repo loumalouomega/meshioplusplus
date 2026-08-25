@@ -113,6 +113,87 @@ def _stack():
     return _state.stack
 
 
+def _ambient():
+    """The record notes land in when no scope is open.
+
+    Provenance is on by default, so a writer-side :func:`note` fires during an
+    ordinary ``write()`` with nothing scoped. Per-thread, and cleared by
+    :func:`lines` once it has rendered, so one file's assumptions can never
+    surface in the next one's header. The C++ twin (``g_ambient_record``) does
+    exactly this; when the extension is loaded it is the one in charge and
+    this is only the pure-Python fallback's copy.
+    """
+    if not hasattr(_state, "ambient"):
+        _state.ambient = Record()
+    return _state.ambient
+
+
+def _active_record():
+    """The scope's record when one is open, else the ambient one."""
+    stack = _stack()
+    return stack[-1][1] if stack else _ambient()
+
+
+def default_mode() -> Mode:
+    """The mode used when no scope is open -- :data:`Mode.BEST_EFFORT` unless
+    turned off.
+
+    Provenance is **on by default**: with nothing scoped a writer still
+    renders any conversion assumptions recorded while it ran. The
+    source/target/operation-chain fields need a caller or driver to set them
+    and so stay absent, and no timestamp is added, which is what keeps default
+    output deterministic.
+
+    Overridden by ``MESHIOPLUSPLUS_PROVENANCE`` (``off``/``none``/``0``, or
+    ``required``), read once, and by :func:`set_default_mode`.
+    """
+    core = _core_module()
+    if core is not None:
+        return _MODE_BY_INT[core.provenance_default_mode()]
+    if not hasattr(_state, "default_mode"):
+        env = os.environ.get("MESHIOPLUSPLUS_PROVENANCE")
+        if env in ("off", "none", "0"):
+            _state.default_mode = Mode.OFF
+        elif env == "required":
+            _state.default_mode = Mode.REQUIRED
+        else:
+            _state.default_mode = Mode.BEST_EFFORT
+    return _state.default_mode
+
+
+def set_default_mode(mode: Mode) -> None:
+    """Sets what :func:`default_mode` returns, overriding the environment."""
+    core = _core_module()
+    if core is not None:
+        core.provenance_set_default_mode(_INT_BY_MODE[mode])
+    _state.default_mode = mode
+
+
+def begin_write() -> None:
+    """Marks the start of a write, bounding scope-less notes to it.
+
+    With provenance on by default a writer-side :func:`note` fires during an
+    ordinary ``write()`` with nothing scoped, and those notes need a lifetime
+    or they attach to whatever file is written *next* -- including an
+    unrelated one. This gives them one: :func:`meshioplusplus.write` calls it,
+    and it resets the ambient record so only notes raised by *this* write can
+    be rendered.
+
+    **A no-op while a scope is open** -- the caller's scope owns the lifetime
+    then, and spanning more than one write is the whole point of opening one.
+
+    The deliberate trade: a note raised *before* the write begins (the
+    operation-side sites) is discarded rather than misattributed. Capturing
+    those needs an explicit :class:`scope` spanning the operations and the
+    write.
+    """
+    core = _core_module()
+    if core is not None:
+        core.provenance_begin_write()
+    if not _stack():
+        _state.ambient = Record()
+
+
 def _core_module():
     """The compiled extension, or ``None`` when it is not built.
 
@@ -183,10 +264,7 @@ def note(category: str, detail: str) -> None:
     core = _core_module()
     if core is not None:
         core.provenance_note(category, detail)
-    stack = _stack()
-    if not stack:
-        return
-    rec = stack[-1][1]
+    rec = _active_record()
     for n in rec.notes:
         if n.category == category and n.detail == detail:
             return
@@ -198,10 +276,7 @@ def set_source(path: str, fmt: str) -> None:
     core = _core_module()
     if core is not None:
         core.provenance_set_source(path, fmt)
-    stack = _stack()
-    if not stack:
-        return
-    rec = stack[-1][1]
+    rec = _active_record()
     rec.source_path = path
     rec.source_format = fmt
 
@@ -213,10 +288,7 @@ def set_target(
     core = _core_module()
     if core is not None:
         core.provenance_set_target(fmt, encoding, codec, float_format)
-    stack = _stack()
-    if not stack:
-        return
-    rec = stack[-1][1]
+    rec = _active_record()
     rec.target_format = fmt
     rec.encoding = encoding
     rec.codec = codec
@@ -229,10 +301,7 @@ def add_operation(rendered: str) -> None:
     core = _core_module()
     if core is not None:
         core.provenance_add_operation(rendered)
-    stack = _stack()
-    if not stack:
-        return
-    stack[-1][1].operations.append(rendered)
+    _active_record().operations.append(rendered)
 
 
 def timestamp() -> str:
@@ -385,7 +454,17 @@ def lines(tier: SlotTier) -> list:
         return list(core.provenance_lines(_INT_BY_TIER[tier]))
 
     out = [TAG]
-    mode = current_mode()
+    stack = _stack()
+    # A scope's mode wins; otherwise the process default, which is BEST_EFFORT
+    # unless a caller or MESHIOPLUSPLUS_PROVENANCE turned it off.
+    mode = stack[-1][0] if stack else default_mode()
+    record = stack[-1][1] if stack else _ambient()
+    # Whatever happens below, the ambient record must not survive this write: a
+    # note fired while writing one file would otherwise reappear in the header
+    # of the next. A scope owns its own record and is unaffected.
+    if not stack:
+        _state.ambient = Record()
+
     if mode is Mode.OFF:
         return out
 
@@ -402,7 +481,7 @@ def lines(tier: SlotTier) -> list:
     if tier is not SlotTier.BLOCK:
         return out
 
-    out.extend(_render_block(current_record()))
+    out.extend(_render_block(record))
     return out
 
 

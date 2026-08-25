@@ -87,9 +87,10 @@ inline constexpr const char* kProvenanceTag = "Written by meshio++ v" MESHIOPLUS
 
 /// How much provenance a writer should render.
 enum class ProvenanceMode : std::uint8_t {
-    /// Only `kProvenanceTag` -- exactly what v10.15.0 wrote. The default.
+    /// Only `kProvenanceTag` -- exactly what v10.15.0 wrote.
     Off = 0,
     /// The full block where the slot allows it, degrading silently otherwise.
+    /// The process default -- see `default_provenance_mode()`.
     BestEffort = 1,
     /// The full block, or a `WriteError` naming the format whose slot cannot
     /// hold one.
@@ -268,6 +269,48 @@ MESHIOPLUSPLUS_API std::string provenance_render_xml_comment(SlotTier tier);
  * recorded -- these files get shared.
  */
 MESHIOPLUSPLUS_API std::string provenance_timestamp();
+
+/**
+ * @brief The mode writers use when no `ProvenanceScope` is open.
+ *
+ * **`BestEffort` by default** -- provenance is on, not opt-in. With nothing
+ * scoped a writer still renders any conversion assumptions recorded while it
+ * ran, which is the half of the record with no substitute elsewhere. The
+ * source/target/operation-chain fields need a caller or driver to set them and
+ * so stay absent, and no timestamp is added (a scope sets that), which is what
+ * keeps default output deterministic.
+ *
+ * Overridden by the `MESHIOPLUSPLUS_PROVENANCE` environment variable
+ * (`off`/`none`/`0`, or `required`), read once on first use.
+ */
+MESHIOPLUSPLUS_API ProvenanceMode default_provenance_mode();
+
+/// Sets what `default_provenance_mode()` returns, overriding the environment.
+/// Process-wide: this is configuration, not per-write state.
+MESHIOPLUSPLUS_API void set_default_provenance_mode(ProvenanceMode mode);
+
+/**
+ * @brief Marks the start of a write, bounding scope-less notes to it.
+ *
+ * With provenance on by default a writer-side `provenance_note` fires during
+ * an ordinary `write()` with nothing scoped, and those notes need a lifetime
+ * or they attach to whatever file is written *next* -- including an unrelated
+ * one. (Reproduced before this existed: `extract_surface(A)` dropping a
+ * region put `Note [regions-dropped]: extract_surface: ...` into unrelated
+ * mesh B's header.) This gives that lifetime: the write entry points call it,
+ * and it resets the ambient record so only notes raised by *this* write can be
+ * rendered.
+ *
+ * **A no-op when a `ProvenanceScope` is open** -- the caller's scope owns the
+ * lifetime then, and the whole point of opening one is to span more than a
+ * single write.
+ *
+ * The trade this makes deliberately: a note raised *before* the write begins
+ * (the operation-side sites, e.g. `warn_regions_dropped`) is discarded rather
+ * than misattributed. Capturing those needs an explicit scope spanning the
+ * operations and the write, which is exactly what `ProvenanceScope` is for.
+ */
+MESHIOPLUSPLUS_API void provenance_begin_write();
 
 /// What `read_provenance_lines` found in a file.
 struct ProvenanceReadResult {

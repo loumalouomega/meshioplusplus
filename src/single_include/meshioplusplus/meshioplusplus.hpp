@@ -9173,9 +9173,10 @@ inline constexpr const char* kProvenanceTag = "Written by meshio++ v" MESHIOPLUS
 
 /// How much provenance a writer should render.
 enum class ProvenanceMode : std::uint8_t {
-    /// Only `kProvenanceTag` -- exactly what v10.15.0 wrote. The default.
+    /// Only `kProvenanceTag` -- exactly what v10.15.0 wrote.
     Off = 0,
     /// The full block where the slot allows it, degrading silently otherwise.
+    /// The process default -- see `default_provenance_mode()`.
     BestEffort = 1,
     /// The full block, or a `WriteError` naming the format whose slot cannot
     /// hold one.
@@ -9354,6 +9355,48 @@ MESHIOPLUSPLUS_API std::string provenance_render_xml_comment(SlotTier tier);
  * recorded -- these files get shared.
  */
 MESHIOPLUSPLUS_API std::string provenance_timestamp();
+
+/**
+ * @brief The mode writers use when no `ProvenanceScope` is open.
+ *
+ * **`BestEffort` by default** -- provenance is on, not opt-in. With nothing
+ * scoped a writer still renders any conversion assumptions recorded while it
+ * ran, which is the half of the record with no substitute elsewhere. The
+ * source/target/operation-chain fields need a caller or driver to set them and
+ * so stay absent, and no timestamp is added (a scope sets that), which is what
+ * keeps default output deterministic.
+ *
+ * Overridden by the `MESHIOPLUSPLUS_PROVENANCE` environment variable
+ * (`off`/`none`/`0`, or `required`), read once on first use.
+ */
+MESHIOPLUSPLUS_API ProvenanceMode default_provenance_mode();
+
+/// Sets what `default_provenance_mode()` returns, overriding the environment.
+/// Process-wide: this is configuration, not per-write state.
+MESHIOPLUSPLUS_API void set_default_provenance_mode(ProvenanceMode mode);
+
+/**
+ * @brief Marks the start of a write, bounding scope-less notes to it.
+ *
+ * With provenance on by default a writer-side `provenance_note` fires during
+ * an ordinary `write()` with nothing scoped, and those notes need a lifetime
+ * or they attach to whatever file is written *next* -- including an unrelated
+ * one. (Reproduced before this existed: `extract_surface(A)` dropping a
+ * region put `Note [regions-dropped]: extract_surface: ...` into unrelated
+ * mesh B's header.) This gives that lifetime: the write entry points call it,
+ * and it resets the ambient record so only notes raised by *this* write can be
+ * rendered.
+ *
+ * **A no-op when a `ProvenanceScope` is open** -- the caller's scope owns the
+ * lifetime then, and the whole point of opening one is to span more than a
+ * single write.
+ *
+ * The trade this makes deliberately: a note raised *before* the write begins
+ * (the operation-side sites, e.g. `warn_regions_dropped`) is discarded rather
+ * than misattributed. Capturing those needs an explicit scope spanning the
+ * operations and the write, which is exactly what `ProvenanceScope` is for.
+ */
+MESHIOPLUSPLUS_API void provenance_begin_write();
 
 /// What `read_provenance_lines` found in a file.
 struct ProvenanceReadResult {
@@ -41363,6 +41406,7 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
 // ===== end src/cpp/src/detail/projection.cpp =====
 // ===== begin src/cpp/src/detail/provenance.cpp =====
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -41384,19 +41428,57 @@ namespace {
 thread_local ProvenanceRecord* g_active_record = nullptr;
 thread_local ProvenanceMode g_active_mode = ProvenanceMode::Off;
 
-const ProvenanceRecord& empty_record() {
-    static const ProvenanceRecord r;
-    return r;
+/// The record notes land in when no scope is open.
+///
+/// Provenance is **on by default**, so a writer-side `provenance_note` fires
+/// during an ordinary `write()` with nothing scoped. Those notes need somewhere
+/// to go, and that somewhere must be per-thread (concurrent writes must not mix)
+/// and must not outlive the write that produced them -- `provenance_lines`
+/// clears it once it has rendered, so one file's assumptions can never surface
+/// in the next one's header.
+thread_local ProvenanceRecord g_ambient_record;
+
+/// The mode used when no scope is open. Process-wide, since it is
+/// configuration rather than per-write state.
+std::atomic<ProvenanceMode>& default_mode_storage() {
+    static std::atomic<ProvenanceMode> m{[] {
+        // Memoized like `log::threshold()`, and for the same reason: this is
+        // read once per write and an env lookup per file is pointless. A
+        // programmatic `set_default_provenance_mode` overrides it.
+        if (const char* env = std::getenv("MESHIOPLUSPLUS_PROVENANCE")) {
+            std::string_view s(env);
+            if (s == "off" || s == "none" || s == "0")
+                return ProvenanceMode::Off;
+            if (s == "required")
+                return ProvenanceMode::Required;
+        }
+        return ProvenanceMode::BestEffort;
+    }()};
+    return m;
 }
 
 }  // namespace
+
+ProvenanceMode default_provenance_mode() {
+    return default_mode_storage().load(std::memory_order_relaxed);
+}
+
+void set_default_provenance_mode(ProvenanceMode mode) {
+    default_mode_storage().store(mode, std::memory_order_relaxed);
+}
+
+void provenance_begin_write() {
+    if (g_active_record)
+        return;  // a caller's scope owns the lifetime; do not disturb it
+    g_ambient_record = ProvenanceRecord{};
+}
 
 ProvenanceMode current_provenance_mode() {
     return g_active_mode;
 }
 
 const ProvenanceRecord& current_provenance() {
-    return g_active_record ? *g_active_record : empty_record();
+    return g_active_record ? *g_active_record : g_ambient_record;
 }
 
 ProvenanceScope::ProvenanceScope(ProvenanceMode mode, ProvenanceRecord record)
@@ -41435,36 +41517,32 @@ const ProvenanceRecord& ProvenanceScope::Get() const {
 }
 
 void provenance_note(std::string_view category, std::string_view detail) {
-    if (!g_active_record)
-        return;
-    for (const auto& n : g_active_record->mNotes)
+    ProvenanceRecord& rec = g_active_record ? *g_active_record : g_ambient_record;
+    for (const auto& n : rec.mNotes)
         if (n.mCategory == category && n.mDetail == detail)
             return;  // collapse duplicates -- a per-cell warning must not
                      // produce a per-cell record.
-    g_active_record->mNotes.push_back(ProvenanceNote{std::string(category), std::string(detail)});
+    rec.mNotes.push_back(ProvenanceNote{std::string(category), std::string(detail)});
 }
 
 void provenance_set_source(std::string_view path, std::string_view format) {
-    if (!g_active_record)
-        return;
-    g_active_record->mSourcePath = std::string(path);
-    g_active_record->mSourceFormat = std::string(format);
+    ProvenanceRecord& rec = g_active_record ? *g_active_record : g_ambient_record;
+    rec.mSourcePath = std::string(path);
+    rec.mSourceFormat = std::string(format);
 }
 
 void provenance_set_target(std::string_view format, std::string_view encoding,
                            std::string_view codec, std::string_view float_format) {
-    if (!g_active_record)
-        return;
-    g_active_record->mTargetFormat = std::string(format);
-    g_active_record->mEncoding = std::string(encoding);
-    g_active_record->mCodec = std::string(codec);
-    g_active_record->mFloatFormat = std::string(float_format);
+    ProvenanceRecord& rec = g_active_record ? *g_active_record : g_ambient_record;
+    rec.mTargetFormat = std::string(format);
+    rec.mEncoding = std::string(encoding);
+    rec.mCodec = std::string(codec);
+    rec.mFloatFormat = std::string(float_format);
 }
 
 void provenance_add_operation(std::string_view rendered) {
-    if (!g_active_record)
-        return;
-    g_active_record->mOperations.emplace_back(rendered);
+    ProvenanceRecord& rec = g_active_record ? *g_active_record : g_ambient_record;
+    rec.mOperations.emplace_back(rendered);
 }
 
 namespace {
@@ -41519,7 +41597,10 @@ std::string render_block(const ProvenanceRecord& rRecord) {
 std::vector<std::string> provenance_lines(SlotTier tier) {
     std::vector<std::string> out{kProvenanceTag};
 
-    const ProvenanceMode mode = g_active_record ? g_active_mode : ProvenanceMode::Off;
+    // With a scope open its mode wins; otherwise the process default, which is
+    // BestEffort unless a caller or MESHIOPLUSPLUS_PROVENANCE turned it off.
+    const ProvenanceMode mode = g_active_record ? g_active_mode : default_provenance_mode();
+
     if (mode == ProvenanceMode::Off)
         return out;
 
@@ -91708,6 +91789,8 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
 void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
                        const WriteOptions& rOptions) {
     const std::string fmt = resolve_format(rPath, rFormat);
+    // Bound scope-less notes to this write -- see provenance_begin_write().
+    detail::provenance_begin_write();
 
     // All-defaults goes straight through the registry, so the common path is
     // byte-for-byte what it always was (and picks up formats this file has no

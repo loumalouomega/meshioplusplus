@@ -415,4 +415,10 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
             pass
 
     # Write
+    # Bound scope-less provenance notes to this write, so a note raised by an
+    # earlier operation cannot attach itself to this file. No-op inside a
+    # caller's own scope. See _provenance.begin_write().
+    from ._provenance import begin_write
+
+    begin_write()
     return writer(filename, mesh, **kwargs)
