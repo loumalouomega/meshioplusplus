@@ -50,3 +50,11 @@ doc/logo/** linguist-vendored
 # src/cpp/third_party/gidpost/README.meshioplusplus.md for what was vendored
 # and why.
 src/cpp/third_party/gidpost/** linguist-vendored
+
+# GiD postprocess test fixtures are tiny, hand-authored, human-readable text
+# committed to pin real-world variants our own writer cannot produce. Without
+# this opt-out they would be SPLIT across two storage mechanisms -- `*.msh` and
+# `*.bin` match the LFS globs above while `.post.res`/`.post.h5` do not -- so a
+# CI checkout without LFS would get a 130-byte pointer for the geometry file
+# and a real results sibling, failing in a thoroughly confusing way.
+tests/python/meshes/gid/** -filter -diff -merge text
