@@ -1441,12 +1441,12 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("resolution") = py::none(), py::arg("cell_size") = py::none(),
-        py::arg("bounds") = py::none(), py::arg("padding") = 0.0,
-        py::arg("padding_relative") = 0.1, py::arg("max_cells") = 20000000,
-        py::arg("max_tets") = 20000000, py::arg("warp_fraction") = 0.35,
-        py::arg("sign") = "pseudonormal", py::arg("weight") = "angle",
-        py::arg("watertight_check") = "warn", py::arg("surface_region") = "",
-        py::arg("grid_cell_size") = 0.0, py::arg("max_winding_work") = 2.0e9);
+        py::arg("bounds") = py::none(), py::arg("padding") = 0.0, py::arg("padding_relative") = 0.1,
+        py::arg("max_cells") = 20000000, py::arg("max_tets") = 20000000,
+        py::arg("warp_fraction") = 0.35, py::arg("sign") = "pseudonormal",
+        py::arg("weight") = "angle", py::arg("watertight_check") = "warn",
+        py::arg("surface_region") = "", py::arg("grid_cell_size") = 0.0,
+        py::arg("max_winding_work") = 2.0e9);
 
     // ODT remeshing: raise a tet mesh's worst element quality by relocating
     // vertices AND flipping connectivity (2-3/3-2, predicate-free). The point
@@ -1582,9 +1582,8 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "remesh",
         [](py::object pymesh, std::int64_t num_clusters, int subdivide, double subsample_ratio,
-           int max_subdivide, int max_iterations, int max_repair_passes,
-           const std::string& metric, double gradation, bool preserve_boundary,
-           double max_anisotropy) {
+           int max_subdivide, int max_iterations, int max_repair_passes, const std::string& metric,
+           double gradation, bool preserve_boundary, double max_anisotropy) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -2959,6 +2958,16 @@ finalizes.
     });
     m.def("provenance_current_mode",
           []() { return static_cast<int>(meshioplusplus::detail::current_provenance_mode()); });
+    m.def("provenance_begin_write", []() { meshioplusplus::detail::provenance_begin_write(); });
+    m.def("provenance_default_mode",
+          []() { return static_cast<int>(meshioplusplus::detail::default_provenance_mode()); });
+    m.def("provenance_set_default_mode", [](int mode) {
+        if (mode < 0 || mode > 2)
+            throw std::invalid_argument("meshio++: unknown provenance mode " +
+                                        std::to_string(mode));
+        meshioplusplus::detail::set_default_provenance_mode(
+            static_cast<meshioplusplus::detail::ProvenanceMode>(mode));
+    });
     m.def("provenance_current_record", []() {
         const auto& rec = meshioplusplus::detail::current_provenance();
         py::dict out;

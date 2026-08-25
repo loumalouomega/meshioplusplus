@@ -868,6 +868,7 @@ mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format)
         if (!path || !mesh)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
         std::string fmt = meshioplusplus::resolve_format(path, format_or_empty(format));
+        meshioplusplus::detail::provenance_begin_write();
         auto it = meshioplusplus::registry_writers().find(fmt);
         if (it == meshioplusplus::registry_writers().end())
             return fail(MIO_ERR_NOT_FOUND, unknown_format_message(fmt, /*for_write=*/true));
@@ -2596,7 +2597,7 @@ int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
 
 namespace {
 mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& rRegion,
-                                     mio_field_integral_info* out) {
+                                    mio_field_integral_info* out) {
     if (!out)
         return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
     out->num_components = static_cast<int64_t>(rRegion.mTotalPerComponent.size());
@@ -2606,8 +2607,8 @@ mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& r
 }
 
 mio_status fill_field_integral_component(const meshioplusplus::FieldIntegralRegion& rRegion,
-                                          int64_t comp, double* total, double* mean,
-                                          double* domain_measure, int64_t* num_nan) {
+                                         int64_t comp, double* total, double* mean,
+                                         double* domain_measure, int64_t* num_nan) {
     if (comp < 0 || static_cast<std::size_t>(comp) >= rRegion.mTotalPerComponent.size())
         return fail(MIO_ERR_INVALID_ARG, "meshio++: component index out of range");
     const std::size_t k = static_cast<std::size_t>(comp);
@@ -2700,8 +2701,8 @@ mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
         const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
         if (region < 0 || static_cast<std::size_t>(region) >= regions.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
-        return fill_field_integral_component(regions[static_cast<std::size_t>(region)], comp,
-                                             total, mean, domain_measure, num_nan);
+        return fill_field_integral_component(regions[static_cast<std::size_t>(region)], comp, total,
+                                             mean, domain_measure, num_nan);
     });
 }
 
@@ -4034,7 +4035,8 @@ meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& 
 }
 
 /// Translate the flat option struct into the core's RemeshVolumeOptions.
-meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(const mio_remesh_volume_opts& rOpts) {
+meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(
+    const mio_remesh_volume_opts& rOpts) {
     meshioplusplus::RemeshVolumeOptions options;
     if (rOpts.resolution != nullptr)
         options.mResolution = std::array<std::int64_t, 3>{
