@@ -2901,6 +2901,16 @@ finalizes.
         },
         py::arg("path"), py::arg("mesh"), py::arg("mode") = "auto",
         py::arg("analysis_name") = "meshio++", py::arg("step") = 1.0);
+    // GiD postprocess reader. Needs no gidpost (that library is write-only),
+    // so it is available in builds that cannot write the format at all.
+    m.def(
+        "gid_read",
+        [](const std::string& path, int time_step) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = time_step;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_gid(path, opts));
+        },
+        py::arg("path"), py::arg("time_step") = 0);
 
     // MFM (Modulef Formatted Mesh) writer / reader (.mfm).
     m.def("mfm_write",
