@@ -1,6 +1,6 @@
 # Provenance
 
-Record where a written file came from, what ran on it, and what conversion assumptions were accepted on the way — as an **opt-in** block a writer renders alongside the unconditional one-line credit every writer has emitted since v10.15.0.
+Record where a written file came from, what ran on it, and what conversion assumptions were accepted on the way — as a block a writer renders alongside the one-line credit every writer has emitted since v10.15.0. **On by default** since v10.17.0: an ordinary `write()` records the assumptions raised while it ran, with no scope needed.
 
 ```python
 import meshioplusplus as mp
@@ -24,7 +24,7 @@ Timestamp: 2026-08-24T15:00:00Z
 -->
 ```
 
-With no scope open, output is byte-for-byte what v10.15.0 wrote — the default has not moved. This page is the design note `doc/roadmap.md` section 1 asked for, and the reference for the mechanism itself. Section 1 is now closed in full: v10.15.0 normalized the credit line, v10.16.0 added the record, v10.17.0 added read-back and the remaining language bindings.
+With no scope open a writer still renders any conversion assumptions raised while it ran. The richer fields — source, target, operation chain, timestamp — need a scope or a driver to set them, so a plain `write()` of a mesh that loses nothing is byte-for-byte what v10.15.0 wrote. This page is the design note `doc/roadmap.md` section 1 asked for, and the reference for the mechanism itself. Section 1 is now closed in full: v10.15.0 normalized the credit line, v10.16.0 added the record, v10.17.0 added read-back and the remaining language bindings.
 
 ## The gap this closes, and the one it does not
 
@@ -38,7 +38,7 @@ The roadmap bullets, read together, ask for two things that cannot both hold.
 
 **Bullet 3 asks the file to record "which surface actually wrote it (C++ core, numpy fallback, or a named binding)."** Bullet 5 requires the C++ core and its Python fallback to emit **character-identical** bytes — the same invariant that drove the whole v10.15.0 change, since a `(C++ core)`-vs-`v{version}` split in the old per-writer strings was exactly what made the fallback boundary visible in output bytes. An engine marker is that same mistake with a different name. This page resolves the tension in favour of byte-identity: which engine ran is a fact about the *process*, not the *mesh*, and it costs nothing to report through `current_record()`/`scope.get()` instead — see [Reading the live record](#reading-the-live-record-mid-write) below. Nothing in the file distinguishes the two engines.
 
-**The record defaults to opt-in, not on.** The roadmap does not settle this explicitly, but v10.15.0's tag is unconditional and this page's richer block is not: opening no scope reproduces v10.15.0's bytes exactly, which is what keeps `tests/python/test_io_baseline.py`'s pinned hashes and every existing cross-engine parity claim (`test_tikz.py`, `test_svg.py`, `test_gmsh.py`, `test_mdpa.py`) untouched by this change rather than needing new exemptions. It also means round-trip safety (bullet 6, below) only has to hold for callers who asked for the block in the first place.
+**The record is on by default** (v10.17.0; it shipped opt-in in v10.16.0). What is on is the part that needs no caller cooperation: the conversion assumptions a writer raises while it runs. The fields that require someone to supply them — source, target, operation chain — stay absent without a scope, and **no timestamp is added**, so a write that loses nothing still reproduces v10.15.0's bytes exactly and every byte-pinned test (`test_io_baseline.py`, `test_tikz.py`, `test_svg.py`, `test_gmsh.py`, `test_mdpa.py`) is untouched. Turn it off with `MESHIOPLUSPLUS_PROVENANCE=off` or `set_default_provenance_mode(Off)`.
 
 ## Where the record lives
 
@@ -98,6 +98,17 @@ Two call sites are wired as the reference pattern for the rest: `detail::warn_re
 `ProvenanceScope`'s constructor stamps `mTimestamp` once, at open, honouring `SOURCE_DATE_EPOCH` (the reproducible-builds convention — `provenance_timestamp()`/`timestamp()` read it directly) so a byte-comparable build can pin an exact instant, and `MESHIOPLUSPLUS_PROVENANCE_TIMESTAMP=off` suppresses it to an empty string (dropped from the rendered block entirely) when neither reproducibility nor a wall-clock record is wanted. `SOURCE_DATE_EPOCH` wins when both are set — a caller exporting both wants the pinned epoch, not silence. Host and user are never recorded; these files get shared.
 
 Because the block is opt-in, this needed no exemption anywhere: `test_io_baseline.py`'s pinned hashes, and the C++/Python byte-parity suites for tikz/svg/gmsh/mdpa, all exercise the *default* (no scope) path, which is unconditionally what v10.15.0 wrote.
+
+## How long a note lives
+
+A note has no natural lifetime without a scope, and getting this wrong writes a *false* statement into a file. Before the bounding below existed, `extract_surface(A)` dropping a region left its note in place, and the next `write()` — of an unrelated mesh B — put `Note [regions-dropped]: extract_surface: ...` into B's header.
+
+So the **public write entry points bound it**: `meshioplusplus.write()`, `registry_write_ex` and `mio_write` each call `provenance_begin_write()`, which resets the scope-less record so only notes raised by *this* write can be rendered. It is a no-op while a scope is open — the caller's scope owns the lifetime then, and spanning more than one write is the whole point of opening one.
+
+Two consequences worth stating plainly:
+
+- **A note raised before the write begins is dropped, not misattributed.** That covers the operation-side sites (`warn_regions_dropped` and friends). To capture those, open a scope spanning the operations *and* the write — which is exactly the example at the top of this page.
+- **The low-level C++ writers do not bound notes for themselves.** Calling `meshioplusplus::write_vtu(...)` directly skips the public path, so notes from earlier work are still in scope-less storage. That is the same contract the rest of that layer has: it is the API where the caller manages state. Go through `registry_write_ex`, or open a scope.
 
 ## Round-trip safety
 
