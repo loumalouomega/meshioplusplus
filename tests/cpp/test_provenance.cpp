@@ -32,6 +32,7 @@
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -227,10 +228,54 @@ TEST(Provenance, ScopesNestAndRestore) {
     EXPECT_EQ(meshioplusplus::detail::current_provenance().mSourcePath, "outer.vtu");
 }
 
-TEST(Provenance, NoScopeMeansOffAndNoteIsANoOp) {
+// Provenance is on by default: with nothing scoped a writer still renders the
+// assumptions raised while it ran. `current_provenance_mode()` still reports
+// Off -- it reports the *scope's* mode, and there is no scope -- but
+// `default_provenance_mode()` is what a writer actually consults.
+TEST(Provenance, NoScopeStillRecordsBecauseProvenanceIsOnByDefault) {
     EXPECT_EQ(meshioplusplus::detail::current_provenance_mode(), ProvenanceMode::Off);
-    meshioplusplus::detail::provenance_note("x", "y");  // must not throw or crash
+    EXPECT_EQ(meshioplusplus::detail::default_provenance_mode(), ProvenanceMode::BestEffort);
+
+    meshioplusplus::detail::provenance_begin_write();  // what a real write does
+    meshioplusplus::detail::provenance_note("x", "y");
+    ASSERT_EQ(meshioplusplus::detail::current_provenance().mNotes.size(), 1u);
+    EXPECT_EQ(meshioplusplus::detail::current_provenance().mNotes[0].mCategory, "x");
+
+    // The next write starts clean, so that note cannot attach itself to an
+    // unrelated file -- the misattribution this bounding exists to prevent.
+    meshioplusplus::detail::provenance_begin_write();
     EXPECT_TRUE(meshioplusplus::detail::current_provenance().mNotes.empty());
+}
+
+TEST(Provenance, DefaultModeCanBeTurnedOff) {
+    const ProvenanceMode previous = meshioplusplus::detail::default_provenance_mode();
+    meshioplusplus::detail::set_default_provenance_mode(ProvenanceMode::Off);
+    meshioplusplus::detail::provenance_begin_write();
+    meshioplusplus::detail::provenance_note("x", "y");
+    const auto lines = meshioplusplus::detail::provenance_lines(SlotTier::Block);
+    meshioplusplus::detail::set_default_provenance_mode(previous);
+
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], meshioplusplus::detail::kProvenanceTag);
+}
+
+// A note raised by an operation, with no write of its own, must NOT attach
+// itself to the next unrelated file. Reproduced before the bounding existed:
+// extract_surface(A) dropping a region put its note into mesh B's header.
+TEST(Provenance, AnOperationsNoteDoesNotLeakIntoAnUnrelatedWrite) {
+    meshioplusplus::detail::provenance_begin_write();
+    meshioplusplus::detail::provenance_note("regions-dropped", "from an earlier operation");
+
+    std::string path = mt::temp_path("_leak.obj");
+    // Through the public write path, which is where the bounding lives.
+    meshioplusplus::registry_write_ex(path, mt::tri_mesh(), "obj", meshioplusplus::WriteOptions{});
+    auto meta = meshioplusplus::registry_read_metadata(path, "obj", meshioplusplus::ReadOptions{});
+
+    for (const auto& l : meta.mProvenance)
+        EXPECT_EQ(l.find("from an earlier operation"), std::string::npos)
+            << "an earlier operation's note leaked into this file";
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 TEST(Provenance, TimestampHonoursSourceDateEpochAndTheOffSwitch) {
@@ -357,6 +402,9 @@ TEST(Provenance, ScannerIsHonestAboutForeignAndAbsentBlocks) {
 
 TEST(Provenance, DefaultWriteRecoversExactlyTheTag) {
     std::string path = mt::temp_path("_rb_off.obj");
+    // A direct low-level writer call does not bound notes for itself (that is
+    // the public write path's job), so do what a public write would.
+    meshioplusplus::detail::provenance_begin_write();
     meshioplusplus::write_obj(path, mt::tri_mesh());
     auto meta = meshioplusplus::registry_read_metadata(path, "obj", meshioplusplus::ReadOptions{});
     EXPECT_TRUE(meta.mProvenanceRecognised);

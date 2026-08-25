@@ -290,9 +290,11 @@ def test_determinism_no_writer_embeds_a_timestamp(tmp_path):
 
 
 def test_off_mode_ignores_every_slot_tier():
-    for tier in _provenance.SlotTier:
-        result = _provenance.lines(tier)
-        assert result == [_provenance.TAG]
+    # An explicit OFF scope, now that OFF is no longer the default.
+    with _provenance.scope(_provenance.Mode.OFF):
+        _provenance.note("x", "y")
+        for tier in _provenance.SlotTier:
+            assert _provenance.lines(tier) == [_provenance.TAG]
 
 
 def test_best_effort_renders_the_full_block_only_for_block_tier():
@@ -342,10 +344,35 @@ def test_scopes_nest_and_restore():
     assert _provenance.current_mode() is _provenance.Mode.OFF
 
 
-def test_no_scope_means_off_and_note_is_a_no_op():
+def test_no_scope_still_records_because_provenance_is_on_by_default():
+    """Provenance is on by default: with nothing scoped a writer still renders
+    the assumptions raised while it ran. `current_mode()` is still OFF -- it
+    reports the *scope's* mode, and there is no scope -- but `default_mode()`
+    is what a writer actually consults."""
     assert _provenance.current_mode() is _provenance.Mode.OFF
-    _provenance.note("x", "y")  # must not raise
+    assert _provenance.default_mode() is _provenance.Mode.BEST_EFFORT
+
+    _provenance.begin_write()  # what a real write does, bounding the notes
+    _provenance.note("x", "y")
+    assert [(n.category, n.detail) for n in _provenance.current_record().notes] == [
+        ("x", "y")
+    ]
+    # ...and the next write starts clean, so this note cannot attach itself to
+    # an unrelated file.
+    _provenance.begin_write()
     assert _provenance.current_record().notes == []
+
+
+def test_default_mode_can_be_turned_off():
+    previous = _provenance.default_mode()
+    try:
+        _provenance.set_default_mode(_provenance.Mode.OFF)
+        assert _provenance.default_mode() is _provenance.Mode.OFF
+        _provenance.begin_write()
+        _provenance.note("x", "y")
+        assert _provenance.lines(_provenance.SlotTier.BLOCK) == [_provenance.TAG]
+    finally:
+        _provenance.set_default_mode(previous)
 
 
 def test_timestamp_honours_source_date_epoch_and_the_off_switch(monkeypatch):
