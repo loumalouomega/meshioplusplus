@@ -1,13 +1,13 @@
 # GiD postprocess (`.post.msh` / `.post.res` / `.post.bin` / `.post.h5`)
 
-The [GiD](https://www.gidsimulation.com/) postprocess format, written through a vendored hardcopy of CIMNE's [gidpost 2.14](https://www.gidsimulation.com/downloads/gidpost-2-14-library-to-write-postprocess-results-for-gid-in-ascii-binary-or-hdf5-format/) (`src/cpp/third_party/gidpost/`, BSD-2-Clause-Views). **Write-only**: gidpost's public API has zero read functions, so there is no `read`; the reader is a documented follow-up (`doc/roadmap.md` section 1).
+The [GiD](https://www.gidsimulation.com/) postprocess format. **Writing** goes through a vendored hardcopy of CIMNE's [gidpost 2.14](https://www.gidsimulation.com/downloads/gidpost-2-14-library-to-write-postprocess-results-for-gid-in-ascii-binary-or-hdf5-format/) (`src/cpp/third_party/gidpost/`, BSD-2-Clause-Views). gidpost's public API has **zero read functions**, so **reading** (added in v10.19.0) is meshio++'s own code against the on-disk grammar, independent of the vendored library — which is why the two directions have different build requirements, below.
 
 | | |
 |---|---|
 | **Format name** | `gid` |
 | **Extensions** | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` |
-| **Read / Write** | — / ✓ |
-| **Extra dependencies** | zlib (hard requirement — gidpost deflates unconditionally); HDF5 for the `hdf5` flavour |
+| **Read / Write** | ✓ / ✓ |
+| **Extra dependencies** | *Writing*: zlib (hard — gidpost deflates unconditionally), plus HDF5 for the `hdf5` flavour. *Reading*: nothing for ascii, zlib for binary, HDF5 for `hdf5`. |
 
 ## Writing
 
@@ -30,6 +30,36 @@ Three on-disk flavours:
 - **hdf5** — one HDF5 file, `<stem>.post.h5`; needs a build with `MESHIOPLUSPLUS_WITH_HDF5=ON` in addition to gidpost itself (gidpost's own HDF5 flavour additionally needs the HDF5 *high-level* library, `libhdf5_hl`, alongside the core C API every other HDF5-backed format here already links).
 
 A build without gidpost (`-DMESHIOPLUSPLUS_WITH_GIDPOST=OFF`, or gidpost on but zlib off) still exposes `gid.write` — it raises a `WriteError` naming the missing CMake flags rather than the path silently falling through to another format. **The statically-linked release CLI binaries and the Windows wheels build with zlib off and therefore do not carry `gid`** (documented, not a bug — see `CLAUDE.md`'s "GiD postprocess" note).
+
+## Reading
+
+```python
+mesh = meshioplusplus.read("out.post.msh")              # any of the four spellings
+mesh = meshioplusplus.gid.read("out.post.msh", time_step=1)
+```
+
+- **`time_step`** — selects one step of a multi-step results file (`0` = the first, negative counts from the end). Honoured natively, because no caller-side filter can recover a step that was never decoded; out of range is an error naming the available count.
+
+The flavour is resolved from the extension and then **confirmed against the leading bytes**, so a gzipped `.post.msh` (gidpost's `GiD_PostAsciiZipped`, which is the same ASCII text through `gzprintf`) reads correctly even though its extension cannot say so.
+
+**Sibling policy** (the `tetgen`/`triangle` `.node`/`.ele` precedent): the geometry file `<stem>.post.msh` is **mandatory**, the results file `<stem>.post.res` is **optional** — a mesh with no results reads back as geometry only. Passing the `.post.res` path directly derives and reads the `.post.msh`; *its* absence is an error, since results alone carry no geometry.
+
+**Reading needs no gidpost at all**, and that has a visible consequence: `gid` is readable in **strictly more build configurations than it is writable**. The statically-linked release CLI binaries and the Windows wheels build with zlib off, so they cannot write GiD — but they read the ASCII flavour fine. `gid_available` reports the write side and `gid_readable` the read side; they genuinely differ, which is why there are two.
+
+### Real-world variants the reader handles
+
+Files in the wild differ from meshio++'s own output in two ways, both observed in a genuine Kratos-produced file and neither reproducible through our writer:
+
+- **The full node table may be repeated in every `MESH` block** (rather than written once, with empty `Coordinates` pairs thereafter). Node ids are therefore accumulated into one global table de-duplicated by id, so a repeated-but-identical table is a no-op. Gapped and non-contiguous ids are supported.
+- **Element ids may restart at 1 in each block** (rather than being globally unique, as our writer makes them). Element ids are tracked per block, so results resolve through the Gauss-point set's mesh name rather than a global id map.
+
+A trailing material column reads back as `cell_data["gmsh:physical"]` — the exact inverse of the key the writer consumes. `Nnode` from the `MESH` header is the **only** disambiguator for that column, since GiD writes no separator before it. An all-zero column means "no materials" and is deliberately *not* surfaced: the binary and HDF5 writers always emit one, so materializing it would invent data and make the three flavours disagree on a round trip.
+
+### What reading does not recover
+
+- **Gauss-point results with more than one point per element** are dropped with a warning. meshio++'s `cell_data` is `(n,)`/`(n,k)`, never per-node-within-cell — the same structural limit MED's ELNO/ELGA documents. Averaging or taking the first point would invent data.
+- **Tensor result types** (`Matrix`, `MainMatrix`, `Complex*`) are read as a single k-component array under the declared name; the declared *type* is dropped rather than reinterpreted, because GiD's symmetric-tensor component order differs from meshio/VTK's. Note the resulting **round-trip asymmetry**: the writer splits a k∉{1,2,3} array into k scalars, and the reader does not re-join them.
+- `ResultGroup`, `OnNurbs*` locations, mesh groups (`Group`/`End Group`) and range tables are skipped or refused by name rather than guessed at.
 
 ## Cell types
 
@@ -72,7 +102,7 @@ There is **no pure-Python reference writer** for this format: gidpost cannot be 
 
 ## Quirks & limitations
 
-- Write-only; reading a `.post.msh`/`.post.res`/`.post.bin`/`.post.h5` path raises a clear error (`"gid"` is not in the reader registry).
+- Reading is supported for all three flavours as of v10.19.0. `ResultGroup` blocks (several results packed into one wide `Values` row) are refused by name — meshio++ has never written one, and unpacking needs the per-member `ResultDescription` dimensions.
 - The ascii flavour spans two files and **cannot** be read from or written to a buffer; neither can the single-file binary/hdf5 flavours, since the buffer path cannot express a flavour choice.
 - Compiled out (no gidpost, or gidpost without zlib), the writer still exists and raises naming both `-DMESHIOPLUSPLUS_WITH_GIDPOST=ON` and `-DMESHIOPLUSPLUS_WITH_ZLIB=ON` — `.post.msh` can never silently resolve to another format.
 - Meshes exceeding `INT_MAX` points, cells, or node indices raise a `WriteError` naming the count (gidpost's connectivity API is 32-bit).

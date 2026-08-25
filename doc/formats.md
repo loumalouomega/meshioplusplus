@@ -18,7 +18,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
-| [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | — | ✓ | zlib (vendored gidpost; `hdf5` flavour additionally needs HDF5) |
+| [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
@@ -320,7 +320,7 @@ meshioplusplus.gid.write(filename, mesh,
 )
 ```
 
-Write-only — see [`gid.md`](./formats/gid.md).
+See [`gid.md`](./formats/gid.md). Reading takes only `time_step` (selecting one step of a multi-step results file).
 
 ---
 
