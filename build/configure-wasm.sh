@@ -44,6 +44,7 @@ WITH_ZLIB="ON"
 WITH_HDF5="ON"
 WITH_NETCDF="ON"
 WITH_CGNSLIB="ON"
+WITH_GIDPOST="ON"
 DEPS_PREFIX=""
 DO_BUILD="no"
 SEQ_ONLY="no"
@@ -61,6 +62,9 @@ Usage: $0 [options]
                                   CGNS 3.x NGON_n layout. Everything else in
                                   CGNS works without it (doc/formats/cgns.md).
                                  Exodus (default: on; needs HDF5)
+  --with-gidpost / --without-gidpost
+                                  GiD postprocess writer, vendored gidpost
+                                  (default: on; needs zlib)
   --deps-prefix <dir>            prefix holding the wasm32 HDF5/netCDF build
                                   (default: build-wasm-deps.sh --print-prefix)
   --seq-only                     build only the sequential variant (skip the
@@ -82,6 +86,8 @@ while [ $# -gt 0 ]; do
         --without-cgnslib) WITH_CGNSLIB="OFF"; shift ;;
         --with-netcdf) WITH_NETCDF="ON"; shift ;;
         --without-netcdf) WITH_NETCDF="OFF"; shift ;;
+        --with-gidpost) WITH_GIDPOST="ON"; shift ;;
+        --without-gidpost) WITH_GIDPOST="OFF"; shift ;;
         --deps-prefix) DEPS_PREFIX="$2"; shift 2 ;;
         --seq-only) SEQ_ONLY="yes"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
@@ -101,6 +107,14 @@ fi
 if [ "$WITH_HDF5" = "ON" ] && [ "$WITH_ZLIB" = "OFF" ]; then
     echo "error: --with-hdf5 needs zlib (the MED/CGNS/H5M/HMF writers deflate)." >&2
     echo "       Use --without-hdf5 as well, or drop --without-zlib." >&2
+    exit 1
+fi
+
+# gidpostInt.h includes <zlib.h> unconditionally and the binary flavour is
+# always deflated, so the GiD writer cannot be built without zlib.
+if [ "$WITH_GIDPOST" = "ON" ] && [ "$WITH_ZLIB" = "OFF" ]; then
+    echo "error: --with-gidpost needs zlib (gidpost deflates unconditionally)." >&2
+    echo "       Use --without-gidpost as well, or drop --without-zlib." >&2
     exit 1
 fi
 
@@ -175,6 +189,7 @@ configure_variant() {
     echo "  hdf5:      $WITH_HDF5"
     echo "  netcdf:    $WITH_NETCDF"
     echo "  cgnslib:   $WITH_CGNSLIB"
+    echo "  gidpost:   $WITH_GIDPOST"
     [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
     echo "  emcc:      $(command -v emcc)"
     echo
@@ -196,7 +211,8 @@ configure_variant() {
         -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
         -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
         -DMESHIOPLUSPLUS_WITH_CGNSLIB="$WITH_CGNSLIB" \
-        -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB"
+        -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
+        -DMESHIOPLUSPLUS_WITH_GIDPOST="$WITH_GIDPOST"
 
     if [ "$WITH_ZLIB" = "ON" ]; then
         echo
