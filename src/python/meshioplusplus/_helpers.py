@@ -15,6 +15,13 @@ extension_to_filetypes = {}
 reader_map = {}
 _writer_map = {}
 
+# Formats spread across sibling files, which a single in-memory buffer cannot
+# serve. "gid"'s ascii flavour writes a `.post.msh`/`.post.res` pair; its
+# binary/hdf5 flavours are single-file, but the buffer path cannot express a
+# flavour choice, so the format as a whole is excluded here, same as the
+# other three.
+_MULTIFILE_FORMATS = ("tetgen", "triangle", "ensight", "gid")
+
 
 def register_format(
     format_name: str, extensions: list[str], reader, writer_map
@@ -44,11 +51,21 @@ def deregister_format(format_name: str):
 
 def _filetypes_from_path(path: Path) -> list[str]:
     ext = ""
-    out = []
+    out: list[str] = []
     for suffix in reversed(path.suffixes):
+        # `ext` grows from the shortest suffix to the longest as the loop
+        # proceeds, so PREPENDING (not appending) puts the longest match
+        # first -- what lets ".post.msh" resolve to "gid" rather than to
+        # ".msh"'s own first candidate ("ansys") in _pick_best_format.
+        # Behaviour-preserving for every extension registered before compound
+        # ones existed: the only pre-existing compound-extension formats
+        # (".vol.gz", ".post.gz", ".dato.gz") have no registered ".gz" alone,
+        # so at most one iteration of this loop ever contributed to `out`
+        # for any real filename -- prepend and append were indistinguishable
+        # until "gid" made a shorter AND a longer suffix both match at once.
         ext = (suffix + ext).lower()
         try:
-            out += extension_to_filetypes[ext]
+            out = extension_to_filetypes[ext] + out
         except KeyError:
             pass
 
@@ -268,7 +285,7 @@ def _read_buffer(
 ):
     if file_format is None:
         raise ReadError("File format must be given if buffer is used")
-    if file_format in ("tetgen", "triangle", "ensight"):
+    if file_format in _MULTIFILE_FORMATS:
         raise ReadError(
             f"{file_format} format is spread across multiple files "
             "and so cannot be read from a buffer"
@@ -352,7 +369,14 @@ def write_points_cells(
 
 
 def _pick_best_format(file_formats, mesh):
-    if "gmsh" in file_formats:
+    # Only reconsider when gmsh is the extension's OWN ambiguity (a plain
+    # ".msh", whose registered candidates are ansys/gmsh/freefem) -- not when
+    # a longer, unambiguous compound extension already resolved to something
+    # else (".post.msh" -> gid, which still lists "gmsh" as a shorter-suffix
+    # candidate in `file_formats`). A specific extension match must beat this
+    # tag heuristic, so the heuristic only applies when gmsh (or one of its
+    # ".msh" siblings) is genuinely the top candidate.
+    if file_formats[0] in ("ansys", "freefem", "gmsh") and "gmsh" in file_formats:
         gmsh_keys = {"gmsh:physical", "gmsh:geometrical", "gmsh:dim_tags"}
         med_keys = {"cell_tags", "point_tags"}
         has_gmsh = bool(gmsh_keys & set(mesh.cell_data.keys())) or bool(
@@ -380,7 +404,7 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     if is_buffer(filename, "r"):
         if file_format is None:
             raise WriteError("File format must be supplied if `filename` is a buffer")
-        if file_format in ("tetgen", "triangle", "ensight"):
+        if file_format in _MULTIFILE_FORMATS:
             raise WriteError(
                 f"{file_format} format is spread across multiple files, "
                 "and so cannot be written to a buffer"

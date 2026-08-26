@@ -22,6 +22,7 @@ BUILD_TYPE="Release"
 WITH_HDF5="ON"
 WITH_NETCDF="ON"
 WITH_ZLIB="ON"
+WITH_GIDPOST="ON"
 WITH_POLYSCOPE="OFF"
 TESTS="OFF"
 C_API="OFF"
@@ -45,6 +46,8 @@ Usage: $0 [options]
   --with-hdf5 / --without-hdf5    HDF5-backed formats (default: on, auto-detected)
   --with-netcdf / --without-netcdf
   --with-zlib / --without-zlib
+  --with-gidpost / --without-gidpost
+                                  GiD postprocess writer (default: on; needs zlib)
   --with-polyscope                native viewer for the CLI's view/screenshot
                                   (default: off; needs OpenGL/GLFW and
                                   git submodule update --init --recursive)
@@ -78,6 +81,8 @@ while [ $# -gt 0 ]; do
         --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
         --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
+        --with-gidpost) WITH_GIDPOST="ON"; shift ;;
+        --without-gidpost) WITH_GIDPOST="OFF"; shift ;;
         --tests) TESTS="ON"; shift ;;
         --c-api) C_API="ON"; shift ;;
         --fortran) FORTRAN="ON"; C_API="ON"; shift ;;
@@ -91,6 +96,14 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
 done
+
+# gidpostInt.h includes <zlib.h> unconditionally and the binary flavour is
+# always deflated, so the GiD writer cannot be built without zlib.
+if [ "$WITH_GIDPOST" = "ON" ] && [ "$WITH_ZLIB" = "OFF" ]; then
+    echo "error: --with-gidpost needs zlib (gidpost deflates unconditionally)." >&2
+    echo "       Use --without-gidpost as well, or drop --without-zlib." >&2
+    exit 1
+fi
 
 # Python: prefer an in-repo venv, then python3.
 if [ -z "$PYTHON_EXE" ]; then
@@ -125,6 +138,7 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_HDF5="$WITH_HDF5" \
     -DMESHIOPLUSPLUS_WITH_NETCDF="$WITH_NETCDF" \
     -DMESHIOPLUSPLUS_WITH_ZLIB="$WITH_ZLIB" \
+    -DMESHIOPLUSPLUS_WITH_GIDPOST="$WITH_GIDPOST" \
         -DMESHIOPLUSPLUS_WITH_POLYSCOPE="$WITH_POLYSCOPE" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
@@ -155,6 +169,7 @@ echo "  type:      $BUILD_TYPE"
 echo "  backend:   $BACKEND"
 echo "  mesh:      $MESH_BACKEND (Python extension: $BUILD_PYTHON)"
 echo "  HDF5:      $WITH_HDF5   netCDF: $WITH_NETCDF   zlib: $WITH_ZLIB"
+echo "  gidpost:   $WITH_GIDPOST  (GiD postprocess writer)"
 echo "  Polyscope: $WITH_POLYSCOPE  (CLI viewer)"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"

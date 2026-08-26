@@ -136,6 +136,7 @@ export default defineConfig({
           { text: "flac3d", link: "/formats/flac3d" },
           { text: "flux", link: "/formats/flux" },
           { text: "freefem", link: "/formats/freefem" },
+          { text: "gid", link: "/formats/gid" },
           { text: "gmsh", link: "/formats/gmsh" },
           { text: "h5m", link: "/formats/h5m" },
           { text: "hmf", link: "/formats/hmf" },

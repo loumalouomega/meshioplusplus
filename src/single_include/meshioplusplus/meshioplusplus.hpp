@@ -9083,7 +9083,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 17
+#define MESHIOPLUSPLUS_VERSION_MINOR 20
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9093,7 +9093,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.17.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.20.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12693,6 +12693,448 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/freefem.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/gid.hpp =====
+/**
+ * @file gid.hpp
+ * @brief GiD postprocess format reader and writer.
+ *
+ * GiD (https://www.gidsimulation.com/) is a pre/postprocessor widely used in
+ * the same FE community meshio++ serves. Its postprocess format is **written**
+ * through CIMNE's gidpost C library, vendored as a hardcopy at
+ * `src/cpp/third_party/gidpost/` (BSD-2-Clause-Views) — see that directory's
+ * `README.meshioplusplus.md` for what was vendored and why.
+ *
+ * gidpost's public API has **zero read functions**, so the **reader** is
+ * meshio++'s own code against the on-disk grammar, entirely independent of the
+ * vendored library. That independence has a visible consequence worth stating
+ * up front: the reader's real dependencies are **per flavour** — ASCII needs
+ * nothing at all, the compressed-binary and gzipped-ASCII flavours need zlib,
+ * and the HDF5 flavour needs HDF5 — whereas *writing* any flavour needs
+ * gidpost, which is itself hard-gated on zlib. So `gid` is **readable in
+ * strictly more build configurations than it is writable**: the
+ * statically-linked release CLI binaries and the Windows wheels build with
+ * zlib off and cannot write GiD at all, yet still read the ASCII flavour.
+ * `gid_available` reports the write side, `gid_readable` the read side; they
+ * genuinely differ, which is why there are two.
+ *
+ * Three on-disk flavours, chosen by `GidMode` or inferred from the path:
+ *  - **Ascii**: two sibling files, `<stem>.post.msh` (geometry) +
+ *    `<stem>.post.res` (results), human-readable.
+ *  - **Binary**: one deflated file, `<stem>.post.bin`.
+ *  - **Hdf5**: one HDF5 file, `<stem>.post.h5` (needs
+ *    `MESHIOPLUSPLUS_WITH_HDF5=ON` in addition to gidpost itself).
+ *
+ * Hard-gated on zlib: gidpost's own `gidpostInt.h` includes `<zlib.h>`
+ * unconditionally and the binary flavour is always deflated, so zlib is a
+ * build prerequisite for the whole library, not for one of its three modes.
+ * `MESHIOPLUSPLUS_WITH_GIDPOST` (default ON) auto-disables — with an
+ * actionable `STATUS` message, never a hard configure error — whenever zlib
+ * is unavailable; compiled out, `write_gid` still exists and throws naming
+ * both CMake flags (the `partition_kahip_parts` contract), so `.post.msh`
+ * can never silently resolve to another format.
+ *
+ * ## Mesh mapping
+ *
+ * GiD has exactly ten element types (`GiD_ElementType`); higher-order
+ * variants share a type with a larger node count. One meshio cell block
+ * becomes one named GiD mesh (`"<celltype>_<blockindex>"`), since GiD
+ * results reference meshes by name. Only the four linear types plus their
+ * one-level-quadratic siblings whose node ordering has been independently
+ * verified against GiD's own geometry (pinned by `tests/cpp/test_gid.cpp`'s
+ * `GidOrdering` suite, never by a round trip through a reader that does not
+ * exist) are supported: `vertex`, `line`/`line3`, `triangle`/`triangle6`,
+ * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`,
+ * `wedge`, `pyramid`. Everything else — `hexahedron27`, `wedge15`,
+ * `pyramid13` (orderings not yet verified), `polygon`/`polyhedron` (GiD has
+ * no such type), every `VTK_LAGRANGE_*` and higher-degree Lagrange type —
+ * throws a `WriteError` naming the offending type, never a silent drop or a
+ * guessed permutation.
+ *
+ * Points are written once (the first mesh's coordinate block; every
+ * subsequent mesh gets an empty `Coordinates`/`End Coordinates` pair, which
+ * gidpost's own state machine requires), always as 3-D (z padded with 0 for
+ * a 2-D mesh, since gidpost's coordinate writer always emits three columns
+ * regardless of the declared dimension). Element ids are globally unique
+ * 1-based integers across every block (gidpost numbers `1..n` *per mesh*
+ * otherwise, which collides the moment a mesh has more than one block).
+ *
+ * An integral `cell_data` array named `"gmsh:physical"` is written as each
+ * element's material id (`GiD_fWriteElementsIdMatBlock`) and is excluded
+ * from the result output, since it is already in the geometry file. No
+ * other key is consulted for material ids in v1.
+ *
+ * ## Data mapping
+ *
+ * `point_data` is written `GiD_OnNodes`. `GiD_ResultLocation` has no
+ * "on cells" concept, so `cell_data` is written `GiD_OnGaussPoints` against
+ * a synthetic one-point Gauss-point set per block (`"gp_<mesh_name>"`) — the
+ * standard GiD idiom for a per-element field, and how Kratos's own GiD
+ * writer represents one. An array spanning several blocks becomes several
+ * result blocks sharing one result name but different Gauss-point sets.
+ *
+ * `GiD_ResultType`'s valid component counts are irregular (Scalar 1; Vector
+ * 2/3/4; Matrix 3/6; MainMatrix 12; ...), and gidpost does not validate an
+ * invalid count itself — it silently emits a malformed file. This writer
+ * validates instead.
+ *
+ * **Which type an array is written as** is chosen in one of two ways:
+ *
+ * 1. **Declared**, via a `field_data` entry `"gid:result_type:<name>"`
+ *    (`kGidResultTypePrefix`) holding a `GidResultType` value. The count is
+ *    checked against that type's legal counts and an illegal one is a
+ *    `WriteError` naming the array — never a silent fallback.
+ * 2. **Inferred**, when no declaration is present: 1 component →
+ *    `GiD_Scalar`; 2 or 3 → `GiD_Vector`; anything else splits into that
+ *    many named `GiD_Scalar` results (`"<name>_1"` .. `"<name>_k"`),
+ *    recorded with a `provenance_note`.
+ *
+ * An undeclared 6-component array is deliberately **not** inferred as
+ * `GiD_Matrix`, even though stress tensors are GiD's canonical use case:
+ * `(n,6)` alone is genuinely ambiguous (it could equally be `Matrix:6`,
+ * `ComplexMatrix:3` or `ComplexVector:6`), so inferring would silently pick
+ * one meaning. Declaring is the way to say which. Note the component order
+ * itself needs no conversion: GiD's `Matrix:6` is `Sxx Syy Szz Sxy Syz Sxz`,
+ * which is exactly meshio/VTK's symmetric-tensor order.
+ *
+ * Named regions and multi-step results are not carried (each dropped with a
+ * `provenance_note` or `log::warn`); this writes exactly one step
+ * (`rStepValue`). `field_data` is not written either, but *is* read, for the
+ * `"gid:result_type:*"` keys above.
+ *
+ * ## Provenance
+ *
+ * `SlotTier::Block`: `provenance_lines(SlotTier::Block)` is rendered one
+ * line per `GiD_fWriteMeshUserAttribute`/`GiD_fWriteResultUserAttribute`
+ * call (`"meshio++"` for line 0, `"meshio++_<n>"` for any further line),
+ * which gidpost itself renders as the `# Name: value` comment its own
+ * source documents. There is **no pure-Python reference writer** for this
+ * format — gidpost cannot be cheaply reimplemented in pure Python, and a
+ * second implementation of the discrete node-ordering permutations risks
+ * disagreeing near the exact cases the bytes tests exist to pin — so
+ * `meshioplusplus.gid` is a C++-core-only surface (the `openfoam` writer's
+ * precedent, generalized: here there is no fallback engine at all, not
+ * merely one that is unconditionally used).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which of gidpost's three (of four) post-file flavours to emit.
+enum class GidMode : int {
+    /// Infer from `rPath`'s extension: `.post.bin` -> Binary, `.post.h5` ->
+    /// Hdf5, anything else (including `.post.msh`/`.post.res`) -> Ascii.
+    /// The default, and what every binding but a caller passing `mode=`
+    /// explicitly uses.
+    Auto = 0,
+    /// Two sibling files, `<stem>.post.msh` + `<stem>.post.res`.
+    Ascii = 1,
+    /// One deflated file, `<stem>.post.bin`.
+    Binary = 2,
+    /// One HDF5 file, `<stem>.post.h5`. Needs `MESHIOPLUSPLUS_WITH_HDF5=ON`
+    /// in addition to `MESHIOPLUSPLUS_WITH_GIDPOST=ON`.
+    Hdf5 = 3,
+    /// Two sibling files like `Ascii`, but gzipped -- gidpost's
+    /// `GiD_PostAsciiZipped`, which is the SAME ASCII text through `gzprintf`.
+    ///
+    /// Reading has always handled it (the reader sniffs the gzip magic and
+    /// inflates, since the flavour is textually identical), so this is the
+    /// write counterpart alone. It needs no dependency `Ascii` does not:
+    /// gidpost hard-requires zlib regardless.
+    ///
+    /// **`Auto` never resolves to this.** No extension can express "zipped" --
+    /// a gzipped file still ends `.post.msh` -- so the mode is explicit-only.
+    /// Inferring it would also change what every existing `.post.msh` write
+    /// produces, which is exactly what `Auto` must not do.
+    AsciiZipped = 4,
+};
+
+/**
+ * @brief What kind of quantity a result array holds, in GiD's own vocabulary.
+ *
+ * meshio++'s `Mesh` has no way to say "this array is a symmetric tensor" or
+ * "this array is complex" -- `NDArray` has neither a complex dtype nor a
+ * string dtype -- so a caller declares it out of band, through a `field_data`
+ * entry named `kGidResultTypePrefix + "<array name>"` holding one of these
+ * values. That mechanism was chosen over a typed side-channel struct
+ * (`MedInfo`'s shape) precisely because the registry's `(path, mesh)` writers
+ * cannot carry a side channel, so it would have been invisible from the CLI,
+ * WASM, the C API and Fortran; a `field_data` key reaches all of them with no
+ * per-binding code, exactly as `gmsh:physical` and `med:num` already do.
+ *
+ * The enumerator values deliberately equal gidpost's own `GiD_ResultType`, so
+ * the writer is a `static_cast`; `gid.cpp` `static_assert`s every one of them
+ * against it (the `mio_cell_type` precedent), making drift a compile error.
+ * The enum is declared here rather than reusing `GiD_ResultType` because this
+ * header must stay free of gidpost, which the *reader* is deliberately built
+ * without -- reading ASCII GiD needs neither gidpost nor zlib.
+ *
+ * ## Component counts and order
+ *
+ * Counts are gidpost's (`_ResultTypeInfo`); the orders are quoted from
+ * CIMNE's GiD Customization Manual. Values are stored **verbatim in GiD's
+ * order** -- meshio++ does not reinterpret them, having no canonical complex
+ * or tensor layout of its own to convert to.
+ *
+ * | Type | Legal counts | Order |
+ * |---|---|---|
+ * | `Scalar` | 1 | the value |
+ * | `Vector` | 2, 3, 4 | X, Y, Z, \|V\| (4th = signed modulus) |
+ * | `Matrix` | 3, 6 | 3: Sxx Syy Sxy / 6: Sxx Syy Szz Sxy Syz Sxz |
+ * | `PlainDeformationMatrix` | 4 | Sxx Syy Sxy Szz |
+ * | `MainMatrix` | 12 | Si Sii Siii, then the three eigenvectors |
+ * | `LocalAxes` | 3 | euler_ang_1..3 |
+ * | `ComplexScalar` | 2 | real, imag |
+ * | `ComplexVector` | 4, 6 | **interleaved**: x_re x_im y_re y_im [z_re z_im] |
+ * | `ComplexMatrix` | 6, 12 | **blocked**: every real, then every imag |
+ *
+ * Two of those are worth not rediscovering. `Matrix:6` is **already**
+ * meshio/VTK's symmetric-tensor order, so a stress tensor needs no
+ * permutation in either direction. And `ComplexVector` interleaves real and
+ * imaginary parts per component while `ComplexMatrix` blocks them -- the same
+ * family, opposite conventions -- so neither may be inferred from the other.
+ */
+enum class GidResultType : std::int64_t {
+    Scalar = 0,
+    Vector = 1,
+    Matrix = 2,
+    PlainDeformationMatrix = 3,
+    MainMatrix = 4,
+    LocalAxes = 5,
+    ComplexScalar = 6,
+    ComplexVector = 7,
+    ComplexMatrix = 8,
+};
+
+/**
+ * @brief `field_data` key prefix declaring an array's `GidResultType`.
+ *
+ * The full key is this prefix plus the array's own name, and its value is a
+ * single integer `GidResultType`. `field_data` is global rather than
+ * per-location, so one key covers an array of that name wherever it appears:
+ * if the same name exists in both `point_data` and `cell_data`, the single
+ * declaration applies to both and must be legal for both counts.
+ */
+inline constexpr const char* kGidResultTypePrefix = "gid:result_type:";
+
+/**
+ * @brief `field_data` key prefix declaring how many Gauss points per element a
+ * `cell_data` array carries.
+ *
+ * GiD writes a per-element result against a **Gauss-point set** of G points,
+ * emitting G rows per element. meshio++'s `cell_data` has no
+ * per-point-within-cell axis (the same limit MED's ELNO/ELGA documents), so a
+ * G-point, k-component array is stored **flat** as `(ncells, G*k)`, laid out
+ * Gauss-point-major -- `[gp0_c0..gp0_ck-1, gp1_c0..gp1_ck-1, ...]`, which is
+ * the order GiD's own `Values` rows arrive in, so neither direction re-packs.
+ *
+ * The full key is this prefix plus the array's own name; its value is a single
+ * integer G. It is written **only when it carries information**, i.e. never
+ * for `G == 1` -- so an ordinary per-element array is a plain `(ncells, k)`
+ * with no declaration at all, and its bytes are unchanged by this mechanism's
+ * existence. Without the declaration a `(ncells, 3)` array is genuinely
+ * ambiguous (a 3-component vector at one Gauss point, or a scalar at three),
+ * which is exactly why the declaration is required rather than inferred.
+ *
+ * Interacts with `kGidResultTypePrefix`: the result type's legal component
+ * counts are checked against **k**, not `G*k`. A `Matrix` (k=6) at G=3 is a
+ * `(n, 18)` array whose declared type is still validated as 6 components.
+ */
+inline constexpr const char* kGidGaussPointsPrefix = "gid:gauss_points:";
+
+/**
+ * @brief `field_data` key prefix supplying a Gauss-point set's **natural
+ * coordinates**, for counts GiD cannot compute itself.
+ *
+ * GiD accepts `Natural Coordinates: Internal` -- letting it place the points
+ * -- only for specific counts per element type (triangle 1/3/6, quadrilateral
+ * 1/4/9, tetrahedra 1/4/10, hexahedra 1/8/27, prism 1/6, pyramid 1/5; line
+ * elements accept any count, equally spaced). Any **other** G must declare
+ * `Natural Coordinates: Given` and list the points explicitly.
+ *
+ * The full key is this prefix plus `"<meshio++ cell type>:<G>"` -- keyed by
+ * `(cell type, G)` rather than by array name, because that is what a GiD
+ * Gauss-point set actually depends on: two arrays sharing a cell block and a
+ * G share one set, and would otherwise have to repeat identical coordinates.
+ * The value is `G * dim` doubles, point-major, where `dim` is 2 for
+ * triangle/quadrilateral and 3 for tetrahedra/hexahedra/prism/pyramid.
+ *
+ * Coordinate ranges are GiD's own: 0..1 for triangle, tetrahedra and prism;
+ * -1..1 for quadrilateral, hexahedra and pyramid. **Line elements cannot use
+ * `Given` at all** -- GiD forbids it -- so they are Internal-only, which is no
+ * restriction since they already accept any count.
+ *
+ * Supplying coordinates for a G that GiD *could* have computed is honoured
+ * (the set is written `Given`); omitting them for a G it cannot is a
+ * `WriteError` naming the type and its legal Internal counts.
+ */
+inline constexpr const char* kGidGaussCoordsPrefix = "gid:gauss_coords:";
+
+/// The GiD spelling of @p type (`"Matrix"`, `"ComplexVector"`, ...), as it
+/// appears in a `.post.res` `Result` header.
+MESHIOPLUSPLUS_API const char* gid_result_type_name(GidResultType type);
+
+/**
+ * @brief Parses a `GidResultType` from its GiD spelling.
+ * @throws std::invalid_argument on an unrecognized name.
+ */
+MESHIOPLUSPLUS_API GidResultType gid_result_type_from_name(const std::string& rName);
+
+/// Whether @p k is a component count @p type accepts (see the table above).
+MESHIOPLUSPLUS_API bool gid_result_dim_is_legal(GidResultType type, std::size_t k);
+
+/**
+ * @brief Parses a `GidMode` from its lower-case name (`"auto"`, `"ascii"`,
+ * `"binary"`, `"hdf5"`), the flat-binding/CLI/Python spelling.
+ * @throws std::invalid_argument on an unrecognized name.
+ */
+MESHIOPLUSPLUS_API GidMode gid_mode_from_name(const std::string& rName);
+
+/**
+ * @brief Whether this build can emit @p mode.
+ *
+ * `Ascii`/`Binary` follow `MESHIOPLUSPLUS_HAS_GIDPOST`; `Hdf5` additionally
+ * needs `MESHIOPLUSPLUS_HAS_GIDPOST_HDF5` (gidpost's HDF5 flavour, gated on
+ * `MESHIOPLUSPLUS_WITH_HDF5` at configure time). `GidMode::Auto` always
+ * returns the same as `Ascii`, since that is what an extension-less/`.post`
+ * path resolves to.
+ */
+MESHIOPLUSPLUS_API bool gid_available(GidMode mode);
+
+/**
+ * @brief Whether this build can **read** @p mode.
+ *
+ * Deliberately distinct from @ref gid_available, which reports the *write*
+ * side. Reading needs no gidpost: `Ascii` is always readable, `Binary` needs
+ * `MESHIOPLUSPLUS_HAS_ZLIB` (the flavour is a gzip stream), and `Hdf5` needs
+ * `MESHIOPLUSPLUS_HAS_HDF5`. `GidMode::Auto` answers as `Ascii`, since that is
+ * what an unrecognized extension resolves to.
+ *
+ * @note `gid_available`'s meaning is the one it shipped with in v10.18.0 and
+ * is deliberately unchanged — silently redefining it to mean "readable" would
+ * be a behaviour change for an existing consumer.
+ */
+MESHIOPLUSPLUS_API bool gid_readable(GidMode mode);
+
+/**
+ * @brief The CMake flags that would enable @p mode, for an actionable
+ * error message.
+ */
+MESHIOPLUSPLUS_API std::string gid_build_option(GidMode mode);
+
+/**
+ * @brief Write a mesh as a GiD postprocess file (set).
+ *
+ * @param rPath filesystem path — any of `.post.msh`, `.post.res`,
+ *        `.post.bin`, `.post.h5`, or an arbitrary path when @p mode is not
+ *        `Auto`. For `GidMode::Ascii` this names (or derives) the sibling
+ *        `.post.msh`/`.post.res` pair; for `Binary`/`Hdf5` it names the
+ *        single output file directly.
+ * @param rMesh the mesh to write.
+ * @param mode which flavour to emit; `Auto` (default) infers it from
+ *        `rPath`'s extension.
+ * @param rAnalysisName the GiD "analysis name" every result is grouped
+ *        under (gidpost has no sane default of its own).
+ * @param stepValue the single time/load step every result is written at.
+ * @throws WriteError when this build cannot emit @p mode (naming
+ *         `-DMESHIOPLUSPLUS_WITH_GIDPOST=ON` and
+ *         `-DMESHIOPLUSPLUS_WITH_ZLIB=ON`, plus `-DMESHIOPLUSPLUS_WITH_HDF5=ON`
+ *         for `Hdf5`), on an unmappable cell type (see the cell-mapping
+ *         section above), when the mesh exceeds `INT_MAX` points, cells, or
+ *         node indices (gidpost's connectivity is 32-bit), or when gidpost
+ *         itself reports a failure.
+ */
+MESHIOPLUSPLUS_API void write_gid(const std::string& rPath, const Mesh& rMesh,
+                                  GidMode mode = GidMode::Auto,
+                                  const std::string& rAnalysisName = "meshio++",
+                                  double stepValue = 1.0);
+
+/**
+ * @brief Read a GiD postprocess file.
+ *
+ * The flavour is resolved from @p rPath's extension and then **confirmed
+ * against the leading bytes**, because the extension alone cannot tell: a
+ * `.post.msh` may legitimately be gzipped (gidpost's `GiD_PostAsciiZipped`
+ * writes the same ASCII text through `gzprintf`), and a `.post.bin` is a gzip
+ * stream wrapping a binary record layout.
+ *
+ * **Sibling policy** (the `triangle` `.node`/`.ele` precedent): for the ASCII
+ * flavour the geometry file `<stem>.post.msh` is **mandatory** and the results
+ * file `<stem>.post.res` is **optional** — a mesh with no results file reads
+ * back as geometry only. Passing the `.post.res` path directly derives and
+ * reads the `.post.msh`; *its* absence is an error, since results alone carry
+ * no geometry.
+ *
+ * Real-world files differ from meshio++'s own output in two ways this reader
+ * handles deliberately, neither of which our writer can produce: the full node
+ * table may be **repeated in every `MESH` block** (rather than written once
+ * with empty blocks thereafter), and element ids may **restart at 1 per
+ * block** (rather than being globally unique). Node ids are therefore
+ * accumulated into one global table de-duplicated by id, and element ids are
+ * tracked per block.
+ *
+ * @param rPath the file to read (any of the four `.post.*` spellings).
+ * @param rOptions selective-read options. `mTimeStep` selects one step of a
+ *        multi-step results file and is honoured natively (it cannot be
+ *        emulated after the fact); `mMmap` is honoured for the ASCII flavour;
+ *        the narrowing options are left to the shared caller-side filter.
+ * @return the read Mesh.
+ * @throws ReadError on malformed input, on a cell type with no verified GiD
+ *         ordering (`hexahedron27`/`wedge15`/`pyramid13`) or no meshio++
+ *         mapping (`Sphere`/`Circle`), on an out-of-range time step, or when
+ *         this build cannot read the resolved flavour (naming the missing
+ *         CMake flag).
+ */
+/**
+ * @brief Writes a **multi-step** GiD file, pulling one step at a time.
+ *
+ * A free function taking a provider rather than a stateful writer class: the
+ * transient surface meshio++ exposes is the sequence layer
+ * (`sequence_to_timeseries`), which already carries every binding, so this
+ * needs none of its own. `XdmfTimeSeriesWriter`'s class shape exists because
+ * that format's series writer is public API in its own right; this one is not.
+ *
+ * @p rNext is called once per step, in order, and fills that step's time and
+ * mesh; it returns false when the series is exhausted. Pull-until-done rather
+ * than a step count so a Python generator -- which cannot say how many steps
+ * it has -- drives it as naturally as the sequence layer's counted loop. Only
+ * one mesh is ever alive, which is the **streaming invariant** that layer
+ * guarantees.
+ *
+ * A GiD `Group` is emitted only when a step's mesh **differs** from the
+ * previous step's, which is what that construct is for (re-meshing / adaptive
+ * analyses: one mesh serving a consecutive run of steps). A series whose mesh
+ * never changes therefore emits no group at all and keeps the single-step
+ * output shape. Processing steps in order also satisfies GiD's "only one group
+ * at a time" rule by construction.
+ */
+MESHIOPLUSPLUS_API void write_gid_series(
+    const std::string& rPath,
+    const std::function<bool(std::size_t, double& rTime, Mesh& rMesh)>& rNext,
+    GidMode Mode = GidMode::Auto, const std::string& rAnalysisName = "meshio++");
+
+MESHIOPLUSPLUS_API Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/**
+ * @brief Summarize a GiD postprocess file without materializing its arrays.
+ *
+ * Reports point/cell counts and block shapes from the `MESH` headers, and the
+ * available step values from the results file. **Declines** — by throwing
+ * `ReadError` — for anything it cannot summarize cheaply, which costs the
+ * caller a slower full read rather than a failure (`registry_read_metadata`
+ * catches it and falls back).
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_gid_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/gid.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/gmsh.hpp =====
 /**
  * @file gmsh.hpp
@@ -23051,6 +23493,381 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
+// ===== begin src/cpp/src/formats/gid_common.hpp =====
+/**
+ * @file formats/gid_common.hpp
+ * @brief Path/flavour helpers shared by the GiD writer and reader.
+ *
+ * A **format-private** header (the `formats/xdmf_doc.hpp` precedent, included
+ * by both `xdmf.cpp` and `xdmf_time_series.cpp`): it lives beside the `.cpp`
+ * files rather than under `src/cpp/include/`, because nothing outside this
+ * format needs it and no installed header may name it. The amalgamator
+ * resolves a quoted include against the including file's own directory first,
+ * so it is inlined exactly once with no generator change.
+ *
+ * These three helpers used to sit in `gid.cpp`'s anonymous namespace **inside**
+ * its `#ifdef MESHIOPLUSPLUS_HAS_GIDPOST` guard. They moved here for two
+ * reasons, and both matter:
+ *
+ *  1. The **reader needs them but must not be behind that guard.** gidpost is
+ *     a write-only library; reading a GiD file is ordinary text/record parsing
+ *     whose real dependencies are per-flavour (ASCII: none, binary: zlib,
+ *     HDF5: HDF5), not "was gidpost compiled in". Leaving them behind the
+ *     guard would have forced the reader behind it too, and a zlib-less build
+ *     (the statically-linked release CLI binaries, the Windows wheels) would
+ *     then carry no GiD reader for no reason at all.
+ *  2. They are in a **named** namespace, not an anonymous one, because the
+ *     amalgamation concatenates every `src/cpp/src/**.cpp` into a single
+ *     translation unit -- two files each carrying an anonymous-namespace
+ *     `gid_has_suffix` would be a redefinition there even though they compile
+ *     fine separately.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace gid_detail {
+
+/// True when @p rS ends with @p rSuffix.
+inline bool gid_has_suffix(const std::string& rS, const std::string& rSuffix) {
+    return rS.size() >= rSuffix.size() &&
+           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+}
+
+/**
+ * @brief Resolves `GidMode::Auto` against a path's extension.
+ *
+ * `.post.bin` -> Binary, `.post.h5` -> Hdf5, anything else (including
+ * `.post.msh`/`.post.res`) -> Ascii. A non-`Auto` mode passes through.
+ *
+ * @note On the READ side this is only the first guess: `read_gid` additionally
+ * sniffs the leading bytes, because a `.post.msh` may legitimately be gzipped
+ * (gidpost's `GiD_PostAsciiZipped` writes the same ASCII text through
+ * `gzprintf`), and the extension alone cannot say so.
+ */
+inline GidMode gid_resolve_mode(const std::string& rPath, GidMode mode) {
+    if (mode != GidMode::Auto)
+        return mode;
+    if (gid_has_suffix(rPath, ".post.bin"))
+        return GidMode::Binary;
+    if (gid_has_suffix(rPath, ".post.h5"))
+        return GidMode::Hdf5;
+    return GidMode::Ascii;
+}
+
+/**
+ * @brief `"<stem>.post.msh"` <-> `"<stem>.post.res"`.
+ *
+ * An arbitrary path is treated as the stem itself (the
+ * `ensight_case_geo_paths` precedent, generalized to a third case since gid's
+ * two known suffixes share the same length).
+ *
+ * @return `{mesh path, result path}`.
+ */
+inline std::pair<std::string, std::string> gid_ascii_paths(const std::string& rPath) {
+    if (gid_has_suffix(rPath, ".post.msh"))
+        return {rPath, rPath.substr(0, rPath.size() - 3) + "res"};
+    if (gid_has_suffix(rPath, ".post.res"))
+        return {rPath.substr(0, rPath.size() - 3) + "msh", rPath};
+    return {rPath + ".post.msh", rPath + ".post.res"};
+}
+
+/**
+ * @brief The one `{GidResultType, GiD spelling, legal component counts}`
+ * table, shared by the writer and the reader.
+ *
+ * Counts are gidpost's own `_ResultTypeInfo` (`gidpostInt.c`); spellings are
+ * what `GetResultTypeName` emits and what a `.post.res` `Result` header
+ * therefore carries. A single table because the reader validates counts it
+ * parsed and the writer validates counts it is about to emit -- two
+ * transcriptions of an irregular nine-row table would drift, and a wrong row
+ * produces a plausible-looking file rather than an error.
+ *
+ * A zero terminates the count list (gidpost's own convention).
+ */
+struct GidResultTypeEntry {
+    GidResultType mType;
+    const char* mName;
+    std::array<std::size_t, 3> mDims;  // zero-terminated
+};
+
+inline const std::vector<GidResultTypeEntry>& gid_result_type_table() {
+    static const std::vector<GidResultTypeEntry> table = {
+        {GidResultType::Scalar, "Scalar", {1, 0, 0}},
+        {GidResultType::Vector, "Vector", {2, 3, 4}},
+        {GidResultType::Matrix, "Matrix", {3, 6, 0}},
+        {GidResultType::PlainDeformationMatrix, "PlainDeformationMatrix", {4, 0, 0}},
+        {GidResultType::MainMatrix, "MainMatrix", {12, 0, 0}},
+        {GidResultType::LocalAxes, "LocalAxes", {3, 0, 0}},
+        {GidResultType::ComplexScalar, "ComplexScalar", {2, 0, 0}},
+        {GidResultType::ComplexVector, "ComplexVector", {4, 6, 0}},
+        {GidResultType::ComplexMatrix, "ComplexMatrix", {6, 12, 0}},
+    };
+    return table;
+}
+
+/// The entry for @p type, or nullptr when @p type is out of range (which a
+/// caller-supplied `field_data` value can be).
+inline const GidResultTypeEntry* gid_find_result_type(GidResultType type) {
+    for (const GidResultTypeEntry& e : gid_result_type_table())
+        if (e.mType == type)
+            return &e;
+    return nullptr;
+}
+
+/// Human-readable legal counts for @p type, for an error message.
+inline std::string gid_legal_dims_text(const GidResultTypeEntry& rEntry) {
+    std::string out;
+    for (std::size_t d : rEntry.mDims) {
+        if (d == 0)
+            break;
+        if (!out.empty())
+            out += ", ";
+        out += std::to_string(d);
+    }
+    return out;
+}
+
+/**
+ * @brief The type the writer picks for a @p k -component array with no
+ * declaration, or nullptr when it would split the array into k scalars.
+ *
+ * Shared so the reader can decide whether a declaration carries information:
+ * it records one only when the file's declared type differs from what this
+ * would have inferred, which is what keeps an ordinary scalar/3-vector round
+ * trip free of `gid:result_type:*` noise (the all-zero-material-column rule).
+ */
+inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
+    if (k == 1)
+        return gid_find_result_type(GidResultType::Scalar);
+    if (k == 2 || k == 3)
+        return gid_find_result_type(GidResultType::Vector);
+    return nullptr;
+}
+
+/**
+ * @brief Node-slot permutations for the three quadratic cell types whose GiD
+ * ordering was, until now, "not independently verified" -- `hexahedron27`,
+ * `wedge15`, `pyramid13`.
+ *
+ * Shared between the writer and the reader for the same reason the result
+ * type table above is: a permutation transcribed twice risks two silently
+ * different tables, and a wrong entry here does not fail loudly -- it writes
+ * or reads a plausible file with quietly transposed quadratic nodes.
+ *
+ * ## Derivation
+ *
+ * Every entry meshio++ already supported was cross-checked against Kratos
+ * Multiphysics's production GiD writer; these three were refused because no
+ * such cross-check existed. Read from Kratos's own geometry classes
+ * (`kratos/geometries/hexahedra_3d_27.h`, `prism_3d_15.h`, `pyramid_3d_13.h`)
+ * and independently confirmed against Kratos's Kratos-to-VTK conversion
+ * utility (`kratos/input_output/vtk_output.cpp`, mirrored in
+ * `ensight_output.cpp`) -- an Element-agnostic source, unlike the
+ * Hexahedra3D20 reorder in `gid_mesh_container.h`, which the research
+ * confirming this table found lives only in that file's *Conditions*-writing
+ * path (elements are written with no reorder at all). That does not change
+ * `hexahedron20`'s own identity mapping below -- `vtk_output.cpp`'s
+ * conversion, which every Hexahedra3D20 element or condition goes through for
+ * VTK/EnSight output, independently reproduces the identical swap -- but it
+ * is the more precise citation and the one these three lean on, since two of
+ * them (`hexahedron27`, `wedge15`) have no GiD-specific Kratos precedent at
+ * all beyond "no reorder is applied", and the third (`pyramid13`) has no
+ * Kratos GiD precedent whatsoever -- Kratos never registers a GiD mesh
+ * container for any pyramid, of any order, so its ordering rests on Kratos's
+ * internal geometry convention alone (confirmed to already equal VTK's own
+ * convention by `vtk_output.cpp` explicitly skipping it: `Pyramid3D13` falls
+ * through that function's `else` branch, needing no conversion).
+ *
+ * `hexahedron27`: meshio++'s own table (`cell_subdivision.cpp`) orders edges
+ * 8-11 bottom ring, 12-15 TOP ring, 16-19 verticals; Kratos's internal order
+ * is 8-11 bottom ring, 12-15 VERTICALS, 16-19 top ring -- the reverse split.
+ * Face centres 20-25 also disagree: meshio++ orders them x-min/x-max/y-min/
+ * y-max/bottom/top, Kratos orders them bottom/y-min/x-max/y-max/x-min/top.
+ * Body centre 26 agrees. The permutation below is `dst[c] = src[p[c]]` (the
+ * `med_node_perm()`/`flatten_f`/`unflatten_f` convention already used
+ * elsewhere in this repo, reused rather than reinvented) mapping a
+ * GiD/Kratos slot to the meshio++ index holding the same edge/face/body; it
+ * is self-inverse (an involution), like every other permutation this
+ * convention has produced so far, and matches `vtk_output.cpp`'s own
+ * Kratos-index array verbatim.
+ *
+ * `wedge15`: meshio++ orders edges 6-8 bottom triangle, 9-11 TOP triangle,
+ * 12-14 verticals; Kratos orders 6-8 bottom triangle, 9-11 VERTICALS, 12-14
+ * top triangle -- the same reverse-split pattern, and again self-inverse.
+ *
+ * `pyramid13`: identical in both conventions (base-ring edges 5-8, apex
+ * edges 9-12) -- no permutation, `mPerm == nullptr`.
+ */
+struct GidCellPermEntry {
+    const char* mMeshioName;
+    std::size_t mNumNodes;
+    const int* mPerm;  // nullptr = identity
+};
+
+/// `dst[c] = src[p[c]]`, self-inverse. See `hexahedron27`'s derivation above;
+/// independently confirmed against Kratos's `vtk_output.cpp` array verbatim.
+/// Indexed and grouped deliberately, not a flat literal, so a slipped digit
+/// here is easy to catch by eye against the derivation comment above:
+///   corners 0-7, bottom-ring edges 8-11: identity
+///   top-ring edges 12-15 <- meshio++'s verticals 16-19
+///   verticals 16-19      <- meshio++'s top-ring edges 12-15
+///   face centres: 20<-24(bottom), 21<-22(y-min), 22<-21(x-max),
+///                 23<-23(y-max, fixed), 24<-20(x-min), 25<-25(top, fixed)
+///   body centre 26: fixed
+inline constexpr int kGidHexahedron27Perm[27] = {
+    0,  1,  2,  3,  4,  5,  6, 7,  // corners
+    8,  9,  10, 11,                // bottom-ring edges
+    16, 17, 18, 19,                // slot 12-15 (top ring)   <- verticals
+    12, 13, 14, 15,                // slot 16-19 (verticals)  <- top ring
+    24, 22, 21, 23, 20, 25,        // face centres 20-25
+    26,                            // body centre
+};
+
+/// `dst[c] = src[p[c]]`, self-inverse. See `wedge15`'s derivation above:
+///   corners 0-5, bottom-triangle edges 6-8: identity
+///   top-triangle edges 9-11 <- meshio++'s verticals 12-14
+///   verticals 12-14         <- meshio++'s top-triangle edges 9-11
+inline constexpr int kGidWedge15Perm[15] = {
+    0,  1,  2,  3, 4, 5,  // corners
+    6,  7,  8,            // bottom-triangle edges
+    12, 13, 14,           // slot 9-11 (top triangle) <- verticals
+    9,  10, 11,           // slot 12-14 (verticals)   <- top triangle
+};
+
+inline const std::vector<GidCellPermEntry>& gid_cell_perm_table() {
+    static const std::vector<GidCellPermEntry> table = {
+        {"hexahedron27", 27, kGidHexahedron27Perm},
+        {"wedge15", 15, kGidWedge15Perm},
+        {"pyramid13", 13, nullptr},
+    };
+    return table;
+}
+
+/// The permutation for @p rMeshioName / @p nnode, or nullptr for identity
+/// (either because the type needs none, like `pyramid13`, or because it is
+/// not in this table at all -- every OTHER GiD-supported type is identity).
+inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode) {
+    for (const GidCellPermEntry& e : gid_cell_perm_table())
+        if (e.mNumNodes == nnode && rMeshioName == e.mMeshioName)
+            return e.mPerm;
+    return nullptr;
+}
+
+/**
+ * @brief Which Gauss-point counts GiD can place itself (`Natural Coordinates:
+ * Internal`), per meshio++ cell type, and how many natural-coordinate
+ * components a `Given` point needs for that type.
+ *
+ * Transcribed from CIMNE's GiD Customization Manual. Shared between the writer
+ * (which must refuse an Internal-impossible count that supplies no
+ * coordinates) and the reader (which must know a Given set's coordinate width
+ * to round-trip it) -- two transcriptions of an irregular six-row table would
+ * drift silently, and the failure mode is a file GiD rejects rather than an
+ * error meshio++ raises.
+ *
+ * `mCoordDim == 0` marks the line family, which is special twice over: it
+ * accepts **any** count Internally (equally spaced), and GiD forbids `Given`
+ * for it outright. `mAnyCount` therefore implies "never needs coordinates".
+ *
+ * A zero terminates the count list, the same convention
+ * `GidResultTypeEntry::mDims` uses.
+ */
+struct GidGaussCountEntry {
+    const char* mMeshioName;
+    std::array<std::size_t, 3> mInternalCounts;  // zero-terminated
+    bool mAnyCount;                              // line family: any G, Given forbidden
+    std::size_t mCoordDim;                       // 0 = Given not permitted
+};
+
+inline const std::vector<GidGaussCountEntry>& gid_gauss_count_table() {
+    static const std::vector<GidGaussCountEntry> table = {
+        // 2-D families: natural coordinates are (a, b).
+        {"triangle", {1, 3, 6}, false, 2},
+        {"quad", {1, 4, 9}, false, 2},
+        // 3-D families: natural coordinates are (a, b, c).
+        {"tetra", {1, 4, 10}, false, 3},
+        {"hexahedron", {1, 8, 27}, false, 3},
+        {"wedge", {1, 6, 0}, false, 3},
+        {"pyramid", {1, 5, 0}, false, 3},
+        // Line elements: any count, equally spaced; Given is forbidden.
+        {"line", {0, 0, 0}, true, 0},
+    };
+    return table;
+}
+
+/**
+ * @brief The Gauss-count entry governing @p rMeshioName, or nullptr.
+ *
+ * Higher-order variants share their base family's Gauss-point rules (a
+ * `tetra10` is still a tetrahedron as far as quadrature goes), so the lookup
+ * matches on the longest table name that prefixes the type -- `hexahedron27`
+ * -> `hexahedron`, `triangle6` -> `triangle`, `line3` -> `line`. Matching on
+ * the longest entry matters: `quad` must not swallow a name that a longer
+ * entry would claim, and this keeps the table one row per family rather than
+ * one per concrete type.
+ */
+inline const GidGaussCountEntry* gid_find_gauss_counts(const std::string& rMeshioName) {
+    const GidGaussCountEntry* best = nullptr;
+    for (const GidGaussCountEntry& e : gid_gauss_count_table()) {
+        const std::string name = e.mMeshioName;
+        if (rMeshioName.rfind(name, 0) != 0)
+            continue;
+        if (best == nullptr || name.size() > std::string(best->mMeshioName).size())
+            best = &e;
+    }
+    return best;
+}
+
+/// Whether GiD can place @p g points itself for @p rMeshioName (so the set may
+/// be written `Natural Coordinates: Internal`). An unknown type is permissive:
+/// only counts we positively know to be impossible are refused.
+inline bool gid_gauss_count_is_internal(const std::string& rMeshioName, std::size_t g) {
+    const GidGaussCountEntry* e = gid_find_gauss_counts(rMeshioName);
+    if (e == nullptr)
+        return true;
+    if (e->mAnyCount)
+        return g >= 1;
+    for (std::size_t c : e->mInternalCounts) {
+        if (c == 0)
+            break;
+        if (c == g)
+            return true;
+    }
+    return false;
+}
+
+/// Human-readable Internal-legal counts for @p rMeshioName, for an error
+/// message ("any count" for the line family).
+inline std::string gid_internal_counts_text(const GidGaussCountEntry& rEntry) {
+    if (rEntry.mAnyCount)
+        return "any count";
+    std::string out;
+    for (std::size_t c : rEntry.mInternalCounts) {
+        if (c == 0)
+            break;
+        if (!out.empty())
+            out += ", ";
+        out += std::to_string(c);
+    }
+    return out;
+}
+
+/// The `field_data` key carrying a `(cell type, G)` set's natural coordinates.
+inline std::string gid_gauss_coords_key(const std::string& rMeshioName, std::size_t g) {
+    return std::string(kGidGaussCoordsPrefix) + rMeshioName + ":" + std::to_string(g);
+}
+
+}  // namespace gid_detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/gid_common.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
 /**
  * pugixml parser - version 1.14
@@ -52327,6 +53144,2795 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/freefem.cpp =====
+// ===== begin src/cpp/src/formats/gid.cpp =====
+#include <stdexcept>
+
+// Project includes
+
+
+namespace meshioplusplus {
+
+// Unconditional (needed whether or not gidpost itself is compiled in), the
+// smooth_method_from_name/partition_method_from_name precedent: the
+// flat-binding/CLI/Python spelling of GidMode.
+GidMode gid_mode_from_name(const std::string& rName) {
+    if (rName == "auto")
+        return GidMode::Auto;
+    if (rName == "ascii")
+        return GidMode::Ascii;
+    if (rName == "binary")
+        return GidMode::Binary;
+    if (rName == "hdf5")
+        return GidMode::Hdf5;
+    // Underscore, not a hyphen: a Julia symbol cannot carry a hyphen, which is
+    // why `gradient`'s hyphenated method names needed a translation layer
+    // there. Nothing here has to.
+    if (rName == "ascii_zipped")
+        return GidMode::AsciiZipped;
+    throw std::invalid_argument("GiD: unknown mode '" + rName +
+                                "' (expected auto, ascii, ascii_zipped, binary, or hdf5)");
+}
+
+}  // namespace meshioplusplus
+
+#ifdef MESHIOPLUSPLUS_HAS_GIDPOST
+
+// System includes
+#include <cstdint>
+#include <limits>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+extern "C" {
+#include "gidpost.h"
+}
+
+namespace meshioplusplus {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Cell-type mapping.
+//
+// GiD has exactly ten element types (GiD_ElementType); higher-order variants
+// share a type with a larger node count. Every entry below is IDENTITY (no
+// node permutation) -- independently cross-checked against the real,
+// production GiD writer in Kratos Multiphysics (kratos/includes/
+// gid_mesh_container.h), whose only reordering is for Hexahedra20, and that
+// reorder turns out to exist purely because KRATOS's own internal hexahedra20
+// node order differs from GiD's (Kratos: corners, bottom-ring, verticals,
+// top-ring; GiD: corners, bottom-ring, top-ring, verticals) -- and GiD's own
+// convention is, edge for edge, IDENTICAL to meshio++'s own hexahedron20
+// table (detail/cell_subdivision.cpp's cell_refine_edges(Hexahedron)):
+// bottom ring {0,1}{1,2}{2,3}{3,0}, top ring {4,5}{5,6}{6,7}{7,4}, verticals
+// {0,4}{1,5}{2,6}{3,7}. Kratos's own geometry classes (triangle_2d_6.h,
+// tetrahedra_3d_10.h, quadrilateral_2d_8.h) write NO reorder at all for
+// triangle6/tetra10/quad8, and their own edge tables match meshio++'s
+// (detail/cell_edges.cpp) edge-for-edge too -- so those three, and quad9 by
+// the same near-universal "trailing node = face centre" convention, are
+// identity as well. Pinned independently of this derivation by the
+// tests/cpp/test_gid.cpp GidOrdering suite, which checks the RAW WRITTEN
+// FILE against GiD's own geometry, never a round trip (there is no reader).
+//
+// RESOLVED: CIMNE's GiD 6-era hexa20.gif figure numbers the mid-edge nodes
+// bottom-ring, VERTICALS, top-ring -- exactly Kratos's INTERNAL order, the
+// order Kratos's own GiD writer permutes AWAY from before emitting a file.
+// Taken at face value that figure said the identity mapping below is wrong.
+// Confirmed that GiD's actual expected order is the one Kratos WRITES, i.e.
+// the post-swap order -- which is meshio++'s own hexahedron20 table, hence
+// identity here is correct and the figure is outdated. CIMNE's current
+// grammar dropped the mid-edge figures entirely for exactly this kind of
+// staleness, saying only "hierarchical order ... vertex nodes first, then
+// the middle ones" with no order given. The GidOrdering tests below pin that
+// no permutation is applied; they do not (and structurally cannot) pin that
+// this order is GiD's, which is why this comment states the resolution
+// rather than leaving the tests to imply it.
+//
+// A precision on the evidence, found while deriving hexahedron27/wedge15
+// below: the reorder this rests on (`gid_mesh_container.h`) lives ONLY in
+// that file's *Conditions*-writing path -- the Elements path writes no
+// reorder at all. The conclusion above is unaffected: an Element-agnostic
+// Kratos source (`kratos/input_output/vtk_output.cpp`'s Kratos-to-VTK
+// conversion, which every Hexahedra3D20 element OR condition goes through
+// for VTK/EnSight output, mirrored in `ensight_output.cpp`) independently
+// reproduces the identical swap. That broader source is the one this file's
+// permutations for hexahedron27/wedge15 actually lean on.
+//
+// hexahedron27/wedge15 (formerly refused as "not independently verified")
+// are now supported via non-identity permutations, `gid_detail::
+// gid_cell_perm()` (formats/gid_common.hpp), derived the same way: Kratos's
+// own geometry classes (hexahedra_3d_27.h, prism_3d_15.h) order their
+// "second ring" of mid-edge nodes as VERTICALS where meshio++'s own table
+// (detail/cell_subdivision.cpp) orders it as the opposite tier (top ring /
+// top triangle) -- the identical reverse-split pattern hexahedron20 has,
+// just with no Conditions-only swap to lean on this time, so these two are
+// cross-checked purely against the Element-agnostic vtk_output.cpp/
+// ensight_output.cpp source. pyramid13 needs no permutation at all: Kratos's
+// own Pyramid3D13 order already matches meshio++'s (vtk_output.cpp
+// explicitly skips converting it, i.e. Kratos itself asserts the two agree)
+// -- and it is the only one of the three with NO Kratos-GiD precedent
+// whatsoever, since Kratos never registers a GiD mesh container for any
+// pyramid; its ordering rests on Kratos's internal geometry convention
+// alone. See gid_common.hpp's `gid_cell_perm_table()` for the full
+// derivation and the permutation arrays themselves.
+//
+// Anything not in this table -- polygon/polyhedron (GiD has no such type),
+// every VTK-Lagrange/higher-degree type -- throws by name rather than
+// guessing.
+struct GidTypeEntry {
+    GiD_ElementType mType;
+    int mNumNodes;
+};
+
+const std::unordered_map<std::string, GidTypeEntry>& gid_type_table() {
+    static const std::unordered_map<std::string, GidTypeEntry> table = {
+        {"vertex", {GiD_Point, 1}},
+        {"line", {GiD_Linear, 2}},
+        {"line3", {GiD_Linear, 3}},
+        {"triangle", {GiD_Triangle, 3}},
+        {"triangle6", {GiD_Triangle, 6}},
+        {"quad", {GiD_Quadrilateral, 4}},
+        {"quad8", {GiD_Quadrilateral, 8}},
+        {"quad9", {GiD_Quadrilateral, 9}},
+        {"tetra", {GiD_Tetrahedra, 4}},
+        {"tetra10", {GiD_Tetrahedra, 10}},
+        {"hexahedron", {GiD_Hexahedra, 8}},
+        {"hexahedron20", {GiD_Hexahedra, 20}},
+        {"hexahedron27", {GiD_Hexahedra, 27}},
+        {"wedge", {GiD_Prism, 6}},
+        {"wedge15", {GiD_Prism, 15}},
+        {"pyramid", {GiD_Pyramid, 5}},
+        {"pyramid13", {GiD_Pyramid, 13}},
+    };
+    return table;
+}
+
+bool gid_is_int_dtype(DType t) {
+    return t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
+           t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64;
+}
+
+// gidpost validates its own state machine with assert() throughout, and
+// GiD_PostInit() prints a "Debug version" banner to stdout in a non-NDEBUG
+// build -- both compiled out here via NDEBUG (CMakeLists.txt's
+// _mio_gidpost_src_defs), which is what makes the return-code checks below
+// the ONLY error-reporting path: an abort() inside the Python extension or
+// the WASM module would kill the host instead of raising, contradicting this
+// project's errors-are-exceptions contract.
+void gid_ensure_init() {
+    static const bool once = [] {
+        GiD_PostInit();
+        return true;
+    }();
+    (void)once;
+    // GiD_PostDone() is deliberately never called: it tears down gidpost's
+    // process-global file-handle table, which a later write_gid() call in
+    // the same process would need.
+}
+
+void gid_check(int rc, const std::string& rWhat) {
+    if (rc != 0)
+        throw WriteError("GiD: " + rWhat + " failed (gidpost status " + std::to_string(rc) + ")");
+}
+
+// gid_has_suffix / gid_resolve_mode / gid_ascii_paths now live in the
+// format-private formats/gid_common.hpp, so the reader -- which must NOT be
+// behind this file's MESHIOPLUSPLUS_HAS_GIDPOST guard -- can share them.
+using gid_detail::gid_ascii_paths;
+using gid_detail::gid_resolve_mode;
+
+GiD_PostMode gid_post_mode(GidMode mode) {
+    switch (mode) {
+        case GidMode::Binary:
+            return GiD_PostBinary;
+        case GidMode::Hdf5:
+            return GiD_PostHDF5;
+        case GidMode::AsciiZipped:
+            return GiD_PostAsciiZipped;
+        default:
+            return GiD_PostAscii;
+    }
+}
+
+// Provenance: SlotTier::Block, rendered as one GiD "user attribute" per line
+// (gidpost's own source documents these as rendering `# Name: value` in
+// ASCII/raw-binary and an HDF5 attribute otherwise) -- "meshio++" for line 0
+// (kProvenanceTag), "meshio++_<n>" for any further line under an open
+// BestEffort/Required scope.
+void gid_write_provenance_mesh(GiD_FILE fd) {
+    const std::vector<std::string> lines = detail::provenance_lines(detail::SlotTier::Block);
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string name = i == 0 ? "meshio++" : "meshio++_" + std::to_string(i);
+        GiD_fWriteMeshUserAttribute(fd, name.c_str(), lines[i].c_str());
+    }
+}
+
+void gid_write_provenance_result(GiD_FILE fd) {
+    const std::vector<std::string> lines = detail::provenance_lines(detail::SlotTier::Block);
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string name = i == 0 ? "meshio++" : "meshio++_" + std::to_string(i);
+        GiD_fWriteResultUserAttribute(fd, name.c_str(), lines[i].c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Geometry.
+// ---------------------------------------------------------------------------
+
+void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
+                        const std::vector<const GidTypeEntry*>& rEntries,
+                        const std::vector<std::string>& rMeshNames, const std::string* pMatName) {
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    const std::size_t np = rMesh.NumPoints();
+
+    std::vector<double> xyz(np * 3);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            xyz[i * 3 + c] = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
+
+    std::int64_t elem_base = 1;  // next 1-based global element id, across every block
+    bool wrote_coords = false;
+
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        const GidTypeEntry* entry = rEntries[bi];
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t ne = cb.NumCells();
+        const NDArray& conn = cb.Conn();
+
+        gid_check(
+            GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType, static_cast<int>(npc)),
+            "BeginMesh('" + rMeshNames[bi] + "')");
+        if (bi == 0)
+            gid_write_provenance_mesh(fd);
+
+        // Only the first mesh carries the shared node table; gidpost's own
+        // state machine requires every subsequent mesh to still open/close an
+        // (empty) coordinates block, or it rejects the file.
+        if (!wrote_coords) {
+            gid_check(GiD_fWriteCoordinatesBlock(fd, static_cast<int>(np), xyz.data()),
+                      "WriteCoordinatesBlock");
+            wrote_coords = true;
+        } else {
+            gid_check(GiD_fBeginCoordinates(fd), "BeginCoordinates");
+            gid_check(GiD_fEndCoordinates(fd), "EndCoordinates");
+        }
+
+        // GiD_fWriteElementsId(Mat)Block already wraps BeginElements()/
+        // EndElements() internally (gidpost's own header documents this) --
+        // an explicit pair here would double-nest the section.
+        //
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (see the cell-type table comment above and
+        // gid_common.hpp's derivation): GiD slot j receives meshio++ node
+        // perm[j], the exact `dst[c] = src[p[c]]` convention med.cpp's
+        // `flatten_f` already uses in this repo.
+        const int* perm = gid_detail::gid_cell_perm(cb.Type(), npc);
+        std::vector<int> ids(ne);
+        std::vector<int> flat_conn(ne * npc);
+        for (std::size_t r = 0; r < ne; ++r) {
+            ids[r] = static_cast<int>(elem_base + static_cast<std::int64_t>(r));
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                flat_conn[r * npc + j] =
+                    static_cast<int>(detail::read_int(conn, r * npc + src_j)) + 1;
+            }
+        }
+
+        if (pMatName != nullptr) {
+            const NDArray& mat_arr = rMesh.CellData(*pMatName, bi);
+            std::vector<int> mat(ne);
+            for (std::size_t r = 0; r < ne; ++r)
+                mat[r] = static_cast<int>(detail::read_int(mat_arr, r));
+            gid_check(GiD_fWriteElementsIdMatBlock(fd, static_cast<int>(ne), ids.data(),
+                                                   flat_conn.data(), mat.data()),
+                      "WriteElementsIdMatBlock('" + rMeshNames[bi] + "')");
+        } else {
+            gid_check(
+                GiD_fWriteElementsIdBlock(fd, static_cast<int>(ne), ids.data(), flat_conn.data()),
+                "WriteElementsIdBlock('" + rMeshNames[bi] + "')");
+        }
+
+        gid_check(GiD_fEndMesh(fd), "EndMesh");
+
+        elem_base += static_cast<std::int64_t>(ne);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Results.
+// ---------------------------------------------------------------------------
+
+// meshioplusplus::GidResultType's values are gidpost's GiD_ResultType's, so
+// the write below is a static_cast. Pinned here rather than trusted: this is
+// the mio_cell_type precedent, and a silent divergence would write a
+// plausible file declaring the wrong kind of quantity.
+static_assert(static_cast<int>(GidResultType::Scalar) == GiD_Scalar, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::Vector) == GiD_Vector, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::Matrix) == GiD_Matrix, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) == GiD_PlainDeformationMatrix,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexScalar) == GiD_ComplexScalar,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexVector) == GiD_ComplexVector,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexMatrix) == GiD_ComplexMatrix,
+              "GidResultType drift");
+
+/**
+ * @brief The `GidResultType` a caller declared for @p rName, if any.
+ *
+ * The declaration rides a `field_data` entry (`kGidResultTypePrefix + name`)
+ * rather than a side-channel struct so that it reaches every surface: the
+ * registry's writers take `(path, mesh)` and could not carry a struct, which
+ * would have left the CLI, WASM, the C API and Fortran unable to declare
+ * anything. See `gid.hpp`.
+ *
+ * @throws WriteError when the value is out of range, or when @p k is not a
+ *         count that type accepts -- never a silent fallback to splitting,
+ *         which would quietly ignore an explicit request (write_options.hpp's
+ *         standing rule).
+ */
+const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh,
+                                                               const std::string& rName,
+                                                               std::size_t k) {
+    const std::string key = std::string(kGidResultTypePrefix) + rName;
+    if (!rMesh.HasFieldData(key))
+        return nullptr;
+
+    const NDArray& decl = rMesh.FieldData(key);
+    if (decl.Size() == 0)
+        throw WriteError("GiD: field_data['" + key + "'] is empty; it must hold one integer " +
+                         "GidResultType value");
+    const auto raw = static_cast<std::int64_t>(detail::read_double(decl, 0));
+    const gid_detail::GidResultTypeEntry* entry =
+        gid_detail::gid_find_result_type(static_cast<GidResultType>(raw));
+    if (entry == nullptr)
+        throw WriteError("GiD: field_data['" + key + "'] declares result type " +
+                         std::to_string(raw) + ", which is not a GidResultType value (0..8)");
+    if (!gid_result_dim_is_legal(entry->mType, k))
+        throw WriteError("GiD: '" + rName + "' is declared " + entry->mName + " but has " +
+                         std::to_string(k) + " components; " + entry->mName + " accepts " +
+                         gid_detail::gid_legal_dims_text(*entry));
+    return entry;
+}
+
+/**
+ * @brief The Gauss-point count declared for @p rName, or 1.
+ *
+ * `field_data[kGidGaussPointsPrefix + name]` -- see gid.hpp. Absent means the
+ * historical one-value-per-element behaviour, which is why an ordinary mesh
+ * never touches any of the G>1 machinery below.
+ *
+ * @throws WriteError on a non-positive G, or a G that does not divide the
+ *         array's own column count (which would mean the flat `(ncells, G*k)`
+ *         layout cannot be split into whole components).
+ */
+std::size_t gid_declared_gauss_points(const Mesh& rMesh, const std::string& rName,
+                                      std::size_t cols) {
+    const std::string key = std::string(kGidGaussPointsPrefix) + rName;
+    if (!rMesh.HasFieldData(key))
+        return 1;
+
+    const NDArray& decl = rMesh.FieldData(key);
+    if (decl.Size() == 0)
+        throw WriteError("GiD: field_data['" + key +
+                         "'] is empty; it must hold one integer Gauss-point count");
+    const auto raw = static_cast<std::int64_t>(detail::read_double(decl, 0));
+    if (raw < 1)
+        throw WriteError("GiD: field_data['" + key + "'] declares " + std::to_string(raw) +
+                         " Gauss points; the count must be at least 1");
+    const auto g = static_cast<std::size_t>(raw);
+    if (cols % g != 0)
+        throw WriteError("GiD: '" + rName + "' is declared " + std::to_string(g) +
+                         " Gauss points but has " + std::to_string(cols) + " columns, which " +
+                         std::to_string(g) +
+                         " does not divide; the layout is (ncells, G*components)");
+    return g;
+}
+
+/**
+ * @brief Declares one Gauss-point set, `Internal` or `Given`.
+ *
+ * `Internal` (GiD places the points) is only legal for specific counts per
+ * element family; any other G must list its natural coordinates explicitly.
+ * Supplying coordinates for a count GiD *could* have placed is honoured --
+ * a solver's own quadrature rule need not match GiD's -- but omitting them
+ * for one it cannot is an error naming the legal counts rather than a file
+ * GiD would silently reject.
+ */
+void gid_declare_gauss_set(GiD_FILE fd, const Mesh& rMesh, const std::string& rGaussName,
+                           const std::string& rMeshioType, GiD_ElementType EType,
+                           const std::string& rMeshName, std::size_t g) {
+    const gid_detail::GidGaussCountEntry* fam = gid_detail::gid_find_gauss_counts(rMeshioType);
+    const std::string coords_key = gid_detail::gid_gauss_coords_key(rMeshioType, g);
+    const bool has_coords = rMesh.HasFieldData(coords_key);
+
+    if (has_coords && fam != nullptr && fam->mCoordDim == 0)
+        throw WriteError("GiD: '" + rMeshioType +
+                         "' cannot use given Gauss-point coordinates (GiD forbids "
+                         "'Natural Coordinates: Given' for line elements); remove field_data['" +
+                         coords_key + "']");
+    if (!has_coords && !gid_detail::gid_gauss_count_is_internal(rMeshioType, g))
+        throw WriteError("GiD: '" + rMeshioType + "' cannot place " + std::to_string(g) +
+                         " Gauss points itself (it accepts " +
+                         gid_detail::gid_internal_counts_text(*fam) +
+                         "); supply their natural coordinates in field_data['" + coords_key + "']");
+
+    const std::size_t dim = fam != nullptr ? fam->mCoordDim : 3;
+    if (has_coords) {
+        const NDArray& coords = rMesh.FieldData(coords_key);
+        if (coords.Size() != g * dim)
+            throw WriteError("GiD: field_data['" + coords_key + "'] has " +
+                             std::to_string(coords.Size()) + " values; " + std::to_string(g) +
+                             " points on '" + rMeshioType + "' need " + std::to_string(g * dim) +
+                             " (" + std::to_string(dim) + " per point)");
+    }
+
+    gid_check(GiD_fBeginGaussPoint(fd, rGaussName.c_str(), EType, rMeshName.c_str(),
+                                   static_cast<int>(g), /*NodesIncluded=*/0,
+                                   /*InternalCoord=*/has_coords ? 0 : 1),
+              "BeginGaussPoint('" + rGaussName + "')");
+    if (has_coords) {
+        const NDArray& coords = rMesh.FieldData(coords_key);
+        for (std::size_t i = 0; i < g; ++i) {
+            const double a = detail::read_double(coords, i * dim + 0);
+            const double b = detail::read_double(coords, i * dim + 1);
+            if (dim == 2)
+                gid_check(GiD_fWriteGaussPoint2D(fd, a, b), "WriteGaussPoint2D");
+            else
+                gid_check(
+                    GiD_fWriteGaussPoint3D(fd, a, b, detail::read_double(coords, i * dim + 2)),
+                    "WriteGaussPoint3D");
+        }
+    }
+    gid_check(GiD_fEndGaussPoint(fd), "EndGaussPoint('" + rGaussName + "')");
+}
+
+/// The Gauss-point set name for a block at @p g points. `G == 1` keeps the
+/// historical `gp_<mesh>` spelling EXACTLY -- byte-identity for every mesh
+/// that never asks for multiple Gauss points depends on it.
+std::string gid_gauss_set_name(const std::string& rMeshName, std::size_t g) {
+    return g == 1 ? "gp_" + rMeshName : "gp" + std::to_string(g) + "_" + rMeshName;
+}
+
+// GiD_ResultType's valid component counts are irregular (Scalar 1; Vector
+// 2/3/4; Matrix 3/6; MainMatrix 12; ...) and gidpost does not validate an
+// unsupported count itself -- it silently emits a malformed file. A declared
+// type is validated above and written as-is; with no declaration only 1
+// (Scalar) and 2/3 (Vector) are mapped directly and anything else splits into
+// that many named scalars, because a bare component count is genuinely
+// ambiguous (see gid.hpp's k-component rule).
+void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr, std::size_t rows,
+                            const std::vector<int>& rIds, const std::string& rName,
+                            const std::string& rAnalysis, double step, GiD_ResultLocation loc,
+                            const std::string& rGaussName, std::size_t g = 1) {
+    // The array is (rows, G*k) laid out Gauss-point-major, so the COMPONENT
+    // count -- what a GiD result type's legal widths are checked against, and
+    // what goes in the Values row -- is cols/G, not cols. Passing cols here
+    // would misdeclare every G>1 array's type and width.
+    const std::size_t cols = rArr.Shape().size() >= 2 ? rArr.Shape()[1] : 1;
+    const std::size_t k = cols / g;
+    const char* gauss = rGaussName.empty() ? nullptr : rGaussName.c_str();
+    const gid_detail::GidResultTypeEntry* declared = gid_declared_result_type(rMesh, rName, k);
+
+    // GiD wants G rows per element; gidpost's own writer suppresses a repeated
+    // id, so handing it each id G times produces exactly the compact form the
+    // reader expects, with no id bookkeeping here.
+    const std::size_t out_rows = rows * g;
+    std::vector<int> ids_g;
+    const std::vector<int>* ids = &rIds;
+    if (g != 1) {
+        ids_g.reserve(out_rows);
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t p = 0; p < g; ++p)
+                ids_g.push_back(rIds[r]);
+        ids = &ids_g;
+    }
+
+    // ONE inference rule, shared with the reader (which needs it to decide
+    // whether a file's declared type carries information worth recording).
+    // Two expressions of it would drift, and the drift is silent: the writer
+    // would emit a type the reader then declines to record, so the round trip
+    // would quietly lose the declaration.
+    const gid_detail::GidResultTypeEntry* chosen =
+        declared != nullptr ? declared : gid_detail::gid_inferred_result_type(k);
+
+    if (chosen != nullptr) {
+        const auto rtype = static_cast<GiD_ResultType>(chosen->mType);
+        // Source and destination share the Gauss-point-major layout, so this
+        // is a straight copy for any G -- the (r, gp, c) index is r*cols +
+        // p*k + c on both sides.
+        std::vector<double> vals(out_rows * k);
+        for (std::size_t i = 0; i < out_rows * k; ++i)
+            vals[i] = detail::read_double(rArr, i);
+        gid_check(
+            GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc, gauss,
+                                  nullptr, 0, nullptr, nullptr, static_cast<int>(out_rows),
+                                  ids->data(), static_cast<int>(k), vals.data()),
+            "WriteResultBlock('" + rName + "')");
+        return;
+    }
+
+    detail::provenance_note("result-split", rName + ": k=" + std::to_string(k) +
+                                                " has no GiD result type; written as " +
+                                                std::to_string(k) + " scalars");
+    std::vector<double> col(out_rows);
+    for (std::size_t c = 0; c < k; ++c) {
+        for (std::size_t i = 0; i < out_rows; ++i)
+            col[i] = detail::read_double(rArr, i * k + c);
+        const std::string cname = rName + "_" + std::to_string(c + 1);
+        gid_check(GiD_fWriteResultBlock(fd, cname.c_str(), rAnalysis.c_str(), step, GiD_Scalar, loc,
+                                        gauss, nullptr, 0, nullptr, nullptr,
+                                        static_cast<int>(out_rows), ids->data(), 1, col.data()),
+                  "WriteResultBlock('" + cname + "')");
+    }
+}
+
+void gid_write_point_data(GiD_FILE fd, const Mesh& rMesh, const std::string& rAnalysis,
+                          double step) {
+    const std::size_t np = rMesh.NumPoints();
+    std::vector<int> ids(np);
+    for (std::size_t i = 0; i < np; ++i)
+        ids[i] = static_cast<int>(i) + 1;
+
+    for (const auto& name : rMesh.PointDataNames())
+        gid_write_result_array(fd, rMesh, rMesh.PointData(name), np, ids, name, rAnalysis, step,
+                               GiD_OnNodes, "");
+}
+
+// GiD_ResultLocation has no "on cells" concept, so cell_data is written
+// GiD_OnGaussPoints against a synthetic one-Gauss-point set declared once per
+// block ("gp_<mesh_name>") -- the standard GiD idiom for a per-element field,
+// and how Kratos's own GiD writer represents one.
+void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
+                         const std::vector<const GidTypeEntry*>& rEntries,
+                         const std::vector<std::string>& rMeshNames,
+                         const std::vector<std::int64_t>& rElemBase, const std::string* pMatName,
+                         const std::string& rAnalysis, double step) {
+    const std::size_t nb = rMesh.NumCellBlocks();
+
+    bool any_cell_data = false;
+    for (const auto& name : rMesh.CellDataNames())
+        if (pMatName == nullptr || name != *pMatName) {
+            any_cell_data = true;
+            break;
+        }
+    if (!any_cell_data)
+        return;
+
+    // Gauss-point sets are keyed by (block, G), not by block: a set's identity
+    // in GiD IS its point count, so two arrays on one block that declare
+    // different counts need two sets, while two declaring the same count share
+    // one. Collected first so each set is declared exactly once, before any
+    // result references it.
+    //
+    // Every block still gets its G=1 set unconditionally, under the historical
+    // "gp_<mesh>" name and in the historical order, so a mesh with no
+    // Gauss-point declarations emits byte-identical bytes to before this
+    // existed.
+    std::vector<std::set<std::size_t>> block_counts(nb);
+    for (std::size_t bi = 0; bi < nb; ++bi)
+        block_counts[bi].insert(1);
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (pMatName != nullptr && name == *pMatName)
+            continue;
+        if (rMesh.CellDataNumBlocks(name) != nb)
+            continue;  // reported below, where the array is written
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+            const NDArray& arr = rMesh.CellData(name, bi);
+            const std::size_t cols = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+            block_counts[bi].insert(gid_declared_gauss_points(rMesh, name, cols));
+        }
+    }
+
+    for (std::size_t bi = 0; bi < nb; ++bi)
+        for (std::size_t g : block_counts[bi])
+            gid_declare_gauss_set(fd, rMesh, gid_gauss_set_name(rMeshNames[bi], g),
+                                  rMesh.Cells(bi).Type(), rEntries[bi]->mType, rMeshNames[bi], g);
+
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (pMatName != nullptr && name == *pMatName)
+            continue;  // already written as the geometry file's material column
+        if (rMesh.CellDataNumBlocks(name) != nb) {
+            log::warn("gid: cell_data '{}' has {} blocks, mesh has {} -- skipped", name,
+                      rMesh.CellDataNumBlocks(name), nb);
+            continue;
+        }
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+            const auto cb = rMesh.Cells(bi);
+            const std::size_t ne = cb.NumCells();
+            if (ne == 0)
+                continue;
+            std::vector<int> ids(ne);
+            for (std::size_t r = 0; r < ne; ++r)
+                ids[r] = static_cast<int>(rElemBase[bi] + static_cast<std::int64_t>(r));
+            const NDArray& arr = rMesh.CellData(name, bi);
+            const std::size_t cols = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+            const std::size_t g = gid_declared_gauss_points(rMesh, name, cols);
+            gid_write_result_array(fd, rMesh, arr, ne, ids, name, rAnalysis, step,
+                                   GiD_OnGaussPoints, gid_gauss_set_name(rMeshNames[bi], g), g);
+        }
+    }
+}
+
+}  // namespace
+
+bool gid_available(GidMode mode) {
+    if (mode == GidMode::Hdf5) {
+#ifdef MESHIOPLUSPLUS_HAS_GIDPOST_HDF5
+        return true;
+#else
+        return false;
+#endif
+    }
+    return true;
+}
+
+std::string gid_build_option(GidMode mode) {
+    if (mode == GidMode::Hdf5)
+        return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON "
+               "-DMESHIOPLUSPLUS_WITH_HDF5=ON";
+    return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON";
+}
+
+/// Everything a write needs to know about one mesh: the per-block GiD type,
+/// the GiD mesh names, the 1-based element-id bases, and which cell_data array
+/// (if any) is the material column. Extracted so `write_gid` and
+/// `write_gid_series` compute it identically rather than twice.
+struct GidWritePrep {
+    std::vector<const GidTypeEntry*> mEntries;
+    std::vector<std::string> mMeshNames;
+    std::vector<std::int64_t> mElemBase;
+    const std::string* mMatName = nullptr;
+};
+
+GidWritePrep gid_prepare_write(const Mesh& rMesh) {
+    if (rMesh.PointDim() > 3)
+        throw WriteError("GiD: points must have at most three components");
+    constexpr std::size_t kIntMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    if (rMesh.NumPoints() > kIntMax)
+        throw WriteError("GiD: mesh has too many points for gidpost's 32-bit API");
+
+    const std::size_t nb = rMesh.NumCellBlocks();
+    GidWritePrep prep;
+    prep.mEntries.resize(nb);
+    prep.mMeshNames.resize(nb);
+    std::int64_t total_cells = 0;
+    for (std::size_t bi = 0; bi < nb; ++bi) {
+        const auto cb = rMesh.Cells(bi);
+        if (cb.IsRagged() || cb.IsPolyhedron())
+            throw WriteError("GiD: cell type '" + cb.Type() +
+                             "' has no GiD representation (ragged/polyhedron blocks are "
+                             "unsupported)");
+        const auto it = gid_type_table().find(cb.Type());
+        if (it == gid_type_table().end())
+            throw WriteError("GiD: cell type '" + cb.Type() + "' has no verified GiD ordering");
+        prep.mEntries[bi] = &it->second;
+        prep.mMeshNames[bi] = cb.Type() + "_" + std::to_string(bi);
+        total_cells += static_cast<std::int64_t>(cb.NumCells());
+    }
+    if (static_cast<std::uint64_t>(total_cells) > static_cast<std::uint64_t>(kIntMax))
+        throw WriteError("GiD: mesh has too many cells for gidpost's 32-bit API");
+
+    prep.mElemBase.resize(nb);
+    {
+        std::int64_t base = 1;
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+            prep.mElemBase[bi] = base;
+            base += static_cast<std::int64_t>(rMesh.Cells(bi).NumCells());
+        }
+    }
+
+    // A material-id column is written only from one documented key
+    // ("gmsh:physical"), only when it is integral and covers every block --
+    // never guessed from another convention.
+    static const std::string kMatKey = "gmsh:physical";
+    if (nb > 0 && rMesh.HasCellData(kMatKey) && rMesh.CellDataNumBlocks(kMatKey) == nb) {
+        bool all_int = true;
+        for (std::size_t bi = 0; bi < nb && all_int; ++bi)
+            all_int = gid_is_int_dtype(rMesh.CellData(kMatKey, bi).Dtype());
+        if (all_int)
+            prep.mMatName = &kMatKey;
+    }
+    return prep;
+}
+
+/// Whether two consecutive steps share a mesh, so no new `Group` is needed.
+/// Geometry only -- results are what differ between steps by definition.
+bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
+    if (rA.NumPoints() != rB.NumPoints() || rA.PointDim() != rB.PointDim() ||
+        rA.NumCellBlocks() != rB.NumCellBlocks())
+        return false;
+    const NDArray& pa = rA.Points();
+    const NDArray& pb = rB.Points();
+    if (pa.Size() != pb.Size())
+        return false;
+    for (std::size_t i = 0; i < pa.Size(); ++i)
+        if (detail::read_double(pa, i) != detail::read_double(pb, i))
+            return false;
+    for (std::size_t bi = 0; bi < rA.NumCellBlocks(); ++bi) {
+        const auto ca = rA.Cells(bi);
+        const auto cb = rB.Cells(bi);
+        if (ca.Type() != cb.Type() || ca.NumCells() != cb.NumCells() ||
+            ca.NodesPerCell() != cb.NodesPerCell() || ca.IsRagged() || cb.IsRagged())
+            return false;
+        const NDArray& na = ca.Conn();
+        const NDArray& nb2 = cb.Conn();
+        if (na.Size() != nb2.Size())
+            return false;
+        for (std::size_t i = 0; i < na.Size(); ++i)
+            if (detail::read_int(na, i) != detail::read_int(nb2, i))
+                return false;
+    }
+    return true;
+}
+
+void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
+               const std::string& rAnalysisName, double stepValue) {
+    const GidMode resolved = gid_resolve_mode(rPath, mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+
+    const GidWritePrep prep = gid_prepare_write(rMesh);
+    const std::vector<const GidTypeEntry*>& entries = prep.mEntries;
+    const std::vector<std::string>& mesh_names = prep.mMeshNames;
+    const std::vector<std::int64_t>& elem_base = prep.mElemBase;
+    const std::string* mat_name = prep.mMatName;
+
+    gid_ensure_init();
+    const GiD_PostMode gid_mode = gid_post_mode(resolved);
+
+    // AsciiZipped is the same two-sibling-file layout as Ascii -- it is the
+    // identical text, only gzipped -- so it shares this branch entirely.
+    if (resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped) {
+        const auto paths = gid_ascii_paths(rPath);
+        const GiD_FILE fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
+        if (fdm <= 0)
+            throw WriteError("GiD: could not open mesh file for writing: " + paths.first);
+        gid_write_geometry(fdm, rMesh, entries, mesh_names, mat_name);
+        gid_check(GiD_fClosePostMeshFile(fdm), "ClosePostMeshFile");
+
+        const GiD_FILE fdr = GiD_fOpenPostResultFile(paths.second.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open result file for writing: " + paths.second);
+        gid_write_provenance_result(fdr);
+        gid_write_point_data(fdr, rMesh, rAnalysisName, stepValue);
+        gid_write_cell_data(fdr, rMesh, entries, mesh_names, elem_base, mat_name, rAnalysisName,
+                            stepValue);
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    } else {
+        const GiD_FILE fd = GiD_fOpenPostResultFile(rPath.c_str(), gid_mode);
+        if (fd <= 0)
+            throw WriteError("GiD: could not open file for writing: " + rPath);
+        gid_write_geometry(fd, rMesh, entries, mesh_names, mat_name);
+        gid_write_provenance_result(fd);
+        gid_write_point_data(fd, rMesh, rAnalysisName, stepValue);
+        gid_write_cell_data(fd, rMesh, entries, mesh_names, elem_base, mat_name, rAnalysisName,
+                            stepValue);
+        gid_check(GiD_fClosePostResultFile(fd), "ClosePostResultFile");
+    }
+}
+
+void write_gid_series(const std::string& rPath,
+                      const std::function<bool(std::size_t, double&, Mesh&)>& rNext, GidMode Mode,
+                      const std::string& rAnalysisName) {
+    const GidMode resolved = gid_resolve_mode(rPath, Mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+    gid_ensure_init();
+    const GiD_PostMode gid_mode = gid_post_mode(resolved);
+    const bool two_files = resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped;
+    const auto paths = gid_ascii_paths(rPath);
+
+    // The handles stay open ACROSS steps -- that is the whole difference from
+    // write_gid, which opens, writes one step and closes.
+    GiD_FILE fdm = 0;
+    GiD_FILE fdr = 0;
+    if (two_files) {
+        fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
+        if (fdm <= 0)
+            throw WriteError("GiD: could not open mesh file for writing: " + paths.first);
+        fdr = GiD_fOpenPostResultFile(paths.second.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open result file for writing: " + paths.second);
+    } else {
+        fdr = GiD_fOpenPostResultFile(rPath.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open file for writing: " + rPath);
+        fdm = fdr;  // one handle carries both in the binary/HDF5 flavours
+    }
+
+    // Only the PREVIOUS step's mesh is retained, never a list: the sequence
+    // layer guarantees one mesh alive at a time and this must not break it.
+    Mesh prev;
+    bool have_prev = false;
+    bool group_open = false;
+    std::size_t group_index = 0;
+
+    for (std::size_t i = 0;; ++i) {
+        double time = static_cast<double>(i);
+        Mesh mesh;
+        if (!rNext(i, time, mesh))
+            break;
+        const GidWritePrep prep = gid_prepare_write(mesh);
+
+        // A GiD Group holds ONE mesh for a consecutive run of steps, so a new
+        // one is opened only when the mesh actually CHANGES. A series whose
+        // mesh never changes emits no group at all and keeps the single-step
+        // output shape; processing steps in order also satisfies GiD's "only
+        // one group at a time" rule by construction.
+        const bool changed = !have_prev || !gid_same_geometry(prev, mesh);
+        if (changed) {
+            if (group_open) {
+                gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+                gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+                group_open = false;
+            }
+            const bool need_group = have_prev;  // the 2nd distinct mesh onwards
+            if (need_group) {
+                const std::string gname = "group_" + std::to_string(++group_index);
+                gid_check(GiD_fBeginMeshGroup(fdm, gname.c_str()), "BeginMeshGroup");
+                gid_check(GiD_fBeginOnMeshGroup(fdr, const_cast<char*>(gname.c_str())),
+                          "BeginOnMeshGroup");
+                group_open = true;
+            }
+            if (i == 0)
+                gid_write_provenance_mesh(fdm);
+            gid_write_geometry(fdm, mesh, prep.mEntries, prep.mMeshNames, prep.mMatName);
+        }
+
+        if (i == 0)
+            gid_write_provenance_result(fdr);
+        gid_write_point_data(fdr, mesh, rAnalysisName, time);
+        gid_write_cell_data(fdr, mesh, prep.mEntries, prep.mMeshNames, prep.mElemBase,
+                            prep.mMatName, rAnalysisName, time);
+
+        prev = std::move(mesh);
+        have_prev = true;
+    }
+
+    if (group_open) {
+        gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+        gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+    }
+    if (two_files) {
+        gid_check(GiD_fClosePostMeshFile(fdm), "ClosePostMeshFile");
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    } else {
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    }
+}
+
+}  // namespace meshioplusplus
+
+#else  // !MESHIOPLUSPLUS_HAS_GIDPOST
+
+namespace meshioplusplus {
+
+bool gid_available(GidMode) {
+    return false;
+}
+
+std::string gid_build_option(GidMode mode) {
+    if (mode == GidMode::Hdf5)
+        return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON "
+               "-DMESHIOPLUSPLUS_WITH_HDF5=ON";
+    return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON";
+}
+
+// Always defined, so `gid` fails with an error naming the build flags rather
+// than a link error or -- worse -- a silent fall-through to another format
+// for a `.post.msh` path (the partition_kahip_parts / vtk_codec contract).
+void write_gid_series(const std::string&, const std::function<bool(std::size_t, double&, Mesh&)>&,
+                      GidMode mode, const std::string&) {
+    throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
+                     " (the vendored gidpost library deflates unconditionally, so zlib is a "
+                     "build prerequisite, not an option)");
+}
+
+void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&, double) {
+    throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
+                     " (the vendored gidpost library deflates unconditionally, so zlib is a "
+                     "build prerequisite, not an option)");
+}
+
+}  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_GIDPOST
+// ===== end src/cpp/src/formats/gid.cpp =====
+// ===== begin src/cpp/src/formats/gid_read.cpp =====
+#include <cstdint>
+#include <cstdlib>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <map>
+#include <string>
+#include <stdexcept>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+#endif
+
+namespace meshioplusplus {
+
+namespace {
+
+using gid_detail::gid_ascii_paths;
+using gid_detail::gid_has_suffix;
+using gid_detail::gid_resolve_mode;
+
+// ---------------------------------------------------------------------------
+// Cell-type mapping: (GiD ElemType name, Nnode) -> meshio++ type.
+//
+// The inverse of gid.cpp's own write table, and deliberately no larger. GiD's
+// legal Nnode values per type (from gidpost's own ValidateConnectivity) are
+// wider than what meshio++ can map: Hexahedra also admits 27, Prism 15 and
+// Pyramid 13. Those three are exactly the orderings the writer refuses because
+// they were never independently verified against GiD's own geometry -- so the
+// reader refuses them too, by name. Reading a permutation we could not write
+// would be the same unverified guess in the other direction.
+//
+// Sphere/Circle are refused for a different reason: they have no meshio++
+// counterpart, AND their element rows are not all-integer (they embed a radius
+// and, for Circle, a normal vector), so they need a different row parser
+// entirely rather than merely a type name.
+/**
+ * @brief Case-insensitive ASCII comparison of a keyword token.
+ *
+ * GiD's own specification is explicit that the structural keywords are not
+ * case-sensitive -- "MESH, dimension, elemtype, nnode: are keywords that are
+ * not case-sensitive", and likewise for the `coordinates`/`end coordinates`
+ * and `elements`/`end elements` pairs. This is not a tolerance we are adding:
+ * the manual's own worked example writes `Coordinates` capitalised but closes
+ * it with a lower-case `end coordinates`, so a reader matching exact case
+ * rejects the specification's own example file.
+ *
+ * ASCII-only by construction (`std::tolower` with an `unsigned char` cast):
+ * every keyword in the grammar is ASCII, and a locale-sensitive fold would be
+ * both wrong and non-deterministic here.
+ */
+bool gid_keyword_is(const std::string& rTok, const char* pKeyword) {
+    std::size_t i = 0;
+    for (; i < rTok.size() && pKeyword[i] != '\0'; ++i) {
+        const auto a = static_cast<unsigned char>(rTok[i]);
+        const auto b = static_cast<unsigned char>(pKeyword[i]);
+        if (std::tolower(a) != std::tolower(b))
+            return false;
+    }
+    return i == rTok.size() && pKeyword[i] == '\0';
+}
+
+struct GidReadType {
+    const char* mGidName;
+    int mNumNodes;
+    const char* mMeshioName;
+};
+
+const std::vector<GidReadType>& gid_read_type_table() {
+    static const std::vector<GidReadType> table = {
+        {"Point", 1, "vertex"},
+        {"Linear", 2, "line"},
+        {"Linear", 3, "line3"},
+        // GiD spells the 1-D type two ways and accepts both: gidpost -- CIMNE's
+        // own writer, vendored here -- emits "Linear" (gidpostFILES.c's
+        // strElementType), while CIMNE's current published grammar names it
+        // "Line". Files in the wild therefore carry either, so read both.
+        // The writer is unaffected: it goes through gidpost and emits "Linear".
+        {"Line", 2, "line"},
+        {"Line", 3, "line3"},
+        {"Triangle", 3, "triangle"},
+        {"Triangle", 6, "triangle6"},
+        {"Quadrilateral", 4, "quad"},
+        {"Quadrilateral", 8, "quad8"},
+        {"Quadrilateral", 9, "quad9"},
+        {"Tetrahedra", 4, "tetra"},
+        {"Tetrahedra", 10, "tetra10"},
+        {"Hexahedra", 8, "hexahedron"},
+        {"Hexahedra", 20, "hexahedron20"},
+        {"Hexahedra", 27, "hexahedron27"},
+        {"Prism", 6, "wedge"},
+        {"Prism", 15, "wedge15"},
+        {"Pyramid", 5, "pyramid"},
+        {"Pyramid", 13, "pyramid13"},
+    };
+    return table;
+}
+
+std::string gid_meshio_type(const std::string& rGidName, int nnode) {
+    for (const GidReadType& e : gid_read_type_table())
+        if (gid_keyword_is(rGidName, e.mGidName) && nnode == e.mNumNodes)
+            return e.mMeshioName;
+    throw ReadError("GiD: element type '" + rGidName + "' with Nnode " + std::to_string(nnode) +
+                    " has no verified meshio++ mapping");
+}
+
+// ---------------------------------------------------------------------------
+// Tokenization. std::strtod / std::strtoll throughout, never std::from_chars --
+// its floating-point overload is a real Emscripten/libc++ hazard (the same rule
+// dex.cpp / wkt.cpp / nastran.cpp follow).
+
+double gid_to_double(const std::string& rTok, const char* pWhat) {
+    const char* start = rTok.c_str();
+    char* end = nullptr;
+    const double v = std::strtod(start, &end);
+    if (end == start)
+        throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" + rTok +
+                        "'");
+    return v;
+}
+
+std::int64_t gid_to_int(const std::string& rTok, const char* pWhat) {
+    const char* start = rTok.c_str();
+    char* end = nullptr;
+    const long long v = std::strtoll(start, &end, 10);
+    if (end == start)
+        throw ReadError(std::string("GiD: expected an integer for ") + pWhat + ", got '" + rTok +
+                        "'");
+    return static_cast<std::int64_t>(v);
+}
+
+/// Splits on whitespace, keeping `"quoted strings"` (which gidpost guarantees
+/// contain no embedded quote: change_quotes() rewrites any `"` inside a user
+/// string to `'` BEFORE embedding it, so "up to the next quote" is exact, not
+/// a heuristic). The quotes themselves are stripped from the returned token.
+std::vector<std::string> gid_split(const std::string& rLine) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < rLine.size()) {
+        while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+            ++i;
+        if (i >= rLine.size())
+            break;
+        if (rLine[i] == '"') {
+            const std::size_t close = rLine.find('"', i + 1);
+            if (close == std::string::npos)
+                throw ReadError("GiD: unterminated quoted string: " + rLine);
+            out.push_back(rLine.substr(i + 1, close - i - 1));
+            i = close + 1;
+        } else {
+            const std::size_t start = i;
+            while (i < rLine.size() && !std::isspace(static_cast<unsigned char>(rLine[i])))
+                ++i;
+            out.push_back(rLine.substr(start, i - start));
+        }
+    }
+    return out;
+}
+
+/// True when `rLine` *starts* a keyword phrase such as "End Coordinates",
+/// ignoring case and collapsing the run of spaces between the two words.
+bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const char* pSecond) {
+    // Called once per row of every Coordinates/Elements/Values block, so the
+    // common case -- a data row, which never begins with the keyword's first
+    // letter -- must not pay for a tokenisation. Peek at the first non-space
+    // character before doing any allocation.
+    std::size_t i = 0;
+    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+        ++i;
+    if (i >= rLine.size() || std::tolower(static_cast<unsigned char>(rLine[i])) !=
+                                 std::tolower(static_cast<unsigned char>(pFirst[0])))
+        return false;
+
+    const std::vector<std::string> tok = gid_split(rLine);
+    if (tok.size() < 2)
+        return false;
+    return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
+}
+
+/// True when the line's first non-space character is `#`.
+///
+/// gidpost emits `# <Name>: <Value>` user attributes (where meshio++'s own
+/// provenance block goes) and `# color <r> <g> <b>`, at file scope, after a
+/// MESH header and after a Result header. There is no lexer-level restriction
+/// on where they appear, so the reader simply drops them everywhere. The
+/// provenance block is recovered separately, from the file's bytes, by
+/// detail::read_provenance_lines -- not from here.
+bool gid_is_comment(const std::string& rLine) {
+    for (char ch : rLine) {
+        if (std::isspace(static_cast<unsigned char>(ch)))
+            continue;
+        return ch == '#';
+    }
+    return false;  // blank
+}
+
+bool gid_is_blank(const std::string& rLine) {
+    for (char ch : rLine)
+        if (!std::isspace(static_cast<unsigned char>(ch)))
+            return false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// The line cursor. ASCII and gzip-inflated-ASCII share it verbatim -- the
+// gzipped flavour (gidpost's GiD_PostAsciiZipped) is the SAME text, so
+// inflating up front is the whole of its support.
+class GidLineCursor {
+public:
+    explicit GidLineCursor(std::string_view text) : mText(text) {}
+
+    /// Next line that is neither blank nor a comment; empty when exhausted.
+    bool Next(std::string& rOut) {
+        while (mPos < mText.size()) {
+            std::size_t nl = mText.find('\n', mPos);
+            if (nl == std::string_view::npos)
+                nl = mText.size();
+            std::string_view raw = mText.substr(mPos, nl - mPos);
+            mPos = nl + 1;
+            if (!raw.empty() && raw.back() == '\r')
+                raw.remove_suffix(1);
+            // A Values row may legitimately begin with whitespace -- see the
+            // id-suppression rule in gid_read_values -- so leading space must
+            // NOT disqualify a line here; only blank and comment lines are
+            // dropped.
+            std::string line(raw);
+            if (gid_is_blank(line) || gid_is_comment(line))
+                continue;
+            mRawStartedWithSpace =
+                !raw.empty() && std::isspace(static_cast<unsigned char>(raw.front()));
+            rOut = std::move(line);
+            return true;
+        }
+        return false;
+    }
+
+    /// Whether the line just returned by Next() began with whitespace.
+    bool LastStartedWithSpace() const { return mRawStartedWithSpace; }
+
+private:
+    std::string_view mText;
+    std::size_t mPos = 0;
+    bool mRawStartedWithSpace = false;
+};
+
+// ---------------------------------------------------------------------------
+// Staged mesh, assembled across every MESH block before anything is committed.
+
+struct GidBlock {
+    std::string mMeshName;
+    std::string mMeshioType;
+    int mNumNodes = 0;
+    std::vector<std::int64_t> mConn;      // global node ids, row-major
+    std::vector<std::int64_t> mElemIds;   // as written; may restart per block
+    std::vector<std::int64_t> mMaterial;  // empty when the file carried none
+    /// The `Group` that wraps this block, or empty for an ungrouped block.
+    /// A GiD `Group` holds ONE mesh serving a consecutive run of steps -- it
+    /// is a re-meshing construct, not an entity set -- so blocks from
+    /// different groups must never be merged into one mesh.
+    std::string mGroup;
+};
+
+struct GidStaged {
+    // One GLOBAL node table keyed by id, de-duplicated. Real files repeat the
+    // full table in every MESH block (Kratos does); meshio++'s own writer
+    // writes it once and emits empty Coordinates pairs thereafter. Both are
+    // legal and both land here identically. std::map, not unordered_map:
+    // iteration order defines the emitted point order, so it must be stable.
+    std::map<std::int64_t, std::array<double, 3>> mNodes;
+    std::vector<GidBlock> mBlocks;
+    bool mAnyThirdCoord = false;  // false only when every row carried 2 coords
+};
+
+/// One result, still in file terms (ids not yet resolved to rows).
+struct GidResult {
+    std::string mName;
+    std::string mAnalysis;
+    double mStep = 0.0;
+    std::string mType;      // Scalar / Vector / Matrix / ...
+    std::string mLocation;  // OnNodes / OnGaussPoints / OnNurbs*
+    std::string mGaussName;
+    std::size_t mNumComponents = 0;
+    std::vector<std::int64_t> mIds;
+    std::vector<double> mValues;  // mIds.size() * mNumComponents
+    /// The `OnGroup` that wraps this result, or empty when ungrouped.
+    std::string mGroup;
+};
+
+/// A `GaussPoints` declaration: what it is called, which mesh it is on, how
+/// many points it holds, and -- when the file supplies them rather than
+/// letting GiD place them -- their natural coordinates, flat and point-major.
+struct GidGaussSet {
+    std::string mMeshName;
+    int mNumPoints = 1;
+    bool mGivenCoords = false;
+    std::vector<double> mCoords;
+};
+
+// ---------------------------------------------------------------------------
+// Geometry parsing (.post.msh).
+
+void gid_read_coordinates(GidLineCursor& rCur, GidStaged& rStaged) {
+    std::string line;
+    while (rCur.Next(line)) {
+        if (gid_line_starts_with(line, "End", "Coordinates"))
+            return;
+        const std::vector<std::string> tok = gid_split(line);
+        // gidpost's block writer always emits 3 coordinates, but the per-node
+        // GiD_WriteCoordinates2D ASCII path emits only 2 -- so count, never
+        // assume 4 tokens.
+        if (tok.size() < 3 || tok.size() > 4)
+            throw ReadError("GiD: malformed coordinate row: " + line);
+        const std::int64_t id = gid_to_int(tok[0], "a node id");
+        std::array<double, 3> xyz{0.0, 0.0, 0.0};
+        for (std::size_t c = 0; c + 1 < tok.size(); ++c)
+            xyz[c] = gid_to_double(tok[c + 1], "a node coordinate");
+        if (tok.size() == 4)
+            rStaged.mAnyThirdCoord = true;
+        // Repeats are expected (the Kratos case) -- keep the first, which
+        // makes a repeated-but-identical table a no-op.
+        rStaged.mNodes.emplace(id, xyz);
+    }
+    throw ReadError("GiD: unterminated Coordinates block");
+}
+
+void gid_read_elements(GidLineCursor& rCur, GidBlock& rBlock) {
+    const std::size_t nn = static_cast<std::size_t>(rBlock.mNumNodes);
+    std::string line;
+    bool material_seen = false;
+    while (rCur.Next(line)) {
+        if (gid_line_starts_with(line, "End", "Elements")) {
+            if (!material_seen)
+                rBlock.mMaterial.clear();
+            return;
+        }
+        const std::vector<std::string> tok = gid_split(line);
+        // THE material-column ambiguity. There is no separator between the
+        // connectivity and an optional trailing material id, so Nnode -- from
+        // this block's own MESH header -- is the only disambiguator:
+        //   1 + Nnode      tokens -> id + connectivity
+        //   1 + Nnode + 1  tokens -> id + connectivity + material
+        // Anything else is malformed, and saying so beats guessing.
+        const bool has_mat = tok.size() == nn + 2;
+        if (tok.size() != nn + 1 && !has_mat)
+            throw ReadError("GiD: element row has " + std::to_string(tok.size()) +
+                            " values; expected " + std::to_string(nn + 1) + " or " +
+                            std::to_string(nn + 2) + " for Nnode " + std::to_string(nn) + ": " +
+                            line);
+        rBlock.mElemIds.push_back(gid_to_int(tok[0], "an element id"));
+        for (std::size_t k = 0; k < nn; ++k)
+            rBlock.mConn.push_back(gid_to_int(tok[k + 1], "an element node"));
+        if (has_mat) {
+            material_seen = true;
+            rBlock.mMaterial.push_back(gid_to_int(tok[nn + 1], "a material id"));
+        } else {
+            rBlock.mMaterial.push_back(0);
+        }
+    }
+    throw ReadError("GiD: unterminated Elements block");
+}
+
+/// Skips to a matching `End <what>` line, for constructs meshio++ understands
+/// structurally but does not map (`Group`, `ResultRangesTable`, `OnGroup`).
+void gid_skip_to_end(GidLineCursor& rCur, const char* pWhat) {
+    const std::string terminator = std::string("End ") + pWhat;
+    std::string line;
+    while (rCur.Next(line))
+        if (line.rfind(terminator, 0) == 0)
+            return;
+    throw ReadError(std::string("GiD: unterminated ") + pWhat + " block");
+}
+
+void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
+    GidLineCursor cur(text);
+    std::string line;
+    std::string group;  // the Group currently open, empty when ungrouped
+    while (cur.Next(line)) {
+        const std::vector<std::string> tok = gid_split(line);
+        if (tok.empty())
+            continue;
+
+        if (gid_keyword_is(tok[0], "MESH")) {
+            // MESH "<name>" dimension <2|3> ElemType <T> Nnode <K>
+            GidBlock block;
+            std::string gid_type;
+            int nnode = 0;
+            // The name is OPTIONAL -- the specification's own example writes
+            // `MESH dimension 3 ElemType Linear Nnode 2` with none. It is a
+            // name exactly when it is not the next grammar keyword; taking
+            // tok[1] unconditionally names such a mesh "dimension", which then
+            // mis-binds any GaussPoints set that refers to a mesh by name.
+            std::size_t i = 1;
+            if (i < tok.size() && !gid_keyword_is(tok[i], "dimension")) {
+                block.mMeshName = tok[i];
+                ++i;
+            }
+            for (; i + 1 < tok.size(); ++i) {
+                if (gid_keyword_is(tok[i], "ElemType"))
+                    gid_type = tok[i + 1];
+                else if (gid_keyword_is(tok[i], "Nnode"))
+                    nnode = static_cast<int>(gid_to_int(tok[i + 1], "Nnode"));
+            }
+            if (gid_type.empty() || nnode <= 0)
+                throw ReadError("GiD: malformed MESH header: " + line);
+            block.mNumNodes = nnode;
+            block.mMeshioType = gid_meshio_type(gid_type, nnode);
+            block.mGroup = group;
+            rStaged.mBlocks.push_back(std::move(block));
+            continue;
+        }
+
+        if (gid_keyword_is(tok[0], "Coordinates")) {
+            gid_read_coordinates(cur, rStaged);
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "Elements")) {
+            if (rStaged.mBlocks.empty())
+                throw ReadError("GiD: Elements block before any MESH header");
+            gid_read_elements(cur, rStaged.mBlocks.back());
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "Group")) {
+            // A GiD Group holds ONE mesh serving a consecutive run of steps --
+            // it exists for re-meshing and adaptive analyses, NOT as an entity
+            // set. Its blocks are therefore TAGGED, not merged: this used to
+            // skip the wrapper and read every group's MESH blocks into one
+            // mesh, which silently garbles any genuinely re-meshed file.
+            group = tok.size() > 1 ? tok[1] : std::string();
+            continue;
+        }
+        if (gid_line_starts_with(line, "End", "Group")) {
+            group.clear();
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "End") || gid_keyword_is(tok[0], "Unit"))
+            continue;  // "End Mesh"-style closers, and mesh units
+        // Anything else at mesh scope is a construct we do not map; ignoring it
+        // is safe because every block we DO map is self-delimiting.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Results parsing (.post.res).
+
+/// Legal component counts per GiD result type, from the shared table (which
+/// transcribes gidpost's own `_ResultTypeInfo`). Used to sanity-check the
+/// count inferred from the row width, because a plain `Result` header carries
+/// no `:N` dimension suffix -- `Vector` alone does not say whether rows hold
+/// 2, 3 or 4 components. An unknown type name accepts whatever the rows say.
+bool gid_dim_is_legal(const std::string& rType, std::size_t k) {
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rType, e.mName))
+            return gid_result_dim_is_legal(e.mType, k);
+    return true;
+}
+
+/**
+ * @brief Records an array's declared GiD result type, when that declaration
+ * carries information.
+ *
+ * A declaration is attached only when the file's type differs from the one the
+ * writer would have *inferred* from the component count -- so a plain
+ * `Scalar`, `Vector:2` or `Vector:3` adds nothing, and an ordinary round trip
+ * stays free of `gid:result_type:*` keys. Same reasoning as the all-zero
+ * material column: materializing a declaration that changes nothing would make
+ * the flavours disagree on a round trip and surprise every caller that never
+ * asked about result types.
+ *
+ * An unrecognized type name is left unrecorded rather than guessed at.
+ */
+void gid_record_result_type(Mesh& rMesh, const std::string& rName, const std::string& rType,
+                            std::size_t k) {
+    const gid_detail::GidResultTypeEntry* declared = nullptr;
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rType, e.mName))
+            declared = &e;
+    if (declared == nullptr)
+        return;
+    const gid_detail::GidResultTypeEntry* inferred = gid_detail::gid_inferred_result_type(k);
+    if (inferred != nullptr && inferred->mType == declared->mType)
+        return;
+
+    NDArray decl(DType::Int64, std::vector<std::size_t>{1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(declared->mType);
+    rMesh.AddFieldData(std::string(kGidResultTypePrefix) + rName, std::move(decl));
+}
+
+/**
+ * @brief Records an array's Gauss-point count, when it carries information.
+ *
+ * Only for `g != 1`: one point per element is the historical layout and needs
+ * no declaration, so an ordinary round trip stays free of
+ * `gid:gauss_points:*` keys -- the same "declare only what changes something"
+ * rule `gid_record_result_type` follows.
+ */
+void gid_record_gauss_points(Mesh& rMesh, const std::string& rName, std::size_t g) {
+    if (g == 1)
+        return;
+    NDArray decl(DType::Int64, std::vector<std::size_t>{1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(g);
+    rMesh.AddFieldData(std::string(kGidGaussPointsPrefix) + rName, std::move(decl));
+}
+
+/**
+ * @brief Records a Gauss-point set's given natural coordinates, keyed by
+ * `(cell type, G)` exactly as the writer looks them up.
+ *
+ * Only for sets the file declared `Natural Coordinates: Given`. Without this
+ * a non-standard count could be read but never written back -- GiD cannot
+ * place those points itself, so the writer would refuse for want of the very
+ * coordinates the file supplied.
+ */
+void gid_record_gauss_coords(Mesh& rMesh, const std::string& rMeshioType, const GidGaussSet& rSet) {
+    if (!rSet.mGivenCoords || rSet.mCoords.empty())
+        return;
+    const std::string key =
+        gid_detail::gid_gauss_coords_key(rMeshioType, static_cast<std::size_t>(rSet.mNumPoints));
+    if (rMesh.HasFieldData(key))
+        return;  // two sets on one (type, G) share coordinates by construction
+    NDArray arr(DType::Float64, std::vector<std::size_t>{rSet.mCoords.size()});
+    double* dst = arr.As<double>();
+    for (std::size_t i = 0; i < rSet.mCoords.size(); ++i)
+        dst[i] = rSet.mCoords[i];
+    rMesh.AddFieldData(key, std::move(arr));
+}
+
+/**
+ * @brief Reads a `Values` ... `End Values` block.
+ *
+ * Handles gidpost's **id-suppression rule**: inside a Values block the row id
+ * is omitted whenever it equals the previous row's, so a result with G>1 Gauss
+ * points per element writes the element id on the first row only and the next
+ * G-1 rows begin with whitespace. A row that carries fewer tokens than
+ * `1 + ncomp` -- or that begins with whitespace once the width is known -- is
+ * therefore a continuation of the preceding id, not a new one.
+ *
+ * The component count itself is inferred from the FIRST row's width, since the
+ * header cannot supply it.
+ */
+void gid_read_values(GidLineCursor& rCur, GidResult& rResult, std::size_t knownWidth = 0) {
+    std::string line;
+    bool first = true;
+    std::int64_t last_id = 0;
+    while (rCur.Next(line)) {
+        if (gid_line_starts_with(line, "End", "Values"))
+            return;
+        const std::vector<std::string> tok = gid_split(line);
+        if (tok.empty())
+            continue;
+
+        if (first) {
+            if (tok.size() < 2)
+                throw ReadError("GiD: malformed first Values row: " + line);
+            if (knownWidth != 0) {
+                // A ResultGroup states every member's width up front, so the
+                // total is known rather than inferred -- and a row that
+                // disagrees means the columns would be mis-associated across
+                // members, which must be an error, never a silent re-split.
+                if (tok.size() - 1 != knownWidth)
+                    throw ReadError("GiD: ResultGroup '" + rResult.mName + "' rows carry " +
+                                    std::to_string(tok.size() - 1) +
+                                    " values but its members total " + std::to_string(knownWidth) +
+                                    ": " + line);
+                rResult.mNumComponents = knownWidth;
+            } else {
+                rResult.mNumComponents = tok.size() - 1;
+                if (!gid_dim_is_legal(rResult.mType, rResult.mNumComponents))
+                    throw ReadError("GiD: result '" + rResult.mName + "' declares type " +
+                                    rResult.mType + " but its rows carry " +
+                                    std::to_string(rResult.mNumComponents) +
+                                    " components, which that type does not admit");
+            }
+            first = false;
+        }
+
+        const std::size_t k = rResult.mNumComponents;
+        const bool continuation = tok.size() == k && rCur.LastStartedWithSpace();
+        if (!continuation && tok.size() != k + 1)
+            throw ReadError("GiD: Values row has " + std::to_string(tok.size()) +
+                            " tokens; expected " + std::to_string(k + 1) + " (or " +
+                            std::to_string(k) + " for a suppressed repeated id): " + line);
+
+        const std::size_t base = continuation ? 0 : 1;
+        if (!continuation)
+            last_id = gid_to_int(tok[0], "a result id");
+        rResult.mIds.push_back(last_id);
+        for (std::size_t c = 0; c < k; ++c)
+            rResult.mValues.push_back(gid_to_double(tok[base + c], "a result value"));
+    }
+    throw ReadError("GiD: unterminated Values block");
+}
+
+/**
+ * @brief One member of a `ResultGroup`: its name, its GiD type spelling, and
+ * how many components of the shared `Values` row it owns.
+ */
+struct GidGroupMember {
+    std::string mName;
+    std::string mType;
+    std::size_t mWidth = 0;
+};
+
+/**
+ * @brief Splits a `ResultDescription`'s `Type[:N]` into its parts and resolves
+ * the member's component width.
+ *
+ * `:N` wins when present -- it is the one place GiD states a width explicitly
+ * (a plain `Result` header carries no such suffix, which is why that path has
+ * to infer from the row). Absent it, the manual fixes the widths *inside a
+ * ResultGroup*: "Vectors in a ResultGroup always have three components",
+ * "Matrices ... always have six". Types with a single legal width take it.
+ *
+ * A type with several legal widths and no `:N` -- the `Complex*` family --
+ * is REFUSED by name rather than guessed: picking one would silently
+ * mis-associate every column after it, which is the whole failure this parser
+ * must not have.
+ */
+GidGroupMember gid_group_member(const std::string& rName, const std::string& rTypeSpec) {
+    GidGroupMember m;
+    m.mName = rName;
+    const std::size_t colon = rTypeSpec.find(':');
+    m.mType = colon == std::string::npos ? rTypeSpec : rTypeSpec.substr(0, colon);
+    if (colon != std::string::npos) {
+        m.mWidth = static_cast<std::size_t>(
+            gid_to_int(rTypeSpec.substr(colon + 1), "a ResultDescription component count"));
+        if (m.mWidth == 0)
+            throw ReadError("GiD: ResultDescription '" + rName + "' declares 0 components");
+        return m;
+    }
+
+    const gid_detail::GidResultTypeEntry* e = nullptr;
+    for (const gid_detail::GidResultTypeEntry& c : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(m.mType, c.mName))
+            e = &c;
+    if (e == nullptr)
+        throw ReadError("GiD: ResultDescription '" + rName + "' has unknown type '" + m.mType +
+                        "'");
+
+    // Inside a ResultGroup, Vector is always 3 and Matrix always 6 -- stated
+    // by the manual, and narrower than the widths those types admit in a plain
+    // Result.
+    if (gid_keyword_is(m.mType, "Vector")) {
+        m.mWidth = 3;
+        return m;
+    }
+    if (gid_keyword_is(m.mType, "Matrix")) {
+        m.mWidth = 6;
+        return m;
+    }
+    if (e->mDims[1] != 0)
+        throw ReadError("GiD: ResultDescription '" + rName + "' has type '" + m.mType +
+                        "', which admits several component counts (" +
+                        gid_detail::gid_legal_dims_text(*e) +
+                        "); a ResultGroup member must state one explicitly as 'Type:N'");
+    m.mWidth = e->mDims[0];
+    return m;
+}
+
+void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
+                        std::unordered_map<std::string, GidGaussSet>& rGauss) {
+    GidLineCursor cur(text);
+    std::string line;
+    std::string group;  // the OnGroup currently open, empty when ungrouped
+    while (cur.Next(line)) {
+        const std::vector<std::string> tok = gid_split(line);
+        if (tok.empty())
+            continue;
+
+        if (gid_keyword_is(tok[0], "GaussPoints")) {
+            // GaussPoints "<gp>" ElemType <T> ["<meshname>"]
+            // There is NO OnMeshName keyword -- the mesh name is a bare
+            // trailing quoted string, which is why it is found positionally.
+            GidGaussSet set;
+            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            if (tok.size() >= 5)
+                set.mMeshName = tok[4];
+            std::string inner;
+            while (cur.Next(inner)) {
+                if (gid_line_starts_with(inner, "End", "GaussPoints"))
+                    break;
+                const std::vector<std::string> it = gid_split(inner);
+                if (it.empty())
+                    continue;
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of")) {
+                    set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
+                    continue;
+                }
+                // "Natural Coordinates: Given" turns every following non-keyword
+                // line into one point's coordinates, which must be captured or a
+                // round trip could not re-declare the set (GiD cannot place a
+                // non-standard count itself). "Internal" needs nothing.
+                if (gid_keyword_is(it[0], "Natural") && it.size() >= 3) {
+                    set.mGivenCoords = gid_keyword_is(it[2], "Given");
+                    continue;
+                }
+                if (gid_keyword_is(it[0], "Nodes"))
+                    continue;  // line-element only; GiD's own default is what we emit
+                if (set.mGivenCoords)
+                    for (const std::string& v : it)
+                        set.mCoords.push_back(gid_to_double(v, "a Gauss-point coordinate"));
+            }
+            rGauss[gp_name] = set;
+            continue;
+        }
+
+        if (gid_keyword_is(tok[0], "Result")) {
+            // Result "<name>" "<analysis>" <step> <Type> <Location> ["<gp>"]
+            if (tok.size() < 6)
+                throw ReadError("GiD: malformed Result header: " + line);
+            GidResult res;
+            res.mName = tok[1];
+            res.mAnalysis = tok[2];
+            res.mStep = gid_to_double(tok[3], "a result step");
+            res.mType = tok[4];
+            res.mLocation = tok[5];
+            if (tok.size() >= 7)
+                res.mGaussName = tok[6];
+            // Optional ResultRangesTable / ComponentNames / Unit lines may sit
+            // between the header and Values, in that fixed order.
+            std::string inner;
+            while (cur.Next(inner)) {
+                const std::vector<std::string> it = gid_split(inner);
+                if (!it.empty() && gid_keyword_is(it[0], "Values")) {
+                    gid_read_values(cur, res);
+                    break;
+                }
+                if (!it.empty() &&
+                    (gid_keyword_is(it[0], "ResultRangesTable") ||
+                     gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
+                    continue;
+                throw ReadError("GiD: unexpected line in result '" + res.mName + "': " + inner);
+            }
+            res.mGroup = group;
+            rResults.push_back(std::move(res));
+            continue;
+        }
+
+        if (gid_keyword_is(tok[0], "ResultRangesTable")) {
+            gid_skip_to_end(cur, "ResultRangesTable");
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "ResultGroup")) {
+            // ResultGroup "<analysis>" <step> <Location> ["<gp>"]
+            //   ResultDescription "<name>" <Type[:N]>          (one per member)
+            //   [ResultRangesTable / ComponentNames / Unit]    (interleaved)
+            //   Values
+            //     <id> v v v ...        every member's components on ONE line
+            //   End Values              (there is no "End ResultGroup")
+            //
+            // Unpacked into one ORDINARY GidResult per member, appended to the
+            // same vector a plain Result feeds. Everything downstream --
+            // point_data/cell_data routing, Gauss-point handling and the flat
+            // (ncells, G*k) layout, result-type recording, time-step selection
+            // -- then applies unchanged, with no second apply path to drift.
+            if (tok.size() < 4)
+                throw ReadError("GiD: malformed ResultGroup header: " + line);
+            const std::string analysis = tok[1];
+            const double step = gid_to_double(tok[2], "a ResultGroup step");
+            const std::string location = tok[3];
+            const std::string gauss_name = tok.size() >= 5 ? tok[4] : std::string();
+
+            std::vector<GidGroupMember> members;
+            bool saw_values = false;
+            std::string inner;
+            while (cur.Next(inner)) {
+                const std::vector<std::string> it = gid_split(inner);
+                if (it.empty())
+                    continue;
+                if (gid_keyword_is(it[0], "ResultDescription")) {
+                    if (it.size() < 3)
+                        throw ReadError("GiD: malformed ResultDescription: " + inner);
+                    members.push_back(gid_group_member(it[1], it[2]));
+                    continue;
+                }
+                if (gid_keyword_is(it[0], "ResultRangesTable") ||
+                    gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit"))
+                    continue;  // per-member properties meshio++ does not model
+                if (gid_keyword_is(it[0], "Values")) {
+                    saw_values = true;
+                    break;
+                }
+                throw ReadError("GiD: unexpected line in ResultGroup '" + analysis + "': " + inner);
+            }
+            if (members.empty())
+                throw ReadError("GiD: ResultGroup '" + analysis + "' declares no members");
+            if (!saw_values)
+                throw ReadError("GiD: ResultGroup '" + analysis + "' has no Values block");
+
+            std::size_t total = 0;
+            for (const GidGroupMember& mem : members)
+                total += mem.mWidth;
+
+            // Read the shared rows as ONE wide pseudo-result, then slice. The
+            // width is known up front from the descriptions -- better than the
+            // plain-Result path, which must infer it from the first row -- and
+            // gid_read_values' own continuation rule (a narrower row beginning
+            // with whitespace repeats the previous id) still applies, which is
+            // what makes a G>1 OnGaussPoints group work here for free.
+            GidResult wide;
+            wide.mName = analysis;
+            wide.mType = "Scalar";  // suppresses the type/width cross-check below
+            wide.mNumComponents = total;
+            gid_read_values(cur, wide, /*known_width=*/total);
+
+            std::size_t offset = 0;
+            for (const GidGroupMember& mem : members) {
+                GidResult res;
+                res.mName = mem.mName;
+                res.mAnalysis = analysis;
+                res.mStep = step;
+                res.mType = mem.mType;
+                res.mLocation = location;
+                res.mGaussName = gauss_name;
+                res.mNumComponents = mem.mWidth;
+                res.mIds = wide.mIds;
+                res.mValues.reserve(wide.mIds.size() * mem.mWidth);
+                for (std::size_t r = 0; r < wide.mIds.size(); ++r)
+                    for (std::size_t c = 0; c < mem.mWidth; ++c)
+                        res.mValues.push_back(wide.mValues[r * total + offset + c]);
+                res.mGroup = group;
+                offset += mem.mWidth;
+                rResults.push_back(std::move(res));
+            }
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "OnGroup")) {
+            // Used to drop every result inside. They are now tagged with the
+            // group whose mesh they belong to -- the counterpart to the mesh
+            // side's Group tagging.
+            group = tok.size() > 1 ? tok[1] : std::string();
+            continue;
+        }
+        if (gid_line_starts_with(line, "End", "OnGroup")) {
+            group.clear();
+            continue;
+        }
+        // Everything else at result scope (the file magic, End markers, ...)
+        // is skipped.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Assembly: staged file structures -> Mesh.
+
+void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
+                       const std::map<std::int64_t, std::size_t>& rNodeRow,
+                       const std::vector<GidResult>& rResults,
+                       const std::unordered_map<std::string, GidGaussSet>& rGauss, double wanted) {
+    // Per-block element-id -> row. Element ids may RESTART per block in real
+    // files (Kratos does exactly that), so this must never be one global map.
+    // Same-named results are accumulated here and committed once, in
+    // first-seen order, so a cell_data array split across blocks survives.
+    std::map<std::string, std::vector<NDArray>> pending;
+    std::vector<std::string> order;
+
+    std::vector<std::map<std::int64_t, std::size_t>> elem_rows(rStaged.mBlocks.size());
+    for (std::size_t b = 0; b < rStaged.mBlocks.size(); ++b)
+        for (std::size_t r = 0; r < rStaged.mBlocks[b].mElemIds.size(); ++r)
+            elem_rows[b].emplace(rStaged.mBlocks[b].mElemIds[r], r);
+
+    for (const GidResult& res : rResults) {
+        if (res.mStep != wanted)
+            continue;
+        if (res.mNumComponents == 0)
+            continue;
+
+        if (res.mLocation == "OnNodes") {
+            NDArray arr(DType::Float64,
+                        res.mNumComponents == 1
+                            ? std::vector<std::size_t>{rNodeRow.size()}
+                            : std::vector<std::size_t>{rNodeRow.size(), res.mNumComponents});
+            double* dst = arr.As<double>();
+            for (std::size_t i = 0; i < res.mIds.size(); ++i) {
+                auto it = rNodeRow.find(res.mIds[i]);
+                if (it == rNodeRow.end())
+                    continue;  // a value for a node the geometry never defined
+                for (std::size_t c = 0; c < res.mNumComponents; ++c)
+                    dst[it->second * res.mNumComponents + c] =
+                        res.mValues[i * res.mNumComponents + c];
+            }
+            rMesh.AddPointData(res.mName, std::move(arr));
+            gid_record_result_type(rMesh, res.mName, res.mType, res.mNumComponents);
+            continue;
+        }
+
+        if (res.mLocation != "OnGaussPoints") {
+            log::warn(
+                "gid: result '{}' has location '{}', which has no meshio++ counterpart "
+                "-- skipped",
+                res.mName, res.mLocation);
+            continue;
+        }
+
+        auto gp = rGauss.find(res.mGaussName);
+        if (gp == rGauss.end()) {
+            log::warn(
+                "gid: result '{}' names Gauss-point set '{}', which the file never "
+                "declares -- skipped",
+                res.mName, res.mGaussName);
+            continue;
+        }
+
+        std::size_t block = rStaged.mBlocks.size();
+        for (std::size_t b = 0; b < rStaged.mBlocks.size(); ++b)
+            if (rStaged.mBlocks[b].mMeshName == gp->second.mMeshName)
+                block = b;
+        if (block == rStaged.mBlocks.size()) {
+            log::warn(
+                "gid: Gauss-point set '{}' is on mesh '{}', which matches no MESH block "
+                "-- result '{}' skipped",
+                res.mGaussName, gp->second.mMeshName, res.mName);
+            continue;
+        }
+
+        // A cell_data array spanning several cell blocks is written as several
+        // Result blocks SHARING ONE NAME, each against its own block's
+        // Gauss-point set. So same-named results must be MERGED into one array
+        // set here: AddCellData is insert-or-assign, and calling it once per
+        // Result block would leave every block but the last zeroed.
+        // G Gauss points per element means G rows per element, flattened into
+        // one (ncells, G*k) row -- Gauss-point-major, which is the order the
+        // rows themselves arrive in, so nothing is re-packed. G == 1 makes
+        // width == k and this is the historical single-value layout exactly.
+        const auto g = static_cast<std::size_t>(gp->second.mNumPoints);
+        const std::size_t width = g * res.mNumComponents;
+
+        auto slot = pending.find(res.mName);
+        if (slot == pending.end()) {
+            std::vector<NDArray> blocks;
+            for (std::size_t b = 0; b < rStaged.mBlocks.size(); ++b) {
+                const std::size_t n = rStaged.mBlocks[b].mElemIds.size();
+                blocks.emplace_back(DType::Float64, width == 1
+                                                        ? std::vector<std::size_t>{n}
+                                                        : std::vector<std::size_t>{n, width});
+            }
+            slot = pending.emplace(res.mName, std::move(blocks)).first;
+            order.push_back(res.mName);
+            // Recorded at first sight, on the same first-seen key the block
+            // list uses: the same result name may span several blocks, and
+            // every one of them declares the same type. The result type's
+            // legal widths are checked against the COMPONENT count, never
+            // against g*k.
+            gid_record_result_type(rMesh, res.mName, res.mType, res.mNumComponents);
+            gid_record_gauss_points(rMesh, res.mName, g);
+            gid_record_gauss_coords(rMesh, rStaged.mBlocks[block].mMeshioType, gp->second);
+        }
+        if (slot->second[block].Shape().size() >= 2 && slot->second[block].Shape()[1] != width) {
+            log::warn(
+                "gid: result '{}' has {} components on mesh '{}' but a different width "
+                "elsewhere -- this block skipped",
+                res.mName, res.mNumComponents, gp->second.mMeshName);
+            continue;
+        }
+        double* dst = slot->second[block].As<double>();
+        // Rows arrive in element order, G consecutive rows per element, so the
+        // point index is the run position within one element id rather than
+        // anything the file states -- `seen` counts it. A row for an element
+        // this block never defined is skipped without advancing anything.
+        std::unordered_map<std::int64_t, std::size_t> seen;
+        for (std::size_t i = 0; i < res.mIds.size(); ++i) {
+            auto it = elem_rows[block].find(res.mIds[i]);
+            if (it == elem_rows[block].end())
+                continue;  // a value for an element this block never defined
+            const std::size_t p = seen[res.mIds[i]]++;
+            if (p >= g) {
+                log::warn(
+                    "gid: result '{}' gives element {} more than the {} Gauss-point rows its "
+                    "set declares -- extra rows ignored",
+                    res.mName, res.mIds[i], g);
+                continue;
+            }
+            for (std::size_t c = 0; c < res.mNumComponents; ++c)
+                dst[it->second * width + p * res.mNumComponents + c] =
+                    res.mValues[i * res.mNumComponents + c];
+        }
+    }
+
+    for (const std::string& name : order)
+        rMesh.AddCellData(name, std::move(pending[name]));
+}
+
+Mesh gid_assemble(const GidStaged& rStagedIn, const std::vector<GidResult>& rResultsIn,
+                  const std::unordered_map<std::string, GidGaussSet>& rGauss, int time_step) {
+    Mesh mesh;
+
+    // Resolve the requested step against the GLOBAL step list, before any group
+    // filtering: with several groups the filtered list is only that group's
+    // steps, so an index resolved against it would name the wrong step (or go
+    // out of range) the moment the requested one lives in a later group.
+    std::vector<double> steps;
+    for (const GidResult& r : rResultsIn) {
+        bool seen = false;
+        for (double v : steps)
+            seen = seen || v == r.mStep;
+        if (!seen)
+            steps.push_back(r.mStep);
+    }
+    double wanted = steps.empty() ? 0.0 : steps.front();
+    if (!steps.empty()) {
+        std::int64_t idx = time_step;
+        if (idx < 0)
+            idx += static_cast<std::int64_t>(steps.size());
+        if (idx < 0 || idx >= static_cast<std::int64_t>(steps.size()))
+            throw ReadError("GiD: time step " + std::to_string(time_step) + " out of range (" +
+                            std::to_string(steps.size()) + " available)");
+        wanted = steps[static_cast<std::size_t>(idx)];
+    }
+
+    // A GiD `Group` holds ONE mesh serving a run of steps (re-meshing), so the
+    // step just resolved decides WHICH mesh this call is about. With no groups
+    // anywhere every tag is empty, the filters below keep everything, and this
+    // is the historical single-mesh path unchanged.
+    bool any_group = false;
+    for (const GidBlock& b : rStagedIn.mBlocks)
+        any_group = any_group || !b.mGroup.empty();
+
+    std::string owner;  // the group owning `wanted`
+    if (any_group)
+        for (const GidResult& r : rResultsIn)
+            if (r.mStep == wanted && !r.mGroup.empty()) {
+                owner = r.mGroup;
+                break;
+            }
+
+    GidStaged staged_owned;
+    std::vector<GidResult> results_owned;
+    const GidStaged* pStaged = &rStagedIn;
+    const std::vector<GidResult>* pResults = &rResultsIn;
+    if (any_group) {
+        staged_owned.mAnyThirdCoord = rStagedIn.mAnyThirdCoord;
+        for (const GidBlock& b : rStagedIn.mBlocks)
+            if (b.mGroup == owner)
+                staged_owned.mBlocks.push_back(b);
+        // Each group carries its own coordinates, so keep only the nodes this
+        // group's blocks actually reference -- otherwise a re-meshed step would
+        // come back carrying every other step's nodes as orphans.
+        for (const GidBlock& b : staged_owned.mBlocks)
+            for (std::int64_t id : b.mConn) {
+                auto it = rStagedIn.mNodes.find(id);
+                if (it != rStagedIn.mNodes.end())
+                    staged_owned.mNodes.emplace(id, it->second);
+            }
+        for (const GidResult& r : rResultsIn)
+            if (r.mGroup == owner)
+                results_owned.push_back(r);
+        pStaged = &staged_owned;
+        pResults = &results_owned;
+    }
+    const GidStaged& rStaged = *pStaged;
+    const std::vector<GidResult>& rResults = *pResults;
+
+    // Points, in ascending node id (std::map order). Ids may be gapped and
+    // non-contiguous, so connectivity is remapped through this table -- the
+    // abaqus/mdpa precedent.
+    const std::size_t dim = rStaged.mAnyThirdCoord ? 3 : 2;
+    NDArray points(DType::Float64, {rStaged.mNodes.size(), dim});
+    double* pp = points.As<double>();
+    std::map<std::int64_t, std::size_t> node_row;
+    {
+        std::size_t row = 0;
+        for (const auto& kv : rStaged.mNodes) {
+            node_row.emplace(kv.first, row);
+            for (std::size_t c = 0; c < dim; ++c)
+                pp[row * dim + c] = kv.second[c];
+            ++row;
+        }
+    }
+    mesh.AssignPoints(std::move(points));
+
+    for (const GidBlock& block : rStaged.mBlocks) {
+        const std::size_t nn = static_cast<std::size_t>(block.mNumNodes);
+        const std::size_t ncells = block.mElemIds.size();
+        NDArray conn(DType::Int64, {ncells, nn});
+        std::int64_t* cp = conn.As<std::int64_t>();
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (gid_common.hpp's derivation, self-inverse): meshio++
+        // slot j receives GiD file slot perm[j] -- the same table the writer
+        // uses, applied in the opposite (gather) direction.
+        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn);
+        for (std::size_t r = 0; r < ncells; ++r) {
+            for (std::size_t j = 0; j < nn; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                const std::int64_t node_id = block.mConn[r * nn + src_j];
+                auto it = node_row.find(node_id);
+                if (it == node_row.end())
+                    throw ReadError("GiD: element in mesh '" + block.mMeshName +
+                                    "' references node id " + std::to_string(node_id) +
+                                    ", which no Coordinates block defines");
+                cp[r * nn + j] = static_cast<std::int64_t>(it->second);
+            }
+        }
+        mesh.AddCellBlock(block.mMeshioType, std::move(conn));
+    }
+
+    // The material column round-trips through "gmsh:physical" -- the exact
+    // inverse of the key write_gid consumes.
+    // Only when the file actually carries material information. The binary and
+    // HDF5 flavours ALWAYS emit a material column (unlike ASCII, which omits it
+    // when there is nothing to say), so an all-zero column means "no materials"
+    // -- surfacing it as a gmsh:physical array would invent data the source
+    // mesh never had, and would make the three flavours disagree on round trip.
+    bool any_material = false;
+    for (const GidBlock& b : rStaged.mBlocks)
+        for (std::int64_t v : b.mMaterial)
+            any_material = any_material || v != 0;
+    if (any_material) {
+        std::vector<NDArray> mats;
+        for (const GidBlock& b : rStaged.mBlocks) {
+            NDArray a(DType::Int64, {b.mElemIds.size()});
+            std::int64_t* ap = a.As<std::int64_t>();
+            for (std::size_t i = 0; i < b.mElemIds.size(); ++i)
+                ap[i] = i < b.mMaterial.size() ? b.mMaterial[i] : 0;
+            mats.push_back(std::move(a));
+        }
+        mesh.AddCellData("gmsh:physical", std::move(mats));
+    }
+
+    gid_apply_results(mesh, rStaged, node_row, rResults, rGauss, wanted);
+    return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// Flavour detection and decompression.
+
+bool gid_looks_gzip(std::string_view bytes) {
+    return bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0x1f &&
+           static_cast<unsigned char>(bytes[1]) == 0x8b;
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+/// Inflates a whole gzip stream. `uncompress()` cannot serve here: it speaks
+/// the zlib wrapper, not gzip, and the decompressed size is not known up front.
+std::string gid_gunzip(std::string_view bytes) {
+    z_stream strm{};
+    if (inflateInit2(&strm, 15 + 16) != Z_OK)
+        throw ReadError("GiD: could not initialize gzip decompression");
+    strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.data()));
+    strm.avail_in = static_cast<uInt>(bytes.size());
+
+    std::string out;
+    std::vector<char> chunk(1 << 16);
+    int rc = Z_OK;
+    do {
+        strm.next_out = reinterpret_cast<Bytef*>(chunk.data());
+        strm.avail_out = static_cast<uInt>(chunk.size());
+        rc = inflate(&strm, Z_NO_FLUSH);
+        if (rc != Z_OK && rc != Z_STREAM_END) {
+            inflateEnd(&strm);
+            throw ReadError("GiD: gzip decompression failed");
+        }
+        out.append(chunk.data(), chunk.size() - strm.avail_out);
+    } while (rc != Z_STREAM_END);
+    inflateEnd(&strm);
+    return out;
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+// ---------------------------------------------------------------------------
+// HDF5 flavour. A genuinely different traversal from the two text-shaped ones,
+// so it gets its own function rather than a third cursor: gidpost stores the
+// same logical model as HDF5 groups whose ATTRIBUTES carry what the ASCII
+// header line carries. Layout (verified against a real written file):
+//
+//   /                       attrs: "GiD Post Results File", WriteStatus
+//   /Meshes/<n>             attrs: Name, Dimension, ElemType, Nnode
+//   /Meshes/<n>/Coordinates dataset
+//   /Meshes/<n>/Elements    dataset
+//   /GaussPoints/<n>        attrs: Name, ElemType, MeshName, GP_number, ...
+//   /Results/<n>            attrs: Name, Analysis, Step, ResultType, ResultLocation
+//
+// Group names are integers as STRINGS ("1", "2", ...), so they are visited in
+// HDF5 link-creation order, matching the order the writer emitted them.
+/// Reads one column-group ("Coordinates", "Elements", a Results group) as a
+/// list of 1-D column datasets named "1", "2", ... in creation order.
+std::vector<NDArray> gid_h5_columns(hid_t loc) {
+    std::vector<NDArray> cols;
+    for (const std::string& key : h5::group_links_crt(loc))
+        cols.push_back(h5::read_dataset(loc, key));
+    return cols;
+}
+
+Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
+    h5::Hid file = h5::open_file_read(rPath);
+
+    GidStaged staged;
+    staged.mAnyThirdCoord = true;  // the HDF5 writer always stores three coordinate columns
+
+    if (h5::exists(file, "Meshes")) {
+        h5::Hid meshes = h5::open_group(file, "Meshes");
+        for (const std::string& key : h5::group_links_crt(meshes)) {
+            h5::Hid g = h5::open_group(meshes, key);
+            GidBlock block;
+            block.mMeshName = h5::has_attr(g, "Name") ? h5::read_attr_string(g, "Name") : key;
+            // gidpost stores every attribute as a STRING, even the numeric ones.
+            const std::string etype =
+                h5::has_attr(g, "ElemType") ? h5::read_attr_string(g, "ElemType") : std::string();
+            const std::string nnode_s =
+                h5::has_attr(g, "Nnode") ? h5::read_attr_string(g, "Nnode") : std::string("0");
+            const int nnode = static_cast<int>(gid_to_int(nnode_s, "Nnode"));
+            block.mNumNodes = nnode;
+            block.mMeshioType = gid_meshio_type(etype, nnode);
+
+            if (h5::exists(g, "Coordinates")) {
+                h5::Hid cg = h5::open_group(g, "Coordinates");
+                const std::vector<NDArray> cols = gid_h5_columns(cg);
+                // Column-oriented: 1 = ids, 2..4 = x, y, z.
+                if (cols.size() >= 2) {
+                    const std::size_t n = cols[0].Size();
+                    for (std::size_t r = 0; r < n; ++r) {
+                        std::array<double, 3> xyz{0.0, 0.0, 0.0};
+                        for (std::size_t k = 0; k + 1 < cols.size() && k < 3; ++k)
+                            xyz[k] = detail::read_double(cols[k + 1], r);
+                        staged.mNodes.emplace(detail::read_int(cols[0], r), xyz);
+                    }
+                }
+            }
+
+            if (h5::exists(g, "Elements")) {
+                h5::Hid eg = h5::open_group(g, "Elements");
+                const std::vector<NDArray> cols = gid_h5_columns(eg);
+                // 1 = element ids, then Nnode connectivity columns, then --
+                // always, as in the binary flavour -- one material column.
+                if (static_cast<int>(cols.size()) >= nnode + 1) {
+                    const std::size_t n = cols[0].Size();
+                    const bool has_mat = static_cast<int>(cols.size()) >= nnode + 2;
+                    for (std::size_t r = 0; r < n; ++r) {
+                        block.mElemIds.push_back(detail::read_int(cols[0], r));
+                        for (int k = 0; k < nnode; ++k)
+                            block.mConn.push_back(
+                                detail::read_int(cols[static_cast<std::size_t>(k) + 1], r));
+                        block.mMaterial.push_back(
+                            has_mat ? detail::read_int(cols[static_cast<std::size_t>(nnode) + 1], r)
+                                    : 0);
+                    }
+                    if (!has_mat)
+                        block.mMaterial.clear();
+                }
+            }
+            staged.mBlocks.push_back(std::move(block));
+        }
+    }
+
+    std::unordered_map<std::string, GidGaussSet> gauss;
+    if (h5::exists(file, "GaussPoints")) {
+        h5::Hid gps = h5::open_group(file, "GaussPoints");
+        for (const std::string& key : h5::group_links_crt(gps)) {
+            h5::Hid g = h5::open_group(gps, key);
+            GidGaussSet set;
+            if (h5::has_attr(g, "MeshName"))
+                set.mMeshName = h5::read_attr_string(g, "MeshName");
+            if (h5::has_attr(g, "GP_number"))
+                set.mNumPoints =
+                    static_cast<int>(gid_to_int(h5::read_attr_string(g, "GP_number"), "GP_number"));
+            gauss[h5::has_attr(g, "Name") ? h5::read_attr_string(g, "Name") : key] = set;
+        }
+    }
+
+    std::vector<GidResult> results;
+    if (h5::exists(file, "Results")) {
+        h5::Hid res_root = h5::open_group(file, "Results");
+        for (const std::string& key : h5::group_links_crt(res_root)) {
+            h5::Hid g = h5::open_group(res_root, key);
+            GidResult res;
+            res.mName = h5::has_attr(g, "Name") ? h5::read_attr_string(g, "Name") : key;
+            if (h5::has_attr(g, "Analysis"))
+                res.mAnalysis = h5::read_attr_string(g, "Analysis");
+            if (h5::has_attr(g, "Step"))
+                res.mStep = gid_to_double(h5::read_attr_string(g, "Step"), "a step");
+            if (h5::has_attr(g, "ResultType"))
+                res.mType = h5::read_attr_string(g, "ResultType");
+            if (h5::has_attr(g, "ResultLocation"))
+                res.mLocation = h5::read_attr_string(g, "ResultLocation");
+            if (h5::has_attr(g, "GaussPointsName"))
+                res.mGaussName = h5::read_attr_string(g, "GaussPointsName");
+
+            // 1 = ids, then one dataset per component.
+            const std::vector<NDArray> cols = gid_h5_columns(g);
+            if (cols.size() >= 2) {
+                res.mNumComponents = cols.size() - 1;
+                const std::size_t n = cols[0].Size();
+                for (std::size_t r = 0; r < n; ++r) {
+                    res.mIds.push_back(detail::read_int(cols[0], r));
+                    for (std::size_t k = 0; k < res.mNumComponents; ++k)
+                        res.mValues.push_back(detail::read_double(cols[k + 1], r));
+                }
+            }
+            results.push_back(std::move(res));
+        }
+    }
+
+    return gid_assemble(staged, results, gauss, rOptions.mTimeStep);
+}
+#endif  // MESHIOPLUSPLUS_HAS_HDF5
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+// ---------------------------------------------------------------------------
+// Compressed-binary flavour (.post.bin).
+//
+// A gzip stream wrapping gidpost's own record layout (gidpostInt.c's
+// CPostBinary):
+//
+//   int  0x91d              magic, and the endianness detector
+//   then a stream of:
+//     string  -> int length (INCLUDING the NUL) + that many bytes
+//     int     -> raw 4-byte int
+//     real    -> raw 4-byte FLOAT (gidpost narrows every double on the way out,
+//                which is why binary round trips are float-precision, not a bug)
+//
+// The keyword vocabulary is the ASCII one with a distinct spelling for the
+// three block openers: "Coordinates -1 Indexed", "Elements -1 Indexed",
+// "Values -1 Indexed". `End Values` is preceded by a bare int -1.
+class GidBinaryCursor {
+public:
+    explicit GidBinaryCursor(const std::string& rBytes) : mBytes(rBytes) {
+        std::int32_t magic = 0;
+        if (!RawInt(magic))
+            throw ReadError("GiD: truncated binary file (no magic)");
+        if (magic == 0x91d)
+            mSwap = false;
+        else if (ByteSwap(magic) == 0x91d)
+            mSwap = true;  // foreign byte order, the ensight precedent
+        else
+            throw ReadError("GiD: not a GiD binary post file (bad magic)");
+    }
+
+    bool AtEnd() const { return mPos >= mBytes.size(); }
+
+    std::int32_t NextInt() {
+        std::int32_t v = 0;
+        if (!RawInt(v))
+            throw ReadError("GiD: truncated binary file (expected an int)");
+        return mSwap ? ByteSwap(v) : v;
+    }
+
+    double NextReal() {
+        float f = 0.0F;
+        if (mPos + sizeof(float) > mBytes.size())
+            throw ReadError("GiD: truncated binary file (expected a real)");
+        std::memcpy(&f, mBytes.data() + mPos, sizeof(float));
+        mPos += sizeof(float);
+        if (mSwap) {
+            std::int32_t bits = 0;
+            std::memcpy(&bits, &f, sizeof(bits));
+            bits = ByteSwap(bits);
+            std::memcpy(&f, &bits, sizeof(f));
+        }
+        return static_cast<double>(f);
+    }
+
+    /// Reads a length-prefixed string record.
+    std::string NextString() {
+        const std::int32_t len = NextInt();
+        if (len < 0 || mPos + static_cast<std::size_t>(len) > mBytes.size())
+            throw ReadError("GiD: truncated binary file (bad string length)");
+        std::string s(mBytes.data() + mPos, static_cast<std::size_t>(len));
+        mPos += static_cast<std::size_t>(len);
+        if (!s.empty() && s.back() == '\0')
+            s.pop_back();  // the length includes the terminator
+        return s;
+    }
+
+    std::size_t Tell() const { return mPos; }
+    void Seek(std::size_t p) { mPos = p; }
+
+    /**
+     * @brief Consumes the next record iff it is the string @p pExpected.
+     *
+     * Binary blocks are terminated by a **string record** ("End Coordinates",
+     * "End Elements", "End Values"), not by a sentinel value -- verified
+     * against real inflated bytes. A row id and a string's length prefix are
+     * both plain ints, so the only sound way to tell a further row from the
+     * terminator is to try to decode the terminator and rewind on failure.
+     * Comparing the FULL content (not just a plausible length) is what makes
+     * this exact rather than heuristic: a false positive would need float
+     * payload bytes to literally spell "End Coordinates".
+     */
+    bool TryTerminator(const char* pExpected) {
+        const std::size_t save = mPos;
+        std::int32_t len = 0;
+        if (!RawInt(len)) {
+            mPos = save;
+            return false;
+        }
+        if (mSwap)
+            len = ByteSwap(len);
+        if (len <= 0 || mPos + static_cast<std::size_t>(len) > mBytes.size()) {
+            mPos = save;
+            return false;
+        }
+        std::string s(mBytes.data() + mPos, static_cast<std::size_t>(len));
+        if (!s.empty() && s.back() == '\0')
+            s.pop_back();
+        if (s != pExpected) {
+            mPos = save;
+            return false;
+        }
+        mPos += static_cast<std::size_t>(len);
+        return true;
+    }
+
+    /// Consumes the next int iff it equals @p want (the `-1` that precedes
+    /// binary's "End Values" record).
+    bool TryInt(std::int32_t want) {
+        const std::size_t save = mPos;
+        std::int32_t v = 0;
+        if (!RawInt(v)) {
+            mPos = save;
+            return false;
+        }
+        if (mSwap)
+            v = ByteSwap(v);
+        if (v != want) {
+            mPos = save;
+            return false;
+        }
+        return true;
+    }
+
+private:
+    bool RawInt(std::int32_t& rOut) {
+        if (mPos + sizeof(std::int32_t) > mBytes.size())
+            return false;
+        std::memcpy(&rOut, mBytes.data() + mPos, sizeof(std::int32_t));
+        mPos += sizeof(std::int32_t);
+        return true;
+    }
+    static std::int32_t ByteSwap(std::int32_t v) {
+        std::uint32_t u = static_cast<std::uint32_t>(v);
+        u = ((u & 0x000000FFU) << 24) | ((u & 0x0000FF00U) << 8) | ((u & 0x00FF0000U) >> 8) |
+            ((u & 0xFF000000U) >> 24);
+        return static_cast<std::int32_t>(u);
+    }
+
+    const std::string& mBytes;
+    std::size_t mPos = 0;
+    bool mSwap = false;
+};
+
+/// The binary block openers carry a `-1 Indexed` suffix the ASCII ones do not.
+bool gid_binary_keyword_is(const std::string& rRecord, const char* pKeyword) {
+    const std::string kw(pKeyword);
+    return rRecord == kw || rRecord.rfind(kw + " ", 0) == 0;
+}
+
+Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
+    GidBinaryCursor cur(rBytes);
+    GidStaged staged;
+    staged.mAnyThirdCoord = true;  // the binary writer always emits three columns
+    std::vector<GidResult> results;
+    std::unordered_map<std::string, GidGaussSet> gauss;
+
+    while (!cur.AtEnd()) {
+        std::string rec;
+        try {
+            rec = cur.NextString();
+        } catch (const ReadError&) {
+            break;  // trailing padding: a clean end of stream
+        }
+        const std::vector<std::string> tok = gid_split(rec);
+        if (tok.empty())
+            continue;
+
+        if (gid_keyword_is(tok[0], "MESH")) {
+            GidBlock block;
+            std::string gid_type;
+            int nnode = 0;
+            // The name is OPTIONAL -- the specification's own example writes
+            // `MESH dimension 3 ElemType Linear Nnode 2` with none. It is a
+            // name exactly when it is not the next grammar keyword; taking
+            // tok[1] unconditionally names such a mesh "dimension", which then
+            // mis-binds any GaussPoints set that refers to a mesh by name.
+            std::size_t i = 1;
+            if (i < tok.size() && !gid_keyword_is(tok[i], "dimension")) {
+                block.mMeshName = tok[i];
+                ++i;
+            }
+            for (; i + 1 < tok.size(); ++i) {
+                if (gid_keyword_is(tok[i], "ElemType"))
+                    gid_type = tok[i + 1];
+                else if (gid_keyword_is(tok[i], "Nnode"))
+                    nnode = static_cast<int>(gid_to_int(tok[i + 1], "Nnode"));
+            }
+            if (gid_type.empty() || nnode <= 0)
+                throw ReadError("GiD: malformed binary MESH header: " + rec);
+            block.mNumNodes = nnode;
+            block.mMeshioType = gid_meshio_type(gid_type, nnode);
+            staged.mBlocks.push_back(std::move(block));
+            continue;
+        }
+
+        if (gid_binary_keyword_is(rec, "Coordinates")) {
+            while (!cur.TryTerminator("End Coordinates")) {
+                const std::int32_t id = cur.NextInt();
+                std::array<double, 3> xyz{0.0, 0.0, 0.0};
+                for (std::size_t k = 0; k < 3; ++k)
+                    xyz[k] = cur.NextReal();
+                staged.mNodes.emplace(static_cast<std::int64_t>(id), xyz);
+            }
+            continue;
+        }
+
+        if (gid_binary_keyword_is(rec, "Elements")) {
+            if (staged.mBlocks.empty())
+                throw ReadError("GiD: binary Elements block before any MESH header");
+            GidBlock& block = staged.mBlocks.back();
+            const int nn = block.mNumNodes;
+            while (!cur.TryTerminator("End Elements")) {
+                block.mElemIds.push_back(static_cast<std::int64_t>(cur.NextInt()));
+                for (int k = 0; k < nn; ++k)
+                    block.mConn.push_back(static_cast<std::int64_t>(cur.NextInt()));
+                // gidpost's binary element writer ALWAYS emits the material
+                // column (verified in the inflated bytes), so unlike ASCII
+                // there is no row-width ambiguity to resolve here.
+                block.mMaterial.push_back(static_cast<std::int64_t>(cur.NextInt()));
+            }
+            continue;
+        }
+
+        if (gid_keyword_is(tok[0], "GaussPoints")) {
+            GidGaussSet set;
+            const std::string gp_name = tok.size() > 1 ? tok[1] : std::string();
+            if (tok.size() >= 5)
+                set.mMeshName = tok[4];
+            while (!cur.AtEnd()) {
+                const std::size_t save = cur.Tell();
+                std::string inner;
+                try {
+                    inner = cur.NextString();
+                } catch (const ReadError&) {
+                    break;
+                }
+                if (gid_line_starts_with(inner, "End", "GaussPoints"))
+                    break;
+                const std::vector<std::string> it = gid_split(inner);
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of"))
+                    set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
+                else if (it.empty())
+                    cur.Seek(save);
+            }
+            gauss[gp_name] = set;
+            continue;
+        }
+
+        if (gid_keyword_is(tok[0], "Result")) {
+            if (tok.size() < 6)
+                throw ReadError("GiD: malformed binary Result header: " + rec);
+            GidResult res;
+            res.mName = tok[1];
+            res.mAnalysis = tok[2];
+            res.mStep = gid_to_double(tok[3], "a result step");
+            res.mType = tok[4];
+            res.mLocation = tok[5];
+            if (tok.size() >= 7)
+                res.mGaussName = tok[6];
+            // The binary stream carries no component count either, and unlike
+            // ASCII there is no row width to infer it from -- so the declared
+            // type's own canonical dimension is the only source.
+            res.mNumComponents = res.mType == "Scalar"   ? 1
+                                 : res.mType == "Vector" ? 3
+                                 : res.mType == "Matrix" ? 6
+                                                         : 0;
+            if (res.mNumComponents == 0)
+                throw ReadError("GiD: binary result '" + res.mName + "' has type '" + res.mType +
+                                "', whose component count this reader cannot infer");
+            std::string opener;
+            while (!cur.AtEnd()) {
+                opener = cur.NextString();
+                if (gid_binary_keyword_is(opener, "Values"))
+                    break;
+            }
+            // The binary writer suppresses a repeated id exactly as the ASCII
+            // one does -- gidpost's CPostBinary_WriteValues writes the id only
+            // when it CHANGES, with its own source calling that out as "only
+            // useful when writing values for gauss points in elements". Binary
+            // has no whitespace cue to spot a continuation, so the only way to
+            // know how many reals follow an id is the Gauss-point count of the
+            // set this result names: exactly G*k, since m_LastID is reset per
+            // Values block and element ids are unique within one.
+            std::size_t gpn = 1;
+            {
+                auto git = gauss.find(res.mGaussName);
+                if (git != gauss.end() && git->second.mNumPoints > 1)
+                    gpn = static_cast<std::size_t>(git->second.mNumPoints);
+            }
+            while (!cur.TryInt(-1) && !cur.TryTerminator("End Values")) {
+                const auto id = static_cast<std::int64_t>(cur.NextInt());
+                for (std::size_t p = 0; p < gpn; ++p) {
+                    res.mIds.push_back(id);
+                    for (std::size_t k = 0; k < res.mNumComponents; ++k)
+                        res.mValues.push_back(cur.NextReal());
+                }
+            }
+            cur.TryTerminator("End Values");  // consume it if the -1 ended the loop
+            results.push_back(std::move(res));
+            continue;
+        }
+        if (gid_keyword_is(tok[0], "ResultGroup")) {
+            // Refused by name rather than skipped. Falling through to the
+            // catch-all below would drop every member of the group silently,
+            // with no diagnostic at all -- strictly worse than the ASCII path,
+            // which has always refused. Unpacking it here needs the binary
+            // record layout of ResultDescription/Values, which no file
+            // available here exercises; ASCII is supported, this is not.
+            throw ReadError(
+                "GiD: ResultGroup blocks are not supported in the binary flavour (the ascii "
+                "flavour reads them); a documented gap");
+        }
+        // Anything else is a keyword record we do not map.
+    }
+
+    return gid_assemble(staged, results, gauss, rOptions.mTimeStep);
+}
+#endif  // MESHIOPLUSPLUS_HAS_ZLIB
+
+std::string gid_missing_flavour_message(GidMode mode) {
+    if (mode == GidMode::Hdf5)
+        return "meshio++: reading the 'gid' HDF5 flavour needs a build with "
+               "-DMESHIOPLUSPLUS_WITH_HDF5=ON";
+    return "meshio++: reading the 'gid' compressed flavours needs a build with "
+           "-DMESHIOPLUSPLUS_WITH_ZLIB=ON";
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Public entry points.
+
+// ---------------------------------------------------------------------------
+// Result-type vocabulary.
+//
+// Defined in this translation unit rather than gid.cpp because this one is
+// unconditional: gid.cpp's body is behind MESHIOPLUSPLUS_HAS_GIDPOST, and a
+// build that cannot write GiD still reads it, so these must resolve there.
+
+const char* gid_result_type_name(GidResultType type) {
+    const gid_detail::GidResultTypeEntry* e = gid_detail::gid_find_result_type(type);
+    if (e == nullptr)
+        throw std::invalid_argument("meshio++: gid: unknown GidResultType value " +
+                                    std::to_string(static_cast<std::int64_t>(type)));
+    return e->mName;
+}
+
+GidResultType gid_result_type_from_name(const std::string& rName) {
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rName, e.mName))
+            return e.mType;
+    throw std::invalid_argument("meshio++: gid: unknown result type '" + rName + "'");
+}
+
+bool gid_result_dim_is_legal(GidResultType type, std::size_t k) {
+    const gid_detail::GidResultTypeEntry* e = gid_detail::gid_find_result_type(type);
+    if (e == nullptr)
+        return false;
+    for (std::size_t d : e->mDims) {
+        if (d == 0)
+            break;
+        if (d == k)
+            return true;
+    }
+    return false;
+}
+
+bool gid_readable(GidMode mode) {
+    switch (mode) {
+        case GidMode::Hdf5:
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+            return true;
+#else
+            return false;
+#endif
+        case GidMode::Binary:
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+            return true;
+#else
+            return false;
+#endif
+        default:
+            return true;  // Ascii (and Auto, which resolves to it)
+    }
+}
+
+Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
+    const GidMode resolved = gid_resolve_mode(rPath, GidMode::Auto);
+
+    if (resolved == GidMode::Hdf5) {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        return gid_read_hdf5(rPath, rOptions);
+#else
+        throw ReadError(gid_missing_flavour_message(GidMode::Hdf5));
+#endif
+    }
+
+    if (resolved == GidMode::Binary) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        const detail::FileSource src(rPath, rOptions.mMmap);
+        return gid_read_binary(gid_gunzip(src.View()), rOptions);
+#else
+        throw ReadError(gid_missing_flavour_message(GidMode::Binary));
+#endif
+    }
+
+    // ASCII (possibly gzipped: GiD_PostAsciiZipped writes the same text
+    // through gzprintf, and the extension cannot say so -- only the bytes can).
+    const auto paths = gid_ascii_paths(rPath);
+
+    const detail::FileSource mesh_src = [&] {
+        try {
+            return detail::FileSource(paths.first, rOptions.mMmap);
+        } catch (const ReadError&) {
+            throw ReadError("GiD: could not open geometry file: " + paths.first);
+        }
+    }();
+
+    std::string mesh_owned;
+    std::string_view mesh_text = mesh_src.View();
+    if (gid_looks_gzip(mesh_text)) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        mesh_owned = gid_gunzip(mesh_text);
+        mesh_text = mesh_owned;
+#else
+        throw ReadError(gid_missing_flavour_message(GidMode::Binary));
+#endif
+    }
+
+    GidStaged staged;
+    gid_parse_mesh_text(mesh_text, staged);
+
+    // The results sibling is OPTIONAL (the triangle .node/.ele precedent): a
+    // geometry file with no results reads back as geometry only.
+    std::vector<GidResult> results;
+    std::unordered_map<std::string, GidGaussSet> gauss;
+    try {
+        const detail::FileSource res_src(paths.second, rOptions.mMmap);
+        std::string res_owned;
+        std::string_view res_text = res_src.View();
+        if (gid_looks_gzip(res_text)) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+            res_owned = gid_gunzip(res_text);
+            res_text = res_owned;
+#else
+            throw ReadError(gid_missing_flavour_message(GidMode::Binary));
+#endif
+        }
+        // A MALFORMED results file is deliberately not fatal -- the geometry is
+        // still good, and the alternative is refusing a file GiD itself opens
+        // -- but it must not be SILENT either. Without this the reader's
+        // refusals ("ResultGroup in the binary flavour", a member width that
+        // disagrees with its row) were unreachable from read_gid: they were
+        // caught below and every result vanished with no diagnostic at all,
+        // including the ones that had already parsed cleanly.
+        try {
+            gid_parse_res_text(res_text, results, gauss);
+        } catch (const ReadError& e) {
+            log::warn("gid: '{}' could not be read ({}) -- reading geometry only", paths.second,
+                      e.what());
+            results.clear();
+            gauss.clear();
+        }
+    } catch (const ReadError&) {
+        // The sibling is ABSENT or unopenable, which is normal and silent: the
+        // results file is optional (the triangle .node/.ele precedent).
+        results.clear();
+        gauss.clear();
+    }
+
+    return gid_assemble(staged, results, gauss, rOptions.mTimeStep);
+}
+
+namespace {
+
+/**
+ * @brief The distinct step values a `.post.res` declares, sorted.
+ *
+ * A **header-only** scan: it reads `Result`/`ResultGroup` headers for their
+ * step field and skips each `Values` body wholesale, never tokenising a single
+ * value. That is the point -- `read_gid_metadata` exists to be cheap, and
+ * reusing `gid_parse_res_text` would materialise every array in the file just
+ * to count its steps.
+ *
+ * Tolerant by design: this feeds metadata, so a malformed header is skipped
+ * rather than thrown on. A real read of the same file still reports the
+ * problem through its own diagnostics.
+ */
+std::vector<double> gid_scan_step_values(std::string_view text) {
+    GidLineCursor cur(text);
+    std::vector<double> steps;
+    std::string line;
+    while (cur.Next(line)) {
+        std::vector<std::string> tok;
+        try {
+            tok = gid_split(line);
+        } catch (const ReadError&) {
+            continue;  // an unterminated quote: not this scan's problem
+        }
+        if (tok.empty())
+            continue;
+
+        // Both spellings put the step in a fixed slot:
+        //   Result      "<name>" "<analysis>" <step> <Type> <Location>
+        //   ResultGroup "<analysis>" <step> <Location>
+        std::size_t slot = 0;
+        if (gid_keyword_is(tok[0], "Result") && tok.size() >= 4)
+            slot = 3;
+        else if (gid_keyword_is(tok[0], "ResultGroup") && tok.size() >= 3)
+            slot = 2;
+        if (slot == 0)
+            continue;
+        try {
+            steps.push_back(gid_to_double(tok[slot], "a result step"));
+        } catch (const ReadError&) {
+            continue;
+        }
+
+        // Skip this block's Values body without reading any of it.
+        std::string inner;
+        while (cur.Next(inner))
+            if (gid_line_starts_with(inner, "End", "Values"))
+                break;
+    }
+    std::sort(steps.begin(), steps.end());
+    steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
+    return steps;
+}
+
+}  // namespace
+
+MeshMetadata read_gid_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    // Deliberately minimal: this declines (by throwing) for everything except
+    // the plain ASCII flavour, and registry_read_metadata then falls back to a
+    // full read. Declining costs a slower answer, never a failed one.
+    if (gid_resolve_mode(rPath, GidMode::Auto) != GidMode::Ascii)
+        throw ReadError("GiD: no cheap metadata path for this flavour");
+
+    const auto paths = gid_ascii_paths(rPath);
+    const detail::FileSource src(paths.first, rOptions.mMmap);
+    if (gid_looks_gzip(src.View()))
+        throw ReadError("GiD: no cheap metadata path for a gzipped file");
+
+    // Walk MESH headers and count rows, without building any array.
+    GidStaged staged;
+    gid_parse_mesh_text(src.View(), staged);
+
+    MeshMetadata meta;
+    meta.mNumPoints = staged.mNodes.size();
+    meta.mPointDim = staged.mAnyThirdCoord ? 3 : 2;
+    for (const GidBlock& b : staged.mBlocks) {
+        CellBlockInfo info;
+        info.mType = b.mMeshioType;
+        info.mNumCells = b.mElemIds.size();
+        info.mNodesPerCell = static_cast<std::size_t>(b.mNumNodes);
+        meta.mCellBlocks.push_back(info);
+    }
+
+    // Steps live in the RESULTS sibling, which this used to never open -- so
+    // gid reported one step however many it had, and the whole sequence layer
+    // (sequence_num_steps, fan-out, `info --fast`, TimeSeries) saw a single
+    // step even though the reader has always honoured ReadOptions::mTimeStep.
+    // The sibling is optional, so its absence is silent, exactly as a full
+    // read treats it.
+    try {
+        const detail::FileSource res_src(paths.second, rOptions.mMmap);
+        if (!gid_looks_gzip(res_src.View()))
+            meta.mTimeValues = gid_scan_step_values(res_src.View());
+    } catch (const ReadError&) {
+        // No results sibling: geometry only, and no steps to report.
+    }
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/gid_read.cpp =====
 // ===== begin src/cpp/src/formats/gmsh.cpp =====
 #include <algorithm>
 #include <array>
@@ -86830,7 +90436,10 @@ namespace {
 /// recorded gap in MED's metadata support, and it closes here for free the
 /// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
-    return rFormat == "xdmf" || rFormat == "exodus";
+    // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
+    // read_gid_metadata never opened the results sibling where steps live, so
+    // it reported one step and this predicate had nothing to gate on.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
 }
 
 }  // namespace
@@ -86861,13 +90470,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf") {
+    if (rFormat == "xdmf" || rFormat == "gid") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf' can); write one file per step "
-           "with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf' and 'gid' can); write one file per "
+           "step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -87138,6 +90747,28 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
+    if (ofmt == "gid") {
+        // gid's series writer is a free function taking a provider rather than
+        // a stateful class -- the transient surface meshio++ exposes IS this
+        // layer, which already carries every binding, so it needs none of its
+        // own. The lambda keeps the same one-mesh-alive property the loop
+        // below has.
+        write_gid_series(rOutput.mPath, [&](std::size_t i, double& rTime, Mesh& rMesh) {
+            if (i >= entries.size())
+                return false;
+            rMesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
+            rTime = entries[i].mTime;
+            if (entries[i].mTimeSource == SequenceTimeSource::Index &&
+                rInput.mTimeFrom != SequenceTimeFrom::Index) {
+                double t = 0.0;
+                if (seq_time_from_mesh(rMesh, t))
+                    rTime = t;
+            }
+            return true;
+        });
+        return;
+    }
+
     XdmfTimeSeriesWriter writer(rOutput.mPath, seq_resolve_data_format(rOutput.mOptions));
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -88660,6 +92291,17 @@ std::string sniff_format(const std::string& rPath) {
         return "vtk";
     if (sniff_starts_with(stripped, "$MeshFormat"))
         return "gmsh";
+    // GiD postprocess. The results file is self-identifying. The geometry file
+    // is matched on `MESH "` -- keyword, space AND opening quote -- because a
+    // bare "MESH " prefix is exactly the generic English token this file's own
+    // contract warns against claiming; the quote is what gidpost always writes
+    // and what makes the match unambiguous. Neither `.post.bin` (a deflated
+    // stream, no stable leading signature) nor `.post.h5` (the generic HDF5
+    // magic, which this file deliberately never claims) is sniffable.
+    if (sniff_starts_with(stripped, "GiD Post Results File"))
+        return "gid";
+    if (sniff_starts_with(stripped, "MESH \""))
+        return "gid";
     // PLY: "ply" on its own first line.
     if (sniff_starts_with(stripped, "ply\n") || sniff_starts_with(stripped, "ply\r") ||
         stripped == "ply")
@@ -91269,6 +94911,15 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
         {"freefem", meshioplusplus::read_freefem},
+        // UNGUARDED, unlike gid's writer entry: gidpost is write-only, so
+        // reading needs none of it. read_gid's real dependencies are per
+        // flavour (ascii: none, binary: zlib, hdf5: HDF5), which makes `gid`
+        // readable in strictly more build configurations than it is writable
+        // -- the release CLI binaries and Windows wheels build zlib-off and
+        // cannot write GiD at all, yet read the ascii flavour fine. For the
+        // same reason gid must NOT appear in registry_compiled_out(): there is
+        // no missing dependency to name.
+        {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
         {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
         {"ip", meshioplusplus::read_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
@@ -91354,6 +95005,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
+        // Write-only (gidpost has no read functions at all -- the reader is a
+        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // infers the flavour (ascii/binary/hdf5) from the path's extension.
+        {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,
                     const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
         // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
@@ -91520,6 +95175,16 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".off", "off"},
         {".post", "permas"},
         {".dato", "permas"},
+        // GiD postprocess. All four are compound extensions, and
+        // resolve_format() tries the longest suffix first, so ".post.msh"
+        // resolves to "gid" rather than falling through to ".msh" -> gmsh.
+        // Registered even when the build has no gidpost: write_gid() then
+        // throws naming the missing build flags, which is strictly better
+        // than ".post.msh" silently resolving to another format.
+        {".post.msh", "gid"},
+        {".post.res", "gid"},
+        {".post.bin", "gid"},
+        {".post.h5", "gid"},
         {".ply", "ply"},
         {".stl", "stl"},
         {".su2", "su2"},
@@ -91557,9 +95222,17 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
 
 namespace {
 
-std::string extension_of(const std::string& rPath) {
-    auto pos = rPath.find_last_of('.');
-    return pos == std::string::npos ? "" : rPath.substr(pos);
+// Longest compound extension first: ".post.msh" must win over ".msh" (gmsh),
+// or the GiD writer is unreachable by path alone. Walking from the FIRST dot
+// of the basename forward yields candidates in strictly decreasing length,
+// so the first hit is the longest match. The basename strip matters: a
+// directory component with a dot ("/home/.config/m.vtu") would otherwise
+// produce a nonsense first candidate. Behaviour-preserving for every
+// extension registered before the compound ones existed -- every one of them
+// is single-dot, so at most one candidate can ever match for those paths.
+std::string basename_of(const std::string& rPath) {
+    auto pos = rPath.find_last_of("/\\");
+    return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
 }
 
 }  // namespace
@@ -91567,11 +95240,16 @@ std::string extension_of(const std::string& rPath) {
 std::string resolve_format(const std::string& rPath, const std::string& rFormat) {
     if (!rFormat.empty())
         return rFormat;
-    auto it = registry_extension_defaults().find(extension_of(rPath));
-    if (it == registry_extension_defaults().end())
-        throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
-                                        "' -- pass an explicit format argument");
-    return it->second;
+    const auto& defaults = registry_extension_defaults();
+    const std::string base = basename_of(rPath);
+    for (std::size_t pos = base.find('.'); pos != std::string::npos;
+         pos = base.find('.', pos + 1)) {
+        auto it = defaults.find(base.substr(pos));
+        if (it != defaults.end())
+            return it->second;
+    }
+    throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
+                                    "' -- pass an explicit format argument");
 }
 
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
@@ -91612,6 +95290,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              return meshioplusplus::read_med(path, info, opts);
          }},
 #endif
+        {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
@@ -91626,6 +95305,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"exodus", meshioplusplus::read_exodus_metadata},
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
+        {"gid", meshioplusplus::read_gid_metadata},
         {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},

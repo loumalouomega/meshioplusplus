@@ -8,14 +8,18 @@ name: cli
 # the four binaries are attached to the tag's GitHub Release (creating it if
 # it doesn't exist yet, mirroring packages.yml).
 #
-# Portability trade-off (matches wheels.yml's manylinux leg): HDF5/netCDF/zlib
-# are OFF and the parallel backend is SEQ, so the release binary has no
-# optional native dependency and no OpenMP/TBB runtime to bundle. HDF5/netCDF
-# formats still work through this binary the same way they don't -- they were
-# never reachable without Python (see the "Documented gaps" note in
-# CLAUDE.md's native-CLI section); users who need them, or multi-threaded
-# operations, should build from source with `build/configure.sh --cli`
-# instead.
+# Portability trade-off (matches wheels.yml's manylinux leg): HDF5/netCDF are
+# OFF and the parallel backend is SEQ, so the release binary has no optional
+# native dependency and no OpenMP/TBB runtime to bundle. HDF5/netCDF formats
+# still work through this binary the same way they don't -- they were never
+# reachable without Python (see the "Documented gaps" note in CLAUDE.md's
+# native-CLI section); users who need them, or multi-threaded operations,
+# should build from source with `build/configure.sh --cli` instead. zlib is
+# the one exception to "optional native paths are off": MESHIOPLUSPLUS_ZLIB_STATIC
+# vendors a pinned, statically-linked zlib (see CMakeLists.txt) instead of
+# find_package(ZLIB)'s ordinary dynamic link, so the GiD postprocess writer
+# (which needs zlib unconditionally) ships here too with no new runtime
+# dependency -- verified below alongside the libstdc++/libgcc_s check.
 on:
   push:
     tags: ["v*"]
@@ -46,7 +50,8 @@ env:
     -DMESHIOPLUSPLUS_BUILD_CLI=ON
     -DMESHIOPLUSPLUS_WITH_HDF5=OFF
     -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
-    -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
+    -DMESHIOPLUSPLUS_WITH_ZLIB=ON
+    -DMESHIOPLUSPLUS_ZLIB_STATIC=ON
     -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
     -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON
 
@@ -85,8 +90,11 @@ jobs:
         run: |
           strip build/meshioplusplus
           ldd build/meshioplusplus
-          # Only baseline glibc/vdso/loader may remain -- no libstdc++/libgcc_s.
-          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s'
+          # Only baseline glibc/vdso/loader may remain: no libstdc++/libgcc_s
+          # (MESHIOPLUSPLUS_STATIC_RUNTIME) and no libz.so (MESHIOPLUSPLUS_ZLIB_STATIC
+          # -- proves the vendored static zlib actually linked rather than
+          # silently falling back to dynamic).
+          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s|libz\.so'
           build/meshioplusplus --version
 
       - name: Package (release only)
@@ -140,8 +148,11 @@ jobs:
         run: |
           strip build/meshioplusplus
           ldd build/meshioplusplus
-          # Only baseline glibc/vdso/loader may remain -- no libstdc++/libgcc_s.
-          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s'
+          # Only baseline glibc/vdso/loader may remain: no libstdc++/libgcc_s
+          # (MESHIOPLUSPLUS_STATIC_RUNTIME) and no libz.so (MESHIOPLUSPLUS_ZLIB_STATIC
+          # -- proves the vendored static zlib actually linked rather than
+          # silently falling back to dynamic).
+          ! ldd build/meshioplusplus | grep -qE 'libstdc\+\+|libgcc_s|libz\.so'
           build/meshioplusplus --version
 
       - name: Package (release only)
@@ -189,6 +200,11 @@ jobs:
         run: |
           strip build/meshioplusplus
           lipo -info build/meshioplusplus
+          otool -L build/meshioplusplus
+          # MESHIOPLUSPLUS_ZLIB_STATIC vendors zlib statically -- confirm no
+          # dynamic libz dependency snuck in (system Clang/libc++/libSystem
+          # entries are expected and fine; only a libz.*.dylib line is not).
+          ! otool -L build/meshioplusplus | grep -qi 'libz\.'
           build/meshioplusplus --version
 
       - name: Package (release only)

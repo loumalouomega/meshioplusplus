@@ -17,7 +17,7 @@ with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
 
 ```
 <!--
-Written by meshio++ v10.17.0
+Written by meshio++ v10.19.0
 Converted from bracket.msh (gmsh)
 Operation: clean(weld=true)
 Timestamp: 2026-08-24T15:00:00Z
@@ -145,7 +145,7 @@ A file's own block comes back through the ordinary summary call — no second en
 
 ```python
 meta = mp.read_metadata("bracket.vtu")
-meta["provenance"]              # ['Written by meshio++ v10.17.0', 'Converted from ...', ...]
+meta["provenance"]              # ['Written by meshio++ v10.19.0', 'Converted from ...', ...]
 meta["provenance_recognised"]   # True when the first line is our own tag format
 ```
 
@@ -153,7 +153,7 @@ meta["provenance_recognised"]   # True when the first line is our own tag format
 $ meshioplusplus info --fast bracket.vtu
   ...
   Provenance:
-    Written by meshio++ v10.17.0
+    Written by meshio++ v10.19.0
     Converted from bracket.msh (gmsh)
     Operation: Clean(Weld=true)
     Timestamp: 2026-08-24T15:00:00Z

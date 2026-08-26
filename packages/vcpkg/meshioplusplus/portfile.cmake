@@ -4,7 +4,9 @@
 # -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF) -- the same config-package
 # (meshioplusplus::meshioplusplus) + pkg-config the standalone `cmake --install`
 # produces. Eigen (a git submodule, absent from the release tarball) stays off,
-# so the MED transpose uses the hand-written fallback; pugixml is vendored.
+# so the MED transpose uses the hand-written fallback; pugixml and gidpost
+# (the GiD postprocess writer's backend) are both vendored hardcopies and so,
+# unlike Eigen, ARE present in the release tarball this port pulls.
 #
 # SHA512 must be refreshed on every release tag: it is the hash of the
 # https://github.com/loumalouomega/meshioplusplus/archive/v${VERSION}.tar.gz
@@ -28,6 +30,7 @@ vcpkg_check_features(
         lz4     MESHIOPLUSPLUS_WITH_LZ4
         kahip   MESHIOPLUSPLUS_WITH_KAHIP
         cgnslib MESHIOPLUSPLUS_WITH_CGNSLIB
+        gidpost MESHIOPLUSPLUS_WITH_GIDPOST
         cxx-api MESHIOPLUSPLUS_INSTALL_CPP
 )
 

@@ -31,10 +31,16 @@ jobs:
         # change affects us since CIBW_BUILD never targets cp38 wheels.
         uses: pypa/cibuildwheel@v4.1.0
         env:
-          # Portable wheels: the optional HDF5/netCDF/zlib native paths are
-          # turned OFF, so the only build requirement is a C++20 compiler.
-          # HDF5/netCDF formats and VTU zlib work through the h5py/netCDF4
-          # runtime extras and the stdlib, exactly as the fallback shims intend.
+          # Portable wheels: the optional HDF5/netCDF native paths are turned
+          # OFF, so the only build requirement is a C++20 compiler. HDF5/netCDF
+          # formats work through the h5py/netCDF4 runtime extras exactly as the
+          # fallback shims intend. zlib is the one exception: rather than
+          # falling back to the Python stdlib zlib (which VTU compression can
+          # do, but the GiD postprocess writer cannot -- gidpost needs zlib
+          # unconditionally), MESHIOPLUSPLUS_ZLIB_STATIC vendors a pinned,
+          # statically-linked zlib (see CMakeLists.txt) instead of an ordinary
+          # find_package(ZLIB) dynamic link, so every wheel gets both VTU zlib
+          # compression and gid write support with no new runtime dependency.
           # The parallel backend is AUTO -> OpenMP (MSVC's built-in OpenMP on Windows,
           # libomp on macOS; delvewheel/delocate bundle it automatically). Linux wheels
           # are forced to SEQ instead - see the manylinux_2_34 comment below.
@@ -71,20 +77,25 @@ jobs:
           # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
           # flag, unlike -static-libgcc/-static-libstdc++), so it would stay a dynamic
           # dependency and could still hit a versioned-symbol rejection. These wheels
-          # already trade native HDF5/netCDF/zlib for portability (see above) - SEQ
+          # already trade native HDF5/netCDF for portability (see above) - SEQ
           # keeps that trade consistent; TBB/OpenMP builds remain available from source.
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
           # -v surfaces which specific symbol/library trips the manylinux policy check,
           # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT: >-
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=OFF"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON"
             MACOSX_DEPLOYMENT_TARGET="13.3"
           CIBW_TEST_REQUIRES: "pytest h5py"
-          CIBW_TEST_COMMAND: "python -c \"import meshioplusplus; print(meshioplusplus.__version__, meshioplusplus._core.__parallel_backend__)\""
+          # The gid round trip proves the vendored static zlib actually reached
+          # this wheel's compiled _core, not just that CMake configured it.
+          CIBW_TEST_COMMAND: >-
+            python -c "import meshioplusplus; print(meshioplusplus.__version__, meshioplusplus._core.__parallel_backend__)"
+            &&
+            python -c "import meshioplusplus, numpy, tempfile, os; m = meshioplusplus.Mesh(numpy.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]), [('triangle', numpy.array([[0, 1, 2]]))]); d = tempfile.mkdtemp(); p = os.path.join(d, 'wheel_smoke.post.msh'); meshioplusplus.gid.write(p, m); back = meshioplusplus.gid.read(p); assert back.points.shape == (3, 3); print('gid write/read smoke OK')"
 
       - uses: actions/upload-artifact@v4
         with:

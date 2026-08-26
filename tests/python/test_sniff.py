@@ -16,6 +16,8 @@ from meshioplusplus._sniff import _sniff_format_py
         (b'<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid">', "vtu"),
         (b'<?xml version="1.0"?>\n<VTKFile type="PolyData">', "vtp"),
         (b"*Heading\n test\n*Node\n", "abaqus"),
+        (b"GiD Post Results File 1.2\n", "gid"),
+        (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
     ],
 )
 def test_recognizes_signatures(tmp_path, contents, expected):
@@ -28,7 +30,15 @@ def test_recognizes_signatures(tmp_path, contents, expected):
 
 @pytest.mark.parametrize(
     "contents",
-    [b"\x89HDF\r\n\x1a\n----------", b"just some random text\n"],
+    [
+        b"\x89HDF\r\n\x1a\n----------",
+        b"just some random text\n",
+        # A bare "MESH " with no opening quote is exactly the generic English
+        # token sniff_format's own contract refuses to claim (medit's .mesh,
+        # FreeFem output and hand-written headers all start this way). Only
+        # `MESH "` is unambiguous.
+        b"MESH something else\n",
+    ],
 )
 def test_ambiguous_returns_empty(tmp_path, contents):
     f = tmp_path / "mesh.dat"

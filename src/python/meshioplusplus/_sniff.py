@@ -35,6 +35,12 @@ def _sniff_format_py(path) -> str:
         return "vtk"
     if stripped.startswith(b"$MeshFormat"):
         return "gmsh"
+    # GiD postprocess -- see the C++ twin for why the geometry match includes
+    # the opening quote and why .post.bin/.post.h5 are deliberately absent.
+    if stripped.startswith(b"GiD Post Results File"):
+        return "gid"
+    if stripped.startswith(b'MESH "'):
+        return "gid"
     if stripped.startswith((b"ply\n", b"ply\r")) or stripped == b"ply":
         return "ply"
     if stripped.startswith((b"OFF", b"COFF", b"NOFF", b"STOFF")):
