@@ -164,6 +164,19 @@ enum class GidMode : int {
     /// One HDF5 file, `<stem>.post.h5`. Needs `MESHIOPLUSPLUS_WITH_HDF5=ON`
     /// in addition to `MESHIOPLUSPLUS_WITH_GIDPOST=ON`.
     Hdf5 = 3,
+    /// Two sibling files like `Ascii`, but gzipped -- gidpost's
+    /// `GiD_PostAsciiZipped`, which is the SAME ASCII text through `gzprintf`.
+    ///
+    /// Reading has always handled it (the reader sniffs the gzip magic and
+    /// inflates, since the flavour is textually identical), so this is the
+    /// write counterpart alone. It needs no dependency `Ascii` does not:
+    /// gidpost hard-requires zlib regardless.
+    ///
+    /// **`Auto` never resolves to this.** No extension can express "zipped" --
+    /// a gzipped file still ends `.post.msh` -- so the mode is explicit-only.
+    /// Inferring it would also change what every existing `.post.msh` write
+    /// produces, which is exactly what `Auto` must not do.
+    AsciiZipped = 4,
 };
 
 /**

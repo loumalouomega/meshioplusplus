@@ -806,3 +806,166 @@ def test_line_elements_accept_any_internal_count(tmp_path):
     meshioplusplus.write(path, mesh)
     back = meshioplusplus.read(path)
     assert np.allclose(back.cell_data["s"][0], vals)
+
+
+# ---------------------------------------------------------------------------
+# ResultGroup (read) and the AsciiZipped write mode.
+#
+# meshio++ never writes a ResultGroup, so every case here is a hand-authored
+# fixture -- the established pattern for this format, and the only possible one.
+# ---------------------------------------------------------------------------
+
+_RG_MESH = (
+    'MESH "s" dimension 3 ElemType Triangle Nnode 3\n'
+    "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+    "Elements\n1 1 2 3\n2 1 2 3\nEnd Elements\n"
+)
+
+
+def _rg(tmp_path, res_body, name="rg"):
+    (tmp_path / f"{name}.post.msh").write_text(_RG_MESH)
+    (tmp_path / f"{name}.post.res").write_text("GiD Post Results File 1.2\n" + res_body)
+    return tmp_path / f"{name}.post.msh"
+
+
+def test_result_group_unpacks_into_its_members(tmp_path):
+    """The manual's own example shape: Scalar + Scalar + Vector + Matrix.
+
+    Widths are 1+1+3+6 = 11, and every value is distinct, so a column
+    mis-split across members -- the failure this parser must not have -- shows
+    up as wrong values rather than merely a wrong shape.
+    """
+    path = _rg(
+        tmp_path,
+        'ResultGroup "Load Analysis" 1 OnNodes\n'
+        'ResultDescription "Ranges test" Scalar\n'
+        'ResultRangesTable "My table"\n'
+        'ResultDescription "Scalar test" Scalar\n'
+        'ResultDescription "Displacements" Vector\n'
+        'ComponentNames "X-Displ", "Y-Displ", "Z-Displ"\n'
+        'ResultDescription "Nodal Stresses" Matrix\n'
+        "Values\n"
+        "1 10 20 31 32 33 41 42 43 44 45 46\n"
+        "2 11 21 51 52 53 61 62 63 64 65 66\n"
+        "3 12 22 71 72 73 81 82 83 84 85 86\n"
+        "End Values\n",
+    )
+    mesh = meshioplusplus.gid.read(path)
+    pd = mesh.point_data
+    assert np.array_equal(np.asarray(pd["Ranges test"]), [10, 11, 12])
+    assert np.array_equal(np.asarray(pd["Scalar test"]), [20, 21, 22])
+    assert np.array_equal(
+        np.asarray(pd["Displacements"]), [[31, 32, 33], [51, 52, 53], [71, 72, 73]]
+    )
+    assert np.array_equal(
+        np.asarray(pd["Nodal Stresses"]),
+        [[41, 42, 43, 44, 45, 46], [61, 62, 63, 64, 65, 66], [81, 82, 83, 84, 85, 86]],
+    )
+
+
+def test_result_group_composes_with_multiple_gauss_points(tmp_path):
+    """A ResultGroup is unpacked into ORDINARY results, so the flat
+    ``(ncells, G*k)`` Gauss-point layout applies to its members for free --
+    there is no second apply path to keep in step."""
+    path = _rg(
+        tmp_path,
+        'GaussPoints "gp2" ElemType Triangle "s"\n'
+        "Number Of Gauss Points: 2\nNatural Coordinates: Internal\nEnd GaussPoints\n"
+        'ResultGroup "A" 1 OnGaussPoints "gp2"\n'
+        'ResultDescription "p" Scalar\n'
+        'ResultDescription "u" Vector\n'
+        "Values\n1 10 1 2 3\n 11 4 5 6\n2 20 7 8 9\n 21 10 11 12\nEnd Values\n",
+    )
+    mesh = meshioplusplus.gid.read(path)
+    assert np.array_equal(np.asarray(mesh.cell_data["p"][0]), [[10, 11], [20, 21]])
+    assert np.array_equal(
+        np.asarray(mesh.cell_data["u"][0]), [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
+    )
+    assert np.asarray(mesh.field_data["gid:gauss_points:p"]).ravel()[0] == 2
+
+
+def test_result_group_honours_an_explicit_component_count(tmp_path):
+    """``:N`` wins where present -- it is the one place GiD states a width."""
+    path = _rg(
+        tmp_path,
+        'ResultGroup "A" 1 OnNodes\n'
+        'ResultDescription "c" ComplexVector:4\n'
+        "Values\n1 1 2 3 4\n2 5 6 7 8\n3 9 10 11 12\nEnd Values\n",
+    )
+    mesh = meshioplusplus.gid.read(path)
+    assert np.asarray(mesh.point_data["c"]).shape == (3, 4)
+
+
+@pytest.mark.parametrize(
+    "body,needle",
+    [
+        (
+            'ResultGroup "A" 1 OnNodes\n'
+            'ResultDescription "a" Scalar\n'
+            'ResultDescription "b" Vector\n'
+            "Values\n1 1 2 3\nEnd Values\n",
+            "members total 4",
+        ),
+        (
+            'ResultGroup "A" 1 OnNodes\n'
+            'ResultDescription "c" ComplexVector\n'
+            "Values\n1 1 2 3 4\nEnd Values\n",
+            "must state one explicitly",
+        ),
+    ],
+)
+def test_malformed_result_group_warns_and_drops_results(tmp_path, capfd, body, needle):
+    """A malformed results file is deliberately not fatal -- the geometry is
+    still good -- but it must not be silent either.
+
+    Before this, the reader's refusals were unreachable from ``read``: they
+    were caught by the optional-sibling handler and every result vanished with
+    no diagnostic at all, including ones that had already parsed cleanly.
+    """
+    mesh = meshioplusplus.gid.read(_rg(tmp_path, body))
+    assert len(mesh.points) == 3  # geometry survives
+    assert not mesh.point_data and not mesh.cell_data
+    # capfd, not capsys: log::warn writes to the C++ stderr file descriptor,
+    # which Python-level capture never sees.
+    assert needle in capfd.readouterr().err
+
+
+def test_absent_results_sibling_stays_silent(tmp_path, capfd):
+    """The counterpart to the rule above: an *absent* .post.res is normal (the
+    file is optional), so it must NOT warn."""
+    (tmp_path / "geo.post.msh").write_text(_RG_MESH)
+    mesh = meshioplusplus.gid.read(tmp_path / "geo.post.msh")
+    assert len(mesh.points) == 3
+    assert "could not be read" not in capfd.readouterr().err
+
+
+@needs_writer
+def test_ascii_zipped_writes_gzip_and_reads_back(tmp_path):
+    """`GiD_PostAsciiZipped` is the same ASCII text through gzprintf, so
+    reading has always worked via the reader's gzip sniffing -- the extension
+    is unchanged and cannot say the file is compressed."""
+    mesh = _tri_mesh({"q": [np.array([1.0, 2.0])]})
+    mesh.point_data["T"] = np.array([1.0, 2.0, 3.0, 4.0])
+    path = tmp_path / "z.post.msh"
+    meshioplusplus.gid.write(str(path), mesh, mode="ascii_zipped")
+
+    assert path.read_bytes()[:2] == b"\x1f\x8b"  # gzip magic, despite .post.msh
+    back = meshioplusplus.gid.read(str(path))
+    assert np.allclose(back.point_data["T"], mesh.point_data["T"])
+    assert np.allclose(back.cell_data["q"][0], [1.0, 2.0])
+
+
+@needs_writer
+def test_auto_never_resolves_to_ascii_zipped(tmp_path):
+    """No extension can express "zipped", so inferring it would change what
+    every existing `.post.msh` write produces."""
+    mesh = _tri_mesh({"q": [np.array([1.0, 2.0])]})
+    path = tmp_path / "plain.post.msh"
+    meshioplusplus.write(path, mesh)
+    assert path.read_bytes()[:2] != b"\x1f\x8b"
+    assert path.read_text().lstrip().startswith("MESH")
+
+
+def test_unknown_mode_names_the_valid_ones():
+    with pytest.raises(Exception, match="ascii_zipped"):
+        meshioplusplus.gid.write("x.post.msh", _tri_mesh(), mode="nope")

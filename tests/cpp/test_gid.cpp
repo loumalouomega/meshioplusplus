@@ -715,6 +715,122 @@ TEST(GidGauss, CountMustDivideTheColumnCount) {
 }
 
 // ---------------------------------------------------------------------------
+// ResultGroup: several results packed into one wide Values row, unpacked into
+// one ORDINARY result per member so everything downstream applies unchanged.
+// meshio++ never writes one, so these are hand-authored fixtures.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Writes a geometry file plus a hand-authored `.post.res`, returning the
+/// geometry path.
+std::string gid_write_group_fixture(const std::string& rResBody) {
+    const std::string mesh_path = mt::temp_path(".post.msh");
+    const std::string res_path = mesh_path.substr(0, mesh_path.size() - 3) + "res";
+    {
+        std::ofstream f(mesh_path);
+        f << "MESH \"s\" dimension 3 ElemType Triangle Nnode 3\n"
+             "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+             "Elements\n1 1 2 3\n2 1 2 3\nEnd Elements\n";
+    }
+    {
+        std::ofstream f(res_path);
+        f << "GiD Post Results File 1.2\n" << rResBody;
+    }
+    return mesh_path;
+}
+
+}  // namespace
+
+TEST(GidResultGroup, UnpacksIntoItsMembers) {
+    // The manual's own example shape: Scalar + Scalar + Vector + Matrix, so
+    // 1+1+3+6 = 11 values after the id. Every value is distinct, so a column
+    // mis-split ACROSS members -- the failure this parser must not have --
+    // surfaces as wrong values, not merely a wrong shape.
+    const std::string path = gid_write_group_fixture(
+        "ResultGroup \"Load Analysis\" 1 OnNodes\n"
+        "ResultDescription \"a\" Scalar\n"
+        "ResultRangesTable \"My table\"\n"
+        "ResultDescription \"b\" Scalar\n"
+        "ResultDescription \"u\" Vector\n"
+        "ComponentNames \"X\", \"Y\", \"Z\"\n"
+        "ResultDescription \"s\" Matrix\n"
+        "Values\n"
+        "1 10 20 31 32 33 41 42 43 44 45 46\n"
+        "2 11 21 51 52 53 61 62 63 64 65 66\n"
+        "3 12 22 71 72 73 81 82 83 84 85 86\n"
+        "End Values\n");
+
+    const Mesh out = meshioplusplus::read_gid(path);
+    ASSERT_TRUE(out.HasPointData("a"));
+    ASSERT_TRUE(out.HasPointData("u"));
+    ASSERT_TRUE(out.HasPointData("s"));
+    EXPECT_DOUBLE_EQ(out.PointData("a").As<double>()[0], 10.0);
+    EXPECT_DOUBLE_EQ(out.PointData("b").As<double>()[0], 20.0);
+    ASSERT_EQ(out.PointData("u").Size(), 9u);   // 3 nodes x 3
+    ASSERT_EQ(out.PointData("s").Size(), 18u);  // 3 nodes x 6
+    EXPECT_DOUBLE_EQ(out.PointData("u").As<double>()[0], 31.0);
+    EXPECT_DOUBLE_EQ(out.PointData("s").As<double>()[0], 41.0);
+    EXPECT_DOUBLE_EQ(out.PointData("s").As<double>()[5], 46.0);
+}
+
+TEST(GidResultGroup, ComposesWithMultipleGaussPoints) {
+    // Members become ordinary results, so the flat (ncells, G*k) layout
+    // applies to them for free -- there is no second apply path to drift.
+    const std::string path = gid_write_group_fixture(
+        "GaussPoints \"gp2\" ElemType Triangle \"s\"\n"
+        "Number Of Gauss Points: 2\nNatural Coordinates: Internal\nEnd GaussPoints\n"
+        "ResultGroup \"A\" 1 OnGaussPoints \"gp2\"\n"
+        "ResultDescription \"p\" Scalar\n"
+        "Values\n1 10\n 11\n2 20\n 21\nEnd Values\n");
+
+    const Mesh out = meshioplusplus::read_gid(path);
+    ASSERT_TRUE(out.HasCellData("p"));
+    const NDArray& arr = out.CellData("p", 0);
+    ASSERT_EQ(arr.Size(), 4u);  // 2 cells x 2 Gauss points
+    EXPECT_DOUBLE_EQ(arr.As<double>()[0], 10.0);
+    EXPECT_DOUBLE_EQ(arr.As<double>()[1], 11.0);
+    EXPECT_DOUBLE_EQ(arr.As<double>()[2], 20.0);
+}
+
+TEST(GidResultGroup, MalformedGroupLeavesGeometryAndDropsResults) {
+    // A malformed results file is deliberately not fatal -- the geometry is
+    // still good -- and the reader's own refusal is what stops the columns
+    // being mis-associated. Before this the refusal was unreachable from
+    // read_gid: it was caught by the optional-sibling handler and every result
+    // vanished with no diagnostic at all.
+    const std::string path = gid_write_group_fixture(
+        "ResultGroup \"A\" 1 OnNodes\n"
+        "ResultDescription \"a\" Scalar\n"
+        "ResultDescription \"b\" Vector\n"
+        "Values\n1 1 2 3\nEnd Values\n");  // 3 values, members total 4
+
+    const Mesh out = meshioplusplus::read_gid(path);
+    EXPECT_EQ(out.NumPoints(), 3u);
+    EXPECT_FALSE(out.HasPointData("a"));
+    EXPECT_FALSE(out.HasPointData("b"));
+}
+
+TEST(GidResultGroup, AmbiguousMemberWidthIsRefused) {
+    // ComplexVector admits 4 or 6; with no ":N" there is nothing to pick, and
+    // guessing would mis-associate every column after it.
+    const std::string path = gid_write_group_fixture(
+        "ResultGroup \"A\" 1 OnNodes\n"
+        "ResultDescription \"c\" ComplexVector\n"
+        "Values\n1 1 2 3 4\nEnd Values\n");
+    EXPECT_FALSE(meshioplusplus::read_gid(path).HasPointData("c"));
+
+    // ... and ":N" resolves it.
+    const std::string ok = gid_write_group_fixture(
+        "ResultGroup \"A\" 1 OnNodes\n"
+        "ResultDescription \"c\" ComplexVector:4\n"
+        "Values\n1 1 2 3 4\n2 5 6 7 8\n3 9 10 11 12\nEnd Values\n");
+    const Mesh out = meshioplusplus::read_gid(ok);
+    ASSERT_TRUE(out.HasPointData("c"));
+    EXPECT_EQ(out.PointData("c").Size(), 12u);
+}
+
+// ---------------------------------------------------------------------------
 // Reader. Note the GidOrdering suite above is deliberately KEPT as a raw-bytes
 // oracle now that a reader exists: a reader+writer round trip is a weak oracle
 // that a consistently-wrong permutation survives, so it cannot replace it.

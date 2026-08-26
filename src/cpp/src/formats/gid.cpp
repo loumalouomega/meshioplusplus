@@ -39,8 +39,13 @@ GidMode gid_mode_from_name(const std::string& rName) {
         return GidMode::Binary;
     if (rName == "hdf5")
         return GidMode::Hdf5;
+    // Underscore, not a hyphen: a Julia symbol cannot carry a hyphen, which is
+    // why `gradient`'s hyphenated method names needed a translation layer
+    // there. Nothing here has to.
+    if (rName == "ascii_zipped")
+        return GidMode::AsciiZipped;
     throw std::invalid_argument("GiD: unknown mode '" + rName +
-                                "' (expected auto, ascii, binary, or hdf5)");
+                                "' (expected auto, ascii, ascii_zipped, binary, or hdf5)");
 }
 
 }  // namespace meshioplusplus
@@ -205,6 +210,8 @@ GiD_PostMode gid_post_mode(GidMode mode) {
             return GiD_PostBinary;
         case GidMode::Hdf5:
             return GiD_PostHDF5;
+        case GidMode::AsciiZipped:
+            return GiD_PostAsciiZipped;
         default:
             return GiD_PostAscii;
     }
@@ -713,7 +720,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     gid_ensure_init();
     const GiD_PostMode gid_mode = gid_post_mode(resolved);
 
-    if (resolved == GidMode::Ascii) {
+    // AsciiZipped is the same two-sibling-file layout as Ascii -- it is the
+    // identical text, only gzipped -- so it shares this branch entirely.
+    if (resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped) {
         const auto paths = gid_ascii_paths(rPath);
         const GiD_FILE fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
         if (fdm <= 0)

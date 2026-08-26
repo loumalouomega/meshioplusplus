@@ -12839,6 +12839,19 @@ enum class GidMode : int {
     /// One HDF5 file, `<stem>.post.h5`. Needs `MESHIOPLUSPLUS_WITH_HDF5=ON`
     /// in addition to `MESHIOPLUSPLUS_WITH_GIDPOST=ON`.
     Hdf5 = 3,
+    /// Two sibling files like `Ascii`, but gzipped -- gidpost's
+    /// `GiD_PostAsciiZipped`, which is the SAME ASCII text through `gzprintf`.
+    ///
+    /// Reading has always handled it (the reader sniffs the gzip magic and
+    /// inflates, since the flavour is textually identical), so this is the
+    /// write counterpart alone. It needs no dependency `Ascii` does not:
+    /// gidpost hard-requires zlib regardless.
+    ///
+    /// **`Auto` never resolves to this.** No extension can express "zipped" --
+    /// a gzipped file still ends `.post.msh` -- so the mode is explicit-only.
+    /// Inferring it would also change what every existing `.post.msh` write
+    /// produces, which is exactly what `Auto` must not do.
+    AsciiZipped = 4,
 };
 
 /**
@@ -53122,8 +53135,13 @@ GidMode gid_mode_from_name(const std::string& rName) {
         return GidMode::Binary;
     if (rName == "hdf5")
         return GidMode::Hdf5;
+    // Underscore, not a hyphen: a Julia symbol cannot carry a hyphen, which is
+    // why `gradient`'s hyphenated method names needed a translation layer
+    // there. Nothing here has to.
+    if (rName == "ascii_zipped")
+        return GidMode::AsciiZipped;
     throw std::invalid_argument("GiD: unknown mode '" + rName +
-                                "' (expected auto, ascii, binary, or hdf5)");
+                                "' (expected auto, ascii, ascii_zipped, binary, or hdf5)");
 }
 
 }  // namespace meshioplusplus
@@ -53284,6 +53302,8 @@ GiD_PostMode gid_post_mode(GidMode mode) {
             return GiD_PostBinary;
         case GidMode::Hdf5:
             return GiD_PostHDF5;
+        case GidMode::AsciiZipped:
+            return GiD_PostAsciiZipped;
         default:
             return GiD_PostAscii;
     }
@@ -53792,7 +53812,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     gid_ensure_init();
     const GiD_PostMode gid_mode = gid_post_mode(resolved);
 
-    if (resolved == GidMode::Ascii) {
+    // AsciiZipped is the same two-sibling-file layout as Ascii -- it is the
+    // identical text, only gzipped -- so it shares this branch entirely.
+    if (resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped) {
         const auto paths = gid_ascii_paths(rPath);
         const GiD_FILE fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
         if (fdm <= 0)
@@ -54382,7 +54404,7 @@ void gid_record_gauss_coords(Mesh& rMesh, const std::string& rMeshioType, const 
  * The component count itself is inferred from the FIRST row's width, since the
  * header cannot supply it.
  */
-void gid_read_values(GidLineCursor& rCur, GidResult& rResult) {
+void gid_read_values(GidLineCursor& rCur, GidResult& rResult, std::size_t knownWidth = 0) {
     std::string line;
     bool first = true;
     std::int64_t last_id = 0;
@@ -54396,12 +54418,25 @@ void gid_read_values(GidLineCursor& rCur, GidResult& rResult) {
         if (first) {
             if (tok.size() < 2)
                 throw ReadError("GiD: malformed first Values row: " + line);
-            rResult.mNumComponents = tok.size() - 1;
-            if (!gid_dim_is_legal(rResult.mType, rResult.mNumComponents))
-                throw ReadError("GiD: result '" + rResult.mName + "' declares type " +
-                                rResult.mType + " but its rows carry " +
-                                std::to_string(rResult.mNumComponents) +
-                                " components, which that type does not admit");
+            if (knownWidth != 0) {
+                // A ResultGroup states every member's width up front, so the
+                // total is known rather than inferred -- and a row that
+                // disagrees means the columns would be mis-associated across
+                // members, which must be an error, never a silent re-split.
+                if (tok.size() - 1 != knownWidth)
+                    throw ReadError("GiD: ResultGroup '" + rResult.mName + "' rows carry " +
+                                    std::to_string(tok.size() - 1) +
+                                    " values but its members total " + std::to_string(knownWidth) +
+                                    ": " + line);
+                rResult.mNumComponents = knownWidth;
+            } else {
+                rResult.mNumComponents = tok.size() - 1;
+                if (!gid_dim_is_legal(rResult.mType, rResult.mNumComponents))
+                    throw ReadError("GiD: result '" + rResult.mName + "' declares type " +
+                                    rResult.mType + " but its rows carry " +
+                                    std::to_string(rResult.mNumComponents) +
+                                    " components, which that type does not admit");
+            }
             first = false;
         }
 
@@ -54420,6 +54455,72 @@ void gid_read_values(GidLineCursor& rCur, GidResult& rResult) {
             rResult.mValues.push_back(gid_to_double(tok[base + c], "a result value"));
     }
     throw ReadError("GiD: unterminated Values block");
+}
+
+/**
+ * @brief One member of a `ResultGroup`: its name, its GiD type spelling, and
+ * how many components of the shared `Values` row it owns.
+ */
+struct GidGroupMember {
+    std::string mName;
+    std::string mType;
+    std::size_t mWidth = 0;
+};
+
+/**
+ * @brief Splits a `ResultDescription`'s `Type[:N]` into its parts and resolves
+ * the member's component width.
+ *
+ * `:N` wins when present -- it is the one place GiD states a width explicitly
+ * (a plain `Result` header carries no such suffix, which is why that path has
+ * to infer from the row). Absent it, the manual fixes the widths *inside a
+ * ResultGroup*: "Vectors in a ResultGroup always have three components",
+ * "Matrices ... always have six". Types with a single legal width take it.
+ *
+ * A type with several legal widths and no `:N` -- the `Complex*` family --
+ * is REFUSED by name rather than guessed: picking one would silently
+ * mis-associate every column after it, which is the whole failure this parser
+ * must not have.
+ */
+GidGroupMember gid_group_member(const std::string& rName, const std::string& rTypeSpec) {
+    GidGroupMember m;
+    m.mName = rName;
+    const std::size_t colon = rTypeSpec.find(':');
+    m.mType = colon == std::string::npos ? rTypeSpec : rTypeSpec.substr(0, colon);
+    if (colon != std::string::npos) {
+        m.mWidth = static_cast<std::size_t>(
+            gid_to_int(rTypeSpec.substr(colon + 1), "a ResultDescription component count"));
+        if (m.mWidth == 0)
+            throw ReadError("GiD: ResultDescription '" + rName + "' declares 0 components");
+        return m;
+    }
+
+    const gid_detail::GidResultTypeEntry* e = nullptr;
+    for (const gid_detail::GidResultTypeEntry& c : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(m.mType, c.mName))
+            e = &c;
+    if (e == nullptr)
+        throw ReadError("GiD: ResultDescription '" + rName + "' has unknown type '" + m.mType +
+                        "'");
+
+    // Inside a ResultGroup, Vector is always 3 and Matrix always 6 -- stated
+    // by the manual, and narrower than the widths those types admit in a plain
+    // Result.
+    if (gid_keyword_is(m.mType, "Vector")) {
+        m.mWidth = 3;
+        return m;
+    }
+    if (gid_keyword_is(m.mType, "Matrix")) {
+        m.mWidth = 6;
+        return m;
+    }
+    if (e->mDims[1] != 0)
+        throw ReadError("GiD: ResultDescription '" + rName + "' has type '" + m.mType +
+                        "', which admits several component counts (" +
+                        gid_detail::gid_legal_dims_text(*e) +
+                        "); a ResultGroup member must state one explicitly as 'Type:N'");
+    m.mWidth = e->mDims[0];
+    return m;
 }
 
 void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
@@ -54505,12 +54606,87 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
             continue;
         }
         if (gid_keyword_is(tok[0], "ResultGroup")) {
-            // A ResultGroup packs several results into one wide Values row.
-            // meshio++ has never written one and unpacking it needs the
-            // per-member ResultDescription dims; refuse by name rather than
-            // mis-associate columns.
-            throw ReadError(
-                "GiD: ResultGroup blocks are not supported by this reader (a documented gap)");
+            // ResultGroup "<analysis>" <step> <Location> ["<gp>"]
+            //   ResultDescription "<name>" <Type[:N]>          (one per member)
+            //   [ResultRangesTable / ComponentNames / Unit]    (interleaved)
+            //   Values
+            //     <id> v v v ...        every member's components on ONE line
+            //   End Values              (there is no "End ResultGroup")
+            //
+            // Unpacked into one ORDINARY GidResult per member, appended to the
+            // same vector a plain Result feeds. Everything downstream --
+            // point_data/cell_data routing, Gauss-point handling and the flat
+            // (ncells, G*k) layout, result-type recording, time-step selection
+            // -- then applies unchanged, with no second apply path to drift.
+            if (tok.size() < 4)
+                throw ReadError("GiD: malformed ResultGroup header: " + line);
+            const std::string analysis = tok[1];
+            const double step = gid_to_double(tok[2], "a ResultGroup step");
+            const std::string location = tok[3];
+            const std::string gauss_name = tok.size() >= 5 ? tok[4] : std::string();
+
+            std::vector<GidGroupMember> members;
+            bool saw_values = false;
+            std::string inner;
+            while (cur.Next(inner)) {
+                const std::vector<std::string> it = gid_split(inner);
+                if (it.empty())
+                    continue;
+                if (gid_keyword_is(it[0], "ResultDescription")) {
+                    if (it.size() < 3)
+                        throw ReadError("GiD: malformed ResultDescription: " + inner);
+                    members.push_back(gid_group_member(it[1], it[2]));
+                    continue;
+                }
+                if (gid_keyword_is(it[0], "ResultRangesTable") ||
+                    gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit"))
+                    continue;  // per-member properties meshio++ does not model
+                if (gid_keyword_is(it[0], "Values")) {
+                    saw_values = true;
+                    break;
+                }
+                throw ReadError("GiD: unexpected line in ResultGroup '" + analysis + "': " + inner);
+            }
+            if (members.empty())
+                throw ReadError("GiD: ResultGroup '" + analysis + "' declares no members");
+            if (!saw_values)
+                throw ReadError("GiD: ResultGroup '" + analysis + "' has no Values block");
+
+            std::size_t total = 0;
+            for (const GidGroupMember& mem : members)
+                total += mem.mWidth;
+
+            // Read the shared rows as ONE wide pseudo-result, then slice. The
+            // width is known up front from the descriptions -- better than the
+            // plain-Result path, which must infer it from the first row -- and
+            // gid_read_values' own continuation rule (a narrower row beginning
+            // with whitespace repeats the previous id) still applies, which is
+            // what makes a G>1 OnGaussPoints group work here for free.
+            GidResult wide;
+            wide.mName = analysis;
+            wide.mType = "Scalar";  // suppresses the type/width cross-check below
+            wide.mNumComponents = total;
+            gid_read_values(cur, wide, /*known_width=*/total);
+
+            std::size_t offset = 0;
+            for (const GidGroupMember& mem : members) {
+                GidResult res;
+                res.mName = mem.mName;
+                res.mAnalysis = analysis;
+                res.mStep = step;
+                res.mType = mem.mType;
+                res.mLocation = location;
+                res.mGaussName = gauss_name;
+                res.mNumComponents = mem.mWidth;
+                res.mIds = wide.mIds;
+                res.mValues.reserve(wide.mIds.size() * mem.mWidth);
+                for (std::size_t r = 0; r < wide.mIds.size(); ++r)
+                    for (std::size_t c = 0; c < mem.mWidth; ++c)
+                        res.mValues.push_back(wide.mValues[r * total + offset + c]);
+                offset += mem.mWidth;
+                rResults.push_back(std::move(res));
+            }
+            continue;
         }
         if (gid_keyword_is(tok[0], "OnGroup")) {
             gid_skip_to_end(cur, "OnGroup");
@@ -55232,6 +55408,17 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
             results.push_back(std::move(res));
             continue;
         }
+        if (gid_keyword_is(tok[0], "ResultGroup")) {
+            // Refused by name rather than skipped. Falling through to the
+            // catch-all below would drop every member of the group silently,
+            // with no diagnostic at all -- strictly worse than the ASCII path,
+            // which has always refused. Unpacking it here needs the binary
+            // record layout of ResultDescription/Values, which no file
+            // available here exercises; ASCII is supported, this is not.
+            throw ReadError(
+                "GiD: ResultGroup blocks are not supported in the binary flavour (the ascii "
+                "flavour reads them); a documented gap");
+        }
         // Anything else is a keyword record we do not map.
     }
 
@@ -55368,11 +55555,24 @@ Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
             throw ReadError(gid_missing_flavour_message(GidMode::Binary));
 #endif
         }
-        gid_parse_res_text(res_text, results, gauss);
+        // A MALFORMED results file is deliberately not fatal -- the geometry is
+        // still good, and the alternative is refusing a file GiD itself opens
+        // -- but it must not be SILENT either. Without this the reader's
+        // refusals ("ResultGroup in the binary flavour", a member width that
+        // disagrees with its row) were unreachable from read_gid: they were
+        // caught below and every result vanished with no diagnostic at all,
+        // including the ones that had already parsed cleanly.
+        try {
+            gid_parse_res_text(res_text, results, gauss);
+        } catch (const ReadError& e) {
+            log::warn("gid: '{}' could not be read ({}) -- reading geometry only", paths.second,
+                      e.what());
+            results.clear();
+            gauss.clear();
+        }
     } catch (const ReadError&) {
-        // Absent or unreadable results file: geometry only. A malformed one is
-        // deliberately not fatal either -- the geometry is still good, and the
-        // alternative is refusing a file GiD itself opens.
+        // The sibling is ABSENT or unopenable, which is normal and silent: the
+        // results file is optional (the triangle .node/.ele precedent).
         results.clear();
         gauss.clear();
     }

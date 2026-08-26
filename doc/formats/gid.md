@@ -19,7 +19,7 @@ meshioplusplus.gid.write("out.post.bin", mesh, mode="binary")
 meshioplusplus.gid.write("out.post.h5", mesh, mode="hdf5")
 ```
 
-- **`mode`** — `"auto"` (default, inferred from the extension: `.post.bin` → binary, `.post.h5` → hdf5, anything else including `.post.msh`/`.post.res` → ascii), `"ascii"`, `"binary"`, `"hdf5"`.
+- **`mode`** — `"auto"` (default, inferred from the extension: `.post.bin` → binary, `.post.h5` → hdf5, anything else including `.post.msh`/`.post.res` → ascii), `"ascii"`, `"ascii_zipped"`, `"binary"`, `"hdf5"`.
 - **`analysis_name`** — the GiD "analysis name" every result is grouped under (default `"meshio++"`).
 - **`step`** — the single time/load step every result is written at (default `1.0`).
 
@@ -27,6 +27,7 @@ Three on-disk flavours:
 
 - **ascii** — two sibling files, `<stem>.post.msh` (geometry, human-readable) + `<stem>.post.res` (results).
 - **binary** — one deflated file, `<stem>.post.bin`.
+- **ascii_zipped** — the same two sibling files as `ascii`, gzipped (gidpost's `GiD_PostAsciiZipped`, which is the identical text through `gzprintf`). The extension is unchanged — a gzipped file still ends `.post.msh` — so **`auto` never resolves to it**: inferring it would change what every existing `.post.msh` write produces. Reading needs no flag at all, since the reader sniffs the gzip magic.
 - **hdf5** — one HDF5 file, `<stem>.post.h5`; needs a build with `MESHIOPLUSPLUS_WITH_HDF5=ON` in addition to gidpost itself (gidpost's own HDF5 flavour additionally needs the HDF5 *high-level* library, `libhdf5_hl`, alongside the core C API every other HDF5-backed format here already links).
 
 A build without gidpost (`-DMESHIOPLUSPLUS_WITH_GIDPOST=OFF`, or gidpost on but zlib off) still exposes `gid.write` — it raises a `WriteError` naming the missing CMake flags rather than the path silently falling through to another format. **The statically-linked release CLI binaries and the Windows wheels build with zlib off and therefore do not carry `gid`** (documented, not a bug — see `CLAUDE.md`'s "GiD postprocess" note).
@@ -66,7 +67,7 @@ Three properties come from CIMNE's published grammar rather than from gidpost's 
 ### What reading does not recover
 
 - **Tensor and complex result types** (`Matrix`, `MainMatrix`, `Complex*`) round-trip through the `field_data` declaration below (see [Result types](#result-types)).
-- `ResultGroup`, `OnNurbs*` locations, mesh groups (`Group`/`End Group`) and range tables are skipped or refused by name rather than guessed at.
+- **`ResultGroup`** is read in the **ascii** flavour (see below); the binary flavour refuses it by name. `OnNurbs*` locations, mesh groups (`Group`/`End Group` — see the note under Gauss points) and range tables are skipped or refused by name rather than guessed at.
 
 ## Cell types
 
@@ -179,6 +180,33 @@ Reading captures a `Given` set's coordinates into the same key, so a non-standar
 
 ::: warning Binary flavour: component counts
 Unrelated to Gauss points, but easily mistaken for them: the binary stream carries neither a row width nor a component count, so its reader can only use the declared type's canonical width (Scalar 1, Vector 3, Matrix 6). A 2-component `Vector` is legal GiD and round-trips through ASCII, but is unrecoverable from binary at **any** G, including the default 1. Pinned by `test_binary_cannot_recover_a_non_canonical_component_count`.
+:::
+
+## ResultGroup
+
+A `ResultGroup` packs several results sharing one analysis, step and location into a single wide `Values` row:
+
+```
+ResultGroup "analysis" step OnNodes|OnGaussPoints ["gauss set"]
+ResultDescription "name" Type[:N]        <- one per member
+[ResultRangesTable / ComponentNames / Unit]
+Values
+  <id>  v v v v v v v v v v v            <- every member's components, one line
+End Values                                <- there is no "End ResultGroup"
+```
+
+Each member is unpacked into an **ordinary result**, so everything else — `point_data`/`cell_data` routing, the flat `(ncells, G*k)` [Gauss-point](#gauss-points) layout, result-type recording, `time_step` selection — applies to it unchanged, with no second code path to drift.
+
+**Member widths** come from `:N` when present (a `ResultDescription` is the one place GiD states a width; a plain `Result` header does not, which is why *that* path infers from the row). Absent it, the manual fixes the widths inside a group: a `Vector` is always 3 components and a `Matrix` always 6. A type admitting several widths with no `:N` — the `Complex*` family — is **refused by name** rather than guessed, since picking one would silently mis-associate every column after it. A row whose width disagrees with the members' total is refused for the same reason.
+
+**Not supported in the binary or HDF5 flavours** — refused by name there. The binary path previously *skipped* the record silently, losing the whole group with no diagnostic; that is fixed. Unpacking it would need the binary record layout of `ResultDescription`/`Values`, which no available file exercises. meshio++ never *writes* a `ResultGroup` in any flavour.
+
+::: tip Malformed results files warn rather than fail
+The `.post.res` sibling is optional, so an **absent** one is normal and silent — a mesh with no results reads back as geometry only. A **malformed** one is also not fatal (the geometry is still good, and the alternative is refusing a file GiD itself opens), but it now emits a warning naming the problem. Before this, the reader's own refusals were unreachable from `read`: they were caught by the optional-sibling handler and every result vanished with no diagnostic at all — including results that had already parsed cleanly.
+:::
+
+::: warning `Group` / `OnGroup` is not a region concept
+Easy to misread from the name: GiD's `Group`/`End Group` wraps the `MESH` blocks belonging to **one time step**, so GiD can swap meshes as the step changes — it exists for re-meshing and adaptive analyses. It is not a named entity set, and the postprocess format has **no node/element set concept at all**; the optional material column (already round-tripping as `gmsh:physical`) is its only grouping mechanism. Its real meshio++ analogue is the transient axis, not `Region`. `Group`/`OnGroup` are skipped on read.
 :::
 
 ## Provenance
