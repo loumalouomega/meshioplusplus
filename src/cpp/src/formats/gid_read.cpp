@@ -110,20 +110,30 @@ struct GidReadType {
 
 const std::vector<GidReadType>& gid_read_type_table() {
     static const std::vector<GidReadType> table = {
-        {"Point", 1, "vertex"},          {"Linear", 2, "line"},
+        {"Point", 1, "vertex"},
+        {"Linear", 2, "line"},
         {"Linear", 3, "line3"},
         // GiD spells the 1-D type two ways and accepts both: gidpost -- CIMNE's
         // own writer, vendored here -- emits "Linear" (gidpostFILES.c's
         // strElementType), while CIMNE's current published grammar names it
         // "Line". Files in the wild therefore carry either, so read both.
         // The writer is unaffected: it goes through gidpost and emits "Linear".
-        {"Line", 2, "line"},             {"Line", 3, "line3"},
+        {"Line", 2, "line"},
+        {"Line", 3, "line3"},
         {"Triangle", 3, "triangle"},
-        {"Triangle", 6, "triangle6"},    {"Quadrilateral", 4, "quad"},
-        {"Quadrilateral", 8, "quad8"},   {"Quadrilateral", 9, "quad9"},
-        {"Tetrahedra", 4, "tetra"},      {"Tetrahedra", 10, "tetra10"},
-        {"Hexahedra", 8, "hexahedron"},  {"Hexahedra", 20, "hexahedron20"},
-        {"Prism", 6, "wedge"},           {"Pyramid", 5, "pyramid"},
+        {"Triangle", 6, "triangle6"},
+        {"Quadrilateral", 4, "quad"},
+        {"Quadrilateral", 8, "quad8"},
+        {"Quadrilateral", 9, "quad9"},
+        {"Tetrahedra", 4, "tetra"},
+        {"Tetrahedra", 10, "tetra10"},
+        {"Hexahedra", 8, "hexahedron"},
+        {"Hexahedra", 20, "hexahedron20"},
+        {"Hexahedra", 27, "hexahedron27"},
+        {"Prism", 6, "wedge"},
+        {"Prism", 15, "wedge15"},
+        {"Pyramid", 5, "pyramid"},
+        {"Pyramid", 13, "pyramid13"},
     };
     return table;
 }
@@ -199,9 +209,8 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
     std::size_t i = 0;
     while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
         ++i;
-    if (i >= rLine.size() ||
-        std::tolower(static_cast<unsigned char>(rLine[i])) !=
-            std::tolower(static_cast<unsigned char>(pFirst[0])))
+    if (i >= rLine.size() || std::tolower(static_cast<unsigned char>(rLine[i])) !=
+                                 std::tolower(static_cast<unsigned char>(pFirst[0])))
         return false;
 
     const std::vector<std::string> tok = gid_split(rLine);
@@ -209,7 +218,6 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
         return false;
     return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
 }
-
 
 /// True when the line's first non-space character is `#`.
 ///
@@ -574,7 +582,8 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
             }
             rGauss[gp_name] = set;
@@ -603,7 +612,8 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                     break;
                 }
                 if (!it.empty() &&
-                    (gid_keyword_is(it[0], "ResultRangesTable") || gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
+                    (gid_keyword_is(it[0], "ResultRangesTable") ||
+                     gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
                     continue;
                 throw ReadError("GiD: unexpected line in result '" + res.mName + "': " + inner);
             }
@@ -638,8 +648,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
 void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
                        const std::map<std::int64_t, std::size_t>& rNodeRow,
                        const std::vector<GidResult>& rResults,
-                       const std::unordered_map<std::string, GidGaussSet>& rGauss,
-                       int time_step) {
+                       const std::unordered_map<std::string, GidGaussSet>& rGauss, int time_step) {
     // Distinct step values, in first-seen order, so mTimeStep can select one.
     std::vector<double> steps;
     for (const GidResult& r : rResults) {
@@ -679,10 +688,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             continue;
 
         if (res.mLocation == "OnNodes") {
-            NDArray arr(DType::Float64, res.mNumComponents == 1
-                                            ? std::vector<std::size_t>{rNodeRow.size()}
-                                            : std::vector<std::size_t>{rNodeRow.size(),
-                                                                       res.mNumComponents});
+            NDArray arr(DType::Float64,
+                        res.mNumComponents == 1
+                            ? std::vector<std::size_t>{rNodeRow.size()}
+                            : std::vector<std::size_t>{rNodeRow.size(), res.mNumComponents});
             double* dst = arr.As<double>();
             for (std::size_t i = 0; i < res.mIds.size(); ++i) {
                 auto it = rNodeRow.find(res.mIds[i]);
@@ -698,26 +707,29 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         }
 
         if (res.mLocation != "OnGaussPoints") {
-            log::warn("gid: result '{}' has location '{}', which has no meshio++ counterpart "
-                      "-- skipped",
-                      res.mName, res.mLocation);
+            log::warn(
+                "gid: result '{}' has location '{}', which has no meshio++ counterpart "
+                "-- skipped",
+                res.mName, res.mLocation);
             continue;
         }
 
         auto gp = rGauss.find(res.mGaussName);
         if (gp == rGauss.end()) {
-            log::warn("gid: result '{}' names Gauss-point set '{}', which the file never "
-                      "declares -- skipped",
-                      res.mName, res.mGaussName);
+            log::warn(
+                "gid: result '{}' names Gauss-point set '{}', which the file never "
+                "declares -- skipped",
+                res.mName, res.mGaussName);
             continue;
         }
         if (gp->second.mNumPoints != 1) {
             // meshio++'s cell_data is (n,)/(n,k), never per-node-within-cell --
             // the same structural limit MED's ELNO/ELGA already documents.
             // Averaging or taking the first point would invent data.
-            log::warn("gid: result '{}' has {} Gauss points per element; meshio++'s cell_data "
-                      "cannot represent per-point values (the MED ELNO/ELGA limit) -- skipped",
-                      res.mName, gp->second.mNumPoints);
+            log::warn(
+                "gid: result '{}' has {} Gauss points per element; meshio++'s cell_data "
+                "cannot represent per-point values (the MED ELNO/ELGA limit) -- skipped",
+                res.mName, gp->second.mNumPoints);
             continue;
         }
 
@@ -726,9 +738,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             if (rStaged.mBlocks[b].mMeshName == gp->second.mMeshName)
                 block = b;
         if (block == rStaged.mBlocks.size()) {
-            log::warn("gid: Gauss-point set '{}' is on mesh '{}', which matches no MESH block "
-                      "-- result '{}' skipped",
-                      res.mGaussName, gp->second.mMeshName, res.mName);
+            log::warn(
+                "gid: Gauss-point set '{}' is on mesh '{}', which matches no MESH block "
+                "-- result '{}' skipped",
+                res.mGaussName, gp->second.mMeshName, res.mName);
             continue;
         }
 
@@ -756,9 +769,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         }
         if (slot->second[block].Shape().size() >= 2 &&
             slot->second[block].Shape()[1] != res.mNumComponents) {
-            log::warn("gid: result '{}' has {} components on mesh '{}' but a different width "
-                      "elsewhere -- this block skipped",
-                      res.mName, res.mNumComponents, gp->second.mMeshName);
+            log::warn(
+                "gid: result '{}' has {} components on mesh '{}' but a different width "
+                "elsewhere -- this block skipped",
+                res.mName, res.mNumComponents, gp->second.mMeshName);
             continue;
         }
         double* dst = slot->second[block].As<double>();
@@ -802,13 +816,22 @@ Mesh gid_assemble(const GidStaged& rStaged, const std::vector<GidResult>& rResul
         const std::size_t ncells = block.mElemIds.size();
         NDArray conn(DType::Int64, {ncells, nn});
         std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < ncells * nn; ++i) {
-            auto it = node_row.find(block.mConn[i]);
-            if (it == node_row.end())
-                throw ReadError("GiD: element in mesh '" + block.mMeshName +
-                                "' references node id " + std::to_string(block.mConn[i]) +
-                                ", which no Coordinates block defines");
-            cp[i] = static_cast<std::int64_t>(it->second);
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (gid_common.hpp's derivation, self-inverse): meshio++
+        // slot j receives GiD file slot perm[j] -- the same table the writer
+        // uses, applied in the opposite (gather) direction.
+        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn);
+        for (std::size_t r = 0; r < ncells; ++r) {
+            for (std::size_t j = 0; j < nn; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                const std::int64_t node_id = block.mConn[r * nn + src_j];
+                auto it = node_row.find(node_id);
+                if (it == node_row.end())
+                    throw ReadError("GiD: element in mesh '" + block.mMeshName +
+                                    "' references node id " + std::to_string(node_id) +
+                                    ", which no Coordinates block defines");
+                cp[r * nn + j] = static_cast<std::int64_t>(it->second);
+            }
         }
         mesh.AddCellBlock(block.mMeshioType, std::move(conn));
     }
@@ -971,8 +994,8 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
             if (h5::has_attr(g, "MeshName"))
                 set.mMeshName = h5::read_attr_string(g, "MeshName");
             if (h5::has_attr(g, "GP_number"))
-                set.mNumPoints = static_cast<int>(
-                    gid_to_int(h5::read_attr_string(g, "GP_number"), "GP_number"));
+                set.mNumPoints =
+                    static_cast<int>(gid_to_int(h5::read_attr_string(g, "GP_number"), "GP_number"));
             gauss[h5::has_attr(g, "Name") ? h5::read_attr_string(g, "Name") : key] = set;
         }
     }
@@ -1254,7 +1277,8 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
                 else if (it.empty())
                     cur.Seek(save);

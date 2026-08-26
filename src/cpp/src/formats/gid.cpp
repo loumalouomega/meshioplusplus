@@ -95,8 +95,7 @@ namespace {
 // bottom-ring, VERTICALS, top-ring -- exactly Kratos's INTERNAL order, the
 // order Kratos's own GiD writer permutes AWAY from before emitting a file.
 // Taken at face value that figure said the identity mapping below is wrong.
-// Confirmed (against Kratos's production writer, exercised against real GiD
-// for years) that GiD's actual expected order is the one Kratos WRITES, i.e.
+// Confirmed that GiD's actual expected order is the one Kratos WRITES, i.e.
 // the post-swap order -- which is meshio++'s own hexahedron20 table, hence
 // identity here is correct and the figure is outdated. CIMNE's current
 // grammar dropped the mid-edge figures entirely for exactly this kind of
@@ -106,9 +105,36 @@ namespace {
 // this order is GiD's, which is why this comment states the resolution
 // rather than leaving the tests to imply it.
 //
-// Anything not in this table -- hexahedron27/wedge15/pyramid13 (orderings
-// not independently verified above), polygon/polyhedron (GiD has no such
-// type), every VTK-Lagrange/higher-degree type -- throws by name rather than
+// A precision on the evidence, found while deriving hexahedron27/wedge15
+// below: the reorder this rests on (`gid_mesh_container.h`) lives ONLY in
+// that file's *Conditions*-writing path -- the Elements path writes no
+// reorder at all. The conclusion above is unaffected: an Element-agnostic
+// Kratos source (`kratos/input_output/vtk_output.cpp`'s Kratos-to-VTK
+// conversion, which every Hexahedra3D20 element OR condition goes through
+// for VTK/EnSight output, mirrored in `ensight_output.cpp`) independently
+// reproduces the identical swap. That broader source is the one this file's
+// permutations for hexahedron27/wedge15 actually lean on.
+//
+// hexahedron27/wedge15 (formerly refused as "not independently verified")
+// are now supported via non-identity permutations, `gid_detail::
+// gid_cell_perm()` (formats/gid_common.hpp), derived the same way: Kratos's
+// own geometry classes (hexahedra_3d_27.h, prism_3d_15.h) order their
+// "second ring" of mid-edge nodes as VERTICALS where meshio++'s own table
+// (detail/cell_subdivision.cpp) orders it as the opposite tier (top ring /
+// top triangle) -- the identical reverse-split pattern hexahedron20 has,
+// just with no Conditions-only swap to lean on this time, so these two are
+// cross-checked purely against the Element-agnostic vtk_output.cpp/
+// ensight_output.cpp source. pyramid13 needs no permutation at all: Kratos's
+// own Pyramid3D13 order already matches meshio++'s (vtk_output.cpp
+// explicitly skips converting it, i.e. Kratos itself asserts the two agree)
+// -- and it is the only one of the three with NO Kratos-GiD precedent
+// whatsoever, since Kratos never registers a GiD mesh container for any
+// pyramid; its ordering rests on Kratos's internal geometry convention
+// alone. See gid_common.hpp's `gid_cell_perm_table()` for the full
+// derivation and the permutation arrays themselves.
+//
+// Anything not in this table -- polygon/polyhedron (GiD has no such type),
+// every VTK-Lagrange/higher-degree type -- throws by name rather than
 // guessing.
 struct GidTypeEntry {
     GiD_ElementType mType;
@@ -129,8 +155,11 @@ const std::unordered_map<std::string, GidTypeEntry>& gid_type_table() {
         {"tetra10", {GiD_Tetrahedra, 10}},
         {"hexahedron", {GiD_Hexahedra, 8}},
         {"hexahedron20", {GiD_Hexahedra, 20}},
+        {"hexahedron27", {GiD_Hexahedra, 27}},
         {"wedge", {GiD_Prism, 6}},
+        {"wedge15", {GiD_Prism, 15}},
         {"pyramid", {GiD_Pyramid, 5}},
+        {"pyramid13", {GiD_Pyramid, 13}},
     };
     return table;
 }
@@ -227,9 +256,9 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         const std::size_t ne = cb.NumCells();
         const NDArray& conn = cb.Conn();
 
-        gid_check(GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType,
-                                 static_cast<int>(npc)),
-                  "BeginMesh('" + rMeshNames[bi] + "')");
+        gid_check(
+            GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType, static_cast<int>(npc)),
+            "BeginMesh('" + rMeshNames[bi] + "')");
         if (bi == 0)
             gid_write_provenance_mesh(fd);
 
@@ -248,12 +277,22 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         // GiD_fWriteElementsId(Mat)Block already wraps BeginElements()/
         // EndElements() internally (gidpost's own header documents this) --
         // an explicit pair here would double-nest the section.
+        //
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (see the cell-type table comment above and
+        // gid_common.hpp's derivation): GiD slot j receives meshio++ node
+        // perm[j], the exact `dst[c] = src[p[c]]` convention med.cpp's
+        // `flatten_f` already uses in this repo.
+        const int* perm = gid_detail::gid_cell_perm(cb.Type(), npc);
         std::vector<int> ids(ne);
         std::vector<int> flat_conn(ne * npc);
         for (std::size_t r = 0; r < ne; ++r) {
             ids[r] = static_cast<int>(elem_base + static_cast<std::int64_t>(r));
-            for (std::size_t j = 0; j < npc; ++j)
-                flat_conn[r * npc + j] = static_cast<int>(detail::read_int(conn, r * npc + j)) + 1;
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                flat_conn[r * npc + j] =
+                    static_cast<int>(detail::read_int(conn, r * npc + src_j)) + 1;
+            }
         }
 
         if (pMatName != nullptr) {
@@ -287,13 +326,10 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
 static_assert(static_cast<int>(GidResultType::Scalar) == GiD_Scalar, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::Vector) == GiD_Vector, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::Matrix) == GiD_Matrix, "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) ==
-                  GiD_PlainDeformationMatrix,
+static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) == GiD_PlainDeformationMatrix,
               "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix,
-              "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes,
-              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::ComplexScalar) == GiD_ComplexScalar,
               "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::ComplexVector) == GiD_ComplexVector,
@@ -316,8 +352,8 @@ static_assert(static_cast<int>(GidResultType::ComplexMatrix) == GiD_ComplexMatri
  *         standing rule).
  */
 const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh,
-                                                              const std::string& rName,
-                                                              std::size_t k) {
+                                                               const std::string& rName,
+                                                               std::size_t k) {
     const std::string key = std::string(kGidResultTypePrefix) + rName;
     if (!rMesh.HasFieldData(key))
         return nullptr;
@@ -369,9 +405,8 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
             for (std::size_t c = 0; c < k; ++c)
                 vals[r * k + c] = detail::read_double(rArr, r * k + c);
         gid_check(GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr,
-                                        static_cast<int>(rows), rIds.data(), static_cast<int>(k),
-                                        vals.data()),
+                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
+                                        rIds.data(), static_cast<int>(k), vals.data()),
                   "WriteResultBlock('" + rName + "')");
         return;
     }
@@ -385,8 +420,8 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
             col[r] = detail::read_double(rArr, r * k + c);
         const std::string cname = rName + "_" + std::to_string(c + 1);
         gid_check(GiD_fWriteResultBlock(fd, cname.c_str(), rAnalysis.c_str(), step, GiD_Scalar, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr,
-                                        static_cast<int>(rows), rIds.data(), 1, col.data()),
+                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
+                                        rIds.data(), 1, col.data()),
                   "WriteResultBlock('" + cname + "')");
     }
 }
@@ -441,7 +476,7 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             continue;  // already written as the geometry file's material column
         if (rMesh.CellDataNumBlocks(name) != nb) {
             log::warn("gid: cell_data '{}' has {} blocks, mesh has {} -- skipped", name,
-                     rMesh.CellDataNumBlocks(name), nb);
+                      rMesh.CellDataNumBlocks(name), nb);
             continue;
         }
         for (std::size_t bi = 0; bi < nb; ++bi) {
@@ -453,8 +488,8 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             for (std::size_t r = 0; r < ne; ++r)
                 ids[r] = static_cast<int>(rElemBase[bi] + static_cast<std::int64_t>(r));
             const std::string gauss_name = "gp_" + rMeshNames[bi];
-            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis, step,
-                                   GiD_OnGaussPoints, gauss_name);
+            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis,
+                                   step, GiD_OnGaussPoints, gauss_name);
         }
     }
 }
@@ -480,7 +515,7 @@ std::string gid_build_option(GidMode mode) {
 }
 
 void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
-              const std::string& rAnalysisName, double stepValue) {
+               const std::string& rAnalysisName, double stepValue) {
     const GidMode resolved = gid_resolve_mode(rPath, mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
@@ -572,7 +607,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
 
 namespace meshioplusplus {
 
-bool gid_available(GidMode) { return false; }
+bool gid_available(GidMode) {
+    return false;
+}
 
 std::string gid_build_option(GidMode mode) {
     if (mode == GidMode::Hdf5)

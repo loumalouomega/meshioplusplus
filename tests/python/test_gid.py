@@ -271,21 +271,44 @@ def test_extension_dispatch_is_unchanged(name, expected):
 
 
 def test_unsupported_cell_type_raises_by_name(tmp_path):
-    """hexahedron27/wedge15/pyramid13 have unverified orderings.
+    """Sphere/Circle rows carry a radius, not a node list -- a genuinely and
+    permanently unsupported row shape, not merely an unverified ordering.
 
-    The writer already refuses them; the reader refuses them too, so the
-    position stays consistent rather than guessing a permutation in one
-    direction that we decline to guess in the other.
+    hexahedron27/wedge15/pyramid13 used to be this test's fixture; they are
+    now supported (Kratos-derived orderings) and read successfully -- see
+    test_gid_cpp's GidOrdering suite and the C++ twin of this test.
     """
-    path = tmp_path / "h27.post.msh"
+    path = tmp_path / "sphere.post.msh"
     path.write_text(
-        'MESH "m" dimension 3 ElemType Hexahedra Nnode 27\n'
+        'MESH "m" dimension 3 ElemType Sphere Nnode 1\n'
         "Coordinates\n1 0 0 0\nEnd Coordinates\n"
         "Elements\nEnd Elements\n"
     )
     # Direct, for the same reason as test_out_of_range_time_step_raises.
-    with pytest.raises(Exception, match="Hexahedra"):
+    with pytest.raises(Exception, match="Sphere"):
         meshioplusplus.gid.read(path)
+
+
+@pytest.mark.parametrize(
+    "cell_type,nnode",
+    [("hexahedron27", 27), ("wedge15", 15), ("pyramid13", 13)],
+)
+def test_kratos_derived_orderings_round_trip(tmp_path, cell_type, nnode):
+    """hexahedron27/wedge15/pyramid13, closing the last roadmap item for this
+    format: orderings derived from Kratos's own geometry classes
+    (kratos/geometries/hexahedra_3d_27.h, prism_3d_15.h, pyramid_3d_13.h),
+    cross-checked against Kratos's Element-agnostic vtk_output.cpp/
+    ensight_output.cpp conversion. The real oracle is the C++ GidOrdering
+    bytes tests (which check the raw file against known geometry, not a round
+    trip); this is the cheaper regression lock over the same path.
+    """
+    pts = np.arange(nnode * 3, dtype=float).reshape(nnode, 3)
+    mesh = meshioplusplus.Mesh(pts, [(cell_type, np.arange(nnode).reshape(1, nnode))])
+    path = tmp_path / f"{cell_type}.post.msh"
+    meshioplusplus.gid.write(str(path), mesh)
+    back = meshioplusplus.gid.read(str(path))
+    assert back.cells[0].type == cell_type
+    assert back.cells[0].data.shape == (1, nnode)
 
 
 def test_buffer_is_refused():

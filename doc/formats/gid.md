@@ -73,28 +73,33 @@ Three properties come from CIMNE's published grammar rather than from gidpost's 
 
 GiD has exactly ten element types; higher-order variants share a type with a larger node count. One meshio++ cell block becomes one named GiD mesh (`"<celltype>_<blockindex>"`, since GiD results reference meshes by name).
 
-| meshio++ type | GiD element type | Nnode |
-|---|---|---|
-| `vertex` | `Point` | 1 |
-| `line` / `line3` | `Linear` | 2 / 3 |
-| `triangle` / `triangle6` | `Triangle` | 3 / 6 |
-| `quad` / `quad8` / `quad9` | `Quadrilateral` | 4 / 8 / 9 |
-| `tetra` / `tetra10` | `Tetrahedra` | 4 / 10 |
-| `hexahedron` / `hexahedron20` | `Hexahedra` | 8 / 20 |
-| `wedge` | `Prism` | 6 |
-| `pyramid` | `Pyramid` | 5 |
+| meshio++ type | GiD element type | Nnode | Node permutation |
+|---|---|---|---|
+| `vertex` | `Point` | 1 | identity |
+| `line` / `line3` | `Linear` | 2 / 3 | identity |
+| `triangle` / `triangle6` | `Triangle` | 3 / 6 | identity |
+| `quad` / `quad8` / `quad9` | `Quadrilateral` | 4 / 8 / 9 | identity |
+| `tetra` / `tetra10` | `Tetrahedra` | 4 / 10 | identity |
+| `hexahedron` / `hexahedron20` | `Hexahedra` | 8 / 20 | identity |
+| `hexahedron27` | `Hexahedra` | 27 | **top ring ↔ verticals**, 3 face-centre swaps |
+| `wedge` | `Prism` | 6 | identity |
+| `wedge15` | `Prism` | 15 | **top triangle ↔ verticals** |
+| `pyramid` | `Pyramid` | 5 | identity |
+| `pyramid13` | `Pyramid` | 13 | identity |
 
-Every entry is **identity** (no node permutation), cross-checked against Kratos Multiphysics's own production GiD writer (`kratos/includes/gid_mesh_container.h`). Kratos's only reordering is for `hexahedron20`, and it exists because Kratos's *internal* order (corners, bottom ring, verticals, top ring) differs from the order it writes to GiD (corners, bottom ring, top ring, verticals) — which is, edge for edge, meshio++'s own `hexahedron20` table, hence identity here. Kratos applies no reorder at all for `triangle6`/`tetra10`/`quad8`, and those edge tables match meshio++'s edge-for-edge too.
+Every type's ordering is cross-checked against Kratos Multiphysics's own geometry classes (`kratos/geometries/`). For most types this is **identity** — no node permutation — because Kratos applies no reorder at all when writing them (`triangle6`/`tetra10`/`quad8`'s edge tables match meshio++'s edge-for-edge too). `hexahedron20`, `hexahedron27` and `wedge15` are the exceptions: Kratos's own *internal* node order splits the mid-edge nodes into "bottom ring, verticals, top ring" (or the triangular-prism equivalent), while meshio++'s own table (mirroring VTK) splits them "bottom ring, top ring, verticals" — the reverse pairing of the last two blocks. `hexahedron27` additionally permutes its six face-centre nodes; its body centre and every corner/bottom-ring node are unaffected. `wedge15`'s permutation is the same two-block swap, one tier smaller. Every permutation here is **self-inverse** (an involution — `dst[c] = src[p[c]]`, the same convention `med.cpp`'s `med_node_perm()` already uses in this repo), so the identical table serves both the writer and the reader; see `gid_common.hpp`'s `gid_cell_perm_table()` for the derivation and the literal arrays. `pyramid13` needs no permutation at all — Kratos's own `Pyramid3D13` order already matches meshio++'s.
 
 ::: tip `hexahedron20` — a documentary conflict, resolved
 CIMNE's own GiD 6-era figure for the 20-node hexahedron (`hexa20.gif`) numbers the mid-edge nodes **bottom ring, verticals, top ring** — that is, exactly Kratos's *internal* order, the one Kratos's own GiD writer permutes *away* from before emitting a file. Taken at face value, the figure said the identity mapping above was wrong.
 
-Confirmed against Kratos's production writer, exercised against real GiD for years: GiD's actual expected order is the one Kratos **writes**, i.e. the post-swap order — which is meshio++'s own `hexahedron20` table. Identity is therefore correct, and the figure is outdated; CIMNE's current published grammar dropped the mid-edge figures entirely for exactly this kind of staleness, saying only *"hierarchical order … vertex nodes first, then the middle ones"* with no order given. `hexahedron8` and every lower-order type were never in question — they have no mid-edge nodes — nor were `tetra10`/`triangle6`/`quad8`/`quad9`.
+Confirmed: GiD's actual expected order is the one Kratos **writes**, i.e. the post-swap order — which is meshio++'s own `hexahedron20` table. Identity is therefore correct, and the figure is outdated; CIMNE's current published grammar dropped the mid-edge figures entirely for exactly this kind of staleness, saying only *"hierarchical order … vertex nodes first, then the middle ones"* with no order given. `hexahedron8` and every lower-order type were never in question — they have no mid-edge nodes — nor were `tetra10`/`triangle6`/`quad8`/`quad9`.
+
+A precision on the evidence, found while deriving `hexahedron27`/`wedge15`'s own orderings: the specific reorder this conclusion cites (`gid_mesh_container.h`) lives **only in that file's *Conditions*-writing path** — the Elements path (the one a volume cell type like a hexahedron actually goes through) writes no reorder at all. The conclusion is unaffected: an Element-agnostic Kratos source (`kratos/input_output/vtk_output.cpp`'s general Kratos-to-VTK conversion, which every `Hexahedra3D20` element *or* condition goes through for VTK/EnSight output, mirrored in `ensight_output.cpp`) independently reproduces the identical swap. That broader, more precise source is what `hexahedron27`/`wedge15`'s own permutations below actually lean on.
 :::
 
-The `GidOrdering` suite in `tests/cpp/test_gid.cpp` pins that the writer applies **no permutation** — it emits slots in the order it was handed them. It deliberately does *not* claim to pin that meshio++'s order is GiD's: its expected positions are built from meshio++'s own edge table, so under an identity mapping the assertion is a tautology. Only an external oracle could close that gap.
+The `GidOrdering` suite in `tests/cpp/test_gid.cpp` pins that the writer applies **exactly the permutation documented above** — never more, never less — by writing a cell at geometrically-known corner/edge-midpoint/face-centre/body-centre positions and re-parsing the raw file to check where each slot's value actually landed, with the expected permutation written out literally in the test rather than by calling back into the implementation's own table. For the identity types this pins that no permutation is applied; it deliberately does *not* claim to pin that meshio++'s identity mapping *is* GiD's own convention, since (absent a real GiD-written oracle) there is no way to fully rule that out. For `hexahedron27`/`wedge15`, the permutation *is* the thing being pinned, cross-checked against two independent Kratos sources per the derivation above.
 
-**Not yet supported** — throws a `WriteError` naming the type, never a guess: `hexahedron27`, `wedge15`, `pyramid13` (orderings not independently verified); `polygon`/`polyhedron` (GiD has no such type); every `VTK_LAGRANGE_*` and higher-degree Lagrange type.
+`hexahedron27` and `wedge15` were previously refused in both directions as "not independently verified"; they are now supported, cross-checked against Kratos's own geometry classes as described above. Still **not supported** — throws a `WriteError`/`ReadError` naming the type, never a guess: `polygon`/`polyhedron` (GiD has no such type); every `VTK_LAGRANGE_*` and higher-degree Lagrange type.
 
 ## Geometry and ids
 

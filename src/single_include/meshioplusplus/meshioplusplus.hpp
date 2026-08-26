@@ -23557,6 +23557,115 @@ inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
     return nullptr;
 }
 
+/**
+ * @brief Node-slot permutations for the three quadratic cell types whose GiD
+ * ordering was, until now, "not independently verified" -- `hexahedron27`,
+ * `wedge15`, `pyramid13`.
+ *
+ * Shared between the writer and the reader for the same reason the result
+ * type table above is: a permutation transcribed twice risks two silently
+ * different tables, and a wrong entry here does not fail loudly -- it writes
+ * or reads a plausible file with quietly transposed quadratic nodes.
+ *
+ * ## Derivation
+ *
+ * Every entry meshio++ already supported was cross-checked against Kratos
+ * Multiphysics's production GiD writer; these three were refused because no
+ * such cross-check existed. Read from Kratos's own geometry classes
+ * (`kratos/geometries/hexahedra_3d_27.h`, `prism_3d_15.h`, `pyramid_3d_13.h`)
+ * and independently confirmed against Kratos's Kratos-to-VTK conversion
+ * utility (`kratos/input_output/vtk_output.cpp`, mirrored in
+ * `ensight_output.cpp`) -- an Element-agnostic source, unlike the
+ * Hexahedra3D20 reorder in `gid_mesh_container.h`, which the research
+ * confirming this table found lives only in that file's *Conditions*-writing
+ * path (elements are written with no reorder at all). That does not change
+ * `hexahedron20`'s own identity mapping below -- `vtk_output.cpp`'s
+ * conversion, which every Hexahedra3D20 element or condition goes through for
+ * VTK/EnSight output, independently reproduces the identical swap -- but it
+ * is the more precise citation and the one these three lean on, since two of
+ * them (`hexahedron27`, `wedge15`) have no GiD-specific Kratos precedent at
+ * all beyond "no reorder is applied", and the third (`pyramid13`) has no
+ * Kratos GiD precedent whatsoever -- Kratos never registers a GiD mesh
+ * container for any pyramid, of any order, so its ordering rests on Kratos's
+ * internal geometry convention alone (confirmed to already equal VTK's own
+ * convention by `vtk_output.cpp` explicitly skipping it: `Pyramid3D13` falls
+ * through that function's `else` branch, needing no conversion).
+ *
+ * `hexahedron27`: meshio++'s own table (`cell_subdivision.cpp`) orders edges
+ * 8-11 bottom ring, 12-15 TOP ring, 16-19 verticals; Kratos's internal order
+ * is 8-11 bottom ring, 12-15 VERTICALS, 16-19 top ring -- the reverse split.
+ * Face centres 20-25 also disagree: meshio++ orders them x-min/x-max/y-min/
+ * y-max/bottom/top, Kratos orders them bottom/y-min/x-max/y-max/x-min/top.
+ * Body centre 26 agrees. The permutation below is `dst[c] = src[p[c]]` (the
+ * `med_node_perm()`/`flatten_f`/`unflatten_f` convention already used
+ * elsewhere in this repo, reused rather than reinvented) mapping a
+ * GiD/Kratos slot to the meshio++ index holding the same edge/face/body; it
+ * is self-inverse (an involution), like every other permutation this
+ * convention has produced so far, and matches `vtk_output.cpp`'s own
+ * Kratos-index array verbatim.
+ *
+ * `wedge15`: meshio++ orders edges 6-8 bottom triangle, 9-11 TOP triangle,
+ * 12-14 verticals; Kratos orders 6-8 bottom triangle, 9-11 VERTICALS, 12-14
+ * top triangle -- the same reverse-split pattern, and again self-inverse.
+ *
+ * `pyramid13`: identical in both conventions (base-ring edges 5-8, apex
+ * edges 9-12) -- no permutation, `mPerm == nullptr`.
+ */
+struct GidCellPermEntry {
+    const char* mMeshioName;
+    std::size_t mNumNodes;
+    const int* mPerm;  // nullptr = identity
+};
+
+/// `dst[c] = src[p[c]]`, self-inverse. See `hexahedron27`'s derivation above;
+/// independently confirmed against Kratos's `vtk_output.cpp` array verbatim.
+/// Indexed and grouped deliberately, not a flat literal, so a slipped digit
+/// here is easy to catch by eye against the derivation comment above:
+///   corners 0-7, bottom-ring edges 8-11: identity
+///   top-ring edges 12-15 <- meshio++'s verticals 16-19
+///   verticals 16-19      <- meshio++'s top-ring edges 12-15
+///   face centres: 20<-24(bottom), 21<-22(y-min), 22<-21(x-max),
+///                 23<-23(y-max, fixed), 24<-20(x-min), 25<-25(top, fixed)
+///   body centre 26: fixed
+inline constexpr int kGidHexahedron27Perm[27] = {
+    0,  1,  2,  3,  4,  5,  6, 7,  // corners
+    8,  9,  10, 11,                // bottom-ring edges
+    16, 17, 18, 19,                // slot 12-15 (top ring)   <- verticals
+    12, 13, 14, 15,                // slot 16-19 (verticals)  <- top ring
+    24, 22, 21, 23, 20, 25,        // face centres 20-25
+    26,                            // body centre
+};
+
+/// `dst[c] = src[p[c]]`, self-inverse. See `wedge15`'s derivation above:
+///   corners 0-5, bottom-triangle edges 6-8: identity
+///   top-triangle edges 9-11 <- meshio++'s verticals 12-14
+///   verticals 12-14         <- meshio++'s top-triangle edges 9-11
+inline constexpr int kGidWedge15Perm[15] = {
+    0,  1,  2,  3, 4, 5,  // corners
+    6,  7,  8,            // bottom-triangle edges
+    12, 13, 14,           // slot 9-11 (top triangle) <- verticals
+    9,  10, 11,           // slot 12-14 (verticals)   <- top triangle
+};
+
+inline const std::vector<GidCellPermEntry>& gid_cell_perm_table() {
+    static const std::vector<GidCellPermEntry> table = {
+        {"hexahedron27", 27, kGidHexahedron27Perm},
+        {"wedge15", 15, kGidWedge15Perm},
+        {"pyramid13", 13, nullptr},
+    };
+    return table;
+}
+
+/// The permutation for @p rMeshioName / @p nnode, or nullptr for identity
+/// (either because the type needs none, like `pyramid13`, or because it is
+/// not in this table at all -- every OTHER GiD-supported type is identity).
+inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnode) {
+    for (const GidCellPermEntry& e : gid_cell_perm_table())
+        if (e.mNumNodes == nnode && rMeshioName == e.mMeshioName)
+            return e.mPerm;
+    return nullptr;
+}
+
 }  // namespace gid_detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/gid_common.hpp =====
@@ -52908,8 +53017,7 @@ namespace {
 // bottom-ring, VERTICALS, top-ring -- exactly Kratos's INTERNAL order, the
 // order Kratos's own GiD writer permutes AWAY from before emitting a file.
 // Taken at face value that figure said the identity mapping below is wrong.
-// Confirmed (against Kratos's production writer, exercised against real GiD
-// for years) that GiD's actual expected order is the one Kratos WRITES, i.e.
+// Confirmed that GiD's actual expected order is the one Kratos WRITES, i.e.
 // the post-swap order -- which is meshio++'s own hexahedron20 table, hence
 // identity here is correct and the figure is outdated. CIMNE's current
 // grammar dropped the mid-edge figures entirely for exactly this kind of
@@ -52919,9 +53027,36 @@ namespace {
 // this order is GiD's, which is why this comment states the resolution
 // rather than leaving the tests to imply it.
 //
-// Anything not in this table -- hexahedron27/wedge15/pyramid13 (orderings
-// not independently verified above), polygon/polyhedron (GiD has no such
-// type), every VTK-Lagrange/higher-degree type -- throws by name rather than
+// A precision on the evidence, found while deriving hexahedron27/wedge15
+// below: the reorder this rests on (`gid_mesh_container.h`) lives ONLY in
+// that file's *Conditions*-writing path -- the Elements path writes no
+// reorder at all. The conclusion above is unaffected: an Element-agnostic
+// Kratos source (`kratos/input_output/vtk_output.cpp`'s Kratos-to-VTK
+// conversion, which every Hexahedra3D20 element OR condition goes through
+// for VTK/EnSight output, mirrored in `ensight_output.cpp`) independently
+// reproduces the identical swap. That broader source is the one this file's
+// permutations for hexahedron27/wedge15 actually lean on.
+//
+// hexahedron27/wedge15 (formerly refused as "not independently verified")
+// are now supported via non-identity permutations, `gid_detail::
+// gid_cell_perm()` (formats/gid_common.hpp), derived the same way: Kratos's
+// own geometry classes (hexahedra_3d_27.h, prism_3d_15.h) order their
+// "second ring" of mid-edge nodes as VERTICALS where meshio++'s own table
+// (detail/cell_subdivision.cpp) orders it as the opposite tier (top ring /
+// top triangle) -- the identical reverse-split pattern hexahedron20 has,
+// just with no Conditions-only swap to lean on this time, so these two are
+// cross-checked purely against the Element-agnostic vtk_output.cpp/
+// ensight_output.cpp source. pyramid13 needs no permutation at all: Kratos's
+// own Pyramid3D13 order already matches meshio++'s (vtk_output.cpp
+// explicitly skips converting it, i.e. Kratos itself asserts the two agree)
+// -- and it is the only one of the three with NO Kratos-GiD precedent
+// whatsoever, since Kratos never registers a GiD mesh container for any
+// pyramid; its ordering rests on Kratos's internal geometry convention
+// alone. See gid_common.hpp's `gid_cell_perm_table()` for the full
+// derivation and the permutation arrays themselves.
+//
+// Anything not in this table -- polygon/polyhedron (GiD has no such type),
+// every VTK-Lagrange/higher-degree type -- throws by name rather than
 // guessing.
 struct GidTypeEntry {
     GiD_ElementType mType;
@@ -52942,8 +53077,11 @@ const std::unordered_map<std::string, GidTypeEntry>& gid_type_table() {
         {"tetra10", {GiD_Tetrahedra, 10}},
         {"hexahedron", {GiD_Hexahedra, 8}},
         {"hexahedron20", {GiD_Hexahedra, 20}},
+        {"hexahedron27", {GiD_Hexahedra, 27}},
         {"wedge", {GiD_Prism, 6}},
+        {"wedge15", {GiD_Prism, 15}},
         {"pyramid", {GiD_Pyramid, 5}},
+        {"pyramid13", {GiD_Pyramid, 13}},
     };
     return table;
 }
@@ -53040,9 +53178,9 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         const std::size_t ne = cb.NumCells();
         const NDArray& conn = cb.Conn();
 
-        gid_check(GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType,
-                                 static_cast<int>(npc)),
-                  "BeginMesh('" + rMeshNames[bi] + "')");
+        gid_check(
+            GiD_fBeginMesh(fd, rMeshNames[bi].c_str(), GiD_3D, entry->mType, static_cast<int>(npc)),
+            "BeginMesh('" + rMeshNames[bi] + "')");
         if (bi == 0)
             gid_write_provenance_mesh(fd);
 
@@ -53061,12 +53199,22 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
         // GiD_fWriteElementsId(Mat)Block already wraps BeginElements()/
         // EndElements() internally (gidpost's own header documents this) --
         // an explicit pair here would double-nest the section.
+        //
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (see the cell-type table comment above and
+        // gid_common.hpp's derivation): GiD slot j receives meshio++ node
+        // perm[j], the exact `dst[c] = src[p[c]]` convention med.cpp's
+        // `flatten_f` already uses in this repo.
+        const int* perm = gid_detail::gid_cell_perm(cb.Type(), npc);
         std::vector<int> ids(ne);
         std::vector<int> flat_conn(ne * npc);
         for (std::size_t r = 0; r < ne; ++r) {
             ids[r] = static_cast<int>(elem_base + static_cast<std::int64_t>(r));
-            for (std::size_t j = 0; j < npc; ++j)
-                flat_conn[r * npc + j] = static_cast<int>(detail::read_int(conn, r * npc + j)) + 1;
+            for (std::size_t j = 0; j < npc; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                flat_conn[r * npc + j] =
+                    static_cast<int>(detail::read_int(conn, r * npc + src_j)) + 1;
+            }
         }
 
         if (pMatName != nullptr) {
@@ -53100,13 +53248,10 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
 static_assert(static_cast<int>(GidResultType::Scalar) == GiD_Scalar, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::Vector) == GiD_Vector, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::Matrix) == GiD_Matrix, "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) ==
-                  GiD_PlainDeformationMatrix,
+static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) == GiD_PlainDeformationMatrix,
               "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix,
-              "GidResultType drift");
-static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes,
-              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes, "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::ComplexScalar) == GiD_ComplexScalar,
               "GidResultType drift");
 static_assert(static_cast<int>(GidResultType::ComplexVector) == GiD_ComplexVector,
@@ -53129,8 +53274,8 @@ static_assert(static_cast<int>(GidResultType::ComplexMatrix) == GiD_ComplexMatri
  *         standing rule).
  */
 const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh,
-                                                              const std::string& rName,
-                                                              std::size_t k) {
+                                                               const std::string& rName,
+                                                               std::size_t k) {
     const std::string key = std::string(kGidResultTypePrefix) + rName;
     if (!rMesh.HasFieldData(key))
         return nullptr;
@@ -53182,9 +53327,8 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
             for (std::size_t c = 0; c < k; ++c)
                 vals[r * k + c] = detail::read_double(rArr, r * k + c);
         gid_check(GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr,
-                                        static_cast<int>(rows), rIds.data(), static_cast<int>(k),
-                                        vals.data()),
+                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
+                                        rIds.data(), static_cast<int>(k), vals.data()),
                   "WriteResultBlock('" + rName + "')");
         return;
     }
@@ -53198,8 +53342,8 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
             col[r] = detail::read_double(rArr, r * k + c);
         const std::string cname = rName + "_" + std::to_string(c + 1);
         gid_check(GiD_fWriteResultBlock(fd, cname.c_str(), rAnalysis.c_str(), step, GiD_Scalar, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr,
-                                        static_cast<int>(rows), rIds.data(), 1, col.data()),
+                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
+                                        rIds.data(), 1, col.data()),
                   "WriteResultBlock('" + cname + "')");
     }
 }
@@ -53254,7 +53398,7 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             continue;  // already written as the geometry file's material column
         if (rMesh.CellDataNumBlocks(name) != nb) {
             log::warn("gid: cell_data '{}' has {} blocks, mesh has {} -- skipped", name,
-                     rMesh.CellDataNumBlocks(name), nb);
+                      rMesh.CellDataNumBlocks(name), nb);
             continue;
         }
         for (std::size_t bi = 0; bi < nb; ++bi) {
@@ -53266,8 +53410,8 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             for (std::size_t r = 0; r < ne; ++r)
                 ids[r] = static_cast<int>(rElemBase[bi] + static_cast<std::int64_t>(r));
             const std::string gauss_name = "gp_" + rMeshNames[bi];
-            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis, step,
-                                   GiD_OnGaussPoints, gauss_name);
+            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis,
+                                   step, GiD_OnGaussPoints, gauss_name);
         }
     }
 }
@@ -53293,7 +53437,7 @@ std::string gid_build_option(GidMode mode) {
 }
 
 void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
-              const std::string& rAnalysisName, double stepValue) {
+               const std::string& rAnalysisName, double stepValue) {
     const GidMode resolved = gid_resolve_mode(rPath, mode);
     if (!gid_available(resolved))
         throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
@@ -53385,7 +53529,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
 
 namespace meshioplusplus {
 
-bool gid_available(GidMode) { return false; }
+bool gid_available(GidMode) {
+    return false;
+}
 
 std::string gid_build_option(GidMode mode) {
     if (mode == GidMode::Hdf5)
@@ -53485,20 +53631,30 @@ struct GidReadType {
 
 const std::vector<GidReadType>& gid_read_type_table() {
     static const std::vector<GidReadType> table = {
-        {"Point", 1, "vertex"},          {"Linear", 2, "line"},
+        {"Point", 1, "vertex"},
+        {"Linear", 2, "line"},
         {"Linear", 3, "line3"},
         // GiD spells the 1-D type two ways and accepts both: gidpost -- CIMNE's
         // own writer, vendored here -- emits "Linear" (gidpostFILES.c's
         // strElementType), while CIMNE's current published grammar names it
         // "Line". Files in the wild therefore carry either, so read both.
         // The writer is unaffected: it goes through gidpost and emits "Linear".
-        {"Line", 2, "line"},             {"Line", 3, "line3"},
+        {"Line", 2, "line"},
+        {"Line", 3, "line3"},
         {"Triangle", 3, "triangle"},
-        {"Triangle", 6, "triangle6"},    {"Quadrilateral", 4, "quad"},
-        {"Quadrilateral", 8, "quad8"},   {"Quadrilateral", 9, "quad9"},
-        {"Tetrahedra", 4, "tetra"},      {"Tetrahedra", 10, "tetra10"},
-        {"Hexahedra", 8, "hexahedron"},  {"Hexahedra", 20, "hexahedron20"},
-        {"Prism", 6, "wedge"},           {"Pyramid", 5, "pyramid"},
+        {"Triangle", 6, "triangle6"},
+        {"Quadrilateral", 4, "quad"},
+        {"Quadrilateral", 8, "quad8"},
+        {"Quadrilateral", 9, "quad9"},
+        {"Tetrahedra", 4, "tetra"},
+        {"Tetrahedra", 10, "tetra10"},
+        {"Hexahedra", 8, "hexahedron"},
+        {"Hexahedra", 20, "hexahedron20"},
+        {"Hexahedra", 27, "hexahedron27"},
+        {"Prism", 6, "wedge"},
+        {"Prism", 15, "wedge15"},
+        {"Pyramid", 5, "pyramid"},
+        {"Pyramid", 13, "pyramid13"},
     };
     return table;
 }
@@ -53574,9 +53730,8 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
     std::size_t i = 0;
     while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
         ++i;
-    if (i >= rLine.size() ||
-        std::tolower(static_cast<unsigned char>(rLine[i])) !=
-            std::tolower(static_cast<unsigned char>(pFirst[0])))
+    if (i >= rLine.size() || std::tolower(static_cast<unsigned char>(rLine[i])) !=
+                                 std::tolower(static_cast<unsigned char>(pFirst[0])))
         return false;
 
     const std::vector<std::string> tok = gid_split(rLine);
@@ -53584,7 +53739,6 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
         return false;
     return gid_keyword_is(tok[0], pFirst) && gid_keyword_is(tok[1], pSecond);
 }
-
 
 /// True when the line's first non-space character is `#`.
 ///
@@ -53949,7 +54103,8 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
             }
             rGauss[gp_name] = set;
@@ -53978,7 +54133,8 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                     break;
                 }
                 if (!it.empty() &&
-                    (gid_keyword_is(it[0], "ResultRangesTable") || gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
+                    (gid_keyword_is(it[0], "ResultRangesTable") ||
+                     gid_keyword_is(it[0], "ComponentNames") || gid_keyword_is(it[0], "Unit")))
                     continue;
                 throw ReadError("GiD: unexpected line in result '" + res.mName + "': " + inner);
             }
@@ -54013,8 +54169,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
 void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
                        const std::map<std::int64_t, std::size_t>& rNodeRow,
                        const std::vector<GidResult>& rResults,
-                       const std::unordered_map<std::string, GidGaussSet>& rGauss,
-                       int time_step) {
+                       const std::unordered_map<std::string, GidGaussSet>& rGauss, int time_step) {
     // Distinct step values, in first-seen order, so mTimeStep can select one.
     std::vector<double> steps;
     for (const GidResult& r : rResults) {
@@ -54054,10 +54209,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             continue;
 
         if (res.mLocation == "OnNodes") {
-            NDArray arr(DType::Float64, res.mNumComponents == 1
-                                            ? std::vector<std::size_t>{rNodeRow.size()}
-                                            : std::vector<std::size_t>{rNodeRow.size(),
-                                                                       res.mNumComponents});
+            NDArray arr(DType::Float64,
+                        res.mNumComponents == 1
+                            ? std::vector<std::size_t>{rNodeRow.size()}
+                            : std::vector<std::size_t>{rNodeRow.size(), res.mNumComponents});
             double* dst = arr.As<double>();
             for (std::size_t i = 0; i < res.mIds.size(); ++i) {
                 auto it = rNodeRow.find(res.mIds[i]);
@@ -54073,26 +54228,29 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         }
 
         if (res.mLocation != "OnGaussPoints") {
-            log::warn("gid: result '{}' has location '{}', which has no meshio++ counterpart "
-                      "-- skipped",
-                      res.mName, res.mLocation);
+            log::warn(
+                "gid: result '{}' has location '{}', which has no meshio++ counterpart "
+                "-- skipped",
+                res.mName, res.mLocation);
             continue;
         }
 
         auto gp = rGauss.find(res.mGaussName);
         if (gp == rGauss.end()) {
-            log::warn("gid: result '{}' names Gauss-point set '{}', which the file never "
-                      "declares -- skipped",
-                      res.mName, res.mGaussName);
+            log::warn(
+                "gid: result '{}' names Gauss-point set '{}', which the file never "
+                "declares -- skipped",
+                res.mName, res.mGaussName);
             continue;
         }
         if (gp->second.mNumPoints != 1) {
             // meshio++'s cell_data is (n,)/(n,k), never per-node-within-cell --
             // the same structural limit MED's ELNO/ELGA already documents.
             // Averaging or taking the first point would invent data.
-            log::warn("gid: result '{}' has {} Gauss points per element; meshio++'s cell_data "
-                      "cannot represent per-point values (the MED ELNO/ELGA limit) -- skipped",
-                      res.mName, gp->second.mNumPoints);
+            log::warn(
+                "gid: result '{}' has {} Gauss points per element; meshio++'s cell_data "
+                "cannot represent per-point values (the MED ELNO/ELGA limit) -- skipped",
+                res.mName, gp->second.mNumPoints);
             continue;
         }
 
@@ -54101,9 +54259,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             if (rStaged.mBlocks[b].mMeshName == gp->second.mMeshName)
                 block = b;
         if (block == rStaged.mBlocks.size()) {
-            log::warn("gid: Gauss-point set '{}' is on mesh '{}', which matches no MESH block "
-                      "-- result '{}' skipped",
-                      res.mGaussName, gp->second.mMeshName, res.mName);
+            log::warn(
+                "gid: Gauss-point set '{}' is on mesh '{}', which matches no MESH block "
+                "-- result '{}' skipped",
+                res.mGaussName, gp->second.mMeshName, res.mName);
             continue;
         }
 
@@ -54131,9 +54290,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         }
         if (slot->second[block].Shape().size() >= 2 &&
             slot->second[block].Shape()[1] != res.mNumComponents) {
-            log::warn("gid: result '{}' has {} components on mesh '{}' but a different width "
-                      "elsewhere -- this block skipped",
-                      res.mName, res.mNumComponents, gp->second.mMeshName);
+            log::warn(
+                "gid: result '{}' has {} components on mesh '{}' but a different width "
+                "elsewhere -- this block skipped",
+                res.mName, res.mNumComponents, gp->second.mMeshName);
             continue;
         }
         double* dst = slot->second[block].As<double>();
@@ -54177,13 +54337,22 @@ Mesh gid_assemble(const GidStaged& rStaged, const std::vector<GidResult>& rResul
         const std::size_t ncells = block.mElemIds.size();
         NDArray conn(DType::Int64, {ncells, nn});
         std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < ncells * nn; ++i) {
-            auto it = node_row.find(block.mConn[i]);
-            if (it == node_row.end())
-                throw ReadError("GiD: element in mesh '" + block.mMeshName +
-                                "' references node id " + std::to_string(block.mConn[i]) +
-                                ", which no Coordinates block defines");
-            cp[i] = static_cast<std::int64_t>(it->second);
+        // `perm`, when non-null, is `hexahedron27`/`wedge15`'s node-order
+        // permutation (gid_common.hpp's derivation, self-inverse): meshio++
+        // slot j receives GiD file slot perm[j] -- the same table the writer
+        // uses, applied in the opposite (gather) direction.
+        const int* perm = gid_detail::gid_cell_perm(block.mMeshioType, nn);
+        for (std::size_t r = 0; r < ncells; ++r) {
+            for (std::size_t j = 0; j < nn; ++j) {
+                const std::size_t src_j = perm ? static_cast<std::size_t>(perm[j]) : j;
+                const std::int64_t node_id = block.mConn[r * nn + src_j];
+                auto it = node_row.find(node_id);
+                if (it == node_row.end())
+                    throw ReadError("GiD: element in mesh '" + block.mMeshName +
+                                    "' references node id " + std::to_string(node_id) +
+                                    ", which no Coordinates block defines");
+                cp[r * nn + j] = static_cast<std::int64_t>(it->second);
+            }
         }
         mesh.AddCellBlock(block.mMeshioType, std::move(conn));
     }
@@ -54346,8 +54515,8 @@ Mesh gid_read_hdf5(const std::string& rPath, const ReadOptions& rOptions) {
             if (h5::has_attr(g, "MeshName"))
                 set.mMeshName = h5::read_attr_string(g, "MeshName");
             if (h5::has_attr(g, "GP_number"))
-                set.mNumPoints = static_cast<int>(
-                    gid_to_int(h5::read_attr_string(g, "GP_number"), "GP_number"));
+                set.mNumPoints =
+                    static_cast<int>(gid_to_int(h5::read_attr_string(g, "GP_number"), "GP_number"));
             gauss[h5::has_attr(g, "Name") ? h5::read_attr_string(g, "Name") : key] = set;
         }
     }
@@ -54629,7 +54798,8 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
-                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") && gid_keyword_is(it[1], "Of"))
+                if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
+                    gid_keyword_is(it[1], "Of"))
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
                 else if (it.empty())
                     cur.Seek(save);

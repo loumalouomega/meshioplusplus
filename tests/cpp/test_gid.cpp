@@ -136,6 +136,33 @@ void expect_point_near(const std::array<double, 3>& rGot, const std::vector<doub
         EXPECT_NEAR(rGot[c], rExpected[c], 1e-9);
 }
 
+/**
+ * @brief `corners_plus_edge_midpoints`'s hexahedron27-only extension: also
+ * appends one point per `cell_refine_quad_faces(Hexahedron)` row (the mean of
+ * that face's 4 corners) and one body-centre point (the mean of all 8
+ * corners). The test builds and controls every one of the 27 point VALUES
+ * directly -- this is not "how meshio++ would compute node 26 elsewhere",
+ * merely a convenient, geometrically-distinguishable fixture.
+ */
+std::vector<std::vector<double>> hex27_fixture_points(
+    const std::vector<std::vector<double>>& rCorners) {
+    std::vector<std::vector<double>> pts =
+        corners_plus_edge_midpoints(rCorners, CellType::Hexahedron);  // 0-19
+    for (const auto& face : meshioplusplus::detail::cell_refine_quad_faces(CellType::Hexahedron)) {
+        std::vector<double> mid(3, 0.0);
+        for (std::uint8_t corner : face)
+            for (std::size_t c = 0; c < 3; ++c)
+                mid[c] += rCorners[corner][c] / 4.0;
+        pts.push_back(mid);  // 20-25
+    }
+    std::vector<double> body(3, 0.0);
+    for (const auto& corner : rCorners)
+        for (std::size_t c = 0; c < 3; ++c)
+            body[c] += corner[c] / 8.0;
+    pts.push_back(body);  // 26
+    return pts;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -184,7 +211,10 @@ TEST(GidOrdering, Hexahedron20MatchesGidGeometry) {
 
 TEST(GidOrdering, Tetra10MatchesGidGeometry) {
     const std::vector<std::vector<double>> corners = {
-        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+        {0, 0, 0},
+        {1, 0, 0},
+        {0, 1, 0},
+        {0, 0, 1},
     };
     const auto pts = corners_plus_edge_midpoints(corners, CellType::Tetra);
     ASSERT_EQ(pts.size(), 10u);
@@ -244,6 +274,113 @@ TEST(GidOrdering, Quad8MatchesGidGeometry) {
     const auto& row_out = parsed.mMeshes.at(0).mElementRows.at(0);
     ASSERT_EQ(row_out.size(), 9u);
     for (std::size_t slot = 0; slot < 8; ++slot)
+        expect_point_near(parsed.mCoords.at(row_out[slot + 1]), pts[slot]);
+}
+
+// The three orderings that were "not independently verified" until Kratos's
+// own geometry classes (kratos/geometries/hexahedra_3d_27.h, prism_3d_15.h,
+// pyramid_3d_13.h) were read directly and cross-checked against a second,
+// Element-agnostic Kratos source (kratos/input_output/vtk_output.cpp's
+// Kratos-to-VTK conversion, mirrored in ensight_output.cpp). See
+// gid_common.hpp's `gid_cell_perm_table()` for the full derivation.
+//
+// The expected permutation is written out LITERALLY here rather than by
+// calling gid_detail::gid_cell_perm() -- a bug in that table must not be able
+// to validate itself. `perm[slot]` names which point in `pts` (built purely
+// from meshio++'s own edge/face tables, in meshio++'s own node order) the
+// GiD file's slot `slot` must hold.
+
+TEST(GidOrdering, Hexahedron27MatchesGidGeometry) {
+    const std::vector<std::vector<double>> corners = {
+        {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1},
+    };
+    const auto pts = hex27_fixture_points(corners);
+    ASSERT_EQ(pts.size(), 27u);
+    std::vector<std::int64_t> row(27);
+    for (int i = 0; i < 27; ++i)
+        row[i] = i;
+    const Mesh m = mt::make_mesh(pts, "hexahedron27", {row});
+
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+
+    const auto parsed = gid_parse_ascii_msh(path);
+    ASSERT_EQ(parsed.mMeshes.size(), 1u);
+    const auto& row_out = parsed.mMeshes[0].mElementRows.at(0);
+    ASSERT_EQ(row_out.size(), 28u);  // id + 27 nodes
+
+    // Kratos's internal order (== what its GiD writer emits, since no
+    // Conditions-only swap exists for this type): corners and bottom-ring
+    // edges match meshio++'s own table; slots 12-15 <-> 16-19 (top ring vs.
+    // verticals) and the face-centre block 20-25 are permuted; body centre
+    // 26 is fixed. Independently confirmed against Kratos's own
+    // vtk_output.cpp array (which expresses the identical mapping the other
+    // way round).
+    const std::array<std::size_t, 27> perm = {
+        0,  1,  2,  3,           // corners 0-3
+        4,  5,  6,  7,           // corners 4-7
+        8,  9,  10, 11,          // bottom-ring edges (identity)
+        16, 17, 18, 19,          // slot 12-15 (top ring)   <- meshio++'s verticals
+        12, 13, 14, 15,          // slot 16-19 (verticals)  <- meshio++'s top ring
+        24, 22, 21, 23, 20, 25,  // face centres 20-25
+        26,                      // body centre
+    };
+    for (std::size_t slot = 0; slot < 27; ++slot)
+        expect_point_near(parsed.mCoords.at(row_out[slot + 1]), pts[perm[slot]]);
+}
+
+TEST(GidOrdering, Wedge15MatchesGidGeometry) {
+    const std::vector<std::vector<double>> corners = {
+        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1},
+    };
+    const auto pts = corners_plus_edge_midpoints(corners, CellType::Wedge);
+    ASSERT_EQ(pts.size(), 15u);
+    std::vector<std::int64_t> row(15);
+    for (int i = 0; i < 15; ++i)
+        row[i] = i;
+    const Mesh m = mt::make_mesh(pts, "wedge15", {row});
+
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+
+    const auto parsed = gid_parse_ascii_msh(path);
+    ASSERT_EQ(parsed.mMeshes.size(), 1u);
+    const auto& row_out = parsed.mMeshes[0].mElementRows.at(0);
+    ASSERT_EQ(row_out.size(), 16u);  // id + 15 nodes
+
+    // Corners and bottom-triangle edges match meshio++'s own table; slots
+    // 9-11 <-> 12-14 (top triangle vs. verticals) are swapped, the same
+    // reverse-split hexahedron27 has.
+    const std::array<std::size_t, 15> perm = {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11,
+    };
+    for (std::size_t slot = 0; slot < 15; ++slot)
+        expect_point_near(parsed.mCoords.at(row_out[slot + 1]), pts[perm[slot]]);
+}
+
+TEST(GidOrdering, Pyramid13MatchesGidGeometry) {
+    const std::vector<std::vector<double>> corners = {
+        {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 1},
+    };
+    const auto pts = corners_plus_edge_midpoints(corners, CellType::Pyramid);
+    ASSERT_EQ(pts.size(), 13u);
+    std::vector<std::int64_t> row(13);
+    for (int i = 0; i < 13; ++i)
+        row[i] = i;
+    const Mesh m = mt::make_mesh(pts, "pyramid13", {row});
+
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+
+    const auto parsed = gid_parse_ascii_msh(path);
+    ASSERT_EQ(parsed.mMeshes.size(), 1u);
+    const auto& row_out = parsed.mMeshes[0].mElementRows.at(0);
+    ASSERT_EQ(row_out.size(), 14u);  // id + 13 nodes
+
+    // Kratos's Pyramid3D13 order is IDENTICAL to meshio++'s own (confirmed
+    // via vtk_output.cpp explicitly skipping any conversion for this type) --
+    // this is a regression lock, not a live risk the way the other two are.
+    for (std::size_t slot = 0; slot < 13; ++slot)
         expect_point_near(parsed.mCoords.at(row_out[slot + 1]), pts[slot]);
 }
 
@@ -400,8 +537,8 @@ TEST(GidWrite, ComplexVectorIsInterleavedAndComplexMatrixIsBlocked) {
     // stored verbatim in GiD's order -- this pins that "verbatim" is a
     // checkable claim, not a hope.
     for (const auto& [type, k] : std::vector<std::pair<meshioplusplus::GidResultType, std::size_t>>{
-            {meshioplusplus::GidResultType::ComplexVector, 6},
-            {meshioplusplus::GidResultType::ComplexMatrix, 12}}) {
+             {meshioplusplus::GidResultType::ComplexVector, 6},
+             {meshioplusplus::GidResultType::ComplexMatrix, 12}}) {
         const std::string path = mt::temp_path(".post.msh");
         meshioplusplus::write_gid(path, gid_typed_mesh(type, k), meshioplusplus::GidMode::Ascii);
         const auto rows = gid_read_values_block(path.substr(0, path.size() - 3) + "res");
@@ -465,10 +602,9 @@ TEST(GidWrite, UndeclaredSixComponentArrayStillSplits) {
     Mesh m;
     m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}));
     m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {1, 3, 2}}));
-    m.AddPointData("s6", mt::data_array(
-                             {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-                              20, 21, 22, 23},
-                             6));
+    m.AddPointData("s6", mt::data_array({0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11,
+                                         12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
+                                        6));
     const std::string path = mt::temp_path(".post.msh");
     meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
     std::ifstream rf(path.substr(0, path.size() - 3) + "res");
@@ -496,8 +632,7 @@ TEST(GidRead, AsciiRoundTrip) {
     EXPECT_EQ(out.Cells(0).NumCells(), in.Cells(0).NumCells());
     for (std::size_t i = 0; i < in.NumPoints() * in.PointDim(); ++i)
         EXPECT_NEAR(meshioplusplus::detail::read_double(out.Points(), i),
-                    meshioplusplus::detail::read_double(in.Points(), i),
-                    1e-8);
+                    meshioplusplus::detail::read_double(in.Points(), i), 1e-8);
 }
 
 TEST(GidRead, RepeatedNodeTablesAreDeduplicated) {
@@ -607,27 +742,29 @@ TEST(GidRead, ResultsSiblingIsOptional) {
     EXPECT_EQ(out.NumPointData(), 0u);
 }
 
-TEST(GidRead, UnverifiedOrderingIsRefusedByName) {
-    // hexahedron27/wedge15/pyramid13 are exactly the orderings the WRITER
-    // refuses; refusing them on read keeps the position consistent instead of
-    // guessing a permutation in one direction we decline to guess in the other.
+TEST(GidRead, ElementTypesWithNoMeshioCounterpartAreRefusedByName) {
+    // hexahedron27/wedge15/pyramid13 used to be exactly this test's fixture --
+    // now Kratos-derived orderings, they read successfully (see the
+    // GidOrdering suite above), so this is repurposed to a type that is
+    // genuinely and permanently unsupported: Sphere rows carry a radius, not
+    // a node list, an entirely different row shape meshio++ has never mapped,
+    // not merely an unverified ordering.
     const std::string path = mt::temp_path(".post.msh");
     {
         std::ofstream f(path);
-        f << "MESH \"h\" dimension 3 ElemType Hexahedra Nnode 27\n"
+        f << "MESH \"s\" dimension 3 ElemType Sphere Nnode 1\n"
              "Coordinates\n1 0 0 0\nEnd Coordinates\nElements\nEnd Elements\n";
     }
     try {
         meshioplusplus::read_gid(path);
         FAIL() << "expected a ReadError";
     } catch (const meshioplusplus::ReadError& e) {
-        EXPECT_NE(std::string(e.what()).find("Hexahedra"), std::string::npos) << e.what();
+        EXPECT_NE(std::string(e.what()).find("Sphere"), std::string::npos) << e.what();
     }
 }
 
 TEST(GidRead, MissingGeometryFileIsAnError) {
-    EXPECT_THROW(meshioplusplus::read_gid(mt::temp_path(".post.msh")),
-                 meshioplusplus::ReadError);
+    EXPECT_THROW(meshioplusplus::read_gid(mt::temp_path(".post.msh")), meshioplusplus::ReadError);
 }
 
 // --- Grammar conformance against CIMNE's published specification. ----------
