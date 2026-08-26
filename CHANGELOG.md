@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.20.1 (2026-08-26)
+
+Fixes two release-CI regressions introduced by v10.20.0's `gid`/static-zlib work, both caught by the `v10.20.0` tag's own CI run.
+
+- Fixed the Windows CLI release build: `MESHIOPLUSPLUS_ZLIB_STATIC`'s vendored `zlibstatic` target never picked up `MESHIOPLUSPLUS_STATIC_RUNTIME`'s `/MT` static-CRT setting, so it stayed on the MSVC default `/MD` while the rest of the statically-linked CLI switched to `/MT` — the exact CRT-mismatch failure mode (unresolved `__imp_`-prefixed externals from zlib's `gzlib.c`/`gzread.c`/`gzwrite.c`) the surrounding code already documents for every other target. `zlibstatic` (and the unused sibling `zlib` shared target) now get the same `MSVC_RUNTIME_LIBRARY` property whenever both options are on.
+- Fixed a WASM provenance leak: `writeMesh`/`convert`/`convertSurface`/`convertSurfaceOps` now reset the scope-less provenance record immediately before writing (mirroring Python's public `write()`), so an operation note left by an earlier, unrelated scope-less pipeline call can no longer leak into a later default write's header.
+
 ## v10.20.0 (2026-08-26)
 
 Closes roadmap section 1's last bullet — `gid` write support now ships in every release artifact, not just from-source builds. See `doc/formats/gid.md`.

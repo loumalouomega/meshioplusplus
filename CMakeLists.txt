@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 10.20.0
+  VERSION 10.20.1
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -151,6 +151,23 @@ if(MESHIOPLUSPLUS_WITH_ZLIB AND NOT EMSCRIPTEN)
     FetchContent_MakeAvailable(meshioplusplus_zlib)
     add_library(ZLIB::ZLIB ALIAS zlibstatic)
     set(ZLIB_FOUND TRUE)
+    # Same /MT-vs-/MD rule the comment near meshioplusplus_core_obj's own
+    # MSVC_RUNTIME_LIBRARY property documents: every object feeding a
+    # static-runtime final link must be compiled with the same CRT setting,
+    # or the link fails with unresolved __imp_-prefixed CRT externals (here,
+    # zlib's gzlib.c/gzread.c/gzwrite.c POSIX-name wrappers). zlib's own
+    # CMakeLists.txt never sets this, so without it zlibstatic stays on the
+    # MSVC default (/MD) even when MESHIOPLUSPLUS_STATIC_RUNTIME switches
+    # every other target to /MT -- exactly what broke the static-runtime CLI
+    # link (cli.yml's Windows leg).
+    if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC)
+      foreach(_zlib_target zlib zlibstatic)
+        if(TARGET ${_zlib_target})
+          set_property(TARGET ${_zlib_target} PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        endif()
+      endforeach()
+    endif()
   else()
     find_package(ZLIB QUIET)
   endif()
