@@ -62,7 +62,12 @@ TIME_KEY = "meshio:time"
 # probe on the write side, so unlike the step *count* (which comes from
 # `read_metadata`) this is a small owned set, kept honest by a test that
 # cross-checks it against what a real two-step fan-in accepts.
-_SERIES_WRITERS = ("xdmf",)
+#
+# **`gid` joined in v10.19.0**, through `_core.gid_write_series` rather than a
+# `_SeriesWriter`: it pulls steps (a callable returning `(time, mesh)` or None)
+# instead of being pushed to, which is what lets a generator drive it with one
+# mesh alive.
+_SERIES_WRITERS = ("xdmf", "gid")
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
 # out.Y` on one of them might silently write step 0 of many. Consulted before
@@ -78,7 +83,12 @@ _SERIES_WRITERS = ("xdmf",)
 # recorded gap in MED's metadata support (doc/sequences.md), and listing it
 # here would buy nothing while doubling the work of every MED convert. It
 # closes for free the moment `read_med_metadata` fills `time_values`.
-_TIME_CAPABLE_READERS = ("xdmf", "exodus")
+#
+# **`gid` joined in v10.19.0.** Its reader had always honoured `time_step`, but
+# `read_gid_metadata` never opened the `.post.res` sibling where steps live, so
+# it reported one step and there was nothing here to gate on -- exactly the
+# shape of gap MED still has above.
+_TIME_CAPABLE_READERS = ("xdmf", "exodus", "gid")
 
 _SEQUENCE_INPUT_KEYS = ("Pattern", "Paths", "Times", "TimeFrom")
 _SEQUENCE_DOC_KEYS = ("Mode", "Parallel", "Workers")
@@ -583,14 +593,19 @@ class TimeSeries:
         return list(self._entries)
 
 
-def _check_series_target(path, file_format):
-    """Refuse a multi-step write to a format that cannot hold one, by name."""
+def _series_target_format(path, file_format):
+    """The format a multi-step write to ``path`` would use."""
     from ._helpers import _filetypes_from_path
 
-    fmt = file_format
-    if not fmt:
-        candidates = _filetypes_from_path(pathlib.Path(str(path)))
-        fmt = candidates[0] if candidates else None
+    if file_format:
+        return file_format
+    candidates = _filetypes_from_path(pathlib.Path(str(path)))
+    return candidates[0] if candidates else None
+
+
+def _check_series_target(path, file_format):
+    """Refuse a multi-step write to a format that cannot hold one, by name."""
+    fmt = _series_target_format(path, file_format)
     if fmt not in _SERIES_WRITERS:
         raise WriteError(
             f"meshio++: sequence: format '{fmt}' cannot hold a multi-step "
@@ -629,6 +644,21 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         return written
 
     _check_series_target(path, file_format)
+
+    if _series_target_format(path, file_format) == "gid":
+        from . import _core
+
+        # Pull, not push: gid's series writer asks for the next step, so the
+        # iterator is consumed one item at a time and only one mesh is ever
+        # alive -- the same streaming property the XDMF branch below has.
+        it = iter(steps)
+
+        def _next():
+            return next(it, None)
+
+        _core.gid_write_series(str(path), _next)
+        return [str(path)]
+
     with _SeriesWriter(path) as writer:
         for time, mesh in steps:
             writer.write(time, mesh)

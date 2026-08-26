@@ -34,6 +34,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 
@@ -207,7 +208,10 @@ namespace {
 /// recorded gap in MED's metadata support, and it closes here for free the
 /// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
-    return rFormat == "xdmf" || rFormat == "exodus";
+    // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
+    // read_gid_metadata never opened the results sibling where steps live, so
+    // it reported one step and this predicate had nothing to gate on.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
 }
 
 }  // namespace
@@ -238,13 +242,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf") {
+    if (rFormat == "xdmf" || rFormat == "gid") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf' can); write one file per step "
-           "with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf' and 'gid' can); write one file per "
+           "step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -515,6 +519,28 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
+    if (ofmt == "gid") {
+        // gid's series writer is a free function taking a provider rather than
+        // a stateful class -- the transient surface meshio++ exposes IS this
+        // layer, which already carries every binding, so it needs none of its
+        // own. The lambda keeps the same one-mesh-alive property the loop
+        // below has.
+        write_gid_series(rOutput.mPath, [&](std::size_t i, double& rTime, Mesh& rMesh) {
+            if (i >= entries.size())
+                return false;
+            rMesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
+            rTime = entries[i].mTime;
+            if (entries[i].mTimeSource == SequenceTimeSource::Index &&
+                rInput.mTimeFrom != SequenceTimeFrom::Index) {
+                double t = 0.0;
+                if (seq_time_from_mesh(rMesh, t))
+                    rTime = t;
+            }
+            return true;
+        });
+        return;
+    }
+
     XdmfTimeSeriesWriter writer(rOutput.mPath, seq_resolve_data_format(rOutput.mOptions));
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {

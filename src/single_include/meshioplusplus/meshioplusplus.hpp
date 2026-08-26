@@ -12819,6 +12819,7 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 // Project includes
@@ -13090,6 +13091,34 @@ MESHIOPLUSPLUS_API void write_gid(const std::string& rPath, const Mesh& rMesh,
  *         this build cannot read the resolved flavour (naming the missing
  *         CMake flag).
  */
+/**
+ * @brief Writes a **multi-step** GiD file, pulling one step at a time.
+ *
+ * A free function taking a provider rather than a stateful writer class: the
+ * transient surface meshio++ exposes is the sequence layer
+ * (`sequence_to_timeseries`), which already carries every binding, so this
+ * needs none of its own. `XdmfTimeSeriesWriter`'s class shape exists because
+ * that format's series writer is public API in its own right; this one is not.
+ *
+ * @p rNext is called once per step, in order, and fills that step's time and
+ * mesh; it returns false when the series is exhausted. Pull-until-done rather
+ * than a step count so a Python generator -- which cannot say how many steps
+ * it has -- drives it as naturally as the sequence layer's counted loop. Only
+ * one mesh is ever alive, which is the **streaming invariant** that layer
+ * guarantees.
+ *
+ * A GiD `Group` is emitted only when a step's mesh **differs** from the
+ * previous step's, which is what that construct is for (re-meshing / adaptive
+ * analyses: one mesh serving a consecutive run of steps). A series whose mesh
+ * never changes therefore emits no group at all and keeps the single-step
+ * output shape. Processing steps in order also satisfies GiD's "only one group
+ * at a time" rule by construction.
+ */
+MESHIOPLUSPLUS_API void write_gid_series(
+    const std::string& rPath,
+    const std::function<bool(std::size_t, double& rTime, Mesh& rMesh)>& rNext,
+    GidMode Mode = GidMode::Auto, const std::string& rAnalysisName = "meshio++");
+
 MESHIOPLUSPLUS_API Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions = {});
 
 /**
@@ -53754,13 +53783,18 @@ std::string gid_build_option(GidMode mode) {
     return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON";
 }
 
-void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
-               const std::string& rAnalysisName, double stepValue) {
-    const GidMode resolved = gid_resolve_mode(rPath, mode);
-    if (!gid_available(resolved))
-        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
-                         gid_build_option(resolved));
+/// Everything a write needs to know about one mesh: the per-block GiD type,
+/// the GiD mesh names, the 1-based element-id bases, and which cell_data array
+/// (if any) is the material column. Extracted so `write_gid` and
+/// `write_gid_series` compute it identically rather than twice.
+struct GidWritePrep {
+    std::vector<const GidTypeEntry*> mEntries;
+    std::vector<std::string> mMeshNames;
+    std::vector<std::int64_t> mElemBase;
+    const std::string* mMatName = nullptr;
+};
 
+GidWritePrep gid_prepare_write(const Mesh& rMesh) {
     if (rMesh.PointDim() > 3)
         throw WriteError("GiD: points must have at most three components");
     constexpr std::size_t kIntMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
@@ -53768,8 +53802,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
         throw WriteError("GiD: mesh has too many points for gidpost's 32-bit API");
 
     const std::size_t nb = rMesh.NumCellBlocks();
-    std::vector<const GidTypeEntry*> entries(nb);
-    std::vector<std::string> mesh_names(nb);
+    GidWritePrep prep;
+    prep.mEntries.resize(nb);
+    prep.mMeshNames.resize(nb);
     std::int64_t total_cells = 0;
     for (std::size_t bi = 0; bi < nb; ++bi) {
         const auto cb = rMesh.Cells(bi);
@@ -53780,18 +53815,18 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
         const auto it = gid_type_table().find(cb.Type());
         if (it == gid_type_table().end())
             throw WriteError("GiD: cell type '" + cb.Type() + "' has no verified GiD ordering");
-        entries[bi] = &it->second;
-        mesh_names[bi] = cb.Type() + "_" + std::to_string(bi);
+        prep.mEntries[bi] = &it->second;
+        prep.mMeshNames[bi] = cb.Type() + "_" + std::to_string(bi);
         total_cells += static_cast<std::int64_t>(cb.NumCells());
     }
     if (static_cast<std::uint64_t>(total_cells) > static_cast<std::uint64_t>(kIntMax))
         throw WriteError("GiD: mesh has too many cells for gidpost's 32-bit API");
 
-    std::vector<std::int64_t> elem_base(nb);
+    prep.mElemBase.resize(nb);
     {
         std::int64_t base = 1;
         for (std::size_t bi = 0; bi < nb; ++bi) {
-            elem_base[bi] = base;
+            prep.mElemBase[bi] = base;
             base += static_cast<std::int64_t>(rMesh.Cells(bi).NumCells());
         }
     }
@@ -53800,14 +53835,58 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     // ("gmsh:physical"), only when it is integral and covers every block --
     // never guessed from another convention.
     static const std::string kMatKey = "gmsh:physical";
-    const std::string* mat_name = nullptr;
     if (nb > 0 && rMesh.HasCellData(kMatKey) && rMesh.CellDataNumBlocks(kMatKey) == nb) {
         bool all_int = true;
         for (std::size_t bi = 0; bi < nb && all_int; ++bi)
             all_int = gid_is_int_dtype(rMesh.CellData(kMatKey, bi).Dtype());
         if (all_int)
-            mat_name = &kMatKey;
+            prep.mMatName = &kMatKey;
     }
+    return prep;
+}
+
+/// Whether two consecutive steps share a mesh, so no new `Group` is needed.
+/// Geometry only -- results are what differ between steps by definition.
+bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
+    if (rA.NumPoints() != rB.NumPoints() || rA.PointDim() != rB.PointDim() ||
+        rA.NumCellBlocks() != rB.NumCellBlocks())
+        return false;
+    const NDArray& pa = rA.Points();
+    const NDArray& pb = rB.Points();
+    if (pa.Size() != pb.Size())
+        return false;
+    for (std::size_t i = 0; i < pa.Size(); ++i)
+        if (detail::read_double(pa, i) != detail::read_double(pb, i))
+            return false;
+    for (std::size_t bi = 0; bi < rA.NumCellBlocks(); ++bi) {
+        const auto ca = rA.Cells(bi);
+        const auto cb = rB.Cells(bi);
+        if (ca.Type() != cb.Type() || ca.NumCells() != cb.NumCells() ||
+            ca.NodesPerCell() != cb.NodesPerCell() || ca.IsRagged() || cb.IsRagged())
+            return false;
+        const NDArray& na = ca.Conn();
+        const NDArray& nb2 = cb.Conn();
+        if (na.Size() != nb2.Size())
+            return false;
+        for (std::size_t i = 0; i < na.Size(); ++i)
+            if (detail::read_int(na, i) != detail::read_int(nb2, i))
+                return false;
+    }
+    return true;
+}
+
+void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
+               const std::string& rAnalysisName, double stepValue) {
+    const GidMode resolved = gid_resolve_mode(rPath, mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+
+    const GidWritePrep prep = gid_prepare_write(rMesh);
+    const std::vector<const GidTypeEntry*>& entries = prep.mEntries;
+    const std::vector<std::string>& mesh_names = prep.mMeshNames;
+    const std::vector<std::int64_t>& elem_base = prep.mElemBase;
+    const std::string* mat_name = prep.mMatName;
 
     gid_ensure_init();
     const GiD_PostMode gid_mode = gid_post_mode(resolved);
@@ -53843,6 +53922,97 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     }
 }
 
+void write_gid_series(const std::string& rPath,
+                      const std::function<bool(std::size_t, double&, Mesh&)>& rNext, GidMode Mode,
+                      const std::string& rAnalysisName) {
+    const GidMode resolved = gid_resolve_mode(rPath, Mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+    gid_ensure_init();
+    const GiD_PostMode gid_mode = gid_post_mode(resolved);
+    const bool two_files = resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped;
+    const auto paths = gid_ascii_paths(rPath);
+
+    // The handles stay open ACROSS steps -- that is the whole difference from
+    // write_gid, which opens, writes one step and closes.
+    GiD_FILE fdm = 0;
+    GiD_FILE fdr = 0;
+    if (two_files) {
+        fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
+        if (fdm <= 0)
+            throw WriteError("GiD: could not open mesh file for writing: " + paths.first);
+        fdr = GiD_fOpenPostResultFile(paths.second.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open result file for writing: " + paths.second);
+    } else {
+        fdr = GiD_fOpenPostResultFile(rPath.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open file for writing: " + rPath);
+        fdm = fdr;  // one handle carries both in the binary/HDF5 flavours
+    }
+
+    // Only the PREVIOUS step's mesh is retained, never a list: the sequence
+    // layer guarantees one mesh alive at a time and this must not break it.
+    Mesh prev;
+    bool have_prev = false;
+    bool group_open = false;
+    std::size_t group_index = 0;
+
+    for (std::size_t i = 0;; ++i) {
+        double time = static_cast<double>(i);
+        Mesh mesh;
+        if (!rNext(i, time, mesh))
+            break;
+        const GidWritePrep prep = gid_prepare_write(mesh);
+
+        // A GiD Group holds ONE mesh for a consecutive run of steps, so a new
+        // one is opened only when the mesh actually CHANGES. A series whose
+        // mesh never changes emits no group at all and keeps the single-step
+        // output shape; processing steps in order also satisfies GiD's "only
+        // one group at a time" rule by construction.
+        const bool changed = !have_prev || !gid_same_geometry(prev, mesh);
+        if (changed) {
+            if (group_open) {
+                gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+                gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+                group_open = false;
+            }
+            const bool need_group = have_prev;  // the 2nd distinct mesh onwards
+            if (need_group) {
+                const std::string gname = "group_" + std::to_string(++group_index);
+                gid_check(GiD_fBeginMeshGroup(fdm, gname.c_str()), "BeginMeshGroup");
+                gid_check(GiD_fBeginOnMeshGroup(fdr, const_cast<char*>(gname.c_str())),
+                          "BeginOnMeshGroup");
+                group_open = true;
+            }
+            if (i == 0)
+                gid_write_provenance_mesh(fdm);
+            gid_write_geometry(fdm, mesh, prep.mEntries, prep.mMeshNames, prep.mMatName);
+        }
+
+        if (i == 0)
+            gid_write_provenance_result(fdr);
+        gid_write_point_data(fdr, mesh, rAnalysisName, time);
+        gid_write_cell_data(fdr, mesh, prep.mEntries, prep.mMeshNames, prep.mElemBase,
+                            prep.mMatName, rAnalysisName, time);
+
+        prev = std::move(mesh);
+        have_prev = true;
+    }
+
+    if (group_open) {
+        gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+        gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+    }
+    if (two_files) {
+        gid_check(GiD_fClosePostMeshFile(fdm), "ClosePostMeshFile");
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    } else {
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    }
+}
+
 }  // namespace meshioplusplus
 
 #else  // !MESHIOPLUSPLUS_HAS_GIDPOST
@@ -53863,6 +54033,13 @@ std::string gid_build_option(GidMode mode) {
 // Always defined, so `gid` fails with an error naming the build flags rather
 // than a link error or -- worse -- a silent fall-through to another format
 // for a `.post.msh` path (the partition_kahip_parts / vtk_codec contract).
+void write_gid_series(const std::string&, const std::function<bool(std::size_t, double&, Mesh&)>&,
+                      GidMode mode, const std::string&) {
+    throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
+                     " (the vendored gidpost library deflates unconditionally, so zlib is a "
+                     "build prerequisite, not an option)");
+}
+
 void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&, double) {
     throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
                      " (the vendored gidpost library deflates unconditionally, so zlib is a "
@@ -53876,6 +54053,7 @@ void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&
 // ===== begin src/cpp/src/formats/gid_read.cpp =====
 #include <cstdint>
 #include <cstdlib>
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <map>
@@ -54136,6 +54314,11 @@ struct GidBlock {
     std::vector<std::int64_t> mConn;      // global node ids, row-major
     std::vector<std::int64_t> mElemIds;   // as written; may restart per block
     std::vector<std::int64_t> mMaterial;  // empty when the file carried none
+    /// The `Group` that wraps this block, or empty for an ungrouped block.
+    /// A GiD `Group` holds ONE mesh serving a consecutive run of steps -- it
+    /// is a re-meshing construct, not an entity set -- so blocks from
+    /// different groups must never be merged into one mesh.
+    std::string mGroup;
 };
 
 struct GidStaged {
@@ -54160,6 +54343,8 @@ struct GidResult {
     std::size_t mNumComponents = 0;
     std::vector<std::int64_t> mIds;
     std::vector<double> mValues;  // mIds.size() * mNumComponents
+    /// The `OnGroup` that wraps this result, or empty when ungrouped.
+    std::string mGroup;
 };
 
 /// A `GaussPoints` declaration: what it is called, which mesh it is on, how
@@ -54249,6 +54434,7 @@ void gid_skip_to_end(GidLineCursor& rCur, const char* pWhat) {
 void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
     GidLineCursor cur(text);
     std::string line;
+    std::string group;  // the Group currently open, empty when ungrouped
     while (cur.Next(line)) {
         const std::vector<std::string> tok = gid_split(line);
         if (tok.empty())
@@ -54279,6 +54465,7 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
                 throw ReadError("GiD: malformed MESH header: " + line);
             block.mNumNodes = nnode;
             block.mMeshioType = gid_meshio_type(gid_type, nnode);
+            block.mGroup = group;
             rStaged.mBlocks.push_back(std::move(block));
             continue;
         }
@@ -54294,13 +54481,20 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
             continue;
         }
         if (gid_keyword_is(tok[0], "Group")) {
-            // Mesh groups have no meshio++ counterpart yet (a documented
-            // roadmap item); the MESH blocks inside are read normally, so only
-            // the wrapper is ignored.
+            // A GiD Group holds ONE mesh serving a consecutive run of steps --
+            // it exists for re-meshing and adaptive analyses, NOT as an entity
+            // set. Its blocks are therefore TAGGED, not merged: this used to
+            // skip the wrapper and read every group's MESH blocks into one
+            // mesh, which silently garbles any genuinely re-meshed file.
+            group = tok.size() > 1 ? tok[1] : std::string();
+            continue;
+        }
+        if (gid_line_starts_with(line, "End", "Group")) {
+            group.clear();
             continue;
         }
         if (gid_keyword_is(tok[0], "End") || gid_keyword_is(tok[0], "Unit"))
-            continue;  // "End Group"/"End Mesh"-style closers, and mesh units
+            continue;  // "End Mesh"-style closers, and mesh units
         // Anything else at mesh scope is a construct we do not map; ignoring it
         // is safe because every block we DO map is self-delimiting.
     }
@@ -54527,6 +54721,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                         std::unordered_map<std::string, GidGaussSet>& rGauss) {
     GidLineCursor cur(text);
     std::string line;
+    std::string group;  // the OnGroup currently open, empty when ungrouped
     while (cur.Next(line)) {
         const std::vector<std::string> tok = gid_split(line);
         if (tok.empty())
@@ -54597,6 +54792,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                     continue;
                 throw ReadError("GiD: unexpected line in result '" + res.mName + "': " + inner);
             }
+            res.mGroup = group;
             rResults.push_back(std::move(res));
             continue;
         }
@@ -54683,13 +54879,21 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 for (std::size_t r = 0; r < wide.mIds.size(); ++r)
                     for (std::size_t c = 0; c < mem.mWidth; ++c)
                         res.mValues.push_back(wide.mValues[r * total + offset + c]);
+                res.mGroup = group;
                 offset += mem.mWidth;
                 rResults.push_back(std::move(res));
             }
             continue;
         }
         if (gid_keyword_is(tok[0], "OnGroup")) {
-            gid_skip_to_end(cur, "OnGroup");
+            // Used to drop every result inside. They are now tagged with the
+            // group whose mesh they belong to -- the counterpart to the mesh
+            // side's Group tagging.
+            group = tok.size() > 1 ? tok[1] : std::string();
+            continue;
+        }
+        if (gid_line_starts_with(line, "End", "OnGroup")) {
+            group.clear();
             continue;
         }
         // Everything else at result scope (the file magic, End markers, ...)
@@ -54703,27 +54907,7 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
 void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
                        const std::map<std::int64_t, std::size_t>& rNodeRow,
                        const std::vector<GidResult>& rResults,
-                       const std::unordered_map<std::string, GidGaussSet>& rGauss, int time_step) {
-    // Distinct step values, in first-seen order, so mTimeStep can select one.
-    std::vector<double> steps;
-    for (const GidResult& r : rResults) {
-        bool seen = false;
-        for (double s : steps)
-            seen = seen || s == r.mStep;
-        if (!seen)
-            steps.push_back(r.mStep);
-    }
-    double wanted = steps.empty() ? 0.0 : steps.front();
-    if (!steps.empty()) {
-        std::int64_t idx = time_step;
-        if (idx < 0)
-            idx += static_cast<std::int64_t>(steps.size());
-        if (idx < 0 || idx >= static_cast<std::int64_t>(steps.size()))
-            throw ReadError("GiD: time step " + std::to_string(time_step) + " out of range (" +
-                            std::to_string(steps.size()) + " available)");
-        wanted = steps[static_cast<std::size_t>(idx)];
-    }
-
+                       const std::unordered_map<std::string, GidGaussSet>& rGauss, double wanted) {
     // Per-block element-id -> row. Element ids may RESTART per block in real
     // files (Kratos does exactly that), so this must never be one global map.
     // Same-named results are accumulated here and committed once, in
@@ -54857,9 +55041,75 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         rMesh.AddCellData(name, std::move(pending[name]));
 }
 
-Mesh gid_assemble(const GidStaged& rStaged, const std::vector<GidResult>& rResults,
+Mesh gid_assemble(const GidStaged& rStagedIn, const std::vector<GidResult>& rResultsIn,
                   const std::unordered_map<std::string, GidGaussSet>& rGauss, int time_step) {
     Mesh mesh;
+
+    // Resolve the requested step against the GLOBAL step list, before any group
+    // filtering: with several groups the filtered list is only that group's
+    // steps, so an index resolved against it would name the wrong step (or go
+    // out of range) the moment the requested one lives in a later group.
+    std::vector<double> steps;
+    for (const GidResult& r : rResultsIn) {
+        bool seen = false;
+        for (double v : steps)
+            seen = seen || v == r.mStep;
+        if (!seen)
+            steps.push_back(r.mStep);
+    }
+    double wanted = steps.empty() ? 0.0 : steps.front();
+    if (!steps.empty()) {
+        std::int64_t idx = time_step;
+        if (idx < 0)
+            idx += static_cast<std::int64_t>(steps.size());
+        if (idx < 0 || idx >= static_cast<std::int64_t>(steps.size()))
+            throw ReadError("GiD: time step " + std::to_string(time_step) + " out of range (" +
+                            std::to_string(steps.size()) + " available)");
+        wanted = steps[static_cast<std::size_t>(idx)];
+    }
+
+    // A GiD `Group` holds ONE mesh serving a run of steps (re-meshing), so the
+    // step just resolved decides WHICH mesh this call is about. With no groups
+    // anywhere every tag is empty, the filters below keep everything, and this
+    // is the historical single-mesh path unchanged.
+    bool any_group = false;
+    for (const GidBlock& b : rStagedIn.mBlocks)
+        any_group = any_group || !b.mGroup.empty();
+
+    std::string owner;  // the group owning `wanted`
+    if (any_group)
+        for (const GidResult& r : rResultsIn)
+            if (r.mStep == wanted && !r.mGroup.empty()) {
+                owner = r.mGroup;
+                break;
+            }
+
+    GidStaged staged_owned;
+    std::vector<GidResult> results_owned;
+    const GidStaged* pStaged = &rStagedIn;
+    const std::vector<GidResult>* pResults = &rResultsIn;
+    if (any_group) {
+        staged_owned.mAnyThirdCoord = rStagedIn.mAnyThirdCoord;
+        for (const GidBlock& b : rStagedIn.mBlocks)
+            if (b.mGroup == owner)
+                staged_owned.mBlocks.push_back(b);
+        // Each group carries its own coordinates, so keep only the nodes this
+        // group's blocks actually reference -- otherwise a re-meshed step would
+        // come back carrying every other step's nodes as orphans.
+        for (const GidBlock& b : staged_owned.mBlocks)
+            for (std::int64_t id : b.mConn) {
+                auto it = rStagedIn.mNodes.find(id);
+                if (it != rStagedIn.mNodes.end())
+                    staged_owned.mNodes.emplace(id, it->second);
+            }
+        for (const GidResult& r : rResultsIn)
+            if (r.mGroup == owner)
+                results_owned.push_back(r);
+        pStaged = &staged_owned;
+        pResults = &results_owned;
+    }
+    const GidStaged& rStaged = *pStaged;
+    const std::vector<GidResult>& rResults = *pResults;
 
     // Points, in ascending node id (std::map order). Ids may be gapped and
     // non-contiguous, so connectivity is remapped through this table -- the
@@ -54927,7 +55177,7 @@ Mesh gid_assemble(const GidStaged& rStaged, const std::vector<GidResult>& rResul
         mesh.AddCellData("gmsh:physical", std::move(mats));
     }
 
-    gid_apply_results(mesh, rStaged, node_row, rResults, rGauss, time_step);
+    gid_apply_results(mesh, rStaged, node_row, rResults, rGauss, wanted);
     return mesh;
 }
 
@@ -55580,6 +55830,64 @@ Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
     return gid_assemble(staged, results, gauss, rOptions.mTimeStep);
 }
 
+namespace {
+
+/**
+ * @brief The distinct step values a `.post.res` declares, sorted.
+ *
+ * A **header-only** scan: it reads `Result`/`ResultGroup` headers for their
+ * step field and skips each `Values` body wholesale, never tokenising a single
+ * value. That is the point -- `read_gid_metadata` exists to be cheap, and
+ * reusing `gid_parse_res_text` would materialise every array in the file just
+ * to count its steps.
+ *
+ * Tolerant by design: this feeds metadata, so a malformed header is skipped
+ * rather than thrown on. A real read of the same file still reports the
+ * problem through its own diagnostics.
+ */
+std::vector<double> gid_scan_step_values(std::string_view text) {
+    GidLineCursor cur(text);
+    std::vector<double> steps;
+    std::string line;
+    while (cur.Next(line)) {
+        std::vector<std::string> tok;
+        try {
+            tok = gid_split(line);
+        } catch (const ReadError&) {
+            continue;  // an unterminated quote: not this scan's problem
+        }
+        if (tok.empty())
+            continue;
+
+        // Both spellings put the step in a fixed slot:
+        //   Result      "<name>" "<analysis>" <step> <Type> <Location>
+        //   ResultGroup "<analysis>" <step> <Location>
+        std::size_t slot = 0;
+        if (gid_keyword_is(tok[0], "Result") && tok.size() >= 4)
+            slot = 3;
+        else if (gid_keyword_is(tok[0], "ResultGroup") && tok.size() >= 3)
+            slot = 2;
+        if (slot == 0)
+            continue;
+        try {
+            steps.push_back(gid_to_double(tok[slot], "a result step"));
+        } catch (const ReadError&) {
+            continue;
+        }
+
+        // Skip this block's Values body without reading any of it.
+        std::string inner;
+        while (cur.Next(inner))
+            if (gid_line_starts_with(inner, "End", "Values"))
+                break;
+    }
+    std::sort(steps.begin(), steps.end());
+    steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
+    return steps;
+}
+
+}  // namespace
+
 MeshMetadata read_gid_metadata(const std::string& rPath, const ReadOptions& rOptions) {
     // Deliberately minimal: this declines (by throwing) for everything except
     // the plain ASCII flavour, and registry_read_metadata then falls back to a
@@ -55605,6 +55913,20 @@ MeshMetadata read_gid_metadata(const std::string& rPath, const ReadOptions& rOpt
         info.mNumCells = b.mElemIds.size();
         info.mNodesPerCell = static_cast<std::size_t>(b.mNumNodes);
         meta.mCellBlocks.push_back(info);
+    }
+
+    // Steps live in the RESULTS sibling, which this used to never open -- so
+    // gid reported one step however many it had, and the whole sequence layer
+    // (sequence_num_steps, fan-out, `info --fast`, TimeSeries) saw a single
+    // step even though the reader has always honoured ReadOptions::mTimeStep.
+    // The sibling is optional, so its absence is silent, exactly as a full
+    // read treats it.
+    try {
+        const detail::FileSource res_src(paths.second, rOptions.mMmap);
+        if (!gid_looks_gzip(res_src.View()))
+            meta.mTimeValues = gid_scan_step_values(res_src.View());
+    } catch (const ReadError&) {
+        // No results sibling: geometry only, and no steps to report.
     }
     return meta;
 }
@@ -90114,7 +90436,10 @@ namespace {
 /// recorded gap in MED's metadata support, and it closes here for free the
 /// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
-    return rFormat == "xdmf" || rFormat == "exodus";
+    // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
+    // read_gid_metadata never opened the results sibling where steps live, so
+    // it reported one step and this predicate had nothing to gate on.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
 }
 
 }  // namespace
@@ -90145,13 +90470,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf") {
+    if (rFormat == "xdmf" || rFormat == "gid") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf' can); write one file per step "
-           "with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf' and 'gid' can); write one file per "
+           "step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -90422,6 +90747,28 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
+    if (ofmt == "gid") {
+        // gid's series writer is a free function taking a provider rather than
+        // a stateful class -- the transient surface meshio++ exposes IS this
+        // layer, which already carries every binding, so it needs none of its
+        // own. The lambda keeps the same one-mesh-alive property the loop
+        // below has.
+        write_gid_series(rOutput.mPath, [&](std::size_t i, double& rTime, Mesh& rMesh) {
+            if (i >= entries.size())
+                return false;
+            rMesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
+            rTime = entries[i].mTime;
+            if (entries[i].mTimeSource == SequenceTimeSource::Index &&
+                rInput.mTimeFrom != SequenceTimeFrom::Index) {
+                double t = 0.0;
+                if (seq_time_from_mesh(rMesh, t))
+                    rTime = t;
+            }
+            return true;
+        });
+        return;
+    }
+
     XdmfTimeSeriesWriter writer(rOutput.mPath, seq_resolve_data_format(rOutput.mOptions));
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {

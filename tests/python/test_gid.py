@@ -969,3 +969,159 @@ def test_auto_never_resolves_to_ascii_zipped(tmp_path):
 def test_unknown_mode_names_the_valid_ones():
     with pytest.raises(Exception, match="ascii_zipped"):
         meshioplusplus.gid.write("x.post.msh", _tri_mesh(), mode="nope")
+
+
+# ---------------------------------------------------------------------------
+# Multi-step: step discovery, Group/OnGroup, and the sequence fan-in.
+# ---------------------------------------------------------------------------
+
+_GRP_MESH = (
+    'Group "g1"\n'
+    'MESH "m1" dimension 3 ElemType Triangle Nnode 3\n'
+    "Coordinates\n1 0 0 0\n2 1 0 0\n3 0 1 0\nEnd Coordinates\n"
+    "Elements\n1 1 2 3\nEnd Elements\n"
+    "end group\n"
+    'Group "g2"\n'
+    'MESH "m2" dimension 3 ElemType Quadrilateral Nnode 4\n'
+    "Coordinates\n11 0 0 0\n12 1 0 0\n13 1 1 0\n14 0 1 0\nEnd Coordinates\n"
+    "Elements\n1 11 12 13 14\nEnd Elements\n"
+    "end group\n"
+)
+_GRP_RES = (
+    "GiD Post Results File 1.2\n"
+    'OnGroup "g1"\n'
+    'Result "T" "a" 1 Scalar OnNodes\nValues\n1 10\n2 11\n3 12\nEnd Values\n'
+    'Result "T" "a" 2 Scalar OnNodes\nValues\n1 20\n2 21\n3 22\nEnd Values\n'
+    "end ongroup\n"
+    'OnGroup "g2"\n'
+    'Result "T" "a" 3 Scalar OnNodes\nValues\n11 30\n12 31\n13 32\n14 33\nEnd Values\n'
+    "end ongroup\n"
+)
+
+
+def test_step_count_is_discoverable(tmp_path):
+    """The reader has always honoured ``time_step``, but metadata never opened
+    the results sibling where steps live -- so it reported one step and the
+    whole sequence layer saw a single entry."""
+    md = meshioplusplus.read_metadata(MESHES / "results.post.msh")
+    assert md["time_values"] == [1.0, 2.0]
+
+    ts = meshioplusplus.TimeSeries(MESHES / "results.post.msh")
+    assert len(ts) == 2
+    assert [t for t, _ in (ts[0], ts[1])] == [1.0, 2.0]
+    assert ts[0][1].point_data["T"][0] == 10.0
+    assert ts[1][1].point_data["T"][0] == 100.0
+
+
+def test_fan_out_writes_one_file_per_step(tmp_path):
+    """What the missing step count silently broke: a multi-step file fanned
+    out to one file per step produced a single file."""
+    out = tmp_path / "out_{step}.vtu"
+    written = meshioplusplus.write_sequence(
+        out, meshioplusplus.TimeSeries(MESHES / "results.post.msh")
+    )
+    assert len(written) == 2
+    vals = [meshioplusplus.read(p).point_data["T"][0] for p in sorted(written)]
+    assert vals == [10.0, 100.0]
+
+
+def test_groups_select_their_own_mesh_per_step(tmp_path):
+    """A GiD ``Group`` holds ONE mesh for a run of steps (re-meshing).
+
+    This used to skip the wrapper and read every group's MESH blocks into a
+    single merged mesh, while ``OnGroup`` results were dropped outright -- so a
+    genuinely re-meshed file came back garbled and result-less.
+    """
+    (tmp_path / "rm.post.msh").write_text(_GRP_MESH)
+    (tmp_path / "rm.post.res").write_text(_GRP_RES)
+    path = tmp_path / "rm.post.msh"
+
+    assert meshioplusplus.read_metadata(path)["time_values"] == [1.0, 2.0, 3.0]
+
+    expected = [
+        (3, "triangle", [10.0, 11.0, 12.0]),
+        (3, "triangle", [20.0, 21.0, 22.0]),
+        (4, "quad", [30.0, 31.0, 32.0, 33.0]),
+    ]
+    for step, (npts, ctype, vals) in enumerate(expected):
+        mesh = meshioplusplus.gid.read(path, time_step=step)
+        # Each group's own nodes only -- a merged read would give 7 points.
+        assert len(mesh.points) == npts
+        assert [c.type for c in mesh.cells] == [ctype]
+        assert np.asarray(mesh.point_data["T"]).tolist() == vals
+
+
+@needs_writer
+def test_fan_in_constant_mesh_emits_no_group(tmp_path):
+    """`Group` exists for re-meshing, so a series whose mesh never changes must
+    not emit one -- that keeps the single-step output shape."""
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    cells = [("triangle", np.array([[0, 1, 2]]))]
+    steps = [
+        (
+            float(i),
+            meshioplusplus.Mesh(pts, cells, point_data={"T": np.arange(3.0) + i}),
+        )
+        for i in range(3)
+    ]
+    path = tmp_path / "series.post.msh"
+    meshioplusplus.write_sequence(path, steps)
+
+    assert "Group" not in path.read_text()
+    ts = meshioplusplus.TimeSeries(path)
+    assert len(ts) == 3
+    assert [t for t, _ in [ts[i] for i in range(3)]] == [0.0, 1.0, 2.0]
+    assert np.allclose(ts[2][1].point_data["T"], np.arange(3.0) + 2)
+
+
+@needs_writer
+def test_fan_in_changed_mesh_emits_groups_and_round_trips(tmp_path):
+    """A mesh that changes between steps is exactly what Group is for."""
+    tri = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    quad = np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]])
+    steps = [
+        (
+            1.0,
+            meshioplusplus.Mesh(
+                tri,
+                [("triangle", np.array([[0, 1, 2]]))],
+                point_data={"T": np.array([10.0, 11, 12])},
+            ),
+        ),
+        (
+            2.0,
+            meshioplusplus.Mesh(
+                tri,
+                [("triangle", np.array([[0, 1, 2]]))],
+                point_data={"T": np.array([20.0, 21, 22])},
+            ),
+        ),
+        (
+            3.0,
+            meshioplusplus.Mesh(
+                quad,
+                [("quad", np.array([[0, 1, 2, 3]]))],
+                point_data={"T": np.array([30.0, 31, 32, 33])},
+            ),
+        ),
+    ]
+    path = tmp_path / "rm.post.msh"
+    meshioplusplus.write_sequence(path, steps)
+    # The first mesh is the implicit (ungrouped) first group; the CHANGED one
+    # opens a real group.
+    assert "Group" in path.read_text()
+
+    ts = meshioplusplus.TimeSeries(path)
+    assert len(ts) == 3
+    assert len(ts[1][1].points) == 3 and ts[1][1].cells[0].type == "triangle"
+    assert len(ts[2][1].points) == 4 and ts[2][1].cells[0].type == "quad"
+    assert np.allclose(ts[2][1].point_data["T"], [30, 31, 32, 33])
+
+
+@needs_writer
+def test_a_format_that_cannot_hold_a_series_still_refuses_by_name(tmp_path):
+    """gid joining the series writers must not weaken the guard for the rest."""
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    steps = [(0.0, meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))]))]
+    with pytest.raises(Exception, match="cannot hold a multi-step"):
+        meshioplusplus.write_sequence(tmp_path / "nope.stl", steps)

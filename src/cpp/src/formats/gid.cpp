@@ -662,13 +662,18 @@ std::string gid_build_option(GidMode mode) {
     return "-DMESHIOPLUSPLUS_WITH_GIDPOST=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON";
 }
 
-void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
-               const std::string& rAnalysisName, double stepValue) {
-    const GidMode resolved = gid_resolve_mode(rPath, mode);
-    if (!gid_available(resolved))
-        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
-                         gid_build_option(resolved));
+/// Everything a write needs to know about one mesh: the per-block GiD type,
+/// the GiD mesh names, the 1-based element-id bases, and which cell_data array
+/// (if any) is the material column. Extracted so `write_gid` and
+/// `write_gid_series` compute it identically rather than twice.
+struct GidWritePrep {
+    std::vector<const GidTypeEntry*> mEntries;
+    std::vector<std::string> mMeshNames;
+    std::vector<std::int64_t> mElemBase;
+    const std::string* mMatName = nullptr;
+};
 
+GidWritePrep gid_prepare_write(const Mesh& rMesh) {
     if (rMesh.PointDim() > 3)
         throw WriteError("GiD: points must have at most three components");
     constexpr std::size_t kIntMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
@@ -676,8 +681,9 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
         throw WriteError("GiD: mesh has too many points for gidpost's 32-bit API");
 
     const std::size_t nb = rMesh.NumCellBlocks();
-    std::vector<const GidTypeEntry*> entries(nb);
-    std::vector<std::string> mesh_names(nb);
+    GidWritePrep prep;
+    prep.mEntries.resize(nb);
+    prep.mMeshNames.resize(nb);
     std::int64_t total_cells = 0;
     for (std::size_t bi = 0; bi < nb; ++bi) {
         const auto cb = rMesh.Cells(bi);
@@ -688,18 +694,18 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
         const auto it = gid_type_table().find(cb.Type());
         if (it == gid_type_table().end())
             throw WriteError("GiD: cell type '" + cb.Type() + "' has no verified GiD ordering");
-        entries[bi] = &it->second;
-        mesh_names[bi] = cb.Type() + "_" + std::to_string(bi);
+        prep.mEntries[bi] = &it->second;
+        prep.mMeshNames[bi] = cb.Type() + "_" + std::to_string(bi);
         total_cells += static_cast<std::int64_t>(cb.NumCells());
     }
     if (static_cast<std::uint64_t>(total_cells) > static_cast<std::uint64_t>(kIntMax))
         throw WriteError("GiD: mesh has too many cells for gidpost's 32-bit API");
 
-    std::vector<std::int64_t> elem_base(nb);
+    prep.mElemBase.resize(nb);
     {
         std::int64_t base = 1;
         for (std::size_t bi = 0; bi < nb; ++bi) {
-            elem_base[bi] = base;
+            prep.mElemBase[bi] = base;
             base += static_cast<std::int64_t>(rMesh.Cells(bi).NumCells());
         }
     }
@@ -708,14 +714,58 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     // ("gmsh:physical"), only when it is integral and covers every block --
     // never guessed from another convention.
     static const std::string kMatKey = "gmsh:physical";
-    const std::string* mat_name = nullptr;
     if (nb > 0 && rMesh.HasCellData(kMatKey) && rMesh.CellDataNumBlocks(kMatKey) == nb) {
         bool all_int = true;
         for (std::size_t bi = 0; bi < nb && all_int; ++bi)
             all_int = gid_is_int_dtype(rMesh.CellData(kMatKey, bi).Dtype());
         if (all_int)
-            mat_name = &kMatKey;
+            prep.mMatName = &kMatKey;
     }
+    return prep;
+}
+
+/// Whether two consecutive steps share a mesh, so no new `Group` is needed.
+/// Geometry only -- results are what differ between steps by definition.
+bool gid_same_geometry(const Mesh& rA, const Mesh& rB) {
+    if (rA.NumPoints() != rB.NumPoints() || rA.PointDim() != rB.PointDim() ||
+        rA.NumCellBlocks() != rB.NumCellBlocks())
+        return false;
+    const NDArray& pa = rA.Points();
+    const NDArray& pb = rB.Points();
+    if (pa.Size() != pb.Size())
+        return false;
+    for (std::size_t i = 0; i < pa.Size(); ++i)
+        if (detail::read_double(pa, i) != detail::read_double(pb, i))
+            return false;
+    for (std::size_t bi = 0; bi < rA.NumCellBlocks(); ++bi) {
+        const auto ca = rA.Cells(bi);
+        const auto cb = rB.Cells(bi);
+        if (ca.Type() != cb.Type() || ca.NumCells() != cb.NumCells() ||
+            ca.NodesPerCell() != cb.NodesPerCell() || ca.IsRagged() || cb.IsRagged())
+            return false;
+        const NDArray& na = ca.Conn();
+        const NDArray& nb2 = cb.Conn();
+        if (na.Size() != nb2.Size())
+            return false;
+        for (std::size_t i = 0; i < na.Size(); ++i)
+            if (detail::read_int(na, i) != detail::read_int(nb2, i))
+                return false;
+    }
+    return true;
+}
+
+void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
+               const std::string& rAnalysisName, double stepValue) {
+    const GidMode resolved = gid_resolve_mode(rPath, mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+
+    const GidWritePrep prep = gid_prepare_write(rMesh);
+    const std::vector<const GidTypeEntry*>& entries = prep.mEntries;
+    const std::vector<std::string>& mesh_names = prep.mMeshNames;
+    const std::vector<std::int64_t>& elem_base = prep.mElemBase;
+    const std::string* mat_name = prep.mMatName;
 
     gid_ensure_init();
     const GiD_PostMode gid_mode = gid_post_mode(resolved);
@@ -751,6 +801,97 @@ void write_gid(const std::string& rPath, const Mesh& rMesh, GidMode mode,
     }
 }
 
+void write_gid_series(const std::string& rPath,
+                      const std::function<bool(std::size_t, double&, Mesh&)>& rNext, GidMode Mode,
+                      const std::string& rAnalysisName) {
+    const GidMode resolved = gid_resolve_mode(rPath, Mode);
+    if (!gid_available(resolved))
+        throw WriteError("meshio++: the 'gid' HDF5 flavour needs a build with " +
+                         gid_build_option(resolved));
+    gid_ensure_init();
+    const GiD_PostMode gid_mode = gid_post_mode(resolved);
+    const bool two_files = resolved == GidMode::Ascii || resolved == GidMode::AsciiZipped;
+    const auto paths = gid_ascii_paths(rPath);
+
+    // The handles stay open ACROSS steps -- that is the whole difference from
+    // write_gid, which opens, writes one step and closes.
+    GiD_FILE fdm = 0;
+    GiD_FILE fdr = 0;
+    if (two_files) {
+        fdm = GiD_fOpenPostMeshFile(paths.first.c_str(), gid_mode);
+        if (fdm <= 0)
+            throw WriteError("GiD: could not open mesh file for writing: " + paths.first);
+        fdr = GiD_fOpenPostResultFile(paths.second.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open result file for writing: " + paths.second);
+    } else {
+        fdr = GiD_fOpenPostResultFile(rPath.c_str(), gid_mode);
+        if (fdr <= 0)
+            throw WriteError("GiD: could not open file for writing: " + rPath);
+        fdm = fdr;  // one handle carries both in the binary/HDF5 flavours
+    }
+
+    // Only the PREVIOUS step's mesh is retained, never a list: the sequence
+    // layer guarantees one mesh alive at a time and this must not break it.
+    Mesh prev;
+    bool have_prev = false;
+    bool group_open = false;
+    std::size_t group_index = 0;
+
+    for (std::size_t i = 0;; ++i) {
+        double time = static_cast<double>(i);
+        Mesh mesh;
+        if (!rNext(i, time, mesh))
+            break;
+        const GidWritePrep prep = gid_prepare_write(mesh);
+
+        // A GiD Group holds ONE mesh for a consecutive run of steps, so a new
+        // one is opened only when the mesh actually CHANGES. A series whose
+        // mesh never changes emits no group at all and keeps the single-step
+        // output shape; processing steps in order also satisfies GiD's "only
+        // one group at a time" rule by construction.
+        const bool changed = !have_prev || !gid_same_geometry(prev, mesh);
+        if (changed) {
+            if (group_open) {
+                gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+                gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+                group_open = false;
+            }
+            const bool need_group = have_prev;  // the 2nd distinct mesh onwards
+            if (need_group) {
+                const std::string gname = "group_" + std::to_string(++group_index);
+                gid_check(GiD_fBeginMeshGroup(fdm, gname.c_str()), "BeginMeshGroup");
+                gid_check(GiD_fBeginOnMeshGroup(fdr, const_cast<char*>(gname.c_str())),
+                          "BeginOnMeshGroup");
+                group_open = true;
+            }
+            if (i == 0)
+                gid_write_provenance_mesh(fdm);
+            gid_write_geometry(fdm, mesh, prep.mEntries, prep.mMeshNames, prep.mMatName);
+        }
+
+        if (i == 0)
+            gid_write_provenance_result(fdr);
+        gid_write_point_data(fdr, mesh, rAnalysisName, time);
+        gid_write_cell_data(fdr, mesh, prep.mEntries, prep.mMeshNames, prep.mElemBase,
+                            prep.mMatName, rAnalysisName, time);
+
+        prev = std::move(mesh);
+        have_prev = true;
+    }
+
+    if (group_open) {
+        gid_check(GiD_fEndOnMeshGroup(fdr), "EndOnMeshGroup");
+        gid_check(GiD_fEndMeshGroup(fdm), "EndMeshGroup");
+    }
+    if (two_files) {
+        gid_check(GiD_fClosePostMeshFile(fdm), "ClosePostMeshFile");
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    } else {
+        gid_check(GiD_fClosePostResultFile(fdr), "ClosePostResultFile");
+    }
+}
+
 }  // namespace meshioplusplus
 
 #else  // !MESHIOPLUSPLUS_HAS_GIDPOST
@@ -771,6 +912,13 @@ std::string gid_build_option(GidMode mode) {
 // Always defined, so `gid` fails with an error naming the build flags rather
 // than a link error or -- worse -- a silent fall-through to another format
 // for a `.post.msh` path (the partition_kahip_parts / vtk_codec contract).
+void write_gid_series(const std::string&, const std::function<bool(std::size_t, double&, Mesh&)>&,
+                      GidMode mode, const std::string&) {
+    throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
+                     " (the vendored gidpost library deflates unconditionally, so zlib is a "
+                     "build prerequisite, not an option)");
+}
+
 void write_gid(const std::string&, const Mesh&, GidMode mode, const std::string&, double) {
     throw WriteError("meshio++: the 'gid' writer needs a build with " + gid_build_option(mode) +
                      " (the vendored gidpost library deflates unconditionally, so zlib is a "

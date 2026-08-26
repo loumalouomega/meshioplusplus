@@ -2897,10 +2897,38 @@ finalizes.
            const std::string& analysis_name, double step) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::write_gid(path, meshioplusplus_py::py_to_mesh(pymesh, refs),
-                                      meshioplusplus::gid_mode_from_name(mode), analysis_name, step);
+                                      meshioplusplus::gid_mode_from_name(mode), analysis_name,
+                                      step);
         },
         py::arg("path"), py::arg("mesh"), py::arg("mode") = "auto",
         py::arg("analysis_name") = "meshio++", py::arg("step") = 1.0);
+    // GiD multi-step writer. Python's sequence engine (`_sequence.py`) is a
+    // separate pure-Python implementation, not a shim over the C++ one, so it
+    // cannot reach `sequence_to_timeseries`' own gid branch and needs this.
+    // `next_step()` returns `(time, mesh)` or None when exhausted -- pull, not
+    // push, so a generator drives it and only one mesh is ever alive.
+    m.def(
+        "gid_write_series",
+        [](const std::string& path, const py::function& next_step, const std::string& mode,
+           const std::string& analysis_name) {
+            meshioplusplus::write_gid_series(
+                path,
+                [&](std::size_t, double& time, meshioplusplus::Mesh& mesh) {
+                    py::object item = next_step();
+                    if (item.is_none())
+                        return false;
+                    auto pair = item.cast<py::tuple>();
+                    time = pair[0].cast<double>();
+                    // The refs must outlive the conversion only until the mesh
+                    // is written, which happens before the next pull.
+                    meshioplusplus_py::PyMeshRefs refs;
+                    mesh = meshioplusplus_py::py_to_mesh(pair[1], refs);
+                    return true;
+                },
+                meshioplusplus::gid_mode_from_name(mode), analysis_name);
+        },
+        py::arg("path"), py::arg("next_step"), py::arg("mode") = "auto",
+        py::arg("analysis_name") = "meshio++");
     // GiD postprocess reader. Needs no gidpost (that library is write-only),
     // so it is available in builds that cannot write the format at all.
     m.def(

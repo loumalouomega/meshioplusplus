@@ -141,6 +141,7 @@
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 // Project includes
@@ -415,6 +416,34 @@ MESHIOPLUSPLUS_API void write_gid(const std::string& rPath, const Mesh& rMesh,
  *         this build cannot read the resolved flavour (naming the missing
  *         CMake flag).
  */
+/**
+ * @brief Writes a **multi-step** GiD file, pulling one step at a time.
+ *
+ * A free function taking a provider rather than a stateful writer class: the
+ * transient surface meshio++ exposes is the sequence layer
+ * (`sequence_to_timeseries`), which already carries every binding, so this
+ * needs none of its own. `XdmfTimeSeriesWriter`'s class shape exists because
+ * that format's series writer is public API in its own right; this one is not.
+ *
+ * @p rNext is called once per step, in order, and fills that step's time and
+ * mesh; it returns false when the series is exhausted. Pull-until-done rather
+ * than a step count so a Python generator -- which cannot say how many steps
+ * it has -- drives it as naturally as the sequence layer's counted loop. Only
+ * one mesh is ever alive, which is the **streaming invariant** that layer
+ * guarantees.
+ *
+ * A GiD `Group` is emitted only when a step's mesh **differs** from the
+ * previous step's, which is what that construct is for (re-meshing / adaptive
+ * analyses: one mesh serving a consecutive run of steps). A series whose mesh
+ * never changes therefore emits no group at all and keeps the single-step
+ * output shape. Processing steps in order also satisfies GiD's "only one group
+ * at a time" rule by construction.
+ */
+MESHIOPLUSPLUS_API void write_gid_series(
+    const std::string& rPath,
+    const std::function<bool(std::size_t, double& rTime, Mesh& rMesh)>& rNext,
+    GidMode Mode = GidMode::Auto, const std::string& rAnalysisName = "meshio++");
+
 MESHIOPLUSPLUS_API Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions = {});
 
 /**

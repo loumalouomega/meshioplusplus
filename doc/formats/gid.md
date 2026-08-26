@@ -205,8 +205,45 @@ Each member is unpacked into an **ordinary result**, so everything else — `poi
 The `.post.res` sibling is optional, so an **absent** one is normal and silent — a mesh with no results reads back as geometry only. A **malformed** one is also not fatal (the geometry is still good, and the alternative is refusing a file GiD itself opens), but it now emits a warning naming the problem. Before this, the reader's own refusals were unreachable from `read`: they were caught by the optional-sibling handler and every result vanished with no diagnostic at all — including results that had already parsed cleanly.
 :::
 
-::: warning `Group` / `OnGroup` is not a region concept
-Easy to misread from the name: GiD's `Group`/`End Group` wraps the `MESH` blocks belonging to **one time step**, so GiD can swap meshes as the step changes — it exists for re-meshing and adaptive analyses. It is not a named entity set, and the postprocess format has **no node/element set concept at all**; the optional material column (already round-tripping as `gmsh:physical`) is its only grouping mechanism. Its real meshio++ analogue is the transient axis, not `Region`. `Group`/`OnGroup` are skipped on read.
+## Multi-step series
+
+`gid` holds several time steps in one file, and round-trips them through meshio++'s [sequence layer](../sequences.md) in both directions.
+
+```python
+mesh = meshioplusplus.gid.read("series.post.msh", time_step=2)   # one step
+series = meshioplusplus.TimeSeries("series.post.msh")            # all of them
+meshioplusplus.write_sequence("out_{step}.vtu", series)          # fan out
+meshioplusplus.write_sequence("all.post.msh", series)            # fan in
+```
+
+Steps live in the `.post.res`, in each `Result`/`ResultGroup` header's step value. `read_metadata` reports them as `time_values` through a **header-only scan** that skips every `Values` body without tokenising it — metadata must stay cheap.
+
+::: tip This closed a real asymmetry
+The reader had always honoured `time_step`, but `read_gid_metadata` never opened the results sibling, so it reported **one** step whatever the file held. `gid` was therefore absent from the sequence layer's step-capable list, and `sequence_num_steps`, fan-out, `info --fast` and `TimeSeries` all saw a single step — a file could be read at step N but never asked how many steps it had.
+:::
+
+### `Group` / `OnGroup` — re-meshing
+
+Easy to misread from the name: `Group` is **not** a named entity set. The postprocess format has **no node/element set concept at all** — the optional material column, already round-tripping as `gmsh:physical`, is its only grouping mechanism. A `Group` wraps the `MESH` blocks of **one mesh serving a consecutive run of steps**, so GiD can swap meshes as the step changes; it exists for re-meshing and adaptive analyses.
+
+```
+Group "steps 1, 2, 3 and 4"
+  MESH "environment" ... end elements
+  MESH "body"        ... end elements
+end group
+Group "steps 5, 6, 7 and 8"  ...  end group
+
+OnGroup "steps 1, 2, 3 and 4"
+  Result ... end values
+end ongroup
+```
+
+Reading resolves the requested step to the group that owns it and uses **only that group's** meshes, results and nodes — each group carries its own coordinates, so a re-meshed step comes back with its own node set rather than every other step's as orphans. Previously the wrapper was skipped and every group's blocks merged into one garbled mesh, while `OnGroup` results were dropped outright.
+
+Writing emits a group only when a step's mesh **differs from the previous step's**, which is what the construct is for: a series with a fixed mesh emits no group at all and keeps the single-step output shape. Processing steps in order also satisfies GiD's "only one group at a time" rule by construction.
+
+::: warning Fan-in is a sequence-layer capability, not a public writer class
+Unlike XDMF there is no public `GidTimeSeriesWriter`. The multi-step writer is a free function (`write_gid_series`) that *pulls* steps, driven by `sequence_to_timeseries` — the transient surface meshio++ exposes is the sequence layer, which already carries every binding. Only one mesh is alive at a time, the streaming invariant that layer guarantees.
 :::
 
 ## Provenance
