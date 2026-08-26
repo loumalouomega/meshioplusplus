@@ -30,7 +30,7 @@ Three on-disk flavours:
 - **ascii_zipped** — the same two sibling files as `ascii`, gzipped (gidpost's `GiD_PostAsciiZipped`, which is the identical text through `gzprintf`). The extension is unchanged — a gzipped file still ends `.post.msh` — so **`auto` never resolves to it**: inferring it would change what every existing `.post.msh` write produces. Reading needs no flag at all, since the reader sniffs the gzip magic.
 - **hdf5** — one HDF5 file, `<stem>.post.h5`; needs a build with `MESHIOPLUSPLUS_WITH_HDF5=ON` in addition to gidpost itself (gidpost's own HDF5 flavour additionally needs the HDF5 *high-level* library, `libhdf5_hl`, alongside the core C API every other HDF5-backed format here already links).
 
-A build without gidpost (`-DMESHIOPLUSPLUS_WITH_GIDPOST=OFF`, or gidpost on but zlib off) still exposes `gid.write` — it raises a `WriteError` naming the missing CMake flags rather than the path silently falling through to another format. **The statically-linked release CLI binaries and the Windows wheels build with zlib off and therefore do not carry `gid`** (documented, not a bug — see `CLAUDE.md`'s "GiD postprocess" note).
+A build without gidpost (`-DMESHIOPLUSPLUS_WITH_GIDPOST=OFF`, or gidpost on but zlib off) still exposes `gid.write` — it raises a `WriteError` naming the missing CMake flags rather than the path silently falling through to another format. As of v10.20.0, **the statically-linked release CLI binaries and every published wheel carry `gid` write support**: both vendor a pinned, statically-linked zlib (`MESHIOPLUSPLUS_ZLIB_STATIC`, see `CLAUDE.md`'s "GiD postprocess" note) rather than dropping zlib entirely, so they still ship a single dependency-free artifact. Only a from-source build with `MESHIOPLUSPLUS_WITH_GIDPOST=OFF`/`MESHIOPLUSPLUS_WITH_ZLIB=OFF` lacks it.
 
 ## Reading
 
@@ -45,7 +45,7 @@ The flavour is resolved from the extension and then **confirmed against the lead
 
 **Sibling policy** (the `tetgen`/`triangle` `.node`/`.ele` precedent): the geometry file `<stem>.post.msh` is **mandatory**, the results file `<stem>.post.res` is **optional** — a mesh with no results reads back as geometry only. Passing the `.post.res` path directly derives and reads the `.post.msh`; *its* absence is an error, since results alone carry no geometry.
 
-**Reading needs no gidpost at all**, and that has a visible consequence: `gid` is readable in **strictly more build configurations than it is writable**. The statically-linked release CLI binaries and the Windows wheels build with zlib off, so they cannot write GiD — but they read the ASCII flavour fine. `gid_available` reports the write side and `gid_readable` the read side; they genuinely differ, which is why there are two.
+**Reading needs no gidpost at all**, and that has a visible consequence: `gid` is readable in **strictly more build configurations than it is writable** — any build with `MESHIOPLUSPLUS_WITH_GIDPOST=OFF` (gidpost's source absent, or a deliberate `--without-gidpost`) still reads every flavour zlib/HDF5 availability allows. `gid_available` reports the write side and `gid_readable` the read side; they genuinely differ, which is why there are two.
 
 ### Real-world variants the reader handles
 

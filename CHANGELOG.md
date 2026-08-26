@@ -8,6 +8,14 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.20.0 (2026-08-26)
+
+Closes roadmap section 1's last bullet — `gid` write support now ships in every release artifact, not just from-source builds. See `doc/formats/gid.md`.
+
+- **The release CLI binaries and every published PyPI wheel now carry `gid` write support.** `cli.yml` and `wheels.yml` used to build `-DMESHIOPLUSPLUS_WITH_ZLIB=OFF` on every leg (not just the Windows wheels, as this project's own docs previously — incorrectly — scoped it: `wheels.yml`'s shared `CIBW_ENVIRONMENT` turns zlib off on all four OS legs, Linux included), which turned the GiD writer off along with the rest of the optional native paths. A plain `find_package(ZLIB)` was never the fix, since it links the system libz **dynamically**, defeating the "one dependency-free artifact" premise those two workflows exist for.
+- **New `MESHIOPLUSPLUS_ZLIB_STATIC` CMake option** (OFF by default, orthogonal to `MESHIOPLUSPLUS_STATIC_RUNTIME`): when ON, `FetchContent` vendors a pinned, SHA256-checked zlib 1.3.1 release and links only its static `zlibstatic` target, aliased to `ZLIB::ZLIB` so every existing zlib/gidpost consumer needed no further change. Both `cli.yml` and `wheels.yml` now pass it; their dependency-verification steps (Linux `ldd`, and a newly-added macOS `otool -L` check) assert no dynamic `libz` dependency appears.
+- **Breaking:** the default `.vtu`/`.vtp` write from the release CLI binaries and every published wheel is now **zlib-compressed** instead of uncompressed. `registry.cpp`'s VTU/VTP writer entries already follow a "default follows the build" convention identical to XDMF's HDF-vs-XML choice (`#ifdef MESHIOPLUSPLUS_HAS_ZLIB` picks compressed over uncompressed for the default write), so gaining zlib for `gid` gains it for these two formats' defaults too. The output is still standard, universally-readable VTK XML — only the raw bytes differ from prior releases; pass `--codec none`/`zlib=False` to keep writing uncompressed.
+
 ## v10.19.0 (2026-08-25)
 
 Closes roadmap section 1's reader bullets: `gid` is now **read and written in all three flavours**, so the section is narrowed to a short list of refinements rather than a missing capability. See `doc/formats/gid.md`.

@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 10.19.0
+  VERSION 10.20.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -118,8 +118,42 @@ endif()
 # Python (whose zlib is always available in the stdlib). This keeps Windows CI
 # and wheels buildable with no system libraries.
 option(MESHIOPLUSPLUS_WITH_ZLIB "Build the C++ VTU zlib compression path" ON)
+
+# OFF by default: an ordinary find_package(ZLIB) links whatever the system
+# provides, which is normally the *shared* libz -- fine for a regular install,
+# but wrong for the one dependency-free portable artifact this project ships
+# (cli.yml's statically-linked release CLI binaries, wheels.yml's wheels),
+# where a dynamic libz dependency defeats the entire premise. When ON, a
+# pinned, SHA256-checked zlib release is fetched and built as a static lib
+# instead, mirroring the MESHIOPLUSPLUS_BUILD_TESTS GoogleTest FetchContent
+# below (and build-wasm-deps.sh's pin discipline for HDF5/netCDF/cgnslib).
+option(MESHIOPLUSPLUS_ZLIB_STATIC
+  "Vendor and statically link a pinned zlib instead of find_package(ZLIB) (for a dependency-free portable artifact: cli.yml/wheels.yml)"
+  OFF)
+
 if(MESHIOPLUSPLUS_WITH_ZLIB AND NOT EMSCRIPTEN)
-  find_package(ZLIB QUIET)
+  if(MESHIOPLUSPLUS_ZLIB_STATIC)
+    include(FetchContent)
+    FetchContent_Declare(
+      meshioplusplus_zlib
+      URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+      URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23)
+    # zlib's own CMakeLists.txt always defines both `zlib` (shared) and
+    # `zlibstatic` (static) with no option to skip the shared one -- only
+    # zlibstatic is linked below. SKIP_INSTALL_ALL keeps its own
+    # headers/lib/pkgconfig out of `cmake --install` (relevant for the wheel
+    # build, which installs the whole tree); ZLIB_BUILD_EXAMPLES=OFF skips its
+    # example/minigzip binaries; CMAKE_POSITION_INDEPENDENT_CODE matches the
+    # PIE default most modern toolchains link executables with.
+    set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    FetchContent_MakeAvailable(meshioplusplus_zlib)
+    add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    set(ZLIB_FOUND TRUE)
+  else()
+    find_package(ZLIB QUIET)
+  endif()
 endif()
 # Under Emscripten there is no system zlib to find_package() -- the bundled
 # port (-sUSE_ZLIB=1) supplies both <zlib.h> and the implementation, but only
