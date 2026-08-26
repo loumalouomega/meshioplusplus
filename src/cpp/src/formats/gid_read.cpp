@@ -31,6 +31,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -455,30 +456,47 @@ void gid_parse_mesh_text(std::string_view text, GidStaged& rStaged) {
 // ---------------------------------------------------------------------------
 // Results parsing (.post.res).
 
-/// Legal component counts per GiD result type, from gidpost's own table.
-/// Used only to sanity-check the count inferred from the row width, because
-/// the `Result` header carries no `:N` dimension suffix -- `Vector` alone does
-/// not say whether rows hold 2, 3 or 4 components.
+/// Legal component counts per GiD result type, from the shared table (which
+/// transcribes gidpost's own `_ResultTypeInfo`). Used to sanity-check the
+/// count inferred from the row width, because a plain `Result` header carries
+/// no `:N` dimension suffix -- `Vector` alone does not say whether rows hold
+/// 2, 3 or 4 components. An unknown type name accepts whatever the rows say.
 bool gid_dim_is_legal(const std::string& rType, std::size_t k) {
-    if (rType == "Scalar")
-        return k == 1;
-    if (rType == "Vector")
-        return k == 2 || k == 3 || k == 4;
-    if (rType == "Matrix")
-        return k == 3 || k == 6;
-    if (rType == "PlainDeformationMatrix")
-        return k == 4;
-    if (rType == "MainMatrix")
-        return k == 12;
-    if (rType == "LocalAxes")
-        return k == 3;
-    if (rType == "ComplexScalar")
-        return k == 2;
-    if (rType == "ComplexVector")
-        return k == 4 || k == 6;
-    if (rType == "ComplexMatrix")
-        return k == 6 || k == 12;
-    return true;  // unknown type: accept whatever the rows say
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rType, e.mName))
+            return gid_result_dim_is_legal(e.mType, k);
+    return true;
+}
+
+/**
+ * @brief Records an array's declared GiD result type, when that declaration
+ * carries information.
+ *
+ * A declaration is attached only when the file's type differs from the one the
+ * writer would have *inferred* from the component count -- so a plain
+ * `Scalar`, `Vector:2` or `Vector:3` adds nothing, and an ordinary round trip
+ * stays free of `gid:result_type:*` keys. Same reasoning as the all-zero
+ * material column: materializing a declaration that changes nothing would make
+ * the flavours disagree on a round trip and surprise every caller that never
+ * asked about result types.
+ *
+ * An unrecognized type name is left unrecorded rather than guessed at.
+ */
+void gid_record_result_type(Mesh& rMesh, const std::string& rName, const std::string& rType,
+                            std::size_t k) {
+    const gid_detail::GidResultTypeEntry* declared = nullptr;
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rType, e.mName))
+            declared = &e;
+    if (declared == nullptr)
+        return;
+    const gid_detail::GidResultTypeEntry* inferred = gid_detail::gid_inferred_result_type(k);
+    if (inferred != nullptr && inferred->mType == declared->mType)
+        return;
+
+    NDArray decl(DType::Int64, std::vector<std::size_t>{1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(declared->mType);
+    rMesh.AddFieldData(std::string(kGidResultTypePrefix) + rName, std::move(decl));
 }
 
 /**
@@ -675,6 +693,7 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
                         res.mValues[i * res.mNumComponents + c];
             }
             rMesh.AddPointData(res.mName, std::move(arr));
+            gid_record_result_type(rMesh, res.mName, res.mType, res.mNumComponents);
             continue;
         }
 
@@ -730,6 +749,10 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             }
             slot = pending.emplace(res.mName, std::move(blocks)).first;
             order.push_back(res.mName);
+            // Recorded at first sight, on the same first-seen key the block
+            // list uses: the same result name may span several blocks, and
+            // every one of them declares the same type.
+            gid_record_result_type(rMesh, res.mName, res.mType, res.mNumComponents);
         }
         if (slot->second[block].Shape().size() >= 2 &&
             slot->second[block].Shape()[1] != res.mNumComponents) {
@@ -1295,6 +1318,41 @@ std::string gid_missing_flavour_message(GidMode mode) {
 
 // ---------------------------------------------------------------------------
 // Public entry points.
+
+// ---------------------------------------------------------------------------
+// Result-type vocabulary.
+//
+// Defined in this translation unit rather than gid.cpp because this one is
+// unconditional: gid.cpp's body is behind MESHIOPLUSPLUS_HAS_GIDPOST, and a
+// build that cannot write GiD still reads it, so these must resolve there.
+
+const char* gid_result_type_name(GidResultType type) {
+    const gid_detail::GidResultTypeEntry* e = gid_detail::gid_find_result_type(type);
+    if (e == nullptr)
+        throw std::invalid_argument("meshio++: gid: unknown GidResultType value " +
+                                    std::to_string(static_cast<std::int64_t>(type)));
+    return e->mName;
+}
+
+GidResultType gid_result_type_from_name(const std::string& rName) {
+    for (const gid_detail::GidResultTypeEntry& e : gid_detail::gid_result_type_table())
+        if (gid_keyword_is(rName, e.mName))
+            return e.mType;
+    throw std::invalid_argument("meshio++: gid: unknown result type '" + rName + "'");
+}
+
+bool gid_result_dim_is_legal(GidResultType type, std::size_t k) {
+    const gid_detail::GidResultTypeEntry* e = gid_detail::gid_find_result_type(type);
+    if (e == nullptr)
+        return false;
+    for (std::size_t d : e->mDims) {
+        if (d == 0)
+            break;
+        if (d == k)
+            return true;
+    }
+    return false;
+}
 
 bool gid_readable(GidMode mode) {
     switch (mode) {

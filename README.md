@@ -30,7 +30,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`),
 > [FLUX](https://www.altair.com/flux/) (mesh `.pf3`, field `.dex`),
 > [FreeFem++](https://freefem.org/) (`.msh`),
-> [GiD postprocess](https://www.gidsimulation.com/) (writing via a vendored gidpost) (`.post.msh`/`.post.res`, `.post.bin`, `.post.h5`),
+> [GiD postprocess](https://www.gidsimulation.com/) (`.post.msh`/`.post.res`, `.post.bin`, `.post.h5`; writing via a vendored gidpost, reading is meshio++'s own code),
 > [H5M](https://www.mcs.anl.gov/~fathom/moab-docs/h5mmain.html) (`.h5m`),
 > [HMF](https://loumalouomega.github.io/meshioplusplus/formats/hmf) (`.hmf`, experimental, meshio++-specific),
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`),

@@ -1,5 +1,59 @@
+import enum
+
 from .. import _core
 from .._helpers import register_format
+
+#: ``field_data`` key prefix declaring an array's :class:`ResultType`.
+#:
+#: The full key is this prefix plus the array's own name, and its value is a
+#: single integer :class:`ResultType`. ``field_data`` is global rather than
+#: per-location, so one key covers an array of that name wherever it appears:
+#: if the same name is in both ``point_data`` and ``cell_data``, the single
+#: declaration applies to both and must be legal for both component counts.
+RESULT_TYPE_PREFIX = "gid:result_type:"
+
+
+class ResultType(enum.IntEnum):
+    """What kind of quantity a GiD result array holds.
+
+    meshio++'s ``Mesh`` cannot say "this array is a symmetric tensor" or "this
+    array is complex" -- numpy's ``complex128`` has no meshio++ dtype -- so a
+    caller declares it out of band::
+
+        mesh.field_data[gid.RESULT_TYPE_PREFIX + "stress"] = [gid.ResultType.MATRIX]
+
+    An array with no declaration keeps the historical inference (1 component ->
+    ``Scalar``, 2 or 3 -> ``Vector``, anything else split into that many named
+    scalars), so output for undeclared arrays is byte-identical to before this
+    existed. A 6-component array is deliberately *not* inferred as ``MATRIX``:
+    ``(n, 6)`` could equally be ``Matrix:6``, ``ComplexMatrix:3`` or
+    ``ComplexVector:6``, so inferring would silently pick one meaning.
+
+    Values are stored **verbatim in GiD's own component order**, which meshio++
+    does not reinterpret. Two orders are worth knowing: ``MATRIX`` with 6
+    components is ``Sxx Syy Szz Sxy Syz Sxz``, which is already meshio/VTK's
+    symmetric-tensor order (so a stress tensor needs no permutation); and
+    ``COMPLEX_VECTOR`` *interleaves* real and imaginary parts per component
+    (``x_re x_im y_re y_im z_re z_im``) while ``COMPLEX_MATRIX`` *blocks* them
+    (every real, then every imaginary) -- the same family, opposite
+    conventions.
+
+    Legal component counts, which the writer enforces (an illegal count is a
+    :class:`meshioplusplus.WriteError` naming the array, never a silent
+    fallback): ``SCALAR`` 1; ``VECTOR`` 2/3/4; ``MATRIX`` 3/6;
+    ``PLAIN_DEFORMATION_MATRIX`` 4; ``MAIN_MATRIX`` 12; ``LOCAL_AXES`` 3;
+    ``COMPLEX_SCALAR`` 2; ``COMPLEX_VECTOR`` 4/6; ``COMPLEX_MATRIX`` 6/12.
+    """
+
+    SCALAR = 0
+    VECTOR = 1
+    MATRIX = 2
+    PLAIN_DEFORMATION_MATRIX = 3
+    MAIN_MATRIX = 4
+    LOCAL_AXES = 5
+    COMPLEX_SCALAR = 6
+    COMPLEX_VECTOR = 7
+    COMPLEX_MATRIX = 8
 
 
 def read(filename, time_step=0):
@@ -67,4 +121,4 @@ register_format(
     "gid", [".post.msh", ".post.res", ".post.bin", ".post.h5"], read, {"gid": write}
 )
 
-__all__ = ["read", "write"]
+__all__ = ["read", "write", "ResultType", "RESULT_TYPE_PREFIX"]

@@ -32,10 +32,12 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <utility>
 #include <string>
 #include <vector>
 
 using meshioplusplus::CellType;
+using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
 
@@ -320,6 +322,160 @@ TEST(GidWrite, ResultsReferenceGaussPointSets) {
     EXPECT_NE(content.find("GaussPoints \"gp_quad_0\""), std::string::npos);
     EXPECT_NE(content.find("\"pressure\""), std::string::npos);
     EXPECT_NE(content.find("OnGaussPoints \"gp_quad_0\""), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Result types (Matrix, Complex, ...). The declaration rides a field_data key
+// (kGidResultTypePrefix) because the registry's (path, mesh) writers cannot
+// carry a side-channel struct -- see gid.hpp. Component counts are gidpost's
+// own; component ORDER is quoted verbatim from CIMNE's Customization Manual,
+// and is pinned literally below because the two complex families use
+// opposite conventions (ComplexVector interleaved, ComplexMatrix blocked).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A 2-triangle mesh with one declared point_data array whose values encode
+/// their own (row, component) position, so a permutation anywhere in the
+/// write path is visible rather than merely plausible.
+Mesh gid_typed_mesh(meshioplusplus::GidResultType type, std::size_t k) {
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {1, 3, 2}}));
+    std::vector<double> vals(4 * k);
+    for (std::size_t i = 0; i < vals.size(); ++i)
+        vals[i] = static_cast<double>(i);
+    m.AddPointData("f", mt::data_array(vals, k));
+    NDArray decl(DType::Int64, {1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(type);
+    m.AddFieldData(std::string(meshioplusplus::kGidResultTypePrefix) + "f", std::move(decl));
+    return m;
+}
+
+/// The numeric rows of the single Result block in a written .post.res.
+std::vector<std::vector<double>> gid_read_values_block(const std::string& rResPath) {
+    std::ifstream f(rResPath);
+    std::string line;
+    bool inside = false;
+    std::vector<std::vector<double>> rows;
+    while (std::getline(f, line)) {
+        std::istringstream iss(line);
+        std::string first;
+        iss >> first;
+        std::string lower = first;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower == "values") {
+            inside = true;
+            continue;
+        }
+        if (lower == "end" && inside)
+            break;
+        if (!inside)
+            continue;
+        std::vector<double> row;
+        std::istringstream row_stream(line);
+        double v;
+        while (row_stream >> v)
+            row.push_back(v);
+        if (!row.empty())
+            rows.push_back(row);
+    }
+    return rows;
+}
+
+}  // namespace
+
+TEST(GidWrite, DeclaredResultTypeReachesTheFileHeader) {
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, gid_typed_mesh(meshioplusplus::GidResultType::Matrix, 6),
+                              meshioplusplus::GidMode::Ascii);
+    std::ifstream rf(path.substr(0, path.size() - 3) + "res");
+    std::string content((std::istreambuf_iterator<char>(rf)), std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("\"f\" \"meshio++\" 1 Matrix OnNodes"), std::string::npos) << content;
+}
+
+TEST(GidWrite, ComplexVectorIsInterleavedAndComplexMatrixIsBlocked) {
+    // ComplexVector:6 = x_re x_im y_re y_im z_re z_im (interleaved);
+    // ComplexMatrix:12 = 6 reals then 6 imaginaries (blocked). Values are
+    // stored verbatim in GiD's order -- this pins that "verbatim" is a
+    // checkable claim, not a hope.
+    for (const auto& [type, k] : std::vector<std::pair<meshioplusplus::GidResultType, std::size_t>>{
+            {meshioplusplus::GidResultType::ComplexVector, 6},
+            {meshioplusplus::GidResultType::ComplexMatrix, 12}}) {
+        const std::string path = mt::temp_path(".post.msh");
+        meshioplusplus::write_gid(path, gid_typed_mesh(type, k), meshioplusplus::GidMode::Ascii);
+        const auto rows = gid_read_values_block(path.substr(0, path.size() - 3) + "res");
+        ASSERT_EQ(rows.size(), 4u);
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            ASSERT_EQ(rows[r].size(), k + 1) << "row " << r;
+            EXPECT_DOUBLE_EQ(rows[r][0], static_cast<double>(r + 1));  // node id
+            for (std::size_t c = 0; c < k; ++c)
+                EXPECT_DOUBLE_EQ(rows[r][c + 1], static_cast<double>(r * k + c))
+                    << "type=" << static_cast<int>(type) << " row=" << r << " comp=" << c;
+        }
+    }
+}
+
+TEST(GidWrite, MatrixNeedsNoPermutation) {
+    // GiD's Matrix:6 is Sxx Syy Szz Sxy Syz Sxz -- already meshio/VTK's
+    // symmetric-tensor order -- so values must reach the file untouched.
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, gid_typed_mesh(meshioplusplus::GidResultType::Matrix, 6),
+                              meshioplusplus::GidMode::Ascii);
+    const auto rows = gid_read_values_block(path.substr(0, path.size() - 3) + "res");
+    ASSERT_FALSE(rows.empty());
+    ASSERT_EQ(rows[0].size(), 7u);
+    for (std::size_t c = 0; c < 6; ++c)
+        EXPECT_DOUBLE_EQ(rows[0][c + 1], static_cast<double>(c));
+}
+
+TEST(GidWrite, IllegalComponentCountErrorsByName) {
+    const std::string path = mt::temp_path(".post.msh");
+    try {
+        meshioplusplus::write_gid(path, gid_typed_mesh(meshioplusplus::GidResultType::Matrix, 5),
+                                  meshioplusplus::GidMode::Ascii);
+        FAIL() << "expected a WriteError";
+    } catch (const meshioplusplus::WriteError& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("'f'"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("accepts 3, 6"), std::string::npos) << msg;
+    }
+}
+
+TEST(GidWrite, OutOfRangeResultTypeErrorsByName) {
+    Mesh m = gid_typed_mesh(meshioplusplus::GidResultType::Matrix, 6);
+    NDArray bad(DType::Int64, {1});
+    bad.As<std::int64_t>()[0] = 42;
+    m.AddFieldData(std::string(meshioplusplus::kGidResultTypePrefix) + "f", std::move(bad));
+    const std::string path = mt::temp_path(".post.msh");
+    try {
+        meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+        FAIL() << "expected a WriteError";
+    } catch (const meshioplusplus::WriteError& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("42"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("0..8"), std::string::npos) << msg;
+    }
+}
+
+TEST(GidWrite, UndeclaredSixComponentArrayStillSplits) {
+    // No declaration -> the historical inference is unaffected: (n,6) is
+    // genuinely ambiguous (Matrix:6? ComplexMatrix:3? ComplexVector:6?), so it
+    // must NOT silently become a Matrix just because the count matches.
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {1, 3, 2}}));
+    m.AddPointData("s6", mt::data_array(
+                             {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                              20, 21, 22, 23},
+                             6));
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+    std::ifstream rf(path.substr(0, path.size() - 3) + "res");
+    std::string content((std::istreambuf_iterator<char>(rf)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(content.find("Matrix"), std::string::npos) << content;
+    for (int c = 1; c <= 6; ++c)
+        EXPECT_NE(content.find("\"s6_" + std::to_string(c) + "\""), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

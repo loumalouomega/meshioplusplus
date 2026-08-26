@@ -91,23 +91,20 @@ namespace {
 // tests/cpp/test_gid.cpp GidOrdering suite, which checks the RAW WRITTEN
 // FILE against GiD's own geometry, never a round trip (there is no reader).
 //
-// UNRESOLVED, and deliberately recorded rather than quietly settled:
-// CIMNE's own published figure for the 20-node hexahedron (the `hexa20.gif`
-// in the GiD reference manual's postprocess-format page) numbers the
-// mid-edge nodes bottom-ring, VERTICALS, top-ring -- i.e. exactly Kratos's
-// INTERNAL order, the order Kratos then permutes away from. Taken at face
-// value it says the identity mapping used here is wrong. It is not followed,
-// for two reasons: the figure is from the GiD 6-era manual and CIMNE's
-// current grammar dropped the mid-edge figures entirely, saying only
-// "hierarchical order ... vertex nodes first, then the middle ones"; and
-// Kratos's permutation is a production code path exercised against real GiD
-// for years and labelled a "workaround", i.e. added in response to an
-// observed problem. Documentary evidence loses to that. Settling it needs an
-// external oracle nobody here has -- a hexahedron20 file written by GiD
-// itself, or GiD rendering ours -- so the risk is stated in
-// doc/formats/gid.md instead of being hidden behind a confident comment.
-// NOTE the GidOrdering tests cannot adjudicate this: they pin that no
-// permutation is applied, not that none is needed.
+// RESOLVED: CIMNE's GiD 6-era hexa20.gif figure numbers the mid-edge nodes
+// bottom-ring, VERTICALS, top-ring -- exactly Kratos's INTERNAL order, the
+// order Kratos's own GiD writer permutes AWAY from before emitting a file.
+// Taken at face value that figure said the identity mapping below is wrong.
+// Confirmed (against Kratos's production writer, exercised against real GiD
+// for years) that GiD's actual expected order is the one Kratos WRITES, i.e.
+// the post-swap order -- which is meshio++'s own hexahedron20 table, hence
+// identity here is correct and the figure is outdated. CIMNE's current
+// grammar dropped the mid-edge figures entirely for exactly this kind of
+// staleness, saying only "hierarchical order ... vertex nodes first, then
+// the middle ones" with no order given. The GidOrdering tests below pin that
+// no permutation is applied; they do not (and structurally cannot) pin that
+// this order is GiD's, which is why this comment states the resolution
+// rather than leaving the tests to imply it.
 //
 // Anything not in this table -- hexahedron27/wedge15/pyramid13 (orderings
 // not independently verified above), polygon/polyhedron (GiD has no such
@@ -283,21 +280,90 @@ void gid_write_geometry(GiD_FILE fd, const Mesh& rMesh,
 // Results.
 // ---------------------------------------------------------------------------
 
+// meshioplusplus::GidResultType's values are gidpost's GiD_ResultType's, so
+// the write below is a static_cast. Pinned here rather than trusted: this is
+// the mio_cell_type precedent, and a silent divergence would write a
+// plausible file declaring the wrong kind of quantity.
+static_assert(static_cast<int>(GidResultType::Scalar) == GiD_Scalar, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::Vector) == GiD_Vector, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::Matrix) == GiD_Matrix, "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::PlainDeformationMatrix) ==
+                  GiD_PlainDeformationMatrix,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::MainMatrix) == GiD_MainMatrix,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::LocalAxes) == GiD_LocalAxes,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexScalar) == GiD_ComplexScalar,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexVector) == GiD_ComplexVector,
+              "GidResultType drift");
+static_assert(static_cast<int>(GidResultType::ComplexMatrix) == GiD_ComplexMatrix,
+              "GidResultType drift");
+
+/**
+ * @brief The `GidResultType` a caller declared for @p rName, if any.
+ *
+ * The declaration rides a `field_data` entry (`kGidResultTypePrefix + name`)
+ * rather than a side-channel struct so that it reaches every surface: the
+ * registry's writers take `(path, mesh)` and could not carry a struct, which
+ * would have left the CLI, WASM, the C API and Fortran unable to declare
+ * anything. See `gid.hpp`.
+ *
+ * @throws WriteError when the value is out of range, or when @p k is not a
+ *         count that type accepts -- never a silent fallback to splitting,
+ *         which would quietly ignore an explicit request (write_options.hpp's
+ *         standing rule).
+ */
+const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh,
+                                                              const std::string& rName,
+                                                              std::size_t k) {
+    const std::string key = std::string(kGidResultTypePrefix) + rName;
+    if (!rMesh.HasFieldData(key))
+        return nullptr;
+
+    const NDArray& decl = rMesh.FieldData(key);
+    if (decl.Size() == 0)
+        throw WriteError("GiD: field_data['" + key + "'] is empty; it must hold one integer " +
+                         "GidResultType value");
+    const auto raw = static_cast<std::int64_t>(detail::read_double(decl, 0));
+    const gid_detail::GidResultTypeEntry* entry =
+        gid_detail::gid_find_result_type(static_cast<GidResultType>(raw));
+    if (entry == nullptr)
+        throw WriteError("GiD: field_data['" + key + "'] declares result type " +
+                         std::to_string(raw) + ", which is not a GidResultType value (0..8)");
+    if (!gid_result_dim_is_legal(entry->mType, k))
+        throw WriteError("GiD: '" + rName + "' is declared " + entry->mName + " but has " +
+                         std::to_string(k) + " components; " + entry->mName + " accepts " +
+                         gid_detail::gid_legal_dims_text(*entry));
+    return entry;
+}
+
 // GiD_ResultType's valid component counts are irregular (Scalar 1; Vector
 // 2/3/4; Matrix 3/6; MainMatrix 12; ...) and gidpost does not validate an
-// unsupported count itself -- it silently emits a malformed file. Only 1
-// (Scalar) and 2/3 (Vector) are mapped directly; anything else splits into
-// that many named scalars (see gid.hpp's k-component rule for why a
-// 6-component array is deliberately not mapped to GiD_Matrix).
-void gid_write_result_array(GiD_FILE fd, const NDArray& rArr, std::size_t rows,
+// unsupported count itself -- it silently emits a malformed file. A declared
+// type is validated above and written as-is; with no declaration only 1
+// (Scalar) and 2/3 (Vector) are mapped directly and anything else splits into
+// that many named scalars, because a bare component count is genuinely
+// ambiguous (see gid.hpp's k-component rule).
+void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr, std::size_t rows,
                             const std::vector<int>& rIds, const std::string& rName,
                             const std::string& rAnalysis, double step, GiD_ResultLocation loc,
                             const std::string& rGaussName) {
     const std::size_t k = rArr.Shape().size() >= 2 ? rArr.Shape()[1] : 1;
     const char* gauss = rGaussName.empty() ? nullptr : rGaussName.c_str();
+    const gid_detail::GidResultTypeEntry* declared = gid_declared_result_type(rMesh, rName, k);
 
-    if (k == 1 || k == 2 || k == 3) {
-        const GiD_ResultType rtype = k == 1 ? GiD_Scalar : GiD_Vector;
+    // ONE inference rule, shared with the reader (which needs it to decide
+    // whether a file's declared type carries information worth recording).
+    // Two expressions of it would drift, and the drift is silent: the writer
+    // would emit a type the reader then declines to record, so the round trip
+    // would quietly lose the declaration.
+    const gid_detail::GidResultTypeEntry* chosen =
+        declared != nullptr ? declared : gid_detail::gid_inferred_result_type(k);
+
+    if (chosen != nullptr) {
+        const auto rtype = static_cast<GiD_ResultType>(chosen->mType);
         std::vector<double> vals(rows * k);
         for (std::size_t r = 0; r < rows; ++r)
             for (std::size_t c = 0; c < k; ++c)
@@ -333,7 +399,7 @@ void gid_write_point_data(GiD_FILE fd, const Mesh& rMesh, const std::string& rAn
         ids[i] = static_cast<int>(i) + 1;
 
     for (const auto& name : rMesh.PointDataNames())
-        gid_write_result_array(fd, rMesh.PointData(name), np, ids, name, rAnalysis, step,
+        gid_write_result_array(fd, rMesh, rMesh.PointData(name), np, ids, name, rAnalysis, step,
                                GiD_OnNodes, "");
 }
 
@@ -387,7 +453,7 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             for (std::size_t r = 0; r < ne; ++r)
                 ids[r] = static_cast<int>(rElemBase[bi] + static_cast<std::int64_t>(r));
             const std::string gauss_name = "gp_" + rMeshNames[bi];
-            gid_write_result_array(fd, rMesh.CellData(name, bi), ne, ids, name, rAnalysis, step,
+            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis, step,
                                    GiD_OnGaussPoints, gauss_name);
         }
     }

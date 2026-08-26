@@ -46,8 +46,11 @@
  */
 
 // System includes
+#include <array>
+#include <cstddef>
 #include <string>
 #include <utility>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/gid.hpp"
@@ -97,6 +100,79 @@ inline std::pair<std::string, std::string> gid_ascii_paths(const std::string& rP
     if (gid_has_suffix(rPath, ".post.res"))
         return {rPath.substr(0, rPath.size() - 3) + "msh", rPath};
     return {rPath + ".post.msh", rPath + ".post.res"};
+}
+
+/**
+ * @brief The one `{GidResultType, GiD spelling, legal component counts}`
+ * table, shared by the writer and the reader.
+ *
+ * Counts are gidpost's own `_ResultTypeInfo` (`gidpostInt.c`); spellings are
+ * what `GetResultTypeName` emits and what a `.post.res` `Result` header
+ * therefore carries. A single table because the reader validates counts it
+ * parsed and the writer validates counts it is about to emit -- two
+ * transcriptions of an irregular nine-row table would drift, and a wrong row
+ * produces a plausible-looking file rather than an error.
+ *
+ * A zero terminates the count list (gidpost's own convention).
+ */
+struct GidResultTypeEntry {
+    GidResultType mType;
+    const char* mName;
+    std::array<std::size_t, 3> mDims;  // zero-terminated
+};
+
+inline const std::vector<GidResultTypeEntry>& gid_result_type_table() {
+    static const std::vector<GidResultTypeEntry> table = {
+        {GidResultType::Scalar, "Scalar", {1, 0, 0}},
+        {GidResultType::Vector, "Vector", {2, 3, 4}},
+        {GidResultType::Matrix, "Matrix", {3, 6, 0}},
+        {GidResultType::PlainDeformationMatrix, "PlainDeformationMatrix", {4, 0, 0}},
+        {GidResultType::MainMatrix, "MainMatrix", {12, 0, 0}},
+        {GidResultType::LocalAxes, "LocalAxes", {3, 0, 0}},
+        {GidResultType::ComplexScalar, "ComplexScalar", {2, 0, 0}},
+        {GidResultType::ComplexVector, "ComplexVector", {4, 6, 0}},
+        {GidResultType::ComplexMatrix, "ComplexMatrix", {6, 12, 0}},
+    };
+    return table;
+}
+
+/// The entry for @p type, or nullptr when @p type is out of range (which a
+/// caller-supplied `field_data` value can be).
+inline const GidResultTypeEntry* gid_find_result_type(GidResultType type) {
+    for (const GidResultTypeEntry& e : gid_result_type_table())
+        if (e.mType == type)
+            return &e;
+    return nullptr;
+}
+
+/// Human-readable legal counts for @p type, for an error message.
+inline std::string gid_legal_dims_text(const GidResultTypeEntry& rEntry) {
+    std::string out;
+    for (std::size_t d : rEntry.mDims) {
+        if (d == 0)
+            break;
+        if (!out.empty())
+            out += ", ";
+        out += std::to_string(d);
+    }
+    return out;
+}
+
+/**
+ * @brief The type the writer picks for a @p k -component array with no
+ * declaration, or nullptr when it would split the array into k scalars.
+ *
+ * Shared so the reader can decide whether a declaration carries information:
+ * it records one only when the file's declared type differs from what this
+ * would have inferred, which is what keeps an ordinary scalar/3-vector round
+ * trip free of `gid:result_type:*` noise (the all-zero-material-column rule).
+ */
+inline const GidResultTypeEntry* gid_inferred_result_type(std::size_t k) {
+    if (k == 1)
+        return gid_find_result_type(GidResultType::Scalar);
+    if (k == 2 || k == 3)
+        return gid_find_result_type(GidResultType::Vector);
+    return nullptr;
 }
 
 }  // namespace gid_detail

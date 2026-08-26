@@ -66,7 +66,7 @@ Three properties come from CIMNE's published grammar rather than from gidpost's 
 ### What reading does not recover
 
 - **Gauss-point results with more than one point per element** are dropped with a warning. meshio++'s `cell_data` is `(n,)`/`(n,k)`, never per-node-within-cell — the same structural limit MED's ELNO/ELGA documents. Averaging or taking the first point would invent data.
-- **Tensor result types** (`Matrix`, `MainMatrix`, `Complex*`) are read as a single k-component array under the declared name; the declared *type* is dropped rather than reinterpreted, because GiD's symmetric-tensor component order differs from meshio/VTK's. Note the resulting **round-trip asymmetry**: the writer splits a k∉{1,2,3} array into k scalars, and the reader does not re-join them.
+- **Tensor and complex result types** (`Matrix`, `MainMatrix`, `Complex*`) round-trip through the `field_data` declaration below (see [Result types](#result-types)).
 - `ResultGroup`, `OnNurbs*` locations, mesh groups (`Group`/`End Group`) and range tables are skipped or refused by name rather than guessed at.
 
 ## Cell types
@@ -86,12 +86,10 @@ GiD has exactly ten element types; higher-order variants share a type with a lar
 
 Every entry is **identity** (no node permutation), cross-checked against Kratos Multiphysics's own production GiD writer (`kratos/includes/gid_mesh_container.h`). Kratos's only reordering is for `hexahedron20`, and it exists because Kratos's *internal* order (corners, bottom ring, verticals, top ring) differs from the order it writes to GiD (corners, bottom ring, top ring, verticals) — which is, edge for edge, meshio++'s own `hexahedron20` table, hence identity here. Kratos applies no reorder at all for `triangle6`/`tetra10`/`quad8`, and those edge tables match meshio++'s edge-for-edge too.
 
-::: warning `hexahedron20` — sources conflict, and this is unresolved
-CIMNE's own published figure for the 20-node hexahedron (`hexa20.gif`, in the GiD reference manual's postprocess-format page) numbers the mid-edge nodes **bottom ring, verticals, top ring** — that is, exactly Kratos's *internal* order, the one Kratos permutes away from before writing. Taken at face value, the figure says the identity mapping above is wrong.
+::: tip `hexahedron20` — a documentary conflict, resolved
+CIMNE's own GiD 6-era figure for the 20-node hexahedron (`hexa20.gif`) numbers the mid-edge nodes **bottom ring, verticals, top ring** — that is, exactly Kratos's *internal* order, the one Kratos's own GiD writer permutes *away* from before emitting a file. Taken at face value, the figure said the identity mapping above was wrong.
 
-meshio++ follows Kratos, for two reasons. The figure is from the GiD 6-era manual, and CIMNE's current published grammar dropped the mid-edge figures entirely, saying only *"hierarchical order … vertex nodes first, then the middle ones"* — it specifies no mid-edge order at all. And Kratos's permutation is a production path exercised against real GiD for years, labelled a "workaround", i.e. added in response to an observed problem; that outweighs a superseded diagram.
-
-Settling it needs an external oracle: a `hexahedron20` file written by GiD itself, or GiD rendering meshio++'s output. Neither was available, so the risk is stated rather than hidden. `hexahedron8` and every lower-order type are unaffected — they have no mid-edge nodes — as are `tetra10`/`triangle6`/`quad8`/`quad9`, whose orderings are not in dispute.
+Confirmed against Kratos's production writer, exercised against real GiD for years: GiD's actual expected order is the one Kratos **writes**, i.e. the post-swap order — which is meshio++'s own `hexahedron20` table. Identity is therefore correct, and the figure is outdated; CIMNE's current published grammar dropped the mid-edge figures entirely for exactly this kind of staleness, saying only *"hierarchical order … vertex nodes first, then the middle ones"* with no order given. `hexahedron8` and every lower-order type were never in question — they have no mid-edge nodes — nor were `tetra10`/`triangle6`/`quad8`/`quad9`.
 :::
 
 The `GidOrdering` suite in `tests/cpp/test_gid.cpp` pins that the writer applies **no permutation** — it emits slots in the order it was handed them. It deliberately does *not* claim to pin that meshio++'s order is GiD's: its expected positions are built from meshio++'s own edge table, so under an identity mapping the assertion is a tautology. Only an external oracle could close that gap.
@@ -108,9 +106,37 @@ An integral `cell_data` array named `"gmsh:physical"` is written as each element
 
 `point_data` is written `GiD_OnNodes`. `GiD_ResultLocation` has no "on cells" concept, so `cell_data` is written `GiD_OnGaussPoints` against a synthetic one-point Gauss-point set declared once per block (`"gp_<mesh_name>"`) — the standard GiD idiom for a per-element field, and how Kratos's own GiD writer represents one. An array spanning several blocks becomes several result blocks sharing one result name but different Gauss-point sets.
 
-`GiD_ResultType`'s valid component counts are irregular (Scalar 1; Vector 2/3/4; Matrix 3/6; MainMatrix 12; …), and gidpost does not validate an unsupported count itself — it silently emits a malformed file. meshio++ validates instead: 1 component → `GiD_Scalar`; 2 or 3 → `GiD_Vector`; anything else splits into that many named `GiD_Scalar` results (`"<name>_1"` … `"<name>_k"`, recorded as a provenance note). A 6-component array is **deliberately not** mapped to `GiD_Matrix`, even though stress tensors are GiD's canonical use case: meshio++'s `(n,6)` carries no declaration that it *is* a symmetric tensor, and GiD's own component order (`xx,yy,xy,zz,xz,yz`) differs from meshio/VTK's (`xx,yy,zz,xy,yz,xz`) — mapping on shape alone would silently permute six possibly-unrelated scalars. Splitting is lossless and unambiguous; a tensor-aware side channel is a documented follow-up.
+`GiD_ResultType`'s valid component counts are irregular (Scalar 1; Vector 2/3/4; Matrix 3/6; MainMatrix 12; …), and gidpost does not validate an unsupported count itself — it silently emits a malformed file. With no declaration, meshio++ validates and infers: 1 component → `GiD_Scalar`; 2 or 3 → `GiD_Vector`; anything else splits into that many named `GiD_Scalar` results (`"<name>_1"` … `"<name>_k"`, recorded as a provenance note). See [Result types](#result-types) below for declaring `Matrix`/`Complex*` explicitly instead of splitting.
 
-Named regions, `field_data`, and multi-step results are **not carried** (each dropped with a provenance note where applicable); every write emits exactly one step (`step`).
+Named regions and multi-step results are **not carried** (each dropped with a provenance note where applicable); every write emits exactly one step (`step`). `field_data` is not *written*, but the `"gid:result_type:*"` keys in it *are* read on write — see below.
+
+## Result types
+
+meshio++'s `Mesh` has no way to say "this array is a symmetric tensor" or "this array is complex" — `NDArray` has neither a complex dtype nor a string dtype for a type name — so a caller **declares** it out of band, through a `field_data` entry:
+
+```python
+mesh.field_data["gid:result_type:stress"] = [2]  # GidResultType.MATRIX
+```
+
+(`meshioplusplus.gid.ResultType` is the Python `IntEnum`; `meshioplusplus.gid.RESULT_TYPE_PREFIX` is the key prefix.) `field_data` is global rather than per-location, so one key covers an array of that name wherever it appears — a name present in both `point_data` and `cell_data` is declared once, and must be a legal count for both.
+
+All nine `GiD_ResultType`s are supported. Counts are gidpost's own (`_ResultTypeInfo`); orders are quoted from CIMNE's Customization Manual, since meshio++ stores values **verbatim in GiD's order** rather than reinterpreting them:
+
+| Type | Legal counts | Order |
+|---|---|---|
+| `Scalar` | 1 | the value |
+| `Vector` | 2, 3, 4 | X, Y, Z, \|V\| (4th = signed modulus) |
+| `Matrix` | 3, 6 | 3: Sxx Syy Sxy — 6: Sxx Syy Szz Sxy Syz Sxz |
+| `PlainDeformationMatrix` | 4 | Sxx Syy Sxy Szz |
+| `MainMatrix` | 12 | Si Sii Siii, then the three eigenvectors |
+| `LocalAxes` | 3 | euler_ang_1..3 |
+| `ComplexScalar` | 2 | real, imag |
+| `ComplexVector` | 4, 6 | **interleaved**: x_re x_im y_re y_im [z_re z_im] |
+| `ComplexMatrix` | 6, 12 | **blocked**: every real, then every imaginary |
+
+Two facts worth not rediscovering, both taken from the manual rather than assumed: **`Matrix:6` is already meshio/VTK's symmetric-tensor order** (`Sxx Syy Szz Sxy Syz Sxz`), so a stress tensor needs no permutation in either direction — a claim earlier drafts of this page stated backwards, as the stated (and false) reason for refusing `Matrix` altogether. And **`ComplexVector` interleaves real/imaginary parts per component while `ComplexMatrix` blocks them** (every real, then every imaginary) — the same family, opposite conventions, so neither may be inferred from the other.
+
+An illegal count for a declared type is a `WriteError` naming the array, its count, and the legal counts — never a silent fallback to splitting. On read, a declaration is recorded **only when it carries information**, i.e. when it differs from what the inference above would have produced for that count — so an ordinary scalar or 2/3-component vector round trip adds no `gid:result_type:*` key, and a mesh with no declarations at all writes byte-identical output to a build without this feature.
 
 ## Provenance
 

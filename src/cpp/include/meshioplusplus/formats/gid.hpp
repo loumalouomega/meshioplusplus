@@ -97,20 +97,31 @@
  * `GiD_ResultType`'s valid component counts are irregular (Scalar 1; Vector
  * 2/3/4; Matrix 3/6; MainMatrix 12; ...), and gidpost does not validate an
  * invalid count itself — it silently emits a malformed file. This writer
- * validates instead: 1 component → `GiD_Scalar`; 2 or 3 → `GiD_Vector`;
- * anything else splits into that many named `GiD_Scalar` results
- * (`"<name>_1"` .. `"<name>_k"`), recorded with a `provenance_note`. A
- * 6-component array is deliberately **not** mapped to `GiD_Matrix` even
- * though stress tensors are GiD's canonical use case: meshio's `(n,6)`
- * carries no declaration that it *is* a symmetric tensor, and GiD's own
- * component order (`xx,yy,xy,zz,xz,yz`) differs from meshio/VTK's
- * (`xx,yy,zz,xy,yz,xz`) — mapping on shape alone would silently permute six
- * possibly-unrelated scalars. Splitting is lossless and unambiguous; a
- * tensor-aware side channel is a documented follow-up.
+ * validates instead.
  *
- * Named regions, `field_data`, and multi-step results are not carried
- * (each dropped with a `provenance_note` or `log::warn`); this writes
- * exactly one step (`rStepValue`).
+ * **Which type an array is written as** is chosen in one of two ways:
+ *
+ * 1. **Declared**, via a `field_data` entry `"gid:result_type:<name>"`
+ *    (`kGidResultTypePrefix`) holding a `GidResultType` value. The count is
+ *    checked against that type's legal counts and an illegal one is a
+ *    `WriteError` naming the array — never a silent fallback.
+ * 2. **Inferred**, when no declaration is present: 1 component →
+ *    `GiD_Scalar`; 2 or 3 → `GiD_Vector`; anything else splits into that
+ *    many named `GiD_Scalar` results (`"<name>_1"` .. `"<name>_k"`),
+ *    recorded with a `provenance_note`.
+ *
+ * An undeclared 6-component array is deliberately **not** inferred as
+ * `GiD_Matrix`, even though stress tensors are GiD's canonical use case:
+ * `(n,6)` alone is genuinely ambiguous (it could equally be `Matrix:6`,
+ * `ComplexMatrix:3` or `ComplexVector:6`), so inferring would silently pick
+ * one meaning. Declaring is the way to say which. Note the component order
+ * itself needs no conversion: GiD's `Matrix:6` is `Sxx Syy Szz Sxy Syz Sxz`,
+ * which is exactly meshio/VTK's symmetric-tensor order.
+ *
+ * Named regions and multi-step results are not carried (each dropped with a
+ * `provenance_note` or `log::warn`); this writes exactly one step
+ * (`rStepValue`). `field_data` is not written either, but *is* read, for the
+ * `"gid:result_type:*"` keys above.
  *
  * ## Provenance
  *
@@ -128,6 +139,8 @@
  */
 
 // System includes
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 // Project includes
@@ -152,6 +165,87 @@ enum class GidMode : int {
     /// in addition to `MESHIOPLUSPLUS_WITH_GIDPOST=ON`.
     Hdf5 = 3,
 };
+
+/**
+ * @brief What kind of quantity a result array holds, in GiD's own vocabulary.
+ *
+ * meshio++'s `Mesh` has no way to say "this array is a symmetric tensor" or
+ * "this array is complex" -- `NDArray` has neither a complex dtype nor a
+ * string dtype -- so a caller declares it out of band, through a `field_data`
+ * entry named `kGidResultTypePrefix + "<array name>"` holding one of these
+ * values. That mechanism was chosen over a typed side-channel struct
+ * (`MedInfo`'s shape) precisely because the registry's `(path, mesh)` writers
+ * cannot carry a side channel, so it would have been invisible from the CLI,
+ * WASM, the C API and Fortran; a `field_data` key reaches all of them with no
+ * per-binding code, exactly as `gmsh:physical` and `med:num` already do.
+ *
+ * The enumerator values deliberately equal gidpost's own `GiD_ResultType`, so
+ * the writer is a `static_cast`; `gid.cpp` `static_assert`s every one of them
+ * against it (the `mio_cell_type` precedent), making drift a compile error.
+ * The enum is declared here rather than reusing `GiD_ResultType` because this
+ * header must stay free of gidpost, which the *reader* is deliberately built
+ * without -- reading ASCII GiD needs neither gidpost nor zlib.
+ *
+ * ## Component counts and order
+ *
+ * Counts are gidpost's (`_ResultTypeInfo`); the orders are quoted from
+ * CIMNE's GiD Customization Manual. Values are stored **verbatim in GiD's
+ * order** -- meshio++ does not reinterpret them, having no canonical complex
+ * or tensor layout of its own to convert to.
+ *
+ * | Type | Legal counts | Order |
+ * |---|---|---|
+ * | `Scalar` | 1 | the value |
+ * | `Vector` | 2, 3, 4 | X, Y, Z, \|V\| (4th = signed modulus) |
+ * | `Matrix` | 3, 6 | 3: Sxx Syy Sxy / 6: Sxx Syy Szz Sxy Syz Sxz |
+ * | `PlainDeformationMatrix` | 4 | Sxx Syy Sxy Szz |
+ * | `MainMatrix` | 12 | Si Sii Siii, then the three eigenvectors |
+ * | `LocalAxes` | 3 | euler_ang_1..3 |
+ * | `ComplexScalar` | 2 | real, imag |
+ * | `ComplexVector` | 4, 6 | **interleaved**: x_re x_im y_re y_im [z_re z_im] |
+ * | `ComplexMatrix` | 6, 12 | **blocked**: every real, then every imag |
+ *
+ * Two of those are worth not rediscovering. `Matrix:6` is **already**
+ * meshio/VTK's symmetric-tensor order, so a stress tensor needs no
+ * permutation in either direction. And `ComplexVector` interleaves real and
+ * imaginary parts per component while `ComplexMatrix` blocks them -- the same
+ * family, opposite conventions -- so neither may be inferred from the other.
+ */
+enum class GidResultType : std::int64_t {
+    Scalar = 0,
+    Vector = 1,
+    Matrix = 2,
+    PlainDeformationMatrix = 3,
+    MainMatrix = 4,
+    LocalAxes = 5,
+    ComplexScalar = 6,
+    ComplexVector = 7,
+    ComplexMatrix = 8,
+};
+
+/**
+ * @brief `field_data` key prefix declaring an array's `GidResultType`.
+ *
+ * The full key is this prefix plus the array's own name, and its value is a
+ * single integer `GidResultType`. `field_data` is global rather than
+ * per-location, so one key covers an array of that name wherever it appears:
+ * if the same name exists in both `point_data` and `cell_data`, the single
+ * declaration applies to both and must be legal for both counts.
+ */
+inline constexpr const char* kGidResultTypePrefix = "gid:result_type:";
+
+/// The GiD spelling of @p type (`"Matrix"`, `"ComplexVector"`, ...), as it
+/// appears in a `.post.res` `Result` header.
+MESHIOPLUSPLUS_API const char* gid_result_type_name(GidResultType type);
+
+/**
+ * @brief Parses a `GidResultType` from its GiD spelling.
+ * @throws std::invalid_argument on an unrecognized name.
+ */
+MESHIOPLUSPLUS_API GidResultType gid_result_type_from_name(const std::string& rName);
+
+/// Whether @p k is a component count @p type accepts (see the table above).
+MESHIOPLUSPLUS_API bool gid_result_dim_is_legal(GidResultType type, std::size_t k);
 
 /**
  * @brief Parses a `GidMode` from its lower-case name (`"auto"`, `"ascii"`,

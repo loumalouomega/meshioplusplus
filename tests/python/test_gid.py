@@ -391,3 +391,197 @@ def test_both_spellings_of_the_1d_type_are_read(tmp_path, spelling):
     mesh = meshioplusplus.gid.read(str(path))
     assert mesh.cells[0].type == "line"
     assert len(mesh.points) == 2
+
+
+# ---------------------------------------------------------------------------
+# Result types (Matrix, Complex, and the rest of GiD_ResultType).
+#
+# The declaration rides a field_data key because the registry's (path, mesh)
+# writers cannot carry a side-channel struct -- see gid.hpp. Component counts
+# come from gidpost's own _ResultTypeInfo; component ORDER is quoted from
+# CIMNE's Customization Manual and is pinned literally below, because the two
+# complex families use opposite conventions and neither can be inferred from
+# the other.
+# ---------------------------------------------------------------------------
+
+from meshioplusplus import gid as _gid  # noqa: E402
+
+RT = _gid.ResultType
+PREFIX = _gid.RESULT_TYPE_PREFIX
+
+# (type, a legal component count) for every one of the nine types.
+ALL_RESULT_TYPES = [
+    (RT.SCALAR, 1),
+    (RT.VECTOR, 2),
+    (RT.VECTOR, 3),
+    (RT.VECTOR, 4),
+    (RT.MATRIX, 3),
+    (RT.MATRIX, 6),
+    (RT.PLAIN_DEFORMATION_MATRIX, 4),
+    (RT.MAIN_MATRIX, 12),
+    (RT.LOCAL_AXES, 3),
+    (RT.COMPLEX_SCALAR, 2),
+    (RT.COMPLEX_VECTOR, 4),
+    (RT.COMPLEX_VECTOR, 6),
+    (RT.COMPLEX_MATRIX, 6),
+    (RT.COMPLEX_MATRIX, 12),
+]
+
+
+def _typed_mesh(rtype, k, name="f"):
+    """A 2-triangle mesh carrying one declared point_data array.
+
+    Values encode their own (row, component) position, so a permutation
+    anywhere in the write/read path is visible rather than merely plausible.
+    """
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
+    vals = np.arange(4 * k, dtype=float).reshape(4, k)
+    arr = vals if k > 1 else vals.reshape(4)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={name: arr},
+        field_data={PREFIX + name: np.array([int(rtype)])},
+    )
+
+
+@pytest.mark.parametrize("rtype,k", ALL_RESULT_TYPES)
+def test_declared_result_type_roundtrips(tmp_path, rtype, k):
+    path = tmp_path / "t.post.msh"
+    mesh = _typed_mesh(rtype, k)
+    meshioplusplus.gid.write(str(path), mesh)
+    back = meshioplusplus.gid.read(str(path))
+
+    expected = np.arange(4 * k, dtype=float).reshape(4, k)
+    got = np.asarray(back.point_data["f"])
+    assert got.reshape(4, k) == pytest.approx(expected)
+
+    # The declaration survives -- except where it carries no information,
+    # which is exactly the shapes the writer would have inferred anyway.
+    inferred = {(RT.SCALAR, 1), (RT.VECTOR, 2), (RT.VECTOR, 3)}
+    key = PREFIX + "f"
+    if (rtype, k) in inferred:
+        assert key not in back.field_data
+    else:
+        assert int(np.asarray(back.field_data[key]).ravel()[0]) == int(rtype)
+
+
+@pytest.mark.parametrize("rtype,k", ALL_RESULT_TYPES)
+def test_declared_result_type_reaches_the_file_header(tmp_path, rtype, k):
+    """The written .post.res must name the declared type, not a substitute."""
+    path = tmp_path / "h.post.msh"
+    meshioplusplus.gid.write(str(path), _typed_mesh(rtype, k))
+    text = (tmp_path / "h.post.res").read_text()
+    names = {
+        RT.SCALAR: "Scalar",
+        RT.VECTOR: "Vector",
+        RT.MATRIX: "Matrix",
+        RT.PLAIN_DEFORMATION_MATRIX: "PlainDeformationMatrix",
+        RT.MAIN_MATRIX: "MainMatrix",
+        RT.LOCAL_AXES: "LocalAxes",
+        RT.COMPLEX_SCALAR: "ComplexScalar",
+        RT.COMPLEX_VECTOR: "ComplexVector",
+        RT.COMPLEX_MATRIX: "ComplexMatrix",
+    }
+    assert f'Result "f" "meshio++" 1 {names[rtype]} OnNodes' in text
+
+
+def _res_values(path):
+    """The numeric rows of the single Result block in a .post.res."""
+    rows, inside = [], False
+    for line in pathlib.Path(path).read_text().splitlines():
+        if line.strip().lower() == "values":
+            inside = True
+            continue
+        if line.strip().lower() == "end values":
+            break
+        if inside:
+            rows.append([float(t) for t in line.split()])
+    return rows
+
+
+def test_complex_vector_is_interleaved_and_complex_matrix_is_blocked(tmp_path):
+    """The one trap in this feature, pinned literally.
+
+    CIMNE's manual gives ``ComplexVector:6`` as ``x_real, x_imag, y_real,
+    y_imag, z_real, z_imag`` -- **interleaved** -- but ``ComplexMatrix:12`` as
+    ``Sxx_real .. Sxz_real, Sxx_imag .. Sxz_imag`` -- **blocked**. Same family,
+    opposite conventions, so neither may be inferred from the other.
+
+    meshio++ stores values verbatim in GiD's order rather than reinterpreting
+    them, having no canonical complex layout of its own. This test therefore
+    pins that the bytes come out in *input* order for both, which is what makes
+    "verbatim" a checkable claim instead of a hope: if either path grew a
+    re-pack, one of these two would fail.
+    """
+    for rtype, k in ((RT.COMPLEX_VECTOR, 6), (RT.COMPLEX_MATRIX, 12)):
+        path = tmp_path / f"c{k}.post.msh"
+        meshioplusplus.gid.write(str(path), _typed_mesh(rtype, k))
+        rows = _res_values(tmp_path / f"c{k}.post.res")
+        assert len(rows) == 4
+        for r, row in enumerate(rows):
+            assert row[0] == r + 1  # the node id
+            assert row[1:] == pytest.approx(
+                list(np.arange(r * k, (r + 1) * k, dtype=float))
+            )
+
+
+def test_matrix_needs_no_permutation(tmp_path):
+    """GiD's ``Matrix:6`` is ``Sxx Syy Szz Sxy Syz Sxz`` -- already meshio/VTK's
+    symmetric-tensor order, so a stress tensor is written straight through.
+
+    This corrects a claim that stood in the docs until now (that the two orders
+    differ), which was the stated reason for refusing ``GiD_Matrix`` at all.
+    """
+    path = tmp_path / "m.post.msh"
+    meshioplusplus.gid.write(str(path), _typed_mesh(RT.MATRIX, 6))
+    rows = _res_values(tmp_path / "m.post.res")
+    assert rows[0][1:] == pytest.approx([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+
+
+@pytest.mark.parametrize(
+    "rtype,k,needle",
+    [
+        (RT.MATRIX, 5, "accepts 3, 6"),
+        (RT.COMPLEX_SCALAR, 3, "accepts 2"),
+        (RT.MAIN_MATRIX, 6, "accepts 12"),
+    ],
+)
+def test_illegal_component_count_errors_by_name(tmp_path, rtype, k, needle):
+    """Never a silent fallback to splitting -- write_options.hpp's rule."""
+    with pytest.raises(Exception) as exc:
+        meshioplusplus.gid.write(str(tmp_path / "bad.post.msh"), _typed_mesh(rtype, k))
+    msg = str(exc.value)
+    assert "'f'" in msg and needle in msg
+
+
+def test_out_of_range_result_type_errors_by_name(tmp_path):
+    mesh = _typed_mesh(RT.MATRIX, 6)
+    mesh.field_data[PREFIX + "f"] = np.array([42])
+    with pytest.raises(Exception) as exc:
+        meshioplusplus.gid.write(str(tmp_path / "bad.post.msh"), mesh)
+    assert "42" in str(exc.value) and "0..8" in str(exc.value)
+
+
+def test_undeclared_arrays_are_unaffected(tmp_path):
+    """A mesh with no declaration keeps the historical inference exactly.
+
+    In particular a 6-component array still splits into six named scalars
+    rather than silently becoming a Matrix -- ``(n, 6)`` is genuinely
+    ambiguous, so inferring would pick one meaning without being asked.
+    """
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"s6": np.arange(24, dtype=float).reshape(4, 6)},
+    )
+    path = tmp_path / "u.post.msh"
+    meshioplusplus.gid.write(str(path), mesh)
+    text = (tmp_path / "u.post.res").read_text()
+    assert "Matrix" not in text
+    for c in range(1, 7):
+        assert f'Result "s6_{c}"' in text
+
+    back = meshioplusplus.gid.read(str(path))
+    assert not any(key.startswith(PREFIX) for key in back.field_data)
