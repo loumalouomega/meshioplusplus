@@ -50,6 +50,7 @@ GidMode gid_mode_from_name(const std::string& rName) {
 // System includes
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -375,6 +376,105 @@ const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh
     return entry;
 }
 
+/**
+ * @brief The Gauss-point count declared for @p rName, or 1.
+ *
+ * `field_data[kGidGaussPointsPrefix + name]` -- see gid.hpp. Absent means the
+ * historical one-value-per-element behaviour, which is why an ordinary mesh
+ * never touches any of the G>1 machinery below.
+ *
+ * @throws WriteError on a non-positive G, or a G that does not divide the
+ *         array's own column count (which would mean the flat `(ncells, G*k)`
+ *         layout cannot be split into whole components).
+ */
+std::size_t gid_declared_gauss_points(const Mesh& rMesh, const std::string& rName,
+                                      std::size_t cols) {
+    const std::string key = std::string(kGidGaussPointsPrefix) + rName;
+    if (!rMesh.HasFieldData(key))
+        return 1;
+
+    const NDArray& decl = rMesh.FieldData(key);
+    if (decl.Size() == 0)
+        throw WriteError("GiD: field_data['" + key +
+                         "'] is empty; it must hold one integer Gauss-point count");
+    const auto raw = static_cast<std::int64_t>(detail::read_double(decl, 0));
+    if (raw < 1)
+        throw WriteError("GiD: field_data['" + key + "'] declares " + std::to_string(raw) +
+                         " Gauss points; the count must be at least 1");
+    const auto g = static_cast<std::size_t>(raw);
+    if (cols % g != 0)
+        throw WriteError("GiD: '" + rName + "' is declared " + std::to_string(g) +
+                         " Gauss points but has " + std::to_string(cols) + " columns, which " +
+                         std::to_string(g) +
+                         " does not divide; the layout is (ncells, G*components)");
+    return g;
+}
+
+/**
+ * @brief Declares one Gauss-point set, `Internal` or `Given`.
+ *
+ * `Internal` (GiD places the points) is only legal for specific counts per
+ * element family; any other G must list its natural coordinates explicitly.
+ * Supplying coordinates for a count GiD *could* have placed is honoured --
+ * a solver's own quadrature rule need not match GiD's -- but omitting them
+ * for one it cannot is an error naming the legal counts rather than a file
+ * GiD would silently reject.
+ */
+void gid_declare_gauss_set(GiD_FILE fd, const Mesh& rMesh, const std::string& rGaussName,
+                           const std::string& rMeshioType, GiD_ElementType EType,
+                           const std::string& rMeshName, std::size_t g) {
+    const gid_detail::GidGaussCountEntry* fam = gid_detail::gid_find_gauss_counts(rMeshioType);
+    const std::string coords_key = gid_detail::gid_gauss_coords_key(rMeshioType, g);
+    const bool has_coords = rMesh.HasFieldData(coords_key);
+
+    if (has_coords && fam != nullptr && fam->mCoordDim == 0)
+        throw WriteError("GiD: '" + rMeshioType +
+                         "' cannot use given Gauss-point coordinates (GiD forbids "
+                         "'Natural Coordinates: Given' for line elements); remove field_data['" +
+                         coords_key + "']");
+    if (!has_coords && !gid_detail::gid_gauss_count_is_internal(rMeshioType, g))
+        throw WriteError("GiD: '" + rMeshioType + "' cannot place " + std::to_string(g) +
+                         " Gauss points itself (it accepts " +
+                         gid_detail::gid_internal_counts_text(*fam) +
+                         "); supply their natural coordinates in field_data['" + coords_key + "']");
+
+    const std::size_t dim = fam != nullptr ? fam->mCoordDim : 3;
+    if (has_coords) {
+        const NDArray& coords = rMesh.FieldData(coords_key);
+        if (coords.Size() != g * dim)
+            throw WriteError("GiD: field_data['" + coords_key + "'] has " +
+                             std::to_string(coords.Size()) + " values; " + std::to_string(g) +
+                             " points on '" + rMeshioType + "' need " + std::to_string(g * dim) +
+                             " (" + std::to_string(dim) + " per point)");
+    }
+
+    gid_check(GiD_fBeginGaussPoint(fd, rGaussName.c_str(), EType, rMeshName.c_str(),
+                                   static_cast<int>(g), /*NodesIncluded=*/0,
+                                   /*InternalCoord=*/has_coords ? 0 : 1),
+              "BeginGaussPoint('" + rGaussName + "')");
+    if (has_coords) {
+        const NDArray& coords = rMesh.FieldData(coords_key);
+        for (std::size_t i = 0; i < g; ++i) {
+            const double a = detail::read_double(coords, i * dim + 0);
+            const double b = detail::read_double(coords, i * dim + 1);
+            if (dim == 2)
+                gid_check(GiD_fWriteGaussPoint2D(fd, a, b), "WriteGaussPoint2D");
+            else
+                gid_check(
+                    GiD_fWriteGaussPoint3D(fd, a, b, detail::read_double(coords, i * dim + 2)),
+                    "WriteGaussPoint3D");
+        }
+    }
+    gid_check(GiD_fEndGaussPoint(fd), "EndGaussPoint('" + rGaussName + "')");
+}
+
+/// The Gauss-point set name for a block at @p g points. `G == 1` keeps the
+/// historical `gp_<mesh>` spelling EXACTLY -- byte-identity for every mesh
+/// that never asks for multiple Gauss points depends on it.
+std::string gid_gauss_set_name(const std::string& rMeshName, std::size_t g) {
+    return g == 1 ? "gp_" + rMeshName : "gp" + std::to_string(g) + "_" + rMeshName;
+}
+
 // GiD_ResultType's valid component counts are irregular (Scalar 1; Vector
 // 2/3/4; Matrix 3/6; MainMatrix 12; ...) and gidpost does not validate an
 // unsupported count itself -- it silently emits a malformed file. A declared
@@ -385,10 +485,29 @@ const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh
 void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr, std::size_t rows,
                             const std::vector<int>& rIds, const std::string& rName,
                             const std::string& rAnalysis, double step, GiD_ResultLocation loc,
-                            const std::string& rGaussName) {
-    const std::size_t k = rArr.Shape().size() >= 2 ? rArr.Shape()[1] : 1;
+                            const std::string& rGaussName, std::size_t g = 1) {
+    // The array is (rows, G*k) laid out Gauss-point-major, so the COMPONENT
+    // count -- what a GiD result type's legal widths are checked against, and
+    // what goes in the Values row -- is cols/G, not cols. Passing cols here
+    // would misdeclare every G>1 array's type and width.
+    const std::size_t cols = rArr.Shape().size() >= 2 ? rArr.Shape()[1] : 1;
+    const std::size_t k = cols / g;
     const char* gauss = rGaussName.empty() ? nullptr : rGaussName.c_str();
     const gid_detail::GidResultTypeEntry* declared = gid_declared_result_type(rMesh, rName, k);
+
+    // GiD wants G rows per element; gidpost's own writer suppresses a repeated
+    // id, so handing it each id G times produces exactly the compact form the
+    // reader expects, with no id bookkeeping here.
+    const std::size_t out_rows = rows * g;
+    std::vector<int> ids_g;
+    const std::vector<int>* ids = &rIds;
+    if (g != 1) {
+        ids_g.reserve(out_rows);
+        for (std::size_t r = 0; r < rows; ++r)
+            for (std::size_t p = 0; p < g; ++p)
+                ids_g.push_back(rIds[r]);
+        ids = &ids_g;
+    }
 
     // ONE inference rule, shared with the reader (which needs it to decide
     // whether a file's declared type carries information worth recording).
@@ -400,28 +519,31 @@ void gid_write_result_array(GiD_FILE fd, const Mesh& rMesh, const NDArray& rArr,
 
     if (chosen != nullptr) {
         const auto rtype = static_cast<GiD_ResultType>(chosen->mType);
-        std::vector<double> vals(rows * k);
-        for (std::size_t r = 0; r < rows; ++r)
-            for (std::size_t c = 0; c < k; ++c)
-                vals[r * k + c] = detail::read_double(rArr, r * k + c);
-        gid_check(GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
-                                        rIds.data(), static_cast<int>(k), vals.data()),
-                  "WriteResultBlock('" + rName + "')");
+        // Source and destination share the Gauss-point-major layout, so this
+        // is a straight copy for any G -- the (r, gp, c) index is r*cols +
+        // p*k + c on both sides.
+        std::vector<double> vals(out_rows * k);
+        for (std::size_t i = 0; i < out_rows * k; ++i)
+            vals[i] = detail::read_double(rArr, i);
+        gid_check(
+            GiD_fWriteResultBlock(fd, rName.c_str(), rAnalysis.c_str(), step, rtype, loc, gauss,
+                                  nullptr, 0, nullptr, nullptr, static_cast<int>(out_rows),
+                                  ids->data(), static_cast<int>(k), vals.data()),
+            "WriteResultBlock('" + rName + "')");
         return;
     }
 
     detail::provenance_note("result-split", rName + ": k=" + std::to_string(k) +
                                                 " has no GiD result type; written as " +
                                                 std::to_string(k) + " scalars");
-    std::vector<double> col(rows);
+    std::vector<double> col(out_rows);
     for (std::size_t c = 0; c < k; ++c) {
-        for (std::size_t r = 0; r < rows; ++r)
-            col[r] = detail::read_double(rArr, r * k + c);
+        for (std::size_t i = 0; i < out_rows; ++i)
+            col[i] = detail::read_double(rArr, i * k + c);
         const std::string cname = rName + "_" + std::to_string(c + 1);
         gid_check(GiD_fWriteResultBlock(fd, cname.c_str(), rAnalysis.c_str(), step, GiD_Scalar, loc,
-                                        gauss, nullptr, 0, nullptr, nullptr, static_cast<int>(rows),
-                                        rIds.data(), 1, col.data()),
+                                        gauss, nullptr, 0, nullptr, nullptr,
+                                        static_cast<int>(out_rows), ids->data(), 1, col.data()),
                   "WriteResultBlock('" + cname + "')");
     }
 }
@@ -458,18 +580,35 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
     if (!any_cell_data)
         return;
 
-    // One Gauss-point set per block, declared once regardless of how many
-    // arrays reference it.
-    for (std::size_t bi = 0; bi < nb; ++bi) {
-        const auto cb = rMesh.Cells(bi);
-        const std::string gauss_name = "gp_" + rMeshNames[bi];
-        gid_check(GiD_fBeginGaussPoint(fd, gauss_name.c_str(), rEntries[bi]->mType,
-                                       rMeshNames[bi].c_str(), /*GP_number=*/1,
-                                       /*NodesIncluded=*/0, /*InternalCoord=*/1),
-                  "BeginGaussPoint('" + gauss_name + "')");
-        gid_check(GiD_fEndGaussPoint(fd), "EndGaussPoint('" + gauss_name + "')");
-        (void)cb;
+    // Gauss-point sets are keyed by (block, G), not by block: a set's identity
+    // in GiD IS its point count, so two arrays on one block that declare
+    // different counts need two sets, while two declaring the same count share
+    // one. Collected first so each set is declared exactly once, before any
+    // result references it.
+    //
+    // Every block still gets its G=1 set unconditionally, under the historical
+    // "gp_<mesh>" name and in the historical order, so a mesh with no
+    // Gauss-point declarations emits byte-identical bytes to before this
+    // existed.
+    std::vector<std::set<std::size_t>> block_counts(nb);
+    for (std::size_t bi = 0; bi < nb; ++bi)
+        block_counts[bi].insert(1);
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (pMatName != nullptr && name == *pMatName)
+            continue;
+        if (rMesh.CellDataNumBlocks(name) != nb)
+            continue;  // reported below, where the array is written
+        for (std::size_t bi = 0; bi < nb; ++bi) {
+            const NDArray& arr = rMesh.CellData(name, bi);
+            const std::size_t cols = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+            block_counts[bi].insert(gid_declared_gauss_points(rMesh, name, cols));
+        }
     }
+
+    for (std::size_t bi = 0; bi < nb; ++bi)
+        for (std::size_t g : block_counts[bi])
+            gid_declare_gauss_set(fd, rMesh, gid_gauss_set_name(rMeshNames[bi], g),
+                                  rMesh.Cells(bi).Type(), rEntries[bi]->mType, rMeshNames[bi], g);
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (pMatName != nullptr && name == *pMatName)
@@ -487,9 +626,11 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
             std::vector<int> ids(ne);
             for (std::size_t r = 0; r < ne; ++r)
                 ids[r] = static_cast<int>(rElemBase[bi] + static_cast<std::int64_t>(r));
-            const std::string gauss_name = "gp_" + rMeshNames[bi];
-            gid_write_result_array(fd, rMesh, rMesh.CellData(name, bi), ne, ids, name, rAnalysis,
-                                   step, GiD_OnGaussPoints, gauss_name);
+            const NDArray& arr = rMesh.CellData(name, bi);
+            const std::size_t cols = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+            const std::size_t g = gid_declared_gauss_points(rMesh, name, cols);
+            gid_write_result_array(fd, rMesh, arr, ne, ids, name, rAnalysis, step,
+                                   GiD_OnGaussPoints, gid_gauss_set_name(rMeshNames[bi], g), g);
         }
     }
 }

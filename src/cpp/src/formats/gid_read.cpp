@@ -321,10 +321,14 @@ struct GidResult {
     std::vector<double> mValues;  // mIds.size() * mNumComponents
 };
 
-/// A `GaussPoints` declaration: what it is called, and which mesh it is on.
+/// A `GaussPoints` declaration: what it is called, which mesh it is on, how
+/// many points it holds, and -- when the file supplies them rather than
+/// letting GiD place them -- their natural coordinates, flat and point-major.
 struct GidGaussSet {
     std::string mMeshName;
     int mNumPoints = 1;
+    bool mGivenCoords = false;
+    std::vector<double> mCoords;
 };
 
 // ---------------------------------------------------------------------------
@@ -508,6 +512,45 @@ void gid_record_result_type(Mesh& rMesh, const std::string& rName, const std::st
 }
 
 /**
+ * @brief Records an array's Gauss-point count, when it carries information.
+ *
+ * Only for `g != 1`: one point per element is the historical layout and needs
+ * no declaration, so an ordinary round trip stays free of
+ * `gid:gauss_points:*` keys -- the same "declare only what changes something"
+ * rule `gid_record_result_type` follows.
+ */
+void gid_record_gauss_points(Mesh& rMesh, const std::string& rName, std::size_t g) {
+    if (g == 1)
+        return;
+    NDArray decl(DType::Int64, std::vector<std::size_t>{1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(g);
+    rMesh.AddFieldData(std::string(kGidGaussPointsPrefix) + rName, std::move(decl));
+}
+
+/**
+ * @brief Records a Gauss-point set's given natural coordinates, keyed by
+ * `(cell type, G)` exactly as the writer looks them up.
+ *
+ * Only for sets the file declared `Natural Coordinates: Given`. Without this
+ * a non-standard count could be read but never written back -- GiD cannot
+ * place those points itself, so the writer would refuse for want of the very
+ * coordinates the file supplied.
+ */
+void gid_record_gauss_coords(Mesh& rMesh, const std::string& rMeshioType, const GidGaussSet& rSet) {
+    if (!rSet.mGivenCoords || rSet.mCoords.empty())
+        return;
+    const std::string key =
+        gid_detail::gid_gauss_coords_key(rMeshioType, static_cast<std::size_t>(rSet.mNumPoints));
+    if (rMesh.HasFieldData(key))
+        return;  // two sets on one (type, G) share coordinates by construction
+    NDArray arr(DType::Float64, std::vector<std::size_t>{rSet.mCoords.size()});
+    double* dst = arr.As<double>();
+    for (std::size_t i = 0; i < rSet.mCoords.size(); ++i)
+        dst[i] = rSet.mCoords[i];
+    rMesh.AddFieldData(key, std::move(arr));
+}
+
+/**
  * @brief Reads a `Values` ... `End Values` block.
  *
  * Handles gidpost's **id-suppression rule**: inside a Values block the row id
@@ -582,9 +625,26 @@ void gid_parse_res_text(std::string_view text, std::vector<GidResult>& rResults,
                 if (gid_line_starts_with(inner, "End", "GaussPoints"))
                     break;
                 const std::vector<std::string> it = gid_split(inner);
+                if (it.empty())
+                    continue;
                 if (it.size() >= 5 && gid_keyword_is(it[0], "Number") &&
-                    gid_keyword_is(it[1], "Of"))
+                    gid_keyword_is(it[1], "Of")) {
                     set.mNumPoints = static_cast<int>(gid_to_int(it[4], "a Gauss point count"));
+                    continue;
+                }
+                // "Natural Coordinates: Given" turns every following non-keyword
+                // line into one point's coordinates, which must be captured or a
+                // round trip could not re-declare the set (GiD cannot place a
+                // non-standard count itself). "Internal" needs nothing.
+                if (gid_keyword_is(it[0], "Natural") && it.size() >= 3) {
+                    set.mGivenCoords = gid_keyword_is(it[2], "Given");
+                    continue;
+                }
+                if (gid_keyword_is(it[0], "Nodes"))
+                    continue;  // line-element only; GiD's own default is what we emit
+                if (set.mGivenCoords)
+                    for (const std::string& v : it)
+                        set.mCoords.push_back(gid_to_double(v, "a Gauss-point coordinate"));
             }
             rGauss[gp_name] = set;
             continue;
@@ -722,16 +782,6 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
                 res.mName, res.mGaussName);
             continue;
         }
-        if (gp->second.mNumPoints != 1) {
-            // meshio++'s cell_data is (n,)/(n,k), never per-node-within-cell --
-            // the same structural limit MED's ELNO/ELGA already documents.
-            // Averaging or taking the first point would invent data.
-            log::warn(
-                "gid: result '{}' has {} Gauss points per element; meshio++'s cell_data "
-                "cannot represent per-point values (the MED ELNO/ELGA limit) -- skipped",
-                res.mName, gp->second.mNumPoints);
-            continue;
-        }
 
         std::size_t block = rStaged.mBlocks.size();
         for (std::size_t b = 0; b < rStaged.mBlocks.size(); ++b)
@@ -750,25 +800,34 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
         // Gauss-point set. So same-named results must be MERGED into one array
         // set here: AddCellData is insert-or-assign, and calling it once per
         // Result block would leave every block but the last zeroed.
+        // G Gauss points per element means G rows per element, flattened into
+        // one (ncells, G*k) row -- Gauss-point-major, which is the order the
+        // rows themselves arrive in, so nothing is re-packed. G == 1 makes
+        // width == k and this is the historical single-value layout exactly.
+        const auto g = static_cast<std::size_t>(gp->second.mNumPoints);
+        const std::size_t width = g * res.mNumComponents;
+
         auto slot = pending.find(res.mName);
         if (slot == pending.end()) {
             std::vector<NDArray> blocks;
             for (std::size_t b = 0; b < rStaged.mBlocks.size(); ++b) {
                 const std::size_t n = rStaged.mBlocks[b].mElemIds.size();
-                blocks.emplace_back(DType::Float64,
-                                    res.mNumComponents == 1
-                                        ? std::vector<std::size_t>{n}
-                                        : std::vector<std::size_t>{n, res.mNumComponents});
+                blocks.emplace_back(DType::Float64, width == 1
+                                                        ? std::vector<std::size_t>{n}
+                                                        : std::vector<std::size_t>{n, width});
             }
             slot = pending.emplace(res.mName, std::move(blocks)).first;
             order.push_back(res.mName);
             // Recorded at first sight, on the same first-seen key the block
             // list uses: the same result name may span several blocks, and
-            // every one of them declares the same type.
+            // every one of them declares the same type. The result type's
+            // legal widths are checked against the COMPONENT count, never
+            // against g*k.
             gid_record_result_type(rMesh, res.mName, res.mType, res.mNumComponents);
+            gid_record_gauss_points(rMesh, res.mName, g);
+            gid_record_gauss_coords(rMesh, rStaged.mBlocks[block].mMeshioType, gp->second);
         }
-        if (slot->second[block].Shape().size() >= 2 &&
-            slot->second[block].Shape()[1] != res.mNumComponents) {
+        if (slot->second[block].Shape().size() >= 2 && slot->second[block].Shape()[1] != width) {
             log::warn(
                 "gid: result '{}' has {} components on mesh '{}' but a different width "
                 "elsewhere -- this block skipped",
@@ -776,12 +835,26 @@ void gid_apply_results(Mesh& rMesh, const GidStaged& rStaged,
             continue;
         }
         double* dst = slot->second[block].As<double>();
+        // Rows arrive in element order, G consecutive rows per element, so the
+        // point index is the run position within one element id rather than
+        // anything the file states -- `seen` counts it. A row for an element
+        // this block never defined is skipped without advancing anything.
+        std::unordered_map<std::int64_t, std::size_t> seen;
         for (std::size_t i = 0; i < res.mIds.size(); ++i) {
             auto it = elem_rows[block].find(res.mIds[i]);
             if (it == elem_rows[block].end())
                 continue;  // a value for an element this block never defined
+            const std::size_t p = seen[res.mIds[i]]++;
+            if (p >= g) {
+                log::warn(
+                    "gid: result '{}' gives element {} more than the {} Gauss-point rows its "
+                    "set declares -- extra rows ignored",
+                    res.mName, res.mIds[i], g);
+                continue;
+            }
             for (std::size_t c = 0; c < res.mNumComponents; ++c)
-                dst[it->second * res.mNumComponents + c] = res.mValues[i * res.mNumComponents + c];
+                dst[it->second * width + p * res.mNumComponents + c] =
+                    res.mValues[i * res.mNumComponents + c];
         }
     }
 
@@ -1314,10 +1387,27 @@ Mesh gid_read_binary(const std::string& rBytes, const ReadOptions& rOptions) {
                 if (gid_binary_keyword_is(opener, "Values"))
                     break;
             }
+            // The binary writer suppresses a repeated id exactly as the ASCII
+            // one does -- gidpost's CPostBinary_WriteValues writes the id only
+            // when it CHANGES, with its own source calling that out as "only
+            // useful when writing values for gauss points in elements". Binary
+            // has no whitespace cue to spot a continuation, so the only way to
+            // know how many reals follow an id is the Gauss-point count of the
+            // set this result names: exactly G*k, since m_LastID is reset per
+            // Values block and element ids are unique within one.
+            std::size_t gpn = 1;
+            {
+                auto git = gauss.find(res.mGaussName);
+                if (git != gauss.end() && git->second.mNumPoints > 1)
+                    gpn = static_cast<std::size_t>(git->second.mNumPoints);
+            }
             while (!cur.TryInt(-1) && !cur.TryTerminator("End Values")) {
-                res.mIds.push_back(static_cast<std::int64_t>(cur.NextInt()));
-                for (std::size_t k = 0; k < res.mNumComponents; ++k)
-                    res.mValues.push_back(cur.NextReal());
+                const auto id = static_cast<std::int64_t>(cur.NextInt());
+                for (std::size_t p = 0; p < gpn; ++p) {
+                    res.mIds.push_back(id);
+                    for (std::size_t k = 0; k < res.mNumComponents; ++k)
+                        res.mValues.push_back(cur.NextReal());
+                }
             }
             cur.TryTerminator("End Values");  // consume it if the -1 ended the loop
             results.push_back(std::move(res));

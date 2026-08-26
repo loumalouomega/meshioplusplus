@@ -199,17 +199,28 @@ def test_out_of_range_time_step_raises():
         meshioplusplus.gid.read(MESHES / "results.post.msh", time_step=9)
 
 
-def test_multi_gauss_point_result_is_dropped_not_guessed():
-    """meshio++'s cell_data is (n,)/(n,k), never per-node-within-cell.
+def test_multi_gauss_point_result_is_read_into_the_flat_layout():
+    """A G>1 result lands in the flat ``(ncells, G*k)`` layout.
 
-    The same structural limit MED's ELNO/ELGA documents. The rows still have to
-    PARSE -- they exercise gidpost's id-suppression rule, where a repeated id is
-    omitted and the row begins with whitespace -- and are then dropped rather
-    than averaged, which would invent data.
+    This fixture used to assert the result was *dropped* -- meshio++'s
+    cell_data had no per-point-within-cell axis, the same limit MED's ELNO/ELGA
+    documents. It is now read: ``twogp`` is 2 Gauss points x 1 component over 2
+    triangles, so a ``(2, 2)`` array holding 5/6 and 7/8 in file order. Those
+    four values are distinct precisely so a swap, a truncation to the first
+    point, or an average all fail here.
+
+    The rows also exercise gidpost's id-suppression rule (a repeated id is
+    omitted and the row begins with whitespace), which is what makes the point
+    index positional rather than stated in the file.
     """
     mesh = meshioplusplus.read(MESHES / "results.post.msh")
-    assert "twogp" not in mesh.cell_data
     assert "q" in mesh.cell_data  # the G=1 result alongside it is unaffected
+    assert "gid:gauss_points:q" not in mesh.field_data  # G=1 declares nothing
+
+    got = np.asarray(mesh.cell_data["twogp"][0])
+    assert got.shape == (2, 2)
+    assert got.tolist() == [[5.0, 6.0], [7.0, 8.0]]
+    assert np.asarray(mesh.field_data["gid:gauss_points:twogp"]).ravel()[0] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -608,3 +619,190 @@ def test_undeclared_arrays_are_unaffected(tmp_path):
 
     back = meshioplusplus.gid.read(str(path))
     assert not any(key.startswith(PREFIX) for key in back.field_data)
+
+
+# ---------------------------------------------------------------------------
+# Gauss points.
+#
+# A G-point, k-component cell array is stored FLAT as (ncells, G*k),
+# Gauss-point-major, plus a `gid:gauss_points:<name>` declaration. G == 1 is
+# the historical layout and declares nothing, which is what keeps an ordinary
+# mesh's bytes untouched by this mechanism's existence.
+# ---------------------------------------------------------------------------
+
+GP_PREFIX = "gid:gauss_points:"
+GP_COORDS_PREFIX = "gid:gauss_coords:"
+
+
+def _tri_mesh(cell_data=None, field_data=None):
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        cell_data=cell_data,
+        field_data=field_data,
+    )
+
+
+@needs_writer
+@pytest.mark.parametrize("ext", FLAVOURS)
+@pytest.mark.parametrize("g,k", [(3, 1), (3, 3), (6, 1)])
+def test_gauss_points_roundtrip(tmp_path, ext, g, k):
+    """Values are position-encoded, so a re-pack, a swap or a truncation to the
+    first point all fail rather than merely looking plausible.
+
+    ``k`` is restricted to counts the *binary* flavour can recover (1 Scalar,
+    3 Vector, 6 Matrix). That is a pre-existing limitation of that flavour and
+    has nothing to do with Gauss points: the binary stream carries no component
+    count, so the reader infers it from the declared type's canonical width,
+    and a 2-component ``Vector`` already fails to round-trip there at G=1. See
+    ``test_binary_cannot_recover_a_non_canonical_component_count``.
+    """
+    vals = np.arange(2 * g * k, dtype=float).reshape(2, g * k)
+    mesh = _tri_mesh({"s": [vals]}, {GP_PREFIX + "s": np.array([g])})
+    path = tmp_path / ("gp" + ext)
+    meshioplusplus.write(path, mesh)
+    back = meshioplusplus.read(path)
+
+    atol = 1.0e-6 if ext == ".post.bin" else 1.0e-8
+    got = np.asarray(back.cell_data["s"][0])
+    assert got.shape == (2, g * k)
+    assert np.allclose(got, vals, atol=atol, rtol=0.0)
+    assert np.asarray(back.field_data[GP_PREFIX + "s"]).ravel()[0] == g
+
+
+@needs_writer
+@pytest.mark.skipif(not _HAS_ZLIB, reason="needs zlib")
+def test_binary_cannot_recover_a_non_canonical_component_count(tmp_path):
+    """A pre-existing binary-flavour limitation, pinned so it is not mistaken
+    for a Gauss-point defect.
+
+    The binary stream carries neither a row width nor a component count, so the
+    reader can only use the declared type's canonical width -- Scalar 1, Vector
+    3, Matrix 6. A 2-component ``Vector`` is legal GiD (the ASCII flavour reads
+    it back from the row width) but is unrecoverable here, at any G including
+    the default 1. ASCII round-trips it fine, which is what makes this a
+    flavour limitation rather than a data-model one.
+    """
+    mesh = _tri_mesh({"v": [np.arange(4, dtype=float).reshape(2, 2)]})
+
+    meshioplusplus.write(tmp_path / "k2.post.msh", mesh)
+    back = meshioplusplus.read(tmp_path / "k2.post.msh")
+    assert np.allclose(back.cell_data["v"][0], mesh.cell_data["v"][0])
+
+    meshioplusplus.write(tmp_path / "k2.post.bin", mesh)
+    with pytest.raises(Exception):
+        meshioplusplus.read(tmp_path / "k2.post.bin")
+
+
+@needs_writer
+def test_one_gauss_point_declares_nothing(tmp_path):
+    """The default path is untouched: no declaration in, none out."""
+    mesh = _tri_mesh({"q": [np.array([1.0, 2.0])]})
+    path = tmp_path / "one.post.msh"
+    meshioplusplus.write(path, mesh)
+    back = meshioplusplus.read(path)
+    assert np.allclose(back.cell_data["q"][0], [1.0, 2.0])
+    assert not any(key.startswith(GP_PREFIX) for key in back.field_data)
+
+
+@needs_writer
+def test_given_natural_coordinates_roundtrip(tmp_path):
+    """A count GiD cannot place itself needs explicit coordinates -- and they
+    must survive the round trip, or the result could be read but never written
+    back (the writer would refuse for want of the very coordinates the file
+    supplied). The re-write below is the real assertion."""
+    coords = np.array([0.1, 0.1, 0.7, 0.1, 0.1, 0.7, 0.4, 0.4, 0.3, 0.3])
+    vals = np.arange(10, dtype=float).reshape(2, 5)
+    key = GP_COORDS_PREFIX + "triangle:5"
+    mesh = _tri_mesh({"g": [vals]}, {GP_PREFIX + "g": np.array([5]), key: coords})
+
+    path = tmp_path / "given.post.msh"
+    meshioplusplus.write(path, mesh)
+    assert "Natural Coordinates: Given" in (tmp_path / "given.post.res").read_text()
+
+    back = meshioplusplus.read(path)
+    assert np.allclose(back.cell_data["g"][0], vals)
+    assert np.allclose(np.asarray(back.field_data[key]).ravel(), coords)
+    # Writable again purely because the coordinates came back.
+    meshioplusplus.write(tmp_path / "given2.post.msh", back)
+
+
+@needs_writer
+@pytest.mark.parametrize(
+    "cell_type,g,needle",
+    [
+        ("triangle", 5, "accepts 1, 3, 6"),
+        ("quad", 3, "accepts 1, 4, 9"),
+        ("tetra", 7, "accepts 1, 4, 10"),
+        ("hexahedron", 7, "accepts 1, 8, 27"),
+    ],
+)
+def test_non_internal_count_without_coordinates_errors_by_name(
+    tmp_path, cell_type, g, needle
+):
+    """GiD places only specific counts itself; anything else must supply
+    coordinates. Never a silent fallback -- the message names the legal counts.
+    """
+    nodes = {"triangle": 3, "quad": 4, "tetra": 4, "hexahedron": 8}[cell_type]
+    pts = np.arange(nodes * 3, dtype=float).reshape(nodes, 3)
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [(cell_type, np.arange(nodes).reshape(1, nodes))],
+        cell_data={"s": [np.zeros((1, g))]},
+        field_data={GP_PREFIX + "s": np.array([g])},
+    )
+    with pytest.raises(Exception) as exc:
+        meshioplusplus.write(tmp_path / "bad.post.msh", mesh)
+    assert needle in str(exc.value) and cell_type in str(exc.value)
+
+
+@needs_writer
+def test_gauss_count_must_divide_the_column_count(tmp_path):
+    mesh = _tri_mesh({"s": [np.zeros((2, 6))]}, {GP_PREFIX + "s": np.array([4])})
+    with pytest.raises(Exception, match="does not divide"):
+        meshioplusplus.write(tmp_path / "bad.post.msh", mesh)
+
+
+@needs_writer
+def test_wrong_coordinate_count_errors_by_name(tmp_path):
+    key = GP_COORDS_PREFIX + "triangle:5"
+    mesh = _tri_mesh(
+        {"s": [np.zeros((2, 5))]},
+        {GP_PREFIX + "s": np.array([5]), key: np.array([0.1, 0.1])},
+    )
+    with pytest.raises(Exception, match="need 10"):
+        meshioplusplus.write(tmp_path / "bad.post.msh", mesh)
+
+
+@needs_writer
+def test_line_elements_refuse_given_coordinates(tmp_path):
+    """GiD forbids `Natural Coordinates: Given` for line elements outright --
+    no restriction in practice, since they accept any count Internally."""
+    pts = np.array([[0.0, 0, 0], [1, 0, 0]])
+    key = GP_COORDS_PREFIX + "line:2"
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("line", np.array([[0, 1]]))],
+        cell_data={"s": [np.zeros((1, 2))]},
+        field_data={GP_PREFIX + "s": np.array([2]), key: np.array([0.1, 0.2])},
+    )
+    with pytest.raises(Exception, match="forbids"):
+        meshioplusplus.write(tmp_path / "bad.post.msh", mesh)
+
+
+@needs_writer
+def test_line_elements_accept_any_internal_count(tmp_path):
+    """The line family's counterpart to the rule above."""
+    pts = np.array([[0.0, 0, 0], [1, 0, 0]])
+    vals = np.arange(7, dtype=float).reshape(1, 7)
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("line", np.array([[0, 1]]))],
+        cell_data={"s": [vals]},
+        field_data={GP_PREFIX + "s": np.array([7])},
+    )
+    path = tmp_path / "line7.post.msh"
+    meshioplusplus.write(path, mesh)
+    back = meshioplusplus.read(path)
+    assert np.allclose(back.cell_data["s"][0], vals)

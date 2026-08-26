@@ -615,6 +615,106 @@ TEST(GidWrite, UndeclaredSixComponentArrayStillSplits) {
 }
 
 // ---------------------------------------------------------------------------
+// Gauss points. A G-point, k-component cell array is stored FLAT as
+// (ncells, G*k), Gauss-point-major, plus a `gid:gauss_points:<name>`
+// declaration; G == 1 is the historical layout and declares nothing.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A 2-triangle mesh with one cell_data array of `width` columns, declared to
+/// hold `g` Gauss points, values position-encoded so a re-pack is visible.
+Mesh gid_gauss_mesh(std::size_t g, std::size_t width) {
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {1, 3, 2}}));
+    std::vector<double> vals(2 * width);
+    for (std::size_t i = 0; i < vals.size(); ++i)
+        vals[i] = static_cast<double>(i);
+    std::vector<NDArray> blocks;
+    blocks.push_back(mt::data_array(vals, width));
+    m.AddCellData("s", std::move(blocks));
+    NDArray decl(DType::Int64, {1});
+    decl.As<std::int64_t>()[0] = static_cast<std::int64_t>(g);
+    m.AddFieldData(std::string(meshioplusplus::kGidGaussPointsPrefix) + "s", std::move(decl));
+    return m;
+}
+
+}  // namespace
+
+TEST(GidGauss, RoundTripsThroughTheFlatLayout) {
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, gid_gauss_mesh(3, 3), meshioplusplus::GidMode::Ascii);
+    const Mesh back = meshioplusplus::read_gid(path);
+
+    ASSERT_TRUE(back.HasCellData("s"));
+    const NDArray& arr = back.CellData("s", 0);
+    ASSERT_EQ(arr.Size(), 6u);
+    for (std::size_t i = 0; i < 6; ++i)
+        EXPECT_DOUBLE_EQ(arr.As<double>()[i], static_cast<double>(i)) << "slot " << i;
+
+    const std::string key = std::string(meshioplusplus::kGidGaussPointsPrefix) + "s";
+    ASSERT_TRUE(back.HasFieldData(key));
+    EXPECT_EQ(static_cast<int>(back.FieldData(key).As<std::int64_t>()[0]), 3);
+}
+
+TEST(GidGauss, OnePointDeclaresNothing) {
+    // The historical layout: no declaration in, none out, so an ordinary mesh
+    // is untouched by this mechanism's existence.
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, gid_gauss_mesh(1, 1), meshioplusplus::GidMode::Ascii);
+    const Mesh back = meshioplusplus::read_gid(path);
+    EXPECT_TRUE(back.HasCellData("s"));
+    EXPECT_FALSE(back.HasFieldData(std::string(meshioplusplus::kGidGaussPointsPrefix) + "s"));
+}
+
+TEST(GidGauss, NonInternalCountWithoutCoordinatesThrowsNamingLegalCounts) {
+    const std::string path = mt::temp_path(".post.msh");
+    try {
+        meshioplusplus::write_gid(path, gid_gauss_mesh(5, 5), meshioplusplus::GidMode::Ascii);
+        FAIL() << "expected a WriteError";
+    } catch (const meshioplusplus::WriteError& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("triangle"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("1, 3, 6"), std::string::npos) << msg;
+    }
+}
+
+TEST(GidGauss, GivenCoordinatesRoundTripAndMakeTheResultWritableAgain) {
+    Mesh m = gid_gauss_mesh(5, 5);
+    // Built literally, not via the implementation's own key helper: a bug
+    // there must not be able to validate itself.
+    const std::string key = std::string(meshioplusplus::kGidGaussCoordsPrefix) + "triangle:5";
+    m.AddFieldData(key, mt::data_array({0.1, 0.1, 0.7, 0.1, 0.1, 0.7, 0.4, 0.4, 0.3, 0.3}));
+
+    const std::string path = mt::temp_path(".post.msh");
+    meshioplusplus::write_gid(path, m, meshioplusplus::GidMode::Ascii);
+    {
+        std::ifstream f(path.substr(0, path.size() - 3) + "res");
+        std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        EXPECT_NE(content.find("Natural Coordinates: Given"), std::string::npos) << content;
+    }
+
+    const Mesh back = meshioplusplus::read_gid(path);
+    ASSERT_TRUE(back.HasFieldData(key));
+    EXPECT_EQ(back.FieldData(key).Size(), 10u);
+    EXPECT_DOUBLE_EQ(back.FieldData(key).As<double>()[2], 0.7);
+    // Writable again only because the coordinates came back: GiD cannot place
+    // 5 points on a triangle itself, so a lost declaration would throw here.
+    meshioplusplus::write_gid(mt::temp_path(".post.msh"), back, meshioplusplus::GidMode::Ascii);
+}
+
+TEST(GidGauss, CountMustDivideTheColumnCount) {
+    const std::string path = mt::temp_path(".post.msh");
+    try {
+        meshioplusplus::write_gid(path, gid_gauss_mesh(4, 6), meshioplusplus::GidMode::Ascii);
+        FAIL() << "expected a WriteError";
+    } catch (const meshioplusplus::WriteError& e) {
+        EXPECT_NE(std::string(e.what()).find("does not divide"), std::string::npos) << e.what();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Reader. Note the GidOrdering suite above is deliberately KEPT as a raw-bytes
 // oracle now that a reader exists: a reader+writer round trip is a weak oracle
 // that a consistently-wrong permutation survives, so it cannot replace it.
@@ -704,8 +804,9 @@ TEST(GidRead, MaterialColumnIsDisambiguatedByNnode) {
 TEST(GidRead, SuppressedRepeatedIdIsAContinuationRow) {
     // gidpost omits a Values row's id when it repeats the previous row's, so a
     // G>1 Gauss-point result writes the id once and the following rows begin
-    // with whitespace. Parsing must survive that (the result is then dropped,
-    // below, because meshio++ cannot represent per-point values).
+    // with whitespace. Parsing must survive that AND land both rows in the
+    // right slots of the flat (ncells, G*k) layout -- the id suppression is
+    // exactly what makes the point index positional rather than stated.
     const std::string mesh_path = mt::temp_path(".post.msh");
     const std::string res_path = mesh_path.substr(0, mesh_path.size() - 3) + "res";
     {
@@ -725,8 +826,18 @@ TEST(GidRead, SuppressedRepeatedIdIsAContinuationRow) {
     }
     const Mesh out = meshioplusplus::read_gid(mesh_path);
     EXPECT_EQ(out.NumPoints(), 3u);
-    // Parsed without error, then dropped rather than averaged or truncated.
-    EXPECT_FALSE(out.HasCellData("two"));
+    // One element, 2 Gauss points, 1 component -> a (1, 2) row holding both
+    // values in file order. Values 5 and 6 are distinct precisely so a swap,
+    // a truncation to the first point, or an average (5.5) all fail here.
+    ASSERT_TRUE(out.HasCellData("two"));
+    const NDArray& arr = out.CellData("two", 0);
+    ASSERT_EQ(arr.Size(), 2u);
+    EXPECT_DOUBLE_EQ(arr.As<double>()[0], 5.0);
+    EXPECT_DOUBLE_EQ(arr.As<double>()[1], 6.0);
+    // ... and the count is declared, since 2 != the historical 1.
+    const std::string key = std::string(meshioplusplus::kGidGaussPointsPrefix) + "two";
+    ASSERT_TRUE(out.HasFieldData(key));
+    EXPECT_EQ(static_cast<int>(out.FieldData(key).As<std::int64_t>()[0]), 2);
 }
 
 TEST(GidRead, ResultsSiblingIsOptional) {

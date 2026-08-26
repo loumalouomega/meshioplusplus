@@ -284,5 +284,109 @@ inline const int* gid_cell_perm(const std::string& rMeshioName, std::size_t nnod
     return nullptr;
 }
 
+/**
+ * @brief Which Gauss-point counts GiD can place itself (`Natural Coordinates:
+ * Internal`), per meshio++ cell type, and how many natural-coordinate
+ * components a `Given` point needs for that type.
+ *
+ * Transcribed from CIMNE's GiD Customization Manual. Shared between the writer
+ * (which must refuse an Internal-impossible count that supplies no
+ * coordinates) and the reader (which must know a Given set's coordinate width
+ * to round-trip it) -- two transcriptions of an irregular six-row table would
+ * drift silently, and the failure mode is a file GiD rejects rather than an
+ * error meshio++ raises.
+ *
+ * `mCoordDim == 0` marks the line family, which is special twice over: it
+ * accepts **any** count Internally (equally spaced), and GiD forbids `Given`
+ * for it outright. `mAnyCount` therefore implies "never needs coordinates".
+ *
+ * A zero terminates the count list, the same convention
+ * `GidResultTypeEntry::mDims` uses.
+ */
+struct GidGaussCountEntry {
+    const char* mMeshioName;
+    std::array<std::size_t, 3> mInternalCounts;  // zero-terminated
+    bool mAnyCount;                              // line family: any G, Given forbidden
+    std::size_t mCoordDim;                       // 0 = Given not permitted
+};
+
+inline const std::vector<GidGaussCountEntry>& gid_gauss_count_table() {
+    static const std::vector<GidGaussCountEntry> table = {
+        // 2-D families: natural coordinates are (a, b).
+        {"triangle", {1, 3, 6}, false, 2},
+        {"quad", {1, 4, 9}, false, 2},
+        // 3-D families: natural coordinates are (a, b, c).
+        {"tetra", {1, 4, 10}, false, 3},
+        {"hexahedron", {1, 8, 27}, false, 3},
+        {"wedge", {1, 6, 0}, false, 3},
+        {"pyramid", {1, 5, 0}, false, 3},
+        // Line elements: any count, equally spaced; Given is forbidden.
+        {"line", {0, 0, 0}, true, 0},
+    };
+    return table;
+}
+
+/**
+ * @brief The Gauss-count entry governing @p rMeshioName, or nullptr.
+ *
+ * Higher-order variants share their base family's Gauss-point rules (a
+ * `tetra10` is still a tetrahedron as far as quadrature goes), so the lookup
+ * matches on the longest table name that prefixes the type -- `hexahedron27`
+ * -> `hexahedron`, `triangle6` -> `triangle`, `line3` -> `line`. Matching on
+ * the longest entry matters: `quad` must not swallow a name that a longer
+ * entry would claim, and this keeps the table one row per family rather than
+ * one per concrete type.
+ */
+inline const GidGaussCountEntry* gid_find_gauss_counts(const std::string& rMeshioName) {
+    const GidGaussCountEntry* best = nullptr;
+    for (const GidGaussCountEntry& e : gid_gauss_count_table()) {
+        const std::string name = e.mMeshioName;
+        if (rMeshioName.rfind(name, 0) != 0)
+            continue;
+        if (best == nullptr || name.size() > std::string(best->mMeshioName).size())
+            best = &e;
+    }
+    return best;
+}
+
+/// Whether GiD can place @p g points itself for @p rMeshioName (so the set may
+/// be written `Natural Coordinates: Internal`). An unknown type is permissive:
+/// only counts we positively know to be impossible are refused.
+inline bool gid_gauss_count_is_internal(const std::string& rMeshioName, std::size_t g) {
+    const GidGaussCountEntry* e = gid_find_gauss_counts(rMeshioName);
+    if (e == nullptr)
+        return true;
+    if (e->mAnyCount)
+        return g >= 1;
+    for (std::size_t c : e->mInternalCounts) {
+        if (c == 0)
+            break;
+        if (c == g)
+            return true;
+    }
+    return false;
+}
+
+/// Human-readable Internal-legal counts for @p rMeshioName, for an error
+/// message ("any count" for the line family).
+inline std::string gid_internal_counts_text(const GidGaussCountEntry& rEntry) {
+    if (rEntry.mAnyCount)
+        return "any count";
+    std::string out;
+    for (std::size_t c : rEntry.mInternalCounts) {
+        if (c == 0)
+            break;
+        if (!out.empty())
+            out += ", ";
+        out += std::to_string(c);
+    }
+    return out;
+}
+
+/// The `field_data` key carrying a `(cell type, G)` set's natural coordinates.
+inline std::string gid_gauss_coords_key(const std::string& rMeshioName, std::size_t g) {
+    return std::string(kGidGaussCoordsPrefix) + rMeshioName + ":" + std::to_string(g);
+}
+
 }  // namespace gid_detail
 }  // namespace meshioplusplus

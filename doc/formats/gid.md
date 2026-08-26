@@ -65,7 +65,6 @@ Three properties come from CIMNE's published grammar rather than from gidpost's 
 
 ### What reading does not recover
 
-- **Gauss-point results with more than one point per element** are dropped with a warning. meshio++'s `cell_data` is `(n,)`/`(n,k)`, never per-node-within-cell — the same structural limit MED's ELNO/ELGA documents. Averaging or taking the first point would invent data.
 - **Tensor and complex result types** (`Matrix`, `MainMatrix`, `Complex*`) round-trip through the `field_data` declaration below (see [Result types](#result-types)).
 - `ResultGroup`, `OnNurbs*` locations, mesh groups (`Group`/`End Group`) and range tables are skipped or refused by name rather than guessed at.
 
@@ -109,7 +108,7 @@ An integral `cell_data` array named `"gmsh:physical"` is written as each element
 
 ## Data mapping
 
-`point_data` is written `GiD_OnNodes`. `GiD_ResultLocation` has no "on cells" concept, so `cell_data` is written `GiD_OnGaussPoints` against a synthetic one-point Gauss-point set declared once per block (`"gp_<mesh_name>"`) — the standard GiD idiom for a per-element field, and how Kratos's own GiD writer represents one. An array spanning several blocks becomes several result blocks sharing one result name but different Gauss-point sets.
+`point_data` is written `GiD_OnNodes`. `GiD_ResultLocation` has no "on cells" concept, so `cell_data` is written `GiD_OnGaussPoints` against a Gauss-point set declared per block — by default a synthetic **one-point** set named `"gp_<mesh_name>"`, the standard GiD idiom for a per-element field and how Kratos's own GiD writer represents one. An array spanning several blocks becomes several result blocks sharing one result name but different Gauss-point sets. See [Gauss points](#gauss-points) for arrays carrying more than one value per element.
 
 `GiD_ResultType`'s valid component counts are irregular (Scalar 1; Vector 2/3/4; Matrix 3/6; MainMatrix 12; …), and gidpost does not validate an unsupported count itself — it silently emits a malformed file. With no declaration, meshio++ validates and infers: 1 component → `GiD_Scalar`; 2 or 3 → `GiD_Vector`; anything else splits into that many named `GiD_Scalar` results (`"<name>_1"` … `"<name>_k"`, recorded as a provenance note). See [Result types](#result-types) below for declaring `Matrix`/`Complex*` explicitly instead of splitting.
 
@@ -142,6 +141,45 @@ All nine `GiD_ResultType`s are supported. Counts are gidpost's own (`_ResultType
 Two facts worth not rediscovering, both taken from the manual rather than assumed: **`Matrix:6` is already meshio/VTK's symmetric-tensor order** (`Sxx Syy Szz Sxy Syz Sxz`), so a stress tensor needs no permutation in either direction — a claim earlier drafts of this page stated backwards, as the stated (and false) reason for refusing `Matrix` altogether. And **`ComplexVector` interleaves real/imaginary parts per component while `ComplexMatrix` blocks them** (every real, then every imaginary) — the same family, opposite conventions, so neither may be inferred from the other.
 
 An illegal count for a declared type is a `WriteError` naming the array, its count, and the legal counts — never a silent fallback to splitting. On read, a declaration is recorded **only when it carries information**, i.e. when it differs from what the inference above would have produced for that count — so an ordinary scalar or 2/3-component vector round trip adds no `gid:result_type:*` key, and a mesh with no declarations at all writes byte-identical output to a build without this feature.
+
+## Gauss points
+
+GiD attaches a per-element result to a **Gauss-point set** of G points and emits G rows per element. meshio++'s `cell_data` has no per-point-within-cell axis (the same limit MED's ELNO/ELGA documents), so a G-point, k-component array is stored **flat**:
+
+```python
+mesh.cell_data["stress"]                          # (ncells, G*k)
+mesh.field_data["gid:gauss_points:stress"] = [G]  # only when G != 1
+```
+
+The row is **Gauss-point-major** — `[gp0_c0…gp0_ck-1, gp1_c0…gp1_ck-1, …]` — which is the order GiD's own `Values` rows arrive in, so neither direction re-packs anything.
+
+`G == 1` is the historical layout and **declares nothing**, so an ordinary per-element array is a plain `(ncells, k)` and its bytes are unchanged by this mechanism's existence. The declaration is required rather than inferred because a bare `(ncells, 3)` is genuinely ambiguous: a 3-component vector at one Gauss point, or a scalar at three. It also interacts with [result types](#result-types): a type's legal component counts are checked against **k**, never `G*k`, so a `Matrix` (k=6) at G=3 is an `(n, 18)` array still validated as 6 components.
+
+### Natural coordinates
+
+GiD places the points itself (`Natural Coordinates: Internal`) only for specific counts per element family. Any other count must supply them explicitly, keyed by `(cell type, G)` — that being what a Gauss-point set actually depends on, so two arrays sharing a block and a G share one set rather than repeating identical coordinates:
+
+```python
+mesh.field_data["gid:gauss_coords:triangle:5"] = [...]   # G*dim doubles, point-major
+```
+
+| Cell family | Internal-valid G | Given range | `dim` |
+|---|---|---|---|
+| `triangle` | 1, 3, 6 | 0…1 | 2 |
+| `quad` | 1, 4, 9 | −1…1 | 2 |
+| `tetra` | 1, 4, 10 | 0…1 | 3 |
+| `hexahedron` | 1, 8, 27 | −1…1 | 3 |
+| `wedge` | 1, 6 | 0…1 | 3 |
+| `pyramid` | 1, 5 | −1…1 | 3 |
+| `line` | **any** | **forbidden** | — |
+
+Higher-order variants share their base family's rules (`hexahedron27` follows `hexahedron`). Supplying coordinates for a count GiD *could* have placed is honoured — a solver's quadrature need not match GiD's — but omitting them for one it cannot is a `WriteError` naming the type and its legal counts, never a file GiD would silently reject. Line elements are the one family GiD forbids `Given` for outright, which costs nothing since they already accept any count.
+
+Reading captures a `Given` set's coordinates into the same key, so a non-standard count read from a file can be written back; without that the writer would refuse for want of the very coordinates the file supplied. **This capture is ASCII-only**: in the binary flavour the coordinates are raw double records the string-record scanner cannot reach, and the HDF5 attribute layout is unverified. The *count* is read in all three flavours, so G>1 values round-trip everywhere — only re-writing a `Given` set read from a binary or HDF5 file is affected.
+
+::: warning Binary flavour: component counts
+Unrelated to Gauss points, but easily mistaken for them: the binary stream carries neither a row width nor a component count, so its reader can only use the declared type's canonical width (Scalar 1, Vector 3, Matrix 6). A 2-component `Vector` is legal GiD and round-trips through ASCII, but is unrecoverable from binary at **any** G, including the default 1. Pinned by `test_binary_cannot_recover_a_non_canonical_component_count`.
+:::
 
 ## Provenance
 

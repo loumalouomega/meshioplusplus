@@ -234,6 +234,59 @@ enum class GidResultType : std::int64_t {
  */
 inline constexpr const char* kGidResultTypePrefix = "gid:result_type:";
 
+/**
+ * @brief `field_data` key prefix declaring how many Gauss points per element a
+ * `cell_data` array carries.
+ *
+ * GiD writes a per-element result against a **Gauss-point set** of G points,
+ * emitting G rows per element. meshio++'s `cell_data` has no
+ * per-point-within-cell axis (the same limit MED's ELNO/ELGA documents), so a
+ * G-point, k-component array is stored **flat** as `(ncells, G*k)`, laid out
+ * Gauss-point-major -- `[gp0_c0..gp0_ck-1, gp1_c0..gp1_ck-1, ...]`, which is
+ * the order GiD's own `Values` rows arrive in, so neither direction re-packs.
+ *
+ * The full key is this prefix plus the array's own name; its value is a single
+ * integer G. It is written **only when it carries information**, i.e. never
+ * for `G == 1` -- so an ordinary per-element array is a plain `(ncells, k)`
+ * with no declaration at all, and its bytes are unchanged by this mechanism's
+ * existence. Without the declaration a `(ncells, 3)` array is genuinely
+ * ambiguous (a 3-component vector at one Gauss point, or a scalar at three),
+ * which is exactly why the declaration is required rather than inferred.
+ *
+ * Interacts with `kGidResultTypePrefix`: the result type's legal component
+ * counts are checked against **k**, not `G*k`. A `Matrix` (k=6) at G=3 is a
+ * `(n, 18)` array whose declared type is still validated as 6 components.
+ */
+inline constexpr const char* kGidGaussPointsPrefix = "gid:gauss_points:";
+
+/**
+ * @brief `field_data` key prefix supplying a Gauss-point set's **natural
+ * coordinates**, for counts GiD cannot compute itself.
+ *
+ * GiD accepts `Natural Coordinates: Internal` -- letting it place the points
+ * -- only for specific counts per element type (triangle 1/3/6, quadrilateral
+ * 1/4/9, tetrahedra 1/4/10, hexahedra 1/8/27, prism 1/6, pyramid 1/5; line
+ * elements accept any count, equally spaced). Any **other** G must declare
+ * `Natural Coordinates: Given` and list the points explicitly.
+ *
+ * The full key is this prefix plus `"<meshio++ cell type>:<G>"` -- keyed by
+ * `(cell type, G)` rather than by array name, because that is what a GiD
+ * Gauss-point set actually depends on: two arrays sharing a cell block and a
+ * G share one set, and would otherwise have to repeat identical coordinates.
+ * The value is `G * dim` doubles, point-major, where `dim` is 2 for
+ * triangle/quadrilateral and 3 for tetrahedra/hexahedra/prism/pyramid.
+ *
+ * Coordinate ranges are GiD's own: 0..1 for triangle, tetrahedra and prism;
+ * -1..1 for quadrilateral, hexahedra and pyramid. **Line elements cannot use
+ * `Given` at all** -- GiD forbids it -- so they are Internal-only, which is no
+ * restriction since they already accept any count.
+ *
+ * Supplying coordinates for a G that GiD *could* have computed is honoured
+ * (the set is written `Given`); omitting them for a G it cannot is a
+ * `WriteError` naming the type and its legal Internal counts.
+ */
+inline constexpr const char* kGidGaussCoordsPrefix = "gid:gauss_coords:";
+
 /// The GiD spelling of @p type (`"Matrix"`, `"ComplexVector"`, ...), as it
 /// appears in a `.post.res` `Result` header.
 MESHIOPLUSPLUS_API const char* gid_result_type_name(GidResultType type);
