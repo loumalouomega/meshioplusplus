@@ -103,7 +103,7 @@ Because the block is opt-in, this needed no exemption anywhere: `test_io_baselin
 
 A note has no natural lifetime without a scope, and getting this wrong writes a *false* statement into a file. Before the bounding below existed, `extract_surface(A)` dropping a region left its note in place, and the next `write()` — of an unrelated mesh B — put `Note [regions-dropped]: extract_surface: ...` into B's header.
 
-So the **public write entry points bound it**: `meshioplusplus.write()`, `registry_write_ex` and `mio_write` each call `provenance_begin_write()`, which resets the scope-less record so only notes raised by *this* write can be rendered. It is a no-op while a scope is open — the caller's scope owns the lifetime then, and spanning more than one write is the whole point of opening one.
+So the **public write entry points bound it**: `meshioplusplus.write()`, `registry_write_ex`, `mio_write`, and WASM's `writeMesh`/`convert`/`convertSurface`/`convertSurfaceOps` each call `provenance_begin_write()`, which resets the scope-less record so only notes raised by *this* write can be rendered. It is a no-op while a scope is open — the caller's scope owns the lifetime then, and spanning more than one write is the whole point of opening one. WASM's raw `registry_writers()` lambdas still bypass `registry_write_ex` itself (see above), so the reset is called explicitly at the JS binding layer, the same way `meshioplusplus.write()` calls it despite `_core.<fmt>_write` bypassing `registry_write_ex` too — without it, a note left by an earlier scope-less operation (or a prior `convertSurfaceOps` pipeline) silently attached itself to the next unrelated `writeMesh` call.
 
 Two consequences worth stating plainly:
 

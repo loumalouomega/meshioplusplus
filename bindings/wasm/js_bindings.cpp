@@ -795,6 +795,11 @@ void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'" +
                 compiled_out_hint(fmt));
+        // Bound scope-less provenance notes to this write, mirroring Python's
+        // public write() -- otherwise a note left by an earlier scope-less
+        // operation would leak into this file. No-op inside a caller's own
+        // scope. See doc/provenance.md.
+        meshioplusplus::detail::provenance_begin_write();
         it->second(rPath, val_to_mesh(rMeshObj));
     });
 }
@@ -819,7 +824,9 @@ void convert(const std::string& rInPath, const std::string& rInFormat, const std
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
                 compiled_out_hint(wfmt));
-        wit->second(rOutPath, rit->second(rInPath));
+        Mesh mesh = rit->second(rInPath);
+        meshioplusplus::detail::provenance_begin_write();
+        wit->second(rOutPath, std::move(mesh));
     });
 }
 
@@ -870,10 +877,17 @@ void convert_surface(const std::string& rInPath, const std::string& rInFormat,
             surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
                                                 {"surface:parent_cell"},
                                                 /*ignore_missing=*/true);
+            // See write_mesh()'s comment: bound scope-less notes to this
+            // write, called after the ops above so any notes THEY raised are
+            // dropped rather than misattributed here, matching every other
+            // scope-less write entry point.
+            meshioplusplus::detail::provenance_begin_write();
             wit->second(rOutPath, surface);
             return;
         }
-        wit->second(rOutPath, meshioplusplus::convert_cells(mesh, linearize).mMesh);
+        Mesh linearized = meshioplusplus::convert_cells(mesh, linearize).mMesh;
+        meshioplusplus::detail::provenance_begin_write();
+        wit->second(rOutPath, std::move(linearized));
     });
 }
 
@@ -1051,9 +1065,16 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
                 surface = meshioplusplus::data_drop(surface, meshioplusplus::DataLocation::Cell,
                                                     {"surface:parent_cell"},
                                                     /*ignore_missing=*/true);
+            // See write_mesh()'s comment: bound scope-less notes to this
+            // write, called after the pipeline steps and surface ops above so
+            // any notes THEY raised are dropped rather than misattributed
+            // here, matching every other scope-less write entry point.
+            meshioplusplus::detail::provenance_begin_write();
             wit->second(rOutPath, surface);
         } else {
-            wit->second(rOutPath, meshioplusplus::convert_cells(mesh, linearize).mMesh);
+            Mesh linearized = meshioplusplus::convert_cells(mesh, linearize).mMesh;
+            meshioplusplus::detail::provenance_begin_write();
+            wit->second(rOutPath, std::move(linearized));
         }
 
         val out = val::object();
