@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.20.2 (2026-08-28)
+
+Re-cuts the release: `v10.20.1`'s tag push landed during a GitHub Actions outage — the `wasm`, `wheels` and `ci` workflows never even started a run for it (no run was created at all), `packages`'s jobs all came back `cancelled`, and a concurrent `docs` run on `master` failed to start with a spurious "workflow file issue". `v10.20.1` itself already carried both fixes below; only the release artifacts were never produced. No code changes beyond the version bump.
+
 ## v10.20.1 (2026-08-26)
 
 Fixes two release-CI regressions introduced by v10.20.0's `gid`/static-zlib work, both caught by the `v10.20.0` tag's own CI run.
