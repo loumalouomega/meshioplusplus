@@ -210,15 +210,25 @@ def write(
         for cell in cell_block.data:
             f = face_index
             face_index += 1
-            # A per-path fill attribute overrides the document-level rule;
-            # without colouring no attribute is emitted and output is unchanged.
+            # A per-path fill attribute alone does NOT override the
+            # document-level rule: per the CSS cascade, a presentation
+            # attribute has zero specificity and loses to ANY stylesheet
+            # rule, even the plain "path {fill: ...}" type selector above -
+            # every renderer that honours the cascade (browsers, cairosvg)
+            # paints every face in the flat fallback colour regardless of
+            # this attribute. The redundant inline `style` wins the cascade
+            # and actually colours the face; `fill` stays for inspection
+            # and because tests key off it. Without colouring, neither
+            # attribute is emitted and output is unchanged.
             if colors.active and cell_block.type != "line":
                 c = colors.color(f)
+                hex_color = _color_hex(c) if c is not None else nan_color
                 ET.SubElement(
                     svg,
                     "path",
                     d=fmt.format(*pts[cell].flatten()),
-                    fill=_color_hex(c) if c is not None else nan_color,
+                    fill=hex_color,
+                    style=f"fill:{hex_color}",
                 )
             else:
                 ET.SubElement(
@@ -315,12 +325,14 @@ def _write_projected(
         d = "".join(parts)
         if not is_line:
             d += "Z"
-        # A per-path fill attribute overrides the document-level rule; without
-        # colouring no attribute is emitted and the output is unchanged.
+        # See the twin comment in write(): the inline `style` is what
+        # actually wins the CSS cascade against the document-level rule;
+        # `fill` stays for inspection/test compatibility.
         if colors.active and not is_line:
             c = colors.color(f)
+            hex_color = _color_hex(c) if c is not None else nan_color
             ET.SubElement(
-                svg, "path", d=d, fill=_color_hex(c) if c is not None else nan_color
+                svg, "path", d=d, fill=hex_color, style=f"fill:{hex_color}"
             )
         else:
             ET.SubElement(svg, "path", d=d)

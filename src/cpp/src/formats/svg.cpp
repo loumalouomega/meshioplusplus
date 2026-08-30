@@ -177,12 +177,18 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         }
         if (!face.mIsLine)
             d += "Z";
-        // A per-path fill attribute overrides the document-level rule; without
-        // coloring no attribute is emitted and the output is unchanged.
+        // A per-path fill attribute ALONE does not override the document-
+        // level rule: a presentation attribute has zero CSS specificity and
+        // loses to any stylesheet rule, even the plain "path {fill: ...}"
+        // type selector above - every cascade-honouring renderer (browsers,
+        // cairosvg) paints every face in the flat fallback colour despite
+        // this attribute. The redundant inline style wins the cascade and
+        // actually colours the face; fill stays for inspection/tests.
         if (colors.mActive && !face.mIsLine) {
             const std::optional<detail::Rgb> c = colors.Color(f);
-            os << "<path d=\"" << d << "\" fill=\""
-               << (c.has_value() ? svg_color_hex(*c) : rNanColor) << "\" />";
+            const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
+            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
+               << hex_color << "\" />";
         } else {
             os << "<path d=\"" << d << "\" />";
         }
@@ -335,8 +341,12 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
             const std::size_t f = face_index++;
             if (colors.mActive && type != "line") {
                 const std::optional<detail::Rgb> c = colors.Color(f);
-                os << "<path d=\"" << d << "\" fill=\""
-                   << (c.has_value() ? svg_color_hex(*c) : rNanColor) << "\" />";
+                const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
+                // See the twin comment in svg_proj_write(): the inline style
+                // is what actually wins the CSS cascade; fill stays for
+                // inspection/tests.
+                os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
+                   << hex_color << "\" />";
             } else {
                 os << "<path d=\"" << d << "\" />";
             }

@@ -160,6 +160,28 @@ def _fills(path):
     return [p.get("fill") for p in ET.parse(path).getroot().findall(f"{SVG_NS}path")]
 
 
+def test_colored_paths_carry_a_winning_inline_style(tmp_path):
+    # Regression guard: a bare `fill="..."` attribute on a <path> has ZERO
+    # CSS specificity and loses to ANY stylesheet rule, including the plain
+    # "path {fill: ...}" type selector this writer always emits - every
+    # cascade-honouring renderer (browsers, cairosvg) then paints every
+    # coloured face in the flat fallback colour instead. The `fill`
+    # attribute alone is therefore not enough; an inline `style` (which
+    # always wins the cascade) must carry the same colour.
+    mesh = meshioplusplus.Mesh(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        [("triangle", [[0, 1, 2]])],
+        cell_data={"tag": [[1.0]]},
+    )
+    out = tmp_path / "styled.svg"
+    meshioplusplus.svg.write(out, mesh, color_by="tag")
+    paths = ET.parse(out).getroot().findall(f"{SVG_NS}path")
+    assert len(paths) == 1
+    fill = paths[0].get("fill")
+    assert fill is not None
+    assert paths[0].get("style") == f"fill:{fill}"
+
+
 def test_cell_data_lands_on_the_right_facet(tmp_path):
     # A cube of two hexes tagged 0 and 1: every drawn skin facet must carry its
     # OWNING hex's colour, which is what "surface:parent_cell" provenance buys.
