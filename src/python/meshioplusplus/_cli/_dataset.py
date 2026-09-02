@@ -17,7 +17,7 @@ portable — see `doc/datasets.md`.
 import json
 import os
 
-from .._dataset import DatasetManifest
+from .._dataset import DatasetManifest, portable_relpath
 
 
 def _load_or_new(path):
@@ -47,7 +47,7 @@ def _manifest_relative(source, manifest_path):
     if os.path.isabs(source):
         return source
     base = os.path.dirname(os.path.abspath(manifest_path))
-    return os.path.relpath(os.path.abspath(source), base)
+    return portable_relpath(os.path.abspath(source), base)
 
 
 def _split_csv(text):

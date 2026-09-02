@@ -238,11 +238,26 @@ def expand_pattern(pattern, index, count):
 
 
 def _glob(pattern):
-    """Expand a ``*``/``?`` pattern to an ordered list of existing files."""
+    """Expand a ``*``/``?`` pattern to an ordered list of existing files.
+
+    The C++ twin, ``seq_split_pattern``, finds the rightmost of either ``/``
+    or ``\\`` in ONE pass (``find_last_of("/\\\\")``). This used to instead
+    prefer ``os.sep`` unconditionally whenever it appeared anywhere in the
+    text -- correct for a purely native-separator pattern, but wrong for a
+    portable ``/``-style pattern (a hand-edited dataset manifest, per
+    ``doc/datasets.md``) joined onto a Windows-native ``base_dir``: the mixed
+    string's LAST separator is still the ``/`` right before the glob suffix,
+    and re-splitting on the last ``\\`` instead silently walked one directory
+    too high, so the glob suffix (e.g. ``cases/case_*.vtu``) never matched a
+    bare filename. Mirror the C++ split exactly: rightmost of either.
+    """
     text = str(pattern)
-    head, sep, base = text.rpartition("/")
-    if os.sep != "/" and os.sep in text:
-        head, sep, base = text.rpartition(os.sep)
+    seps = ("/",) if os.sep == "/" else ("/", os.sep)
+    idx = max((text.rfind(s) for s in seps), default=-1)
+    if idx == -1:
+        head, sep, base = "", "", text
+    else:
+        head, sep, base = text[:idx], text[idx], text[idx + 1 :]
     directory = head if sep else "."
     if not directory:
         directory = os.sep

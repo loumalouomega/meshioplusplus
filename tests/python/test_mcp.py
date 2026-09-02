@@ -697,9 +697,11 @@ def test_dataset_add_list_update_round_trip(tmp_path, monkeypatch):
         )
     )
     assert out["entry_id"] == "sweep" and out["num_steps"] == 3
-    # the stored source is manifest-relative, so the manifest is portable
+    # the stored source is manifest-relative AND "/"-separated regardless of
+    # platform, so the manifest is genuinely portable (doc/datasets.md) --
+    # not os.path.join, which would be backslash-joined on Windows.
     doc = json.loads(open(manifest, encoding="utf-8").read())
-    assert doc["Entries"][0]["Source"]["Pattern"] == os.path.join("cases", "case_*.vtu")
+    assert doc["Entries"][0]["Source"]["Pattern"] == "cases/case_*.vtu"
 
     _dump(
         _tools.tool_dataset_add(

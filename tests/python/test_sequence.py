@@ -147,6 +147,50 @@ def test_glob_match_matches_cpp(pattern, name, expected):
     assert _core.sequence_glob_match(pattern, name) is expected
 
 
+def test_glob_directory_split_prefers_the_rightmost_separator_on_windows(monkeypatch):
+    """A portable, "/"-style manifest pattern joined onto a Windows-native
+    base_dir must still find the true last path component.
+
+    ``_glob`` used to unconditionally re-split on ``os.sep`` whenever it
+    appeared *anywhere* in the text, even after a correct "/" split had
+    already been found -- so a pattern like ``<native base>\\cases/case_*.vtu``
+    (a manifest's own ``"cases/case_*.vtu"`` joined onto a Windows tmp_path)
+    re-split one directory too high, leaving ``cases/case_*.vtu`` itself as
+    the "basename" glob_match compares against a bare filename -- which never
+    matches, since glob_match has no "/" of its own (it is single-component
+    only). Mirrors the C++ twin's ``find_last_of("/\\\\")``, which never had
+    this defect.
+
+    A real backslash is not a path separator on POSIX (it is a legal filename
+    character), so this cannot be reproduced with real files on a non-Windows
+    machine -- it mocks ``os.listdir``/``os.path.isfile`` instead, asserting
+    the DIRECTORY the fixed split computes and passes to ``os.listdir`` is
+    the true last component, not one level too high.
+    """
+    monkeypatch.setattr(os, "sep", "\\", raising=False)
+    windows_style_prefix = r"C:\Users\runner\AppData\Local\Temp\pytest\case0"
+    pattern = f"{windows_style_prefix}\\cases/case_*.vtu"
+    expected_dir = f"{windows_style_prefix}\\cases"
+
+    seen_dirs = []
+
+    def fake_listdir(path):
+        seen_dirs.append(path)
+        if path == expected_dir:
+            return ["case_0.vtu", "case_1.vtu", "readme.txt"]
+        return []  # the pre-fix (wrong, one-level-too-high) directory: empty
+
+    monkeypatch.setattr(os, "listdir", fake_listdir)
+    monkeypatch.setattr(os.path, "isfile", lambda p: True)
+
+    matched = _sequence._glob(pattern)
+    assert seen_dirs == [expected_dir]
+    assert sorted(matched) == [
+        os.path.join(expected_dir, "case_0.vtu"),
+        os.path.join(expected_dir, "case_1.vtu"),
+    ]
+
+
 @pytest.mark.parametrize(
     "pattern,index,count,expected",
     [

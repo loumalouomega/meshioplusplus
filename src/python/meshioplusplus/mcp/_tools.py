@@ -1677,14 +1677,22 @@ def tool_dataset_add(
         )
     manifest, resolved_manifest = _load_manifest(manifest_path, must_exist=False)
     base = os.path.dirname(resolved_manifest)
+    from .._dataset import portable_relpath
+
     if input_pattern is not None:
         _resolve_pattern(input_pattern)  # sandbox + non-empty, before storing
         head, tail = os.path.split(str(input_pattern))
-        rel_head = os.path.relpath(_resolve(head or "."), base)
-        source = {"Pattern": os.path.normpath(os.path.join(rel_head, tail))}
+        rel_head = portable_relpath(_resolve(head or "."), base)
+        # Not os.path.normpath/join: on Windows those re-introduce a native
+        # backslash into what must stay a portable, "/"-only manifest path
+        # (doc/datasets.md) -- string-join instead, since rel_head is already
+        # normalized and `tail` (from os.path.split) never contains its own
+        # separator.
+        pattern = f"{rel_head}/{tail}" if rel_head not in ("", ".") else tail
+        source = {"Pattern": pattern}
     else:
         resolved = [_resolve(p, must_exist=True) for p in input_paths]
-        source = {"Paths": [os.path.relpath(p, base) for p in resolved]}
+        source = {"Paths": [portable_relpath(p, base) for p in resolved]}
         if sort:
             source["Sort"] = True
     if input_format:

@@ -120,6 +120,22 @@ def _resolve_source_path(path, base_dir):
     return path
 
 
+def portable_relpath(path, base_dir):
+    """``os.path.relpath(path, base_dir)``, normalized to ``/`` for storage.
+
+    A manifest is meant to be portable, hand-editable JSON (``doc/datasets.md``),
+    so a relative source written by one platform must resolve correctly when
+    read back on another -- and `_glob`'s own directory/glob split
+    (``_sequence.py``) takes the rightmost of either ``/`` or ``os.sep``, so a
+    stored path that already uses the *native* separator on Windows works there
+    too. The one thing that must never happen is writing a bare
+    ``os.path.relpath()`` result: on Windows that is backslash-separated, and a
+    manifest checked out and read back on Linux/macOS would then see a literal
+    backslash as part of a filename, matching nothing.
+    """
+    return os.path.relpath(path, base_dir).replace(os.sep, "/")
+
+
 @dataclass(frozen=True)
 class DatasetEntry:
     """One catalogued case: a source plan plus its curation state.
