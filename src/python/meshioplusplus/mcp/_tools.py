@@ -91,12 +91,7 @@ from .. import (
     write,
 )
 from .. import write_parquet as _write_parquet_fn
-from .._helpers import (
-    _filetypes_from_path,
-    _writer_map,
-    extension_to_filetypes,
-    reader_map,
-)
+from .._helpers import _filetypes_from_path, formats
 
 # --------------------------------------------------------------------------- #
 # Path sandbox                                                                #
@@ -231,13 +226,8 @@ def tool_formats():
 
 
 def formats_payload():
-    return {
-        "readable": sorted(reader_map),
-        "writable": sorted(_writer_map),
-        "extensions": {
-            ext: list(fmts) for ext, fmts in sorted(extension_to_filetypes.items())
-        },
-    }
+    """The public ``meshioplusplus.formats()`` answer, verbatim."""
+    return formats()
 
 
 def tool_sniff(input_path):
@@ -1889,7 +1879,11 @@ TOOL_REGISTRY = OrderedDict(
     [
         (
             "formats",
-            {"fn": tool_formats, "wraps": ("extension_to_filetypes",), "gated": None},
+            {
+                "fn": tool_formats,
+                "wraps": ("extension_to_filetypes", "formats"),
+                "gated": None,
+            },
         ),
         ("sniff", {"fn": tool_sniff, "wraps": ("sniff_format",), "gated": None}),
         ("info", {"fn": tool_info, "wraps": ("read_metadata",), "gated": None}),

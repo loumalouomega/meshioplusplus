@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.20.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
+Status at time of writing: **v10.21.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -42,9 +42,10 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## 3. Ecosystem reach
 
-- **Blender add-on** — Blender ships Python and reads almost no FEA formats; unusually high visibility per line of code. **S–M**
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
-- **Registration and distribution** — conda-forge, CRAN, Julia General, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. **M**
+- **Registration and distribution** — conda-forge, CRAN, Julia General, the Blender Extensions Platform, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. The Blender extension zips are built and attached to every `v*` release (see `doc/blender.md`), so only the *listing* remains there. **M**
+
+*The Blender add-on shipped in v10.21.0 and has been removed from this section: `src/python/meshioplusplus/_blender.py` (the pure payload layer plus `to_blender`/`from_blender`), the 4.2+ extension in `src/blender/`, and per-platform zips on every release. See [`doc/blender.md`](blender.md).*
 
 ---
 

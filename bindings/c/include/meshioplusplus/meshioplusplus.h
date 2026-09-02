@@ -235,8 +235,8 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 20
-#define MIO_VERSION_PATCH 2
+#define MIO_VERSION_MINOR 21
+#define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
 /** Whether the header being compiled against is at least major.minor.patch. */

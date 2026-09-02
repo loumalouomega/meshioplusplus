@@ -49,6 +49,7 @@ from . import (
 )
 from .__about__ import __version__
 from ._agglomerate import agglomerate
+from ._blender import from_blender, has_blender, to_blender
 from ._clean import clean
 from ._conservative_interpolate import conservative_interpolate
 from ._convert_cells import convert_cells
@@ -81,6 +82,7 @@ from ._grid import grid
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
+    formats,
     read,
     read_metadata,
     register_format,
@@ -202,6 +204,7 @@ __all__ = [
     "deregister_format",
     "write_points_cells",
     "extension_to_filetypes",
+    "formats",
     "extract_skin",
     "extract_surface",
     "compute_quality",
@@ -266,6 +269,9 @@ __all__ = [
     "from_pyvista",
     "to_trimesh",
     "from_trimesh",
+    "to_blender",
+    "from_blender",
+    "has_blender",
     "to_arrow",
     "from_arrow",
     "write_parquet",

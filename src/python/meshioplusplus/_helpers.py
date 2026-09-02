@@ -23,6 +23,26 @@ _writer_map = {}
 _MULTIFILE_FORMATS = ("tetgen", "triangle", "ensight", "gid")
 
 
+def formats() -> dict:
+    """What this build can read and write, and which extension implies which.
+
+    ``{"readable": [...], "writable": [...], "extensions": {".stl": ["stl"], ...}}``
+    — all sorted, and the extension keys carry their leading dot.
+
+    Public because a file dialog needs exactly this and the registries backing
+    it are private. Reaching into ``_helpers.reader_map`` is what
+    ``tools/paraview-meshioplusplus-plugin.py`` does, with nothing to catch a
+    rename; the Blender add-on calls this instead.
+    """
+    return {
+        "readable": sorted(reader_map),
+        "writable": sorted(_writer_map),
+        "extensions": {
+            ext: list(fmts) for ext, fmts in sorted(extension_to_filetypes.items())
+        },
+    }
+
+
 def register_format(
     format_name: str, extensions: list[str], reader, writer_map
 ) -> None:

@@ -612,8 +612,14 @@ def has_jax() -> bool:
     return _importable("jax")
 
 
-def _require_framework(op, module, hint, doc="doc/ml.md"):
-    """Import a heavyweight ML framework or raise naming the install command.
+def _require_framework(
+    op,
+    module,
+    hint,
+    doc="doc/ml.md",
+    qualifier="(pick the wheel matching your accelerator)",
+):
+    """Import a heavyweight optional dependency or raise naming the install command.
 
     The CuPy precedent, not ``_interop._require``: there is deliberately no
     ``meshioplusplus[torch]``/``[jax]`` extra — torch's default Linux wheel
@@ -622,13 +628,18 @@ def _require_framework(op, module, hint, doc="doc/ml.md"):
     more people than it would help (the Open3D ~400 MB-wheel reasoning).
     ``doc`` names the page the error points at — the PhysicsNeMo adapter
     reuses this rather than growing a second no-extra error shape.
+
+    ``qualifier`` is the parenthetical after the install hint. It defaults to
+    the accelerator wording every ML caller wants, so their messages are
+    unchanged; the Blender bridge overrides it, since ``bpy``'s constraint is a
+    CPython pin rather than a GPU.
     """
     if _importable(module):
         return __import__(module)
     raise ImportError(
         f"meshio++: {op}: {module} is not installed. There is deliberately no "
-        f"pip extra for it; install it directly with `{hint}` (pick the wheel "
-        f"matching your accelerator). See {doc}."
+        f"pip extra for it; install it directly with `{hint}` {qualifier}. "
+        f"See {doc}."
     )
 
 

@@ -433,6 +433,11 @@ _NOT_TOOLS = {
     "from_pyvista",
     "to_trimesh",
     "from_trimesh",
+    # An in-memory handoff to a live Blender datablock: there is no
+    # path-in/path-out form, and `convert` already covers the file case.
+    "to_blender",
+    "from_blender",
+    "has_blender",
     "to_arrow",
     "from_arrow",
     "read_parquet",  # tabular import, no Mesh output to write

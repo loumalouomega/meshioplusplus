@@ -4,3 +4,10 @@ ignore = E203, E266, E501, W503, C901, E741
 max-line-length = 88
 max-complexity = 18
 select = B,C,E,F,W,T4,B9
+# Blender registers operator properties through class annotations
+# (`prop: StringProperty(...)`), which is the only API it offers. pyflakes
+# parses every string literal inside an annotation as a forward reference, so
+# `options={"HIDDEN"}` reads as an undefined name and a `name="Show all files"`
+# as a malformed one. Scoped to the one file that has to speak that dialect.
+per-file-ignores =
+    src/blender/addon/operators.py: F821, F722

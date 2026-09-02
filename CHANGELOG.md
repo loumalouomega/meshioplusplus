@@ -8,6 +8,18 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.21.0 (2026-09-02)
+
+Adds a **Blender add-on**, closing the first bullet of roadmap section 3 ("Ecosystem reach"). Blender ships Python and reads almost no FEA formats — STL, OBJ, PLY and essentially nothing else; all 43 of meshio++'s are now available under `File > Import`. See `doc/blender.md`.
+
+- **New public API `to_blender(mesh)` / `from_blender(obj_or_mesh)` / `has_blender()`** (`src/python/meshioplusplus/_blender.py`). Python-only over the numpy the readers already return; the C++/WASM/C/Fortran core is untouched. Split like `_interop.py` and `mcp/`: the whole behaviour lives in the pure `_to_blender_payload`/`_mesh_from_blender_arrays` pair, which imports no `bpy` and is tested in the default CI matrix.
+- **Quads and n-gons are kept, not triangulated.** Blender's vertices + loops + polygons model holds them natively, unlike `trimesh`, so the reduction is `_viewer_browser._renderable_surface` (extract a volume's boundary, gather each `cell_data` array through the owning cell, linearize) rather than `_interop`'s triangles-only `_triangulate`. A mesh therefore looks the same in Blender, in `view()` and in the hosted browser demo.
+- **`point_data` and `cell_data` become Blender attributes** on the `POINT` and `FACE` domains, named regions become `region:<name>` boolean attributes with the same JSON sidecar `to_pyvista` uses (so a region survives a trip out through one bridge and back through the other), and `field_data` becomes custom properties.
+- **New Blender 4.2+ extension** in `src/blender/`, with the meshio++ wheel bundled inside the zip — no pip step and no network access at install time. Per-platform zips (`linux-x64`, `windows-x64`, `macos-x64`, `macos-arm64`) are built by `src/blender/build_extension.py` and attached to every `v*` GitHub Release. `blender_manifest.toml` is generated rather than committed, because the bundled wheel file names carry the version; a new `blender-packaging` CI job asserts the generated manifest agrees with `pyproject.toml` and with the zip's contents.
+- **New public `meshioplusplus.formats()`** returning `{"readable", "writable", "extensions"}`. The add-on's file dialog needs exactly this, and the registries behind it are private — reaching into `_helpers.reader_map` is what the ParaView plugin does, with nothing to catch a rename. `meshioplusplus.mcp._tools.formats_payload()` now delegates to it.
+- `_gpu._require_framework` gained a backward-compatible `qualifier=` keyword so the Blender error can name a CPython pin instead of an accelerator. Every existing torch/JAX/PhysicsNeMo message is byte-identical, pinned by a test.
+- There is deliberately **no `[blender]` pip extra**: the `bpy` wheel on PyPI is several hundred megabytes and pinned to one CPython minor, and inside Blender `bpy` is a builtin pip must never touch. The `torch`/`jax`/CuPy reasoning, and the same error shape.
+
 ## v10.20.2 (2026-08-28)
 
 Re-cuts the release: `v10.20.1`'s tag push landed during a GitHub Actions outage — the `wasm`, `wheels` and `ci` workflows never even started a run for it (no run was created at all), `packages`'s jobs all came back `cancelled`, and a concurrent `docs` run on `master` failed to start with a spurious "workflow file issue". `v10.20.1` itself already carried both fixes below; only the release artifacts were never produced. No code changes beyond the version bump.

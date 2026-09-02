@@ -1109,6 +1109,56 @@ jobs:
         run: python -m pytest tests/python/test_mcp.py -v
 
   # --------------------------------------------------------------------------
+  # The Blender bridge with `bpy` installed. The default `test` matrix already
+  # runs test_blender.py's pure half -- the payload layer, the pure inverse,
+  # the attribute typing, the not-installed error path -- with no bpy at all;
+  # that split is the point. This job adds the half only a real Blender data
+  # model can settle, chiefly `mesh.validate()` as a topology oracle.
+  #
+  # Python is pinned to 3.11, not 3.12: the `bpy` PyPI wheel is built against
+  # the exact CPython minor Blender embeds (3.11 for the 4.2 LTS line), so
+  # there is no cp312 wheel to install. When Blender moves to 3.12 this pin and
+  # the extension's bundled wheels move together.
+  #
+  # Honest cost: that wheel is a few hundred MB, which makes this the slowest
+  # of the Python jobs.
+  # --------------------------------------------------------------------------
+  blender:
+    name: Blender bridge (bpy)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # bpy links against a full GL/X11 stack even when nothing is rendered.
+      - name: Install the runtime libraries bpy needs
+        run: |
+          # packages.microsoft.com ships preinstalled on the ubuntu-latest
+          # runner image and this repo never uses it; when that repo 403s it
+          # aborts `apt-get update` under the default `-e` shell before the
+          # packages we actually need are ever fetched. Strip it first.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libglx-mesa0 libegl1 libxi6 libxxf86vm1 libxfixes3 \
+            libxrender1 libxkbcommon0 libsm6 libice6
+
+      - name: Install meshio++ and bpy
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pytest
+          pip install "bpy==4.2.*"
+
+      - name: Blender bridge tests
+        run: python -m pytest tests/python/test_blender.py -v
+
+  # --------------------------------------------------------------------------
   # The browser viewer. Lives here rather than in wasm.yml because that
   # workflow only triggers on v* tags, and this needs to run on every PR that
   # could break the app.
@@ -1290,6 +1340,69 @@ jobs:
           if asset not in names:
               sys.exit(f"{asset} is missing from {wheel}")
           print(f"ok: {asset} ships in {wheel}")
+          PY
+
+  # --------------------------------------------------------------------------
+  # The Blender extension zip. The `viewer-packaging` shape: build the artifact
+  # and assert its structure, rather than trusting anyone to remember.
+  #
+  # The manifest is *generated*, so its version cannot drift from
+  # pyproject.toml by hand -- but the generator could, and the wheel file names
+  # it embeds carry the version too. This job is what makes that machine-checked.
+  #
+  # `--local-wheel`, never PyPI: on a PR that bumps the version, the wheel the
+  # manifest must name does not exist on PyPI yet.
+  # --------------------------------------------------------------------------
+  blender-packaging:
+    name: Blender extension zip is well-formed
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive  # vendored Eigen (MED transpose)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build the wheel and the extension zip
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+          python src/blender/build_extension.py --platform linux-x64 \
+                 --local-wheel 'dist/*.whl' --outdir dist
+
+      - name: Check the zip's contents and manifest
+        run: |
+          python - <<'PY'
+          import glob, pathlib, sys, tomllib, zipfile
+
+          archive = zipfile.ZipFile(sorted(glob.glob("dist/*.zip"))[-1])
+          names = set(archive.namelist())
+          for required in ("blender_manifest.toml", "__init__.py", "operators.py",
+                           "formats.py", "LICENSE"):
+              if required not in names:
+                  sys.exit(f"{required} is missing from the extension zip")
+
+          manifest = tomllib.loads(archive.read("blender_manifest.toml").decode())
+          with open("pyproject.toml", "rb") as handle:
+              version = tomllib.load(handle)["project"]["version"]
+          if manifest["version"] != version:
+              sys.exit(f'manifest {manifest["version"]} != pyproject {version}')
+
+          listed = {w.lstrip("./") for w in manifest["wheels"]}
+          present = {n for n in names if n.startswith("wheels/")}
+          if listed != present:
+              sys.exit(f"manifest/zip wheel mismatch: {listed ^ present}")
+
+          # meshioplusplus needs the compiled _core, and `rich` is a hard
+          # runtime dependency because __init__.py imports _cli eagerly.
+          if not any(f"meshioplusplus-{version}-cp311-" in n for n in present):
+              sys.exit(f"no cp311 meshioplusplus-{version} wheel in {sorted(present)}")
+          if not any(n.startswith("wheels/rich-") for n in present):
+              sys.exit("rich must be bundled: meshioplusplus/__init__.py imports _cli")
+          print("ok:", sorted(present))
           PY
 
   # --------------------------------------------------------------------------

@@ -107,6 +107,7 @@ export default defineConfig({
           { text: "CLI reference", link: "/cli" },
           { text: "XDMF time series", link: "/xdmf_time_series" },
           { text: "Extending meshio++", link: "/extending" },
+          { text: "Blender add-on", link: "/blender" },
           { text: "ParaView plugin", link: "/paraview_plugin" },
           { text: "WebAssembly / JavaScript", link: "/wasm" },
           { text: "Single-header C++", link: "/single_header" },

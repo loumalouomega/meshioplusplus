@@ -75,11 +75,17 @@ def _sha(path) -> str:
 
 
 # Regenerate with: pytest tests/python/test_io_baseline.py -k report -s
+#
+# These hashes cover the whole file, and every writer here emits a provenance
+# comment carrying the release version ("Written by meshio++ v<version>"), so
+# **a version bump changes all four and they must be refreshed in the same
+# change**. They were recorded at v10.19.0 and went stale for three releases
+# before anyone noticed, which is what this note is for.
 BASELINE_HASHES = {
-    "vtu_ascii": "58c419f3ce63649123538509478e87c8af576c5ea5cadedca9cecf5c271464aa",
-    "vtu_binary_raw": "3c9d15678d0cefa878a36d4158c2abe69b0013f50e838d906ba96e1759689a4f",
-    "vtp_ascii": "2b0a146f6f90d4d5d331bbe6939c3d23ab6a195563c6badf0e08cc3a1784f39a",
-    "vtp_binary_raw": "1a337328823cad74932fc464f62a207e93fb7766239130e5585e243d37a9eab8",
+    "vtu_ascii": "46fc815a769e1de99b12cef2b9b683a631c3bdf7b28750fd5da8f31d6109f4f9",
+    "vtu_binary_raw": "e4461f39a037a3b1b442fd8b0ffac2c49fa1ee8d96d1e7b1aa9a2665aa114e18",
+    "vtp_ascii": "6ca00d1c8703204301e8a32bca6a4af514e2225b00df9dd31c224406c0ee8ba1",
+    "vtp_binary_raw": "0267ebe223bc91f8d000e96c66dbf02f5b13eeabb163e5d975f533562331e05f",
 }
 
 
