@@ -331,9 +331,7 @@ def _write_projected(
         if colors.active and not is_line:
             c = colors.color(f)
             hex_color = _color_hex(c) if c is not None else nan_color
-            ET.SubElement(
-                svg, "path", d=d, fill=hex_color, style=f"fill:{hex_color}"
-            )
+            ET.SubElement(svg, "path", d=d, fill=hex_color, style=f"fill:{hex_color}")
         else:
             ET.SubElement(svg, "path", d=d)
 
