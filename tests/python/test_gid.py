@@ -304,6 +304,7 @@ def test_unsupported_cell_type_raises_by_name(tmp_path):
     "cell_type,nnode",
     [("hexahedron27", 27), ("wedge15", 15), ("pyramid13", 13)],
 )
+@needs_writer
 def test_kratos_derived_orderings_round_trip(tmp_path, cell_type, nnode):
     """hexahedron27/wedge15/pyramid13, closing the last roadmap item for this
     format: orderings derived from Kratos's own geometry classes
@@ -480,6 +481,7 @@ def _typed_mesh(rtype, k, name="f"):
 
 
 @pytest.mark.parametrize("rtype,k", ALL_RESULT_TYPES)
+@needs_writer
 def test_declared_result_type_roundtrips(tmp_path, rtype, k):
     path = tmp_path / "t.post.msh"
     mesh = _typed_mesh(rtype, k)
@@ -501,6 +503,7 @@ def test_declared_result_type_roundtrips(tmp_path, rtype, k):
 
 
 @pytest.mark.parametrize("rtype,k", ALL_RESULT_TYPES)
+@needs_writer
 def test_declared_result_type_reaches_the_file_header(tmp_path, rtype, k):
     """The written .post.res must name the declared type, not a substitute."""
     path = tmp_path / "h.post.msh"
@@ -534,6 +537,7 @@ def _res_values(path):
     return rows
 
 
+@needs_writer
 def test_complex_vector_is_interleaved_and_complex_matrix_is_blocked(tmp_path):
     """The one trap in this feature, pinned literally.
 
@@ -560,6 +564,7 @@ def test_complex_vector_is_interleaved_and_complex_matrix_is_blocked(tmp_path):
             )
 
 
+@needs_writer
 def test_matrix_needs_no_permutation(tmp_path):
     """GiD's ``Matrix:6`` is ``Sxx Syy Szz Sxy Syz Sxz`` -- already meshio/VTK's
     symmetric-tensor order, so a stress tensor is written straight through.
@@ -581,6 +586,7 @@ def test_matrix_needs_no_permutation(tmp_path):
         (RT.MAIN_MATRIX, 6, "accepts 12"),
     ],
 )
+@needs_writer
 def test_illegal_component_count_errors_by_name(tmp_path, rtype, k, needle):
     """Never a silent fallback to splitting -- write_options.hpp's rule."""
     with pytest.raises(Exception) as exc:
@@ -589,6 +595,7 @@ def test_illegal_component_count_errors_by_name(tmp_path, rtype, k, needle):
     assert "'f'" in msg and needle in msg
 
 
+@needs_writer
 def test_out_of_range_result_type_errors_by_name(tmp_path):
     mesh = _typed_mesh(RT.MATRIX, 6)
     mesh.field_data[PREFIX + "f"] = np.array([42])
@@ -597,6 +604,7 @@ def test_out_of_range_result_type_errors_by_name(tmp_path):
     assert "42" in str(exc.value) and "0..8" in str(exc.value)
 
 
+@needs_writer
 def test_undeclared_arrays_are_unaffected(tmp_path):
     """A mesh with no declaration keeps the historical inference exactly.
 

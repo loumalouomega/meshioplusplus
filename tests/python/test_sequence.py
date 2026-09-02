@@ -318,7 +318,16 @@ def test_fan_in_to_a_non_series_format_raises_by_name(steps, tmp_path):
 def test_series_writers_list_agrees_with_reality(steps, tmp_path):
     # The anti-drift gate for the small owned set: a format that grows a
     # multi-step writer without being listed turns this red naming itself.
+    #
+    # 'gid' is skipped on a build with no gidpost (needs zlib at compile time,
+    # see gid/__init__.py) -- its absence here is a build configuration, not a
+    # _SERIES_WRITERS/reality mismatch, which is what this gate actually checks.
+    from meshioplusplus import _core
+
+    has_gidpost = getattr(_core, "__has_gidpost__", False)
     for fmt in sorted(meshioplusplus._helpers._writer_map):
+        if fmt == "gid" and not has_gidpost:
+            continue
         works = True
         try:
             meshioplusplus.write_sequence(

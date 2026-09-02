@@ -93,7 +93,7 @@ def _cases():
     from meshioplusplus.vtp import _vtp as py_vtp
     from meshioplusplus.vtu import _vtu as py_vtu
 
-    return {
+    cases = {
         "obj": (TRI, ".obj", _core.obj_write, py_obj.write),
         "off": (TRI, ".off", _core.off_write, py_off.write),
         "mphtxt": (TRI, ".mphtxt", _core.mphtxt_write, py_mphtxt.write),
@@ -116,7 +116,6 @@ def _cases():
         ),
         "flux": (TRI, ".pf3", _core.flux_write, py_flux.write),
         "tecplot": (TRI, ".dat", _core.tecplot_write, py_tecplot.write),
-        "exodus": (TET, ".exo", _core.exodus_write, py_exodus.write),
         "ansys": (
             TRI,
             ".msh",
@@ -173,6 +172,12 @@ def _cases():
             py_vti.write,
         ),
     }
+    # exodus needs netCDF; on a build with it compiled out (Windows CI),
+    # `_core.exodus_write` does not exist at all -- adding it unconditionally
+    # broke collection of this whole module there.
+    if getattr(_core, "__has_netcdf__", False):
+        cases["exodus"] = (TET, ".exo", _core.exodus_write, py_exodus.write)
+    return cases
 
 
 CASES = _cases()
@@ -638,7 +643,7 @@ def _note_parity_cases():
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
         [("triangle", np.array([[0, 1, 2]])), ("tetra", np.array([[0, 1, 2, 3]]))],
     )
-    return [
+    cases = [
         ("off", mixed, ".off", _core.off_write, _off.write),
         ("unv", mixed, ".unv", _core.unv_write, _unv.write),
         (
@@ -665,8 +670,13 @@ def _note_parity_cases():
             lambda p, m: _core.flac3d_write(p, m, "%.16e", False),
             lambda p, m: _flac3d.write(p, m, binary=False),
         ),
-        ("cgns", mixed, ".cgns", _core.cgns_write, _cgns.write),
     ]
+    # cgns needs HDF5; on a build with it compiled out (Windows CI),
+    # `_core.cgns_write` does not exist at all -- adding it unconditionally
+    # broke collection of this whole module there.
+    if getattr(_core, "__has_hdf5__", False):
+        cases.append(("cgns", mixed, ".cgns", _core.cgns_write, _cgns.write))
+    return cases
 
 
 @pytest.mark.parametrize("name", [c[0] for c in _note_parity_cases()])

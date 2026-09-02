@@ -90,6 +90,20 @@ BASELINE_HASHES = {
 
 
 def _write(tmp_path, fmt, binary, zlib_on):
+    """Write straight through ``_core``, bypassing ``meshioplusplus.write()``.
+
+    That bypass is deliberate -- these tests pin the writer's own output, not
+    the shim's -- but it means the provenance record's usual reset never runs:
+    only the public ``write()`` calls ``_provenance.begin_write()``, and a
+    "no scope" record otherwise carries whatever note the *previous* write
+    (anywhere in the same test session, e.g. a PLY int64->int32 cast) left
+    behind, per ``detail/provenance.hpp``'s documented caller-manages-state
+    contract for direct writer calls. Reset it ourselves so this file's
+    byte-pinning is independent of what ran before it.
+    """
+    from meshioplusplus import _provenance
+
+    _provenance.begin_write()
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / f"baseline.{fmt}"
     getattr(_core, f"{fmt}_write")(str(path), _baseline_mesh(), binary, zlib_on)

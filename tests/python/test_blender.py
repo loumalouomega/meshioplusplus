@@ -638,7 +638,8 @@ def test_blender_regions_and_field_data_survive():
     me = _new_mesh(bpy, _mixed_surface())
     assert me.attributes[_interop.REGION_PREFIX + "wall"].domain == "FACE"
     assert me.attributes[_interop.REGION_PREFIX + "inlet"].domain == "POINT"
-    assert me[FIELD_PREFIX + "step"][:] == [7]
+    # Blender's ID-property arrays come back as a tuple, not a list.
+    assert list(me[FIELD_PREFIX + "step"]) == [7]
 
 
 def test_blender_round_trip():

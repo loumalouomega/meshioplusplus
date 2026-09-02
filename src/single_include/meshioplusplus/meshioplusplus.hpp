@@ -9083,7 +9083,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 20
+#define MESHIOPLUSPLUS_VERSION_MINOR 21
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9093,7 +9093,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.20.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.21.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -66401,12 +66401,18 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         }
         if (!face.mIsLine)
             d += "Z";
-        // A per-path fill attribute overrides the document-level rule; without
-        // coloring no attribute is emitted and the output is unchanged.
+        // A per-path fill attribute ALONE does not override the document-
+        // level rule: a presentation attribute has zero CSS specificity and
+        // loses to any stylesheet rule, even the plain "path {fill: ...}"
+        // type selector above - every cascade-honouring renderer (browsers,
+        // cairosvg) paints every face in the flat fallback colour despite
+        // this attribute. The redundant inline style wins the cascade and
+        // actually colours the face; fill stays for inspection/tests.
         if (colors.mActive && !face.mIsLine) {
             const std::optional<detail::Rgb> c = colors.Color(f);
-            os << "<path d=\"" << d << "\" fill=\""
-               << (c.has_value() ? svg_color_hex(*c) : rNanColor) << "\" />";
+            const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
+            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
+               << hex_color << "\" />";
         } else {
             os << "<path d=\"" << d << "\" />";
         }
@@ -66559,8 +66565,12 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
             const std::size_t f = face_index++;
             if (colors.mActive && type != "line") {
                 const std::optional<detail::Rgb> c = colors.Color(f);
-                os << "<path d=\"" << d << "\" fill=\""
-                   << (c.has_value() ? svg_color_hex(*c) : rNanColor) << "\" />";
+                const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
+                // See the twin comment in svg_proj_write(): the inline style
+                // is what actually wins the CSS cascade; fill stays for
+                // inspection/tests.
+                os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
+                   << hex_color << "\" />";
             } else {
                 os << "<path d=\"" << d << "\" />";
             }

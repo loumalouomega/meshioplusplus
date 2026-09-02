@@ -23,7 +23,12 @@ def settings_env(tmp_path):
     mesh = copy.deepcopy(helpers.tet_mesh)
     mesh.point_data["temperature"] = np.linspace(0.0, 1.0, len(mesh.points))
     in_path = tmp_path / "in.vtu"
-    meshioplusplus.write(str(in_path), mesh)
+    # Uncompressed: the Python VTU shim's own default is "zlib", which its
+    # pure-Python fallback can always honour (the stdlib zlib module is
+    # unconditional) even when the C++ core is built without it -- so a
+    # zlib-less build's C++ pipeline engine could not read this fixture back.
+    # These tests are about pipeline operations, not codec support.
+    meshioplusplus.write(str(in_path), mesh, compression=None)
     return {
         "in": str(in_path),
         "out": str(tmp_path / "out.vtu"),
@@ -288,7 +293,9 @@ def test_remesh_pipeline_step(tmp_path):
         ],
     )
     in_path = tmp_path / "octa.vtu"
-    meshioplusplus.write(str(in_path), octa)
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    meshioplusplus.write(str(in_path), octa, compression=None)
     out_path = tmp_path / "out.vtu"
     settings = {
         "Version": 1,
@@ -371,7 +378,9 @@ def test_remesh_volume_pipeline_step(tmp_path):
         ],
     )
     in_path = tmp_path / "octa.vtu"
-    meshioplusplus.write(str(in_path), octa)
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    meshioplusplus.write(str(in_path), octa, compression=None)
     out_path = tmp_path / "out.vtu"
     settings = {
         "Version": 1,
