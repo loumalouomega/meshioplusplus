@@ -59,7 +59,11 @@ def write_svgs(out, names=None):
     written = []
     for name, text in render_all(names).items():
         path = out / f"{name}.svg"
-        path.write_text(text, encoding="utf-8", newline="\n")
+        # write_bytes rather than write_text(..., newline="\n") -- the latter
+        # needs Python 3.10+, and this project's floor is 3.9 -- and it sidesteps
+        # text-mode newline translation entirely, so the LF-only bytes the
+        # builder already emits reach disk unchanged on every platform.
+        path.write_bytes(text.encode("utf-8"))
         written.append(path)
     return written
 
