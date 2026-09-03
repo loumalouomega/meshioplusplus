@@ -38,6 +38,8 @@ ImportError: meshio++: to_pyvista: pyvista is not installed;
 
 ## Architecture: the pure payload layer
 
+![The pure payload layer under the thin lazily-imported wrappers for PyVista, trimesh, Arrow, pandas, polars, Blender and the device frameworks](/diagrams/interop_layers.svg)
+
 `src/python/meshioplusplus/_interop.py` is split exactly the way [`_viewer.py`](./viewer) is, and for the same reason. The bulk of it is a **pure payload layer** — `_to_vtk_payload`, `_to_triangles_payload`, `_to_table_payload` — which imports no third-party library at all, does not mutate its input, and returns plain numpy plus frozen dataclasses. The public `to_*` / `from_*` functions are thin wrappers over it.
 
 That split is what makes the genuinely subtle parts testable with none of the optional libraries installed: block-major cell indexing, which arrays are shared and which are copied, and the routing of non-triangle input through existing operations. `tests/python/test_interop.py` runs that half in every CI leg; the gated half runs in the dedicated `interop` job.

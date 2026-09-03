@@ -1,6 +1,6 @@
 # MCP server
 
-Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 40+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
+Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 43 mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
 
 ```bash
 pip install "meshioplusplus[mcp]"          # the mcp SDK needs Python >= 3.10
@@ -60,7 +60,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 
 ## Tools
 
-54 tools; the two marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
+57 tools; the three marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)
 

@@ -12,6 +12,8 @@ meshioplusplus.write("skin.vtu", skin)
 
 The [STL](./formats/stl.md) and [PLY](./formats/ply.md) writers call this automatically (by default) when handed a volume mesh, and the [SVG](./formats/svg.md)/[TikZ](./formats/tikz.md) writers use it to render 3D meshes.
 
+![Two hexahedra sharing a face: every face is keyed by its sorted corners, the shared key occurs twice and cancels, every other face is kept and wound outward](/diagrams/extract_skin_hashing.svg)
+
 ## Supported cell types
 
 | volume type | boundary faces |

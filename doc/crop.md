@@ -26,6 +26,8 @@ meshioplusplus.write("cropped.vtu", inside)
 
 ## Region and mode
 
+![The all-nodes and any-node crop rules on a box, beside slice, which returns the intersection one dimension lower instead of whole cells](/diagrams/slice_vs_crop.svg)
+
 | argument | meaning |
 |---|---|
 | `bbox` | `(xmin, ymin, zmin, xmax, ymax, zmax)` or `(lo3, hi3)` |

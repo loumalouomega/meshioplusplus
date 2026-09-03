@@ -2,7 +2,7 @@
 
 meshio++ uses its own canonical type names. Every format reader maps native element names to these; every writer maps them back.
 
-Node ordering follows the VTK convention where available. See the [meshio wiki](https://github.com/nschloe/meshio/wiki/Node-ordering-in-cells) for diagrams.
+Node ordering follows the VTK convention where available. The figures below are generated from the code's own topology tables (`_convert_cells._ELEVATE` for mid-edge nodes, `_skin._CELL_FACES` and `_refine_templates.QUAD_FACES` for face and body centres), so they cannot drift from what the readers, writers and operations actually assume; corner nodes are drawn solid, mid-edge nodes blue, face centres orange and the body centre violet. One convention is worth stating: `pyramid14` is `pyramid13` plus a base-centre node 13, the order every consumer in the core (`detail/cell_faces.hpp`, the CGNS table) uses, while the gmsh reader applies no permutation to gmsh's own edge-lexicographic type 14, a gap recorded in the [roadmap](./roadmap.md#9-format-completeness).
 
 ## 0-D
 
@@ -11,6 +11,8 @@ Node ordering follows the VTK convention where available. See the [meshio wiki](
 | `vertex` | 1 |
 
 ## 1-D (line elements)
+
+![Node ordering of vertex, line and line3](/diagrams/cell_types_line.svg)
 
 | Type | Nodes | Description |
 |------|-------|-------------|
@@ -29,6 +31,8 @@ Node ordering follows the VTK convention where available. See the [meshio wiki](
 
 ### Triangles
 
+![Node ordering of triangle and triangle6](/diagrams/cell_types_triangle.svg)
+
 | Type | Nodes |
 |------|-------|
 | `triangle` | 3 |
@@ -43,6 +47,8 @@ Node ordering follows the VTK convention where available. See the [meshio wiki](
 | `triangle66` | 66 |
 
 ### Quadrilaterals
+
+![Node ordering of quad, quad8 and quad9](/diagrams/cell_types_quad.svg)
 
 | Type | Nodes |
 |------|-------|
@@ -70,6 +76,8 @@ For `polygon` cells, all cells within a `CellBlock` must have the same number of
 
 ### Tetrahedra
 
+![Node ordering of tetra and tetra10](/diagrams/cell_types_tetra.svg)
+
 | Type | Nodes |
 |------|-------|
 | `tetra` | 4 |
@@ -84,6 +92,8 @@ For `polygon` cells, all cells within a `CellBlock` must have the same number of
 | `tetra286` | 286 |
 
 ### Hexahedra
+
+![Node ordering of hexahedron, hexahedron20, hexahedron24 and hexahedron27](/diagrams/cell_types_hexahedron.svg)
 
 | Type | Nodes |
 |------|-------|
@@ -102,6 +112,8 @@ For `polygon` cells, all cells within a `CellBlock` must have the same number of
 
 ### Wedges (prisms)
 
+![Node ordering of wedge, wedge15 and wedge18](/diagrams/cell_types_wedge.svg)
+
 | Type | Nodes |
 |------|-------|
 | `wedge` | 6 |
@@ -116,6 +128,8 @@ For `polygon` cells, all cells within a `CellBlock` must have the same number of
 | `wedge550` | 550 |
 
 ### Pyramids
+
+![Node ordering of pyramid, pyramid13 and pyramid14](/diagrams/cell_types_pyramid.svg)
 
 | Type | Nodes |
 |------|-------|

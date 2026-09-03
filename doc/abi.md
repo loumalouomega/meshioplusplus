@@ -14,6 +14,8 @@ This page covers `COMPONENTS CXX` only. The **C API is a different contract** an
 
 What matters is *what the change does*, not which file it lives in.
 
+![The decision flow from a changed installed header to Tier A, Tier B or Tier C, with the gate that catches each](/diagrams/abi_tiers.svg)
+
 ### Tier A — layout. Bump the ABI version.
 
 Anything that changes the shape of a type a consumer can name:
@@ -67,6 +69,8 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 7 | v10.1.0 | `RefineOptions` gained `mRecordHierarchy`, the persistent `refine:cell_id`/`refine:parent_id` parent/child hierarchy |
 | 8 | v10.11.0 | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
 | 9 | v10.12.0 | `RemeshOptions` gained `mMaxAnisotropy`, `RemeshMetric` gained `Anisotropic` |
+| 10 | v10.13.0 – v10.16.0 | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type when `Odt` was appended — a 4-byte → 1-byte narrowing of the enum, Tier A by this page's own rule, even though `sizeof(SmoothOptions)` did not move |
+| 11 | v10.17.0 – | `MeshMetadata` gained `mProvenance` and `mProvenanceRecognised` for provenance read-back (its pin moved 256 → 288) |
 
 It reaches consumers three ways:
 

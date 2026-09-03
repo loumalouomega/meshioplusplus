@@ -36,6 +36,8 @@ A 1-level block has exactly one face per cell, so `face_offsets` *is* the row-of
 The `NATIVE` mesh backend stores the same two arrays under the opposite names: its `mRowOffsets` is this page's `face_offsets`, and its `mFaceOffsets` is this page's `cell_offsets`. The CSR vocabulary above is what every *binding* uses; `native_mesh.hpp`'s field names are internal and predate it.
 :::
 
+![A two-level ragged block as the three CSR arrays cell_offsets, face_offsets and nodes, with the indexing of one face traced through them](/diagrams/polyhedra_csr.svg)
+
 ## Winding
 
 Faces **should** be wound so that the right-hand normal points *out* of the cell. That is what OpenFOAM's `polyMesh` gives on read, what VTK's type 42 asks for, and what meshio++ writes.

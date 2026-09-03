@@ -69,6 +69,8 @@ Cells that **cannot** be evaluated read NaN and increment `num_skipped` — the 
 
 ## Worked composition: curvature-driven refinement
 
+![A mesh coloured by the Frobenius norm of the Hessian of a scalar field, the curvature indicator a refinement predicate can consume](/images/hessian_curvature.png)
+
 `data_calc`'s `norm(...)` is a plain sum-of-squares-then-sqrt over however many components its argument has, so `norm(hessian_array)` on the 9-component output is exactly its **Frobenius norm** — a scalar curvature indicator with **zero new code**, ready for [`refine`](/refine)'s `--where` selector. No bespoke marking pass is needed here, unlike `estimate_error`'s ZZ-specific one: the composable pieces already exist and are more general.
 
 ```python

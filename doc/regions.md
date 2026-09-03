@@ -6,6 +6,8 @@ Before meshio++ 8.1 these lived only on the Python `Mesh`, as `point_sets` / `ce
 
 ## The model
 
+![Every format's group concept maps onto one Region of kind point, cell or side, whose cell entries are global block-major indices](/diagrams/regions.svg)
+
 ```python
 import meshioplusplus as mio
 
@@ -83,6 +85,10 @@ A gmsh dimension-0 physical group tags `vertex` *cells*, not points, so it becom
 Abaqus numbers element faces `S1`..`S6`, and that numbering is **not** meshio++'s. `C3D8`'s `S1` is the 1-2-3-4 face — local nodes `{0,1,2,3}` — which is meshio++'s face 4. The mapping is spelled out per type in both `abaqus.cpp` (`abq_face_index`) and `_abaqus.py` (`_ABAQUS_FACE_ORDER`), which are twins and must stay in step: getting it wrong yields a plausible-looking side set pointing at the wrong faces. Shell elements' `SPOS`/`SNEG` name a side rather than a facet and map to facet 0 and 1.
 
 ## How operations treat regions
+
+![A mesh with two named regions before cropping](/images/regions_before_crop.png)
+
+![The same mesh after cropping, its regions remapped onto the kept cells](/images/regions_after_crop.png)
 
 | Operations | Treatment |
 |---|---|

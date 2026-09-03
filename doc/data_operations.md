@@ -30,6 +30,8 @@ Every data operation follows one rule for `NaN` and `±inf`:
 
 ## Locations
 
+![Point data, cell data and field data beside the geometry they never modify, and the five data operations that act on them](/diagrams/data_locations.svg)
+
 Everywhere a location is named, these spellings are accepted:
 
 | Canonical | Aliases |
