@@ -9085,7 +9085,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Minor component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MINOR 21
 /// Patch component of the release version.
-#define MESHIOPLUSPLUS_VERSION_PATCH 0
+#define MESHIOPLUSPLUS_VERSION_PATCH 1
 
 /// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
 #define MESHIOPLUSPLUS_VERSION                                                   \
@@ -9093,7 +9093,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.21.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.21.1"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
