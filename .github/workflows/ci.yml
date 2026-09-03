@@ -34,6 +34,8 @@ jobs:
       # .svg and .ts sets are in step. See doc/icons/README.md.
       - name: Icons are current and well-formed
         run: node doc/icons/check-icons.mjs
+      - name: Diagrams are current, twinned and referenced
+        run: python doc/diagrams/gen_diagrams.py --check
       # Keeps MESHIOPLUSPLUS_ABI_VERSION honest: an installed header changed
       # since the last release tag, the ABI version did not, and doc/abi_reviews.md
       # records no additive review => red. Needs no build, hence the lint job.

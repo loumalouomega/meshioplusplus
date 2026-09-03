@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/loumalouomega/meshioplusplus"><img alt="meshio++" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/logo/logo-with-text.svg" width="60%"></a>
+  <a href="https://github.com/loumalouomega/meshioplusplus"><img alt="meshio++" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/logo/logo-with-text.svg" width="60%"></a>
   <p align="center">I/O for mesh files.</p>
 </p>
 
@@ -64,10 +64,16 @@ There are various mesh formats available for representing unstructured meshes. m
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`).
 
 <p align="center">
-  <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/logo/logo-icon-square.png" width="64">
+  <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/logo/logo-icon-square.png" width="64">
 </p>
 
-meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`, including a bring-your-own [Kokkos](https://kokkos.org) host backend). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/main/doc)).
+<p align="center">
+  <a href="https://loumalouomega.github.io/meshioplusplus/architecture"><img alt="meshio++ architecture: one C++ core holding the format registry, the operations layer and one of three mesh backends; the Python, C, Fortran, Julia, R, WebAssembly and C++ surfaces over it; and the CLIs, viewers, MCP server, Blender add-on, ParaView plugin and PhysicsNeMo adapter built on those" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/public/diagrams/architecture.svg" width="100%"></a>
+</p>
+
+One C++ core, six language surfaces, and the tools built on them; the [architecture page](https://loumalouomega.github.io/meshioplusplus/architecture) is the map, with every box linked to the page that owns it.
+
+meshio++ ships a **C++20 core** (built with pybind11 + scikit-build-core) that reads and writes most formats with zero-copy numpy at the I/O boundary, plus optional HDF5/netCDF acceleration and a **selectable parallel backend** (`AUTO` by default — prefers OpenMP, then STL+TBB, then sequential; override with `-DMESHIOPLUSPLUS_PARALLEL_BACKEND=...`, including a bring-your-own [Kokkos](https://kokkos.org) host backend). Every format has a pure-Python fallback, so behaviour and file compatibility are identical whether or not the native libraries are present. For a standalone C++ build use `build/configure.sh` (Linux/macOS) or `build/configure.bat` (Windows). Full docs (install, data model, per-format options, CLI) live at [the documentation site](https://loumalouomega.github.io/meshioplusplus/) (sources under [`doc/`](https://github.com/loumalouomega/meshioplusplus/tree/master/doc)).
 
 Install with
 
@@ -215,7 +221,7 @@ meshioplusplus.write(
 )
 ```
 
-<img alt="a bracket coloured by scaled Jacobian" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/public/images/color_by_quality.svg" width="85%">
+<img alt="a bracket coloured by scaled Jacobian" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/public/images/color_by_quality.svg" width="85%">
 
 *The bundled bracket coloured by element quality — the same figure `tools/gen_doc_images.py` regenerates.*
 
@@ -393,7 +399,7 @@ redone = meshioplusplus.refine(undone, cells=[12, 19], record_hierarchy=True, re
 **`meshioplusplus.decimate`** is `refine`'s inverse: it *reduces* a surface mesh's face count by greedy quadric-error-metric (Garland–Heckbert) edge collapse, preserving shape, boundaries and features. Exactly one stopping criterion is given — `ratio` (fraction of faces to keep), `target_faces`, or `max_error` — and the output is all-triangle (`quad`/`polygon` blocks are triangulated first, block structure kept 1:1). See `doc/decimate.md`.
 
 <p align="center">
-<img alt="a refined sphere before and after decimation to 25% of its faces" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/doc/public/images/decimate_before_after.png" width="85%">
+<img alt="a refined sphere before and after decimation to 25% of its faces" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/public/images/decimate_before_after.png" width="85%">
 </p>
 
 <!--pytest-codeblocks:skip-->
@@ -790,7 +796,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 45 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 57 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### Blender add-on
 
@@ -818,17 +824,17 @@ You can now open all meshio++-supported files in ParaView.
 
 ### Benchmarks
 
-How much does the C++ core help? The [`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/main/benchmark) folder times read/write conversions against the original pure-Python [meshio](https://github.com/nschloe/meshio) on the formats both support (same in-memory mesh, same machine). The headline input is the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k cells).
+How much does the C++ core help? The [`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/master/benchmark) folder times read/write conversions against the original pure-Python [meshio](https://github.com/nschloe/meshio) on the formats both support (same in-memory mesh, same machine). The headline input is the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/master/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k cells).
 
-<img alt="meshio vs meshio++ speedup on example.msh" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_speedup.svg" width="85%">
+<img alt="meshio vs meshio++ speedup on example.msh" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/benchmark/plots/benchmark_speedup.svg" width="85%">
 
 meshio++'s biggest wins are the parallel and text paths: **VTU binary+zlib ~16× write** (the zlib blocks run across cores via an OpenMP backend with dynamic scheduling — hybrid P+E-core CPUs load-balance too), **VTU ASCII ~7× write / ~5× read**, and mixed-topology **XDMF read ~10×**. The binary and HDF5 formats that used to be *slower* — VTK/Gmsh binary, UGRID, and MED — are now at or above parity after an optimisation pass (bulk-buffered binary I/O, single-instruction `bswap` endianness conversion, a real parallel backend, an Eigen-backed MED transpose, **zero-copy cell reconstruction** that moves the connectivity buffer straight into the mesh, and uninitialised reader buffers + thread-parallel block copies so nothing is written twice); binary **reads** now match or beat numpy's `fromfile` — Gmsh ~1.7×, single-type VTK ~1.45×, and even mixed-topology VTK ~1.1×. Output stays byte-identical throughout.
 
 The speedup is per-element: text/parallel formats climb out of the small-mesh regime and plateau (large meshes realise the full speedup):
 
-<img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/main/benchmark/plots/benchmark_scaling.svg" width="85%">
+<img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/benchmark/plots/benchmark_scaling.svg" width="85%">
 
-Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/01_benchmark.ipynb)).
+Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/master/benchmark/01_benchmark.ipynb)).
 
 ### Reading only what you need
 
@@ -889,7 +895,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.21.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

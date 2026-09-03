@@ -27,7 +27,7 @@ mp.isosurface(field, "sdf:distance", [0.0])             # contouring
 None of that needed a line of new code, and none of it would have been available from a dedicated grid type. Two alternatives were considered and rejected:
 
 - **`custom` cells** (for a future adaptive octree). `CellType::Custom` reports −1 nodes and −1 dimension, which makes the block invisible to `stats`, `quality`, `extract_surface`, `gradient` and `refine` and unwritable by most formats — forfeiting exactly the property that motivates the choice.
-- **A new `voxel` cell type.** VTK's type 11 is deliberately unmapped in this codebase; adding it would mean a row in all 42 format tables to buy an implicit node ordering nothing needs.
+- **A new `voxel` cell type.** VTK's type 11 is deliberately unmapped in this codebase; adding it would mean a row in all 43 format tables to buy an implicit node ordering nothing needs.
 
 ## Numbering
 

@@ -1,6 +1,6 @@
 # C++ API
 
-The full C++ core — `Mesh`, the [format registry](/formats), all [mesh operations](/operations) and [data operations](/data_operations), and the header-only [Kratos bridge](/cpp_backends#kratos) — installs as a normal CMake package with exported targets. It is the right entry point for a C++ consumer that wants more than the flat [C API](/c_api) can express: real `Mesh` objects, the operations layer, and `meshioplusplus::ModelPart`, none of which cross a C ABI.
+The full C++ core — `Mesh`, the [format registry](/formats), all [mesh operations](/architecture#the-operations-layer) and [data operations](/data_operations), and the header-only [Kratos bridge](/cpp_backends#kratos) — installs as a normal CMake package with exported targets. It is the right entry point for a C++ consumer that wants more than the flat [C API](/c_api) can express: real `Mesh` objects, the operations layer, and `meshioplusplus::ModelPart`, none of which cross a C ABI.
 
 ::: tip Which API do I want?
 Use the [C API](/c_api) if you are writing C or Fortran, want a stable ABI, or want the smallest possible dependency surface. Use this one if you are writing C++ and want the library's real types and operations.
@@ -226,7 +226,7 @@ endif()
 The conservative pin is still fully supported, and is the right choice if you would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 10.21.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a full *string* comparison against the package version, so `9.4 EXACT` does not match an installed `9.5.0` — it fails with "no configuration file … exactly matches requested version". (Through v9.1.0 this page printed the two-component form, which could never succeed.)

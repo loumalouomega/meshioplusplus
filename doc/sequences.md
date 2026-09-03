@@ -1,6 +1,6 @@
 # Sequences: multi-file and transient datasets
 
-Since v9.12.0 meshio++ can treat a **set of files** — or the steps inside one multi-step file — as one ordered logical dataset. That is how transient solver output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 41 formats have to express time, since only a minority carry several steps natively.
+Since v9.12.0 meshio++ can treat a **set of files** — or the steps inside one multi-step file — as one ordered logical dataset. That is how transient solver output actually arrives (`out_0000.vtu … out_0500.vtu`), and how most of the 43 formats have to express time, since only a minority carry several steps natively.
 
 ```bash
 # fan-in: N single-step files -> one multi-step XDMF (quote the glob!)
@@ -38,6 +38,8 @@ Everything here reads and writes through the existing format registry and runs o
 | 1 file, 1 step | yes | `sequence` with one entry |
 
 The mode is **inferred**. An explicit `Mode` (`"sequence"`, `"fan-in"`, `"fan-out"`) never *changes* the run: it **asserts** the inference and errors naming both on a mismatch. That is worth having because the inference depends on how many files a glob happened to match — a pattern matching exactly one file would otherwise quietly take the single-file path, and someone who wrote `"Mode": "fan-in"` wants that to fail.
+
+![Fan-in, fan-out and N-to-N sequences, and the multi-step-to-single-file case that is refused rather than truncated](/diagrams/sequences_shapes.svg)
 
 ## Ordering is natural-numeric
 
@@ -118,7 +120,7 @@ Two different questions, answered two different ways:
 
 **Writing** — can this format hold N steps? — has no file to probe, so it is a small owned predicate: **XDMF only**. The anti-drift mechanism is a test rather than the table: a gtest iterates every registered writer and asserts the predicate agrees with whether a real two-step fan-in to that format actually succeeds, so a format that grows a series writer without updating the predicate turns CI red naming itself.
 
-**Fan-out is the answer for everything else**, which is most of the 42 formats.
+**Fan-out is the answer for everything else**, which is most of the 43 formats.
 
 ## Never a silent truncation
 

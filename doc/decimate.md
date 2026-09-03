@@ -25,6 +25,8 @@ meshioplusplus decimate scan.stl coarse.stl --ratio 0.25
 meshioplusplus decimate scan.stl coarse.stl --target-faces 5000 --placement midpoint
 ```
 
+![A refined sphere before and after decimation to a quarter of its faces](/images/decimate_before_after.png)
+
 ## The algorithm in a paragraph
 
 Every vertex accumulates a 4×4 symmetric **quadric**: the sum, over its incident triangles, of the squared-distance-to-plane form of each triangle's plane, weighted by area (Garland & Heckbert, SIGGRAPH '97). Collapsing an edge merges its two endpoints into one surviving vertex whose *error* is the summed endpoint quadric evaluated at the surviving position — geometrically, the weighted squared distance to all the planes the two vertices have ever represented. The cheapest edge is collapsed, its quadrics are summed onto the survivor, the survivor's edges are re-scored, and the loop repeats until the stopping criterion is met. Cheap collapses are the ones that don't change the shape; expensive ones are at corners and creases — so error-ordered greedy collapse removes detail exactly where the surface is flat.

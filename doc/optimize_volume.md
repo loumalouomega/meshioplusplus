@@ -18,6 +18,8 @@ Criterion 2 is Freitag & Ollivier-Gooch's local-mesh-improvement-by-swapping rul
 
 A **2-3 flip** replaces the two tets sharing an interior triangular face with three tets around the edge joining their two apexes; a **3-2 flip** is its inverse (three tets around an interior edge become two capping the ring). The relocation half is delegated verbatim to `smooth`'s `method="odt"`, reusing all of its boundary/feature/frozen pinning and inversion guard.
 
+![A 2-3 flip replaces two tetrahedra sharing a face with three around the new edge between their apexes, and the 3-2 flip is its inverse](/diagrams/flips_23_32.svg)
+
 ## Boundary is invariant
 
 A 2-3 flip acts only on an *interior* face (shared by two tets) and a 3-2 flip only on an *interior* edge (all its incident faces interior), so neither ever touches a boundary face. Combined with `preserve_boundary` pinning boundary vertices during relocation, the output's boundary surface is **byte-identical** to the input's: watertight in ⇒ watertight out, with none of the coincident-edge risk `remesh_volume`'s surface warp carries.

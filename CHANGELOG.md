@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.21.1 (2026-09-03)
+
+Documentation only: a generated SVG/PNG diagram pipeline (`doc/diagrams/`, 30 figures deriving their cell-type node orderings from the code's own topology tables rather than transcribing them), a rewritten `doc/roadmap.md`, a new `doc/architecture.md` overview page, a themed sidebar, and several stale-count and broken-link fixes (`README.md`'s image URLs pointed at a nonexistent `main` branch). No API, format or operation changes; the version moves only because the `Written by meshio++ v<version>` provenance comment is baked into `tests/python/test_io_baseline.py`'s pinned writer-output hashes.
+
 ## v10.21.0 (2026-09-02)
 
 Adds a **Blender add-on**, closing the first bullet of roadmap section 3 ("Ecosystem reach"). Blender ships Python and reads almost no FEA formats — STL, OBJ, PLY and essentially nothing else; all 43 of meshio++'s are now available under `File > Import`. See `doc/blender.md`.

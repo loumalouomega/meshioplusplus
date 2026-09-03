@@ -121,4 +121,4 @@ The same C++ core also compiles to WebAssembly for use in the browser or Node.js
 node tests/wasm/smoke.mjs
 ```
 
-See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (27 of the 35+ formats — the HDF5/netCDF-backed ones are not yet ported to WASM), and known v1 limitations.
+See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (all 43 formats, the HDF5- and netCDF-backed ones included since v8.0.0), and known limitations.

@@ -1,13 +1,29 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.21.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
+Status at time of writing: **v10.21.0** — 43 readable and 46 writable formats, 34 mesh operations and 5 data operations, six language surfaces (Python / C / Fortran / Julia / R / WebAssembly), two viewers plus a browser dataset manager, a Blender add-on, a ParaView reader plugin, an MCP server with 57 tools, a settings-driven pipeline engine with a transient sequence driver, a dataset-manifest layer with a PhysicsNeMo adapter, provenance in written files, and a versioned C++ ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
 
-This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
+This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly, and when a change closes or narrows an item the entry moves to the [recently closed](#recently-closed) table in the same change.
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
----
+## The map
 
+![The roadmap at a glance: open items grouped by theme, shaded by effort, with dependency arrows and the items that need a design pass or a research spike first](/diagrams/roadmap_map.svg)
+
+| Section | Open items | Effort | Depends on | Posture |
+| --- | --- | --- | --- | --- |
+| [§1 Dataset dashboard and training](#1-dataset-dashboard-and-training-integration) | 12 | S–L | a server-side companion process for anything that trains | proceed on the client-side pieces; design pass first for training |
+| [§2 Scale](#2-scale) | 3 | S–XL | the benchmark tier decides whether the other two matter | benchmark first |
+| [§3 Ecosystem reach](#3-ecosystem-reach) | 2 | M | nothing technical; registration is logistics | proceed |
+| [§4 Quality of implementation](#4-quality-of-implementation) | 3 | M | nothing | proceed, in parallel with everything |
+| [§5 NURBS and higher-order geometry](#5-nurbs-and-higher-order-geometry-long-run) | 3 | M–XL | the spike's findings | research spike first |
+| [§6 Mesh generation](#6-mesh-generation) | 4 | S–L | primitives before extrude, extrude before revolve | proceed, primitives first |
+| [§7 CLI chatbot](#7-cli-chatbot--conversational-assistant-mcp-driven) | 1 | S–M | the existing MCP tool registry | proceed whenever wanted |
+| [§8 Binding-surface parity](#8-binding-surface-parity) | 2 | S–M | nothing | proceed |
+| [§9 Format completeness](#9-format-completeness) | 5 | S–M | nothing | proceed |
+| [§10 Follow-ups recorded elsewhere](#10-follow-ups-recorded-in-other-pages) | 6 | S–M | see each host page | pointers only |
+
+---
 
 ## 1. Dataset dashboard and training integration
 
@@ -24,18 +40,18 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 - **Dataset health summaries** — per-dataset checks on the card/drill-down: split balance, fields missing across entries, degenerate/inverted-cell counts (reusing `compute_quality`) — so a bad dataset is visible before a run wastes GPU time on it. **S**
 - **Manifest diffing/versioning** — manifests are hand-editable JSON (`doc/datasets.md`); a lightweight diff view between two versions of the same file (or two git revisions of it) would make manual edits auditable. **S**
 - **Run-completion notifications** — a browser notification, or a webhook the companion process posts to, when a launched run finishes or fails, so the dashboard need not stay the active tab. **S**
-- **Visual/UX design pass** — once the layout above is functional, loop it through Claude Design (Claude in a design-iteration capacity — layout, spacing, colour, motion) rather than shipping the first working arrangement as the final one; the rest of the viewer already has a deliberate icon set and colour system (`doc/icons/`, the `dataviz` skill's palette) and this should read as one piece with it, not a bolted-on admin panel. **S**
+- **Visual/UX design pass** — once the layout above is functional, loop it through a design-iteration pass (layout, spacing, colour, motion) rather than shipping the first working arrangement as the final one; the rest of the viewer already has a deliberate icon set and colour system (`doc/icons/`, the palette `doc/diagrams/` also uses) and this should read as one piece with it, not a bolted-on admin panel. **S**
 
-*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§5) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
+*Recommended posture: the dashboard/drill-down/health-summary items are ordinary viewer work and can proceed independently and incrementally. Training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§5) is scoped before its own implementation.*
 
 ---
 
 ## 2. Scale
 
-The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
+The benchmark is a ~52k-node bracket (293k cells; the backend benchmark's largest input is 257k tetrahedra); nothing addresses meshes that do not fit in RAM.
 
 - **A large-mesh benchmark tier** (10M+ cells) — cheap, and it would show whether the parallel paths actually hold. Do this before the two below, since it decides whether they matter. **S**
-- **Streaming / chunked writes**, the counterpart to the selective-read work. **L**
+- **Streaming / chunked writes of one mesh**, the counterpart to the selective-read work. The [sequence layer](./sequences.md) already streams at *file* granularity — a fan-in, fan-out or per-step run keeps at most one mesh alive, and that invariant is pinned by a test — but nothing streams the cells of a single mesh that does not fit in memory, and every writer takes a whole `Mesh`. **L**
 - **Out-of-core operations** for the ops that are already block-local. **XL**
 
 ---
@@ -43,15 +59,13 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 ## 3. Ecosystem reach
 
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
-- **Registration and distribution** — conda-forge, CRAN, Julia General, the Blender Extensions Platform, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. The Blender extension zips are built and attached to every `v*` release (see `doc/blender.md`), so only the *listing* remains there. **M**
-
-*The Blender add-on shipped in v10.21.0 and has been removed from this section: `src/python/meshioplusplus/_blender.py` (the pure payload layer plus `to_blender`/`from_blender`), the 4.2+ extension in `src/blender/`, and per-platform zips on every release. See [`doc/blender.md`](blender.md).*
+- **Registration and distribution** — conda-forge, CRAN, Julia General (plus a JLL for the binary), the Blender Extensions Platform listing, and a listed ParaView plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. The artefacts themselves exist: the Blender extension zips are attached to every `v*` release (`doc/blender.md`), and the ParaView reader plugin ships as `tools/paraview-meshioplusplus-plugin.py` with its own [install page](./paraview_plugin.md), so what remains on each is the *listing*, not the code. Spack recipes are already upstream. **M**
 
 ---
 
 ## 4. Quality of implementation
 
-- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
+- **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 43 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
 - **Property-based testing** (Hypothesis) over the invariants already articulated in the docs: partition-of-unity, volume conservation, conformity, byte-identical determinism. **M**
 
@@ -72,9 +86,9 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ## 6. Mesh generation
 
-**The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer — **partly closed as a side effect of `remesh_volume`'s own delivery** (v10.13.0), which accepts a closed surface directly and generates a genuinely new tetrahedral volume mesh (isosurface stuffing over a BCC lattice) rather than transforming the input's own cells; a surface-in/volume-out capability this section previously lacked entirely. It does not close any bullet below, though: no primitive constructors, no extrude/revolve, and no 2D output (it is a 3D volume mesher, not a 2D triangulator) — those gaps stand as stated.
+**The gap.** Every operation transforms a mesh you already have; almost nothing creates one. Two generators exist and neither closes a bullet below: [`grid`](./voxelize.md) (v9.24.0) builds a regular hexahedron lattice from nothing and ships across Python, C++, C, Fortran, Julia, R, WebAssembly and the MCP server, and [`remesh_volume`](./remesh_volume.md) (v10.13.0) accepts a closed surface and generates a genuinely new tetrahedral volume mesh by isosurface stuffing. There are still no primitive constructors, no extrude/revolve, and no 2-D triangulator.
 
-- **Primitive constructors** — `box`, `sphere`, `cylinder`, `disk`. (`grid(nx,ny,nz)` shipped in v9.24.0 as part of the signed-distance work, over the same `detail/grid_lattice.hpp`; the rest follow the same shape.) Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
+- **Primitive constructors** — `box`, `sphere`, `cylinder`, `disk`, over the same `detail/grid_lattice.hpp` shape `grid` established. Trivial, dependency-free, and it removes the fixture-file dependency from tests, docs, notebooks, the browser demo and the MCP server. Highest leverage per line of code in this document. **S**
 - **`extrude`** — 2D → 3D sweep (triangle→wedge, quad→hexahedron), `nlayers`, per-layer offsets. The most-requested generation primitive; repeatedly deferred. **M**
 - **`revolve`** — extrude's rotational sibling, sweeping around an axis. **M**
 - **Delaunay / constrained 2D meshing** — genuinely useful, but robust geometric predicates are where dependency-free stops paying. Better as an optional Triangle or Gmsh backend, following the KaHIP pattern. **L**
@@ -85,26 +99,77 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 **The gap.** The MCP server (`src/python/meshioplusplus/mcp/`, `doc/mcp.md`) exposes the whole Python surface to an AI *agent* — but only to one already speaking MCP over stdio (Claude Desktop, an IDE, a custom host). There is no way to have a natural-language conversation about a mesh **from the terminal itself**: a user with an LLM API key on hand cannot ask `meshioplusplus` "why does this file fail to convert" or "clean this mesh and tell me what changed" and get a tool-calling assistant that drives the existing operations for them. Every other surface (Python API, CLI verbs, MCP tools) is imperative-only; this is the one conversational entry point missing.
 
-- **Minimal REPL verb**: a `meshioplusplus chat` command (Python CLI only, `_cli/_chat.py`, alongside `data`/`dataset` as a third nested concern) that starts a terminal chat loop. Gated cleanly on an LLM API key being present (`ANTHROPIC_API_KEY` first-class, matching the `claude-api` skill's model; provider-agnostic wiring behind the same interface is a stretch goal, not a v1 requirement) — absent, it fails by name (`pip install meshioplusplus[chat]` / "set ANTHROPIC_API_KEY"), the `meshioplusplus-mcp` entry-point precedent, never a bare traceback. **S–M**
-- **Reuse, not reimplementation**: the assistant's tool-calling loop drives `mcp/_tools.py`'s existing `TOOL_REGISTRY` directly (in-process, no stdio round trip needed for a same-process CLI) — never a second copy of the tool dispatch, sandbox (`_resolve`), or `_json_safe` result-sanitizing logic MCP already owns. A new tool added to `TOOL_REGISTRY` is automatically available to the chatbot for free, the same parity guarantee `test_every_operation_has_a_tool` already gives the MCP surface. **M** (mostly wiring an agentic loop over an existing, stable tool registry — see the `claude-api` skill for the Messages API tool-use shape)
+- **Minimal REPL verb**: a `meshioplusplus chat` command (Python CLI only, `_cli/_chat.py`, alongside `data`/`dataset` as a third nested concern) that starts a terminal chat loop. Gated cleanly on an LLM API key being present (`ANTHROPIC_API_KEY` first-class; provider-agnostic wiring behind the same interface is a stretch goal, not a v1 requirement) — absent, it fails by name (`pip install meshioplusplus[chat]` / "set ANTHROPIC_API_KEY"), the `meshioplusplus-mcp` entry-point precedent, never a bare traceback. **S–M**
+- **Reuse, not reimplementation**: the assistant's tool-calling loop drives `mcp/_tools.py`'s existing `TOOL_REGISTRY` directly (in-process, no stdio round trip needed for a same-process CLI) — never a second copy of the tool dispatch, sandbox (`_resolve`), or `_json_safe` result-sanitizing logic MCP already owns. A new tool added to `TOOL_REGISTRY` is automatically available to the chatbot for free, the same parity guarantee `test_every_operation_has_a_tool` already gives the MCP surface. **M** (mostly wiring an agentic loop over an existing, stable tool registry)
 - **Scope for v1**: a stateless-per-turn loop (send message + conversation history + tool schemas from `TOOL_REGISTRY`, execute any tool calls the model requests, feed results back, repeat until a plain-text reply) operating on files under the CWD or an explicit `--root`, mirroring the MCP server's own path sandbox rather than inventing a second one. Multi-turn context lives only in the terminal session; no persistence, no server. **S**
 - **New optional extra**: `chat = ["anthropic>=0.40,<1"]` (the SDK, not a hard dependency of `meshioplusplus` itself — the `mcp` extra's precedent), kept out of `[all]`. `_tools.py` stays untouched (no SDK import); only the new `_cli/_chat.py` / a `mcp/_chat.py` module imports it, so the default CI matrix and every other surface are unaffected. **S**
-- **Docs**: a `doc/chat.md` page (modelled on `doc/mcp.md`) and a CLAUDE.md entry once shipped, per the "Keeping docs in sync" rule at the top of this file.
+- **Docs**: a `doc/chat.md` page (modelled on `doc/mcp.md`) and a CLAUDE.md entry once shipped, per the "Keeping docs in sync" rule.
 
 *Recommended posture: this is a thin client over work that already exists (the MCP tool registry) rather than new mesh functionality — the honest estimate for a usable v1 is small (S–M), with provider-agnostic support and a persisted chat history as documented follow-ups rather than v1 requirements.*
 
 ---
 
+## 8. Binding-surface parity
+
+**The gap.** Every operation is meant to reach every surface, and almost all do. The exceptions are recorded per page as "documented gaps"; gathering them here is what makes them visible as work rather than as footnotes.
+
+- **`decimate_volume` on the flat surfaces** — it shipped in v10.6.0 on Python, C++, the C API, both CLIs, the pipeline and MCP, with the Fortran, Julia, R and WebAssembly bindings recorded as a follow-up that has not landed (no `decimate_volume` symbol exists under `bindings/fortran`, `bindings/julia`, `bindings/r` or `bindings/wasm`). Each is a transcription of the existing `decimate` binding with the tet-flavoured counters. **S** per surface
+- **The documented flat-ABI gaps** — each deferred because the C ABI cannot carry the shape cheaply, and each closable with a small additive entry point: the `frozen` node mask on `smooth`, `decimate`, `decimate_volume` and `optimize_volume` (S); named `point_sets`/`cell_sets` in `diff`, `merge` and `split`, which today only the Python shim compares and remaps (M); the combined `data_manage` call (the three primitives exist) (S); per-cell-type counts in `mio_stats` (S); the SVG/TikZ colouring parameters, which the registry's `(path, mesh)` writer lambdas cannot carry (S); the `MedInfo`/`ExodusInfo`/`GmshInfo` side channels the registry drops (M); R's data setters always writing `Float64`, which is what stops `mio_split(by = "region")` on a tag built in R (S); a structured pipeline report over the C ABI instead of JSON text (S); and a native-CLI `data export` (Parquet is written through pyarrow, so this needs an Arrow writer or a documented "Python only") (S–M).
+
+---
+
+## 9. Format completeness
+
+**The gap.** A format is "supported" when it reads and writes; several still lose a specific construct on one side, and the losses are recorded in tests so they cannot be forgotten.
+
+- **Exodus writer** — the reader maps element blocks, node sets and side sets to regions, but the writer emits neither node sets nor side sets, so exodus is a region *source* and not a round-trip target (`tests/python/test_region_roundtrip.py`, `READ_ONLY_REGIONS`); and there is no multi-step Exodus writer, which is a stateful object of `XdmfTimeSeriesWriter`'s shape rather than a `(path, mesh)` writer. **M** each
+- **Regions, Phase 2** — UNV groups and Ansys components (absorbing `UnvInfo`/`AnsysInfo`), OpenFOAM boundary patches (face groups, so side regions), XDMF sets and a VTU convention are the formats whose native group concept still does not map onto `Region` (`PHASE_2` in the same test file; see [regions](./regions.md#the-format-matrix)). **M**
+- **A MED metadata reader** — `read_metadata` on a MED file is a full read that still reports one time step, so MED is invisible to the [sequence layer](./sequences.md)'s step probing even though its reader honours `time_step`; a `read_med_metadata` filling `mTimeValues` closes that for free. **S**
+- **Gmsh in the C++ reader** — `$Periodic` still throws (the Python shim falls back, every other surface cannot), format 4.0 declines, and gmsh's 14-node pyramid is passed through in gmsh's edge-lexicographic order while every consumer in the core (`detail/cell_faces.hpp`, the CGNS table) treats `pyramid14` as `pyramid13` plus a base-centre node — the permutation the reader applies to `pyramid13` is missing for type 14, in both the C++ and the Python readers. **M**
+- **Provenance assumption notes** — two sites are wired as the reference pattern (`warn_regions_dropped`, the OFF cell-type skip); the sweep over the remaining `warn()` calls that are genuine conversion assumptions, each checked rather than transcribed, is the open half of [provenance](./provenance.md). **M**
+
+---
+
+## 10. Follow-ups recorded in other pages
+
+Items that a page already owns in detail are listed here as pointers only; the host page states the constraints and the reasoning, and this table exists so the roadmap stays a complete list.
+
+| Host page | Item | Effort |
+| --- | --- | --- |
+| [pipeline](./pipeline.md#follow-ups-recorded-not-implemented) | multi-mesh steps (`Inputs:` and `Output.Pattern`), a structured report accessor on the C ABI, Conan/vcpkg shipping the JSON parser | S–M |
+| [GPU handoff](./gpu.md#phase-2-reading-directly-into-pinned-memory) | the `pinned_reads()` context manager and `to_cupy(pinned=True)` fast path over the C++ buffer-allocator hook that already ships | S |
+| [interoperability](./interop.md#phase-2-open3d-and-dolfinx) | Open3D and DOLFINx targets, whose constraints (a copying API and a 400 MB wheel; a single cell type, MPI and a basix permutation) are recorded there | M |
+| [Julia](./julia.md) | registration in the General registry and a JLL for the binary | S |
+| [MCP server](./mcp.md) | the SDK is pinned below 2.0 because 2.0 removed `mcp.server.fastmcp`; porting `_server.py` to the 2.x API is a separate piece of work | S |
+| [WebAssembly](./wasm.md) | `Parallel` in a sequence document is accepted and ignored with a warning there, since a wasm module has no process pool | S |
+
+---
+
+## Recently closed
+
+Shipped items leave the sections above and land here, so the list stays an accurate "not built" list without losing the history of what closed and when.
+
+| Version | What closed | Where |
+| --- | --- | --- |
+| v10.21.0 | The Blender add-on: `to_blender`/`from_blender`, the 4.2+ extension, per-platform zips on every release | [blender](./blender.md) |
+| v10.18.0 – v10.20.0 | GiD postprocess: all three write flavours, the hand-rolled reader, Gauss points, `ResultGroup`, multi-step series, and `gid` in every release binary and wheel via a vendored static zlib | [gid](./formats/gid.md) |
+| v10.15.0 – v10.17.0 | Provenance in written files: one engine-identical credit line, the opt-in record (source, operations, assumptions, timestamp), read-back through `read_metadata`, and the Fortran/Julia/R/WASM bindings | [provenance](./provenance.md) |
+| v10.10.0 – v10.14.0 | Remeshing: `remesh` (isotropic, quadric and anisotropic metrics, curvature gradation, boundaries), `remesh_volume` (isosurface stuffing), ODT smoothing and `optimize_volume` (flips) | [remesh](./remesh.md), [remesh_volume](./remesh_volume.md), [optimize_volume](./optimize_volume.md) |
+| v10.8.0 – v10.9.0 | Field integration (`data_integrate`) and second derivatives (`hessian`) | [field integration](./field_integration.md), [hessian](./hessian.md) |
+| v10.2.0 – v10.6.0 | Error estimation (`estimate_error`), polyhedral refinement (`subdivide`) and coarsening (`agglomerate`), green-element undo (`undo_green`), volume decimation (`decimate_volume`) | [error](./error.md), [subdivide](./subdivide.md), [agglomerate](./agglomerate.md), [undo_green](./undo_green.md), [decimate_volume](./decimate_volume.md) |
+| v9.28.0 – v9.30.0 | PhysicsNeMo: the adapter, dataset manifests, the browser dataset manager, t→t+1 pairing, the `physicsnemo.mesh.Mesh` bridge | [physicsnemo](./physicsnemo.md), [datasets](./datasets.md) |
+| v9.24.0 – v9.25.0 | `grid`, `voxelize`, signed distance (`compute_sdf`, the octree), the `.vti` format, `crop_predicate` | [voxelize](./voxelize.md), [sdf](./sdf.md) |
+
+---
+
 ## Suggested sequencing
 
-1. **Remeshing — shipped in full**, removed from this document entirely: v10.10.0 (`remesh`, a clean-room isotropic clustering engine derived from the MIT `pyvista/pyacvd` plus an original `metric="quadric"` synthesis over meshio++'s own pre-existing Garland-Heckbert quadric machinery, across every binding surface in one release); v10.11.0 (curvature gradation via a new osculating-paraboloid vertex-curvature estimator, plus boundary pinning/dual-edge insertion and separately-reported non-manifold-vertex detection, both extending `remesh` and its full binding surface); v10.12.0 (`metric="anisotropic"`, packing a curvature tensor into the existing quadric accumulator, closing the section's L estimate faster than expected once gradation had already supplied the curvature machinery it needed — `MESHIOPLUSPLUS_ABI_VERSION` 8→9); v10.13.0 (`remesh_volume`, isosurface stuffing over a BCC lattice, closing the volumetric bullet's *capability* by a predicate-free algorithm rather than the literal Delaunay/CVD method named, plus `SmoothMethod::Odt` closing its "ODT" half's *smoothing* piece on fixed connectivity — `MESHIOPLUSPLUS_ABI_VERSION` 9→10, not because either operation's own new option/result struct needed it, but because `SmoothMethod` gaining an explicit `: std::uint8_t` underlying type for the first time is itself a Tier A layout change under `doc/abi.md`'s own rule); v10.14.0 (`optimize_volume`, closing the "ODT" bullet's *remeshing* piece — predicate-free 2-3/3-2 topological flips alternated with the ODT vertex relocation, genuinely changing connectivity, Tier C additive with no ABI bump, full binding surface in one release). See `doc/remesh.md`, `doc/remesh_volume.md` and `doc/optimize_volume.md`.
-2. **Provenance in written files** — shipped in full and removed from this document: v10.15.0 (the audit-and-normalize bullet — one canonical, engine-identical credit line, plus the per-format comment-syntax table in `doc/formats.md#provenance`), v10.16.0 (the opt-in record — source/target, operation chain, conversion assumptions, timestamp, over a thread-local scope with a Python↔C++ bridge, and the `mio_provenance_*` C ABI), v10.17.0 (read-back through `read_metadata`/`info`, plus the Fortran/Julia/R/WASM bindings — `MESHIOPLUSPLUS_ABI_VERSION` 10→11, since `MeshMetadata` grew two fields). Widening conversion-assumption coverage past the wired formats is a documented follow-up in `doc/provenance.md`, not a roadmap gap. See `doc/provenance.md`.
-3. **GiD postprocess — shipped in full and removed from this document**: v10.18.0 (vendoring, build integration, all three write flavours, extension dispatch, every registry-driven surface), v10.19.0 (the hand-rolled reader, all three flavours, plus two upstream gidpost HDF5 bug fixes its own test suite surfaced; the `hexahedron20` node-order conflict against CIMNE's own documentation resolved in Kratos's favour; `hexahedron27`/`wedge15`/`pyramid13` added by deriving their orderings from Kratos's own geometry classes; all nine `GiD_ResultType`s, including `Matrix`/`Complex*`, via a `field_data` declaration; arbitrary Gauss points per element; `ResultGroup` reading; the `ascii_zipped` write mode; and multi-step series in both directions, including `Group`/`OnGroup` re-meshing), and v10.20.0 (the release CLI binaries and every published wheel gained `gid` write support via a `FetchContent`-vendored static zlib, `MESHIOPLUSPLUS_ZLIB_STATIC`, closing the section's last item). See `doc/formats/gid.md`.
-4. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
-5. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
-6. **Remaining refinement and coarsening gaps** — shipped in full and removed from this document: v10.2.0 (error-estimator helpers — `estimate_error`), v10.3.0 (polyhedral refinement — `subdivide`), v10.4.0 (polyhedral coarsening — `agglomerate`), v10.5.0 (green-element undo — `undo_green`), v10.6.0 (volume decimation — `decimate_volume`, the section's last open item). See `doc/error.md`, `doc/subdivide.md`, `doc/agglomerate.md`, `doc/undo_green.md` and `doc/decimate_volume.md`.
-7. **Field capability beyond derivatives** — shipped in full and removed from this document: v10.8.0 (field integration — `data_integrate`, a cell-measure-weighted total/mean over cells, whole-mesh and per named Cell region), v10.9.0 (second derivatives — `hessian`, a composition of two `gradient` calls, exact for a linear field everywhere and for a quadratic field away from a structured mesh's own boundary, closing the section's last open item). See `doc/field_integration.md` and `doc/hessian.md`.
-8. **Fuzzing (§4)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-9. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
-10. **Dataset dashboard (§1)** — the non-training pieces (multi-dataset overview, drill-down, health summaries, diffing) can proceed any time; training launch/monitoring waits on its own design pass (server-side companion process) before implementation.
-11. **CLI chatbot (§7)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.
+1. **Primitive constructors (§6)** — a few days, and it improves testing, docs and every demo surface at once.
+2. **The large-mesh benchmark tier (§2)** — cheap, and it decides whether streaming and out-of-core work matter.
+3. **Fuzzing (§4)** — start in parallel with everything else; it is not a feature and does not compete for the same attention.
+4. **Binding parity (§8)** — small, mechanical, any time; the `decimate_volume` bindings first, since they are the only operation missing from a surface outright.
+5. **Format follow-ups (§9)** — the MED metadata reader and the gmsh `pyramid14` permutation are days each; the Exodus writer and Phase-2 regions are the real work.
+6. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest; no implementation until it reports.
+7. **Dataset dashboard (§1)** — the non-training pieces can proceed any time; training launch and monitoring wait on their own design pass for the server-side companion process.
+8. **CLI chatbot (§7)** — small and self-contained; can proceed whenever a maintainer wants it.
+9. **Rust bindings and the registrations (§3)** — logistics, scheduled around releases rather than features.

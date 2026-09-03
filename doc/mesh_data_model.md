@@ -2,6 +2,8 @@
 
 ## Mesh
 
+![A Mesh holds points, a list of cell blocks, point data aligned to the points, cell data as one array per block, field data and named regions](/diagrams/mesh_data_model.svg)
+
 `meshioplusplus.Mesh` is the central object. All format readers produce one; all writers consume one.
 
 ```python

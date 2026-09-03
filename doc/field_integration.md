@@ -24,6 +24,8 @@ It is still reachable as `meshioplusplus data integrate` in both CLIs, because t
 
 ## What it computes
 
+![Per-region totals of a cell field, weighted by cell measure](/images/data_integrate_totals.png)
+
 For each requested array and each component `k`:
 
 ```

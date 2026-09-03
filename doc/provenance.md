@@ -42,6 +42,8 @@ The roadmap bullets, read together, ask for two things that cannot both hold.
 
 ## Where the record lives
 
+![The write paths that reach registry_write_ex, Python's own path and WASM's all end in the per-format writer, which reads the thread-local provenance scope](/diagrams/provenance_write_paths.svg)
+
 The roadmap names two candidate homes and reconnaissance ruled out the more obvious one.
 
 `registry_write_ex` — `write_options.hpp`'s documented "single owner of write-this-format-with-these-parameters" — is reached by only **four** of the write paths in this library: the native CLI, `mio_write_ex`, the settings pipeline, and the sequence driver. Python's own path (`_helpers.write` → the per-format shim → `_core.<fmt>_write` → the format's free function) never touches it; neither does the WASM path (`registry_writers()`'s raw lambdas) nor plain `mio_write`. A record grown onto `WriteOptions` would therefore be invisible from the primary user surface — the one most callers actually use. It is also structurally the wrong shape: growing `WriteOptions` is a **Tier A** ABI change (it is pinned at 48 bytes in `tests/cpp/test_abi_layout.cpp`), and the C mirror `mio_write_opts` only preserves `sizeof` across an appended field where `sizeof(void*) == 8` — the exact hazard the roadmap bullet already flagged.
@@ -65,7 +67,7 @@ with _provenance.scope(_provenance.Mode.BEST_EFFORT):
 
 ### The Python ↔ C++ bridge
 
-Python's `_provenance.scope` does not only manage a Python-side stack — when the compiled extension is present, opening it **also** pushes a matching `ProvenanceScope` on the C++ side (`bindings/python/_core.cpp`'s `provenance_scope_push`/`_pop`), and every `note()`/`set_source()`/`set_target()`/`add_operation()` call mirrors into both. Without this, a scope opened from Python would be invisible to the ~40 of 44 formats whose write goes through the compiled C++ writer, and the feature would silently do nothing for the surface most callers use. `lines()` — what the pure-Python fallback writers call to render — reads back through the same bridge, so a Python writer running under a scope agrees with a C++ writer byte for byte: one rendering engine, not two independently-maintained ones. The bridge degrades to a pure-Python thread-local stack when the extension is absent, the same fallback posture every other part of this library takes.
+Python's `_provenance.scope` does not only manage a Python-side stack — when the compiled extension is present, opening it **also** pushes a matching `ProvenanceScope` on the C++ side (`bindings/python/_core.cpp`'s `provenance_scope_push`/`_pop`), and every `note()`/`set_source()`/`set_target()`/`add_operation()` call mirrors into both. Without this, a scope opened from Python would be invisible to the ~40 of the 46 writable formats whose write goes through the compiled C++ writer, and the feature would silently do nothing for the surface most callers use. `lines()` — what the pure-Python fallback writers call to render — reads back through the same bridge, so a Python writer running under a scope agrees with a C++ writer byte for byte: one rendering engine, not two independently-maintained ones. The bridge degrades to a pure-Python thread-local stack when the extension is absent, the same fallback posture every other part of this library takes.
 
 ## What the record contains
 

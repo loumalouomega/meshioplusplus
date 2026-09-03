@@ -32,6 +32,8 @@ The install error names this recipe rather than a pip extra. Two predicates answ
 
 ## Architecture: the pure payload layer
 
+![The same pure payload layer serves the device wrappers, where a host-to-device move is always one bus transfer](/diagrams/interop_layers.svg)
+
 `_gpu.py` is split exactly the way [`_interop.py`](./interop) is: the bulk is the pure builder `_to_device_payload`, which imports no third-party library, mutates nothing, and returns plain numpy in a frozen `DevicePayload` — which is what makes everything subtle here testable in the default CI matrix on a machine with no GPU. `to_cupy` / `from_cupy` are thin gated wrappers.
 
 A `DevicePayload` carries:
