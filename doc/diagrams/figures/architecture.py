@@ -428,9 +428,7 @@ def mesh_data_model():
         P.CORE,
         w=170,
     )
-    table(
-        330, yb + 30, 'CellBlock("quad", (1, 4))', ["0: 1 4 5 3"], P.CORE, w=170
-    )
+    table(330, yb + 30, 'CellBlock("quad", (1, 4))', ["0: 1 4 5 3"], P.CORE, w=170)
     # cell_data aligned to blocks
     c.text(
         540,
