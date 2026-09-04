@@ -27,8 +27,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..__about__ import __version__
-from .._dataset import DatasetManifest
+from .._dataset import DatasetManifest, check_pairing
 from .._gpu import _require_framework
+from .._grid_transfer import GridSpec
 from .._interop import _emit, _importable
 from .._ml import FEATURE_SCHEMA_VERSION, edge_index, feature_matrix
 from .._regions import block_bases
@@ -38,6 +39,10 @@ __all__ = [
     "GraphSample",
     "graph_sample",
     "iter_samples",
+    "GridSample",
+    "grid_sample_pair",
+    "iter_grid_samples",
+    "grid_stats",
     "field_stats",
     "edge_stats",
     "make_reader",
@@ -328,6 +333,278 @@ def iter_samples(manifest, *, split=None, **kwargs):
     for entry_id, series, step in _flat_items(manifest, split, read_kwargs, offset):
         time, sample = _read_sample(series, step, graph_kwargs)
         yield entry_id, time, sample
+
+
+# --------------------------------------------------------------------------- #
+# Grid samples: the coarse/fine pair a convolutional model trains on          #
+# --------------------------------------------------------------------------- #
+#: Bumped when the recorded grid-sample contract changes meaning.
+GRID_SAMPLE_VERSION = 1
+
+_GRID_KWARGS = (
+    "fields",
+    "target_fields",
+    "coarse",
+    "fine",
+    "scaling_factor",
+    "extrapolate",
+    "fill_value",
+    "squeeze",
+    "squeeze_index",
+    "float32",
+)
+
+
+@dataclass(frozen=True)
+class GridSample:
+    """One coarse/fine pair, plus the contract that names its channels.
+
+    :class:`GraphSample`'s shape for a grid-shaped model. ``arrays`` holds
+    ``x`` (the coarse grid, ``(C, D, H, W)``) and, when targets were asked
+    for, ``y`` (the fine grid, ``(C', sD, sH, sW)``).
+    """
+
+    arrays: dict
+    x_channels: tuple
+    y_channels: tuple
+    schema: dict
+
+
+def _grid_specs(mesh, coarse, fine, scaling_factor):
+    """Resolve the coarse and fine specs of a pair, and check they agree.
+
+    Exactly one of ``fine`` and ``scaling_factor`` decides the fine grid.
+    ``scaling_factor`` goes through :meth:`GridSpec.upscale_samples`, **not**
+    ``upscale``: a convolutional upsampler multiplies sample counts, not cells
+    (see that method's own note).
+    """
+    if not isinstance(coarse, GridSpec):
+        coarse = GridSpec.from_mesh(mesh, **dict(coarse))
+    if (fine is None) == (scaling_factor is None):
+        raise ValueError(
+            "meshio++: grid_sample_pair: give exactly one of fine and " "scaling_factor"
+        )
+    if scaling_factor is not None:
+        fine = coarse.upscale_samples(int(scaling_factor))
+    elif not isinstance(fine, GridSpec):
+        fine = GridSpec.from_mesh(mesh, **dict(fine))
+    if not coarse.same_bounds(fine):
+        raise ValueError(
+            "meshio++: grid_sample_pair: the coarse and fine grids cover "
+            f"different boxes ({coarse.bounds} vs {fine.bounds}); take the box "
+            "from the fine mesh so every fine node is inside the coarse grid"
+        )
+    factor = coarse.sample_scaling_factor(fine)
+    if factor is None:
+        raise ValueError(
+            f"meshio++: grid_sample_pair: the coarse grid's shape {coarse.shape} "
+            f"does not scale to the fine grid's {fine.shape} by one whole factor "
+            "on every axis; build the fine spec with "
+            "GridSpec.upscale_samples(factor)"
+        )
+    return coarse, fine, factor
+
+
+def grid_sample_pair(
+    mesh,
+    coarse,
+    *,
+    fine=None,
+    scaling_factor=None,
+    target_mesh=None,
+    fields=None,
+    target_fields=None,
+    extrapolate=False,
+    fill_value=0.0,
+    squeeze=None,
+    squeeze_index=None,
+    float32=True,
+):
+    """Sample a mesh (and optionally its paired target) onto a coarse/fine pair.
+
+    The grid counterpart of :func:`graph_sample`. ``x`` is ``mesh`` on the
+    coarse grid; ``y`` is the fine grid, taken from ``target_mesh`` when there
+    is one and from ``mesh`` itself when there is not -- **self-supervision is
+    the ordinary case**, since a superresolution dataset is usually one
+    high-resolution solve per case with the coarse input made by sampling it
+    less finely.
+
+    Give exactly one of ``fine`` (a spec, or the kwargs to build one) and
+    ``scaling_factor`` (an integer, resolved through
+    :meth:`GridSpec.upscale_samples`). ``squeeze`` collapses a world axis for a
+    2-D operator: an integer index keeps that plane, ``"mean"`` averages.
+    """
+    from .._grid_transfer import sample_grid, squeeze_grid
+
+    coarse, fine, factor = _grid_specs(mesh, coarse, fine, scaling_factor)
+    target_fields = list(target_fields) if target_fields else None
+    y_mesh = mesh if target_mesh is None else target_mesh
+
+    x = sample_grid(
+        mesh,
+        coarse,
+        fields=fields,
+        extrapolate=extrapolate,
+        fill_value=fill_value,
+        float32=float32,
+    )
+    arrays = {"x": x.values}
+    y_channels = ()
+    y = None
+    if target_fields is not None:
+        y = sample_grid(
+            y_mesh,
+            fine,
+            fields=target_fields,
+            extrapolate=extrapolate,
+            fill_value=fill_value,
+            float32=float32,
+        )
+        arrays["y"] = y.values
+        y_channels = y.channels
+
+    if squeeze is not None:
+        axis, reduce = _squeeze_args(squeeze, squeeze_index)
+        for key in list(arrays):
+            arrays[key] = squeeze_grid(
+                arrays[key], axis, index=squeeze_index, reduce=reduce
+            )
+
+    schema = {
+        "grid_sample_version": GRID_SAMPLE_VERSION,
+        "grid_schema_version": x.schema["grid_schema_version"],
+        "meshioplusplus_version": str(__version__),
+        "layout": x.schema["layout"],
+        "coarse": coarse.to_dict(),
+        "fine": fine.to_dict(),
+        "scaling_factor": factor,
+        "squeeze": squeeze,
+        "squeeze_index": squeeze_index,
+        "float32": bool(float32),
+        "x_channels": list(x.channels),
+        "y_channels": list(y_channels),
+        "x_coverage": x.coverage,
+        "y_coverage": None if y is None else y.coverage,
+    }
+    return GridSample(
+        arrays=arrays,
+        x_channels=tuple(x.channels),
+        y_channels=tuple(y_channels),
+        schema=schema,
+    )
+
+
+def _squeeze_args(squeeze, squeeze_index):
+    """``squeeze`` is a world axis; ``squeeze_index`` picks a plane, else mean."""
+    axis = int(squeeze)
+    if axis not in (0, 1, 2):
+        raise ValueError(
+            f"meshio++: grid_sample_pair: squeeze must be a world axis 0, 1 or 2, "
+            f"got {squeeze!r}"
+        )
+    return axis, (None if squeeze_index is not None else "mean")
+
+
+def _grid_flat_items(manifest, split, read_kwargs):
+    """The flat (entry, step) index for grid pairs -- no mesh read.
+
+    Every entry contributes one sample per step. A ``Target`` is checked
+    against its ``Source`` **here**, at index-build time, so a mismatched pair
+    fails once by name rather than at the first epoch that reaches it.
+    """
+    items = []
+    for entry in _as_manifest(manifest).entries(split=split):
+        check_pairing(entry)
+        series = entry.time_series(**read_kwargs)
+        target = entry.target_time_series(**read_kwargs) if entry.target else None
+        for step in range(len(series)):
+            items.append((entry.id, series, target, step))
+    return items
+
+
+def _read_grid_sample(series, target, step, grid_kwargs):
+    """One or two mesh reads -> ``(time, GridSample)``.
+
+    :func:`_read_sample`'s sibling and the single owner of the grid
+    read-and-sample step. A self-supervised entry (no ``Target``) reads **one**
+    mesh; a paired one reads two. Nothing is cached between steps, so the
+    streaming invariant holds either way.
+    """
+    time, mesh = series[step]
+    target_mesh = target[step][1] if target is not None else None
+    return time, grid_sample_pair(mesh, target_mesh=target_mesh, **grid_kwargs)
+
+
+def iter_grid_samples(manifest, *, split=None, **kwargs):
+    """Yield ``(entry_id, time, GridSample)`` over a manifest's entries.
+
+    :func:`iter_samples`' grid counterpart, honouring the same streaming
+    invariant: one mesh alive per yielded sample, two for a paired entry.
+    """
+    grid_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in _GRID_KWARGS}
+    read_kwargs = kwargs
+    for entry_id, series, target, step in _grid_flat_items(
+        manifest, split, read_kwargs
+    ):
+        time, sample = _read_grid_sample(series, target, step, grid_kwargs)
+        yield entry_id, time, sample
+
+
+def grid_stats(manifest, *, split=None, **kwargs):
+    """Per-channel mean/std over a manifest's **grids**, in the same key
+    convention as :func:`field_stats`.
+
+    Deliberately a separate function rather than a mode of :func:`field_stats`,
+    and the distinction is not cosmetic: a grid's statistics include the
+    **fill** wherever the lattice reaches outside the mesh, so they are a
+    different number from the nodal ones. Normalizing a grid with node stats
+    would be silently wrong, which is exactly the kind of error a model absorbs
+    without complaining.
+
+    Returns ``{"x_mean", "x_std", "y_mean", "y_std", "coverage"}`` -- one value
+    per channel, plus the mean coverage over the dataset, since a dataset whose
+    grids are mostly fill is a dataset a model will learn the fill from.
+    """
+    x_acc = y_acc = None
+    x_channels = y_channels = None
+    coverage, seen = 0.0, 0
+    for _, _, sample in iter_grid_samples(manifest, split=split, **kwargs):
+        for key, channels in (("x", "x_channels"), ("y", "y_channels")):
+            if key not in sample.arrays:
+                continue
+            names = list(getattr(sample, channels))
+            rows = np.asarray(sample.arrays[key], dtype=np.float64)
+            rows = rows.reshape(rows.shape[0], -1).T  # (samples, channels)
+            if key == "x":
+                if x_channels is None:
+                    x_channels, x_acc = names, _Moments(len(names))
+                elif names != x_channels:
+                    raise ValueError(
+                        "meshio++: grid_stats: the x channels changed across the "
+                        f"dataset ({x_channels} -> {names})"
+                    )
+                x_acc.add(rows)
+            else:
+                if y_channels is None:
+                    y_channels, y_acc = names, _Moments(len(names))
+                elif names != y_channels:
+                    raise ValueError(
+                        "meshio++: grid_stats: the y channels changed across the "
+                        f"dataset ({y_channels} -> {names})"
+                    )
+                y_acc.add(rows)
+        cov = sample.schema.get("x_coverage")
+        if cov is not None:
+            coverage += float(cov)
+            seen += 1
+    stats = {
+        "x_mean": [] if x_acc is None else x_acc.mean().tolist(),
+        "x_std": [] if x_acc is None else x_acc.std().tolist(),
+        "y_mean": [] if y_acc is None else y_acc.mean().tolist(),
+        "y_std": [] if y_acc is None else y_acc.std().tolist(),
+        "coverage": (coverage / seen) if seen else None,
+    }
+    return stats
 
 
 class _Moments:

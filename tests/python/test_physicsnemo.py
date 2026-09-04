@@ -626,3 +626,186 @@ def test_run_training_and_predict_end_to_end(tmp_path):
         == 0
     )
     assert (tmp_path / "run2" / t.FINAL_CHECKPOINT.replace("final.mdlus", "")).exists()
+
+
+# --------------------------------------------------------------------------- #
+# grid samples: the coarse/fine pair a convolutional model trains on          #
+# --------------------------------------------------------------------------- #
+def _grid_case(tmp_path, name, phase=0.0, n=8):
+    """One high-resolution solve -- the shape a superresolution dataset has."""
+    mesh = meshioplusplus.convert_cells(
+        meshioplusplus.grid((n, n, n), spacing=(1 / n, 2 / n, 4 / n)),
+        mode="simplexify",
+    )
+    p = mesh.points
+    mesh.point_data["T"] = np.sin(3 * p[:, 0] + phase) * np.cos(2 * p[:, 1])
+    path = tmp_path / f"{name}.vtu"
+    meshioplusplus.write(path, mesh)
+    return path
+
+
+def _grid_manifest(tmp_path, cases=3):
+    for c in range(cases):
+        _grid_case(tmp_path, f"case_{c}", phase=0.4 * c)
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    for c in range(cases):
+        manifest.add(f"case_{c}.vtu", id=f"c{c}", split="train")
+    return manifest
+
+
+def test_grid_sample_pair_shapes_follow_the_sample_scaling_factor(tmp_path):
+    """The pair must agree with what a convolutional upsampler does, which is
+    to multiply the *sample* counts -- not the cell counts.
+
+    A coarse 4x4x4-cell grid carries 5x5x5 points, and at s=2 the model emits
+    10x10x10. `GridSpec.upscale` would have given 9x9x9 (it multiplies cells,
+    which is right for resampling and wrong here), so this pins the one that
+    matters.
+    """
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+    sample = mpn.grid_sample_pair(
+        mesh, coarse, scaling_factor=2, fields=["T"], target_fields=["T"]
+    )
+    assert sample.arrays["x"].shape == (1, 5, 5, 5)
+    assert sample.arrays["y"].shape == (1, 10, 10, 10)
+    assert sample.schema["scaling_factor"] == 2
+    assert sample.schema["layout"] == "channels_first_zyx"
+    assert coarse.upscale(2).shape == (9, 9, 9)  # the one that would not fit
+
+
+def test_grid_sample_pair_is_self_supervised_without_a_target(tmp_path):
+    """No target mesh means the same mesh supplies both sides -- the ordinary
+    shape of a superresolution dataset, not a fallback."""
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+    sample = mpn.grid_sample_pair(
+        mesh, coarse, scaling_factor=2, fields=["T"], target_fields=["T"]
+    )
+    assert sample.x_channels == ("T",)
+    assert sample.y_channels == ("T",)
+    assert sample.schema["x_coverage"] == 1.0
+
+
+def test_grid_sample_pair_refuses_a_mismatched_pair(tmp_path):
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+    with pytest.raises(ValueError, match="exactly one of fine and scaling_factor"):
+        mpn.grid_sample_pair(mesh, coarse, fields=["T"])
+    # a fine spec over a different box
+    other = meshioplusplus.GridSpec(
+        origin=(9.0, 9.0, 9.0), spacing=(1.0, 1.0, 1.0), dims=(9, 9, 9)
+    )
+    with pytest.raises(ValueError, match="different boxes"):
+        mpn.grid_sample_pair(mesh, coarse, fine=other, fields=["T"])
+    # same box, but not a whole sample factor
+    lo, hi = coarse.bounds
+    odd = meshioplusplus.GridSpec(
+        origin=lo, spacing=(hi - lo) / np.array([7, 7, 7]), dims=(7, 7, 7)
+    )
+    with pytest.raises(ValueError, match="upscale_samples"):
+        mpn.grid_sample_pair(mesh, coarse, fine=odd, fields=["T"])
+
+
+def test_grid_sample_pair_squeezes_a_world_axis(tmp_path):
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+    kwargs = dict(scaling_factor=2, fields=["T"], target_fields=["T"])
+    plane = mpn.grid_sample_pair(mesh, coarse, squeeze=2, squeeze_index=0, **kwargs)
+    assert plane.arrays["x"].shape == (1, 5, 5)  # world z dropped
+    assert plane.arrays["y"].shape == (1, 10, 10)
+    averaged = mpn.grid_sample_pair(mesh, coarse, squeeze=2, **kwargs)
+    assert averaged.arrays["x"].shape == (1, 5, 5)
+    assert not np.array_equal(plane.arrays["x"], averaged.arrays["x"])
+
+
+def test_iter_grid_samples_walks_a_manifest(tmp_path):
+    manifest = _grid_manifest(tmp_path)
+    got = list(
+        mpn.iter_grid_samples(
+            manifest,
+            split="train",
+            coarse=dict(resolution=(4, 4, 4)),
+            scaling_factor=2,
+            fields=["T"],
+            target_fields=["T"],
+        )
+    )
+    assert [entry_id for entry_id, _, _ in got] == ["c0", "c1", "c2"]
+    assert all(s.arrays["y"].shape == (1, 10, 10, 10) for _, _, s in got)
+
+
+def test_grid_stats_are_not_field_stats(tmp_path):
+    """A grid's statistics include the fill wherever the lattice reaches
+    outside the mesh, so they are a different number from the nodal ones --
+    which is why this is a separate function rather than a mode."""
+    manifest = _grid_manifest(tmp_path, cases=2)
+    kwargs = dict(
+        coarse=dict(resolution=(4, 4, 4)),
+        scaling_factor=2,
+        fields=["T"],
+        target_fields=["T"],
+    )
+    stats = mpn.grid_stats(manifest, split="train", **kwargs)
+    assert set(stats) == {"x_mean", "x_std", "y_mean", "y_std", "coverage"}
+    assert len(stats["x_mean"]) == 1 and len(stats["y_mean"]) == 1
+    assert stats["coverage"] == 1.0
+    # the coarse and fine grids sample the same field at different resolutions,
+    # so their statistics are close but not identical
+    assert stats["x_mean"][0] != stats["y_mean"][0]
+
+
+def test_iter_grid_samples_checks_the_pairing_before_reading(tmp_path):
+    """A mismatched Target fails once, by name, at index-build time -- not at
+    the first epoch that happens to reach the entry."""
+    _grid_case(tmp_path, "a")
+    _grid_case(tmp_path, "b")
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    manifest.add(
+        {"Paths": ["a.vtu", "b.vtu"]},
+        target={"Path": "a.vtu"},
+        id="bad",
+        validate_source=False,
+    )
+    with pytest.raises(ValueError, match="pairs 2 source steps with 1 target steps"):
+        list(
+            mpn.iter_grid_samples(
+                manifest,
+                coarse=dict(resolution=(2, 2, 2)),
+                scaling_factor=2,
+                fields=["T"],
+            )
+        )
+
+
+def test_grid_pair_shape_matches_a_real_srresnet(tmp_path):
+    """The oracle for the whole pairing rule: a real model's output shape.
+
+    `GridSpec.upscale_samples` exists because `upscale` disagrees with what a
+    convolutional upsampler does, and the disagreement is an off-by-one that
+    surfaces as a torch shape error deep inside a loss. Asserting against the
+    model itself is the only way to pin that; a test written against our own
+    arithmetic would agree with whichever convention we chose.
+    """
+    torch = pytest.importorskip("torch")
+    srrn = pytest.importorskip("physicsnemo.models.srrn")
+
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    for factor in (2, 4):
+        coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+        sample = mpn.grid_sample_pair(
+            mesh, coarse, scaling_factor=factor, fields=["T"], target_fields=["T"]
+        )
+        model = srrn.SRResNet(
+            in_channels=1,
+            out_channels=1,
+            conv_layer_size=4,
+            n_resid_blocks=1,
+            scaling_factor=factor,
+        )
+        x = torch.from_numpy(sample.arrays["x"]).unsqueeze(0).float()
+        out = tuple(model(x).shape[1:])
+        assert out == sample.arrays["y"].shape, (
+            f"at s={factor} the model emits {out} but the pair's target is "
+            f"{sample.arrays['y'].shape}"
+        )

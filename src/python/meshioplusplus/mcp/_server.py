@@ -1554,6 +1554,12 @@ def _register_dataset(server: FastMCP) -> None:
         time_from: Optional[str] = None,
         times: Optional[List[float]] = None,
         sort: bool = False,
+        target_pattern: Optional[str] = None,
+        target_paths: Optional[List[str]] = None,
+        target_format: Optional[str] = None,
+        target_time_from: Optional[str] = None,
+        target_times: Optional[List[float]] = None,
+        target_sort: bool = False,
         split: Optional[str] = None,
         tags: Optional[List[str]] = None,
         group: Optional[str] = None,
@@ -1563,7 +1569,11 @@ def _register_dataset(server: FastMCP) -> None:
         """Add a case to a dataset manifest JSON (created if absent). Give
         exactly one of input_pattern (a glob) or input_paths; the source is
         validated now and stored relative to the manifest's directory.
-        Optional curation: split, tags, group, notes, metadata."""
+        The optional target_* family records a paired coarse/fine series for a
+        superresolution dataset: the two must have the same number of steps at
+        the same instants, checked here. Leave it out for the ordinary case --
+        an entry without a target is self-supervised, one mesh supplying both
+        sides. Optional curation: split, tags, group, notes, metadata."""
         return _guard(
             _tools.tool_dataset_add,
             manifest_path=manifest_path,
@@ -1574,6 +1584,12 @@ def _register_dataset(server: FastMCP) -> None:
             time_from=time_from,
             times=times,
             sort=sort,
+            target_pattern=target_pattern,
+            target_paths=target_paths,
+            target_format=target_format,
+            target_time_from=target_time_from,
+            target_times=target_times,
+            target_sort=target_sort,
             split=split,
             tags=tags,
             group=group,

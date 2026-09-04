@@ -21,6 +21,7 @@ import math
 from typing import Callable, Dict, Iterable, List, Optional
 
 from .. import compute_quality, data_info
+from .._dataset import check_pairing
 
 QUALITY_PREFIX = "quality:"
 _SCALED_JACOBIAN_KEYS = ("quality:scaled_jacobian", "scaled_jacobian")
@@ -44,6 +45,8 @@ def empty_scan() -> dict:
         "num_degenerate": 0,
         "min_scaled_jacobian": None,
         "arrays": [],
+        "target_steps": None,
+        "pairing_error": None,
     }
 
 
@@ -93,6 +96,14 @@ def entry_health(
         steps = len(plan)
         scan = empty_scan()
         scan["steps"] = steps
+        if entry.target:
+            # A paired entry's Target is checked separately from the mesh scan:
+            # a mismatched pair is a manifest problem, not a bad mesh, and it
+            # must not make the entry look unreadable.
+            try:
+                scan["target_steps"] = check_pairing(entry)
+            except Exception as e:  # noqa: BLE001
+                scan["pairing_error"] = str(e)
         arrays = set()
         for index in range(steps) if all_steps else range(min(steps, 1)):
             _, mesh = series[index]  # one mesh alive at a time
@@ -116,6 +127,9 @@ def scan_is_bad(scan: dict) -> bool:
         or scan["num_inverted"] > 0
         or scan["num_degenerate"] > 0
         or (sj is not None and sj < 0)
+        # A pair whose two sides disagree trains the model on mismatched steps,
+        # which is a silent wrong answer rather than a crash -- so it is bad.
+        or scan.get("pairing_error") is not None
     )
 
 

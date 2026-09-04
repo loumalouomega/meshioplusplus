@@ -201,6 +201,8 @@ export interface ServerEntryScan {
     num_degenerate: number;
     min_scaled_jacobian: number | null;
     arrays: string[];
+    target_steps?: number | null;
+    pairing_error?: string | null;
     error?: string;
 }
 
@@ -241,6 +243,8 @@ export function fromServerHealth(report: ServerHealthReport): {
             numDegenerate: s.num_degenerate,
             minScaledJacobian: s.min_scaled_jacobian,
             arrays: [...s.arrays],
+            targetSteps: s.target_steps ?? null,
+            pairingError: s.pairing_error ?? null,
         };
     }
     return {

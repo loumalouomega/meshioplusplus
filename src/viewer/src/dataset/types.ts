@@ -28,6 +28,13 @@ export interface EntryScan {
      * "fields missing across entries" input of the health summary. Empty for
      * an entry that could not be read (`steps === 0`). */
     arrays: string[];
+    /** Steps in the entry's paired `Target`, or null when it has none (which
+     * means self-supervised, not broken). */
+    targetSteps?: number | null;
+    /** Why the Source/Target pair does not line up, when it does not. A pair
+     * whose sides disagree trains on mismatched steps — a silent wrong answer
+     * rather than a crash — so it counts as a bad entry. */
+    pairingError?: string | null;
 }
 
 /** One split's share of a manifest; `''` is "unassigned". */

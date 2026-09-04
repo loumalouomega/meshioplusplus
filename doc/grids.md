@@ -124,6 +124,19 @@ meshioplusplus grid-spectrum grid.vti --field T --json
 
 Four tools: `grid_sample`, `grid_scatter`, `grid_resample` and `grid_power_spectrum`, all path-in/path-out like every other tool, so an agent can drive the whole data path without holding a mesh. See [the MCP server](mcp.md).
 
+## Pairing a coarse grid with a fine one
+
+`upscale` is right for resampling and **wrong** for a superresolution pair, so there are two methods and they are named apart:
+
+| | multiplies | on a 4×4×4-cell grid at ×2 | use for |
+|---|---|---|---|
+| `spec.upscale(s)` | **cells** | 9×9×9 points; all 125 coarse points nest | `resample_grid` |
+| `spec.upscale_samples(s)` | **samples** | 10×10×10 points; only the 8 corners are shared | a model pair |
+
+A convolutional upsampler multiplies sample counts — `SRResNet(scaling_factor=2)` maps `(B, C, 5, 5, 5)` to `(B, C, 10, 10, 10)` — so a pair built with `upscale` fails as a shape error deep inside a loss. Both preserve the box exactly; `spec.sample_scaling_factor(other)` returns the single integer such a model must be parametrized by, or `None` when the pair does not have one.
+
+See [paired cases](datasets.md#paired-cases) for describing the two sides in a manifest and [`grid_sample_pair`](physicsnemo.md#grid-samples) for producing them.
+
 ## What is not here
 
-The pieces this path still needs before a superresolution model can be trained from a manifest — coarse/fine pairing on a dataset entry, and an `srresnet` family in the training spec — are the next items on [the roadmap](roadmap.md). `cell_data` is deliberately refused in both directions: a piecewise-constant field has no value at a point, so convert it with `cell_data_to_point_data` (CLI `data to-point`) first, which makes the approximation explicit rather than hiding it inside the sampler.
+An `srresnet` family in the training spec is the next item on [the roadmap](roadmap.md). `cell_data` is deliberately refused in both directions: a piecewise-constant field has no value at a point, so convert it with `cell_data_to_point_data` (CLI `data to-point`) first, which makes the approximation explicit rather than hiding it inside the sampler.

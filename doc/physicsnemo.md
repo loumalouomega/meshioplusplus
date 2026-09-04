@@ -142,6 +142,34 @@ pm.to("cuda")                              # device moves are upstream's job
 
 **The risk, stated**: this rides the framework's newest surface. The bridge therefore touches only the tensorclass constructor and public attributes — never the self-declared-unstable `.pmsh` format — its gated module is the only one importing `physicsnemo.mesh` (an import that pulls in NVIDIA Warp, ~1.5 s, which is why it stays lazy), and training projects should pin `nvidia-physicsnemo>=2.1,<2.2`. If upstream's `Mesh` stabilizes, an `io_meshio.py` contributed upstream (mirroring `io_pyvista`'s shape) is still the natural end state; today its `io` module has no plugin registry, so the bridge lives here.
 
+## Grid samples
+
+A convolutional model does not take a graph. `grid_sample_pair` is `graph_sample`'s counterpart for one: it samples a mesh onto a **coarse** lattice and its targets onto a **fine** one, which is the pair a superresolution model trains on.
+
+```python
+import meshioplusplus as mio
+import meshioplusplus.physicsnemo as mpn
+
+mesh   = mio.read("case_0042.vtu")
+coarse = mio.GridSpec.from_mesh(mesh, resolution=(32, 32, 32))
+
+sample = mpn.grid_sample_pair(mesh, coarse, scaling_factor=2,
+                              fields=["T"], target_fields=["T"])
+sample.arrays["x"]      # (C, D, H, W)      -- the model's input
+sample.arrays["y"]      # (C, 2D, 2H, 2W)   -- its target
+sample.schema["scaling_factor"]
+```
+
+**`scaling_factor` goes through `GridSpec.upscale_samples`, not `upscale`, and the difference is an off-by-one that a model turns into a shape error deep inside a loss.** A convolutional upsampler multiplies *sample* counts: `SRResNet(scaling_factor=2)` maps `(B, C, 5, 5, 5)` to `(B, C, 10, 10, 10)`. `upscale` multiplies *cells*, so on a 4×4×4-cell grid it yields 9×9×9 points — right for resampling, where every coarse point is then also a fine point, and wrong here. Both preserve the box exactly; only the sample counts differ. Give exactly one of `scaling_factor` and an explicit `fine` spec.
+
+`target_mesh=None` means **self-supervised** — the same mesh supplying both sides — and that is the ordinary case, not a fallback. `iter_grid_samples` walks a manifest the way `iter_samples` does, honouring the same streaming invariant (one mesh alive per sample, two for a [paired entry](./datasets#paired-cases)), and checks each entry's pairing once at index-build time rather than at the first epoch that reaches it.
+
+`squeeze=<world axis>` collapses a thin axis for a 2-D operator: an integer `squeeze_index` keeps that plane, and omitting it averages over the axis.
+
+**`grid_stats` is deliberately separate from `field_stats`.** A grid's statistics include the *fill* wherever the lattice reaches outside the mesh, so they are a different number from the nodal ones; normalizing a grid with node stats would be silently wrong. It reports `x_mean`/`x_std`/`y_mean`/`y_std` per channel plus the mean `coverage`, because a dataset whose grids are mostly fill is a dataset a model will learn the fill from.
+
+See [mesh and regular grids](./grids) for the transfer itself.
+
 ## Training and prediction
 
 The adapter builds the tensors; `run_training` is the loop over them — MeshGraphNet through the PyG path, driven by a **training spec** and writing everything a run produces into one directory:

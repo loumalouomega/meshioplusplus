@@ -584,6 +584,80 @@ def _grid_source(tmp_path):
     return str(path)
 
 
+def test_dataset_add_records_a_paired_target(tmp_path):
+    src = tmp_path / "coarse"
+    tgt = tmp_path / "fine"
+    for d, n in ((src, 2), (tgt, 4)):
+        d.mkdir()
+        for i in range(3):
+            meshioplusplus.write(d / f"out_{i:04d}.vtu", meshioplusplus.grid((n, n, n)))
+    manifest = str(tmp_path / "m.json")
+
+    report = _tools.tool_dataset_add(
+        manifest,
+        input_pattern=str(src / "*.vtu"),
+        target_pattern=str(tgt / "*.vtu"),
+        entry_id="sr",
+        split="train",
+    )
+    assert report["num_steps"] == 3
+    assert report["num_target_steps"] == 3
+
+    listed = _tools.tool_dataset_list(manifest)["entries"][0]
+    assert listed["Target"] == {"Pattern": "fine/*.vtu"}
+    assert listed["Source"] == {"Pattern": "coarse/*.vtu"}
+
+
+def test_dataset_add_refuses_a_target_outside_the_root(tmp_path):
+    """A Target is client input *inside* the document, so the sandbox has to
+    hold on it exactly as it does on the Source."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.vtu").write_bytes(b"")
+    meshioplusplus.write(root / "a.vtu", meshioplusplus.grid((2, 2, 2)))
+    outside = tmp_path / "outside.vtu"
+    meshioplusplus.write(outside, meshioplusplus.grid((2, 2, 2)))
+
+    _tools.set_root(str(root))
+    try:
+        with pytest.raises(ValueError):
+            _tools.tool_dataset_add(
+                str(root / "m.json"),
+                input_paths=["a.vtu"],
+                target_paths=[str(outside)],
+                entry_id="sr",
+            )
+    finally:
+        _tools.set_root(None)
+
+
+def test_dataset_health_reports_a_broken_pairing(tmp_path):
+    src = tmp_path / "coarse"
+    src.mkdir()
+    for i in range(3):
+        meshioplusplus.write(src / f"out_{i:04d}.vtu", meshioplusplus.grid((2, 2, 2)))
+    one = tmp_path / "only.vtu"
+    meshioplusplus.write(one, meshioplusplus.grid((2, 2, 2)))
+
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    manifest.add({"Pattern": "coarse/*.vtu"}, id="ok")
+    manifest.add(
+        {"Pattern": "coarse/*.vtu"},
+        target={"Path": "only.vtu"},
+        id="bad",
+        validate_source=False,
+    )
+    path = tmp_path / "m.json"
+    manifest.save(path)
+
+    report = _tools.tool_dataset_health(str(path), quality=False)
+    entries = report["entries"]
+    assert entries["ok"]["target_steps"] is None  # self-supervised, not broken
+    assert entries["ok"]["pairing_error"] is None
+    assert "pairs 3 source steps with 1 target steps" in entries["bad"]["pairing_error"]
+    assert "bad" in report["bad_entries"] and "ok" not in report["bad_entries"]
+
+
 def test_grid_tools_round_trip(tmp_path):
     """sample -> resample -> scatter over paths, with the reports checked.
 

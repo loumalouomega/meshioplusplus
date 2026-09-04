@@ -145,7 +145,7 @@ test('the server report adapts to the browser shapes', async () => {
             { split: '', count: 1, fraction: 0.5 },
         ],
         entries: {
-            a: { steps: 3, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.7, arrays: ['point_data:T'] },
+            a: { steps: 3, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.7, arrays: ['point_data:T'], target_steps: 3 },
             b: { steps: 0, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: null, arrays: [], error: 'gone' },
         },
         fields_missing: {},
@@ -159,6 +159,10 @@ test('the server report adapts to the browser shapes', async () => {
     assert.equal(health.total, 2);
     assert.equal(health.minScaledJacobian, 0.7);
     assert.deepEqual(health.badEntries, ['b']);
-    assert.deepEqual(scans.a, { steps: 3, numNan: 0, numInf: 0, numInverted: 0, numDegenerate: 0, minScaledJacobian: 0.7, arrays: ['point_data:T'] });
+    assert.deepEqual(scans.a, { steps: 3, numNan: 0, numInf: 0, numInverted: 0, numDegenerate: 0, minScaledJacobian: 0.7, arrays: ['point_data:T'], targetSteps: 3, pairingError: null });
     assert.equal(scans.b.steps, 0);
+    // an entry the server said nothing about pairing for is self-supervised,
+    // not broken -- both fields fall back to null rather than undefined
+    assert.equal(scans.b.targetSteps, null);
+    assert.equal(scans.b.pairingError, null);
 });

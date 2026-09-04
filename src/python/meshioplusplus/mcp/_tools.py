@@ -1837,11 +1837,51 @@ def _sandbox_entry_paths(entry):
     """Enforce the root on the paths a manifest entry resolves to — a
     hand-edited manifest can name anything, so the sandbox must hold on the
     *resolved* plan, not only on the manifest file (the pipeline-tool rule:
-    paths inside the document are client input too)."""
+    paths inside the document are client input too).
+
+    An entry's optional ``Target`` is a second source of exactly the same kind,
+    so it is walked too; skipping it would leave the whole sandbox open through
+    one extra key."""
     plan = entry.entries()
     for item in plan:
         _resolve(item["path"], must_exist=True)
+    if entry.target:
+        for item in entry.target_entries():
+            _resolve(item["path"], must_exist=True)
     return plan
+
+
+def _mcp_source_block(pattern, paths, base, fmt, times, time_from, sort):
+    """One sandboxed source family -> a Source object stored relative to `base`.
+
+    Shared by a manifest entry's Source and its optional Target so the two
+    cannot diverge on sandboxing or on path portability.
+    """
+    from .._dataset import portable_relpath
+
+    if pattern is not None:
+        _resolve_pattern(pattern)  # sandbox + non-empty, before storing
+        head, tail = os.path.split(str(pattern))
+        rel_head = portable_relpath(_resolve(head or "."), base)
+        # Not os.path.normpath/join: on Windows those re-introduce a native
+        # backslash into what must stay a portable, "/"-only manifest path
+        # (doc/datasets.md) -- string-join instead, since rel_head is already
+        # normalized and `tail` (from os.path.split) never contains its own
+        # separator.
+        stored = f"{rel_head}/{tail}" if rel_head not in ("", ".") else tail
+        source = {"Pattern": stored}
+    else:
+        resolved = [_resolve(p, must_exist=True) for p in paths]
+        source = {"Paths": [portable_relpath(p, base) for p in resolved]}
+        if sort:
+            source["Sort"] = True
+    if fmt:
+        source["Format"] = fmt
+    if times is not None:
+        source["Times"] = [float(t) for t in times]
+    if time_from:
+        source["TimeFrom"] = time_from
+    return source
 
 
 def tool_dataset_add(
@@ -1853,6 +1893,12 @@ def tool_dataset_add(
     time_from=None,
     times=None,
     sort=False,
+    target_pattern=None,
+    target_paths=None,
+    target_format=None,
+    target_time_from=None,
+    target_times=None,
+    target_sort=False,
     split=None,
     tags=None,
     group=None,
@@ -1870,34 +1916,30 @@ def tool_dataset_add(
         raise ValueError(
             "meshio++: mcp: give exactly one of input_pattern or input_paths"
         )
+    if target_pattern is not None and target_paths is not None:
+        raise ValueError(
+            "meshio++: mcp: give at most one of target_pattern or target_paths"
+        )
     manifest, resolved_manifest = _load_manifest(manifest_path, must_exist=False)
     base = os.path.dirname(resolved_manifest)
-    from .._dataset import portable_relpath
 
-    if input_pattern is not None:
-        _resolve_pattern(input_pattern)  # sandbox + non-empty, before storing
-        head, tail = os.path.split(str(input_pattern))
-        rel_head = portable_relpath(_resolve(head or "."), base)
-        # Not os.path.normpath/join: on Windows those re-introduce a native
-        # backslash into what must stay a portable, "/"-only manifest path
-        # (doc/datasets.md) -- string-join instead, since rel_head is already
-        # normalized and `tail` (from os.path.split) never contains its own
-        # separator.
-        pattern = f"{rel_head}/{tail}" if rel_head not in ("", ".") else tail
-        source = {"Pattern": pattern}
-    else:
-        resolved = [_resolve(p, must_exist=True) for p in input_paths]
-        source = {"Paths": [portable_relpath(p, base) for p in resolved]}
-        if sort:
-            source["Sort"] = True
-    if input_format:
-        source["Format"] = input_format
-    if times is not None:
-        source["Times"] = [float(t) for t in times]
-    if time_from:
-        source["TimeFrom"] = time_from
+    source = _mcp_source_block(
+        input_pattern, input_paths, base, input_format, times, time_from, sort
+    )
+    target = None
+    if target_pattern is not None or target_paths is not None:
+        target = _mcp_source_block(
+            target_pattern,
+            target_paths,
+            base,
+            target_format,
+            target_times,
+            target_time_from,
+            target_sort,
+        )
     entry = manifest.add(
         source,
+        target=target,
         id=entry_id,
         split=split,
         tags=tags or (),
@@ -1911,6 +1953,7 @@ def tool_dataset_add(
             "manifest_path": resolved_manifest,
             "entry_id": entry.id,
             "num_steps": len(entry.entries()),
+            "num_target_steps": len(entry.target_entries()) if entry.target else None,
             "num_entries": len(manifest),
         }
     )

@@ -232,18 +232,73 @@ class GridSpec:
             and np.all(np.abs(hi_a - hi_b) <= rtol * scale)
         )
 
+    def upscale_samples(self, factor) -> "GridSpec":
+        """The same box with ``factor`` times as many **sample points**.
+
+        This is :meth:`upscale`'s sibling, and the difference between them is an
+        off-by-one that a superresolution model turns into a shape error deep
+        inside a loss function.
+
+        A lattice's samples are its *corners*, so ``dims`` cells carry
+        ``dims + 1`` points. :meth:`upscale` multiplies the **cells**, which is
+        what resampling wants -- every coarse point is then also a fine point,
+        and the two grids nest. A convolutional upsampler multiplies the
+        **samples**: ``SRResNet(scaling_factor=s)`` maps ``(B, C, D, H, W)`` to
+        ``(B, C, sD, sH, sW)``. Measured on a 4x4x4-cell grid at ``s = 2``:
+        ``upscale`` gives a 9x9x9-point grid (all 125 coarse points nest),
+        while the model needs 10x10x10.
+
+        So use this one to build the *fine* spec of a coarse/fine pair, and
+        :meth:`upscale` to resample. The price is that only the box's eight
+        corners are shared between the two lattices -- invisible to a model,
+        which never sees a coordinate, and the bounds are identical either way.
+        """
+        f = np.asarray(factor, dtype=np.int64).reshape(-1)
+        if f.size == 1:
+            f = np.repeat(f, 3)
+        if f.size != 3 or np.any(f <= 0):
+            raise ValueError(
+                "meshio++: GridSpec.upscale_samples: factor must be one positive "
+                "integer, or three"
+            )
+        lo, hi = self.bounds
+        dims = f * (self.dims + 1) - 1
+        spacing = (hi - lo) / dims.astype(np.float64)
+        return GridSpec(origin=lo, spacing=spacing, dims=dims)
+
     def scaling_factor(self, other: "GridSpec") -> Optional[Tuple[int, int, int]]:
         """``other.dims / self.dims`` when it is a whole number on every axis.
 
-        ``None`` when it is not -- an SRResNet's scaling factor is an integer by
-        construction, so a non-integer ratio is a mismatched pair rather than a
-        model hyperparameter.
+        The **cell** ratio, matching :meth:`upscale`. For the number an
+        SRResNet's ``scaling_factor`` must equal, use
+        :meth:`sample_scaling_factor`.
+
+        ``None`` when the ratio is not whole -- that is a mismatched pair rather
+        than a model hyperparameter.
         """
         ratio = other.dims.astype(np.float64) / self.dims.astype(np.float64)
         whole = np.rint(ratio).astype(np.int64)
         if np.any(whole < 1) or np.any(whole.astype(np.float64) != ratio):
             return None
         return (int(whole[0]), int(whole[1]), int(whole[2]))
+
+    def sample_scaling_factor(self, other: "GridSpec") -> Optional[int]:
+        """The single integer ``other.shape / self.shape``, or ``None``.
+
+        The number a convolutional upsampler is parametrized by, and the one to
+        pass as ``SRResNet(scaling_factor=...)``. It is a **scalar**, not a
+        triple, because such a model applies one factor to every axis; a pair
+        whose axes disagree is not upsamplable by one and returns ``None``.
+        """
+        mine = np.asarray(self.shape, dtype=np.float64)
+        theirs = np.asarray(other.shape, dtype=np.float64)
+        ratio = theirs / mine
+        whole = np.rint(ratio).astype(np.int64)
+        if np.any(whole < 1) or np.any(whole.astype(np.float64) != ratio):
+            return None
+        if not np.all(whole == whole[0]):
+            return None
+        return int(whole[0])
 
     # -- construction ------------------------------------------------------- #
     @classmethod
@@ -852,7 +907,9 @@ def _tensor_axis(world_axis: int) -> int:
     return 3 - world_axis
 
 
-def squeeze_grid(values, axis: int = 2, index: Optional[int] = None) -> np.ndarray:
+def squeeze_grid(
+    values, axis: int = 2, index: Optional[int] = None, reduce: Optional[str] = None
+) -> np.ndarray:
     """Drop a **world** axis, turning a 3-D grid into a 2-D one.
 
     How a 2-D operator (FNO, AFNO, a 2-D U-Net) is fed a mesh that is planar in
@@ -861,9 +918,16 @@ def squeeze_grid(values, axis: int = 2, index: Optional[int] = None) -> np.ndarr
 
     A lattice always has at least two points on every axis -- one cell has two
     corners -- so the thin axis of a planar problem still arrives with a plane at
-    each face. ``index`` says which of them to keep; it is required whenever the
-    axis is longer than one, because silently taking the first would discard a
-    plane without saying so.
+    each face. Say which of them you want:
+
+    * ``index=k`` keeps plane ``k`` and discards the rest;
+    * ``reduce="mean"`` averages over the axis, which is the right choice when
+      the axis is thin but not exactly constant, and what a solver coupling
+      normally does;
+    * neither is required only when the axis is already a single plane.
+
+    One of them is **required** whenever the axis is longer than one, because
+    silently taking the first plane would discard the others without saying so.
 
     A free function on raw arrays rather than a :class:`GridArray` method,
     because the result no longer matches a three-dimensional spec -- that is the
@@ -874,12 +938,21 @@ def squeeze_grid(values, axis: int = 2, index: Optional[int] = None) -> np.ndarr
     ax = _tensor_axis(axis)
     if arr.ndim != 4:
         raise ValueError("meshio++: squeeze_grid: values must be (C, D, H, W)")
+    if index is not None and reduce is not None:
+        raise ValueError("meshio++: squeeze_grid: give at most one of index and reduce")
+    if reduce is not None:
+        if reduce != "mean":
+            raise ValueError(
+                f"meshio++: squeeze_grid: reduce must be 'mean', got {reduce!r}"
+            )
+        return np.ascontiguousarray(arr.mean(axis=ax))
     n = arr.shape[ax]
     if index is None:
         if n != 1:
             raise ValueError(
                 f"meshio++: squeeze_grid: world axis {axis} has {n} points, so there "
-                "is no single plane to keep; pass index= to choose one"
+                "is no single plane to keep; pass index= to choose one, or "
+                "reduce='mean' to average over them"
             )
         index = 0
     if not -n <= index < n:
@@ -890,12 +963,23 @@ def squeeze_grid(values, axis: int = 2, index: Optional[int] = None) -> np.ndarr
     return np.ascontiguousarray(np.take(arr, index, axis=ax))
 
 
-def expand_grid(values, axis: int = 2) -> np.ndarray:
-    """Reinsert a length-one **world** axis -- :func:`squeeze_grid`'s inverse."""
+def expand_grid(values, axis: int = 2, size: int = 1) -> np.ndarray:
+    """Reinsert a **world** axis -- :func:`squeeze_grid`'s inverse.
+
+    ``size`` duplicates the plane that many times, which is how a 2-D model's
+    prediction is written back onto a thin 3-D lattice: the model saw one plane,
+    and every plane of the thin axis gets it.
+    """
     arr = np.asarray(values)
     if arr.ndim != 3:
         raise ValueError("meshio++: expand_grid: values must be (C, H, W)")
-    return np.ascontiguousarray(np.expand_dims(arr, axis=_tensor_axis(axis)))
+    if size < 1:
+        raise ValueError(f"meshio++: expand_grid: size must be at least 1, got {size}")
+    ax = _tensor_axis(axis)
+    out = np.expand_dims(arr, axis=ax)
+    if size > 1:
+        out = np.repeat(out, size, axis=ax)
+    return np.ascontiguousarray(out)
 
 
 # --------------------------------------------------------------------------- #

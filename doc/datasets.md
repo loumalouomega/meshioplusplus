@@ -51,6 +51,7 @@ A settings-family JSON (the [pipeline](./pipeline) / [sequences](./sequences) co
 | `Source.Path` | a single file (possibly multi-step — each step becomes one entry of the case's series) |
 | `Source.Paths` | an explicit ordered file list; `Sort: true` natural-sorts it |
 | `Source.Times` / `TimeFrom` | the [time-value precedence](./sequences#where-time-values-come-from), verbatim |
+| `Target` | an optional **second** source of the same shape, for a paired coarse/fine case — see [Paired cases](#paired-cases) below |
 | `Split` | free string; exact-match filtering (`entries(split=...)`) |
 | `Tags` | free strings; filtering requires **all** given tags |
 | `Group` | slash-separated path; filtering matches the path or any descendant (path segments, not string prefixes) |
@@ -105,6 +106,42 @@ Two knowingly-accepted gaps, stated rather than hidden: fraction-based `assign_s
 
 [`write_dataset`](./ml#dataset-export-write_dataset) emits `meshioplusplus_dataset.json` — a **machine-written output artefact** (snake_case, layout-versioned, atomically written at the end of an export run) describing rows already on disk. A dataset manifest is the opposite: a **hand-edited input** describing sources still in their native formats. They stay separate documents deliberately; the natural composition is directional — iterate a manifest's split and feed each case to `write_dataset`, or use the [PhysicsNeMo adapter](./physicsnemo), which trains straight off the manifest with no export step at all.
 
+## Paired cases
+
+A superresolution model trains on *pairs*: a coarse field in, a fine field out. An entry describes that with an optional `Target`, a second source of exactly the same shape as `Source`:
+
+```json
+{
+  "Id": "cyl_re100",
+  "Source": { "Pattern": "coarse/out_*.vtu" },
+  "Target": { "Pattern": "fine/out_*.vtu" },
+  "Split": "train"
+}
+```
+
+**Leave it out for the ordinary case.** An entry with no `Target` is *self-supervised*: one mesh supplies both sides, sampled onto a coarse grid and a fine one. That is the usual shape of a superresolution dataset, because you normally have only the high-resolution solve and make the coarse input by sampling it less finely — so `Target` is for the less common case where the coarse data is a genuinely separate run.
+
+Two things are checked when a `Target` is present, and the second is the one that matters:
+
+- **Equal step counts.** The obvious mismatch, refused by name.
+- **Agreeing times.** A coarse run written at a different output interval produces two plans of the same length whose steps are at *different instants*. Pairing by index would then train the model to map one moment onto another — a quiet corruption rather than a crash, so it is refused too. Times are compared only where both sides carry a real one; a plan whose `time_source` is `index` says nothing about when its steps happened, so there is nothing to disagree with.
+
+An explicit `Times` list always overrides `TimeFrom`, so the two cannot be combined to mean "ignore these times": declaring times is taken to mean them. If the instants genuinely carry no information, drop `Times` and set `TimeFrom: index` on both sides.
+
+The pairing is checked at `dataset add` time, again when a training index is built, and reported per entry by `dataset_health` as `target_steps` / `pairing_error` — a broken pair counts as a bad entry.
+
+```python
+entry.target                    # the Target source dict, or None
+entry.target_time_series()      # time_series()'s twin; raises by name when there is none
+entry.target_entries()          # entries()'s twin
+```
+
+```bash
+meshioplusplus dataset add m.json 'coarse/*.vtu' --target 'fine/*.vtu' --id cyl_re100
+```
+
+See [mesh and regular grids](./grids) for what the two sides become, and [the PhysicsNeMo adapter](./physicsnemo#grid-samples) for `grid_sample_pair` / `iter_grid_samples` / `grid_stats`.
+
 ## Per-surface entry points
 
 | surface | entry point |
@@ -112,6 +149,6 @@ Two knowingly-accepted gaps, stated rather than hidden: fraction-based `assign_s
 | Python | `DatasetManifest` / `DatasetEntry` |
 | CLI | [`meshioplusplus dataset add / list / split / tag / annotate`](./cli#meshioplusplus-dataset) |
 | MCP | `dataset_add` / `dataset_list` / `dataset_update` (sandboxed like `sequence`), plus `dataset_find` / `dataset_health` — the [dashboard](./dashboard#the-companion-process)'s server-side manifest discovery and health producer |
-| PhysicsNeMo | [`iter_samples` / `field_stats` / `make_dataset` / `make_reader`](./physicsnemo), and [`run_training` / `predict`](./physicsnemo#training-and-prediction) over a manifest's splits |
+| PhysicsNeMo | [`iter_samples` / `field_stats` / `make_dataset` / `make_reader`](./physicsnemo), [`grid_sample_pair` / `iter_grid_samples` / `grid_stats`](./physicsnemo#grid-samples) for paired grids, and [`run_training` / `predict`](./physicsnemo#training-and-prediction) over a manifest's splits |
 
 The manifest is Python-only (like `data export`): it never reaches the C++/WASM/C/Fortran core, and there is no native-CLI counterpart.
