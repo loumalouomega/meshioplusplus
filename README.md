@@ -781,6 +781,8 @@ A *collection* of solution outputs is catalogued by a hand-editable [dataset man
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
+If PhysicsNeMo itself is unfamiliar, [**PhysicsNeMo basics**](https://loumalouomega.github.io/meshioplusplus/physicsnemo/overview.html) is a fourteen-page map of the framework — what a `Module` and a `.mdlus` checkpoint are, which of the 25 architecture families fits the shape of your data, how simulation output becomes batched tensors, and where meshio++ ends and the framework begins. Each page closes by naming what meshio++ supplies, or by saying plainly that nothing does.
+
 ### MCP server
 
 Every operation in this README is also exposed to AI agents as a tool over the [Model Context Protocol](https://modelcontextprotocol.io/) — reading/writing all the formats, conversion, and the full mesh- and data-operation suite:
@@ -889,7 +891,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.25.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.26.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
