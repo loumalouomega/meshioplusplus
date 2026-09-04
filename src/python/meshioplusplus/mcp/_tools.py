@@ -1803,6 +1803,96 @@ def tool_dataset_update(
     )
 
 
+def tool_dataset_find(root_dir=".", max_depth=2):
+    """Find dataset manifests under a directory (sandboxed walk).
+
+    Every ``*.json`` at most ``max_depth`` levels below ``root_dir`` that
+    ``DatasetManifest.load`` accepts is listed with its content hash -- the
+    identity a browser-side card (which never sees an absolute path) binds
+    to. Other JSON files are skipped silently; dot-directories are not
+    entered.
+    """
+    import hashlib
+
+    from .._dataset import DatasetManifest, portable_relpath
+
+    base = _resolve(root_dir)
+    if not os.path.isdir(base):
+        raise ValueError(f"meshio++: mcp: directory not found: '{base}'")
+    depth = int(max_depth)
+    if depth < 0:
+        raise ValueError("meshio++: mcp: max_depth must be >= 0")
+    found = []
+    for current, dirs, files in os.walk(base):
+        rel = os.path.relpath(current, base)
+        level = 0 if rel == "." else rel.count(os.sep) + 1
+        dirs[:] = (
+            sorted(d for d in dirs if not d.startswith(".")) if level < depth else []
+        )
+        for name in sorted(files):
+            if not name.lower().endswith(".json"):
+                continue
+            path = os.path.join(current, name)
+            try:
+                manifest = DatasetManifest.load(path)
+            except Exception:  # noqa: BLE001 - not a manifest, or a broken one
+                continue
+            with open(path, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            found.append(
+                {
+                    "path": path,
+                    "relpath": portable_relpath(path, base),
+                    "sha256": digest,
+                    "name": manifest.name,
+                    "num_entries": len(manifest),
+                    "splits": {str(k): v for k, v in manifest.splits().items()},
+                    "mtime": int(os.path.getmtime(path) * 1000),
+                }
+            )
+    return _json_safe({"root": base, "manifests": found})
+
+
+def tool_dataset_health(
+    manifest_path, split=None, entry_ids=None, quality=True, all_steps=False
+):
+    """Scan a manifest's entries and summarize their health (server side).
+
+    Per entry: step count, NaN/Inf counts over the data arrays (quality:*
+    arrays excluded -- their NaN means "N/A for this cell type"), inverted /
+    degenerate cell counts and the worst scaled Jacobian from
+    compute_quality, and the arrays present. Per manifest: split balance,
+    totals, fields missing across entries, and the bad entries. Meshes are
+    read one at a time; every entry's resolved paths are sandbox-checked
+    (a hand-edited manifest is client input too).
+    """
+    import hashlib
+
+    from ._health import manifest_health
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    selected = manifest.entries(split=split)
+    if entry_ids:
+        wanted = list(entry_ids)
+        known = {e.id for e in selected}
+        unknown = [i for i in wanted if i not in known]
+        if unknown:
+            raise ValueError(f"meshio++: mcp: unknown entry id(s): {unknown}")
+        selected = [e for e in selected if e.id in set(wanted)]
+    report = manifest_health(
+        manifest,
+        selected,
+        quality=bool(quality),
+        all_steps=bool(all_steps),
+        before_entry=_sandbox_entry_paths,
+    )
+    with open(resolved_manifest, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    report["manifest_path"] = resolved_manifest
+    report["sha256"] = digest
+    return _json_safe(report)
+
+
 # --------------------------------------------------------------------------- #
 # Gated tools (optional extras; the wrapped functions raise the named error)  #
 # --------------------------------------------------------------------------- #
@@ -2063,6 +2153,14 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_dataset_update, "wraps": (), "gated": None},
         ),
         (
+            "dataset_find",
+            {"fn": tool_dataset_find, "wraps": (), "gated": None},
+        ),
+        (
+            "dataset_health",
+            {"fn": tool_dataset_health, "wraps": (), "gated": None},
+        ),
+        (
             "data_export",
             {"fn": tool_data_export, "wraps": ("write_parquet",), "gated": "arrow"},
         ),
@@ -2076,3 +2174,32 @@ TOOL_REGISTRY = OrderedDict(
         ),
     ]
 )
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch                                                                    #
+# --------------------------------------------------------------------------- #
+def guard(fn, /, **kwargs):
+    """Run a tool; a failure is a ``{"error", "error_type"}`` payload, never a
+    traceback. The one guard, shared by the FastMCP wrappers and the HTTP
+    front-end's dispatch."""
+    try:
+        return fn(**kwargs)
+    except Exception as e:  # noqa: BLE001 - the client needs a payload
+        return {"error": str(e), "error_type": type(e).__name__}
+
+
+def call_tool(name, kwargs=None):
+    """Dispatch a tool by registry name with keyword arguments.
+
+    The single entry point the HTTP front-end (``POST /api/tools/<name>``)
+    goes through, so it inherits the sandbox and the strict-JSON sanitizer
+    every tool already applies. An unknown name is a ``KeyError`` (the
+    caller's 404); a tool failure -- including bad keyword arguments -- is a
+    guarded payload.
+    """
+    try:
+        spec = TOOL_REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"meshio++: mcp: unknown tool '{name}'") from None
+    return guard(spec["fn"], **(kwargs or {}))

@@ -869,7 +869,7 @@ jobs:
           # NOT apply here and an unbounded `mcp` resolves 2.0.0, which removed
           # mcp.server.fastmcp. Keep the two in step.
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow pandas polars zarr "mcp<2"
+            pyvista trimesh pyarrow pandas polars zarr "mcp<2" starlette uvicorn httpx
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
@@ -1100,13 +1100,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install meshio++ with the mcp extra
+      - name: Install meshio++ with the mcp and dashboard extras
         run: |
           python -m pip install --upgrade pip
-          pip install ".[mcp]" pytest
+          # httpx is Starlette's TestClient transport, used by test_mcp_http.py
+          pip install ".[mcp,dashboard]" pytest httpx
 
-      - name: MCP tests
-        run: python -m pytest tests/python/test_mcp.py -v
+      - name: MCP and HTTP front-end tests
+        run: python -m pytest tests/python/test_mcp.py tests/python/test_mcp_http.py -v
 
   # --------------------------------------------------------------------------
   # The Blender bridge with `bpy` installed. The default `test` matrix already

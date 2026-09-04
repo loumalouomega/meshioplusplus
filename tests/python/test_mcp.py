@@ -796,3 +796,139 @@ def test_dataset_list_sandboxes_hand_edited_sources(tmp_path, monkeypatch):
     _dump(_tools.tool_dataset_list(str(manifest)))  # data-only: allowed
     with pytest.raises(ValueError, match="outside the configured root"):
         _tools.tool_dataset_list(str(manifest), resolve=True)
+
+
+# --------------------------------------------------------------------------- #
+# Pure half: dataset health / find and the registry dispatch (v10.23.0)       #
+# --------------------------------------------------------------------------- #
+def _health_manifest(tmp_path):
+    """Three cases: case_0 carries quality:* arrays (whose NaN must not count),
+    case_1 carries a NaN in a data array, case_2 lacks the point array."""
+    from meshioplusplus import DatasetManifest, attach_quality
+
+    cases = tmp_path / "cases"
+    cases.mkdir(exist_ok=True)
+    meshioplusplus.write(str(cases / "case_0.vtu"), attach_quality(_mixed_mesh()))
+    bad = _mixed_mesh()
+    bad.point_data["t"][2] = float("nan")
+    meshioplusplus.write(str(cases / "case_1.vtu"), bad)
+    sparse = _mixed_mesh()
+    del sparse.point_data["t"]
+    meshioplusplus.write(str(cases / "case_2.vtu"), sparse)
+    m = DatasetManifest(name="health", base_dir=str(tmp_path))
+    m.add("cases/case_0.vtu", split="train")
+    m.add("cases/case_1.vtu", split="train")
+    m.add("cases/case_2.vtu")
+    path = str(tmp_path / "m.json")
+    m.save(path)
+    return path
+
+
+def test_dataset_health_reports_per_entry_and_aggregates(tmp_path):
+    report = _dump(_tools.tool_dataset_health(_health_manifest(tmp_path)))
+    assert report["producer"] == "server"
+    assert report["name"] == "health"
+    assert report["num_entries"] == 3 and report["scanned"] == 3
+    assert len(report["sha256"]) == 64
+    assert report["splits"] == {"train": 2, "": 1}
+    assert report["split_balance"] == [
+        {"split": "train", "count": 2, "fraction": 2 / 3},
+        {"split": "", "count": 1, "fraction": 1 / 3},
+    ]
+    entries = report["entries"]
+    assert set(entries) == {"case_0", "case_1", "case_2"}
+    for scan in entries.values():
+        assert scan["steps"] == 1
+        assert isinstance(scan["min_scaled_jacobian"], float)
+    # quality:* NaN (metric N/A) never counts; a data NaN does
+    assert entries["case_0"]["num_nan"] == 0
+    assert entries["case_1"]["num_nan"] == 1
+    assert not any(a.startswith("quality:") for a in entries["case_0"]["arrays"])
+    # fields missing = union over readable entries minus each entry's own
+    assert list(report["fields_missing"]) == ["case_2"]
+    assert report["fields_missing"]["case_2"][0].endswith(":t")
+    assert report["totals"]["num_nan"] == 1
+    assert report["totals"]["num_inverted"] == 0
+    assert report["bad_entries"] == ["case_1"]
+
+
+def test_dataset_health_filters_and_reports_unreadable_entries(tmp_path):
+    from meshioplusplus import DatasetManifest
+
+    path = _health_manifest(tmp_path)
+    only = _dump(_tools.tool_dataset_health(path, split="train"))
+    assert only["scanned"] == 2 and set(only["entries"]) == {"case_0", "case_1"}
+    one = _dump(_tools.tool_dataset_health(path, entry_ids=["case_2"], quality=False))
+    assert set(one["entries"]) == {"case_2"}
+    assert one["entries"]["case_2"]["min_scaled_jacobian"] is None
+    with pytest.raises(ValueError, match="unknown entry id"):
+        _tools.tool_dataset_health(path, entry_ids=["nope"])
+    # an entry whose file vanished is reported, never fatal
+    m = DatasetManifest.load(path)
+    m.add("cases/case_1.vtu", id="ghost", validate_source=False)
+    os.remove(str(tmp_path / "cases" / "case_1.vtu"))
+    m.save(path)
+    report = _dump(_tools.tool_dataset_health(path))
+    assert report["entries"]["ghost"]["steps"] == 0
+    assert "error" in report["entries"]["ghost"]
+    assert "ghost" in report["bad_entries"]
+    # the sandbox holds on the manifest AND on what it resolves to
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_health(path)
+
+
+def test_dataset_find_lists_manifests_and_skips_other_json(tmp_path):
+    from meshioplusplus import DatasetManifest
+
+    _case_files(tmp_path)
+    top = DatasetManifest(name="top", base_dir=str(tmp_path))
+    top.add("cases/case_0.vtu", split="train")
+    top.save(str(tmp_path / "top.json"))
+    (tmp_path / "other.json").write_text('{"foo": 1}', encoding="utf-8")
+    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
+    nested = tmp_path / "campaign" / "sub"
+    nested.mkdir(parents=True)
+    DatasetManifest(name="nested").save(str(nested / "n.json"))
+    deep = nested / "deeper" / "deepest"
+    deep.mkdir(parents=True)
+    DatasetManifest(name="deep").save(str(deep / "d.json"))
+
+    report = _dump(_tools.tool_dataset_find(str(tmp_path)))
+    found = {m["relpath"]: m for m in report["manifests"]}
+    assert set(found) == {"top.json", "campaign/sub/n.json"}
+    assert found["top.json"]["name"] == "top"
+    assert found["top.json"]["num_entries"] == 1
+    assert found["top.json"]["splits"] == {"train": 1}
+    assert len(found["top.json"]["sha256"]) == 64
+    assert found["top.json"]["mtime"] > 0
+    deeper = _dump(_tools.tool_dataset_find(str(tmp_path), max_depth=4))
+    assert "campaign/sub/deeper/deepest/d.json" in {
+        m["relpath"] for m in deeper["manifests"]
+    }
+    with pytest.raises(ValueError, match="directory not found"):
+        _tools.tool_dataset_find(str(tmp_path / "nowhere"))
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_find(str(tmp_path))
+
+
+def test_call_tool_dispatches_through_the_registry(mesh_file, tmp_path):
+    report = _tools.call_tool("info", {"input_path": mesh_file})
+    assert report["num_points"] == 5
+    failed = _tools.call_tool("info", {"input_path": str(tmp_path / "nope.vtu")})
+    assert failed["error_type"] == "ValueError"
+    wrong = _tools.call_tool("info", {"bogus": 1})
+    assert wrong["error_type"] == "TypeError"
+    with pytest.raises(KeyError, match="unknown tool 'nope'"):
+        _tools.call_tool("nope", {})
+    assert _tools.call_tool("formats")["readable"]
+
+
+def test_has_dashboard_is_a_bool_and_names_the_extra():
+    import meshioplusplus.mcp as mmcp
+
+    assert isinstance(mmcp.has_dashboard(), bool)
+    if not mmcp.has_dashboard():
+        with pytest.raises(ImportError, match=r"meshioplusplus\[dashboard\]"):
+            mmcp._require_http()

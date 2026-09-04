@@ -32,6 +32,21 @@
           <p id="ws-info" class="hint" hidden></p>
         </section>
 
+        <section id="server-section">
+          <h2>Companion process</h2>
+          <p class="hint">
+            Optional: a local <code>meshioplusplus-mcp --http</code> scans manifests server-side
+            (and, later, trains). Nothing here needs it.
+          </p>
+          <label class="row"><span>URL</span><input id="srv-url" type="text" value="http://127.0.0.1:8765" /></label>
+          <label class="row"><span>Token</span><input id="srv-token" type="password" autocomplete="off" /></label>
+          <div class="row">
+            <button id="srv-connect" type="button">Connect</button>
+            <button id="srv-disconnect" type="button" hidden>Disconnect</button>
+          </div>
+          <p id="srv-status" class="hint"></p>
+        </section>
+
         <section id="overview-tools" hidden>
           <h2>Datasets <span id="ov-counts" class="counts"></span></h2>
           <div class="row">
@@ -101,6 +116,15 @@
               title="Stage each entry once and summarize its data arrays (NaN/Inf counts)"
             >
               Scan
+            </button>
+            <button
+              id="e-scan-server"
+              type="button"
+              data-needs-server
+              hidden
+              title="Scan this manifest on the companion process (full quality metrics; the file must be saved and found by the server)"
+            >
+              Scan (server)
             </button>
           </div>
           <div id="add-flow" hidden>

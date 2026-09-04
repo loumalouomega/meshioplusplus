@@ -20,6 +20,7 @@ import { $, setOptions, show } from '../ui/dom';
 import type { ArrayEntry } from '../types';
 import * as client from '../worker/client';
 import type { ArraySummary, PlanEntry } from '../worker/protocol';
+import { ApiClient, isToolError, type ServerManifest } from './api';
 import { diffLines, diffManifests, renderDiff, summarizeDiff } from './diff';
 import {
     hasFsAccess,
@@ -33,10 +34,12 @@ import { sha256Hex } from './hash';
 import {
     emptyScan,
     entryScanFromSummaries,
+    fromServerHealth,
     healthBadges,
     healthFromScans,
     isQualityRow,
     qualityRowIsBad,
+    type ServerHealthReport,
 } from './health';
 import {
     addEntry,
@@ -53,6 +56,7 @@ import {
 import {
     buildCard,
     cardFromManifest,
+    cardFromServerManifest,
     renderCards,
     sortCards,
     splitBar,
@@ -62,7 +66,14 @@ import {
 import { clearHandle, getValue, loadHandle, putValue, saveHandle } from './persist';
 import { suggestSource } from './suggest';
 import { captureThumbnail } from './thumbs';
-import type { DatasetState, DatasetView, EntryScan, ManifestCard, ManifestHealth } from './types';
+import type {
+    DatasetState,
+    DatasetView,
+    EntryScan,
+    ManifestCard,
+    ManifestHealth,
+    ServerState,
+} from './types';
 
 // --- state ----------------------------------------------------------------- //
 
@@ -72,6 +83,7 @@ window.__datasetState = {
     restoreAvailable: false,
     view: 'overview',
     manifests: [],
+    server: null,
     manifestName: null,
     entryIds: [],
     selected: null,
@@ -105,6 +117,10 @@ let splitPalette = new Map<string, string>();
 /** Set while "Scan all" drives the manifest view, so it does not flip the
  * page between depths on every manifest it opens. */
 let bulkScan = false;
+/** The companion-process client while connected (`api.ts`). */
+let serverApi: ApiClient | null = null;
+/** What the server found (`dataset_find`), merged into the cards by hash. */
+let serverManifests: ServerManifest[] = [];
 
 function setState(patch: Partial<DatasetState>): void {
     Object.assign(window.__datasetState, patch);
@@ -200,6 +216,9 @@ function renderOverview(): void {
     renderCards($('ov-cards'), sortCards(cards, key), splitPalette, {
         onOpen: (path) => void openManifestPath(path).catch(fail),
         onScan: (path) => void scanManifestPath(path).catch(fail),
+        onScanServer: serverApi
+            ? (path) => void scanOnServer(path).catch(fail)
+            : undefined,
     });
     show($('ov-empty'), cards.length === 0);
     $('ov-counts').textContent = `(${cards.length})`;
@@ -229,6 +248,7 @@ async function buildOverview(): Promise<void> {
         built.push(card);
     }
     cards = built;
+    mergeServerCards();
     renderOverview();
 }
 
@@ -699,6 +719,152 @@ async function scanAllManifests(): Promise<void> {
     setStatus('ready', `scanned ${cards.filter((c) => !c.parseError).length} manifest(s)`);
 }
 
+// --- companion process ------------------------------------------------------ //
+
+const SERVER_KEY = 'server';
+
+function setServer(patch: Partial<ServerState> & { url: string }): void {
+    const previous = window.__datasetState.server;
+    setState({
+        server: {
+            url: patch.url,
+            connected: patch.connected ?? previous?.connected ?? false,
+            version: patch.version ?? previous?.version ?? null,
+            tools: patch.tools ?? previous?.tools ?? [],
+            root: patch.root ?? previous?.root ?? null,
+            runsDir: patch.runsDir ?? previous?.runsDir ?? null,
+            error: patch.error ?? null,
+        },
+    });
+}
+
+/** Show/hide every `data-needs-server` control and the status line. */
+function updateServerUi(): void {
+    const server = window.__datasetState.server;
+    const connected = !!server?.connected;
+    for (const el of document.querySelectorAll<HTMLElement>('[data-needs-server]')) {
+        el.hidden = !connected;
+    }
+    show($('srv-disconnect'), connected);
+    show($('srv-connect'), !connected);
+    const status = $('srv-status');
+    status.className = 'hint';
+    if (!server) {
+        status.textContent = '';
+    } else if (connected) {
+        status.classList.add('connected');
+        status.textContent =
+            `connected — meshio++ ${server.version ?? '?'}` +
+            (server.root ? `, root ${server.root}` : ', unrestricted paths');
+    } else {
+        status.classList.add('failed');
+        status.textContent = server.error ?? 'not connected';
+    }
+    $<HTMLButtonElement>('e-scan-server').disabled = !currentCard()?.serverPath;
+}
+
+/** Bind workspace cards to the server's manifests by content hash (FSA
+ * never reveals an absolute path, so bytes are the only shared identity),
+ * and add a card for every manifest only the server knows. */
+function mergeServerCards(): void {
+    cards = cards.filter((c) => !c.serverOnly);
+    for (const card of cards) card.serverPath = null;
+    for (const m of serverManifests) {
+        const bound = cards.find((c) => c.sha256 !== null && c.sha256 === m.sha256);
+        if (bound) {
+            bound.serverPath = m.path;
+        } else {
+            cards.push(cardFromServerManifest(m));
+        }
+    }
+}
+
+async function refreshServerManifests(): Promise<void> {
+    if (!serverApi) return;
+    const found = await serverApi.tool<{ manifests: ServerManifest[] }>('dataset_find', {
+        root_dir: '.',
+        max_depth: 2,
+    });
+    if (isToolError(found)) throw new Error(found.error);
+    serverManifests = found.manifests;
+    mergeServerCards();
+    renderOverview();
+    updateServerUi();
+}
+
+async function connectServer(url: string, token: string): Promise<void> {
+    const api = new ApiClient(url, token || null);
+    setStatus('loading', 'connecting…');
+    try {
+        const health = await api.health();
+        serverApi = api;
+        setServer({
+            url: api.baseUrl,
+            connected: true,
+            version: health.version,
+            tools: health.tools,
+            root: health.root,
+            runsDir: health.runs_dir,
+            error: null,
+        });
+        await putValue(SERVER_KEY, { url: api.baseUrl, token: token || '' });
+        updateServerUi();
+        setStatus('ready', `connected to ${api.baseUrl}`);
+        await refreshServerManifests();
+    } catch (e) {
+        serverApi = null;
+        setServer({
+            url,
+            connected: false,
+            error: e instanceof Error ? e.message : String(e),
+        });
+        updateServerUi();
+        setStatus('ready');
+    }
+}
+
+function disconnectServer(): void {
+    serverApi = null;
+    serverManifests = [];
+    setServer({ url: $<HTMLInputElement>('srv-url').value, connected: false, error: null });
+    mergeServerCards();
+    renderOverview();
+    updateServerUi();
+}
+
+/** Health from the server producer, onto a card and — when that card is
+ * the open manifest — onto its entries, replacing the browser scans. */
+async function scanOnServer(path: string): Promise<void> {
+    const card = cards.find((c) => c.path === path);
+    if (!serverApi || !card?.serverPath) return;
+    setStatus('loading', `scanning ${card.name ?? card.path} on the server…`);
+    const report = await serverApi.tool<ServerHealthReport>('dataset_health', {
+        manifest_path: card.serverPath,
+    });
+    if (isToolError(report)) throw new Error(report.error);
+    const { health, scans: serverScans } = fromServerHealth(report);
+    card.health = health;
+    if (!card.serverOnly && card.path === manifestPath) {
+        scans.clear();
+        for (const [id, scan] of Object.entries(serverScans)) scans.set(id, scan);
+        setState({ scans: Object.fromEntries(scans) });
+        renderHealthSection(health);
+        renderEntryList();
+    }
+    renderOverview();
+    setStatus('ready', `server scan of ${card.name ?? card.path} complete`);
+}
+
+/** Try the remembered server on boot, silently: a stale entry just leaves
+ * the section disconnected with its fields prefilled. */
+async function restoreServer(): Promise<void> {
+    const saved = await getValue<{ url: string; token: string }>(SERVER_KEY);
+    if (!saved || typeof saved.url !== 'string') return;
+    $<HTMLInputElement>('srv-url').value = saved.url;
+    $<HTMLInputElement>('srv-token').value = saved.token ?? '';
+    await connectServer(saved.url, saved.token ?? '');
+}
+
 // --- add-case flow ---------------------------------------------------------- //
 
 function openAddFlow(): void {
@@ -848,6 +1014,7 @@ async function openManifest(): Promise<void> {
         show($('entries-section'));
         renderHealthSection(currentCard()?.health ?? null);
         renderEntryList();
+        updateServerUi();
         if (!bulkScan) setView('manifest');
         setStatus('ready', `${manifest.entries.length} entr${manifest.entries.length === 1 ? 'y' : 'ies'}`);
         await restoreScansFromCache();
@@ -1061,6 +1228,19 @@ async function boot(): Promise<void> {
         refreshCurrentCard();
         setView('overview');
     });
+
+    $('srv-connect').addEventListener('click', () => {
+        void connectServer(
+            $<HTMLInputElement>('srv-url').value.trim(),
+            $<HTMLInputElement>('srv-token').value.trim(),
+        );
+    });
+    $('srv-disconnect').addEventListener('click', disconnectServer);
+    $('e-scan-server').addEventListener('click', () => {
+        const path = currentCard()?.path;
+        if (path) void scanOnServer(path).catch(fail);
+    });
+    void restoreServer();
 
     $('manifest-open').addEventListener('click', () => void openManifest());
     $('m-save').addEventListener('click', () => void saveManifest());

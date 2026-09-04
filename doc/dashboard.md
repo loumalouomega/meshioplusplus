@@ -1,6 +1,6 @@
 # Dataset dashboard
 
-The [dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html) — the browser viewer's second page — curates the [dataset manifests](./datasets) a training run is driven off. Since v10.22.0 it has two depths: an **overview** of every manifest in the picked directory, and the per-manifest **curation view** that page always had. Everything on this page runs client-side against the viewer's own WASM build; no file is uploaded anywhere. Launching and monitoring PhysicsNeMo training from here needs a local companion process and is the next item of [the roadmap](./roadmap) — it is not built yet.
+The [dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html) — the browser viewer's second page — curates the [dataset manifests](./datasets) a training run is driven off. Since v10.22.0 it has two depths: an **overview** of every manifest in the picked directory, and the per-manifest **curation view** that page always had. Everything on this page runs client-side against the viewer's own WASM build; no file is uploaded anywhere. Optionally, a local **companion process** (`meshioplusplus-mcp --http`, v10.23.0, [below](#the-companion-process)) scans manifests server-side with the full Python core — and is the process launching and monitoring PhysicsNeMo training will run through, the next item of [the roadmap](./roadmap).
 
 ![The dataset dashboard: one card per manifest in the workspace, with split balance, tags, health badges and a preview thumbnail](/viewer/dataset-dashboard.png)
 
@@ -36,7 +36,7 @@ The manifest-level summary aggregates the scans into badges shown on the card an
 | `unreadable n` | entries that could not be staged or summarized at all |
 | `healthy` | a fully scanned manifest with none of the above |
 
-Everything here is computed in the browser from the same summaries the per-entry table shows. A server-side producer of the same summary — for manifests too large to stage in a browser, and for the companion process the training features need — is the roadmap's next step and will fill the same `ManifestHealth` shape with `producer: "server"`.
+Everything here is computed in the browser from the same summaries the per-entry table shows. With a [companion process](#the-companion-process) connected, **Scan (server)** — on a card, or in the curation view — asks the server for the same summary instead (`dataset_health`, the full Python `compute_quality` + `data_info` over every entry, one mesh alive at a time, nothing staged in the browser), which fills the same `ManifestHealth` shape with `producer: "server"` and the entry badges alike; the two producers apply the same quality-NaN rule.
 
 ## Diffing manifests
 
@@ -44,9 +44,32 @@ Everything here is computed in the browser from the same summaries the per-entry
 
 Git history is out of a browser page's reach: to compare against a revision, paste the output of `git show REV:dataset_manifest.json` as one side.
 
+## The companion process
+
+Everything above runs with no server. What a browser page cannot do — scan a manifest too large to stage in WebAssembly, and (next) train a model — runs through a small local process the page connects to: the [MCP server](./mcp) itself, started over HTTP.
+
+```bash
+pip install "meshioplusplus[dashboard]"
+meshioplusplus-mcp --http --root /path/to/cases
+#   meshio++ companion process at http://127.0.0.1:8765
+#     dataset manager: connect to http://127.0.0.1:8765 with token …
+#     MCP over HTTP (streamable-http): http://127.0.0.1:8765/mcp
+```
+
+Paste the URL and token into the page's **Companion process** panel and connect; the connection is remembered (in IndexedDB, like the directory handle) and retried on the next visit. Everything server-dependent stays hidden until the `health` probe succeeds, so a page with no server looks exactly as before.
+
+**What it serves.** One process, one token, two surfaces: MCP over streamable HTTP at `/mcp` (so an agent can be pointed at it with `claude mcp add --transport http …`), and a JSON API for this page — `GET /api/health` (version, root, the tool list), `POST /api/tools/<name>` with the tool's keyword arguments as a JSON object (every [registry tool](./mcp#tools), dispatched through the same path sandbox and strict-JSON sanitizer MCP uses; a tool failure is a `200` with `{"error", "error_type"}`, an unknown tool a `404`), and `GET /api/files?path=` (a sandboxed download, for the checkpoints and predictions of a later release). Two tools exist for this page in particular: `dataset_find` lists the manifests under the server's root with their SHA-256, and `dataset_health` is the server-side producer of the health summary.
+
+**How cards bind.** The File System Access API never reveals an absolute path, so a browser card and a server manifest can only be matched by their **bytes**: the page hashes each manifest it reads and `dataset_find` reports the server's hashes, and a card whose hash matches is *bound* (it shows an `on server` chip and a **Scan (server)** button). A manifest the server has that is not in the picked directory appears as a **server-only** card — it can be scanned but not opened here, since curating it means picking the directory that holds it. An unsaved edit changes the bytes, so a dirty card is unbound until it is saved.
+
+**Security posture, stated.** The server binds the loopback interface by default and requires a bearer token on every `/api/*` and `/mcp*` request; the token is generated per start (or fixed with `--token`), `--no-token` turns the check off for a machine you alone use, and `--host 0.0.0.0` prints a warning because whoever reaches the port with the token can read and write files under the root. Paths inside a request body — a manifest path, and the paths a hand-edited manifest resolves to — go through the same `--root` containment every MCP tool applies. CORS admits loopback origins on any port (a local `npm run dev`/`preview`) and the hosted docs site, so the [GitHub-Pages copy of this page](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html) can call a server on your own machine (`--allow-origin` extends the list); Chromium and Firefox treat `http://127.0.0.1` as potentially trustworthy from an `https` page and Chrome's Private Network Access preflight is answered, while Safari blocks the mixed-content call — run the page locally there. The one place the token rides a URL is `GET /api/files?token=`, because a download link cannot set a header.
+
+The architecture rule the MCP server already follows carries over: `src/python/meshioplusplus/mcp/_http.py` is the only module importing Starlette/uvicorn, `_health.py` (the producer) is pure stdlib + meshioplusplus and tested in the default CI matrix, and the FastMCP app is the root ASGI application with the `/api` routes added to it — its own lifespan starts the streamable-HTTP session manager, which mounting it under a parent app would silently skip.
+
 ## Limitations
 
 - Only `*.json` files at the workspace root are treated as manifests: the manifest is the resolution anchor for the relative sources inside it, and the page saves back at the root.
 - Thumbnails are session-only and cost one preview render per manifest; untick *thumbnails* before **Scan all** on a large workspace.
 - A scan stages exactly one entry at a time (the WASM filesystem never reclaims memory), so **Scan all** over many large manifests is serial and slow the first time; the scan cache makes the next visit instant.
-- Training launch, monitoring, run history, prediction preview and notifications are not built yet — see [the roadmap](./roadmap).
+- Training launch, monitoring, run history, prediction preview and notifications are not built yet — see [the roadmap](./roadmap); the companion process they will run through is.
+- The companion process is a local convenience, not a multi-user service: one token, loopback by default, no accounts.

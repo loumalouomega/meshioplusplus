@@ -16,6 +16,7 @@ Every tool is **stateless and file-path based**: input path(s) in, output path(s
 | Extra | Brings | For |
 |---|---|---|
 | `meshioplusplus[mcp]` | the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | the `meshioplusplus-mcp` server |
+| `meshioplusplus[dashboard]` | the SDK plus [Starlette](https://www.starlette.io/) and [uvicorn](https://www.uvicorn.org/) (both BSD) | `meshioplusplus-mcp --http` — the [browser dataset manager](./dashboard)'s companion process and MCP over HTTP |
 
 This extra is **not** in `meshioplusplus[all]` — `[all]` means "the optional dependencies the *formats* need", the same reasoning as `[interop]`/`[viewer]`. Note the `mcp` SDK itself requires **Python ≥ 3.10** while meshio++ supports 3.8: the package (and the server's pure tool layer) works everywhere, only *running* the server needs the newer Python.
 
@@ -54,13 +55,26 @@ Claude Desktop (`claude_desktop_config.json`):
 
 Interactive browsing: `npx @modelcontextprotocol/inspector meshioplusplus-mcp`.
 
+### Over HTTP (`--http`)
+
+The same process can serve over HTTP instead (v10.23.0, the `[dashboard]` extra): MCP over streamable HTTP at `/mcp` for agents, plus a small JSON API the [dataset dashboard](./dashboard#the-companion-process) calls — `GET /api/health`, `POST /api/tools/<name>` (every tool below, dispatched through the same sandbox and sanitizer) and `GET /api/files` (a sandboxed download).
+
+```bash
+pip install "meshioplusplus[dashboard]"
+meshioplusplus-mcp --http --root /path/to/cases        # 127.0.0.1:8765, a fresh token is printed
+claude mcp add --transport http meshioplusplus http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+Flags: `--host` (default `127.0.0.1`; binding elsewhere prints a warning), `--port` (default `8765`), `--token` to fix the bearer token instead of generating one, `--no-token` to require none (only on a machine you alone use), `--allow-origin ORIGIN` (repeatable; loopback origins on any port and the hosted docs site are always admitted), `--runs-dir` (where training runs will land). Every `/api/*` and `/mcp*` request needs `Authorization: Bearer <token>`; a missing or wrong token is a `401` `{"error", "error_type": "PermissionError"}` payload. FastMCP's own DNS-rebinding protection stays on for `/mcp`; on an SDK older than streamable HTTP the endpoint is the SSE transport instead (`GET /api/health` reports which).
+
 ## Path sandbox
 
 By default paths are unrestricted — the server runs locally under your own account and MCP clients gate filesystem access themselves. Pass `--root DIR` (or set `MESHIOPLUSPLUS_MCP_ROOT`) to confine every input **and** output path: each path is realpath-resolved (symlinks included) and must stay inside the root; relative paths resolve against it. Violations come back as clean `{"error": ..., "error_type": "ValueError"}` payloads the agent can act on — no tool ever surfaces a raw traceback.
 
 ## Tools
 
-54 tools; the two marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
+59 tools; the three marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)
 
@@ -106,6 +120,8 @@ By default paths are unrestricted — the server runs locally under your own acc
 | `dataset_add` | add a case to a [dataset manifest](datasets.md) (created if absent): `input_pattern` **or** `input_paths` (the `sequence` tool's shape, same sandboxed glob handling), optional `entry_id`/`split`/`tags`/`group`/`notes`/`metadata`; the source is validated now and stored relative to the manifest's directory |
 | `dataset_list` | a manifest's entries, filtered by `split`/`tags` (must carry all)/`group` (path or descendant); `resolve: true` also expands each entry's file/step/time plan — every resolved path is containment-checked, since a hand-edited manifest is client input too |
 | `dataset_update` | curate: `split` on `entry_ids`/`all_entries`, `assign_splits` by fractions (deterministic via `seed`; `by_group` keeps groups together), `add_tags`/`remove_tags`, or one entry's `group`/`notes`/`metadata` |
+| `dataset_find` | every `*.json` at most `max_depth` levels below `root_dir` that parses as a manifest, with its name, entry count, splits, modification time and SHA-256 content hash (the identity the [dashboard](./dashboard) binds a browser-side card to) |
+| `dataset_health` | scan a manifest's entries (optionally one `split` / given `entry_ids`, step 0 or `all_steps`), one mesh alive at a time: per entry the step count, NaN/Inf counts over the data arrays (`quality:*` arrays excluded — their NaN means "N/A for this cell type"), inverted/degenerate cells and the worst scaled Jacobian from `compute_quality`, and the arrays present; per manifest the split balance, totals, fields missing across entries and the bad entries — the server-side producer of the dashboard's health summary |
 
 ### Gated
 

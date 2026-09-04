@@ -273,6 +273,22 @@ body[data-view='overview'] #detail-section {
     background: rgba(144, 133, 233, 0.25);
 }
 
+.chip.server {
+    background: rgba(57, 135, 229, 0.3);
+}
+
+.card.server-only .card-thumb {
+    background: repeating-linear-gradient(135deg, #101216 0 8px, #15181e 8px 16px);
+}
+
+#srv-status.connected {
+    color: #0ca30c;
+}
+
+#srv-status.failed {
+    color: #e66767;
+}
+
 .card-actions {
     display: flex;
     gap: 6px;

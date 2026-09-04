@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "10.22.0"
+version = "10.23.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -95,6 +95,13 @@ interop = [
 # separate piece of work; until then this pins the SDK the server is written
 # against. The pure tool layer (`_tools.py`) imports no SDK and is unaffected.
 mcp = ["mcp>=1.2,<2"]
+# The companion process (`meshioplusplus-mcp --http`, src/python/meshioplusplus/
+# mcp/_http.py): the JSON API the browser dataset manager talks to, plus MCP
+# over HTTP. Starlette/uvicorn arrive transitively with the mcp SDK today, but
+# _http.py imports them directly, so they are declared here rather than
+# borrowed from the SDK's own dependency list. Same Python floor and same
+# NOT-in-`all` reasoning as [mcp].
+dashboard = ["mcp>=1.2,<2", "starlette>=0.27", "uvicorn>=0.31"]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats

@@ -82,6 +82,23 @@ export interface ManifestCard {
     sha256: string | null;
     /** Unsaved edits are pending in the drill-down for this manifest. */
     dirty: boolean;
+    /** The same manifest on the companion process (bound by content hash),
+     * or null when no connected server holds it. */
+    serverPath: string | null;
+    /** Known only to the server — not in the picked directory, so it cannot
+     * be opened here; health still works through the server. */
+    serverOnly: boolean;
+}
+
+/** The companion-process connection (`api.ts`), null until first tried. */
+export interface ServerState {
+    url: string;
+    connected: boolean;
+    version: string | null;
+    tools: string[];
+    root: string | null;
+    runsDir: string | null;
+    error: string | null;
 }
 
 export type DatasetView = 'overview' | 'manifest';
@@ -105,6 +122,7 @@ export interface DatasetState {
      * manifest in the workspace, or one manifest's curation view. */
     view: DatasetView;
     manifests: ManifestCard[];
+    server: ServerState | null;
     manifestName: string | null;
     entryIds: string[];
     selected: string | null;

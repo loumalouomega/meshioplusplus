@@ -12,6 +12,7 @@
  * the same colour on every card; badge colours are the fixed status palette.
  */
 
+import type { ServerManifest } from './api';
 import { healthBadges } from './health';
 import { parseManifest, splitCounts, type Manifest } from './manifest';
 import type { ManifestCard, SplitBalance } from './types';
@@ -65,6 +66,31 @@ export function cardFromManifest(
         thumbnail: null,
         sha256: null,
         dirty: false,
+        serverPath: null,
+        serverOnly: false,
+    };
+}
+
+/** A card for a manifest only the companion process knows (found by
+ * `dataset_find`, not in the picked directory). Its `path` is namespaced so
+ * it can never collide with a workspace card. */
+export function cardFromServerManifest(m: ServerManifest): ManifestCard {
+    return {
+        path: `server:${m.relpath}`,
+        name: m.name,
+        description: null,
+        numEntries: m.num_entries,
+        splits: { ...m.splits },
+        tags: [],
+        groups: [],
+        lastModified: m.mtime,
+        parseError: null,
+        health: null,
+        thumbnail: null,
+        sha256: m.sha256,
+        dirty: false,
+        serverPath: m.path,
+        serverOnly: true,
     };
 }
 
@@ -89,6 +115,8 @@ export function buildCard(path: string, text: string, lastModified: number | nul
             thumbnail: null,
             sha256: null,
             dirty: false,
+            serverPath: null,
+            serverOnly: false,
         };
     }
 }
@@ -180,6 +208,8 @@ export function formatModified(ms: number | null): string {
 export interface CardHandlers {
     onOpen(path: string): void;
     onScan(path: string): void;
+    /** Present only while a companion process is connected. */
+    onScanServer?(path: string): void;
 }
 
 export function renderCards(
@@ -193,6 +223,7 @@ export function renderCards(
         node.dataset.path = card.path;
         if (card.parseError) node.classList.add('broken');
         if (card.dirty) node.classList.add('dirty');
+        if (card.serverOnly) node.classList.add('server-only');
 
         const thumb = el('div', 'card-thumb');
         if (card.thumbnail) {
@@ -201,13 +232,23 @@ export function renderCards(
             img.alt = '';
             thumb.append(img);
         } else {
-            thumb.append(el('span', '', card.parseError ? 'unreadable' : 'no preview yet'));
+            thumb.append(
+                el(
+                    'span',
+                    '',
+                    card.parseError
+                        ? 'unreadable'
+                        : card.serverOnly
+                          ? 'on the companion process only'
+                          : 'no preview yet',
+                ),
+            );
         }
         node.append(thumb);
 
         const body = el('div', 'card-body');
         body.append(el('h3', 'card-title', card.name ?? card.path));
-        const sub = [card.path];
+        const sub = [card.serverOnly ? (card.serverPath ?? card.path) : card.path];
         sub.push(`${card.numEntries} entr${card.numEntries === 1 ? 'y' : 'ies'}`);
         sub.push(formatModified(card.lastModified));
         body.append(el('p', 'card-sub', sub.join(' · ')));
@@ -216,10 +257,15 @@ export function renderCards(
             body.append(el('p', 'error', card.parseError));
         } else {
             body.append(splitBar(balanceOf(card.splits), palette));
-            if (card.tags.length || card.groups.length) {
+            if (card.tags.length || card.groups.length || card.serverPath) {
                 const chips = el('div', 'card-chips');
                 for (const t of card.tags) chips.append(el('span', 'chip tag', t));
                 for (const g of card.groups) chips.append(el('span', 'chip group', g));
+                if (card.serverPath) {
+                    chips.append(
+                        el('span', 'chip server', card.serverOnly ? 'server only' : 'on server'),
+                    );
+                }
                 body.append(chips);
             }
             const badges = el('div', 'card-badges');
@@ -236,13 +282,21 @@ export function renderCards(
         const actions = el('div', 'card-actions');
         const open = el('button', 'card-open', 'Open') as HTMLButtonElement;
         open.type = 'button';
-        open.disabled = !!card.parseError;
+        open.disabled = !!card.parseError || card.serverOnly;
+        open.title = card.serverOnly ? 'Pick the directory holding this manifest to curate it' : '';
         open.addEventListener('click', () => handlers.onOpen(card.path));
         const scan = el('button', 'card-scan', 'Scan') as HTMLButtonElement;
         scan.type = 'button';
-        scan.disabled = !!card.parseError;
+        scan.disabled = !!card.parseError || card.serverOnly;
         scan.addEventListener('click', () => handlers.onScan(card.path));
         actions.append(open, scan);
+        if (card.serverPath && handlers.onScanServer && !card.parseError) {
+            const remote = el('button', 'card-scan-server', 'Scan (server)') as HTMLButtonElement;
+            remote.type = 'button';
+            remote.title = 'Scan on the companion process (full quality metrics, nothing staged here)';
+            remote.addEventListener('click', () => handlers.onScanServer?.(card.path));
+            actions.append(remote);
+        }
         body.append(actions);
         node.append(body);
         return node;

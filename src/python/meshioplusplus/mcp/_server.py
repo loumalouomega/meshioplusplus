@@ -34,18 +34,23 @@ directory by the server's --root option.
 """
 
 
-def _guard(fn, /, **kwargs):
-    try:
-        return fn(**kwargs)
-    except Exception as e:  # noqa: BLE001 — the client needs a payload, not a traceback
-        return {"error": str(e), "error_type": type(e).__name__}
+# The one guard, shared with the HTTP front-end's dispatch: a tool failure is
+# a {"error", "error_type"} payload, never a traceback (or a 500).
+_guard = _tools.guard
 
 
-def create_server(root: Optional[str] = None) -> FastMCP:
-    """Build the FastMCP server with every tool and resource registered."""
+def create_server(root: Optional[str] = None, host: Optional[str] = None) -> FastMCP:
+    """Build the FastMCP server with every tool and resource registered.
+
+    ``host`` matters only for the HTTP front-end: FastMCP enables its
+    DNS-rebinding protection (Host/Origin allow-lists) when the host is a
+    loopback name, so a ``--host 0.0.0.0`` server must be told, or the
+    ``/mcp`` endpoint would reject every non-loopback ``Host`` header.
+    """
     if root is not None:
         _tools.set_root(root)
-    server = FastMCP("meshioplusplus", instructions=_INSTRUCTIONS)
+    kwargs = {"host": host} if host is not None else {}
+    server = FastMCP("meshioplusplus", instructions=_INSTRUCTIONS, **kwargs)
     _register_inspection(server)
     _register_conversion(server)
     _register_operations(server)
@@ -1518,6 +1523,36 @@ def _register_dataset(server: FastMCP) -> None:
             drop_metadata=drop_metadata,
         )
 
+    @server.tool()
+    def dataset_find(root_dir: str = ".", max_depth: int = 2) -> dict:
+        """Find dataset manifests: every *.json at most max_depth levels
+        below root_dir that parses as a DatasetManifest, with its name,
+        entry count, splits, modification time and SHA-256 content hash."""
+        return _guard(_tools.tool_dataset_find, root_dir=root_dir, max_depth=max_depth)
+
+    @server.tool()
+    def dataset_health(
+        manifest_path: str,
+        split: Optional[str] = None,
+        entry_ids: Optional[List[str]] = None,
+        quality: bool = True,
+        all_steps: bool = False,
+    ) -> dict:
+        """Scan a dataset manifest's entries (optionally one split / given
+        ids) and report their health: per entry the step count, NaN/Inf
+        counts over data arrays, inverted/degenerate cells, worst scaled
+        Jacobian and arrays present; per manifest the split balance, totals,
+        fields missing across entries and the bad entries. Reads one mesh at
+        a time (step 0, or every step with all_steps)."""
+        return _guard(
+            _tools.tool_dataset_health,
+            manifest_path=manifest_path,
+            split=split,
+            entry_ids=entry_ids,
+            quality=quality,
+            all_steps=all_steps,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Gated tools (optional extras)                                               #
@@ -1628,6 +1663,60 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--version", action="version", version=f"meshioplusplus {__version__}"
     )
+    http = parser.add_argument_group(
+        "HTTP front-end",
+        "serve the browser dataset manager's JSON API and MCP over HTTP from "
+        "this process instead of stdio (needs the [dashboard] extra; "
+        "doc/dashboard.md)",
+    )
+    http.add_argument("--http", action="store_true", help="serve over HTTP")
+    http.add_argument("--host", default=None, help="bind address (default 127.0.0.1)")
+    http.add_argument("--port", type=int, default=None, help="port (default 8765)")
+    http.add_argument(
+        "--token",
+        default=None,
+        help="the bearer token to require (default: a fresh random one, printed)",
+    )
+    http.add_argument(
+        "--no-token",
+        action="store_true",
+        help="require no token (only on a machine you alone use)",
+    )
+    http.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help="an extra browser origin to admit (loopback origins and the hosted "
+        "docs site are always admitted); repeatable",
+    )
+    http.add_argument(
+        "--runs-dir",
+        default=None,
+        help="where training runs land (default: <root or cwd>/runs)",
+    )
     args = parser.parse_args(argv)
-    create_server(root=args.root).run()
+    if not args.http:
+        create_server(root=args.root).run()
+        return 0
+    from . import _require_http
+
+    try:
+        _http = _require_http()
+    except ImportError as e:
+        import sys
+
+        print(str(e), file=sys.stderr)
+        return 1
+    host = args.host or _http.DEFAULT_HOST
+    port = args.port if args.port is not None else _http.DEFAULT_PORT
+    token = None if args.no_token else (args.token or _http.new_token())
+    app = _http.build_app(
+        create_server(root=args.root, host=host),
+        token=token,
+        allowed_origins=[*_http.DEFAULT_ALLOWED_ORIGINS, *args.allow_origin],
+        root=_tools.get_root(),
+        runs_dir=args.runs_dir,
+    )
+    _http.serve(app, host=host, port=port)
     return 0

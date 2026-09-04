@@ -111,7 +111,7 @@ Two knowingly-accepted gaps, stated rather than hidden: fraction-based `assign_s
 |---|---|
 | Python | `DatasetManifest` / `DatasetEntry` |
 | CLI | [`meshioplusplus dataset add / list / split / tag / annotate`](./cli#meshioplusplus-dataset) |
-| MCP | `dataset_add` / `dataset_list` / `dataset_update` (sandboxed like `sequence`) |
+| MCP | `dataset_add` / `dataset_list` / `dataset_update` (sandboxed like `sequence`), plus `dataset_find` / `dataset_health` — the [dashboard](./dashboard#the-companion-process)'s server-side manifest discovery and health producer |
 | PhysicsNeMo | [`iter_samples` / `field_stats` / `make_dataset` / `make_reader`](./physicsnemo) |
 
 The manifest is Python-only (like `data export`): it never reaches the C++/WASM/C/Fortran core, and there is no native-CLI counterpart.

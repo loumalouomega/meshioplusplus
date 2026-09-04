@@ -190,3 +190,73 @@ export function healthBadges(health: ManifestHealth): HealthBadge[] {
     }
     return badges;
 }
+
+/** The server producer's report (`dataset_health`, snake_case) — the
+ * superset shape `mcp/_health.py` emits. */
+export interface ServerEntryScan {
+    steps: number;
+    num_nan: number;
+    num_inf: number;
+    num_inverted: number;
+    num_degenerate: number;
+    min_scaled_jacobian: number | null;
+    arrays: string[];
+    error?: string;
+}
+
+export interface ServerHealthReport {
+    producer: 'server';
+    name: string | null;
+    num_entries: number;
+    scanned: number;
+    splits: Record<string, number>;
+    split_balance: SplitBalance[];
+    entries: Record<string, ServerEntryScan>;
+    fields_missing: Record<string, string[]>;
+    totals: {
+        num_nan: number;
+        num_inf: number;
+        num_inverted: number;
+        num_degenerate: number;
+        min_scaled_jacobian: number | null;
+    };
+    bad_entries: string[];
+    manifest_path: string;
+    sha256: string;
+}
+
+/** Adapt the server's report to the browser's shapes, so the card renderer
+ * and the entry badges take either producer. */
+export function fromServerHealth(report: ServerHealthReport): {
+    health: ManifestHealth;
+    scans: Record<string, EntryScan>;
+} {
+    const scans: Record<string, EntryScan> = {};
+    for (const [id, s] of Object.entries(report.entries)) {
+        scans[id] = {
+            steps: s.steps,
+            numNan: s.num_nan,
+            numInf: s.num_inf,
+            numInverted: s.num_inverted,
+            numDegenerate: s.num_degenerate,
+            minScaledJacobian: s.min_scaled_jacobian,
+            arrays: [...s.arrays],
+        };
+    }
+    return {
+        health: {
+            producer: 'server',
+            scanned: report.scanned,
+            total: report.num_entries,
+            numNan: report.totals.num_nan,
+            numInf: report.totals.num_inf,
+            numInverted: report.totals.num_inverted,
+            numDegenerate: report.totals.num_degenerate,
+            minScaledJacobian: report.totals.min_scaled_jacobian,
+            splitBalance: report.split_balance.map((r) => ({ ...r })),
+            fieldsMissing: { ...report.fields_missing },
+            badEntries: [...report.bad_entries],
+        },
+        scans,
+    };
+}

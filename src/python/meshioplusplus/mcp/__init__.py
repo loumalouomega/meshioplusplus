@@ -17,6 +17,11 @@ matrix with no ``mcp`` installed), while the thin registration layer
 Run it with the ``meshioplusplus-mcp`` console script or
 ``python -m meshioplusplus.mcp`` (both take ``--root DIR`` /
 ``MESHIOPLUSPLUS_MCP_ROOT`` to sandbox paths). Docs: ``doc/mcp.md``.
+
+``--http`` turns the same process into the browser dataset manager's
+companion (a JSON API over the tool registry plus MCP over HTTP); that
+front-end lives in :mod:`._http`, the only module importing Starlette and
+uvicorn (the ``[dashboard]`` extra). Docs: ``doc/dashboard.md``.
 """
 
 from ._tools import TOOL_REGISTRY, formats_payload, set_root  # noqa: F401
@@ -25,6 +30,7 @@ __all__ = [
     "TOOL_REGISTRY",
     "create_server",
     "formats_payload",
+    "has_dashboard",
     "has_mcp",
     "main",
     "set_root",
@@ -39,6 +45,32 @@ def has_mcp() -> bool:
         return True
     except ImportError:
         return False
+
+
+def has_dashboard() -> bool:
+    """Whether the HTTP front-end can run (the ``[dashboard]`` extra:
+    the ``mcp`` SDK plus Starlette and uvicorn)."""
+    if not has_mcp():
+        return False
+    try:
+        import starlette  # noqa: F401
+        import uvicorn  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _require_http():
+    if not has_dashboard():
+        raise ImportError(
+            "meshio++: mcp server: the HTTP front-end needs starlette and "
+            "uvicorn; install them with `pip install meshioplusplus[dashboard]` "
+            "(requires Python >= 3.10)"
+        )
+    from . import _http
+
+    return _http
 
 
 def _require_server():

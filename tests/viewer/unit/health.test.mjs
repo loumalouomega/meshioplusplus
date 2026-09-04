@@ -131,3 +131,34 @@ test('a fully scanned clean manifest is simply healthy', () => {
     );
     assert.equal(badges.at(-1).label, 'healthy');
 });
+
+test('the server report adapts to the browser shapes', async () => {
+    const { fromServerHealth } = await import('../../../src/viewer/src/dataset/health.ts');
+    const report = {
+        producer: 'server',
+        name: 'h',
+        num_entries: 2,
+        scanned: 2,
+        splits: { train: 1, '': 1 },
+        split_balance: [
+            { split: 'train', count: 1, fraction: 0.5 },
+            { split: '', count: 1, fraction: 0.5 },
+        ],
+        entries: {
+            a: { steps: 3, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.7, arrays: ['point_data:T'] },
+            b: { steps: 0, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: null, arrays: [], error: 'gone' },
+        },
+        fields_missing: {},
+        totals: { num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.7 },
+        bad_entries: ['b'],
+        manifest_path: '/w/m.json',
+        sha256: 'abc',
+    };
+    const { health, scans } = fromServerHealth(report);
+    assert.equal(health.producer, 'server');
+    assert.equal(health.total, 2);
+    assert.equal(health.minScaledJacobian, 0.7);
+    assert.deepEqual(health.badEntries, ['b']);
+    assert.deepEqual(scans.a, { steps: 3, numNan: 0, numInf: 0, numInverted: 0, numDegenerate: 0, minScaledJacobian: 0.7, arrays: ['point_data:T'] });
+    assert.equal(scans.b.steps, 0);
+});

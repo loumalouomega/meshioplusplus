@@ -520,3 +520,148 @@ test('overview: the diff view compares the file on disk with the current edits',
     expect(card.dirty).toBe(true);
     expect(card.splits).toEqual({ valid: 1 });
 });
+
+// --------------------------------------------------------------------------- //
+// v10.23.0: the companion process (served same-origin by a routed fake, so   //
+// no CORS preflight is involved — CORS is covered by test_mcp_http.py)         //
+// --------------------------------------------------------------------------- //
+
+import { createHash } from 'node:crypto';
+
+const OVERVIEW_MANIFEST =
+    JSON.stringify(
+        {
+            Version: 1,
+            Name: 'campaign',
+            Entries: [{ Id: 'block', Source: { Path: 'block.vtu' }, Split: 'train', Tags: ['raw'] }],
+        },
+        null,
+        2,
+    ) + '\n';
+const OVERVIEW_SHA = createHash('sha256').update(OVERVIEW_MANIFEST).digest('hex');
+const SERVER_TOKEN = 'tok-123';
+
+/** A fake companion process at `<page origin>/__mock-api`, answering only
+ * with the right bearer token. */
+async function installServerFake(page) {
+    await page.route('**/__mock-api/**', async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const json = (status, body) =>
+            route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+        if (request.headers()['authorization'] !== `Bearer ${SERVER_TOKEN}`) {
+            return json(401, { error: 'missing or invalid bearer token', error_type: 'PermissionError' });
+        }
+        if (url.pathname.endsWith('/api/health')) {
+            return json(200, {
+                version: '10.23.0',
+                root: '/srv/cases',
+                runs_dir: '/srv/cases/runs',
+                tools: ['info', 'dataset_find', 'dataset_health'],
+                mcp: '/mcp',
+                transport: 'streamable-http',
+                auth: 'token',
+            });
+        }
+        if (url.pathname.endsWith('/api/tools/dataset_find')) {
+            return json(200, {
+                root: '/srv/cases',
+                manifests: [
+                    { path: '/srv/cases/dataset.json', relpath: 'dataset.json', sha256: OVERVIEW_SHA, name: 'campaign', num_entries: 1, splits: { train: 1 }, mtime: 1700000000000 },
+                    { path: '/srv/cases/other/big.json', relpath: 'other/big.json', sha256: 'f'.repeat(64), name: 'big', num_entries: 40, splits: { train: 30, valid: 10 }, mtime: 1690000000000 },
+                ],
+            });
+        }
+        if (url.pathname.endsWith('/api/tools/dataset_health')) {
+            const body = request.postDataJSON();
+            return json(200, {
+                producer: 'server',
+                name: 'campaign',
+                num_entries: 1,
+                scanned: 1,
+                splits: { train: 1 },
+                split_balance: [{ split: 'train', count: 1, fraction: 1 }],
+                entries: { block: { steps: 1, num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.42, arrays: ['point_data:layer'] } },
+                fields_missing: {},
+                totals: { num_nan: 0, num_inf: 0, num_inverted: 0, num_degenerate: 0, min_scaled_jacobian: 0.42 },
+                bad_entries: [],
+                manifest_path: body.manifest_path,
+                sha256: OVERVIEW_SHA,
+            });
+        }
+        return json(404, { error: 'unknown', error_type: 'KeyError' });
+    });
+}
+
+// The web build registers the COOP/COEP service worker (a speed enhancement
+// for the threaded wasm), and Playwright's `page.route` never sees a fetch
+// a service worker handled -- so the fake is only reachable with service
+// workers blocked for this spec.
+test.describe('companion process', () => {
+    test.use({ serviceWorkers: 'block' });
+
+test('connect, bind cards by hash, scan on the server', async ({ page }) => {
+    await installOverviewMock(page);
+    await installServerFake(page);
+    await pickOverview(page);
+
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    // a wrong token is a named 401, and the section stays disconnected
+    await page.locator('#srv-token').fill('wrong');
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.error))
+        .toContain('bearer token');
+    expect((await state(page)).server.connected).toBe(false);
+    await expect(page.locator('#e-scan-server')).toBeHidden();
+
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+    let s = await state(page);
+    expect(s.server.version).toBe('10.23.0');
+    expect(s.server.root).toBe('/srv/cases');
+    expect(s.server.tools).toContain('dataset_health');
+
+    // the workspace card is bound by its content hash; the other is server-only
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.manifests.length))
+        .toBe(3);
+    s = await state(page);
+    const bound = s.manifests.find((c) => c.path === 'dataset.json');
+    expect(bound.serverPath).toBe('/srv/cases/dataset.json');
+    expect(bound.serverOnly).toBe(false);
+    const remote = s.manifests.find((c) => c.serverOnly);
+    expect(remote.path).toBe('server:other/big.json');
+    expect(remote.numEntries).toBe(40);
+    await expect(page.locator('.card[data-path="server:other/big.json"] .card-open')).toBeDisabled();
+
+    // scan on the server from the card
+    await page.locator('.card[data-path="dataset.json"] .card-scan-server').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.manifests.find((c) => c.path === 'dataset.json').health?.producer))
+        .toBe('server');
+    s = await state(page);
+    expect(s.manifests.find((c) => c.path === 'dataset.json').health.minScaledJacobian).toBe(0.42);
+
+    // ...and from the drill-down, where it also fills the entry scans
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+    await expect(page.locator('#e-scan-server')).toBeVisible();
+    await page.locator('#e-scan-server').click();
+    await waitStatus(page, 'ready');
+    s = await state(page);
+    expect(s.scans.block.arrays).toEqual(['point_data:layer']);
+    expect(s.scans.block.minScaledJacobian).toBe(0.42);
+
+    // disconnecting drops the server-only card and unbinds the rest
+    await page.locator('#srv-disconnect').click();
+    s = await state(page);
+    expect(s.server.connected).toBe(false);
+    expect(s.manifests.length).toBe(2);
+    expect(s.manifests.find((c) => c.path === 'dataset.json').serverPath).toBeNull();
+});
+});
