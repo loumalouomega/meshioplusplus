@@ -165,7 +165,9 @@ def build_app(
     else:  # pragma: no cover - older SDKs in the >=1.2 range
         app = server.sse_app()
         transport = "sse"
-    runs = runs_dir or default_runs_dir(root)
+    if runs_dir:
+        _tools.set_runs_dir(runs_dir)
+    runs = _tools.get_runs_dir()
     app.state.meshioplusplus = {
         "token": token,
         "transport": transport,

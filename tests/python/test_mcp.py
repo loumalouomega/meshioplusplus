@@ -502,7 +502,7 @@ def test_wraps_names_are_real_public_api():
 def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
-        assert spec["gated"] in (None, "arrow", "viewer"), name
+        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
 
 
 def test_every_tool_function_is_callable():
@@ -932,3 +932,119 @@ def test_has_dashboard_is_a_bool_and_names_the_extra():
     if not mmcp.has_dashboard():
         with pytest.raises(ImportError, match=r"meshioplusplus\[dashboard\]"):
             mmcp._require_http()
+
+
+# --------------------------------------------------------------------------- #
+# Pure half: training-job tools over the fake trainer (v10.24.0)              #
+# --------------------------------------------------------------------------- #
+import sys  # noqa: E402
+import time  # noqa: E402
+
+_FAKE_TRAINER = [
+    sys.executable,
+    os.path.join(os.path.dirname(__file__), "_fake_trainer.py"),
+]
+
+
+@pytest.fixture()
+def fake_trainer(monkeypatch, tmp_path):
+    from meshioplusplus.mcp import _jobs
+
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(_FAKE_TRAINER))
+    _tools.set_runs_dir(str(tmp_path / "runs"))
+    yield
+    _tools.set_runs_dir(None)
+    _tools._MANAGERS.clear()
+
+
+def _wait_terminal(job_id, timeout=20.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = _tools.tool_train_status(job_id)
+        if state["status"] in ("finished", "failed", "stopped"):
+            return state
+        time.sleep(0.05)
+    raise AssertionError(state)
+
+
+def test_train_defaults_describes_the_manifest(tmp_path):
+    path = _health_manifest(tmp_path)
+    report = _dump(_tools.tool_train_defaults(path, fields=["t"], target_fields=["t"]))
+    assert report["num_entries"] == 3 and report["splits"] == {"train": 2, "": 1}
+    assert report["available_fields"]["point"] == ["t"]
+    # case_0 also carries the quality:* cell arrays attach_quality wrote
+    assert "c" in report["available_fields"]["cell"]
+    assert set(report["frameworks"]) == {"torch_geometric", "physicsnemo"}
+    assert report["spec"]["Fields"] == ["t"] and report["spec"]["Manifest"] == path
+    assert report["spec"]["Model"]["Name"] == "meshgraphnet"
+    assert report["runs_dir"].endswith("runs")
+
+
+def test_train_tools_drive_a_job_end_to_end(tmp_path, fake_trainer):
+    path = _health_manifest(tmp_path)
+    started = _dump(
+        _tools.tool_train_start(
+            path,
+            ["t"],
+            ["t"],
+            epochs=4,
+            checkpoint_every=2,
+            tags=["smoke"],
+            notes="mcp",
+        )
+    )
+    job_id = started["job_id"]
+    assert started["status"] == "running"
+    assert started["run_dir"].startswith(str(tmp_path / "runs"))
+    state = _wait_terminal(job_id)
+    assert state["status"] == "finished" and state["completed"] and state["epoch"] == 4
+    log = _dump(_tools.tool_train_log(job_id))
+    assert "fake trainer: done" in log["text"] and log["done"]
+    metrics = _dump(_tools.tool_train_metrics(job_id, since_epoch=3))
+    assert [r["epoch"] for r in metrics["rows"]] == [3]
+    ckpts = _dump(_tools.tool_train_checkpoints(job_id))
+    names = {c["name"] for c in ckpts["checkpoints"]}
+    assert {"Fake.0.1.mdlus", "Fake.0.3.mdlus", "best.mdlus", "final.mdlus"} <= names
+    marked = _dump(_tools.tool_train_mark_best(job_id, "Fake.0.1.mdlus"))
+    assert [c["name"] for c in marked["checkpoints"] if c["is_best"]] == ["best.mdlus"]
+    listed = _dump(_tools.tool_train_list())
+    assert listed["jobs"][0]["job_id"] == job_id and listed["jobs"][0]["tags"] == [
+        "smoke"
+    ]
+    assert _dump(_tools.tool_train_list(status="running"))["jobs"] == []
+    assert (
+        _dump(_tools.tool_train_list(manifest_path=path))["jobs"][0]["job_id"] == job_id
+    )
+    # a stop on a finished job is a no-op; unknown jobs are named errors
+    assert _dump(_tools.tool_train_stop(job_id))["status"] == "finished"
+    with pytest.raises(ValueError, match="no job 'nope'"):
+        _tools.tool_train_status("nope")
+
+
+def test_train_start_validates_before_spawning(tmp_path, fake_trainer):
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ValueError, match="no split 'nope'"):
+        _tools.tool_train_start(path, ["t"], ["t"], train_split="nope")
+    with pytest.raises(ValueError, match="TargetFields must name"):
+        _tools.tool_train_start(path, ["t"], [])
+    with pytest.raises(ValueError, match="Epochs must be"):
+        _tools.tool_train_start(path, ["t"], ["t"], epochs=0)
+    # the sandbox holds on the entries the split resolves to
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_train_start(path, ["t"], ["t"])
+
+
+def test_train_start_names_the_missing_frameworks(tmp_path, monkeypatch):
+    from meshioplusplus import _gpu
+    from meshioplusplus.mcp import _jobs
+
+    monkeypatch.delenv(_jobs.TRAIN_COMMAND_ENV, raising=False)
+    monkeypatch.setattr(_gpu, "_importable", lambda name: False)
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ImportError, match="pip install torch_geometric"):
+        _tools.tool_train_start(path, ["t"], ["t"])
+    with pytest.raises(ImportError, match="torch_geometric"):
+        _tools.tool_train_predict(path, checkpoint=path, output_dir=str(tmp_path / "p"))
+    with pytest.raises(ValueError, match="give job_id or checkpoint"):
+        _tools.tool_train_predict(path)

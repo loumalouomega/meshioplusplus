@@ -66,10 +66,23 @@ Paste the URL and token into the page's **Companion process** panel and connect;
 
 The architecture rule the MCP server already follows carries over: `src/python/meshioplusplus/mcp/_http.py` is the only module importing Starlette/uvicorn, `_health.py` (the producer) is pure stdlib + meshioplusplus and tested in the default CI matrix, and the FastMCP app is the root ASGI application with the `/api` routes added to it — its own lifespan starts the streamable-HTTP session manager, which mounting it under a parent app would silently skip.
 
+## Launching and monitoring a run
+
+With a companion process connected, a manifest's drill-down grows a **Training** section: pick the input and target fields (read from the manifest's own first entry), the train and validation splits, the hyperparameters, and **Start training**. The run is a job on the server — a `python -m meshioplusplus.physicsnemo.train --spec` subprocess in its own run directory — and the page follows it.
+
+![A training run in progress: the loss curve, progress and ETA, the checkpoint list and the live log](/viewer/training-run.png)
+
+The run panel polls three incremental tools and shows what they return: `train_status` (the epoch, the best validation loss so far, an ETA, the device), `train_metrics` since the last epoch it has (the train/valid loss curve, log-scaled, with a hover crosshair), and `train_log` from the last byte offset (the trainer's stdout, with a *follow* toggle). **Stop** sends SIGTERM, which the trainer honours by finishing its epoch and writing `final.mdlus` — a stopped run leaves a usable checkpoint, not a truncated one. When a run reaches a terminal state the page raises a browser notification (permission is asked from the Start click, and the run never waits on the answer); with notifications refused the tab title carries the outcome instead.
+
+Each checkpoint is listed with its epoch, validation loss and size, a **download** link (through the sandboxed `/api/files` route) and **mark best**, which copies it — and its model card — to `best.mdlus`, which is what `train_predict` and the example's `infer.py` then use.
+
+Two things follow from where training actually runs. The form is enabled only for a manifest the **server can see**, i.e. one whose bytes match a manifest under the server's root — an unsaved edit unbinds the card, and the hint says so. And the **Runs…** button lists the server's jobs, so closing the tab does not lose a run: reconnecting and picking it from the list resumes following it exactly where the files say it is.
+
 ## Limitations
 
 - Only `*.json` files at the workspace root are treated as manifests: the manifest is the resolution anchor for the relative sources inside it, and the page saves back at the root.
 - Thumbnails are session-only and cost one preview render per manifest; untick *thumbnails* before **Scan all** on a large workspace.
 - A scan stages exactly one entry at a time (the WASM filesystem never reclaims memory), so **Scan all** over many large manifests is serial and slow the first time; the scan cache makes the next visit instant.
-- Training launch, monitoring, run history, prediction preview and notifications are not built yet — see [the roadmap](./roadmap); the companion process they will run through is.
+- Run history is a list, not yet a comparison: past runs can be reopened from **Runs…**, but comparing several runs' curves side by side, and previewing a prediction in the mesh viewer, are still [roadmap](./roadmap) items.
+- One model architecture (MeshGraphNet) and one training loop; a different architecture means a different trainer, not a form field.
 - The companion process is a local convenience, not a multi-user service: one token, loopback by default, no accounts.

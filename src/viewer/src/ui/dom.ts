@@ -13,6 +13,17 @@ export function $<T extends HTMLElement = HTMLElement>(id: string): T {
     return el as T;
 }
 
+/**
+ * Like {@link $}, for an SVG element. `getElementById` is typed
+ * `HTMLElement | null`, which an `<svg>` is not, so this goes through
+ * `querySelector<T>` -- properly typed for SVG, and no cast.
+ */
+export function svg$<T extends SVGElement = SVGSVGElement>(id: string): T {
+    const el = document.querySelector<T>(`#${id}`);
+    if (!el) throw new Error(`viewer: #${id} is missing from the page`);
+    return el;
+}
+
 /** Like {@link $}, but for elements a given build may legitimately omit. */
 export function maybe<T extends HTMLElement = HTMLElement>(id: string): T | null {
     return document.getElementById(id) as T | null;

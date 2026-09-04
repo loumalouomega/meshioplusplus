@@ -138,6 +138,54 @@ pm.to("cuda")                              # device moves are upstream's job
 
 **The risk, stated**: this rides the framework's newest surface. The bridge therefore touches only the tensorclass constructor and public attributes — never the self-declared-unstable `.pmsh` format — its gated module is the only one importing `physicsnemo.mesh` (an import that pulls in NVIDIA Warp, ~1.5 s, which is why it stays lazy), and training projects should pin `nvidia-physicsnemo>=2.1,<2.2`. If upstream's `Mesh` stabilizes, an `io_meshio.py` contributed upstream (mirroring `io_pyvista`'s shape) is still the natural end state; today its `io` module has no plugin registry, so the bridge lives here.
 
+## Training and prediction
+
+The adapter builds the tensors; `run_training` is the loop over them — MeshGraphNet through the PyG path, driven by a **training spec** and writing everything a run produces into one directory:
+
+```python
+spec = mpn.default_spec("dataset_manifest.json", ["q_scaled"], ["T"],
+                        run_dir="runs/example", epochs=100)
+progress = mpn.run_training(spec)          # or: python -m meshioplusplus.physicsnemo.train --spec spec.json
+rows = mpn.predict(progress["best_checkpoint"], "dataset_manifest.json",
+                   split="test", output_dir="predictions")
+```
+
+The spec is a **hand-editable settings document** — PascalCase keys, `"Version": 1`, strict unknown-key refusal, exactly like a [dataset manifest](./datasets) or a [pipeline](./pipeline) — because a training run is something you write down, review and re-run:
+
+```jsonc
+{
+  "Version": 1,
+  "Manifest": "dataset_manifest.json",   // required; relative to this file
+  "RunDir": "runs/example",
+  "Fields": ["q_scaled"],                // required: the input arrays
+  "TargetFields": ["T"],                 // required: what the model predicts
+  "TrainSplit": "train", "ValidSplit": "valid",
+  "Epochs": 100, "BatchSize": 8, "LearningRate": 0.001, "Seed": 0,
+  "CheckpointEvery": 10, "Device": "auto",
+  "Model": { "Name": "meshgraphnet", "ProcessorSize": 8, "HiddenDim": 64, "Aggregation": "sum" },
+  "Graph": { "Regions": false, "Kind": "node", "Undirected": true,
+             "EdgeFeatures": true, "Float32": true,
+             "TargetOffset": 0, "TargetDelta": false },   // graph_sample's own options
+  "Read": {}, "Notes": null, "Tags": []
+}
+```
+
+Everything the run *writes* is a machine artefact and is snake_case (the [`write_dataset`](./ml#dataset-export-write_dataset) convention), in the run directory:
+
+| file | written by | holds |
+|---|---|---|
+| `spec.json` | the launcher | the spec the run was started from |
+| `metrics.jsonl` | the trainer | one row per epoch: `epoch`, `train_loss`, `valid_loss`, `lr`, `elapsed` |
+| `progress.json` | the trainer | the live record: epoch, best epoch and loss, ETA, device, `completed` |
+| `node_stats.json`, `edge_stats.json` | the trainer | the normalization stats, in PhysicsNeMo's own key convention |
+| `checkpoints/` | the trainer | `<Model>.0.<epoch>.mdlus` + `checkpoint.0.<epoch>.pt` (`physicsnemo.utils.checkpoint.save_checkpoint`, resumable), plus `best.mdlus` and `final.mdlus` |
+| `predictions/` | `predict` | `<entry_id>.vtu` with the predictions written back |
+| `log.txt`, `job.json` | the [job manager](./dashboard#the-companion-process) | only when the run was launched as a job |
+
+**Every `.mdlus` carries a model card** (`<checkpoint>.card.json`): the field names, the `x_columns`/`y_columns` contract, and the input/output/edge normalization the model was trained under. This is the [Kratos PhysicsNeMo application](https://github.com/KratosMultiphysics/Kratos)'s convention, adopted for the same reason it exists there — a checkpoint that does not say what its channels mean is a checkpoint you can silently misuse, and writing a model's normalized output onto a physical field produces finite, plausible, completely wrong numbers. `predict` reads the card rather than being told again, and refuses by name when the columns it recomputes differ from the ones recorded (the feature-drift guard).
+
+Two details worth knowing. The model is sized from the **recorded schema**, not from `len(Fields)`: with `Graph.Regions` on, the region one-hots widen `x`, and sizing from the field count alone would build the wrong first layer. And `SIGTERM` is honoured — the running epoch finishes, `final.mdlus` and its card are written, and the process exits 143 — which is what makes the dashboard's *Stop* button leave a usable checkpoint rather than a truncated one.
+
 ## Dataset manifests
 
 The object the adapter iterates is a [`DatasetManifest`](./datasets) — a hand-editable JSON cataloguing many cases (each possibly a time series) with splits, tags, groups and notes, curated by hand, by the [`dataset` CLI group](./cli#meshioplusplus-dataset), or by the [MCP tools](./mcp), all reading and writing the same file.
@@ -145,5 +193,7 @@ The object the adapter iterates is a [`DatasetManifest`](./datasets) — a hand-
 ## The worked example
 
 [`example/physicsnemo/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/physicsnemo) is the end-to-end path, executed for real: 200 self-generated steady-heat cases (a manufactured Poisson pair `q = -∆T` on jittered, transformed triangle meshes — `convert_cells(simplexify)` + `transform`), catalogued and split with the `dataset` CLI, preprocessed by a [settings-document pipeline](./pipeline), trained with PhysicsNeMo's MeshGraphNet through `make_dataset`, and the predictions written back as ordinary `point_data` (`T_pred`/`T_error`) into `.vtu` files and rendered. The committed README, stats files and renders are the outputs of a real GPU run: 100 epochs over 160 training graphs in 73.8 s on an RTX 2000 Ada (8 GB, WSL2), validation MSE 7.9×10⁻¹ → 4.2×10⁻⁴, mean test RMSE 0.0040 on a field of amplitude 1 (2026-08-06; physicsnemo 2.1.1, torch 2.12.0+cu130).
+
+The trainer is reachable from every surface the adapter is: `mpn.run_training`/`mpn.predict` in Python, `python -m meshioplusplus.physicsnemo.train --spec` as a process, and the `train_*` [MCP tools](./mcp#training) the [dashboard](./dashboard#launching-and-monitoring-a-run) drives.
 
 **CI note:** public runners install neither torch nor PhysicsNeMo (the [GPU-handoff precedent](./gpu#testing-and-ci)). The pure half — `graph_sample`, the stats accumulators, manifest iteration, the install-error messages — runs in the default CI matrix with nothing optional installed; the gated halves `importorskip` and were exercised on a real GPU machine, which is stated here rather than implied by a green badge.

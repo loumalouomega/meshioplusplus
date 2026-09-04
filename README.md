@@ -777,7 +777,7 @@ t = meshioplusplus.to_torch(mesh)                     # torch tensors, adopted z
 
 `feature_matrix`'s column order is a stated, versioned contract recorded in the returned schema, so training and inference cannot silently disagree; `write_dataset` streams a glob / directory / transient series into hive-partitioned Parquet (or chunked zarr/hdf5 groups, `[zarr]`/h5py) with a strict shared schema and a JSON manifest; `to_torch`/`to_jax` adopt the DLPack payload per framework (no `[torch]`/`[jax]` extra, deliberately — the CuPy precedent). See [the ML docs](https://loumalouomega.github.io/meshioplusplus/ml.html).
 
-A *collection* of solution outputs is catalogued by a hand-editable [dataset manifest](https://loumalouomega.github.io/meshioplusplus/datasets.html) (`DatasetManifest` — sources, train/valid/test splits, tags, groups, notes; curated in Python, by the `meshioplusplus dataset` CLI group, over MCP, or with a text editor, all against the same JSON), and the [PhysicsNeMo adapter](https://loumalouomega.github.io/meshioplusplus/physicsnemo.html) (`meshioplusplus.physicsnemo`) trains straight off it: `graph_sample` builds the MeshGraphNet tensor set per mesh, `field_stats`/`edge_stats` stream normalization stats in PhysicsNeMo's own convention, `make_dataset` yields a PyTorch Geometric dataset and `make_reader` a Gen-2 `Reader` — with a worked, GPU-executed end-to-end example in [`example/physicsnemo/`](example/physicsnemo/).
+A *collection* of solution outputs is catalogued by a hand-editable [dataset manifest](https://loumalouomega.github.io/meshioplusplus/datasets.html) (`DatasetManifest` — sources, train/valid/test splits, tags, groups, notes; curated in Python, by the `meshioplusplus dataset` CLI group, over MCP, or with a text editor, all against the same JSON), and the [PhysicsNeMo adapter](https://loumalouomega.github.io/meshioplusplus/physicsnemo.html) (`meshioplusplus.physicsnemo`) trains straight off it: `graph_sample` builds the MeshGraphNet tensor set per mesh, `field_stats`/`edge_stats` stream normalization stats in PhysicsNeMo's own convention, `make_dataset` yields a PyTorch Geometric dataset and `make_reader` a Gen-2 `Reader`, and `run_training`/`predict` (also `python -m meshioplusplus.physicsnemo.train --spec`, and the dashboard's *Start training*) run the loop and write predictions back onto the mesh — with a worked, GPU-executed end-to-end example in [`example/physicsnemo/`](example/physicsnemo/).
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
@@ -790,7 +790,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 59 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 69 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### Blender add-on
 
@@ -889,7 +889,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.23.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.24.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

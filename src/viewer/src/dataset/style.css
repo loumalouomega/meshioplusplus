@@ -191,6 +191,7 @@ label.col textarea {
 body[data-view='overview'] #manifest-editor,
 body[data-view='overview'] #entries-section,
 body[data-view='overview'] #health-section,
+body[data-view='overview'] #train-section,
 body[data-view='overview'] #detail-section {
     display: none;
 }
@@ -376,6 +377,144 @@ body[data-view='overview'] #detail-section {
 
 #h-missing li span {
     color: var(--muted);
+}
+
+/* --- training: the launch form and the run panel -------------------------- */
+
+.grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 8px;
+}
+
+/* A flex row's inputs default to their intrinsic width, which overflows the
+   fixed-width aside once two sit side by side. */
+.grid2 .row {
+    min-width: 0;
+}
+
+.grid2 .row input {
+    min-width: 0;
+    width: 100%;
+}
+
+#train-section select[multiple] {
+    padding: 2px 4px;
+}
+
+#run-wrap {
+    position: absolute;
+    inset: 0;
+    z-index: 17;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 20px;
+    overflow-y: auto;
+    background: var(--bg);
+}
+
+.run-head {
+    align-items: center;
+}
+
+#run-job {
+    max-width: 18rem;
+}
+
+#run-title {
+    flex: 1;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+#run-progress {
+    flex: 1;
+    height: 8px;
+    accent-color: var(--accent);
+}
+
+#run-wrap h4 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0 0;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+/* The chart draws its own axes; the surface is the page's, so the hairline
+   grid and the muted ink tokens carry over unchanged. */
+.chart-wrap {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px;
+}
+
+#run-chart {
+    display: block;
+    width: 100%;
+    height: 300px;
+}
+
+.chart-tooltip {
+    position: absolute;
+    top: 10px;
+    left: 70px;
+    margin: 0;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: var(--text);
+    background: rgba(10, 16, 26, 0.85);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    pointer-events: none;
+}
+
+#run-checkpoints {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 12px;
+}
+
+#run-checkpoints li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+#run-checkpoints li.best .ckpt-name {
+    color: #0ca30c;
+}
+
+#run-checkpoints .ckpt-name {
+    flex: 1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#run-checkpoints a {
+    color: var(--accent);
+}
+
+#run-log {
+    margin: 0;
+    padding: 8px 10px;
+    max-height: 16rem;
+    overflow: auto;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    background: #101216;
+    border: 1px solid var(--line);
+    border-radius: 6px;
 }
 
 /* --- the manifest diff view ------------------------------------------------ */

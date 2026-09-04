@@ -74,7 +74,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 
 ## Tools
 
-59 tools; the three marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
+69 tools; the five marked *gated* need a further extra and return a named install error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report.
 
 ### Inspection (read-only)
 
@@ -123,6 +123,20 @@ By default paths are unrestricted — the server runs locally under your own acc
 | `dataset_find` | every `*.json` at most `max_depth` levels below `root_dir` that parses as a manifest, with its name, entry count, splits, modification time and SHA-256 content hash (the identity the [dashboard](./dashboard) binds a browser-side card to) |
 | `dataset_health` | scan a manifest's entries (optionally one `split` / given `entry_ids`, step 0 or `all_steps`), one mesh alive at a time: per entry the step count, NaN/Inf counts over the data arrays (`quality:*` arrays excluded — their NaN means "N/A for this cell type"), inverted/degenerate cells and the worst scaled Jacobian from `compute_quality`, and the arrays present; per manifest the split balance, totals, fields missing across entries and the bad entries — the server-side producer of the dashboard's health summary |
 
+### Training
+
+Jobs on the machine the server runs on (see [the dashboard](./dashboard#launching-and-monitoring-a-run)); every run lives in its own directory under `--runs-dir` (default `<root>/runs`).
+
+| Tool | Notes |
+|---|---|
+| `train_defaults` | what a launch needs: the data arrays the manifest's first entry carries, its splits, whether the frameworks are installed, and a complete default [training spec](physicsnemo.md#training-and-prediction) |
+| `train_start` | *gated* — start a MeshGraphNet run (`fields` → `target_fields` over a split) as a subprocess; returns the job id. Needs `torch_geometric` + `nvidia-physicsnemo`, checked **before** spawning so a missing framework is a named error rather than a dead process |
+| `train_status` / `train_metrics` / `train_log` | the three incremental polls: state + progress + ETA, the per-epoch rows since an epoch, and the log from a byte offset |
+| `train_list` | every run (newest first) with its hyperparameters and final/best losses |
+| `train_stop` | SIGTERM (the trainer finishes its epoch and writes `final.mdlus`), SIGKILL after `grace_seconds` |
+| `train_checkpoints` / `train_mark_best` | the run's `.mdlus` files with epoch/validation loss/size, and which one is best |
+| `train_predict` | *gated* — predict over a split with a job's (or an explicit) checkpoint, writing `<column>_pred`/`<column>_error` back into `output_dir/<entry_id>.vtu`; returns per-entry RMSE |
+
 ### Gated
 
 | Tool | Extra | Notes |
@@ -130,6 +144,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 | `data_export` | `[arrow]` | data arrays → Parquet table |
 | `export_dataset` | `[arrow]` (`[zarr]`/h5py for those layouts) | a *set* of meshes → one `mesh_id`-keyed dataset (hive Parquet / zarr / hdf5; see [ML data handling](/ml)) |
 | `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content |
+| `train_start`, `train_predict` | `torch_geometric` + `nvidia-physicsnemo` (no pip extra, [deliberately](physicsnemo.md#installation-deliberately-no-physicsnemo-extra)) | training and inference; the other `train_*` tools only read files and need neither |
 
 ## Reports are strict JSON
 

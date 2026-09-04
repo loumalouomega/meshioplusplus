@@ -517,3 +517,112 @@ def test_to_physicsnemo_tessellation_warns(capsys):
     # module -- assert on stderr, where every lossy step must be named
     err = capsys.readouterr().err
     assert "tessellated" in err and "line x 1" in err
+
+
+# --------------------------------------------------------------------------- #
+# v10.24.0: the in-package trainer -- dev GPU box only, never public CI        #
+# --------------------------------------------------------------------------- #
+def test_run_training_and_predict_end_to_end(tmp_path):
+    pytest.importorskip("torch_geometric")
+    pytest.importorskip("physicsnemo")
+    import json
+    import os
+
+    manifest = _manifest(tmp_path)
+    manifest_path = str(tmp_path / "m.json")
+    manifest.save(manifest_path)
+    run_dir = tmp_path / "run"
+    spec = mpn.default_spec(
+        manifest_path,
+        ["T"],
+        ["v"],
+        run_dir=str(run_dir),
+        valid_split="test",
+        epochs=3,
+        batch_size=2,
+        hidden_dim=8,
+        processor_size=2,
+        checkpoint_every=2,
+        device="cpu",
+    )
+    lines = []
+    progress = mpn.run_training(spec, log=lines.append)
+    assert progress["completed"] and not progress["stopped"]
+    assert progress["epoch"] == 3 and progress["epochs"] == 3
+    assert any(line.startswith("epoch    0") for line in lines)
+    # the run directory layout (physicsnemo/_train.py)
+    from meshioplusplus.physicsnemo import _train as t
+
+    rows = t.read_metrics(str(run_dir))
+    assert [r["epoch"] for r in rows] == [0, 1, 2]
+    assert all(r["valid_loss"] is not None for r in rows)
+    node_stats = json.load(open(run_dir / t.NODE_STATS_FILE))
+    assert set(node_stats) == {"T_mean", "T_std", "v_mean", "v_std"}
+    assert len(node_stats["v_mean"]) == 2
+    ckpts = t.list_checkpoints(str(run_dir), best=progress["best_checkpoint"])
+    names = {c["name"] for c in ckpts}
+    assert {"best.mdlus", "final.mdlus"} <= names
+    assert any(
+        c["kind"] == "periodic" for c in ckpts
+    ), names  # save_checkpoint at epoch 1
+    assert all(c["epoch"] is not None for c in ckpts), ckpts  # every .mdlus has a card
+    periodic = [c for c in ckpts if c["kind"] == "periodic"]
+    assert os.path.isfile(os.path.join(run_dir, t.CHECKPOINT_DIR, "checkpoint.0.1.pt"))
+    card = t.read_json(t.card_path(progress["best_checkpoint"]))
+    assert card["x_columns"] == ["T"] and card["y_columns"] == ["v_0", "v_1"]
+    assert card["model"]["input_dim_nodes"] == 1 and card["model"]["output_dim"] == 2
+    assert card["model"]["input_dim_edges"] == 4
+    assert len(card["output_normalization"]["mean"]) == 2
+
+    # predict on the held-out split, written back as data arrays
+    out = tmp_path / "pred"
+    predictions = mpn.predict(
+        progress["best_checkpoint"], manifest_path, split="test", output_dir=str(out)
+    )
+    assert len(predictions) == 1
+    row = predictions[0]
+    assert row["entry_id"] == "c3" and row["num_rows"] == 4
+    assert row["rmse"] is not None and row["max_error"] >= 0
+    mesh = meshioplusplus.read(row["output_path"])
+    assert {"v_0_pred", "v_1_pred", "v_0_error", "v_1_error"} <= set(mesh.point_data)
+    assert mesh.point_data["v_0_pred"].shape == (4,)
+    # a periodic checkpoint predicts too (it carries a card as well)
+    again = mpn.predict(
+        periodic[0]["path"], manifest_path, split="test", output_dir=str(out / "p")
+    )
+    assert again[0]["entry_id"] == "c3"
+    # feature drift is a named error: a manifest whose meshes lack the field
+    with pytest.raises(Exception, match="T"):
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        m = _mesh()
+        del m.point_data["T"]
+        meshioplusplus.write(str(bad / "x.vtu"), m)
+        drift = DatasetManifest(base_dir=str(tmp_path))
+        drift.add("bad/x.vtu", id="x", split="test")
+        drift.save(str(tmp_path / "drift.json"))
+        mpn.predict(
+            progress["best_checkpoint"],
+            str(tmp_path / "drift.json"),
+            split="test",
+            output_dir=str(out / "d"),
+        )
+    # the CLI entry point and the named errors without the frameworks
+    from meshioplusplus.physicsnemo import train as trainer
+
+    assert (
+        trainer.main(
+            [
+                "--spec",
+                json.dumps(
+                    {
+                        **t.spec_to_dict(spec),
+                        "RunDir": str(tmp_path / "run2"),
+                        "Epochs": 1,
+                    }
+                ),
+            ]
+        )
+        == 0
+    )
+    assert (tmp_path / "run2" / t.FINAL_CHECKPOINT.replace("final.mdlus", "")).exists()

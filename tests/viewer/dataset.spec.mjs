@@ -541,9 +541,108 @@ const OVERVIEW_MANIFEST =
 const OVERVIEW_SHA = createHash('sha256').update(OVERVIEW_MANIFEST).digest('hex');
 const SERVER_TOKEN = 'tok-123';
 
+/**
+ * The training half of the fake: a job that reports two epochs on its first
+ * status poll and finishes on the second, so the spec exercises the real
+ * running -> finished transition (and the poller's incremental metrics/log
+ * offsets) without waiting on a real trainer.
+ */
+function makeTrainFake() {
+    const EPOCHS = 4;
+    const rows = Array.from({ length: EPOCHS }, (_, epoch) => ({
+        epoch,
+        train_loss: 1 / (epoch + 1),
+        valid_loss: 1.2 / (epoch + 1),
+        lr: 0.001,
+        elapsed: (epoch + 1) * 2,
+        epoch_seconds: 2,
+        timestamp: 1700000000 + epoch,
+    }));
+    const LOG = rows.map((r) => `epoch ${r.epoch} train ${r.train_loss}\n`).join('');
+    const state = { started: false, polls: 0, best: 'best.mdlus' };
+    const visible = () => (state.polls <= 1 ? 2 : EPOCHS);
+    const status = () => ({
+        job_id: 'job-1',
+        run_dir: '/srv/cases/runs/job-1',
+        status: state.polls <= 1 ? 'running' : 'finished',
+        pid: 4242,
+        started: 1700000000,
+        finished: state.polls <= 1 ? null : 1700000010,
+        exit_code: state.polls <= 1 ? null : 0,
+        manifest: '/srv/cases/dataset.json',
+        best_checkpoint: `/srv/cases/runs/job-1/checkpoints/${state.best}`,
+        epoch: visible(),
+        epochs: EPOCHS,
+        best_epoch: visible() - 1,
+        best_valid_loss: rows[visible() - 1].valid_loss,
+        eta_seconds: state.polls <= 1 ? 4 : 0,
+        device: 'cuda',
+        completed: state.polls > 1,
+        num_metrics: visible(),
+        last: rows[visible() - 1],
+    });
+    return (tool, body) => {
+        if (tool === 'train_defaults') {
+            return {
+                manifest_path: body.manifest_path,
+                num_entries: 1,
+                splits: { train: 1, valid: 1 },
+                available_fields: { point: ['q', 'T'], cell: [] },
+                runs_dir: '/srv/cases/runs',
+                frameworks: { torch_geometric: true, physicsnemo: true },
+                spec: { Version: 1, Manifest: body.manifest_path },
+            };
+        }
+        if (tool === 'train_start') {
+            state.started = body;
+            return status();
+        }
+        if (tool === 'train_status') {
+            const current = status();
+            state.polls += 1;
+            return current;
+        }
+        if (tool === 'train_metrics') {
+            return { job_id: 'job-1', status: status().status, rows: rows.slice(body.since_epoch ?? 0, visible()) };
+        }
+        if (tool === 'train_log') {
+            const offset = body.offset ?? 0;
+            const text = LOG.slice(offset, LOG.length);
+            return { job_id: 'job-1', text, offset, next_offset: offset + text.length, size: LOG.length, done: state.polls > 1 };
+        }
+        if (tool === 'train_checkpoints') {
+            return {
+                job_id: 'job-1',
+                best_checkpoint: `/srv/cases/runs/job-1/checkpoints/${state.best}`,
+                checkpoints: [
+                    { path: '/srv/cases/runs/job-1/checkpoints/Model.0.1.mdlus', name: 'Model.0.1.mdlus', kind: 'periodic', epoch: 1, valid_loss: 0.6, size: 2048, is_best: state.best === 'Model.0.1.mdlus' },
+                    { path: '/srv/cases/runs/job-1/checkpoints/best.mdlus', name: 'best.mdlus', kind: 'best', epoch: 3, valid_loss: 0.3, size: 2048, is_best: state.best === 'best.mdlus' },
+                ],
+            };
+        }
+        if (tool === 'train_mark_best') {
+            state.best = body.checkpoint;
+            const listed = { job_id: 'job-1', best_checkpoint: `/srv/cases/runs/job-1/checkpoints/${state.best}` };
+            return { ...listed, checkpoints: [
+                { path: '/srv/cases/runs/job-1/checkpoints/Model.0.1.mdlus', name: 'Model.0.1.mdlus', kind: 'periodic', epoch: 1, valid_loss: 0.6, size: 2048, is_best: state.best === 'Model.0.1.mdlus' },
+                { path: '/srv/cases/runs/job-1/checkpoints/best.mdlus', name: 'best.mdlus', kind: 'best', epoch: 3, valid_loss: 0.3, size: 2048, is_best: state.best === 'best.mdlus' },
+            ] };
+        }
+        if (tool === 'train_list') {
+            return { runs_dir: '/srv/cases/runs', jobs: state.started ? [{ ...status(), fields: ['q'], target_fields: ['T'], tags: [] }] : [] };
+        }
+        if (tool === 'train_stop') {
+            state.polls = 99;
+            return { ...status(), status: 'stopped' };
+        }
+        return { error: `unknown tool ${tool}`, error_type: 'KeyError' };
+    };
+}
+
 /** A fake companion process at `<page origin>/__mock-api`, answering only
  * with the right bearer token. */
 async function installServerFake(page) {
+    const trainFake = makeTrainFake();
     await page.route('**/__mock-api/**', async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -571,6 +670,12 @@ async function installServerFake(page) {
                     { path: '/srv/cases/other/big.json', relpath: 'other/big.json', sha256: 'f'.repeat(64), name: 'big', num_entries: 40, splits: { train: 30, valid: 10 }, mtime: 1690000000000 },
                 ],
             });
+        }
+        // The mock lives under the page's own base path, so match the tail
+        // (as the handlers below do), never a leading '/__mock-api'.
+        const train = /\/api\/tools\/(train_\w+)$/.exec(url.pathname);
+        if (train) {
+            return json(200, trainFake(train[1], request.postDataJSON() ?? {}));
         }
         if (url.pathname.endsWith('/api/tools/dataset_health')) {
             const body = request.postDataJSON();
@@ -663,5 +768,97 @@ test('connect, bind cards by hash, scan on the server', async ({ page }) => {
     expect(s.server.connected).toBe(false);
     expect(s.manifests.length).toBe(2);
     expect(s.manifests.find((c) => c.path === 'dataset.json').serverPath).toBeNull();
+});
+});
+
+// Same service-worker rule as the companion block above: `page.route` never
+// sees a fetch the COOP/COEP worker answered first.
+test.describe('training', () => {
+    test.use({ serviceWorkers: 'block' });
+
+test('launch a run from the manifest and follow it to completion', async ({
+    page,
+}) => {
+    await installOverviewMock(page);
+    await installServerFake(page);
+    await pickOverview(page);
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+
+    // the training form belongs to a manifest, so it lives in the drill-down
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+    await expect(page.locator('#train-section')).toBeVisible();
+    await expect
+        .poll(() => page.locator('#t-fields option').count())
+        .toBe(2);
+    await expect(page.locator('#t-start')).toBeEnabled();
+    await expect(page.locator('#t-train-split')).toHaveValue('train');
+
+    // a run needs both selections; the form says so rather than starting
+    await page.locator('#t-start').click();
+    await expect(page.locator('#t-error')).toContainText('at least one input field');
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.activeJob))
+        .toBeNull();
+
+    await page.locator('#t-fields').selectOption(['q']);
+    await page.locator('#t-targets').selectOption(['T']);
+    await page.locator('#t-epochs').fill('4');
+    await page.locator('#t-start').click();
+
+    // the run panel follows the job: running first, then finished
+    await expect(page.locator('#run-wrap')).toBeVisible();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.activeJob?.status))
+        .toBe('running');
+    await expect
+        .poll(
+            () => page.evaluate(() => window.__datasetState.activeJob?.status),
+            { timeout: 20_000 },
+        )
+        .toBe('finished');
+
+    const job = (await state(page)).activeJob;
+    expect(job.jobId).toBe('job-1');
+    expect(job.epoch).toBe(4);
+    expect(job.epochs).toBe(4);
+    // every row arrived exactly once, across two polls with a moving offset
+    expect(job.metrics.map((r) => r.epoch)).toEqual([0, 1, 2, 3]);
+    expect(job.checkpoints.map((c) => c.name)).toEqual(['Model.0.1.mdlus', 'best.mdlus']);
+    expect(job.bestCheckpoint).toContain('best.mdlus');
+
+    // the chart drew both series, with a direct label each
+    await expect(page.locator('#run-chart polyline')).toHaveCount(2);
+    await expect(page.locator('#run-chart')).toContainText('train');
+    await expect(page.locator('#run-chart')).toContainText('valid');
+    await expect(page.locator('#run-legend .split-item')).toHaveCount(2);
+    // ...and the log arrived once, in order
+    await expect(page.locator('#run-log')).toContainText('epoch 0 train 1');
+    await expect(page.locator('#run-log')).toContainText('epoch 3 train 0.25');
+    expect(await page.locator('#run-log').textContent()).not.toContain('epoch 0 train 1\nepoch 0');
+    // a finished run cannot be stopped, and its checkpoints are downloadable
+    await expect(page.locator('#run-stop')).toBeDisabled();
+    const href = await page.locator('#run-checkpoints a').first().getAttribute('href');
+    expect(href).toContain('/api/files?path=');
+    expect(href).toContain(`token=${SERVER_TOKEN}`);
+
+    // marking another checkpoint best goes through the server
+    await page.locator('#run-checkpoints li', { hasText: 'Model.0.1.mdlus' }).getByRole('button').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.activeJob?.bestCheckpoint))
+        .toContain('Model.0.1.mdlus');
+
+    // leaving for the overview hides the panel but keeps the run's state
+    await page.locator('#run-close').click();
+    await expect(page.locator('#run-wrap')).toBeHidden();
+    await page.locator('#t-runs').click();
+    await expect(page.locator('#run-wrap')).toBeVisible();
+    expect((await state(page)).jobs.map((j) => j.job_id)).toEqual(['job-1']);
 });
 });

@@ -56,6 +56,7 @@ def create_server(root: Optional[str] = None, host: Optional[str] = None) -> Fas
     _register_operations(server)
     _register_data(server)
     _register_dataset(server)
+    _register_training(server)
     _register_gated(server)
     _register_resources(server)
     return server
@@ -1555,6 +1556,158 @@ def _register_dataset(server: FastMCP) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Training jobs (doc/dashboard.md)                                            #
+# --------------------------------------------------------------------------- #
+def _register_training(server: FastMCP) -> None:
+    @server.tool()
+    def train_defaults(
+        manifest_path: str,
+        fields: Optional[List[str]] = None,
+        target_fields: Optional[List[str]] = None,
+    ) -> dict:
+        """What a training launch needs: the point/cell data arrays the
+        manifest's first entry carries, its splits, whether the frameworks
+        are installed, and a complete default training spec."""
+        return _guard(
+            _tools.tool_train_defaults,
+            manifest_path=manifest_path,
+            fields=fields,
+            target_fields=target_fields,
+        )
+
+    @server.tool()
+    def train_start(
+        manifest_path: str,
+        fields: List[str],
+        target_fields: List[str],
+        train_split: str = "train",
+        valid_split: str = "valid",
+        epochs: int = 100,
+        batch_size: int = 8,
+        learning_rate: float = 1e-3,
+        seed: int = 0,
+        processor_size: int = 8,
+        hidden_dim: int = 64,
+        aggregation: str = "sum",
+        regions: bool = False,
+        kind: str = "node",
+        undirected: bool = True,
+        edge_features: bool = True,
+        float32: bool = True,
+        target_offset: int = 0,
+        target_delta: bool = False,
+        checkpoint_every: int = 10,
+        device: str = "auto",
+        notes: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> dict:
+        """Start training PhysicsNeMo's MeshGraphNet on a manifest split
+        (fields -> target_fields) as a background job under the runs
+        directory; returns the job id and initial status. Needs
+        torch_geometric + nvidia-physicsnemo (no pip extra); a missing
+        framework is a named error."""
+        return _guard(
+            _tools.tool_train_start,
+            manifest_path=manifest_path,
+            fields=fields,
+            target_fields=target_fields,
+            train_split=train_split,
+            valid_split=valid_split,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            seed=seed,
+            processor_size=processor_size,
+            hidden_dim=hidden_dim,
+            aggregation=aggregation,
+            regions=regions,
+            kind=kind,
+            undirected=undirected,
+            edge_features=edge_features,
+            float32=float32,
+            target_offset=target_offset,
+            target_delta=target_delta,
+            checkpoint_every=checkpoint_every,
+            device=device,
+            notes=notes,
+            tags=tags,
+        )
+
+    @server.tool()
+    def train_status(job_id: str) -> dict:
+        """A training job's status (running/finished/failed/stopped), epoch
+        progress, best validation loss, ETA and last metrics row."""
+        return _guard(_tools.tool_train_status, job_id=job_id)
+
+    @server.tool()
+    def train_list(
+        status: Optional[str] = None, manifest_path: Optional[str] = None
+    ) -> dict:
+        """Every training job (newest first) with its hyperparameters and
+        final/best losses; optionally filtered by status or manifest."""
+        return _guard(
+            _tools.tool_train_list, status=status, manifest_path=manifest_path
+        )
+
+    @server.tool()
+    def train_stop(job_id: str, grace_seconds: float = 10.0) -> dict:
+        """Stop a job: SIGTERM lets the trainer finish its epoch and write
+        final.mdlus; SIGKILL after grace_seconds."""
+        return _guard(
+            _tools.tool_train_stop, job_id=job_id, grace_seconds=grace_seconds
+        )
+
+    @server.tool()
+    def train_log(job_id: str, offset: int = 0, max_bytes: int = 65536) -> dict:
+        """A window of a job's stdout/stderr from a byte offset; poll with
+        next_offset to tail it."""
+        return _guard(
+            _tools.tool_train_log, job_id=job_id, offset=offset, max_bytes=max_bytes
+        )
+
+    @server.tool()
+    def train_metrics(job_id: str, since_epoch: int = 0) -> dict:
+        """A job's per-epoch metrics rows (train/valid loss, lr, timing)."""
+        return _guard(_tools.tool_train_metrics, job_id=job_id, since_epoch=since_epoch)
+
+    @server.tool()
+    def train_checkpoints(job_id: str) -> dict:
+        """A job's .mdlus checkpoints (periodic/best/final) with epoch,
+        validation loss, size and which is marked best."""
+        return _guard(_tools.tool_train_checkpoints, job_id=job_id)
+
+    @server.tool()
+    def train_mark_best(job_id: str, checkpoint: str) -> dict:
+        """Mark one of a job's checkpoints as best (copied to best.mdlus)."""
+        return _guard(_tools.tool_train_mark_best, job_id=job_id, checkpoint=checkpoint)
+
+    @server.tool()
+    def train_predict(
+        manifest_path: str,
+        job_id: Optional[str] = None,
+        checkpoint: Optional[str] = None,
+        entry_ids: Optional[List[str]] = None,
+        split: Optional[str] = "test",
+        step: int = 0,
+        output_dir: Optional[str] = None,
+    ) -> dict:
+        """Predict over a manifest split with a job's (best or named)
+        checkpoint or an explicit .mdlus, writing <column>_pred /
+        <column>_error data arrays into output_dir/<entry_id>.vtu; returns
+        per-entry RMSE. Needs the frameworks."""
+        return _guard(
+            _tools.tool_train_predict,
+            manifest_path=manifest_path,
+            job_id=job_id,
+            checkpoint=checkpoint,
+            entry_ids=entry_ids,
+            split=split,
+            step=step,
+            output_dir=output_dir,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Gated tools (optional extras)                                               #
 # --------------------------------------------------------------------------- #
 def _register_gated(server: FastMCP) -> None:
@@ -1696,6 +1849,8 @@ def main(argv=None) -> int:
         help="where training runs land (default: <root or cwd>/runs)",
     )
     args = parser.parse_args(argv)
+    if args.runs_dir:
+        _tools.set_runs_dir(args.runs_dir)
     if not args.http:
         create_server(root=args.root).run()
         return 0

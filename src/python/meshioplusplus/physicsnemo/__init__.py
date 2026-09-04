@@ -32,6 +32,7 @@ from .._gpu import _require_framework
 from .._interop import _emit, _importable
 from .._ml import FEATURE_SCHEMA_VERSION, edge_index, feature_matrix
 from .._regions import block_bases
+from ._train import TrainSpec, default_spec, load_spec
 
 __all__ = [
     "GraphSample",
@@ -45,6 +46,11 @@ __all__ = [
     "from_physicsnemo",
     "has_physicsnemo",
     "has_torch_geometric",
+    "TrainSpec",
+    "default_spec",
+    "load_spec",
+    "run_training",
+    "predict",
 ]
 
 # Version 2 (v9.30.0): the schema gained `target_offset`/`target_delta` --
@@ -696,3 +702,53 @@ def make_dataset(manifest, *, split=None, device=None, **kwargs):
     from ._pyg import MeshManifestDataset
 
     return MeshManifestDataset(manifest, split=split, device=device, **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Training and prediction (v10.24.0; the gated module is ``train.py``)        #
+# --------------------------------------------------------------------------- #
+def run_training(spec, *, log=print):
+    """Train MeshGraphNet per a :class:`TrainSpec` (or its dict / JSON text /
+    file path) into the spec's run directory; returns the final progress
+    record. The same thing ``python -m meshioplusplus.physicsnemo.train
+    --spec`` and the dashboard's ``train_start`` run. Needs ``torch_geometric``
+    and ``nvidia-physicsnemo``; raises a named install error otherwise.
+    Named ``run_training`` rather than ``train`` so importing the ``train``
+    submodule can never shadow it. See ``doc/physicsnemo.md``."""
+    _require_framework(
+        "run_training", "torch_geometric", "pip install torch_geometric", doc=_DOC
+    )
+    from .train import run
+
+    return run(spec, log=log)
+
+
+def predict(
+    checkpoint,
+    manifest,
+    *,
+    entry_ids=None,
+    split="test",
+    step=0,
+    output_dir,
+    device="auto",
+):
+    """Predict with a trained ``.mdlus`` checkpoint (and its model card) over
+    a manifest's entries, writing ``<column>_pred``/``<column>_error`` back
+    as data arrays into ``output_dir/<entry_id>.vtu``; returns one row per
+    entry (``entry_id``, ``output_path``, ``rmse``, ``max_error``). Needs
+    ``nvidia-physicsnemo`` and ``torch_geometric``."""
+    _require_framework(
+        "predict", "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC
+    )
+    from .train import predict as _predict
+
+    return _predict(
+        checkpoint,
+        manifest,
+        entry_ids=entry_ids,
+        split=split,
+        step=step,
+        output_dir=output_dir,
+        device=device,
+    )

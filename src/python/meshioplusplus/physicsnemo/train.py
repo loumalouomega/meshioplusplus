@@ -1,0 +1,490 @@
+"""Train PhysicsNeMo's MeshGraphNet from a dataset manifest, and predict
+with the result: ``python -m meshioplusplus.physicsnemo.train --spec spec.json``.
+
+The ONLY module in the package importing torch, PyTorch Geometric and
+PhysicsNeMo's model/checkpoint utilities -- and only inside functions, so
+``import meshioplusplus.physicsnemo`` stays pure. Reached through the lazy
+``meshioplusplus.physicsnemo.run_training``/``predict`` factories, by the
+job manager (``mcp/_jobs.py``) as a subprocess, and by the worked example.
+
+What a run writes (``physicsnemo/_train.py`` owns the layout): one
+``metrics.jsonl`` row and a ``progress.json`` update per epoch, a resumable
+training checkpoint every ``CheckpointEvery`` epochs through
+``physicsnemo.utils.checkpoint.save_checkpoint`` (model weights as ``.mdlus``
+plus optimizer state), ``best.mdlus`` whenever the validation loss improves
+and ``final.mdlus`` at the end -- every ``.mdlus`` with a **model card**
+sidecar (what its channels mean and how they were normalized). SIGTERM is
+honoured: the running epoch finishes, ``final.*`` is written, and the
+process exits 143. The training path is PyG's (``make_dataset`` +
+``DataLoader``): MeshGraphNet consumes PyG ``Data`` and PyG batches
+variable-size graphs natively. See ``doc/physicsnemo.md``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import math
+import os
+import signal
+import sys
+import time
+from typing import List, Optional
+
+import numpy as np
+
+from .. import DatasetManifest, write
+from .._gpu import _require_framework
+from .._regions import block_bases
+from . import _DOC, edge_stats, field_stats, graph_sample, make_dataset
+from ._train import (
+    BEST_CHECKPOINT,
+    CHECKPOINT_DIR,
+    EDGE_STATS_FILE,
+    FINAL_CHECKPOINT,
+    NODE_STATS_FILE,
+    PROGRESS_FILE,
+    SPEC_FILE,
+    TrainSpec,
+    append_metrics,
+    card_from_run,
+    card_path,
+    load_spec,
+    metrics_row,
+    normalizers_from_card,
+    read_json,
+    save_spec,
+    write_json_atomic,
+)
+
+_ERR = "meshio++: train: "
+_STOP = {"requested": False}
+
+
+def _frameworks(op):
+    _require_framework(op, "torch_geometric", "pip install torch_geometric", doc=_DOC)
+    _require_framework(op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC)
+
+
+def _device(name):
+    import torch
+
+    if name == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    return name
+
+
+def build_model(spec: TrainSpec, schema: dict, *, input_dim_edges: int):
+    """The MeshGraphNet a spec describes, sized from the recorded schema --
+    never from ``len(Fields)``, which is wrong once region one-hots widen
+    ``x``."""
+    from physicsnemo.models.meshgraphnet import MeshGraphNet
+
+    return MeshGraphNet(
+        input_dim_nodes=len(schema["x_columns"]),
+        input_dim_edges=input_dim_edges,
+        output_dim=len(schema["y_columns"]),
+        processor_size=spec.processor_size,
+        hidden_dim_processor=spec.hidden_dim,
+        hidden_dim_node_encoder=spec.hidden_dim,
+        hidden_dim_edge_encoder=spec.hidden_dim,
+        hidden_dim_node_decoder=spec.hidden_dim,
+        aggregation=spec.aggregation,
+    )
+
+
+def _norm_tensors(card: dict, device):
+    import torch
+
+    norms = normalizers_from_card(card)
+    return {
+        k: torch.tensor(v, dtype=torch.float32, device=device) for k, v in norms.items()
+    }
+
+
+def _run_epoch(model, loader, norms, device, optimizer=None):
+    import torch
+
+    total, count = 0.0, 0
+    for batch in loader:
+        batch = batch.to(device)
+        x = (batch.x - norms["x_mean"]) / norms["x_std"]
+        edge_attr = (batch.edge_attr - norms["e_mean"]) / norms["e_std"]
+        target = (batch.y - norms["y_mean"]) / norms["y_std"]
+        pred = model(x, edge_attr, batch)
+        loss = torch.nn.functional.mse_loss(pred, target)
+        if optimizer is not None:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        total += float(loss.detach()) * batch.num_graphs
+        count += batch.num_graphs
+    return total / max(count, 1) if count else None
+
+
+def _write_card(spec, schema, node_stats, e_stats, path, *, epoch, valid_loss, dims):
+    write_json_atomic(
+        card_path(path),
+        card_from_run(
+            spec,
+            schema,
+            node_stats,
+            e_stats,
+            epoch=epoch,
+            valid_loss=valid_loss,
+            checkpoint=path,
+            input_dims=dims,
+        ),
+    )
+
+
+def _save_periodic(run_dir, model, optimizer, epoch, extra):
+    """``physicsnemo.utils.checkpoint.save_checkpoint`` (weights + optimizer
+    state, resumable) into ``checkpoints/``; returns the ``.mdlus`` it wrote."""
+    from physicsnemo.utils.checkpoint import save_checkpoint
+
+    try:  # save_checkpoint initializes it anyway, with a warning otherwise
+        from physicsnemo.distributed import DistributedManager
+
+        if not DistributedManager.is_initialized():
+            DistributedManager.initialize()
+    except Exception:  # noqa: BLE001 - best-effort; save_checkpoint copes
+        pass
+    directory = os.path.join(run_dir, CHECKPOINT_DIR)
+    before = set(glob.glob(os.path.join(directory, "*.mdlus")))
+    save_checkpoint(
+        directory, models=model, optimizer=optimizer, epoch=epoch, metadata=extra
+    )
+    new = sorted(set(glob.glob(os.path.join(directory, "*.mdlus"))) - before)
+    return new[-1] if new else None
+
+
+def run(spec, *, log=print) -> dict:
+    """Train per ``spec`` (a :class:`TrainSpec`, dict, JSON text or path);
+    returns the final ``progress.json`` record."""
+    _frameworks("run_training")
+    import torch
+    from torch_geometric.loader import DataLoader
+
+    spec = load_spec(spec)
+    if not spec.edge_features:
+        raise ValueError(f"{_ERR}MeshGraphNet needs edge features (Graph.EdgeFeatures)")
+    run_dir = spec.resolved_run_dir()
+    manifest_path = spec.resolved_manifest()
+    os.makedirs(os.path.join(run_dir, CHECKPOINT_DIR), exist_ok=True)
+    if not os.path.isfile(os.path.join(run_dir, SPEC_FILE)):
+        save_spec(spec, os.path.join(run_dir, SPEC_FILE))
+    torch.manual_seed(spec.seed)
+    np.random.seed(spec.seed)
+    device = _device(spec.device)
+    log(f"device: {device}")
+
+    manifest = DatasetManifest.load(manifest_path)
+    read_kwargs = dict(spec.read)
+    fields = list(spec.fields)
+    targets = list(spec.target_fields)
+    node_stats = field_stats(
+        manifest, split=spec.train_split, fields=fields + targets, **read_kwargs
+    )
+    if spec.target_delta:
+        node_stats.update(
+            field_stats(
+                manifest,
+                split=spec.train_split,
+                fields=targets,
+                delta=spec.target_offset or True,
+                **read_kwargs,
+            )
+        )
+    e_stats = edge_stats(
+        manifest,
+        split=spec.train_split,
+        kind=spec.kind,
+        undirected=spec.undirected,
+        **read_kwargs,
+    )
+    write_json_atomic(os.path.join(run_dir, NODE_STATS_FILE), node_stats)
+    write_json_atomic(os.path.join(run_dir, EDGE_STATS_FILE), e_stats)
+
+    graph_kwargs = spec.graph_kwargs()
+    train_ds = make_dataset(
+        manifest, split=spec.train_split, **graph_kwargs, **read_kwargs
+    )
+    valid_ds = make_dataset(
+        manifest, split=spec.valid_split, **graph_kwargs, **read_kwargs
+    )
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"{_ERR}split '{spec.train_split}' of {manifest_path} yields no samples"
+        )
+    log(f"train: {len(train_ds)} graphs, valid: {len(valid_ds)} graphs")
+    schema = train_ds.schema
+    input_dim_edges = len(e_stats["edge_mean"])
+    dims = (len(schema["x_columns"]), input_dim_edges, len(schema["y_columns"]))
+    model = build_model(spec, schema, input_dim_edges=input_dim_edges).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=spec.learning_rate)
+    norms = _norm_tensors(
+        card_from_run(
+            spec,
+            schema,
+            node_stats,
+            e_stats,
+            epoch=0,
+            valid_loss=None,
+            checkpoint="",
+            input_dims=dims,
+        ),
+        device,
+    )
+    train_loader = DataLoader(train_ds, batch_size=spec.batch_size, shuffle=True)
+    valid_loader = (
+        DataLoader(valid_ds, batch_size=spec.batch_size) if len(valid_ds) else None
+    )
+
+    _STOP["requested"] = False
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: _STOP.update(requested=True))
+    except ValueError:  # not the main thread (e.g. called from a worker)
+        pass
+
+    checkpoints = os.path.join(run_dir, CHECKPOINT_DIR)
+    best = None
+    best_path = None
+    start = time.time()
+    progress = {}
+    for epoch in range(spec.epochs):
+        t0 = time.time()
+        model.train()
+        train_loss = _run_epoch(model, train_loader, norms, device, optimizer)
+        valid_loss = None
+        if valid_loader is not None:
+            model.eval()
+            with torch.no_grad():
+                valid_loss = _run_epoch(model, valid_loader, norms, device)
+        now = time.time()
+        append_metrics(
+            run_dir,
+            metrics_row(
+                epoch, train_loss, valid_loss, spec.learning_rate, now - start, now - t0
+            ),
+        )
+        score = valid_loss if valid_loss is not None else train_loss
+        if best is None or score < best:
+            best = score
+            best_path = os.path.join(checkpoints, BEST_CHECKPOINT)
+            model.save(best_path)
+            _write_card(
+                spec,
+                schema,
+                node_stats,
+                e_stats,
+                best_path,
+                epoch=epoch,
+                valid_loss=valid_loss,
+                dims=dims,
+            )
+            best_epoch = epoch
+        per_epoch = (now - start) / (epoch + 1)
+        progress = {
+            "epoch": epoch + 1,
+            "epochs": spec.epochs,
+            "best_epoch": best_epoch,
+            "best_valid_loss": best,
+            "best_checkpoint": best_path,
+            "eta_seconds": per_epoch * (spec.epochs - epoch - 1),
+            "device": device,
+            "completed": False,
+            "stopped": False,
+        }
+        write_json_atomic(os.path.join(run_dir, PROGRESS_FILE), progress)
+        valid_text = f"{valid_loss:.3e}" if valid_loss is not None else "n/a"
+        log(
+            f"epoch {epoch:4d}  train {train_loss:.3e}  valid {valid_text}  ({now - t0:.1f} s)"
+        )
+        if spec.checkpoint_every and (epoch + 1) % spec.checkpoint_every == 0:
+            written = _save_periodic(
+                run_dir,
+                model,
+                optimizer,
+                epoch,
+                {"valid_loss": valid_loss, "train_loss": train_loss},
+            )
+            if written:
+                _write_card(
+                    spec,
+                    schema,
+                    node_stats,
+                    e_stats,
+                    written,
+                    epoch=epoch,
+                    valid_loss=valid_loss,
+                    dims=dims,
+                )
+        if _STOP["requested"]:
+            log("stop requested: finishing after this epoch")
+            break
+
+    final_path = os.path.join(checkpoints, FINAL_CHECKPOINT)
+    model.save(final_path)
+    _write_card(
+        spec,
+        schema,
+        node_stats,
+        e_stats,
+        final_path,
+        epoch=progress.get("epoch", 0) - 1,
+        valid_loss=progress.get("best_valid_loss"),
+        dims=dims,
+    )
+    progress["completed"] = not _STOP["requested"]
+    progress["stopped"] = bool(_STOP["requested"])
+    progress["elapsed"] = time.time() - start
+    write_json_atomic(os.path.join(run_dir, PROGRESS_FILE), progress)
+    log(
+        f"{'stopped' if progress['stopped'] else 'trained'} after {progress['epoch']} epoch(s) in {progress['elapsed']:.1f} s; wrote {final_path}"
+    )
+    return progress
+
+
+def predict(
+    checkpoint,
+    manifest,
+    *,
+    entry_ids: Optional[List[str]] = None,
+    split: Optional[str] = "test",
+    step: int = 0,
+    output_dir,
+    device: str = "auto",
+) -> List[dict]:
+    """Predict with a ``.mdlus`` checkpoint (plus its card) over a manifest's
+    entries and write each prediction back as ordinary data arrays --
+    ``<column>_pred`` and, where the truth is present, ``<column>_error`` --
+    into ``output_dir/<entry_id>.vtu``. Returns one row per entry."""
+    _frameworks("predict")
+    import torch
+    from physicsnemo.core.module import Module
+    from torch_geometric.data import Data
+
+    checkpoint = str(checkpoint)
+    card = read_json(card_path(checkpoint))
+    if not isinstance(card, dict):
+        raise ValueError(
+            f"{_ERR}no model card beside '{checkpoint}' ({card_path(checkpoint)}); "
+            "only checkpoints written by this trainer carry one"
+        )
+    device = _device(device)
+    model = Module.from_checkpoint(checkpoint).to(device)
+    model.eval()
+    norms = _norm_tensors(card, device)
+    graph_kwargs = dict(card["graph"])
+    read_kwargs = dict(card.get("read", {}))
+    offset = int(graph_kwargs.get("target_offset", 0))
+    kind = graph_kwargs.get("kind", "node")
+    y_columns = list(card["y_columns"])
+
+    if not isinstance(manifest, DatasetManifest):
+        manifest = DatasetManifest.load(manifest)
+    entries = manifest.entries(split=split) if split else list(manifest)
+    if entry_ids:
+        wanted = list(entry_ids)
+        known = {e.id for e in entries}
+        unknown = [i for i in wanted if i not in known]
+        if unknown:
+            raise ValueError(f"{_ERR}unknown entry id(s): {unknown}")
+        entries = [e for e in entries if e.id in set(wanted)]
+    os.makedirs(output_dir, exist_ok=True)
+
+    rows = []
+    for entry in entries:
+        series = entry.time_series(**read_kwargs)
+        if step + offset >= len(series):
+            raise ValueError(
+                f"{_ERR}entry '{entry.id}' has {len(series)} step(s); step {step}"
+                + (f" + offset {offset}" if offset else "")
+                + " is out of range"
+            )
+        time_value, mesh = series[step]
+        target_mesh = series[step + offset][1] if offset else None
+        sample = graph_sample(mesh, target_mesh=target_mesh, **graph_kwargs)
+        if list(sample.x_columns) != list(card["x_columns"]):
+            raise ValueError(
+                f"{_ERR}feature drift: the checkpoint was trained on x columns "
+                f"{card['x_columns']} but entry '{entry.id}' yields {list(sample.x_columns)}"
+            )
+        arrays = sample.arrays
+        with torch.no_grad():
+            x = (torch.from_numpy(arrays["x"]).to(device) - norms["x_mean"]) / norms[
+                "x_std"
+            ]
+            edge_attr = (
+                torch.from_numpy(arrays["edge_attr"]).to(device) - norms["e_mean"]
+            ) / norms["e_std"]
+            graph = Data(
+                x=x,
+                edge_index=torch.from_numpy(arrays["edge_index"]).to(device),
+                edge_attr=edge_attr,
+            )
+            pred_norm = model(x, edge_attr, graph)
+            pred = (
+                (pred_norm * norms["y_std"] + norms["y_mean"])
+                .cpu()
+                .numpy()
+                .astype(np.float64)
+            )
+        truth = arrays.get("y")
+        truth = None if truth is None else np.asarray(truth, dtype=np.float64)
+        for i, column in enumerate(y_columns):
+            _attach(mesh, kind, f"{column}_pred", pred[:, i])
+            if truth is not None:
+                _attach(mesh, kind, f"{column}_error", np.abs(pred[:, i] - truth[:, i]))
+        name = f"{entry.id}.vtu" if step == 0 else f"{entry.id}_s{step}.vtu"
+        out_path = os.path.join(output_dir, name)
+        write(out_path, mesh)
+        error = None if truth is None else np.abs(pred - truth)
+        rows.append(
+            {
+                "entry_id": entry.id,
+                "time": float(time_value),
+                "output_path": out_path,
+                "num_rows": int(pred.shape[0]),
+                "rmse": (
+                    None
+                    if error is None
+                    else float(math.sqrt(float(np.mean(error**2))))
+                ),
+                "max_error": None if error is None else float(error.max()),
+            }
+        )
+        del mesh, target_mesh, sample
+    return rows
+
+
+def _attach(mesh, kind, name, values):
+    if kind == "node":
+        mesh.point_data[name] = values
+        return
+    bases = block_bases(mesh.cells)
+    mesh.cell_data[name] = [
+        values[bases[i] : bases[i + 1]] for i in range(len(mesh.cells))
+    ]
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="python -m meshioplusplus.physicsnemo.train",
+        description=__doc__.split("\n\n")[0],
+    )
+    ap.add_argument(
+        "--spec", required=True, help="the PascalCase training spec (JSON file)"
+    )
+    args = ap.parse_args(argv)
+    try:
+        progress = run(args.spec)
+    except ImportError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    return 143 if progress.get("stopped") else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

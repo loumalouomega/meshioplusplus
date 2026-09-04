@@ -63,8 +63,10 @@ import {
     splitPaletteOf,
     type CardSort,
 } from './overview';
+import { notificationState } from './notify';
 import { clearHandle, getValue, loadHandle, putValue, saveHandle } from './persist';
 import { suggestSource } from './suggest';
+import { TrainPanel } from './train';
 import { captureThumbnail } from './thumbs';
 import type {
     DatasetState,
@@ -84,6 +86,9 @@ window.__datasetState = {
     view: 'overview',
     manifests: [],
     server: null,
+    jobs: [],
+    activeJob: null,
+    notifications: notificationState(),
     manifestName: null,
     entryIds: [],
     selected: null,
@@ -162,7 +167,13 @@ function setView(view: DatasetView): void {
     document.body.dataset.view = view;
     show($('overview'), view === 'overview');
     show($('m-back'), view === 'manifest');
-    if (view === 'overview') $('diff-wrap').hidden = true;
+    if (view === 'overview') {
+        $('diff-wrap').hidden = true;
+        // The run panel is a stage overlay like the diff: hidden here, but
+        // its poller keeps running, so a run still finishes and announces
+        // itself while the overview is up.
+        $('run-wrap').hidden = true;
+    }
 }
 
 // --- rendering ------------------------------------------------------------- //
@@ -761,6 +772,7 @@ function updateServerUi(): void {
         status.textContent = server.error ?? 'not connected';
     }
     $<HTMLButtonElement>('e-scan-server').disabled = !currentCard()?.serverPath;
+    trainPanel.refreshAvailability();
 }
 
 /** Bind workspace cards to the server's manifests by content hash (FSA
@@ -824,6 +836,7 @@ async function connectServer(url: string, token: string): Promise<void> {
 }
 
 function disconnectServer(): void {
+    trainPanel.dispose();
     serverApi = null;
     serverManifests = [];
     setServer({ url: $<HTMLInputElement>('srv-url').value, connected: false, error: null });
@@ -864,6 +877,19 @@ async function restoreServer(): Promise<void> {
     $<HTMLInputElement>('srv-token').value = saved.token ?? '';
     await connectServer(saved.url, saved.token ?? '');
 }
+
+// --- training --------------------------------------------------------------- //
+
+const trainPanel = new TrainPanel({
+    getApi: () => serverApi,
+    // Training runs on the server, against the file the server can see: the
+    // manifest's own path there, which a card only has once its bytes match
+    // (so an unsaved edit correctly disables the form).
+    getManifestPath: () => currentCard()?.serverPath ?? null,
+    setState,
+    setStatus: (message) => setStatus('ready', message),
+    fail,
+});
 
 // --- add-case flow ---------------------------------------------------------- //
 

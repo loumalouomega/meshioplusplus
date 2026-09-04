@@ -114,6 +114,34 @@ def get_root():
     return _ROOT
 
 
+# Where training jobs land (doc/dashboard.md): `<root or cwd>/runs` unless the
+# server's --runs-dir says otherwise. Job ids are validated by the manager, so
+# a job path can never leave this directory.
+_RUNS_DIR = None
+_MANAGERS = {}
+
+
+def set_runs_dir(path):
+    global _RUNS_DIR
+    _RUNS_DIR = os.path.realpath(str(path)) if path else None
+
+
+def get_runs_dir():
+    return _RUNS_DIR or os.path.join(
+        _ROOT if _ROOT is not None else os.getcwd(), "runs"
+    )
+
+
+def _jobs_manager():
+    from ._jobs import JobManager
+
+    runs = get_runs_dir()
+    manager = _MANAGERS.get(runs)
+    if manager is None:
+        manager = _MANAGERS[runs] = JobManager(runs)
+    return manager
+
+
 def _resolve(path, must_exist=False, for_write=False):
     """Resolve a client-supplied path, enforcing the sandbox when configured."""
     raw = os.path.expanduser(str(path))
@@ -1894,6 +1922,262 @@ def tool_dataset_health(
 
 
 # --------------------------------------------------------------------------- #
+# Training jobs (doc/dashboard.md, doc/physicsnemo.md)                        #
+# --------------------------------------------------------------------------- #
+_PHYSICSNEMO_DOC = "doc/physicsnemo.md"
+
+
+def _require_training_frameworks(op):
+    """The trainer subprocess needs torch_geometric + physicsnemo -- checked
+    here, BEFORE spawning, so a missing framework is a named payload rather
+    than a dead subprocess. Skipped when MESHIOPLUSPLUS_TRAIN_COMMAND names a
+    trainer from another interpreter (the override's whole point)."""
+    from .._gpu import _require_framework
+    from ._jobs import TRAIN_COMMAND_ENV
+
+    if os.environ.get(TRAIN_COMMAND_ENV):
+        return
+    _require_framework(
+        op, "torch_geometric", "pip install torch_geometric", doc=_PHYSICSNEMO_DOC
+    )
+    _require_framework(
+        op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_PHYSICSNEMO_DOC
+    )
+
+
+def tool_train_defaults(manifest_path, fields=None, target_fields=None):
+    """What a training launch form needs: the data arrays the manifest's
+    first entry carries, the splits, and a complete default spec."""
+    from ..physicsnemo import has_physicsnemo, has_torch_geometric
+    from ..physicsnemo._train import TrainSpec, spec_to_dict
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    entries = list(manifest)
+    if not entries:
+        raise ValueError(
+            f"meshio++: mcp: the manifest '{resolved_manifest}' has no entries"
+        )
+    plan = _sandbox_entry_paths(entries[0])
+    meta = read_metadata(plan[0]["path"])
+    spec = TrainSpec(
+        manifest=resolved_manifest,
+        fields=tuple(fields or ()),
+        target_fields=tuple(target_fields or ()),
+        run_dir=get_runs_dir(),
+    )
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "num_entries": len(manifest),
+            "splits": {
+                ("" if k is None else str(k)): v for k, v in manifest.splits().items()
+            },
+            "available_fields": {
+                "point": list(meta.get("point_data_names", [])),
+                "cell": list(meta.get("cell_data_names", [])),
+            },
+            "runs_dir": get_runs_dir(),
+            "frameworks": {
+                "torch_geometric": has_torch_geometric(),
+                "physicsnemo": has_physicsnemo(),
+            },
+            "spec": spec_to_dict(spec),
+        }
+    )
+
+
+def tool_train_start(
+    manifest_path,
+    fields,
+    target_fields,
+    train_split="train",
+    valid_split="valid",
+    epochs=100,
+    batch_size=8,
+    learning_rate=1e-3,
+    seed=0,
+    processor_size=8,
+    hidden_dim=64,
+    aggregation="sum",
+    regions=False,
+    kind="node",
+    undirected=True,
+    edge_features=True,
+    float32=True,
+    target_offset=0,
+    target_delta=False,
+    checkpoint_every=10,
+    device="auto",
+    notes=None,
+    tags=None,
+):
+    """Start a MeshGraphNet training job against a manifest split.
+
+    Builds the PascalCase spec, lays out `<runs_dir>/<job_id>/` and spawns
+    `python -m meshioplusplus.physicsnemo.train --spec` as a subprocess;
+    returns the job's initial status. Poll it with train_status /
+    train_metrics / train_log. Needs torch_geometric + nvidia-physicsnemo
+    (no pip extra, deliberately); a missing framework is a named error
+    before anything is spawned.
+    """
+    from ..physicsnemo._train import default_spec, spec_to_dict
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    splits = {("" if k is None else str(k)): v for k, v in manifest.splits().items()}
+    if train_split not in splits:
+        raise ValueError(
+            f"meshio++: mcp: the manifest has no split '{train_split}' "
+            f"(available: {sorted(splits)})"
+        )
+    for entry in manifest.entries(split=train_split):
+        _sandbox_entry_paths(entry)
+    _require_training_frameworks("train_start")
+    spec = default_spec(
+        resolved_manifest,
+        fields,
+        target_fields,
+        run_dir=get_runs_dir(),
+        train_split=str(train_split),
+        valid_split=str(valid_split),
+        epochs=int(epochs),
+        batch_size=int(batch_size),
+        learning_rate=float(learning_rate),
+        seed=int(seed),
+        processor_size=int(processor_size),
+        hidden_dim=int(hidden_dim),
+        aggregation=str(aggregation),
+        regions=bool(regions),
+        kind=str(kind),
+        undirected=bool(undirected),
+        edge_features=bool(edge_features),
+        float32=bool(float32),
+        target_offset=int(target_offset),
+        target_delta=bool(target_delta),
+        checkpoint_every=int(checkpoint_every),
+        device=str(device),
+        notes=notes,
+        tags=tuple(tags or ()),
+    )
+    return _json_safe(_jobs_manager().start(spec_to_dict(spec)))
+
+
+def tool_train_status(job_id):
+    """A job's status, progress (epoch/epochs, best, ETA) and last metrics row."""
+    return _json_safe(_jobs_manager().status(str(job_id)))
+
+
+def tool_train_list(status=None, manifest_path=None):
+    """Every job under the runs directory (newest first), summarized with its
+    hyperparameters and final/best losses; filter by status or manifest."""
+    manifest = _resolve(manifest_path, must_exist=True) if manifest_path else None
+    manager = _jobs_manager()
+    return _json_safe(
+        {
+            "runs_dir": manager.runs_dir,
+            "jobs": manager.list_jobs(status=status, manifest=manifest),
+        }
+    )
+
+
+def tool_train_stop(job_id, grace_seconds=10.0):
+    """Stop a job: SIGTERM (the trainer finishes its epoch and writes
+    final.mdlus), SIGKILL after grace_seconds."""
+    return _json_safe(_jobs_manager().stop(str(job_id), grace=float(grace_seconds)))
+
+
+def tool_train_log(job_id, offset=0, max_bytes=65536):
+    """A window of the job's log from a byte offset (tail with next_offset)."""
+    return _json_safe(
+        _jobs_manager().log(str(job_id), offset=int(offset), max_bytes=int(max_bytes))
+    )
+
+
+def tool_train_metrics(job_id, since_epoch=0):
+    """The per-epoch metrics rows from since_epoch on."""
+    return _json_safe(
+        _jobs_manager().metrics(str(job_id), since_epoch=int(since_epoch))
+    )
+
+
+def tool_train_checkpoints(job_id):
+    """The job's .mdlus checkpoints with epoch / validation loss / size."""
+    return _json_safe(_jobs_manager().checkpoints(str(job_id)))
+
+
+def tool_train_mark_best(job_id, checkpoint):
+    """Copy one of the job's checkpoints (and its card) to best.mdlus."""
+    return _json_safe(_jobs_manager().mark_best(str(job_id), str(checkpoint)))
+
+
+def tool_train_predict(
+    manifest_path,
+    job_id=None,
+    checkpoint=None,
+    entry_ids=None,
+    split="test",
+    step=0,
+    output_dir=None,
+):
+    """Predict over a manifest split with a job's checkpoint (its marked
+    best, or a named one) or with an explicit .mdlus path; writes
+    <column>_pred / <column>_error back into output_dir/<entry_id>.vtu
+    (default: the job's predictions/ directory). Needs the frameworks.
+    """
+    from ..physicsnemo._train import PREDICTIONS_DIR
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    for entry in manifest.entries(split=split) if split else manifest:
+        _sandbox_entry_paths(entry)
+    manager = _jobs_manager()
+    if job_id:
+        resolved_checkpoint = manager.resolve_checkpoint(str(job_id), checkpoint)
+        out = output_dir or os.path.join(manager.job_dir(str(job_id)), PREDICTIONS_DIR)
+    elif checkpoint:
+        resolved_checkpoint = _resolve(checkpoint, must_exist=True)
+        if not output_dir:
+            raise ValueError(
+                "meshio++: mcp: output_dir is required with an explicit checkpoint"
+            )
+        out = output_dir
+    else:
+        raise ValueError("meshio++: mcp: give job_id or checkpoint")
+    out = _resolve(out, for_write=True)
+    from .._gpu import _require_framework
+
+    _require_framework(
+        "train_predict",
+        "torch_geometric",
+        "pip install torch_geometric",
+        doc=_PHYSICSNEMO_DOC,
+    )
+    _require_framework(
+        "train_predict",
+        "physicsnemo",
+        "pip install nvidia-physicsnemo",
+        doc=_PHYSICSNEMO_DOC,
+    )
+    from ..physicsnemo import predict
+
+    rows = predict(
+        resolved_checkpoint,
+        manifest,
+        entry_ids=list(entry_ids) if entry_ids else None,
+        split=split,
+        step=int(step),
+        output_dir=out,
+    )
+    finite = [r["rmse"] for r in rows if r.get("rmse") is not None]
+    return _json_safe(
+        {
+            "checkpoint": resolved_checkpoint,
+            "output_dir": out,
+            "predictions": rows,
+            "mean_rmse": (sum(finite) / len(finite)) if finite else None,
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Gated tools (optional extras; the wrapped functions raise the named error)  #
 # --------------------------------------------------------------------------- #
 def tool_data_export(input_path, output_path, input_format=None, location="point"):
@@ -2159,6 +2443,31 @@ TOOL_REGISTRY = OrderedDict(
         (
             "dataset_health",
             {"fn": tool_dataset_health, "wraps": (), "gated": None},
+        ),
+        (
+            "train_defaults",
+            {"fn": tool_train_defaults, "wraps": (), "gated": None},
+        ),
+        (
+            "train_start",
+            {"fn": tool_train_start, "wraps": (), "gated": "physicsnemo"},
+        ),
+        ("train_status", {"fn": tool_train_status, "wraps": (), "gated": None}),
+        ("train_list", {"fn": tool_train_list, "wraps": (), "gated": None}),
+        ("train_stop", {"fn": tool_train_stop, "wraps": (), "gated": None}),
+        ("train_log", {"fn": tool_train_log, "wraps": (), "gated": None}),
+        ("train_metrics", {"fn": tool_train_metrics, "wraps": (), "gated": None}),
+        (
+            "train_checkpoints",
+            {"fn": tool_train_checkpoints, "wraps": (), "gated": None},
+        ),
+        (
+            "train_mark_best",
+            {"fn": tool_train_mark_best, "wraps": (), "gated": None},
+        ),
+        (
+            "train_predict",
+            {"fn": tool_train_predict, "wraps": (), "gated": "physicsnemo"},
         ),
         (
             "data_export",

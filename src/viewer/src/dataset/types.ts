@@ -8,6 +8,9 @@
  * `selected`/`step`/scan results in it would make Python reject the file.
  */
 
+import type { CheckpointInfo, JobSummary, MetricRow } from './jobs';
+import type { NotificationState } from './notify';
+
 export interface EntryScan {
     steps: number;
     /** NaN/Inf over the entry's DATA arrays only — `quality:*` arrays are
@@ -103,6 +106,19 @@ export interface ServerState {
 
 export type DatasetView = 'overview' | 'manifest';
 
+/** The run the page is following (`train.ts` / `jobs.ts`). */
+export interface ActiveJob {
+    jobId: string;
+    status: string;
+    epoch: number;
+    epochs: number;
+    metrics: MetricRow[];
+    checkpoints: CheckpointInfo[];
+    bestCheckpoint: string | null;
+    /** The last polling error, cleared by the next successful poll. */
+    error: string | null;
+}
+
 /** The counts of the last manifest diff shown. */
 export interface DiffSummary {
     a: string;
@@ -123,6 +139,10 @@ export interface DatasetState {
     view: DatasetView;
     manifests: ManifestCard[];
     server: ServerState | null;
+    /** Training runs the companion process knows (newest first). */
+    jobs: JobSummary[];
+    activeJob: ActiveJob | null;
+    notifications: NotificationState;
     manifestName: string | null;
     entryIds: string[];
     selected: string | null;
