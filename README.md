@@ -696,7 +696,7 @@ meshioplusplus.screenshot(mesh, "part.png", color_by="temperature")
 
 The **[browser](https://loumalouomega.github.io/meshioplusplus/viewer/)** backend needs nothing extra. The same app is hosted as a live demo: drag in any supported format, colour by point or cell data, and convert and download to another format — all client-side, with no server and no upload. Since it runs the WebAssembly build, every format meshio++ reads works there too.
 
-A second page, the **[dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)**, curates the [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections visually — directory picking with in-place manifest save (Chromium), per-entry previews with a time-series scrubber, and NaN/Inf scanning — against the same hand-editable JSON the CLI and Python API use:
+A second page, the **[dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)**, curates the [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections visually — an overview of every manifest in a directory (cards with split balance, health badges and thumbnails, plus a manifest diff view; see [the dashboard page](https://loumalouomega.github.io/meshioplusplus/dashboard.html)), directory picking with in-place manifest save (Chromium), per-entry previews with a time-series scrubber, and NaN/Inf/quality scanning — against the same hand-editable JSON the CLI and Python API use:
 
 <img alt="the meshio++ dataset manager, previewing a transient case with a step scrubber and a per-array NaN/Inf summary table" src="https://loumalouomega.github.io/meshioplusplus/viewer/dataset-manager.png" width="85%">
 
@@ -889,7 +889,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.21.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.22.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

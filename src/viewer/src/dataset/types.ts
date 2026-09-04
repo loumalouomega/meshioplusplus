@@ -1,12 +1,11 @@
 /**
- * The dataset page's typed test hook and session-state types — the sibling
- * of `src/types.ts`'s `ViewerState`, with the same discipline: Playwright
- * specs assert on `window.__datasetState` (never pixels), the specs import
- * this type, and a new field with un-updated tests is a compile error.
+ * The dataset page's state hook (`window.__datasetState`), typed like the
+ * viewer's `ViewerState` so the Playwright spec's expectations are checked at
+ * compile time.
  *
- * UI-session state (selection, dirtiness, scan cache) lives HERE and never
- * in the manifest document itself — the document's schema is strict, and
- * stashing UI state in it would make Python reject the file.
+ * UI-session state lives here and NEVER in the manifest document: the
+ * document's schema is strict (an unknown key is an error), so stashing
+ * `selected`/`step`/scan results in it would make Python reject the file.
  */
 
 export interface EntryScan {
@@ -16,37 +15,109 @@ export interface EntryScan {
      * by design, not a bad value. */
     numNan: number;
     numInf: number;
-    /** The quality lane: cells with `quality:inverted` set, and the worst
-     * `quality:scaled_jacobian` (null when the metric was unavailable). */
+    /** The quality lane: cells with `quality:inverted` / `quality:degenerate`
+     * set, and the worst `quality:scaled_jacobian` (null when the metric was
+     * unavailable). */
     numInverted: number;
+    numDegenerate: number;
     minScaledJacobian: number | null;
+    /** Every data array present at step 0, as `<location>:<name>` — the
+     * "fields missing across entries" input of the health summary. Empty for
+     * an entry that could not be read (`steps === 0`). */
+    arrays: string[];
+}
+
+/** One split's share of a manifest; `''` is "unassigned". */
+export interface SplitBalance {
+    split: string;
+    count: number;
+    fraction: number;
+}
+
+/**
+ * A manifest-level health summary aggregated from per-entry scans. The
+ * browser (WASM) and, later, the companion server are two producers of the
+ * same shape — `producer` says which filled it.
+ */
+export interface ManifestHealth {
+    producer: 'browser' | 'server';
+    /** Entries with a scan / entries in the manifest. */
+    scanned: number;
+    total: number;
+    numNan: number;
+    numInf: number;
+    numInverted: number;
+    numDegenerate: number;
+    minScaledJacobian: number | null;
+    splitBalance: SplitBalance[];
+    /** entry id -> data arrays (as `<location>:<name>`) that every OTHER
+     * scanned entry carries and this one lacks. Only entries missing
+     * something are listed. */
+    fieldsMissing: Record<string, string[]>;
+    /** Entries with any bad signal (NaN/Inf, inverted/degenerate cells, a
+     * negative worst scaled Jacobian, or unreadable). */
+    badEntries: string[];
+}
+
+/** One manifest in the overview grid. */
+export interface ManifestCard {
+    /** Workspace-relative path (root-level `*.json`). */
+    path: string;
+    name: string | null;
+    description: string | null;
+    numEntries: number;
+    /** `{split: count}` with unassigned entries under `''`. */
+    splits: Record<string, number>;
+    /** Sorted unions over the entries. */
+    tags: string[];
+    groups: string[];
+    /** Epoch milliseconds; null when the backend cannot say. */
+    lastModified: number | null;
+    /** A strict-parse failure still yields a card, flagged with the message. */
+    parseError: string | null;
+    health: ManifestHealth | null;
+    /** A data URL captured from a preview render, session-only. */
+    thumbnail: string | null;
+    /** SHA-256 of the file text (null when `crypto.subtle` is unavailable). */
+    sha256: string | null;
+    /** Unsaved edits are pending in the drill-down for this manifest. */
+    dirty: boolean;
+}
+
+export type DatasetView = 'overview' | 'manifest';
+
+/** The counts of the last manifest diff shown. */
+export interface DiffSummary {
+    a: string;
+    b: string;
+    headerChanged: number;
+    added: number;
+    removed: number;
+    changed: number;
 }
 
 export interface DatasetState {
     status: 'booting' | 'idle' | 'loading' | 'ready' | 'error';
-    /** How the workspace was opened: File System Access, or the
-     * webkitdirectory + download fallback. Null before a pick. */
     backendMode: 'fsa' | 'fallback' | null;
-    /** A persisted directory handle exists — the "Reopen" button is shown
-     * (restore itself runs behind its click; permission needs the gesture). */
+    /** A persisted directory handle was found; "Reopen" is offered. */
     restoreAvailable: boolean;
+    /** Which depth of the page is showing: the overview grid of every
+     * manifest in the workspace, or one manifest's curation view. */
+    view: DatasetView;
+    manifests: ManifestCard[];
     manifestName: string | null;
     entryIds: string[];
     selected: string | null;
-    /** The staged entry's resolved plan length and current scrubber step. */
     planLength: number;
     step: number;
-    /** Of the current preview render. */
     numPoints: number;
     numCells: number;
     summary:
         | { name: string; min: number; mean: number; numNan: number; numInf: number }[]
         | null;
-    /** Per-entry scan results (filled by the Scan action). */
     scans: Record<string, EntryScan>;
+    diff: DiffSummary | null;
     dirty: boolean;
-    /** The last save — `text` is the exact serialization, the byte-parity
-     * test seam (asserting on it needs no filesystem access). */
     lastSave: { mode: 'in-place' | 'download'; text: string } | null;
     error: string | null;
 }

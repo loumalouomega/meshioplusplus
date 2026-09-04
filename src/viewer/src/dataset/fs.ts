@@ -25,6 +25,9 @@
 export interface WorkspaceFile {
     relPath: string;
     bytes(): Promise<ArrayBuffer>;
+    /** Epoch milliseconds of the file's last modification, or null when the
+     * backend cannot say (the overview cards and the scan cache key on it). */
+    lastModified(): Promise<number | null>;
 }
 
 export interface Workspace {
@@ -60,6 +63,17 @@ async function collectFsa(
     }
 }
 
+function fsaFile(relPath: string, handle: FileSystemFileHandle): WorkspaceFile {
+    return {
+        relPath,
+        bytes: async () => (await handle.getFile()).arrayBuffer(),
+        lastModified: async () => {
+            const file = await handle.getFile();
+            return Number.isFinite(file.lastModified) ? file.lastModified : null;
+        },
+    };
+}
+
 class FsaWorkspace implements Workspace {
     readonly kind = 'fsa' as const;
     readonly files: WorkspaceFile[];
@@ -68,10 +82,7 @@ class FsaWorkspace implements Workspace {
         readonly root: FileSystemDirectoryHandle,
         entries: { relPath: string; handle: FileSystemFileHandle }[],
     ) {
-        this.files = entries.map(({ relPath, handle }) => ({
-            relPath,
-            bytes: async () => (await handle.getFile()).arrayBuffer(),
-        }));
+        this.files = entries.map(({ relPath, handle }) => fsaFile(relPath, handle));
         this.byPath = new Map(entries.map((e) => [e.relPath, e.handle]));
     }
 
@@ -108,10 +119,7 @@ class FsaWorkspace implements Workspace {
         await writable.close();
         if (!this.byPath.has(relPath)) {
             this.byPath.set(relPath, handle);
-            this.files.push({
-                relPath,
-                bytes: async () => (await handle.getFile()).arrayBuffer(),
-            });
+            this.files.push(fsaFile(relPath, handle));
         }
         return 'in-place';
     }
@@ -136,6 +144,8 @@ class FallbackWorkspace implements Workspace {
         this.files = [...this.byPath.entries()].map(([relPath, file]) => ({
             relPath,
             bytes: () => file.arrayBuffer(),
+            lastModified: async () =>
+                Number.isFinite(file.lastModified) ? file.lastModified : null,
         }));
     }
 

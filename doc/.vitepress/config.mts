@@ -74,6 +74,7 @@ export default defineConfig({
           { text: "ML data handling", link: "/ml" },
           { text: "Dataset manifests", link: "/datasets" },
           { text: "PhysicsNeMo integration", link: "/physicsnemo" },
+          { text: "Dataset dashboard", link: "/dashboard" },
           { text: "MCP server", link: "/mcp" },
           { text: "Cell conversion", link: "/convert_cells" },
           { text: "Polyhedral refinement (subdivide)", link: "/subdivide" },

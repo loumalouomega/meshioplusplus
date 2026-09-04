@@ -1,13 +1,17 @@
 /**
- * The dataset-manager page (`dataset.html`) — build and curate a
- * `DatasetManifest` JSON against a local case directory, previewing entries
+ * The dataset-manager page (`dataset.html`) — build and curate
+ * `DatasetManifest` JSONs against a local case directory, previewing entries
  * through the same worker/renderer the viewer uses.
  *
- * Structure mirrors `src/main.ts`: static markup in the HTML, `$()` lookups
- * that throw on a missing id, one state object (`window.__datasetState`)
- * that the Playwright spec asserts on. All document logic lives in the pure
- * modules (`manifest.ts`, `glob.ts`, `suggest.ts`); all file access in
- * `fs.ts`; everything wasm-side behind the shared worker.
+ * Two depths of one page: the **overview** (a card per manifest found at the
+ * workspace root — counts, split balance, health, thumbnail) and the
+ * **manifest** view (one manifest's curation: entries, detail editor,
+ * preview, scan). Structure mirrors `src/main.ts`: static markup in the HTML,
+ * `$()` lookups that throw on a missing id, one state object
+ * (`window.__datasetState`) that the Playwright spec asserts on. All document
+ * logic lives in the pure modules (`manifest.ts`, `glob.ts`, `suggest.ts`,
+ * `health.ts`, `overview.ts`, `diff.ts`); all file access in `fs.ts`;
+ * everything wasm-side behind the shared worker.
  */
 
 import { Legend } from '../render/legend';
@@ -16,9 +20,27 @@ import { $, setOptions, show } from '../ui/dom';
 import type { ArrayEntry } from '../types';
 import * as client from '../worker/client';
 import type { ArraySummary, PlanEntry } from '../worker/protocol';
+import { diffLines, diffManifests, renderDiff, summarizeDiff } from './diff';
+import {
+    hasFsAccess,
+    pickWorkspaceFsa,
+    workspaceFromFileList,
+    workspaceFromHandle,
+    type Workspace,
+} from './fs';
+import { globMatch } from './glob';
+import { sha256Hex } from './hash';
+import {
+    emptyScan,
+    entryScanFromSummaries,
+    healthBadges,
+    healthFromScans,
+    isQualityRow,
+    qualityRowIsBad,
+} from './health';
 import {
     addEntry,
-    annotateEntry,
+    deriveId,
     emptyManifest,
     getEntry,
     parseManifest,
@@ -28,18 +50,19 @@ import {
     type ManifestEntry,
     type SourceSpec,
 } from './manifest';
-import { globMatch } from './glob';
-import { suggestSource } from './suggest';
-import { deriveId } from './manifest';
 import {
-    hasFsAccess,
-    pickWorkspaceFsa,
-    workspaceFromFileList,
-    workspaceFromHandle,
-    type Workspace,
-} from './fs';
-import { clearHandle, loadHandle, saveHandle } from './persist';
-import type { DatasetState, EntryScan } from './types';
+    buildCard,
+    cardFromManifest,
+    renderCards,
+    sortCards,
+    splitBar,
+    splitPaletteOf,
+    type CardSort,
+} from './overview';
+import { clearHandle, getValue, loadHandle, putValue, saveHandle } from './persist';
+import { suggestSource } from './suggest';
+import { captureThumbnail } from './thumbs';
+import type { DatasetState, DatasetView, EntryScan, ManifestCard, ManifestHealth } from './types';
 
 // --- state ----------------------------------------------------------------- //
 
@@ -47,6 +70,8 @@ window.__datasetState = {
     status: 'booting',
     backendMode: null,
     restoreAvailable: false,
+    view: 'overview',
+    manifests: [],
     manifestName: null,
     entryIds: [],
     selected: null,
@@ -56,6 +81,7 @@ window.__datasetState = {
     numCells: 0,
     summary: null,
     scans: {},
+    diff: null,
     dirty: false,
     lastSave: null,
     error: null,
@@ -71,6 +97,14 @@ let selected: string | null = null;
 let staged: { id: string; plan: PlanEntry[] } | null = null;
 const scans = new Map<string, EntryScan>();
 let readableExtensions: Set<string> = new Set();
+/** The overview's cards — one per manifest at the workspace root (plus an
+ * unsaved new manifest while it is being edited). */
+let cards: ManifestCard[] = [];
+/** The fixed split -> colour assignment over every split in the workspace. */
+let splitPalette = new Map<string, string>();
+/** Set while "Scan all" drives the manifest view, so it does not flip the
+ * page between depths on every manifest it opens. */
+let bulkScan = false;
 
 function setState(patch: Partial<DatasetState>): void {
     Object.assign(window.__datasetState, patch);
@@ -90,9 +124,29 @@ function currentText(): string {
     return stringifyManifest(manifest);
 }
 
+function currentCard(): ManifestCard | undefined {
+    return manifestPath ? cards.find((c) => c.path === manifestPath) : undefined;
+}
+
 function refreshDirty(): void {
-    setState({ dirty: savedText !== null && currentText() !== savedText });
-    $('m-dirty').hidden = !window.__datasetState.dirty;
+    const dirty = savedText !== null && currentText() !== savedText;
+    setState({ dirty });
+    $('m-dirty').hidden = !dirty;
+    const card = currentCard();
+    if (card) card.dirty = dirty;
+}
+
+// --- the two depths -------------------------------------------------------- //
+
+function setView(view: DatasetView): void {
+    setState({ view });
+    // The CSS hides the curation sections (editor, entries, health, detail)
+    // while the overview shows, without touching their `hidden` attributes —
+    // those still mean "no manifest open"/"nothing selected".
+    document.body.dataset.view = view;
+    show($('overview'), view === 'overview');
+    show($('m-back'), view === 'manifest');
+    if (view === 'overview') $('diff-wrap').hidden = true;
 }
 
 // --- rendering ------------------------------------------------------------- //
@@ -138,6 +192,69 @@ function applyColorBy(key: string): void {
     legend.show(entry.label, renderer.colormap, range);
 }
 
+// --- overview -------------------------------------------------------------- //
+
+function renderOverview(): void {
+    splitPalette = splitPaletteOf(cards.flatMap((c) => Object.keys(c.splits)));
+    const key = $<HTMLSelectElement>('ov-sort').value as CardSort;
+    renderCards($('ov-cards'), sortCards(cards, key), splitPalette, {
+        onOpen: (path) => void openManifestPath(path).catch(fail),
+        onScan: (path) => void scanManifestPath(path).catch(fail),
+    });
+    show($('ov-empty'), cards.length === 0);
+    $('ov-counts').textContent = `(${cards.length})`;
+    setState({ manifests: cards });
+}
+
+/** Rebuild the cards from the workspace's root-level manifests, keeping the
+ * health/thumbnail of any card whose file is unchanged. */
+async function buildOverview(): Promise<void> {
+    if (!workspace) return;
+    const byPath = new Map(workspace.files.map((f) => [f.relPath, f]));
+    const built: ManifestCard[] = [];
+    for (const path of workspace.manifestCandidates()) {
+        const file = byPath.get(path);
+        if (!file) continue;
+        const [text, mtime] = await Promise.all([
+            workspace.readText(path),
+            file.lastModified(),
+        ]);
+        const card = buildCard(path, text, mtime);
+        card.sha256 = await sha256Hex(text);
+        const previous = cards.find((c) => c.path === path);
+        if (previous && previous.sha256 === card.sha256) {
+            card.health = previous.health;
+            card.thumbnail = previous.thumbnail;
+        }
+        built.push(card);
+    }
+    cards = built;
+    renderOverview();
+}
+
+/** Bring the open manifest's card in line with the in-memory document
+ * (counts/splits reflect unsaved edits, flagged dirty). A brand-new manifest
+ * gets a card of its own until it is saved. */
+function refreshCurrentCard(): void {
+    if (!manifestPath) return;
+    let card = currentCard();
+    const fresh = cardFromManifest(manifestPath, manifest, card?.lastModified ?? null);
+    if (card) {
+        card.name = fresh.name;
+        card.description = fresh.description;
+        card.numEntries = fresh.numEntries;
+        card.splits = fresh.splits;
+        card.tags = fresh.tags;
+        card.groups = fresh.groups;
+    } else {
+        card = fresh;
+        cards.push(card);
+    }
+    card.dirty = window.__datasetState.dirty;
+    if (scans.size) card.health = healthFromScans(manifest, scans);
+    renderOverview();
+}
+
 // --- entry list / detail --------------------------------------------------- //
 
 function chip(text: string, cls: string): HTMLSpanElement {
@@ -176,6 +293,10 @@ function renderEntryList(): void {
             if (scan && scan.numInverted > 0) {
                 li.append(chip(`inverted ${scan.numInverted}`, 'warn'));
             }
+            if (scan && scan.numDegenerate > 0) {
+                li.append(chip(`degenerate ${scan.numDegenerate}`, 'warn'));
+            }
+            if (scan && scan.steps === 0) li.append(chip('unreadable', 'warn'));
             li.addEventListener('click', () => selectEntry(entry.id));
             return li;
         });
@@ -263,6 +384,53 @@ function commitDetail(): void {
         metadata,
     };
     renderEntryList();
+    updateHealth();
+}
+
+// --- health ---------------------------------------------------------------- //
+
+function renderHealthSection(health: ManifestHealth | null): void {
+    const section = $('health-section');
+    if (!health) {
+        section.hidden = true;
+        return;
+    }
+    $('h-splits').replaceChildren(splitBar(health.splitBalance, splitPalette));
+    $('h-totals').replaceChildren(
+        ...healthBadges(health).map((b) => {
+            const span = document.createElement('span');
+            span.className = `badge ${b.level}`;
+            span.textContent = b.label;
+            return span;
+        }),
+    );
+    const missing = Object.entries(health.fieldsMissing);
+    const box = $('h-missing');
+    if (missing.length) {
+        const ul = document.createElement('ul');
+        for (const [id, fields] of missing) {
+            const li = document.createElement('li');
+            li.textContent = `${id} lacks `;
+            const span = document.createElement('span');
+            span.textContent = fields.join(', ');
+            li.append(span);
+            ul.append(li);
+        }
+        box.replaceChildren(ul);
+    } else {
+        box.replaceChildren();
+    }
+    show(section);
+}
+
+/** Recompute the open manifest's health from its scans and push it to the
+ * drill-down section and the card. */
+function updateHealth(): void {
+    const health = scans.size ? healthFromScans(manifest, scans) : null;
+    const card = currentCard();
+    if (card) card.health = health;
+    renderHealthSection(health);
+    renderOverview();
 }
 
 // --- staging / preview / summary ------------------------------------------- //
@@ -320,23 +488,6 @@ async function previewStep(step: number): Promise<void> {
     setState({ step });
     setStatus('ready');
     void refreshSummary(step);
-}
-
-/** Is a summary row a `quality:*` metric? Their NaN means "metric N/A for
- * this cell type" BY DESIGN, so quality rows are excluded from every
- * NaN-based bad-case rule — here and in `scanEntries` — or every entry
- * would badge spuriously. */
-function isQualityRow(s: ArraySummary): boolean {
-    return s.name.startsWith('quality:');
-}
-
-/** The quality-specific bad rules: inverted/degenerate cells present, or a
- * negative worst scaled Jacobian. */
-function qualityRowIsBad(s: ArraySummary): boolean {
-    if (s.name === 'quality:inverted' || s.name === 'quality:degenerate') {
-        return s.mean * s.numValues > 0;
-    }
-    return s.name === 'quality:scaled_jacobian' && s.min < 0;
 }
 
 async function refreshSummary(step: number): Promise<void> {
@@ -405,6 +556,19 @@ function renderSummary(summaries: ArraySummary[]): void {
     show(wrap);
 }
 
+/** Give the open manifest's card a thumbnail from the view just rendered,
+ * best-effort (a card only ever lacks one, never shows a wrong one). */
+async function thumbnailFromView(): Promise<void> {
+    const card = currentCard();
+    if (!card) return;
+    try {
+        card.thumbnail = await captureThumbnail(renderer);
+        renderOverview();
+    } catch {
+        // WebGL capture unavailable (e.g. a context without a back buffer)
+    }
+}
+
 async function previewSelected(): Promise<void> {
     try {
         setStatus('loading', 'staging…');
@@ -415,53 +579,124 @@ async function previewSelected(): Promise<void> {
         scrub.value = '0';
         $('scrub-row').hidden = plan.length < 2;
         await previewStep(0);
+        if (!currentCard()?.thumbnail) await thumbnailFromView();
     } catch (e) {
         fail(e);
+    }
+}
+
+/** The scan cache key: the manifest, the entry and the newest modification
+ * time of its source files — a source that changes invalidates the scan.
+ * Null when a backend cannot report modification times (no caching then). */
+async function scanCacheKey(entry: ManifestEntry): Promise<string | null> {
+    if (!workspace || !manifestPath) return null;
+    const byPath = new Map(workspace.files.map((f) => [f.relPath, f]));
+    let newest = 0;
+    for (const { relPath } of entryFiles(entry.source)) {
+        const mtime = await byPath.get(relPath)?.lastModified();
+        if (mtime === null || mtime === undefined) return null;
+        newest = Math.max(newest, mtime);
+    }
+    return `scan:${manifestPath}:${entry.id}:${newest}`;
+}
+
+function isEntryScan(value: unknown): value is EntryScan {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        Array.isArray((value as EntryScan).arrays) &&
+        typeof (value as EntryScan).steps === 'number'
+    );
+}
+
+/** Pick up cached scans for the open manifest (from an earlier visit) so its
+ * health shows without re-staging every entry. */
+async function restoreScansFromCache(): Promise<void> {
+    for (const entry of manifest.entries) {
+        try {
+            const key = await scanCacheKey(entry);
+            const cached = key ? await getValue<unknown>(key) : null;
+            if (isEntryScan(cached)) scans.set(entry.id, cached);
+        } catch {
+            // a source that does not resolve is simply not cached
+        }
+    }
+    if (scans.size) {
+        setState({ scans: Object.fromEntries(scans) });
+        updateHealth();
+        renderEntryList();
     }
 }
 
 async function scanEntries(): Promise<void> {
     if (!workspace) return;
     const previous = selected;
+    let stagedAny = false;
     for (const entry of manifest.entries) {
         try {
             setStatus('loading', `scanning ${entry.id}…`);
+            const key = await scanCacheKey(entry);
+            const cached = key ? await getValue<unknown>(key) : null;
+            if (isEntryScan(cached)) {
+                scans.set(entry.id, cached);
+                continue;
+            }
             selected = entry.id;
             const plan = await stageSelected();
+            stagedAny = true;
             const { arrays: summaries } = await client.summarizeStep(0);
-            // The NaN/Inf lane counts DATA arrays only — a quality metric's
-            // NaN is "N/A for this cell type" by design, not a bad value.
-            const dataRows = summaries.filter((s) => !isQualityRow(s));
-            const inverted = summaries.find((s) => s.name === 'quality:inverted');
-            const jacobian = summaries.find(
-                (s) => s.name === 'quality:scaled_jacobian',
-            );
-            scans.set(entry.id, {
-                steps: plan.length,
-                numNan: dataRows.reduce((n, s) => n + s.numNan, 0),
-                numInf: dataRows.reduce((n, s) => n + s.numInf, 0),
-                numInverted: inverted
-                    ? Math.round(inverted.mean * inverted.numValues)
-                    : 0,
-                minScaledJacobian:
-                    jacobian && Number.isFinite(jacobian.min) ? jacobian.min : null,
-            });
+            const scan = entryScanFromSummaries(plan.length, summaries);
+            scans.set(entry.id, scan);
+            if (key) await putValue(key, scan);
         } catch {
-            scans.set(entry.id, {
-                steps: 0,
-                numNan: 0,
-                numInf: 0,
-                numInverted: 0,
-                minScaledJacobian: null,
-            });
+            scans.set(entry.id, emptyScan());
         }
     }
-    await client.evictEntry();
+    if (stagedAny) await client.evictEntry();
     staged = null;
     selected = previous;
     setState({ scans: Object.fromEntries(scans) });
+    updateHealth();
     setStatus('ready', 'scan complete');
     renderEntryList();
+}
+
+/** Scan one card's manifest from the overview (opening it first). */
+async function scanManifestPath(path: string): Promise<void> {
+    await openManifestPath(path);
+    await scanEntries();
+}
+
+/** Open, scan and (optionally) thumbnail every manifest in turn — strictly
+ * one staged entry at a time, the MEMFS rule — then return to the overview. */
+async function scanAllManifests(): Promise<void> {
+    if (!workspace) return;
+    if (window.__datasetState.dirty) {
+        setStatus('error', 'save or discard the unsaved manifest edits before scanning all');
+        return;
+    }
+    const withThumbs = $<HTMLInputElement>('ov-thumbs').checked;
+    bulkScan = true;
+    try {
+        for (const card of [...cards]) {
+            if (card.parseError) continue;
+            await openManifestPath(card.path);
+            await scanEntries();
+            if (withThumbs && !card.thumbnail && manifest.entries.length) {
+                selectEntry(manifest.entries[0]?.id ?? null);
+                await previewSelected();
+                await thumbnailFromView();
+                await client.evictEntry();
+                staged = null;
+            }
+        }
+    } finally {
+        bulkScan = false;
+    }
+    selectEntry(null);
+    setView('overview');
+    renderOverview();
+    setStatus('ready', `scanned ${cards.filter((c) => !c.parseError).length} manifest(s)`);
 }
 
 // --- add-case flow ---------------------------------------------------------- //
@@ -537,6 +772,7 @@ async function commitAdd(): Promise<void> {
         selectEntry(entry.id);
         await previewSelected();
         $('add-flow').hidden = true;
+        refreshCurrentCard();
     } catch (e) {
         // Roll back a half-added entry so the manifest never holds an entry
         // whose source did not resolve.
@@ -603,17 +839,35 @@ async function openManifest(): Promise<void> {
             savedText = text;
         }
         scans.clear();
+        setState({ scans: {} });
         selectEntry(null);
         $<HTMLInputElement>('m-name').value = manifest.name ?? '';
         $<HTMLInputElement>('m-desc').value = manifest.description ?? '';
         setState({ manifestName: manifestPath });
         show($('manifest-editor'));
         show($('entries-section'));
+        renderHealthSection(currentCard()?.health ?? null);
         renderEntryList();
+        if (!bulkScan) setView('manifest');
         setStatus('ready', `${manifest.entries.length} entr${manifest.entries.length === 1 ? 'y' : 'ies'}`);
+        await restoreScansFromCache();
     } catch (e) {
         fail(e);
     }
+}
+
+/** Open a manifest by path (a card click). Re-entering the manifest that is
+ * already open with unsaved edits keeps those edits rather than re-reading
+ * the file. */
+async function openManifestPath(path: string): Promise<void> {
+    if (path === manifestPath && window.__datasetState.dirty) {
+        if (!bulkScan) setView('manifest');
+        return;
+    }
+    const select = $<HTMLSelectElement>('manifest-file');
+    if ([...select.options].some((o) => o.value === path)) select.value = path;
+    else select.value = NEW_MANIFEST;
+    await openManifest();
 }
 
 async function saveManifest(): Promise<void> {
@@ -624,6 +878,19 @@ async function saveManifest(): Promise<void> {
         savedText = text;
         setState({ lastSave: { mode, text } });
         refreshDirty();
+        if (mode === 'in-place') {
+            // The file list may have gained the manifest; refresh the select
+            // and the card set from disk (health/thumbnail survive by hash).
+            populateManifestSelect();
+            $<HTMLSelectElement>('manifest-file').value = manifestPath;
+            const card = currentCard();
+            const hash = await sha256Hex(text);
+            if (card) {
+                card.lastModified = Date.now();
+                card.sha256 = hash;
+            }
+        }
+        refreshCurrentCard();
         setStatus(
             'ready',
             mode === 'in-place' ? `saved ${manifestPath}` : `downloaded ${manifestPath}`,
@@ -631,6 +898,73 @@ async function saveManifest(): Promise<void> {
     } catch (e) {
         fail(e);
     }
+}
+
+// --- diff ------------------------------------------------------------------- //
+
+const DIFF_DISK = '::disk::';
+const DIFF_CURRENT = '::current::';
+const DIFF_PASTE = '::paste::';
+
+function diffChoices(): { value: string; label: string }[] {
+    const choices: { value: string; label: string }[] = [];
+    if (manifestPath && savedText !== null) {
+        choices.push({ value: DIFF_DISK, label: `${manifestPath} (on disk)` });
+    }
+    if (manifestPath) {
+        choices.push({ value: DIFF_CURRENT, label: `${manifestPath} (current edits)` });
+    }
+    for (const p of workspace?.manifestCandidates() ?? []) {
+        choices.push({ value: p, label: p });
+    }
+    choices.push({ value: DIFF_PASTE, label: 'pasted JSON' });
+    return choices;
+}
+
+async function diffText(choice: string): Promise<{ label: string; text: string }> {
+    if (choice === DIFF_DISK) return { label: `${manifestPath} (on disk)`, text: savedText ?? '' };
+    if (choice === DIFF_CURRENT) {
+        return { label: `${manifestPath} (current edits)`, text: currentText() };
+    }
+    if (choice === DIFF_PASTE) {
+        return { label: 'pasted JSON', text: $<HTMLTextAreaElement>('diff-paste').value };
+    }
+    if (!workspace) throw new Error('no workspace');
+    return { label: choice, text: await workspace.readText(choice) };
+}
+
+async function runDiff(): Promise<void> {
+    try {
+        const [a, b] = await Promise.all([
+            diffText($<HTMLSelectElement>('diff-a').value),
+            diffText($<HTMLSelectElement>('diff-b').value),
+        ]);
+        const diff = diffManifests(parseManifest(a.text), parseManifest(b.text));
+        const lines = diffLines(a.text, b.text);
+        renderDiff($('diff-body'), diff, lines);
+        const summary = summarizeDiff(a.label, b.label, diff);
+        $('diff-summary').textContent =
+            `${summary.a} → ${summary.b}: +${summary.added} added, ` +
+            `−${summary.removed} removed, ~${summary.changed} changed` +
+            (summary.headerChanged ? `, ${summary.headerChanged} document field(s)` : '');
+        setState({ diff: summary });
+    } catch (e) {
+        $('diff-body').replaceChildren();
+        $('diff-summary').textContent = e instanceof Error ? e.message : String(e);
+        setState({ diff: null });
+    }
+}
+
+function openDiff(): void {
+    const choices = diffChoices();
+    const a = savedText !== null && manifestPath ? DIFF_DISK : (choices[0]?.value ?? DIFF_PASTE);
+    const b = manifestPath
+        ? DIFF_CURRENT
+        : (choices.find((c) => c.value !== a && c.value !== DIFF_PASTE)?.value ?? DIFF_PASTE);
+    setOptions($<HTMLSelectElement>('diff-a'), choices, a);
+    setOptions($<HTMLSelectElement>('diff-b'), choices, b);
+    show($('diff-wrap'));
+    void runDiff();
 }
 
 // --- workspace pick --------------------------------------------------------- //
@@ -650,7 +984,10 @@ function adoptWorkspace(ws: Workspace): void {
             : 'this browser cannot write back; saving downloads the manifest.');
     show($('ws-info'));
     populateManifestSelect();
+    show($('overview-tools'));
+    setView('overview');
     setStatus('idle', 'workspace ready — open or create a manifest');
+    void buildOverview().catch(fail);
 }
 
 function pickFlow(): void {
@@ -713,6 +1050,18 @@ async function boot(): Promise<void> {
         }
     });
 
+    $('ov-sort').addEventListener('change', renderOverview);
+    $('ov-scan-all').addEventListener('click', () => void scanAllManifests().catch(fail));
+    $('ov-diff').addEventListener('click', openDiff);
+    $('ov-new').addEventListener('click', () => {
+        $<HTMLSelectElement>('manifest-file').value = NEW_MANIFEST;
+        void openManifest();
+    });
+    $('m-back').addEventListener('click', () => {
+        refreshCurrentCard();
+        setView('overview');
+    });
+
     $('manifest-open').addEventListener('click', () => void openManifest());
     $('m-save').addEventListener('click', () => void saveManifest());
     $<HTMLInputElement>('m-name').addEventListener('change', (e) => {
@@ -741,6 +1090,14 @@ async function boot(): Promise<void> {
         removeEntry(manifest, selected);
         scans.delete(selected);
         selectEntry(null);
+        updateHealth();
+    });
+
+    $('diff-a').addEventListener('change', () => void runDiff());
+    $('diff-b').addEventListener('change', () => void runDiff());
+    $('diff-paste').addEventListener('input', () => void runDiff());
+    $('diff-close').addEventListener('click', () => {
+        $('diff-wrap').hidden = true;
     });
 
     $<HTMLInputElement>('scrub').addEventListener('input', (e) => {

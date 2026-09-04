@@ -354,3 +354,169 @@ test('quality: summary rows flow from attachQuality and the scan is unpolluted',
     expect(scan.numNan).toBe(0);
     expect(scan.numInf).toBe(0);
 });
+
+// --------------------------------------------------------------------------- //
+// v10.22.0: the overview depth — cards, drill-down, health, diff              //
+// --------------------------------------------------------------------------- //
+
+/**
+ * A mocked FSA directory holding two manifests (one deliberately broken) and
+ * the block.vtu sample, with real `lastModified` stamps so the cards can show
+ * them. Writes are captured like the FSA test above.
+ */
+async function installOverviewMock(page) {
+    await page.addInitScript(() => {
+        window.__fsaWrites = [];
+        const MANIFEST =
+            JSON.stringify(
+                {
+                    Version: 1,
+                    Name: 'campaign',
+                    Entries: [
+                        { Id: 'block', Source: { Path: 'block.vtu' }, Split: 'train', Tags: ['raw'] },
+                    ],
+                },
+                null,
+                2,
+            ) + '\n';
+        const BROKEN = '{"Version": 1, "Bogus": 1}';
+        const fileHandle = (name, getBytes, lastModified) => ({
+            kind: 'file',
+            name,
+            getFile: async () => new File([await getBytes()], name, { lastModified }),
+            createWritable: async () => ({
+                write: async (data) => {
+                    window.__fsaWrites.push(String(data));
+                },
+                close: async () => {},
+            }),
+        });
+        const handles = {
+            'dataset.json': fileHandle('dataset.json', async () => MANIFEST, 1700000000000),
+            'broken.json': fileHandle('broken.json', async () => BROKEN, 1600000000000),
+            'block.vtu': fileHandle(
+                'block.vtu',
+                async () => {
+                    const url = new URL('samples/block.vtu', location.href);
+                    return (await fetch(url)).arrayBuffer();
+                },
+                1500000000000,
+            ),
+        };
+        window.showDirectoryPicker = async () => ({
+            kind: 'directory',
+            name: 'root',
+            async *entries() {
+                for (const [name, handle] of Object.entries(handles)) yield [name, handle];
+            },
+            queryPermission: async () => 'granted',
+            getFileHandle: async (name) => handles[name] ?? fileHandle(name, async () => '', Date.now()),
+        });
+    });
+}
+
+async function pickOverview(page) {
+    await page.goto('./dataset.html');
+    await waitStatus(page, 'idle');
+    await page.locator('#ws-pick').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.manifests.length))
+        .toBe(2);
+}
+
+test('overview: a card per manifest, drill-down and back', async ({ page }) => {
+    await installOverviewMock(page);
+    await pickOverview(page);
+
+    let s = await state(page);
+    expect(s.view).toBe('overview');
+    const card = s.manifests.find((c) => c.path === 'dataset.json');
+    expect(card.name).toBe('campaign');
+    expect(card.numEntries).toBe(1);
+    expect(card.splits).toEqual({ train: 1 });
+    expect(card.tags).toEqual(['raw']);
+    expect(card.lastModified).toBe(1700000000000);
+    expect(card.parseError).toBeNull();
+    expect(card.health).toBeNull();
+    expect(typeof card.sha256).toBe('string');
+    const broken = s.manifests.find((c) => c.path === 'broken.json');
+    expect(broken.parseError).toContain("unknown key 'Bogus'");
+    expect(broken.numEntries).toBe(0);
+    await expect(page.locator('.card[data-path="broken.json"]')).toHaveClass(/broken/);
+
+    // drill down through the card, then back
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+    s = await state(page);
+    expect(s.view).toBe('manifest');
+    expect(s.manifestName).toBe('dataset.json');
+    expect(s.entryIds).toEqual(['block']);
+    await expect(page.locator('#overview')).toBeHidden();
+    await expect(page.locator('#m-back')).toBeVisible();
+
+    await page.locator('#m-back').click();
+    s = await state(page);
+    expect(s.view).toBe('overview');
+    await expect(page.locator('#overview')).toBeVisible();
+});
+
+test('overview: a scan fills the card health and the drill-down health section', async ({
+    page,
+}) => {
+    await installOverviewMock(page);
+    await pickOverview(page);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+
+    await page.locator('#e-scan').click();
+    await waitStatus(page, 'ready');
+    const s = await state(page);
+    const health = s.manifests.find((c) => c.path === 'dataset.json').health;
+    expect(health.producer).toBe('browser');
+    expect(health.scanned).toBe(1);
+    expect(health.total).toBe(1);
+    expect(health.numNan).toBe(0);
+    expect(health.numInf).toBe(0);
+    expect(health.numInverted).toBe(0);
+    expect(health.numDegenerate).toBe(0);
+    expect(typeof health.minScaledJacobian).toBe('number');
+    expect(health.splitBalance).toEqual([{ split: 'train', count: 1, fraction: 1 }]);
+    expect(health.fieldsMissing).toEqual({});
+    expect(health.badEntries).toEqual([]);
+    expect(s.scans.block.arrays.length).toBeGreaterThan(0);
+    await expect(page.locator('#health-section')).toBeVisible();
+    await expect(page.locator('#h-totals .badge.ok')).toHaveCount(3);
+});
+
+test('overview: the diff view compares the file on disk with the current edits', async ({
+    page,
+}) => {
+    await installOverviewMock(page);
+    await pickOverview(page);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+
+    await page.locator('#entry-list li', { hasText: 'block' }).click();
+    await page.locator('#d-split').fill('valid');
+    await page.locator('#d-split').blur();
+    await expect.poll(() => page.evaluate(() => window.__datasetState.dirty)).toBe(true);
+
+    await page.locator('#ov-diff').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.diff?.changed))
+        .toBe(1);
+    const s = await state(page);
+    expect(s.diff.a).toContain('on disk');
+    expect(s.diff.b).toContain('current edits');
+    expect(s.diff.added).toBe(0);
+    expect(s.diff.removed).toBe(0);
+    await expect(page.locator('#diff-body')).toContainText('~ block');
+    await expect(page.locator('#diff-body')).toContainText('split: train → valid');
+
+    // the card reflects the unsaved edit once we go back
+    await page.locator('#diff-close').click();
+    await page.locator('#m-back').click();
+    const card = (await state(page)).manifests.find((c) => c.path === 'dataset.json');
+    expect(card.dirty).toBe(true);
+    expect(card.splits).toEqual({ valid: 1 });
+});

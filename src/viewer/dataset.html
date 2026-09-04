@@ -32,8 +32,43 @@
           <p id="ws-info" class="hint" hidden></p>
         </section>
 
+        <section id="overview-tools" hidden>
+          <h2>Datasets <span id="ov-counts" class="counts"></span></h2>
+          <div class="row">
+            <select id="ov-sort" title="Order the cards">
+              <option value="name">by name</option>
+              <option value="entries">by entries</option>
+              <option value="modified">by last modified</option>
+              <option value="health">by health</option>
+            </select>
+          </div>
+          <div class="row">
+            <button
+              id="ov-scan-all"
+              type="button"
+              title="Open and scan every manifest in turn (one entry staged at a time)"
+            >
+              Scan all
+            </button>
+            <label class="check" title="Capture a preview thumbnail per manifest while scanning">
+              <input id="ov-thumbs" type="checkbox" checked />
+              thumbnails
+            </label>
+          </div>
+          <div class="row">
+            <button id="ov-diff" type="button" title="Compare two manifests">Diff…</button>
+            <button id="ov-new" type="button">New manifest</button>
+          </div>
+          <p class="hint">
+            Cards summarize every <code>*.json</code> manifest at the workspace root; open one to curate it.
+          </p>
+        </section>
+
         <section id="manifest-section" hidden>
           <h2>Manifest</h2>
+          <button id="m-back" type="button" hidden title="Back to the overview of every manifest">
+            ← All datasets
+          </button>
           <div class="row">
             <select id="manifest-file"></select>
             <button id="manifest-open" type="button">Open</button>
@@ -81,6 +116,13 @@
           </div>
         </section>
 
+        <section id="health-section" hidden>
+          <h2>Health</h2>
+          <div id="h-splits"></div>
+          <div id="h-totals" class="card-badges"></div>
+          <div id="h-missing"></div>
+        </section>
+
         <section id="detail-section" hidden>
           <h2 id="d-id"></h2>
           <p id="d-source" class="hint"></p>
@@ -114,6 +156,26 @@
 
       <main id="stage">
         <div id="render"></div>
+        <div id="overview" hidden>
+          <p id="ov-empty" class="hint" hidden>
+            No manifest at the workspace root yet — create one with “New manifest”.
+          </p>
+          <div id="ov-cards" class="card-grid"></div>
+        </div>
+        <div id="diff-wrap" hidden>
+          <div class="row">
+            <select id="diff-a" title="Left side (A)"></select>
+            <span>→</span>
+            <select id="diff-b" title="Right side (B)"></select>
+            <button id="diff-close" type="button">Close</button>
+          </div>
+          <textarea
+            id="diff-paste"
+            placeholder="Choose “pasted JSON” on either side and paste a manifest here — e.g. the output of `git show REV:dataset_manifest.json`"
+          ></textarea>
+          <p id="diff-summary"></p>
+          <div id="diff-body"></div>
+        </div>
         <div id="legend"></div>
         <div id="viewport-tools">
           <label class="row">

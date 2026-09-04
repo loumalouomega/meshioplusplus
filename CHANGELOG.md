@@ -8,7 +8,16 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
-## v10.21.0 (2026-09-02)
+## v10.22.0 (2026-09-04)
+
+The dataset manager gains an **overview depth**: a card per manifest in the picked directory, health summaries, thumbnails and a manifest diff view — closing the multi-dataset overview, drill-down, browser-side health-summary and manifest-diffing bullets of roadmap section 1. Browser-only (TypeScript over the existing `dataset.html` and WASM build); no C++, binding, wheel-asset or Python change. See `doc/dashboard.md`.
+
+- **Overview cards.** Picking a directory now lands on a grid of every root-level `*.json` manifest — name/description, entry count, last-modified time, a split-balance bar with a colour-and-label legend, tag/group chips, health badges and a preview thumbnail — sortable by name, entries, modification time or health (worst first). A manifest the strict parser rejects is a flagged card, not a missing one. **New manifest** and **Scan all** (with optional thumbnails, one staged entry at a time) live beside the grid.
+- **Drill-down and back.** A card's *Open* enters the unchanged curation view; *← All datasets* returns. Unsaved edits survive the round trip (the card follows the in-memory document and is flagged dirty; re-opening it does not re-read the file), and *Scan all* refuses to run over unsaved edits.
+- **Health summaries.** Per-entry scans now also record degenerate cells and the list of data arrays present, and are cached in IndexedDB keyed by the manifest, the entry and its sources' newest modification time. The manifest-level summary (split balance, NaN/Inf and inverted/degenerate totals, worst scaled Jacobian, *fields missing across entries*, unreadable entries) is shown as badges on the card and in a new **Health** section of the curation view. The quality-NaN-means-N/A rule moved into `src/viewer/src/dataset/health.ts`, its single home.
+- **Manifest diff.** *Diff…* compares two manifests — the open one on disk, its current edits, any root manifest, or pasted JSON — structurally (document fields; entries added/removed; per-entry field changes, metadata compared by value) and as a line diff over the stable serialization.
+- Test surface: three new unit suites (`overview`, `health`, `diff`) and three Playwright specs on the typed `window.__datasetState`; `EntryScan`/`DatasetState` are additive.
+
 
 Adds a **Blender add-on**, closing the first bullet of roadmap section 3 ("Ecosystem reach"). Blender ships Python and reads almost no FEA formats — STL, OBJ, PLY and essentially nothing else; all 43 of meshio++'s are now available under `File > Import`. See `doc/blender.md`.
 

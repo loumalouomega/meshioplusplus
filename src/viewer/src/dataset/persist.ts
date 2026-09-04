@@ -18,6 +18,9 @@
  */
 
 const DB_NAME = 'meshioplusplus-dataset';
+/** One object store for everything (the directory handle, the scan cache,
+ * the server connection): a second store would need a DB version bump and a
+ * migration, for no benefit — keys are namespaced instead. */
 const STORE = 'handles';
 const KEY = 'workspace-root';
 
@@ -80,4 +83,16 @@ export async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
 /** Forget the saved root (a denied/stale handle must not keep reappearing). */
 export async function clearHandle(): Promise<void> {
     await withStore('readwrite', (store) => store.delete(KEY));
+}
+
+/** Store any structured-cloneable value under a namespaced key
+ * (`scan:...`, `server`); failures are silently absorbed. */
+export async function putValue(key: string, value: unknown): Promise<void> {
+    await withStore('readwrite', (store) => store.put(value, key));
+}
+
+/** Read a value stored with {@link putValue}, or null. */
+export async function getValue<T>(key: string): Promise<T | null> {
+    const value = await withStore<unknown>('readonly', (store) => store.get(key));
+    return value === undefined ? null : (value as T | null);
 }
