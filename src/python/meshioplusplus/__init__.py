@@ -79,6 +79,18 @@ from ._gpu import (
 )
 from ._gradient import gradient
 from ._grid import grid
+from ._grid_transfer import (
+    GridArray,
+    GridSpec,
+    PowerSpectrum,
+    expand_grid,
+    interpolate_grid,
+    power_spectrum,
+    resample_grid,
+    sample_grid,
+    scatter_grid,
+    squeeze_grid,
+)
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -290,6 +302,16 @@ __all__ = [
     "FeatureMatrix",
     "write_dataset",
     "has_zarr",
+    "GridSpec",
+    "GridArray",
+    "PowerSpectrum",
+    "sample_grid",
+    "scatter_grid",
+    "interpolate_grid",
+    "resample_grid",
+    "squeeze_grid",
+    "expand_grid",
+    "power_spectrum",
     "DatasetManifest",
     "DatasetEntry",
     "to_dlpack",

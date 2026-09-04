@@ -36,6 +36,8 @@ from collections import OrderedDict
 import numpy as np
 
 from .. import (
+    GridArray,
+    GridSpec,
     agglomerate,
     attach_quality,
     cell_data_to_point_data,
@@ -68,14 +70,18 @@ from .. import (
     optimize_volume,
     partition,
     point_data_to_cell_data,
+    power_spectrum,
     read,
     read_metadata,
     refine,
     remesh,
     remesh_volume,
     reorder,
+    resample_grid,
     run_pipeline,
     sample_distance,
+    sample_grid,
+    scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
 from .. import slice as _slice_op
@@ -878,6 +884,149 @@ def tool_voxelize(
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
+
+
+def _grid_spec_report(spec):
+    return {
+        "origin": [float(v) for v in spec.origin],
+        "spacing": [float(v) for v in spec.spacing],
+        "dims": [int(v) for v in spec.dims],
+        "shape": list(spec.shape),
+        "layout": "channels_first_zyx",
+    }
+
+
+def tool_grid_sample(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    fields=None,
+    extrapolate=False,
+    fill_value=0.0,
+    max_cells=20000000,
+):
+    """Sample a mesh's point data onto a regular grid, written as a lattice mesh."""
+    mesh = _load(input_path, input_format)
+    spec = GridSpec.from_mesh(
+        mesh,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        max_cells=max_cells,
+    )
+    array = sample_grid(
+        mesh,
+        spec,
+        fields=fields,
+        extrapolate=extrapolate,
+        fill_value=fill_value,
+    )
+    out = array.to_mesh()
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        coverage=array.coverage,
+        grid=_grid_spec_report(spec),
+    )
+
+
+def tool_grid_scatter(
+    grid_path,
+    target_path,
+    output_path,
+    grid_format=None,
+    target_format=None,
+    output_format=None,
+    fields=None,
+    on_conflict="error",
+):
+    """Write a grid's fields back onto a mesh's points by trilinear interpolation."""
+    array = GridArray.from_mesh(_load(grid_path, grid_format), fields=fields)
+    target = _load(target_path, target_format)
+    out = scatter_grid(array, target, on_conflict=on_conflict)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        grid=_grid_spec_report(array.spec),
+    )
+
+
+def tool_grid_resample(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    factor=None,
+    resolution=None,
+    fields=None,
+):
+    """Resample a grid onto a finer or coarser one - the trilinear upsampling baseline."""
+    array = GridArray.from_mesh(_load(input_path, input_format), fields=fields)
+    if (factor is None) == (resolution is None):
+        raise ValueError(
+            "meshio++: grid_resample: give exactly one of factor and resolution"
+        )
+    if factor is not None:
+        target = array.spec.upscale(factor)
+    else:
+        lo, hi = array.spec.bounds
+        dims = np.asarray(resolution, dtype=np.int64).reshape(-1)
+        if dims.size != 3:
+            raise ValueError(
+                "meshio++: grid_resample: resolution must be three cell counts"
+            )
+        target = GridSpec(origin=lo, spacing=(hi - lo) / dims.astype(float), dims=dims)
+    values = resample_grid(array.values, array.spec, target)
+    out = GridArray(values, target, array.channels, dict(array.schema)).to_mesh()
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        source_grid=_grid_spec_report(array.spec),
+        grid=_grid_spec_report(target),
+        scaling_factor=array.spec.scaling_factor(target),
+    )
+
+
+def tool_grid_power_spectrum(input_path, field, input_format=None, max_bins=256):
+    """The azimuthally averaged power spectrum of one field on a regular grid."""
+    array = GridArray.from_mesh(_load(input_path, input_format))
+    names = [c for c in array.channels if c == field or c.startswith(field + "_")]
+    if not names:
+        raise ValueError(
+            f"meshio++: grid_power_spectrum: no channel named {field!r} "
+            f"(have {list(array.channels)})"
+        )
+    values = np.stack([array.channel(n) for n in names], axis=0)
+    ps = power_spectrum(values, array.spec)
+    keep = (
+        min(int(max_bins), len(ps.power))
+        if max_bins and max_bins > 0
+        else len(ps.power)
+    )
+    return _json_safe(
+        {
+            "field": field,
+            "channels": names,
+            "units": ps.units,
+            "wavenumber": ps.wavenumber[:keep],
+            "power": ps.power[:keep],
+            "counts": ps.counts[:keep],
+            "num_bins": int(len(ps.power)),
+            "total_power": float(ps.power.sum()),
+            "grid": _grid_spec_report(array.spec),
+        }
+    )
 
 
 def tool_distance_to_surface(
@@ -2349,6 +2498,26 @@ TOOL_REGISTRY = OrderedDict(
         ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
+        (
+            "grid_sample",
+            {"fn": tool_grid_sample, "wraps": ("sample_grid",), "gated": None},
+        ),
+        (
+            "grid_scatter",
+            {"fn": tool_grid_scatter, "wraps": ("scatter_grid",), "gated": None},
+        ),
+        (
+            "grid_resample",
+            {"fn": tool_grid_resample, "wraps": ("resample_grid",), "gated": None},
+        ),
+        (
+            "grid_power_spectrum",
+            {
+                "fn": tool_grid_power_spectrum,
+                "wraps": ("power_spectrum",),
+                "gated": None,
+            },
+        ),
         (
             "compute_sdf",
             {"fn": tool_compute_sdf, "wraps": ("compute_sdf",), "gated": None},

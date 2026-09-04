@@ -520,6 +520,120 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def grid_sample(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        fields: Optional[List[str]] = None,
+        extrapolate: bool = False,
+        fill_value: float = 0.0,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Sample a mesh's point data onto a regular grid - the step a CNN or a
+        superresolution model needs before it can see a mesh at all. Give exactly
+        one of resolution (nx, ny, nz cell counts) or cell_size. Writes the grid
+        as a lattice mesh; use .vti so the lattice survives the round trip.
+        Reports the channel names (a k-component array expands to name_0..name_k)
+        and the coverage, the fraction of grid points inside the mesh - a low
+        coverage means the grid is mostly fill and a model would learn it."""
+        return _guard(
+            _tools.tool_grid_sample,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            fields=fields,
+            extrapolate=extrapolate,
+            fill_value=fill_value,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def grid_scatter(
+        grid_path: str,
+        target_path: str,
+        output_path: str,
+        grid_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+        on_conflict: str = "error",
+    ) -> dict:
+        """Write a grid's fields back onto a mesh's points by trilinear
+        interpolation - grid_sample's inverse, and the step that turns a model's
+        output back into something every format can hold. Consecutive
+        name_0/name_1/name_2 channels rebuild one multi-component array.
+        on_conflict is 'error', 'overwrite' or 'suffix'."""
+        return _guard(
+            _tools.tool_grid_scatter,
+            grid_path=grid_path,
+            target_path=target_path,
+            output_path=output_path,
+            grid_format=grid_format,
+            target_format=target_format,
+            output_format=output_format,
+            fields=fields,
+            on_conflict=on_conflict,
+        )
+
+    @server.tool()
+    def grid_resample(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        factor: Optional[int] = None,
+        resolution: Optional[List[int]] = None,
+        fields: Optional[List[str]] = None,
+    ) -> dict:
+        """Resample a grid onto a finer or coarser lattice covering the same box,
+        by trilinear interpolation. This is the baseline a superresolution model
+        has to beat. Give exactly one of factor (an integer upscale) or
+        resolution (nx, ny, nz cell counts)."""
+        return _guard(
+            _tools.tool_grid_resample,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            factor=factor,
+            resolution=resolution,
+            fields=fields,
+        )
+
+    @server.tool()
+    def grid_power_spectrum(
+        input_path: str,
+        field: str,
+        input_format: Optional[str] = None,
+        max_bins: int = 256,
+    ) -> dict:
+        """The azimuthally averaged power spectrum of one field on a regular
+        grid - whether a super-resolved or generated field carries the right
+        small-scale content, which a pointwise error cannot see. Needs an
+        isotropic grid (equal spacing on every axis) and reports power per
+        wavenumber bin plus the mode count per bin. The power sums to
+        mean(field**2) exactly."""
+        return _guard(
+            _tools.tool_grid_power_spectrum,
+            input_path=input_path,
+            field=field,
+            input_format=input_format,
+            max_bins=max_bins,
+        )
+
+    @server.tool()
     def compute_sdf(
         input_path: str,
         output_path: str,

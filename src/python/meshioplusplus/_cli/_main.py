@@ -19,6 +19,7 @@ from . import (
     _decompress,
     _diff,
     _extract_surface,
+    _grid_transfer,
     _info,
     _interpolate,
     _isosurface,
@@ -162,6 +163,34 @@ def main(argv=None):
     )
     _voxelize.add_args(parser)
     parser.set_defaults(func=_voxelize.voxelize_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-sample",
+        help="Sample a mesh's point data onto a regular grid (for a CNN)",
+    )
+    _grid_transfer.add_sample_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_sample_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-scatter",
+        help="Write a grid's fields back onto a mesh (grid-sample's inverse)",
+    )
+    _grid_transfer.add_scatter_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_scatter_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-resample",
+        help="Resample a grid onto a finer or coarser lattice over the same box",
+    )
+    _grid_transfer.add_resample_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_resample_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-spectrum",
+        help="Azimuthally averaged power spectrum of a field on a regular grid",
+    )
+    _grid_transfer.add_spectrum_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_spectrum_cmd)
 
     parser = subparsers.add_parser(
         "sdf",

@@ -770,3 +770,82 @@ def test_dataset_hand_edit_survives_cli_edit(tmp_path, monkeypatch):
     )
     m = meshioplusplus.DatasetManifest.load("m.json")
     assert m["case_0"].notes == "hand-written" and m["case_0"].split == "train"
+
+
+# --------------------------------------------------------------------------- #
+# grid transfer                                                               #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def grid_source(tmp_path):
+    """A tetrahedral mesh over an anisotropic box, carrying a linear field."""
+    mesh = meshioplusplus.convert_cells(
+        meshioplusplus.grid((3, 3, 3), spacing=(1 / 3, 2 / 3, 4 / 3)), mode="simplexify"
+    )
+    p = mesh.points
+    mesh.point_data["u"] = 1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2]
+    mesh.point_data["v"] = np.column_stack([p[:, 0], 2.0 * p[:, 1], -p[:, 2]])
+    path = tmp_path / "src.vtu"
+    meshioplusplus.write(path, mesh)
+    return path
+
+
+def test_cli_grid_round_trip(grid_source, tmp_path, capsys):
+    """sample -> resample -> scatter, the whole chain through the CLI.
+
+    A linear field must survive all three steps, and the multi-component array
+    must come back with its shape.
+    """
+    gridfile = tmp_path / "g.vti"
+    fine = tmp_path / "fine.vtu"
+    upfile = tmp_path / "up.vti"
+    outfile = tmp_path / "out.vtu"
+    meshioplusplus.write(
+        fine, meshioplusplus.grid((6, 6, 6), spacing=(1 / 6, 2 / 6, 4 / 6))
+    )
+
+    meshioplusplus._cli.main(
+        ["grid-sample", str(grid_source), str(gridfile), "--resolution", "4,4,4"]
+    )
+    assert "coverage:" in capsys.readouterr().out
+
+    meshioplusplus._cli.main(
+        ["grid-resample", str(gridfile), str(upfile), "--factor", "2"]
+    )
+    assert "(2, 2, 2)" in capsys.readouterr().out
+
+    meshioplusplus._cli.main(["grid-scatter", str(upfile), str(fine), str(outfile)])
+
+    out = meshioplusplus.read(outfile)
+    p = out.points
+    assert out.point_data["u"] == pytest.approx(
+        1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2], abs=1e-12
+    )
+    assert out.point_data["v"].shape == (len(p), 3)
+
+
+def test_cli_grid_spectrum_json(tmp_path, capsys):
+    mesh = meshioplusplus.grid((15, 15, 15), spacing=(1 / 16, 1 / 16, 1 / 16))
+    mesh.point_data["u"] = np.cos(2 * np.pi * 3 * mesh.points[:, 0])
+    path = tmp_path / "g.vti"
+    meshioplusplus.write(path, mesh)
+
+    meshioplusplus._cli.main(["grid-spectrum", str(path), "--field", "u", "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["units"] == "cycles per unit length"
+    # Parseval, and the mode lands in the bin its wavenumber names
+    assert report["total_power"] == pytest.approx(
+        float((mesh.point_data["u"] ** 2).mean()), rel=1e-12
+    )
+    loud = int(np.argmax(report["power"]))
+    assert report["wavenumber"][loud] == pytest.approx(3.0)
+
+
+def test_cli_grid_resample_requires_exactly_one_target(grid_source, tmp_path):
+    gridfile = tmp_path / "g.vti"
+    meshioplusplus._cli.main(
+        ["grid-sample", str(grid_source), str(gridfile), "--resolution", "2,2,2"]
+    )
+    with pytest.raises(ValueError, match="exactly one of --factor and --resolution"):
+        meshioplusplus._cli.main(
+            ["grid-resample", str(gridfile), str(tmp_path / "x.vti")]
+        )

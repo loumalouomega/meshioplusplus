@@ -1231,6 +1231,36 @@ meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
 
 See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
 
+## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
+
+The mesh-to-grid data path a convolutional or superresolution model needs.
+
+```bash
+meshioplusplus grid-sample   case.vtu grid.vti --resolution 64,64,64
+meshioplusplus grid-resample grid.vti fine.vti --factor 2
+meshioplusplus grid-scatter  fine.vti case.vtu predicted.vtu
+meshioplusplus grid-spectrum grid.vti --field T --json
+```
+
+Write grids as **`.vti`**: it stores the lattice as origin/spacing/extent and regenerates the points arithmetically, so the grid is recovered exactly on the way back in. A grid written to `.vtu` is a lossy round trip for this purpose and reading one back as a grid fails by name.
+
+| flag | verb | meaning |
+|---|---|---|
+| `--resolution nx,ny,nz` / `--cell-size S` | sample | the lattice; exactly one, the same six-field vocabulary as `voxelize` and `sdf` |
+| `--bounds=xlo,...,zhi` | sample | explicit bounds. For a coarse/fine pair take the box from the **fine** mesh, so every fine node is inside the coarse grid |
+| `--padding` / `--padding-relative` | sample | grow the box on every side |
+| `--fields a,b` | all | which point data to carry; every array by default |
+| `--extrapolate` | sample | give a grid point outside the mesh its nearest value instead of the fill |
+| `--fill-value=V` | sample | what an outside point gets (`nan` makes the fill visible downstream) |
+| `--factor N` / `--resolution nx,ny,nz` | resample | integer upscale, or explicit counts, over the same box; exactly one |
+| `--on-conflict error\|overwrite\|suffix` | scatter | when the target already has an array of that name |
+| `--field NAME` | spectrum | required; a multi-component array's components are summed |
+| `--max-bins N` / `--json` | spectrum | truncate the printed table / emit JSON |
+
+`grid-sample` reports the **coverage**, the fraction of grid points inside the mesh — a grid around a concave domain is mostly fill, and a model trained on it learns the fill. `cell_data` is refused in both directions: convert it with `data to-point` first.
+
+See [`doc/grids.md`](grids.md).
+
 ## `sdf`
 
 ```bash

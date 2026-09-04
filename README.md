@@ -781,6 +781,17 @@ A *collection* of solution outputs is catalogued by a hand-editable [dataset man
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
 
+For a **grid-shaped** model — a 3-D CNN, or a superresolution network taking a coarse grid to a fine one — the shape a mesh has to become is a dense array, and `sample_grid` is that step:
+
+```python
+spec  = mio.GridSpec.from_mesh(mesh, resolution=(64, 64, 64))
+array = mio.sample_grid(mesh, spec, fields=["T", "vel"])   # (C, D, H, W), channels first then z,y,x
+array.coverage                                             # how much of the grid is actually inside the mesh
+result = mio.scatter_grid(prediction, mesh)                # and back onto the mesh, trilinearly
+```
+
+Grids are ordinary hexahedron meshes, so `view`, `crop` and every writer work on one; cache them as `.vti`, which stores the lattice exactly. `power_spectrum` reports whether a super-resolved field carries the right small-scale content, which a pointwise error cannot see. See [mesh and regular grids](https://loumalouomega.github.io/meshioplusplus/grids.html).
+
 If PhysicsNeMo itself is unfamiliar, [**PhysicsNeMo basics**](https://loumalouomega.github.io/meshioplusplus/physicsnemo/overview.html) is a fourteen-page map of the framework — what a `Module` and a `.mdlus` checkpoint are, which of the 25 architecture families fits the shape of your data, how simulation output becomes batched tensors, and where meshio++ ends and the framework begins. Each page closes by naming what meshio++ supplies, or by saying plainly that nothing does.
 
 ### MCP server
@@ -792,7 +803,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 69 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 73 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### Blender add-on
 
@@ -891,7 +902,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.26.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.27.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -88,6 +88,7 @@ export default defineConfig({
           { text: "Slicing / cross-sections", link: "/slice" },
           { text: "Isosurfaces / contours", link: "/isosurface" },
           { text: "Regular grids / voxelize", link: "/voxelize" },
+          { text: "Mesh and regular grids", link: "/grids" },
           { text: "Signed distance", link: "/sdf" },
           { text: "Field derivatives", link: "/gradient" },
           { text: "Error estimation", link: "/error" },

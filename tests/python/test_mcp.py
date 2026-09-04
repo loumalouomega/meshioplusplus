@@ -453,6 +453,15 @@ _NOT_TOOLS = {
     "edge_index",  # in-memory (2, E) array; no path-based form
     "feature_matrix",  # in-memory matrix + schema; no path-based form
     "FeatureMatrix",
+    # Grid values and the lattice they live on are in-memory arrays; the four
+    # grid_* tools cover every path-in/path-out case (sample, scatter, resample,
+    # spectrum).
+    "GridSpec",
+    "GridArray",
+    "PowerSpectrum",
+    "interpolate_grid",  # in-memory (C, M) evaluation at caller-supplied points
+    "squeeze_grid",  # in-memory array reshape for a 2-D operator
+    "expand_grid",
     "has_zarr",
     "to_dlpack",
     "to_cupy",
@@ -560,6 +569,90 @@ def test_compute_sdf_tool(tmp_path):
         _tools.tool_compute_sdf(
             mesh_file, str(tree), structure="octree", resolution=[4, 4, 4]
         )
+
+
+def _grid_source(tmp_path):
+    """Anisotropic box, linear scalar plus a vector -- see test_grid_transfer."""
+    mesh = meshioplusplus.convert_cells(
+        meshioplusplus.grid((3, 3, 3), spacing=(1 / 3, 2 / 3, 4 / 3)), mode="simplexify"
+    )
+    p = mesh.points
+    mesh.point_data["u"] = 1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2]
+    mesh.point_data["v"] = np.column_stack([p[:, 0], 2.0 * p[:, 1], -p[:, 2]])
+    path = tmp_path / "src.vtu"
+    meshioplusplus.write(path, mesh)
+    return str(path)
+
+
+def test_grid_tools_round_trip(tmp_path):
+    """sample -> resample -> scatter over paths, with the reports checked.
+
+    The whole point of the grid tools is that an agent can drive the data path
+    without holding a mesh, so every step here goes through a file.
+    """
+    src = _grid_source(tmp_path)
+    gridfile = str(tmp_path / "g.vti")
+    report = _tools.tool_grid_sample(src, gridfile, resolution=[4, 4, 4])
+    assert report["channels"] == ["u", "v_0", "v_1", "v_2"]
+    assert report["coverage"] == 1.0
+    assert report["grid"]["dims"] == [4, 4, 4]
+    assert report["grid"]["shape"] == [5, 5, 5]
+    assert report["grid"]["layout"] == "channels_first_zyx"
+
+    upfile = str(tmp_path / "up.vti")
+    report = _tools.tool_grid_resample(gridfile, upfile, factor=2)
+    assert report["scaling_factor"] == [2, 2, 2]
+    assert report["grid"]["dims"] == [8, 8, 8]
+
+    fine = str(tmp_path / "fine.vtu")
+    meshioplusplus.write(
+        fine, meshioplusplus.grid((6, 6, 6), spacing=(1 / 6, 2 / 6, 4 / 6))
+    )
+    out = str(tmp_path / "out.vtu")
+    report = _tools.tool_grid_scatter(upfile, fine, out)
+    assert report["point_data"] == ["u", "v"]
+
+    got = meshioplusplus.read(out)
+    p = got.points
+    assert got.point_data["u"] == pytest.approx(
+        1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2], abs=1e-12
+    )
+
+
+def test_grid_power_spectrum_tool_is_json_safe(tmp_path):
+    mesh = meshioplusplus.grid((15, 15, 15), spacing=(1 / 16, 1 / 16, 1 / 16))
+    mesh.point_data["u"] = np.cos(2 * np.pi * 3 * mesh.points[:, 0])
+    path = str(tmp_path / "g.vti")
+    meshioplusplus.write(path, mesh)
+
+    report = _dump(_tools.tool_grid_power_spectrum(path, "u"))
+    assert report["units"] == "cycles per unit length"
+    assert report["total_power"] == pytest.approx(
+        float((mesh.point_data["u"] ** 2).mean()), rel=1e-12
+    )
+    loud = int(np.argmax(report["power"]))
+    assert report["wavenumber"][loud] == pytest.approx(3.0)
+
+
+def test_grid_tools_report_a_named_error_rather_than_a_traceback(tmp_path):
+    src = _grid_source(tmp_path)
+    gridfile = str(tmp_path / "g.vti")
+    _tools.tool_grid_sample(src, gridfile, resolution=[2, 2, 2])
+
+    guarded = _tools.guard(
+        _tools.tool_grid_power_spectrum, input_path=gridfile, field="nope"
+    )
+    assert guarded["error_type"] == "ValueError"
+    assert "no channel named 'nope'" in guarded["error"]
+
+    # a mesh that is not a lattice cannot be read as a grid
+    guarded = _tools.guard(
+        _tools.tool_grid_scatter,
+        grid_path=src,
+        target_path=src,
+        output_path=str(tmp_path / "o.vtu"),
+    )
+    assert "not a dense regular lattice" in guarded["error"]
 
 
 def test_crop_tool_takes_a_data_predicate(mesh_file, tmp_path):
