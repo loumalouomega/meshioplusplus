@@ -63,6 +63,12 @@ export interface TrainPanelHooks {
     /** The open manifest's path ON THE SERVER (bound by content hash), or
      * null when no manifest is open or it is not bound. */
     getManifestPath(): string | null;
+    /** The open manifest's entries, for the prediction picker. */
+    getEntries(): { id: string; split: string | null }[];
+    /** Render a mesh the server produced (a prediction), colouring it by its
+     * error array — the viewer's own session slot, so the staged dataset
+     * entry is untouched. */
+    previewPrediction(name: string, bytes: ArrayBuffer): Promise<void>;
     setState(patch: Partial<DatasetState>): void;
     setStatus(message: string): void;
     fail(error: unknown): void;
@@ -77,8 +83,8 @@ export class TrainPanel {
 
     constructor(private readonly hooks: TrainPanelHooks) {
         $('t-start').addEventListener('click', () => void this.start().catch(hooks.fail));
-        $('t-runs').addEventListener('click', () => void this.refreshJobs(true).catch(hooks.fail));
         $('run-close').addEventListener('click', () => this.close());
+        $('pred-run').addEventListener('click', () => void this.predict().catch(hooks.fail));
         $('run-stop').addEventListener('click', () => void this.stop().catch(hooks.fail));
         $<HTMLSelectElement>('run-job').addEventListener('change', (e) => {
             const jobId = (e.target as HTMLSelectElement).value;
@@ -220,6 +226,67 @@ export class TrainPanel {
         await this.follow(started.job_id);
     }
 
+    /** Predict one entry with this run's checkpoint and show the result in
+     * the mesh viewer, coloured by its own error field. */
+    async predict(): Promise<void> {
+        const api = this.hooks.getApi();
+        const manifest = this.hooks.getManifestPath();
+        const job = this.active;
+        const entryId = $<HTMLSelectElement>('pred-entry').value;
+        if (!api || !manifest || !job || !entryId) return;
+        const metrics = $('pred-metrics');
+        metrics.textContent = 'predicting…';
+        this.hooks.setStatus(`predicting ${entryId}…`);
+        const report = await api.tool<{
+            checkpoint: string;
+            predictions: { entry_id: string; output_path: string; rmse: number | null; max_error: number | null }[];
+        }>('train_predict', { manifest_path: manifest, job_id: job.jobId, split: null, entry_ids: [entryId] });
+        if (isToolError(report)) {
+            metrics.textContent = report.error;
+            this.hooks.setStatus('ready');
+            return;
+        }
+        const row = report.predictions[0];
+        if (!row) {
+            metrics.textContent = 'the server predicted nothing for that entry';
+            return;
+        }
+        // The prediction is a file on the server: fetch it through the same
+        // sandboxed route the checkpoint downloads use, then render it.
+        const response = await fetch(api.fileUrl(row.output_path));
+        if (!response.ok) throw new Error(`meshio++: could not fetch ${row.output_path}`);
+        await this.hooks.previewPrediction(`${row.entry_id}.vtu`, await response.arrayBuffer());
+        const rmse = row.rmse === null ? '—' : row.rmse.toPrecision(3);
+        const max = row.max_error === null ? '—' : row.max_error.toPrecision(3);
+        metrics.textContent = `${row.entry_id}: RMSE ${rmse} · max |error| ${max}`;
+        this.hooks.setState({
+            prediction: {
+                jobId: job.jobId,
+                entryId: row.entry_id,
+                outputPath: row.output_path,
+                rmse: row.rmse,
+                maxError: row.max_error,
+            },
+        });
+        this.hooks.setStatus(`predicted ${row.entry_id}`);
+    }
+
+    /** Fill the prediction picker from the open manifest. */
+    private refreshEntries(): void {
+        const entries = this.hooks.getEntries();
+        setOptions(
+            $<HTMLSelectElement>('pred-entry'),
+            entries.map((e) => ({
+                value: e.id,
+                label: e.split ? `${e.id} (${e.split})` : e.id,
+            })),
+            // Default to a held-out entry: predicting on a training case is
+            // rarely what you want to look at.
+            entries.find((e) => e.split && e.split !== 'train')?.id ?? entries[0]?.id,
+        );
+        $<HTMLButtonElement>('pred-run').disabled = entries.length === 0;
+    }
+
     /** Show a job's panel and poll it while it runs. */
     async follow(jobId: string): Promise<void> {
         const api = this.hooks.getApi();
@@ -238,6 +305,8 @@ export class TrainPanel {
             error: null,
         };
         $<HTMLSelectElement>('run-job').value = jobId;
+        $('pred-metrics').textContent = '';
+        this.refreshEntries();
         show($('run-wrap'));
         this.render();
         this.poller = new JobPoller(api, jobId, {
@@ -302,7 +371,7 @@ export class TrainPanel {
         this.close();
         this.active = null;
         this.jobs = [];
-        this.hooks.setState({ jobs: [], activeJob: null });
+        this.hooks.setState({ jobs: [], activeJob: null, compare: [], prediction: null });
     }
 
     private render(status?: JobStatus): void {

@@ -517,6 +517,87 @@ body[data-view='overview'] #detail-section {
     border-radius: 6px;
 }
 
+#runs-wrap {
+    position: absolute;
+    inset: 0;
+    z-index: 18;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 20px;
+    overflow-y: auto;
+    background: var(--bg);
+}
+
+#runs-wrap h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* The header carries five controls; it wraps rather than pushing the panel
+   into a horizontal scroll (which hides the left edge of everything below). */
+#runs-wrap .row {
+    flex-wrap: wrap;
+}
+
+#runs-filter {
+    flex: 1 1 12rem;
+    min-width: 6rem;
+}
+
+#runs-sort {
+    flex: 0 1 auto;
+    max-width: 14rem;
+}
+
+#runs-table,
+#runs-diff {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+#runs-table th,
+#runs-diff th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--muted);
+}
+
+#runs-table th,
+#runs-table td,
+#runs-diff th,
+#runs-diff td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--line);
+}
+
+/* Numbers line up when they are read down a column. */
+#runs-table td:nth-child(n + 4),
+#runs-diff td {
+    font-variant-numeric: tabular-nums;
+}
+
+#runs-table tr.selected {
+    background: rgba(57, 135, 229, 0.12);
+}
+
+.run-open {
+    padding: 2px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+}
+
+#runs-diff tr.differs th {
+    color: var(--text);
+}
+
+#runs-diff tr.differs td {
+    color: #fab219;
+}
+
 /* --- the manifest diff view ------------------------------------------------ */
 
 #diff-wrap {
@@ -597,3 +678,124 @@ body[data-view='overview'] #detail-section {
 .diff-lines .diff-gap {
     color: var(--muted);
 }
+
+/* --- polish: affordance, focus and motion ---------------------------------- *
+ * Applied after the layout worked rather than while it was being built: the
+ * shapes below are the ones the page already had, given a consistent hover
+ * and focus treatment. Everything is a colour or a 1px transform, so nothing
+ * here can reflow a panel -- and every transition is dropped under
+ * `prefers-reduced-motion`, which is the setting that means it.
+ */
+
+:where(button, select, input, textarea, a, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.card,
+#entry-list li,
+#runs-table tbody tr,
+#run-checkpoints li {
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        transform 120ms ease;
+}
+
+.card:hover {
+    border-color: #3a4152;
+    transform: translateY(-1px);
+}
+
+.card:focus-within {
+    border-color: var(--accent);
+}
+
+/* The card's own buttons are the click targets; the card lifting under the
+   pointer is the hint that it is one thing. */
+.card-actions button:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+.card-actions button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#entry-list li:hover {
+    background: rgba(76, 159, 254, 0.08);
+}
+
+#runs-table tr:hover td {
+    background: rgba(76, 159, 254, 0.06);
+}
+
+#run-checkpoints li:hover {
+    background: rgba(76, 159, 254, 0.06);
+}
+
+/* The stage overlays arrive rather than appearing: 120ms is under the
+   threshold where a transition reads as a delay. */
+#overview:not([hidden]),
+#diff-wrap:not([hidden]),
+#run-wrap:not([hidden]),
+#runs-wrap:not([hidden]) {
+    animation: panel-in 120ms ease-out;
+}
+
+@keyframes panel-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+/* A run that is still going says so without a word. */
+#run-status.none {
+    position: relative;
+    padding-left: 18px;
+}
+
+#run-status.none::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    50% {
+        opacity: 0.25;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .card,
+    #entry-list li,
+    #runs-table tbody tr,
+    #run-checkpoints li {
+        transition: none;
+    }
+
+    .card:hover {
+        transform: none;
+    }
+
+    #overview:not([hidden]),
+    #diff-wrap:not([hidden]),
+    #run-wrap:not([hidden]),
+    #runs-wrap:not([hidden]) {
+        animation: none;
+    }
+
+    #run-status.none::before {
+        animation: none;
+    }
+}
+

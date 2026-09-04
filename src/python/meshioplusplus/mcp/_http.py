@@ -157,8 +157,15 @@ def build_app(
     allowed_origins: Iterable[str] = DEFAULT_ALLOWED_ORIGINS,
     root: Optional[str] = None,
     runs_dir: Optional[str] = None,
+    watch_jobs: bool = False,
 ) -> Starlette:
-    """The ASGI app: FastMCP's HTTP app plus the ``/api`` routes and auth."""
+    """The ASGI app: FastMCP's HTTP app plus the ``/api`` routes and auth.
+
+    ``watch_jobs`` starts the job watcher, which polls live training jobs so
+    a terminal transition -- and its webhook -- is noticed with nobody
+    asking; only worth running when a webhook is configured, since every
+    request already re-derives the jobs it touches.
+    """
     if hasattr(server, "streamable_http_app"):
         app = server.streamable_http_app()
         transport = "streamable-http"
@@ -168,6 +175,10 @@ def build_app(
     if runs_dir:
         _tools.set_runs_dir(runs_dir)
     runs = _tools.get_runs_dir()
+    if watch_jobs:
+        from ._jobs import Watcher
+
+        app.state.job_watcher = Watcher(_tools._jobs_manager()).start()
     app.state.meshioplusplus = {
         "token": token,
         "transport": transport,

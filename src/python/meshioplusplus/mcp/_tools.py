@@ -118,12 +118,30 @@ def get_root():
 # server's --runs-dir says otherwise. Job ids are validated by the manager, so
 # a job path can never leave this directory.
 _RUNS_DIR = None
+_WEBHOOK = None
 _MANAGERS = {}
 
 
 def set_runs_dir(path):
     global _RUNS_DIR
     _RUNS_DIR = os.path.realpath(str(path)) if path else None
+    _MANAGERS.clear()
+
+
+def set_webhook(url):
+    """The URL a terminal job is POSTed to (the server's ``--webhook``).
+
+    Deliberately a server-side setting rather than a spec key or a tool
+    parameter: a URL supplied by a client and fetched by the server is
+    server-side request forgery by design.
+    """
+    global _WEBHOOK
+    _WEBHOOK = str(url) if url else None
+    _MANAGERS.clear()
+
+
+def get_webhook():
+    return _WEBHOOK
 
 
 def get_runs_dir():
@@ -138,7 +156,7 @@ def _jobs_manager():
     runs = get_runs_dir()
     manager = _MANAGERS.get(runs)
     if manager is None:
-        manager = _MANAGERS[runs] = JobManager(runs)
+        manager = _MANAGERS[runs] = JobManager(runs, webhook=_WEBHOOK)
     return manager
 
 

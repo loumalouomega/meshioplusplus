@@ -603,7 +603,12 @@ function makeTrainFake() {
             return current;
         }
         if (tool === 'train_metrics') {
-            return { job_id: 'job-1', status: status().status, rows: rows.slice(body.since_epoch ?? 0, visible()) };
+            const jobId = body.job_id ?? 'job-1';
+            if (jobId !== 'job-1') {
+                // another run's whole curve, offset so the two are distinguishable
+                return { job_id: jobId, status: 'finished', rows: rows.map((r) => ({ ...r, valid_loss: r.valid_loss / 2 })) };
+            }
+            return { job_id: jobId, status: status().status, rows: rows.slice(body.since_epoch ?? 0, visible()) };
         }
         if (tool === 'train_log') {
             const offset = body.offset ?? 0;
@@ -629,7 +634,33 @@ function makeTrainFake() {
             ] };
         }
         if (tool === 'train_list') {
-            return { runs_dir: '/srv/cases/runs', jobs: state.started ? [{ ...status(), fields: ['q'], target_fields: ['T'], tags: [] }] : [] };
+            if (!state.started) return { runs_dir: '/srv/cases/runs', jobs: [] };
+            const base = { ...status(), fields: ['q'], target_fields: ['T'], train_split: 'train', valid_split: 'valid', batch_size: 8, learning_rate: 0.001, seed: 0, processor_size: 8, tags: [] };
+            return {
+                runs_dir: '/srv/cases/runs',
+                jobs: [
+                    { ...base, hidden_dim: 64, best_valid_loss: 0.3, duration_seconds: 50 },
+                    { ...base, job_id: 'job-0', hidden_dim: 128, best_valid_loss: 0.2, duration_seconds: 90, tags: ['wide'] },
+                    { ...base, job_id: 'job-x', status: 'failed', hidden_dim: 64, best_valid_loss: null, duration_seconds: 5 },
+                ],
+            };
+        }
+        if (tool === 'train_predict') {
+            return {
+                checkpoint: '/srv/cases/runs/job-1/checkpoints/best.mdlus',
+                output_dir: '/srv/cases/runs/job-1/predictions',
+                predictions: [
+                    {
+                        entry_id: body.entry_ids[0],
+                        time: 0,
+                        output_path: `/srv/cases/runs/job-1/predictions/${body.entry_ids[0]}.vtu`,
+                        num_rows: 4,
+                        rmse: 0.0123,
+                        max_error: 0.04,
+                    },
+                ],
+                mean_rmse: 0.0123,
+            };
         }
         if (tool === 'train_stop') {
             state.polls = 99;
@@ -638,6 +669,31 @@ function makeTrainFake() {
         return { error: `unknown tool ${tool}`, error_type: 'KeyError' };
     };
 }
+
+/** A minimal ASCII VTU carrying a `T_error` point array — what a prediction
+ * file is, as far as the page is concerned. */
+const PREDICTION_VTU = `<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="4" NumberOfCells="2">
+      <Points>
+        <DataArray type="Float64" NumberOfComponents="3" format="ascii">
+          0 0 0 1 0 0 1 1 0 0 1 0
+        </DataArray>
+      </Points>
+      <Cells>
+        <DataArray type="Int64" Name="connectivity" format="ascii">0 1 2 0 2 3</DataArray>
+        <DataArray type="Int64" Name="offsets" format="ascii">3 6</DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">5 5</DataArray>
+      </Cells>
+      <PointData>
+        <DataArray type="Float64" Name="T_pred" format="ascii">0 0.25 0.5 0.75</DataArray>
+        <DataArray type="Float64" Name="T_error" format="ascii">0.01 0.02 0.03 0.04</DataArray>
+      </PointData>
+    </Piece>
+  </UnstructuredGrid>
+</VTKFile>
+`;
 
 /** A fake companion process at `<page origin>/__mock-api`, answering only
  * with the right bearer token. */
@@ -648,8 +704,15 @@ async function installServerFake(page) {
         const url = new URL(request.url());
         const json = (status, body) =>
             route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-        if (request.headers()['authorization'] !== `Bearer ${SERVER_TOKEN}`) {
+        // Mirrors the real server: a bearer header everywhere, and `?token=`
+        // accepted on /api/files alone (a download link cannot set a header).
+        const viaQuery =
+            url.pathname.endsWith('/api/files') && url.searchParams.get('token') === SERVER_TOKEN;
+        if (request.headers()['authorization'] !== `Bearer ${SERVER_TOKEN}` && !viaQuery) {
             return json(401, { error: 'missing or invalid bearer token', error_type: 'PermissionError' });
+        }
+        if (url.pathname.endsWith('/api/files')) {
+            return route.fulfill({ status: 200, contentType: 'application/octet-stream', body: PREDICTION_VTU });
         }
         if (url.pathname.endsWith('/api/health')) {
             return json(200, {
@@ -854,11 +917,119 @@ test('launch a run from the manifest and follow it to completion', async ({
         .poll(() => page.evaluate(() => window.__datasetState.activeJob?.bestCheckpoint))
         .toContain('Model.0.1.mdlus');
 
-    // leaving for the overview hides the panel but keeps the run's state
+    // closing the panel keeps the run's state, and Runs… reaches it again
+    // through the history table
     await page.locator('#run-close').click();
     await expect(page.locator('#run-wrap')).toBeHidden();
+    expect((await state(page)).jobs.map((j) => j.job_id)).toContain('job-1');
     await page.locator('#t-runs').click();
+    await expect(page.locator('#runs-wrap')).toBeVisible();
+    await page.locator('.run-open', { hasText: 'job-1' }).click();
     await expect(page.locator('#run-wrap')).toBeVisible();
-    expect((await state(page)).jobs.map((j) => j.job_id)).toEqual(['job-1']);
+    expect((await state(page)).activeJob.jobId).toBe('job-1');
+});
+
+test('runs: compare a few runs, and refuse a fourth', async ({ page }) => {
+    await installOverviewMock(page);
+    await installServerFake(page);
+    await pickOverview(page);
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+
+    // a run must exist before there is any history: start one
+    await page.locator('#t-fields').selectOption(['q']);
+    await page.locator('#t-targets').selectOption(['T']);
+    await page.locator('#t-start').click();
+    await expect
+        .poll(
+            () => page.evaluate(() => window.__datasetState.activeJob?.status),
+            { timeout: 20_000 },
+        )
+        .toBe('finished');
+    await page.locator('#run-close').click();
+
+    await page.locator('#t-runs').click();
+    await expect(page.locator('#runs-wrap')).toBeVisible();
+    await expect(page.locator('#runs-table tr')).toHaveCount(4); // header + 3 runs
+    await expect(page.locator('#runs-count')).toHaveText('(3/3)');
+
+    // filtering narrows the table without touching the selection
+    await page.locator('#runs-filter').fill('wide');
+    await expect(page.locator('#runs-table tr')).toHaveCount(2);
+    await page.locator('#runs-filter').fill('');
+
+    // compare two: two curves, and only the rows that differ are flagged
+    await page.locator('#runs-table tr', { hasText: 'job-1' }).locator('input').check();
+    await page.locator('#runs-table tr', { hasText: 'job-0' }).locator('input').check();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.compare))
+        .toEqual(['job-1', 'job-0']);
+    await expect(page.locator('#runs-compare')).toBeVisible();
+    await expect(page.locator('#runs-chart polyline')).toHaveCount(2);
+    await expect(page.locator('#runs-legend .split-item')).toHaveCount(2);
+    await expect(page.locator('#runs-diff tr.differs', { hasText: 'hidden' })).toHaveCount(1);
+    // ...and a parameter they share is not flagged
+    const seedRow = page.locator('#runs-diff tr', { hasText: 'seed' });
+    await expect(seedRow).not.toHaveClass(/differs/);
+
+    // a third is fine; a fourth is refused by name, and the box stays clear
+    await page.locator('#runs-table tr', { hasText: 'job-x' }).locator('input').check();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.compare.length))
+        .toBe(3);
+    await page.locator('#runs-table tr', { hasText: 'job-1' }).locator('input').uncheck();
+    await page.locator('#runs-table tr', { hasText: 'job-1' }).locator('input').check();
+    expect((await state(page)).compare.length).toBe(3);
+
+    // opening a run from the table hands it to the run panel
+    await page.locator('.run-open', { hasText: 'job-0' }).click();
+    await expect(page.locator('#runs-wrap')).toBeHidden();
+    await expect(page.locator('#run-wrap')).toBeVisible();
+});
+
+test('prediction: predict an entry and show it coloured by its error', async ({ page }) => {
+    await installOverviewMock(page);
+    await installServerFake(page);
+    await pickOverview(page);
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+    await page.locator('#t-fields').selectOption(['q']);
+    await page.locator('#t-targets').selectOption(['T']);
+    await page.locator('#t-start').click();
+    await expect
+        .poll(
+            () => page.evaluate(() => window.__datasetState.activeJob?.status),
+            { timeout: 20_000 },
+        )
+        .toBe('finished');
+
+    // the picker offers the manifest's entries
+    await expect(page.locator('#pred-entry option')).toHaveCount(1);
+    await page.locator('#pred-run').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.prediction?.entryId))
+        .toBe('block');
+    const s = await state(page);
+    expect(s.prediction.rmse).toBeCloseTo(0.0123, 6);
+    expect(s.prediction.outputPath).toContain('predictions/block.vtu');
+    expect(s.numPoints).toBe(4); // the prediction mesh, rendered
+    await expect(page.locator('#pred-metrics')).toContainText('RMSE 0.0123');
+    // ...and it came up coloured by its own error field, not left on solid
+    const colorBy = await page.locator('#color-by').inputValue();
+    expect(colorBy).toContain('T_error');
 });
 });

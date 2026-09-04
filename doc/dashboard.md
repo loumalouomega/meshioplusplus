@@ -78,11 +78,33 @@ Each checkpoint is listed with its epoch, validation loss and size, a **download
 
 Two things follow from where training actually runs. The form is enabled only for a manifest the **server can see**, i.e. one whose bytes match a manifest under the server's root — an unsaved edit unbinds the card, and the hint says so. And the **Runs…** button lists the server's jobs, so closing the tab does not lose a run: reconnecting and picking it from the list resumes following it exactly where the files say it is.
 
+## Comparing runs
+
+**Runs…** opens the history: every run the server knows, with its status, epochs, best validation loss, duration and tags, filterable and sortable (an unknown value sorts last in both directions — a run that never reported a validation loss is not the best one). Clicking a run's id opens it in the run panel.
+
+![The run history: three runs, two selected, their validation curves overlaid and their hyperparameters side by side](/viewer/run-history.png)
+
+Ticking runs compares them: their validation curves overlaid on one chart, and their hyperparameters side by side with **only the rows they disagree on** highlighted, which is the question a comparison is actually asked — what was different, and did it help.
+
+**Three runs is the cap, and it is a measured one.** Overlaid curves cross, so their colours have to be distinguishable in every pair rather than only between neighbours; under that rule the categorical palette's first three slots pass on this page's surface and the fourth (yellow beside orange) fails both the colour-vision and the normal-vision floors. A fourth selection is refused with that reason rather than silently reusing a colour.
+
+## Previewing a prediction
+
+The run panel's **Predict & show** takes one case, runs it through the run's best checkpoint on the server (`train_predict`), and renders the result in the same mesh viewer the rest of the page uses — coloured by the prediction's own error field, so the first thing on screen is where the model is wrong rather than a uniform grey solid. The picker defaults to a held-out case, since predicting on a training case rarely tells you anything.
+
+The prediction is an ordinary `.vtu` the server wrote into the run's `predictions/` directory: it is fetched through the same sandboxed download route the checkpoints use, and it goes into the viewer's own file slot, so the entry being curated stays staged.
+
+## Being told when a run ends
+
+Three notifications, for three distances from the tab. The run panel updates live while it is open. A **browser notification** fires when a run reaches a terminal state (permission is asked from the Start click, and the run never waits on the answer); with notifications refused the tab title carries the outcome instead. And `meshioplusplus-mcp --http --webhook URL` POSTs a JSON payload — `event` (`run.finished` / `run.failed` / `run.stopped`), `job_id`, `run_dir`, `status`, `exit_code`, `best_valid_loss`, `best_checkpoint` — once per job, which reaches a chat channel or a CI system and survives the browser being closed entirely.
+
+The webhook is **a server-side setting, never a spec key or a tool parameter**, for the same reason the trainer command is: a URL supplied by a client and then fetched by the server is server-side request forgery by design. It is posted from the one place a terminal transition is observed, so it fires exactly once however many clients are polling; with a webhook configured the server also runs a small watcher so a run that ends while nobody is looking still notifies.
+
 ## Limitations
 
 - Only `*.json` files at the workspace root are treated as manifests: the manifest is the resolution anchor for the relative sources inside it, and the page saves back at the root.
 - Thumbnails are session-only and cost one preview render per manifest; untick *thumbnails* before **Scan all** on a large workspace.
 - A scan stages exactly one entry at a time (the WASM filesystem never reclaims memory), so **Scan all** over many large manifests is serial and slow the first time; the scan cache makes the next visit instant.
-- Run history is a list, not yet a comparison: past runs can be reopened from **Runs…**, but comparing several runs' curves side by side, and previewing a prediction in the mesh viewer, are still [roadmap](./roadmap) items.
 - One model architecture (MeshGraphNet) and one training loop; a different architecture means a different trainer, not a form field.
+- At most three runs compare at once (the colour limit above), and a comparison is of validation curves and hyperparameters — not of predictions.
 - The companion process is a local convenience, not a multi-user service: one token, loopback by default, no accounts.

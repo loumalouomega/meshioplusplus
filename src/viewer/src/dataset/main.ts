@@ -64,6 +64,7 @@ import {
     type CardSort,
 } from './overview';
 import { notificationState } from './notify';
+import { RunsPanel } from './runs';
 import { clearHandle, getValue, loadHandle, putValue, saveHandle } from './persist';
 import { suggestSource } from './suggest';
 import { TrainPanel } from './train';
@@ -88,6 +89,8 @@ window.__datasetState = {
     server: null,
     jobs: [],
     activeJob: null,
+    compare: [],
+    prediction: null,
     notifications: notificationState(),
     manifestName: null,
     entryIds: [],
@@ -169,6 +172,7 @@ function setView(view: DatasetView): void {
     show($('m-back'), view === 'manifest');
     if (view === 'overview') {
         $('diff-wrap').hidden = true;
+        $('runs-wrap').hidden = true;
         // The run panel is a stage overlay like the diff: hidden here, but
         // its poller keeps running, so a run still finishes and announces
         // itself while the overview is up.
@@ -837,6 +841,7 @@ async function connectServer(url: string, token: string): Promise<void> {
 
 function disconnectServer(): void {
     trainPanel.dispose();
+    runsPanel.close();
     serverApi = null;
     serverManifests = [];
     setServer({ url: $<HTMLInputElement>('srv-url').value, connected: false, error: null });
@@ -886,10 +891,45 @@ const trainPanel = new TrainPanel({
     // manifest's own path there, which a card only has once its bytes match
     // (so an unsaved edit correctly disables the form).
     getManifestPath: () => currentCard()?.serverPath ?? null,
+    getEntries: () => manifest.entries.map((e) => ({ id: e.id, split: e.split })),
+    previewPrediction,
     setState,
     setStatus: (message) => setStatus('ready', message),
     fail,
 });
+
+const runsPanel = new RunsPanel({
+    getApi: () => serverApi,
+    onOpen: (jobId) => {
+        runsPanel.close();
+        void trainPanel.follow(jobId).catch(fail);
+    },
+    setState,
+    setStatus: (message) => setStatus('ready', message),
+    fail,
+});
+
+/**
+ * Render a mesh the server produced, coloured by its own error field.
+ *
+ * It goes through the viewer's `open` session -- a slot independent of the
+ * dataset stage -- so previewing a prediction never evicts the entry being
+ * curated, and the file itself is a plain VTU the server already wrote.
+ */
+async function previewPrediction(name: string, bytes: ArrayBuffer): Promise<void> {
+    setStatus('loading', `rendering ${name}…`);
+    const render = await client.openFile(new File([bytes], name));
+    show3d(render.vtp);
+    // Colour by the error field the prediction carries, without guessing its
+    // name from the spec: the array that IS the error is the one to show.
+    const error = arrays.find((a) => a.name.endsWith('_error') && a.component <= 0);
+    if (error) {
+        const key = colorKey(error);
+        $<HTMLSelectElement>('color-by').value = key;
+        applyColorBy(key);
+    }
+    setStatus('ready', `showing ${name}`);
+}
 
 // --- add-case flow ---------------------------------------------------------- //
 
@@ -1262,6 +1302,7 @@ async function boot(): Promise<void> {
         );
     });
     $('srv-disconnect').addEventListener('click', disconnectServer);
+    $('t-runs').addEventListener('click', () => void runsPanel.open().catch(fail));
     $('e-scan-server').addEventListener('click', () => {
         const path = currentCard()?.path;
         if (path) void scanOnServer(path).catch(fail);

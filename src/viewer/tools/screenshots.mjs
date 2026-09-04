@@ -318,7 +318,11 @@ await trainingPage.route('**/__mock-api/**', async (route) => {
             last: rows[EPOCHS - 1],
         });
     }
-    if (tail === 'train_metrics') return json({ rows });
+    if (tail === 'train_metrics') {
+        const body = route.request().postDataJSON() ?? {};
+        const scale = body.job_id === '20260903-173000-9c11' ? 1.7 : 1;
+        return json({ rows: rows.map((r) => ({ ...r, valid_loss: r.valid_loss * scale })) });
+    }
     if (tail === 'train_log') {
         const text = rows
             .filter((r) => r.epoch % 10 === 0 || r.epoch === EPOCHS - 1)
@@ -342,9 +346,27 @@ await trainingPage.route('**/__mock-api/**', async (route) => {
         });
     }
     if (tail === 'train_list') {
+        const base = {
+            status: 'finished',
+            manifest: '/srv/cases/dataset_manifest.json',
+            fields: ['q_scaled'],
+            target_fields: ['T'],
+            train_split: 'train',
+            valid_split: 'valid',
+            epochs: 100,
+            batch_size: 8,
+            learning_rate: 0.001,
+            seed: 0,
+            processor_size: 8,
+            tags: [],
+        };
         return json({
             runs_dir: '/srv/cases/runs',
-            jobs: [{ job_id: '20260904-101500-3f2a', status: 'finished' }],
+            jobs: [
+                { ...base, job_id: '20260904-101500-3f2a', hidden_dim: 64, best_valid_loss: 1.648e-4, duration_seconds: 50, tags: ['baseline'] },
+                { ...base, job_id: '20260903-173000-9c11', hidden_dim: 128, batch_size: 16, best_valid_loss: 2.71e-4, duration_seconds: 88, tags: ['wide'] },
+                { ...base, job_id: '20260902-090012-4ab7', status: 'failed', hidden_dim: 64, best_valid_loss: null, duration_seconds: 4 },
+            ],
         });
     }
     return json({ error: `unknown ${tail}`, error_type: 'KeyError' });
@@ -362,11 +384,28 @@ await trainingPage.waitForFunction(() => window.__datasetState?.view === 'manife
 await trainingPage.locator('#t-fields').selectOption(['q_scaled']);
 await trainingPage.locator('#t-targets').selectOption(['T']);
 await trainingPage.locator('#t-runs').click();
+await trainingPage.waitForSelector('#runs-wrap:not([hidden])');
+await trainingPage.locator('.run-open', { hasText: '20260904-101500-3f2a' }).click();
 await trainingPage.waitForFunction(
     () => window.__datasetState?.activeJob?.metrics.length === 100,
 );
 await trainingPage.waitForTimeout(800);
 await trainingPage.screenshot({ path: `${OUT}training-run.png` });
 console.log(`wrote ${OUT}training-run.png`);
+
+// --- the run history and comparison ------------------------------------------ //
+await trainingPage.locator('#run-close').click();
+await trainingPage.locator('#t-runs').click();
+await trainingPage.waitForSelector('#runs-wrap:not([hidden])');
+for (const id of ['20260904-101500-3f2a', '20260903-173000-9c11']) {
+    await trainingPage
+        .locator('#runs-table tr', { hasText: id })
+        .locator('input')
+        .check();
+}
+await trainingPage.waitForFunction(() => window.__datasetState?.compare.length === 2);
+await trainingPage.waitForTimeout(800);
+await trainingPage.screenshot({ path: `${OUT}run-history.png` });
+console.log(`wrote ${OUT}run-history.png`);
 
 await browser.close();

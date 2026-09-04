@@ -1848,9 +1848,19 @@ def main(argv=None) -> int:
         default=None,
         help="where training runs land (default: <root or cwd>/runs)",
     )
+    http.add_argument(
+        "--webhook",
+        default=None,
+        metavar="URL",
+        help="POST a JSON payload to this URL when a training job finishes, "
+        "fails or is stopped (server-side by design: a client-supplied URL "
+        "would be server-side request forgery)",
+    )
     args = parser.parse_args(argv)
     if args.runs_dir:
         _tools.set_runs_dir(args.runs_dir)
+    if args.webhook:
+        _tools.set_webhook(args.webhook)
     if not args.http:
         create_server(root=args.root).run()
         return 0
@@ -1872,6 +1882,7 @@ def main(argv=None) -> int:
         allowed_origins=[*_http.DEFAULT_ALLOWED_ORIGINS, *args.allow_origin],
         root=_tools.get_root(),
         runs_dir=args.runs_dir,
+        watch_jobs=bool(args.webhook),
     )
     _http.serve(app, host=host, port=port)
     return 0

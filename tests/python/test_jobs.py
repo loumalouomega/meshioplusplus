@@ -187,3 +187,111 @@ def test_bad_ids_and_specs_are_named_errors(manager, tmp_path):
         manager.start({**_spec(tmp_path), "Bogus": 1})
     assert not os.path.isdir(manager.runs_dir) or not os.listdir(manager.runs_dir)
     assert manager.list_jobs() == []
+
+
+# --------------------------------------------------------------------------- #
+# Run-completion webhooks (v10.25.0)                                          #
+# --------------------------------------------------------------------------- #
+def _webhook_server():
+    """A one-shot HTTP listener recording the JSON bodies posted to it."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            length = int(self.headers.get("Content-Length", 0))
+            received.append(_json.loads(self.rfile.read(length)))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, received
+
+
+def test_a_terminal_job_posts_its_webhook_once(tmp_path, monkeypatch):
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(FAKE))
+    server, received = _webhook_server()
+    url = f"http://127.0.0.1:{server.server_port}/hook"
+    manager = _jobs.JobManager(str(tmp_path / "runs"), webhook=url)
+    job_id = manager.start(_spec(tmp_path))["job_id"]
+    _wait(manager, job_id)
+    deadline = time.time() + 10
+    while not received and time.time() < deadline:
+        manager.status(job_id)  # the transition was already observed; poll for delivery
+        time.sleep(0.05)
+    server.shutdown()
+    assert len(received) == 1, received
+    payload = received[0]
+    assert payload["event"] == "run.finished"
+    assert payload["job_id"] == job_id
+    assert payload["status"] == "finished"
+    assert payload["exit_code"] == 0
+    assert payload["manifest"] == str(tmp_path / "m.json")
+    assert payload["epochs"] == 4
+    assert payload["best_valid_loss"] == pytest.approx(1.2 / 4)
+    assert payload["best_checkpoint"].endswith("best.mdlus")
+    # ...and no second delivery from later polls: the transition happens once
+    for _ in range(3):
+        manager.status(job_id)
+    time.sleep(0.2)
+    assert len(received) == 1
+
+
+def test_a_failed_job_posts_run_failed_and_a_dead_endpoint_is_survived(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(FAKE))
+    server, received = _webhook_server()
+    url = f"http://127.0.0.1:{server.server_port}/hook"
+    manager = _jobs.JobManager(str(tmp_path / "runs"), webhook=url)
+    job_id = manager.start(_spec(tmp_path, Notes="fail"))["job_id"]
+    state = _wait(manager, job_id)
+    assert state["status"] == "failed"
+    deadline = time.time() + 10
+    while not received and time.time() < deadline:
+        time.sleep(0.05)
+    server.shutdown()
+    assert received[0]["event"] == "run.failed" and received[0]["exit_code"] == 3
+
+    # an endpoint that is not there is logged and dropped, never raised
+    assert (
+        _jobs.post_webhook("http://127.0.0.1:9/nowhere", {"a": 1}, timeout=0.5) is False
+    )
+    assert "webhook POST" in capsys.readouterr().err
+
+
+def test_no_webhook_configured_posts_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(FAKE))
+    server, received = _webhook_server()
+    manager = _jobs.JobManager(str(tmp_path / "runs"))  # no webhook
+    job_id = manager.start(_spec(tmp_path))["job_id"]
+    _wait(manager, job_id)
+    time.sleep(0.2)
+    server.shutdown()
+    assert received == []
+
+
+def test_the_watcher_notices_a_transition_with_nobody_asking(tmp_path, monkeypatch):
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(FAKE))
+    server, received = _webhook_server()
+    url = f"http://127.0.0.1:{server.server_port}/hook"
+    manager = _jobs.JobManager(str(tmp_path / "runs"), webhook=url)
+    job_id = manager.start(_spec(tmp_path, Epochs=2))["job_id"]
+    watcher = _jobs.Watcher(manager, interval=0.05).start()
+    deadline = time.time() + 20
+    while not received and time.time() < deadline:
+        time.sleep(0.05)
+    watcher.stop(timeout=5)
+    server.shutdown()
+    assert received and received[0]["job_id"] == job_id
+    assert received[0]["event"] == "run.finished"
+    # a terminal job is not re-checked, and a missing runs dir is not fatal
+    assert watcher.poll_once() == 0
+    assert _jobs.Watcher(_jobs.JobManager(str(tmp_path / "nowhere"))).poll_once() == 0

@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.24.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
+Status at time of writing: **v10.25.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -9,22 +9,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 ---
 
 
-## 1. Dataset dashboard and training integration
-
-**The gap.** The browser dataset manager (`src/viewer/`, `dataset.html`, v9.29.0) curates `DatasetManifest`s — since v10.22.0 from an **overview** of every manifest in the picked directory (a card per manifest with split balance, tags/groups, health badges and a thumbnail, drilling down into the curation view, plus a manifest diff view; see [`doc/dashboard.md`](dashboard.md)). What it still lacks is any path from "manifest is ready" to "a PhysicsNeMo run is training against it" without leaving the browser entirely for the CLI/Python recipe in `example/physicsnemo/`. This is a UI/workflow gap, not a numerical one — the underlying capability (`edge_index`, `feature_matrix`, `write_dataset`, dataset manifests, the `physicsnemo.mesh` bridge) is complete as of v9.30.0; nothing surfaces it as one connected experience.
-
-- **Run comparison** — the dashboard's **Runs…** picker lists every past run and reopens it (v10.24.0), and `train_list` already reports each run's hyperparameters and final/best losses; what remains is *comparing* them — several runs' curves overlaid on one chart and their hyperparameters side by side, so a new run can be judged against prior ones without leaving the page. **M**
-- **Prediction preview in-viewer** — run a checkpoint over a held-out entry and show the predicted field (and its error against ground truth) through the *existing* mesh viewer's colour-by machinery — the PhysicsNeMo example's `T_pred`/`T_error` write-back, made interactive instead of a one-off script. **M**
-- **Run-completion webhooks** — the browser notification shipped in v10.24.0; a webhook the companion process posts to on a terminal job would also reach a chat channel or a CI system, and (unlike a tab) survives the browser being closed entirely. **S**
-- **Visual/UX design pass** — once the layout above is functional, loop it through Claude Design (Claude in a design-iteration capacity — layout, spacing, colour, motion) rather than shipping the first working arrangement as the final one; the rest of the viewer already has a deliberate icon set and colour system (`doc/icons/`, the `dataviz` skill's palette) and this should read as one piece with it, not a bolted-on admin panel. **S**
-
-*Recommended posture: training launch and monitoring is the one item requiring a server-side companion process and should get its own short design pass — what talks to what, auth, where jobs actually run — before implementation, the same way the NURBS spike (§5) is scoped before its own implementation. Once the pieces work, run a design-polish loop (Claude Design) over the whole dashboard before calling it done — functional and pleasant are two different bars.*
-
-*Shipped and removed from this section, none of it touching C++/WASM/any binding: the multi-dataset overview, the per-dataset drill-down, manifest diffing and the browser-side health summaries (v10.22.0); the companion process and its server-side health producer (v10.23.0, `meshioplusplus-mcp --http`, `dataset_find`/`dataset_health`); and training launch, monitoring, log tailing and the checkpoint browser (v10.24.0, the in-package trainer + job manager + ten `train_*` tools + the dashboard's launch form and run panel). See [`doc/dashboard.md`](dashboard.md) and [`doc/physicsnemo.md`](physicsnemo.md#training-and-prediction).*
-
----
-
-## 2. Scale
+## 1. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -34,7 +19,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 3. Ecosystem reach
+## 2. Ecosystem reach
 
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
 - **Registration and distribution** — conda-forge, CRAN, Julia General, the Blender Extensions Platform, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. The Blender extension zips are built and attached to every `v*` release (see `doc/blender.md`), so only the *listing* remains there. **M**
@@ -43,7 +28,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 4. Quality of implementation
+## 3. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -51,7 +36,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 5. NURBS and higher-order geometry (long run)
+## 4. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -64,7 +49,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 6. Mesh generation
+## 5. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer — **partly closed as a side effect of `remesh_volume`'s own delivery** (v10.13.0), which accepts a closed surface directly and generates a genuinely new tetrahedral volume mesh (isosurface stuffing over a BCC lattice) rather than transforming the input's own cells; a surface-in/volume-out capability this section previously lacked entirely. It does not close any bullet below, though: no primitive constructors, no extrude/revolve, and no 2D output (it is a 3D volume mesher, not a 2D triangulator) — those gaps stand as stated.
 
@@ -75,7 +60,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 7. CLI chatbot / conversational assistant (MCP-driven)
+## 6. CLI chatbot / conversational assistant (MCP-driven)
 
 **The gap.** The MCP server (`src/python/meshioplusplus/mcp/`, `doc/mcp.md`) exposes the whole Python surface to an AI *agent* — but only to one already speaking MCP over stdio (Claude Desktop, an IDE, a custom host). There is no way to have a natural-language conversation about a mesh **from the terminal itself**: a user with an LLM API key on hand cannot ask `meshioplusplus` "why does this file fail to convert" or "clean this mesh and tell me what changed" and get a tool-calling assistant that drives the existing operations for them. Every other surface (Python API, CLI verbs, MCP tools) is imperative-only; this is the one conversational entry point missing.
 
@@ -94,11 +79,11 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 1. **Remeshing — shipped in full**, removed from this document entirely: v10.10.0 (`remesh`, a clean-room isotropic clustering engine derived from the MIT `pyvista/pyacvd` plus an original `metric="quadric"` synthesis over meshio++'s own pre-existing Garland-Heckbert quadric machinery, across every binding surface in one release); v10.11.0 (curvature gradation via a new osculating-paraboloid vertex-curvature estimator, plus boundary pinning/dual-edge insertion and separately-reported non-manifold-vertex detection, both extending `remesh` and its full binding surface); v10.12.0 (`metric="anisotropic"`, packing a curvature tensor into the existing quadric accumulator, closing the section's L estimate faster than expected once gradation had already supplied the curvature machinery it needed — `MESHIOPLUSPLUS_ABI_VERSION` 8→9); v10.13.0 (`remesh_volume`, isosurface stuffing over a BCC lattice, closing the volumetric bullet's *capability* by a predicate-free algorithm rather than the literal Delaunay/CVD method named, plus `SmoothMethod::Odt` closing its "ODT" half's *smoothing* piece on fixed connectivity — `MESHIOPLUSPLUS_ABI_VERSION` 9→10, not because either operation's own new option/result struct needed it, but because `SmoothMethod` gaining an explicit `: std::uint8_t` underlying type for the first time is itself a Tier A layout change under `doc/abi.md`'s own rule); v10.14.0 (`optimize_volume`, closing the "ODT" bullet's *remeshing* piece — predicate-free 2-3/3-2 topological flips alternated with the ODT vertex relocation, genuinely changing connectivity, Tier C additive with no ABI bump, full binding surface in one release). See `doc/remesh.md`, `doc/remesh_volume.md` and `doc/optimize_volume.md`.
 2. **Provenance in written files** — shipped in full and removed from this document: v10.15.0 (the audit-and-normalize bullet — one canonical, engine-identical credit line, plus the per-format comment-syntax table in `doc/formats.md#provenance`), v10.16.0 (the opt-in record — source/target, operation chain, conversion assumptions, timestamp, over a thread-local scope with a Python↔C++ bridge, and the `mio_provenance_*` C ABI), v10.17.0 (read-back through `read_metadata`/`info`, plus the Fortran/Julia/R/WASM bindings — `MESHIOPLUSPLUS_ABI_VERSION` 10→11, since `MeshMetadata` grew two fields). Widening conversion-assumption coverage past the wired formats is a documented follow-up in `doc/provenance.md`, not a roadmap gap. See `doc/provenance.md`.
 3. **GiD postprocess — shipped in full and removed from this document**: v10.18.0 (vendoring, build integration, all three write flavours, extension dispatch, every registry-driven surface), v10.19.0 (the hand-rolled reader, all three flavours, plus two upstream gidpost HDF5 bug fixes its own test suite surfaced; the `hexahedron20` node-order conflict against CIMNE's own documentation resolved in Kratos's favour; `hexahedron27`/`wedge15`/`pyramid13` added by deriving their orderings from Kratos's own geometry classes; all nine `GiD_ResultType`s, including `Matrix`/`Complex*`, via a `field_data` declaration; arbitrary Gauss points per element; `ResultGroup` reading; the `ascii_zipped` write mode; and multi-step series in both directions, including `Group`/`OnGroup` re-meshing), and v10.20.0 (the release CLI binaries and every published wheel gained `gid` write support via a `FetchContent`-vendored static zlib, `MESHIOPLUSPLUS_ZLIB_STATIC`, closing the section's last item). See `doc/formats/gid.md`.
-4. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+4. **Primitive constructors (§5, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
 5. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
 6. **Remaining refinement and coarsening gaps** — shipped in full and removed from this document: v10.2.0 (error-estimator helpers — `estimate_error`), v10.3.0 (polyhedral refinement — `subdivide`), v10.4.0 (polyhedral coarsening — `agglomerate`), v10.5.0 (green-element undo — `undo_green`), v10.6.0 (volume decimation — `decimate_volume`, the section's last open item). See `doc/error.md`, `doc/subdivide.md`, `doc/agglomerate.md`, `doc/undo_green.md` and `doc/decimate_volume.md`.
 7. **Field capability beyond derivatives** — shipped in full and removed from this document: v10.8.0 (field integration — `data_integrate`, a cell-measure-weighted total/mean over cells, whole-mesh and per named Cell region), v10.9.0 (second derivatives — `hessian`, a composition of two `gradient` calls, exact for a linear field everywhere and for a quadratic field away from a structured mesh's own boundary, closing the section's last open item). See `doc/field_integration.md` and `doc/hessian.md`.
-8. **Fuzzing (§4)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-9. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
-10. **Dataset dashboard (§1)** — shipped across v10.22.0 (overview, drill-down, health, diffing), v10.23.0 (the companion process and its server-side health producer) and v10.24.0 (the trainer, the job manager, launch and monitoring). What remains is comparison rather than capability: overlaying several runs' curves, previewing a prediction in the mesh viewer, a completion webhook, and the design-polish pass over the whole dashboard.
-11. **CLI chatbot (§7)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.
+8. **Fuzzing (§3)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+9. **NURBS spike (§4)** — a documented investigation, scheduled independently of the rest.
+10. **Dataset dashboard and training integration** — shipped in full and removed from this document: v10.22.0 (the multi-dataset overview, the per-dataset drill-down, browser-side health summaries, manifest diffing), v10.23.0 (the companion process `meshioplusplus-mcp --http` and its server-side health producer), v10.24.0 (the in-package trainer, the job manager as `train_*` tools, launch and monitoring, log tailing, the checkpoint browser) and v10.25.0 (run history and comparison, in-viewer prediction preview, run-completion webhooks, and the design pass). None of it touched C++, WASM or any binding. See [`doc/dashboard.md`](dashboard.md) and [`doc/physicsnemo.md`](physicsnemo.md#training-and-prediction).
+11. **CLI chatbot (§6)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.

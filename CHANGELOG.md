@@ -8,6 +8,15 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v10.25.0 (2026-09-04)
+
+Closes roadmap section 1 — "Dataset dashboard and training integration" — in full, and removes it from the roadmap: run history and comparison, an in-viewer prediction preview, run-completion webhooks, and a design pass over the whole dashboard. Browser and Python only; no C++, WASM or binding change. See `doc/dashboard.md`.
+
+- **Run history and comparison.** *Runs…* opens a filterable, sortable table of every run the companion process knows (an unknown value sorts last in both directions), and ticking runs overlays their validation curves on one chart with their hyperparameters side by side — only the rows they disagree on highlighted. **At most three runs compare at once**, which is a measured limit rather than a round number: overlaid curves cross, so their colours must separate in every pair, and the categorical palette's first three slots pass that check on this page's surface while the fourth does not.
+- **Prediction preview.** The run panel's *Predict & show* runs one case through the run's checkpoint on the server and renders the result in the page's own mesh viewer, coloured by the prediction's error field. It uses the viewer's file slot rather than the dataset stage, so the entry being curated stays staged.
+- **Run-completion webhooks.** `meshioplusplus-mcp --http --webhook URL` POSTs a JSON payload once per job when it finishes, fails or is stopped, so an outcome reaches a chat channel or a CI system without a browser tab staying open. It fires from the one place a terminal transition is observed (so exactly once, however many clients poll), and with a webhook configured the server runs a small watcher so a run that ends while nobody is looking still notifies. Like the trainer command it is **server-side only** — a client-supplied URL the server then fetches would be server-side request forgery.
+- **A design pass over the dashboard**: consistent focus rings, hover affordance on cards, rows and checkpoints, short panel entrances and a pulsing "running" badge, every one of them dropped under `prefers-reduced-motion`. Two layout defects (a wrapping run title with clipped inputs, and a runs header that overflowed into a horizontal scroll) were found by rendering the pages and looking at them, and the documentation screenshots for both new views are now captured by `src/viewer/tools/screenshots.mjs`.
+
 ## v10.24.0 (2026-09-04)
 
 Trains a model from the dataset dashboard: an in-package **trainer**, a **job manager** exposed as MCP tools, and the launch form and run panel that drive them — closing roadmap section 1's training-launch, monitoring, log-tailing and checkpoint-browser bullets. See `doc/physicsnemo.md` and `doc/dashboard.md`.

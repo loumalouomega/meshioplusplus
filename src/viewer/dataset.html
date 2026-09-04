@@ -258,11 +258,41 @@
           <div id="run-legend" class="split-legend"></div>
           <h4>Checkpoints</h4>
           <ul id="run-checkpoints"></ul>
+          <h4>Prediction</h4>
+          <div class="row">
+            <select id="pred-entry" title="Which case to predict and show"></select>
+            <button id="pred-run" type="button">Predict &amp; show</button>
+            <span id="pred-metrics" class="hint"></span>
+          </div>
           <h4>
             Log
             <label class="check"><input id="run-follow" type="checkbox" checked /> follow</label>
           </h4>
           <pre id="run-log"></pre>
+        </div>
+        <div id="runs-wrap" hidden>
+          <div class="row run-head">
+            <h3>Runs <span id="runs-count" class="counts"></span></h3>
+            <input id="runs-filter" type="text" placeholder="Filter by id / status / tag" />
+            <select id="runs-sort" title="Order the runs">
+              <option value="job_id">by id</option>
+              <option value="best_valid_loss">by best validation loss</option>
+              <option value="epochs">by epochs</option>
+              <option value="duration_seconds">by duration</option>
+            </select>
+            <button id="runs-order" type="button" title="Reverse the order">↓</button>
+            <button id="runs-close" type="button">Close</button>
+          </div>
+          <table id="runs-table"></table>
+          <div id="runs-compare" hidden>
+            <h4>Comparison</h4>
+            <div class="chart-wrap">
+              <svg id="runs-chart" role="img" aria-label="validation loss per epoch, one line per selected run"></svg>
+              <p id="runs-tooltip" class="chart-tooltip" hidden></p>
+            </div>
+            <div id="runs-legend" class="split-legend"></div>
+            <table id="runs-diff"></table>
+          </div>
         </div>
         <div id="summary-wrap" hidden>
           <table id="summary"></table>

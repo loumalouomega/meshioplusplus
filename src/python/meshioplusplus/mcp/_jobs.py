@@ -20,6 +20,15 @@ environment variable (a JSON list) -- how the tests substitute a tiny fake,
 and how a deployment runs the trainer from a different interpreter. It is
 deliberately **not** a spec key or a tool parameter: an arbitrary command
 reachable over HTTP/MCP would be remote code execution by design.
+
+A ``webhook`` URL (the server's ``--webhook``) is POSTed once per job when it
+reaches a terminal state, so a finished run reaches a chat channel or a CI
+system without a browser tab staying open. It is posted from the one place a
+transition is *observed* -- :meth:`JobManager._refresh` -- and the optional
+:class:`Watcher` thread only supplies the polling that makes that observation
+happen with nobody asking. Like the trainer command it is a **server-side
+setting, never a spec key or a tool parameter**: a client-supplied URL the
+server then fetches is server-side request forgery by design.
 """
 
 from __future__ import annotations
@@ -31,7 +40,10 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.request
 from typing import Dict, List, Optional
 
 from ..physicsnemo._train import (
@@ -54,6 +66,10 @@ from ..physicsnemo._train import (
 TRAIN_COMMAND_ENV = "MESHIOPLUSPLUS_TRAIN_COMMAND"
 _ERR = "meshio++: train: "
 _TERMINAL = ("finished", "failed", "stopped")
+#: How long a webhook POST may take before it is abandoned (best-effort).
+WEBHOOK_TIMEOUT = 5.0
+#: How often the optional watcher re-derives the state of live jobs.
+WATCH_INTERVAL = 5.0
 
 
 def trainer_command() -> List[str]:
@@ -108,11 +124,30 @@ def is_alive(pid: int, pid_start: Optional[str] = None) -> bool:
     return True
 
 
+def post_webhook(url: str, payload: dict, *, timeout: float = WEBHOOK_TIMEOUT) -> bool:
+    """POST ``payload`` as JSON. Best-effort: a failure is logged and dropped,
+    never raised into the caller (a job's outcome does not depend on whoever
+    wanted to hear about it)."""
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=timeout
+        ):  # noqa: S310 - operator-supplied
+            return True
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print(f"{_ERR}webhook POST to {url} failed: {e}", file=sys.stderr)
+        return False
+
+
 class JobManager:
     """Start, watch and stop training jobs under ``runs_dir``."""
 
-    def __init__(self, runs_dir: str) -> None:
+    def __init__(self, runs_dir: str, *, webhook: Optional[str] = None) -> None:
         self.runs_dir = os.path.abspath(str(runs_dir))
+        self.webhook = webhook
         self._procs: Dict[str, subprocess.Popen] = {}
 
     # -- paths ------------------------------------------------------------- #
@@ -218,7 +253,37 @@ class JobManager:
             job["reason"] = "process gone" if not completed else "completed"
         self._write_job(job)
         self._procs.pop(job["job_id"], None)
+        # The one place a terminal transition is observed, so the one place
+        # the webhook fires -- exactly once per job, whoever noticed.
+        self._notify(job, progress if isinstance(progress, dict) else {})
         return job
+
+    def _notify(self, job: dict, progress: dict) -> None:
+        if not self.webhook:
+            return
+        payload = {
+            "event": f"run.{job['status']}",
+            "job_id": job["job_id"],
+            "run_dir": self.job_dir(job["job_id"]),
+            "status": job["status"],
+            "exit_code": job.get("exit_code"),
+            "reason": job.get("reason"),
+            "manifest": job.get("manifest"),
+            "epoch": progress.get("epoch"),
+            "epochs": progress.get("epochs"),
+            "best_valid_loss": progress.get("best_valid_loss"),
+            "best_checkpoint": job.get("best_checkpoint")
+            or progress.get("best_checkpoint"),
+        }
+        url = self.webhook
+        # Off the caller's thread: a slow endpoint must not stall the request
+        # (or the watcher) that happened to notice the transition.
+        threading.Thread(
+            target=post_webhook,
+            args=(url, payload),
+            daemon=True,
+            name="meshioplusplus-webhook",
+        ).start()
 
     def status(self, job_id: str) -> dict:
         job = self._refresh(self._read_job(job_id))
@@ -443,11 +508,71 @@ class JobManager:
         raise ValueError(f"{_ERR}job '{job_id}' has no checkpoint yet")
 
 
+class Watcher:
+    """Poll live jobs so a terminal transition is noticed (and its webhook
+    posted) with nobody asking -- a run killed outright still notifies.
+
+    A daemon thread calling :meth:`JobManager.status`, which is the same
+    derivation every request performs; it adds no state of its own.
+    """
+
+    def __init__(
+        self, manager: JobManager, *, interval: float = WATCH_INTERVAL
+    ) -> None:
+        self.manager = manager
+        self.interval = float(interval)
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> "Watcher":
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="meshioplusplus-job-watcher"
+        )
+        self._thread.start()
+        return self
+
+    def stop(self, timeout: Optional[float] = None) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout)
+            self._thread = None
+
+    def poll_once(self) -> int:
+        """Re-derive every non-terminal job; returns how many were checked."""
+        checked = 0
+        try:
+            names = sorted(os.listdir(self.manager.runs_dir))
+        except OSError:
+            return 0
+        for name in names:
+            if not os.path.isfile(os.path.join(self.manager.runs_dir, name, JOB_FILE)):
+                continue
+            try:
+                job = self.manager._read_job(name)
+                if job.get("status") in _TERMINAL:
+                    continue
+                self.manager.status(name)
+                checked += 1
+            except Exception as e:  # noqa: BLE001 - a bad job must not stop the watch
+                print(f"{_ERR}watcher: {name}: {e}", file=sys.stderr)
+        return checked
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            self.poll_once()
+
+
 __all__ = [
     "CARD_SUFFIX",
     "JobManager",
     "TRAIN_COMMAND_ENV",
+    "WATCH_INTERVAL",
+    "WEBHOOK_TIMEOUT",
+    "Watcher",
     "is_alive",
     "new_job_id",
+    "post_webhook",
     "trainer_command",
 ]

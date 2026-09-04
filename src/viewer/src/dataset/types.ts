@@ -106,6 +106,15 @@ export interface ServerState {
 
 export type DatasetView = 'overview' | 'manifest';
 
+/** A prediction fetched from the companion process and rendered. */
+export interface PredictionPreview {
+    jobId: string;
+    entryId: string;
+    outputPath: string;
+    rmse: number | null;
+    maxError: number | null;
+}
+
 /** The run the page is following (`train.ts` / `jobs.ts`). */
 export interface ActiveJob {
     jobId: string;
@@ -142,6 +151,10 @@ export interface DatasetState {
     /** Training runs the companion process knows (newest first). */
     jobs: JobSummary[];
     activeJob: ActiveJob | null;
+    /** The runs selected for comparison, in the order picked. */
+    compare: string[];
+    /** The last prediction rendered in the viewer, or null. */
+    prediction: PredictionPreview | null;
     notifications: NotificationState;
     manifestName: string | null;
     entryIds: string[];
