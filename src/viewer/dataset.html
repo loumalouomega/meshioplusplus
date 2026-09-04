@@ -160,13 +160,37 @@
           </label>
           <label class="row"><span>Train split</span><select id="t-train-split"></select></label>
           <label class="row"><span>Valid split</span><select id="t-valid-split"></select></label>
+          <label class="row">
+            <span>Model</span>
+            <select id="t-model">
+              <option value="meshgraphnet">MeshGraphNet (mesh graph)</option>
+              <option value="srresnet">SRResNet (superresolution grid)</option>
+            </select>
+          </label>
           <div class="grid2">
             <label class="row"><span>Epochs</span><input id="t-epochs" type="number" min="1" value="100" /></label>
             <label class="row"><span>Batch</span><input id="t-batch" type="number" min="1" value="8" /></label>
             <label class="row"><span>LR</span><input id="t-lr" type="number" min="0" step="0.0001" value="0.001" /></label>
             <label class="row"><span>Seed</span><input id="t-seed" type="number" value="0" /></label>
+          </div>
+          <div class="grid2" id="t-graph-opts">
             <label class="row"><span>Layers</span><input id="t-processor" type="number" min="1" value="8" /></label>
             <label class="row"><span>Hidden</span><input id="t-hidden" type="number" min="1" value="64" /></label>
+          </div>
+          <div class="grid2" id="t-grid-opts" hidden>
+            <label class="row">
+              <span title="The coarse grid, in cells per axis; the fine one is this times the scale">Resolution</span>
+              <input id="t-resolution" type="text" value="16,16,16" />
+            </label>
+            <label class="row"><span>Scale</span>
+              <select id="t-scaling">
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+                <option value="8">8x</option>
+              </select>
+            </label>
+            <label class="row"><span>Channels</span><input id="t-conv" type="number" min="1" value="32" /></label>
+            <label class="row"><span>Blocks</span><input id="t-blocks" type="number" min="1" value="8" /></label>
           </div>
           <div class="row">
             <button id="t-start" class="button" type="button">Start training</button>

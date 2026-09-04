@@ -218,6 +218,43 @@ Everything the run *writes* is a machine artefact and is snake_case (the [`write
 
 Two details worth knowing. The model is sized from the **recorded schema**, not from `len(Fields)`: with `Graph.Regions` on, the region one-hots widen `x`, and sizing from the field count alone would build the wrong first layer. And `SIGTERM` is honoured — the running epoch finishes, `final.mdlus` and its card are written, and the process exits 143 — which is what makes the dashboard's *Stop* button leave a usable checkpoint rather than a truncated one.
 
+## Superresolution: the `srresnet` family
+
+`TrainSpec` knows two model families, and they read different blocks. `Model.Name: "srresnet"` trains `physicsnemo.models.srrn.SRResNet` on the coarse/fine grid pairs [`grid_sample_pair`](#grid-samples) produces:
+
+```json
+{
+  "Manifest": "dataset_manifest.json",
+  "RunDir": "runs/sr",
+  "Fields": ["T"],
+  "TargetFields": ["T"],
+  "Epochs": 150,
+  "Model": { "Name": "srresnet", "ScalingFactor": 2, "ConvLayerSize": 32, "ResidBlocks": 4 },
+  "Grid":  { "Resolution": [7, 7, 7] }
+}
+```
+
+**A hyperparameter meant for the other family is refused, not ignored.** `HiddenDim` on an srresnet, `ScalingFactor` on a meshgraphnet, a `Grid` block on a graph model, a `Graph` block on a CNN, a `ScalingFactor` outside {2, 4, 8}, or `Grid.Squeeze` on an srresnet (which is `Conv3d` throughout) each raise by name. A silently dropped key is how a run ends up training a model nobody asked for.
+
+`Grid` takes the same lattice vocabulary as [`GridSpec.from_mesh`](./grids.md) — exactly one of `Resolution` and `CellSize`, plus `Bounds`, `Padding`, `PaddingRelative`, `Extrapolate`, `FillValue` and `MaxCells`. The **fine** grid is the coarse one through `upscale_samples(ScalingFactor)`, which is what makes the target's shape equal the model's output shape; see [that method's note](./grids.md#pairing-a-coarse-grid-with-a-fine-one) for why `upscale` is the wrong one here.
+
+**A grid run needs `torch` and `nvidia-physicsnemo` but not `torch_geometric`.** PyTorch Geometric exists to batch ragged graphs and a dense `(C, D, H, W)` tensor is not one, so requiring it would refuse a runnable job over a dependency whose prebuilt wheels routinely lag torch releases. The grid dataset is a plain `torch.utils.data.Dataset`.
+
+### The card, and what it must record
+
+Every `.mdlus` gets a `*.card.json` as before, and the grid card records three things the graph card has no equivalent for: the **layout** as a literal string (`"channels_first_zyx"`), and both grid specs (`coarse`, `fine`). The layout matters most — a checkpoint that does not say which axis is which produces finite, plausible, transposed numbers, and nothing downstream can tell.
+
+`predict` reads the card and dispatches on it, so a grid checkpoint needs no special call. It writes `<field>_pred`, `<field>_true` and `<field>_error` into an ordinary `.vtu`, which is why the dashboard's prediction preview works on a superresolution run with no browser change. Each row carries `rmse`, `max_error`, `coverage` and **`spectrum_rel_l2`** — the relative L2 between the predicted and true azimuthally averaged power spectra.
+
+That last number is the one to report. A pointwise error cannot distinguish a field with the right small-scale content from a plausible smoothed one, and on the worked example the gap is stark — over 60 cases of a multi-scale field, 150 epochs in 149 s on one GPU:
+
+| | RMSE | `spectrum_rel_l2` |
+|---|---|---|
+| trilinear baseline | 0.1556 | 0.2493 |
+| SRResNet | **0.0081** | **0.0027** |
+
+Nineteen times better pointwise, and **ninety-three times** closer in the spectrum. The two ratios differ that much because they measure different things: the baseline gets the large scales roughly right and loses the small ones entirely, which is precisely what a pointwise error under-reports. See [`example/physicsnemo/superresolution.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/physicsnemo/superresolution.py).
+
 ## Dataset manifests
 
 The object the adapter iterates is a [`DatasetManifest`](./datasets) — a hand-editable JSON cataloguing many cases (each possibly a time series) with splits, tags, groups and notes, curated by hand, by the [`dataset` CLI group](./cli#meshioplusplus-dataset), or by the [MCP tools](./mcp), all reading and writing the same file.

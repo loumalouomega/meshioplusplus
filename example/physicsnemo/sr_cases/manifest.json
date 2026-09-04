@@ -1,0 +1,425 @@
+{
+  "Version": 1,
+  "Entries": [
+    {
+      "Id": "case_0000",
+      "Source": {
+        "Path": "case_0000.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0001",
+      "Source": {
+        "Path": "case_0001.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0002",
+      "Source": {
+        "Path": "case_0002.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0003",
+      "Source": {
+        "Path": "case_0003.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0004",
+      "Source": {
+        "Path": "case_0004.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0005",
+      "Source": {
+        "Path": "case_0005.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0006",
+      "Source": {
+        "Path": "case_0006.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0007",
+      "Source": {
+        "Path": "case_0007.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0008",
+      "Source": {
+        "Path": "case_0008.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0009",
+      "Source": {
+        "Path": "case_0009.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0010",
+      "Source": {
+        "Path": "case_0010.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0011",
+      "Source": {
+        "Path": "case_0011.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0012",
+      "Source": {
+        "Path": "case_0012.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0013",
+      "Source": {
+        "Path": "case_0013.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0014",
+      "Source": {
+        "Path": "case_0014.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0015",
+      "Source": {
+        "Path": "case_0015.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0016",
+      "Source": {
+        "Path": "case_0016.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0017",
+      "Source": {
+        "Path": "case_0017.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0018",
+      "Source": {
+        "Path": "case_0018.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0019",
+      "Source": {
+        "Path": "case_0019.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0020",
+      "Source": {
+        "Path": "case_0020.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0021",
+      "Source": {
+        "Path": "case_0021.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0022",
+      "Source": {
+        "Path": "case_0022.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0023",
+      "Source": {
+        "Path": "case_0023.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0024",
+      "Source": {
+        "Path": "case_0024.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0025",
+      "Source": {
+        "Path": "case_0025.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0026",
+      "Source": {
+        "Path": "case_0026.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0027",
+      "Source": {
+        "Path": "case_0027.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0028",
+      "Source": {
+        "Path": "case_0028.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0029",
+      "Source": {
+        "Path": "case_0029.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0030",
+      "Source": {
+        "Path": "case_0030.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0031",
+      "Source": {
+        "Path": "case_0031.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0032",
+      "Source": {
+        "Path": "case_0032.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0033",
+      "Source": {
+        "Path": "case_0033.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0034",
+      "Source": {
+        "Path": "case_0034.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0035",
+      "Source": {
+        "Path": "case_0035.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0036",
+      "Source": {
+        "Path": "case_0036.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0037",
+      "Source": {
+        "Path": "case_0037.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0038",
+      "Source": {
+        "Path": "case_0038.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0039",
+      "Source": {
+        "Path": "case_0039.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0040",
+      "Source": {
+        "Path": "case_0040.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0041",
+      "Source": {
+        "Path": "case_0041.vtu"
+      },
+      "Split": "train"
+    },
+    {
+      "Id": "case_0042",
+      "Source": {
+        "Path": "case_0042.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0043",
+      "Source": {
+        "Path": "case_0043.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0044",
+      "Source": {
+        "Path": "case_0044.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0045",
+      "Source": {
+        "Path": "case_0045.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0046",
+      "Source": {
+        "Path": "case_0046.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0047",
+      "Source": {
+        "Path": "case_0047.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0048",
+      "Source": {
+        "Path": "case_0048.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0049",
+      "Source": {
+        "Path": "case_0049.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0050",
+      "Source": {
+        "Path": "case_0050.vtu"
+      },
+      "Split": "valid"
+    },
+    {
+      "Id": "case_0051",
+      "Source": {
+        "Path": "case_0051.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0052",
+      "Source": {
+        "Path": "case_0052.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0053",
+      "Source": {
+        "Path": "case_0053.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0054",
+      "Source": {
+        "Path": "case_0054.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0055",
+      "Source": {
+        "Path": "case_0055.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0056",
+      "Source": {
+        "Path": "case_0056.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0057",
+      "Source": {
+        "Path": "case_0057.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0058",
+      "Source": {
+        "Path": "case_0058.vtu"
+      },
+      "Split": "test"
+    },
+    {
+      "Id": "case_0059",
+      "Source": {
+        "Path": "case_0059.vtu"
+      },
+      "Split": "test"
+    }
+  ]
+}

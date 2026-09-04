@@ -83,6 +83,8 @@ export class TrainPanel {
 
     constructor(private readonly hooks: TrainPanelHooks) {
         $('t-start').addEventListener('click', () => void this.start().catch(hooks.fail));
+        $('t-model').addEventListener('change', () => this.syncModelOptions());
+        this.syncModelOptions();
         $('run-close').addEventListener('click', () => this.close());
         $('pred-run').addEventListener('click', () => void this.predict().catch(hooks.fail));
         $('run-stop').addEventListener('click', () => void this.stop().catch(hooks.fail));
@@ -178,7 +180,8 @@ export class TrainPanel {
             throw new Error('meshio++: pick at least one input field and one target field');
         }
         const number = (id: string) => Number($<HTMLInputElement>(id).value);
-        return {
+        const modelName = $<HTMLSelectElement>('t-model').value;
+        const common = {
             manifest_path: manifest,
             fields,
             target_fields: targets,
@@ -188,9 +191,38 @@ export class TrainPanel {
             batch_size: number('t-batch'),
             learning_rate: number('t-lr'),
             seed: number('t-seed'),
+            model_name: modelName,
+        };
+        // Only the chosen family's hyperparameters are sent. The server refuses
+        // the other family's by name, so posting both would turn a UI default
+        // into an error the user never asked for.
+        if (modelName === 'srresnet') {
+            const resolution = $<HTMLInputElement>('t-resolution')
+                .value.split(',')
+                .map((part) => Number(part.trim()));
+            if (resolution.length !== 3 || resolution.some((v) => !(v > 0))) {
+                throw new Error('meshio++: resolution must be three positive cell counts, e.g. 16,16,16');
+            }
+            return {
+                ...common,
+                resolution,
+                scaling_factor: Number($<HTMLSelectElement>('t-scaling').value),
+                conv_layer_size: number('t-conv'),
+                resid_blocks: number('t-blocks'),
+            };
+        }
+        return {
+            ...common,
             processor_size: number('t-processor'),
             hidden_dim: number('t-hidden'),
         };
+    }
+
+    /** Show only the chosen family's options. */
+    syncModelOptions(): void {
+        const isGrid = $<HTMLSelectElement>('t-model').value === 'srresnet';
+        $('t-graph-opts').hidden = isGrid;
+        $('t-grid-opts').hidden = !isGrid;
     }
 
     async start(): Promise<void> {

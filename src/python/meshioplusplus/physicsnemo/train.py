@@ -34,6 +34,7 @@ from typing import List, Optional
 import numpy as np
 
 from .. import DatasetManifest, write
+from ..__about__ import __version__
 from .._gpu import _require_framework
 from .._regions import block_bases
 from . import _DOC, edge_stats, field_stats, graph_sample, make_dataset
@@ -45,6 +46,7 @@ from ._train import (
     NODE_STATS_FILE,
     PROGRESS_FILE,
     SPEC_FILE,
+    STATS_STD_FLOOR,
     TrainSpec,
     append_metrics,
     card_from_run,
@@ -61,8 +63,18 @@ _ERR = "meshio++: train: "
 _STOP = {"requested": False}
 
 
-def _frameworks(op):
-    _require_framework(op, "torch_geometric", "pip install torch_geometric", doc=_DOC)
+def _frameworks(op, model_name="meshgraphnet"):
+    """Require only what the chosen family actually imports.
+
+    A convolutional model is torch plus physicsnemo; PyTorch Geometric exists to
+    batch ragged graphs and a grid is not one, so demanding it for an srresnet
+    run would refuse a perfectly runnable job over a dependency whose prebuilt
+    wheels routinely lag torch releases.
+    """
+    if model_name != "srresnet":
+        _require_framework(
+            op, "torch_geometric", "pip install torch_geometric", doc=_DOC
+        )
     _require_framework(op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC)
 
 
@@ -162,11 +174,18 @@ def _save_periodic(run_dir, model, optimizer, epoch, extra):
 def run(spec, *, log=print) -> dict:
     """Train per ``spec`` (a :class:`TrainSpec`, dict, JSON text or path);
     returns the final ``progress.json`` record."""
-    _frameworks("run_training")
+    spec = load_spec(spec)
+    _frameworks("run_training", spec.model_name)
+    if spec.model_name == "srresnet":
+        return _run_grid(spec, log=log)
+    return _run_graph(spec, log=log)
+
+
+def _run_graph(spec, *, log=print) -> dict:
+    """Train a MeshGraphNet."""
     import torch
     from torch_geometric.loader import DataLoader
 
-    spec = load_spec(spec)
     if not spec.edge_features:
         raise ValueError(f"{_ERR}MeshGraphNet needs edge features (Graph.EdgeFeatures)")
     run_dir = spec.resolved_run_dir()
@@ -241,6 +260,269 @@ def run(spec, *, log=print) -> dict:
         DataLoader(valid_ds, batch_size=spec.batch_size) if len(valid_ds) else None
     )
 
+    def step(loader, optimizer_or_none):
+        return _run_epoch(model, loader, norms, device, optimizer_or_none)
+
+    def write_card(path, epoch, valid_loss):
+        _write_card(
+            spec,
+            schema,
+            node_stats,
+            e_stats,
+            path,
+            epoch=epoch,
+            valid_loss=valid_loss,
+            dims=dims,
+        )
+
+    return _epoch_loop(
+        spec,
+        run_dir,
+        device,
+        model,
+        optimizer,
+        train_loader,
+        valid_loader,
+        step=step,
+        write_card=write_card,
+        log=log,
+    )
+
+
+def build_grid_model(spec: TrainSpec, schema: dict):
+    """The SRResNet a spec describes, sized from the recorded channel contract.
+
+    ``in_channels``/``out_channels`` come from ``schema``, never from
+    ``len(Fields)`` -- a multi-component array expands into one channel per
+    component, so the two are different numbers the moment a vector field is
+    involved. Same rule as :func:`build_model`, for the same reason.
+    """
+    from physicsnemo.models.srrn import SRResNet
+
+    return SRResNet(
+        in_channels=len(schema["x_channels"]),
+        out_channels=len(schema["y_channels"]),
+        large_kernel_size=spec.large_kernel_size,
+        small_kernel_size=spec.small_kernel_size,
+        conv_layer_size=spec.conv_layer_size,
+        n_resid_blocks=spec.resid_blocks,
+        scaling_factor=spec.scaling_factor,
+        activation_fn=spec.activation_fn,
+    )
+
+
+def _grid_norm_tensors(card, device):
+    """Per-channel normalizers reshaped to broadcast over ``(B, C, D, H, W)``."""
+    import torch
+
+    norms = normalizers_from_card(card)
+    out = {}
+    for key, values in norms.items():
+        tensor = torch.as_tensor(values, dtype=torch.float32, device=device)
+        # (C,) -> (1, C, 1, 1, 1): a channel statistic applies across the whole
+        # volume, and the explicit reshape is what keeps that from silently
+        # broadcasting along the wrong axis.
+        out[key] = tensor.reshape(1, -1, 1, 1, 1)
+    return out
+
+
+def _run_grid_epoch(model, loader, norms, device, optimizer=None):
+    import torch
+
+    total, count = 0.0, 0
+    for x, y in loader:
+        x = x.to(device)
+        y = y.to(device)
+        x = (x - norms["x_mean"]) / norms["x_std"]
+        target = (y - norms["y_mean"]) / norms["y_std"]
+        pred = model(x)
+        loss = torch.nn.functional.mse_loss(pred, target)
+        if optimizer is not None:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        total += float(loss.detach()) * x.shape[0]
+        count += x.shape[0]
+    return total / max(count, 1) if count else None
+
+
+def grid_card_from_run(
+    spec: TrainSpec,
+    schema: dict,
+    stats: dict,
+    *,
+    epoch: int,
+    valid_loss,
+    checkpoint: str,
+) -> dict:
+    """The model card for a grid checkpoint.
+
+    :func:`card_from_run`'s counterpart. It records the **grid construction**
+    alongside the channel contract, and the array layout as a literal string:
+    a checkpoint that does not say which axis is which produces finite,
+    plausible, transposed numbers months later, and nothing downstream can tell.
+
+    There is no edge block -- a convolutional model has no edges -- which
+    :func:`normalizers_from_card` treats as empty rather than as an error.
+    """
+    from .._grid_transfer import GRID_LAYOUT
+
+    x_channels = list(schema["x_channels"])
+    y_channels = list(schema["y_channels"])
+    return {
+        "version": 1,
+        "meshioplusplus_version": __version__,
+        "model": {
+            "name": spec.model_name,
+            "scaling_factor": spec.scaling_factor,
+            "conv_layer_size": spec.conv_layer_size,
+            "resid_blocks": spec.resid_blocks,
+            "large_kernel_size": spec.large_kernel_size,
+            "small_kernel_size": spec.small_kernel_size,
+            "activation_fn": spec.activation_fn,
+            "in_channels": len(x_channels),
+            "out_channels": len(y_channels),
+        },
+        "schema": schema,
+        "layout": GRID_LAYOUT,
+        "x_columns": x_channels,
+        "y_columns": y_channels,
+        "x_channels": x_channels,
+        "y_channels": y_channels,
+        "fields": list(spec.fields),
+        "target_fields": list(spec.target_fields),
+        "grid": spec.grid_kwargs(),
+        "coarse": schema.get("coarse"),
+        "fine": schema.get("fine"),
+        "read": dict(spec.read),
+        "input_normalization": {
+            "mean": [float(v) for v in stats["x_mean"]],
+            "std": [max(float(v), STATS_STD_FLOOR) for v in stats["x_std"]],
+        },
+        "output_normalization": {
+            "mean": [float(v) for v in stats["y_mean"]],
+            "std": [max(float(v), STATS_STD_FLOOR) for v in stats["y_std"]],
+        },
+        "epoch": int(epoch),
+        "valid_loss": None if valid_loss is None else float(valid_loss),
+        "checkpoint": os.path.basename(checkpoint),
+    }
+
+
+def _run_grid(spec, *, log=print) -> dict:
+    """Train an SRResNet on a manifest's coarse/fine grid pairs."""
+    import torch
+    from torch.utils.data import DataLoader
+
+    from . import grid_stats
+    from ._torch import make_grid_dataset
+
+    run_dir = spec.resolved_run_dir()
+    manifest_path = spec.resolved_manifest()
+    os.makedirs(os.path.join(run_dir, CHECKPOINT_DIR), exist_ok=True)
+    if not os.path.isfile(os.path.join(run_dir, SPEC_FILE)):
+        save_spec(spec, os.path.join(run_dir, SPEC_FILE))
+    torch.manual_seed(spec.seed)
+    np.random.seed(spec.seed)
+    device = _device(spec.device)
+    log(f"device: {device}")
+
+    manifest = DatasetManifest.load(manifest_path)
+    read_kwargs = dict(spec.read)
+    grid_kwargs = spec.grid_kwargs()
+
+    stats = grid_stats(manifest, split=spec.train_split, **grid_kwargs, **read_kwargs)
+    write_json_atomic(os.path.join(run_dir, NODE_STATS_FILE), stats)
+    coverage = stats.get("coverage")
+    if coverage is not None:
+        log(f"grid coverage: {coverage:.4f} of points inside the mesh")
+        if coverage < 0.5:
+            log(
+                "warning: more than half of every grid is fill -- a model trained "
+                "on this learns the fill (tighten Grid.Bounds or the resolution)"
+            )
+
+    train_ds = make_grid_dataset(
+        manifest, split=spec.train_split, read_kwargs=read_kwargs, **grid_kwargs
+    )
+    valid_ds = make_grid_dataset(
+        manifest, split=spec.valid_split, read_kwargs=read_kwargs, **grid_kwargs
+    )
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"{_ERR}split '{spec.train_split}' of {manifest_path} yields no samples"
+        )
+    log(f"train: {len(train_ds)} pairs, valid: {len(valid_ds)} pairs")
+
+    schema = train_ds.schema
+    model = build_grid_model(spec, schema).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=spec.learning_rate)
+    norms = _grid_norm_tensors(
+        grid_card_from_run(
+            spec, schema, stats, epoch=0, valid_loss=None, checkpoint=""
+        ),
+        device,
+    )
+    train_loader = DataLoader(train_ds, batch_size=spec.batch_size, shuffle=True)
+    valid_loader = (
+        DataLoader(valid_ds, batch_size=spec.batch_size) if len(valid_ds) else None
+    )
+
+    def step(loader, optimizer_or_none):
+        return _run_grid_epoch(model, loader, norms, device, optimizer_or_none)
+
+    def write_card(path, epoch, valid_loss):
+        write_json_atomic(
+            card_path(path),
+            grid_card_from_run(
+                spec,
+                schema,
+                stats,
+                epoch=epoch,
+                valid_loss=valid_loss,
+                checkpoint=path,
+            ),
+        )
+
+    return _epoch_loop(
+        spec,
+        run_dir,
+        device,
+        model,
+        optimizer,
+        train_loader,
+        valid_loader,
+        step=step,
+        write_card=write_card,
+        log=log,
+    )
+
+
+def _epoch_loop(
+    spec,
+    run_dir,
+    device,
+    model,
+    optimizer,
+    train_loader,
+    valid_loader,
+    *,
+    step,
+    write_card,
+    log,
+):
+    """The training loop's bookkeeping, shared by both model families.
+
+    Everything in here is family-independent: per-epoch metrics, best-score
+    tracking, ``progress.json``, periodic checkpoints and the SIGTERM handling
+    that makes a stopped run leave a usable checkpoint. The **only** thing the
+    families differ in is one epoch's forward pass, which arrives as ``step``.
+
+    ``step(loader, optimizer_or_None)`` returns that epoch's mean loss;
+    ``write_card(path, epoch, valid_loss)`` writes the card beside a checkpoint.
+    """
+    import torch
+
     _STOP["requested"] = False
     try:
         signal.signal(signal.SIGTERM, lambda *_: _STOP.update(requested=True))
@@ -255,12 +537,12 @@ def run(spec, *, log=print) -> dict:
     for epoch in range(spec.epochs):
         t0 = time.time()
         model.train()
-        train_loss = _run_epoch(model, train_loader, norms, device, optimizer)
+        train_loss = step(train_loader, optimizer)
         valid_loss = None
         if valid_loader is not None:
             model.eval()
             with torch.no_grad():
-                valid_loss = _run_epoch(model, valid_loader, norms, device)
+                valid_loss = step(valid_loader, None)
         now = time.time()
         append_metrics(
             run_dir,
@@ -273,16 +555,7 @@ def run(spec, *, log=print) -> dict:
             best = score
             best_path = os.path.join(checkpoints, BEST_CHECKPOINT)
             model.save(best_path)
-            _write_card(
-                spec,
-                schema,
-                node_stats,
-                e_stats,
-                best_path,
-                epoch=epoch,
-                valid_loss=valid_loss,
-                dims=dims,
-            )
+            write_card(best_path, epoch, valid_loss)
             best_epoch = epoch
         per_epoch = (now - start) / (epoch + 1)
         progress = {
@@ -310,31 +583,15 @@ def run(spec, *, log=print) -> dict:
                 {"valid_loss": valid_loss, "train_loss": train_loss},
             )
             if written:
-                _write_card(
-                    spec,
-                    schema,
-                    node_stats,
-                    e_stats,
-                    written,
-                    epoch=epoch,
-                    valid_loss=valid_loss,
-                    dims=dims,
-                )
+                write_card(written, epoch, valid_loss)
         if _STOP["requested"]:
             log("stop requested: finishing after this epoch")
             break
 
     final_path = os.path.join(checkpoints, FINAL_CHECKPOINT)
     model.save(final_path)
-    _write_card(
-        spec,
-        schema,
-        node_stats,
-        e_stats,
-        final_path,
-        epoch=progress.get("epoch", 0) - 1,
-        valid_loss=progress.get("best_valid_loss"),
-        dims=dims,
+    write_card(
+        final_path, progress.get("epoch", 0) - 1, progress.get("best_valid_loss")
     )
     progress["completed"] = not _STOP["requested"]
     progress["stopped"] = bool(_STOP["requested"])
@@ -360,6 +617,18 @@ def predict(
     entries and write each prediction back as ordinary data arrays --
     ``<column>_pred`` and, where the truth is present, ``<column>_error`` --
     into ``output_dir/<entry_id>.vtu``. Returns one row per entry."""
+    card_file = card_path(str(checkpoint))
+    card = read_json(card_file)
+    if card and card.get("model", {}).get("name") == "srresnet":
+        return predict_grid(
+            checkpoint,
+            manifest,
+            entry_ids=entry_ids,
+            split=split,
+            step=step,
+            output_dir=output_dir,
+            device=device,
+        )
     _frameworks("predict")
     import torch
     from physicsnemo.core.module import Module
@@ -457,6 +726,146 @@ def predict(
         )
         del mesh, target_mesh, sample
     return rows
+
+
+def predict_grid(
+    checkpoint,
+    manifest,
+    *,
+    entry_ids: Optional[List[str]] = None,
+    split: Optional[str] = "test",
+    step: int = 0,
+    output_dir,
+    device: str = "auto",
+) -> List[dict]:
+    """Superresolve a manifest's entries with a grid checkpoint.
+
+    :func:`predict`'s grid counterpart, and reached through it -- the card says
+    which family wrote the checkpoint, so a caller does not have to.
+
+    The prediction is scattered back onto the entry's own mesh as ordinary
+    ``<column>_pred`` / ``<column>_error`` point data, so the result is a plain
+    ``.vtu`` that every viewer already understands and the dashboard's
+    prediction preview needs no change to show.
+    """
+    import torch
+
+    from .._grid_transfer import GridArray, GridSpec, scatter_grid
+    from . import grid_sample_pair
+
+    _frameworks("predict", "srresnet")
+    from physicsnemo.core.module import Module
+
+    card_file = card_path(str(checkpoint))
+    card = read_json(card_file)
+    if not card:
+        raise ValueError(
+            f"{_ERR}no model card beside {checkpoint} (expected {card_file}); a "
+            "checkpoint without one does not say what its channels mean"
+        )
+    if card.get("layout") not in (None, "channels_first_zyx"):
+        raise ValueError(
+            f"{_ERR}the card records layout {card['layout']!r}, which this build "
+            "does not know how to read"
+        )
+    model = Module.from_checkpoint(str(checkpoint)).to(device := _device(device))
+    model.eval()
+    norms = _grid_norm_tensors(card, device)
+
+    grid_kwargs = dict(card["grid"])
+    read_kwargs = dict(card.get("read", {}))
+    x_channels = list(card["x_channels"])
+    y_channels = list(card["y_channels"])
+
+    manifest = DatasetManifest.load(manifest)
+    entries = list(manifest.entries(split=split))
+    if entry_ids:
+        wanted = set(entry_ids)
+        entries = [e for e in entries if e.id in wanted]
+    os.makedirs(output_dir, exist_ok=True)
+
+    rows = []
+    for entry in entries:
+        series = entry.time_series(**read_kwargs)
+        time_value, mesh = series[step]
+        target_mesh = (
+            entry.target_time_series(**read_kwargs)[step][1] if entry.target else None
+        )
+        sample = grid_sample_pair(mesh, target_mesh=target_mesh, **grid_kwargs)
+        if list(sample.x_channels) != x_channels:
+            raise ValueError(
+                f"{_ERR}entry '{entry.id}' produces channels "
+                f"{list(sample.x_channels)} but the checkpoint was trained on "
+                f"{x_channels}"
+            )
+        x = torch.from_numpy(sample.arrays["x"]).float().unsqueeze(0).to(device)
+        with torch.no_grad():
+            pred = model((x - norms["x_mean"]) / norms["x_std"])
+        pred = (pred * norms["y_std"] + norms["y_mean"])[0].cpu().numpy()
+
+        truth = sample.arrays.get("y")
+        if truth is not None and pred.shape != truth.shape:
+            raise ValueError(
+                f"{_ERR}entry '{entry.id}': the model emitted {pred.shape} but the "
+                f"target grid is {truth.shape}; the checkpoint's scaling factor "
+                "does not match the pair this spec builds"
+            )
+
+        fine = GridSpec.from_dict(sample.schema["fine"])
+        out_mesh = scatter_grid(
+            GridArray(pred, fine, tuple(y_channels)),
+            target_mesh if target_mesh is not None else mesh,
+            names=[f"{c}_pred" for c in y_channels],
+        )
+        row = {
+            "entry_id": entry.id,
+            "time": time_value,
+            "num_rows": int(pred.reshape(pred.shape[0], -1).shape[1]),
+            "coverage": sample.schema.get("y_coverage"),
+        }
+        if truth is not None:
+            error = pred - truth
+            row["rmse"] = float(np.sqrt(np.mean(np.square(error))))
+            row["max_error"] = float(np.max(np.abs(error)))
+            row["spectrum_rel_l2"] = _spectrum_rel_l2(pred, truth, fine)
+            truth_mesh = scatter_grid(
+                GridArray(truth, fine, tuple(y_channels)),
+                out_mesh,
+                names=[f"{c}_true" for c in y_channels],
+                on_conflict="overwrite",
+            )
+            out_mesh = scatter_grid(
+                GridArray(error, fine, tuple(y_channels)),
+                truth_mesh,
+                names=[f"{c}_error" for c in y_channels],
+                on_conflict="overwrite",
+            )
+        suffix = "" if step == 0 else f"_s{step}"
+        out_path = os.path.join(output_dir, f"{entry.id}{suffix}.vtu")
+        write(out_path, out_mesh)
+        row["output_path"] = out_path
+        rows.append(row)
+    return rows
+
+
+def _spectrum_rel_l2(pred, truth, spec):
+    """Relative L2 between the two azimuthally averaged power spectra.
+
+    The number a superresolution result should be reported against: a pointwise
+    error cannot tell a field with the right small-scale content from a
+    plausible smoothed one, and this can. ``None`` on an anisotropic lattice,
+    where a shell average is not meaningful.
+    """
+    from .._grid_transfer import power_spectrum
+
+    if not spec.is_isotropic:
+        return None
+    a = power_spectrum(pred, spec).power
+    b = power_spectrum(truth, spec).power
+    denominator = float(np.sqrt(np.sum(np.square(b))))
+    if denominator == 0.0:
+        return None
+    return float(np.sqrt(np.sum(np.square(a - b))) / denominator)
 
 
 def _attach(mesh, kind, name, values):

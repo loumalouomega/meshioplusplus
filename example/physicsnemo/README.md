@@ -99,3 +99,82 @@ torch_geometric 2.8, torch_scatter 2.1.2, meshio++ v10.24.0.
 Public CI runs none of this (no GPU, no torch on the runners — the
 [GPU-handoff precedent](../../doc/gpu.md#testing-and-ci)); the committed
 outputs are how the path is shown to work.
+
+---
+
+# Superresolution: coarse grid → SRResNet → fine mesh
+
+The grid counterpart of the walk-through above, in
+[`superresolution.py`](superresolution.py): the same library, a different model
+family, and the data path from [`doc/grids.md`](../../doc/grids.md) rather than
+the graph one.
+
+## The problem
+
+60 cases of a **multi-scale** 3-D scalar field on a tetrahedral unit cube: a
+smooth large-scale part every method gets right, plus a higher-wavenumber part
+whose amplitude and phase vary per case. That structure is deliberate — a model
+that learns only the smooth part scores respectably on RMSE and badly on the
+power spectrum, which is exactly the distinction the spectral metric exists to
+make.
+
+Each case is **one high-resolution solve**, and the coarse input is made by
+sampling it onto a coarser lattice — self-supervision, which is the ordinary
+shape of a superresolution dataset, so no manifest entry carries a `Target`.
+
+```
+mesh (12³ cells, tets)
+  ├── sampled onto a 7³-cell grid  ->  8×8×8 points    -- the model's input
+  └── sampled onto its ×2 pair     ->  16×16×16 points -- the target
+```
+
+The fine grid comes from `GridSpec.upscale_samples(2)`, not `upscale`: a
+convolutional upsampler multiplies *sample* counts, and getting that wrong is a
+shape error deep inside a loss. See
+[the note in `doc/grids.md`](../../doc/grids.md#pairing-a-coarse-grid-with-a-fine-one).
+
+## Running it
+
+```sh
+python superresolution.py --cases 60 --epochs 150
+```
+
+Needs `torch` and `nvidia-physicsnemo` — but **not** `torch_geometric`: a
+convolutional model never touches it, and the trainer only asks for what the
+chosen family imports.
+
+## Results, from a real run
+
+150 epochs over 42 training cases in **148.9 s** on one RTX 2000 Ada; best
+validation MSE 2.5×10⁻⁴ at epoch 141. On the held-out test split, against the
+trilinear baseline that comes free with `resample_grid`:
+
+| | RMSE | `spectrum_rel_l2` |
+|---|---|---|
+| trilinear | 0.15558 | 0.24928 |
+| **SRResNet** | **0.00809** | **0.00269** |
+
+Nineteen times better pointwise, and **93× closer in the spectrum**. That the
+two ratios differ so much *is* the finding: the baseline gets the large scales
+roughly right and loses the small ones, which a pointwise error under-reports
+by design.
+
+![loss curve](renders/sr_loss_curve.png)
+
+![a z-slice: coarse input, trilinear, SRResNet, truth](renders/sr_slices.png)
+
+The slice makes it visible — the trilinear panel is washed out where the
+model's matches the truth's contrast. The spectrum says the same thing
+quantitatively:
+
+![power spectra](renders/sr_spectrum.png)
+
+The model tracks the truth through both fine-structure peaks (k ≈ 4 and
+k ≈ 7); the baseline has already fallen away by k ≈ 3 and misses them entirely.
+
+## What it exercises
+
+`GridSpec.from_mesh` / `upscale_samples` · `sample_grid` · `grid_sample_pair` ·
+`grid_stats` · `TrainSpec`'s `srresnet` family and its `Grid` block ·
+`run_training` · the model card's recorded layout and grid specs · `predict`
+dispatching on the card · `scatter_grid` back onto the mesh · `power_spectrum`.

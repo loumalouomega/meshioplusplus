@@ -344,6 +344,7 @@ class JobManager:
         rows = read_metrics(self.job_dir(job_id))
         last = rows[-1] if rows else None
         finite = [r["valid_loss"] for r in rows if r.get("valid_loss") is not None]
+        model = spec.get("Model") or {}
         state.update(
             {
                 "fields": spec.get("Fields", []),
@@ -354,8 +355,15 @@ class JobManager:
                 "batch_size": spec.get("BatchSize"),
                 "learning_rate": spec.get("LearningRate"),
                 "seed": spec.get("Seed"),
-                "hidden_dim": (spec.get("Model") or {}).get("HiddenDim"),
-                "processor_size": (spec.get("Model") or {}).get("ProcessorSize"),
+                # Lifted by name, so a family that does not have a given
+                # hyperparameter reports None for it rather than a wrong number.
+                "model_name": model.get("Name", "meshgraphnet"),
+                "hidden_dim": model.get("HiddenDim"),
+                "processor_size": model.get("ProcessorSize"),
+                "scaling_factor": model.get("ScalingFactor"),
+                "conv_layer_size": model.get("ConvLayerSize"),
+                "resid_blocks": model.get("ResidBlocks"),
+                "resolution": (spec.get("Grid") or {}).get("Resolution"),
                 "tags": spec.get("Tags", []),
                 "notes": spec.get("Notes"),
                 "final_train_loss": last["train_loss"] if last else None,

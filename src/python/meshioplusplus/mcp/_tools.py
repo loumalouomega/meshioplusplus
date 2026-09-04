@@ -2137,19 +2137,24 @@ def tool_dataset_health(
 _PHYSICSNEMO_DOC = "doc/physicsnemo.md"
 
 
-def _require_training_frameworks(op):
-    """The trainer subprocess needs torch_geometric + physicsnemo -- checked
-    here, BEFORE spawning, so a missing framework is a named payload rather
-    than a dead subprocess. Skipped when MESHIOPLUSPLUS_TRAIN_COMMAND names a
-    trainer from another interpreter (the override's whole point)."""
+def _require_training_frameworks(op, model_name="meshgraphnet"):
+    """The trainer subprocess's frameworks -- checked here, BEFORE spawning, so
+    a missing one is a named payload rather than a dead subprocess. Skipped when
+    MESHIOPLUSPLUS_TRAIN_COMMAND names a trainer from another interpreter (the
+    override's whole point).
+
+    Only what the chosen family imports: a convolutional model never touches
+    PyTorch Geometric, so demanding it would refuse a runnable job.
+    """
     from .._gpu import _require_framework
     from ._jobs import TRAIN_COMMAND_ENV
 
     if os.environ.get(TRAIN_COMMAND_ENV):
         return
-    _require_framework(
-        op, "torch_geometric", "pip install torch_geometric", doc=_PHYSICSNEMO_DOC
-    )
+    if model_name != "srresnet":
+        _require_framework(
+            op, "torch_geometric", "pip install torch_geometric", doc=_PHYSICSNEMO_DOC
+        )
     _require_framework(
         op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_PHYSICSNEMO_DOC
     )
@@ -2206,9 +2211,20 @@ def tool_train_start(
     batch_size=8,
     learning_rate=1e-3,
     seed=0,
+    model_name="meshgraphnet",
     processor_size=8,
     hidden_dim=64,
     aggregation="sum",
+    scaling_factor=2,
+    conv_layer_size=32,
+    resid_blocks=8,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    extrapolate=False,
+    fill_value=0.0,
     regions=False,
     kind="node",
     undirected=True,
@@ -2221,14 +2237,20 @@ def tool_train_start(
     notes=None,
     tags=None,
 ):
-    """Start a MeshGraphNet training job against a manifest split.
+    """Start a training job against a manifest split.
 
     Builds the PascalCase spec, lays out `<runs_dir>/<job_id>/` and spawns
     `python -m meshioplusplus.physicsnemo.train --spec` as a subprocess;
     returns the job's initial status. Poll it with train_status /
-    train_metrics / train_log. Needs torch_geometric + nvidia-physicsnemo
-    (no pip extra, deliberately); a missing framework is a named error
-    before anything is spawned.
+    train_metrics / train_log.
+
+    model_name picks the family, and the two read different hyperparameters:
+    'meshgraphnet' uses processor_size/hidden_dim/aggregation and the graph
+    options, 'srresnet' uses scaling_factor/conv_layer_size/resid_blocks and
+    the grid options (give exactly one of resolution and cell_size). Needs
+    nvidia-physicsnemo, plus torch_geometric for meshgraphnet only (no pip
+    extra, deliberately); a missing framework is a named error before anything
+    is spawned.
     """
     from ..physicsnemo._train import default_spec, spec_to_dict
 
@@ -2241,11 +2263,9 @@ def tool_train_start(
         )
     for entry in manifest.entries(split=train_split):
         _sandbox_entry_paths(entry)
-    _require_training_frameworks("train_start")
-    spec = default_spec(
-        resolved_manifest,
-        fields,
-        target_fields,
+    model_name = str(model_name).lower()
+    _require_training_frameworks("train_start", model_name)
+    common = dict(
         run_dir=get_runs_dir(),
         train_split=str(train_split),
         valid_split=str(valid_split),
@@ -2253,21 +2273,39 @@ def tool_train_start(
         batch_size=int(batch_size),
         learning_rate=float(learning_rate),
         seed=int(seed),
-        processor_size=int(processor_size),
-        hidden_dim=int(hidden_dim),
-        aggregation=str(aggregation),
-        regions=bool(regions),
-        kind=str(kind),
-        undirected=bool(undirected),
-        edge_features=bool(edge_features),
+        model_name=model_name,
         float32=bool(float32),
-        target_offset=int(target_offset),
-        target_delta=bool(target_delta),
         checkpoint_every=int(checkpoint_every),
         device=str(device),
         notes=notes,
         tags=tuple(tags or ()),
     )
+    if model_name == "srresnet":
+        family = dict(
+            scaling_factor=int(scaling_factor),
+            conv_layer_size=int(conv_layer_size),
+            resid_blocks=int(resid_blocks),
+            resolution=tuple(resolution) if resolution else None,
+            cell_size=None if cell_size is None else float(cell_size),
+            bounds=tuple(bounds) if bounds else None,
+            padding=float(padding),
+            padding_relative=float(padding_relative),
+            extrapolate=bool(extrapolate),
+            fill_value=float(fill_value),
+        )
+    else:
+        family = dict(
+            processor_size=int(processor_size),
+            hidden_dim=int(hidden_dim),
+            aggregation=str(aggregation),
+            regions=bool(regions),
+            kind=str(kind),
+            undirected=bool(undirected),
+            edge_features=bool(edge_features),
+            target_offset=int(target_offset),
+            target_delta=bool(target_delta),
+        )
+    spec = default_spec(resolved_manifest, fields, target_fields, **common, **family)
     return _json_safe(_jobs_manager().start(spec_to_dict(spec)))
 
 

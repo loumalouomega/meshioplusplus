@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import numpy as np
 import pytest
@@ -216,3 +217,181 @@ def test_card_round_trip_and_checkpoint_listing(tmp_path):
     ]
     assert [c["is_best"] for c in listed] == [False, True, False, False, False]
     assert listed[-1]["epoch"] is None
+
+
+# --------------------------------------------------------------------------- #
+# the input normalizer must be as wide as x                                   #
+# --------------------------------------------------------------------------- #
+def test_the_input_normalizer_is_as_wide_as_the_recorded_x_columns():
+    """Region one-hots widen `x`, and the normalizer has to widen with it.
+
+    Before this was fixed the normalizer was built field-by-field, so with
+    `Graph.Regions` on it was narrower than the batch. That has two faces and
+    the first is the dangerous one:
+
+    * one field, N columns -> numpy **broadcasts** the single value across
+      every column, so the region one-hots are silently normalized by the
+      field's own mean and standard deviation. No error, wrong model.
+    * several fields, a different N -> a shape crash somewhere in the loop.
+
+    A one-hot contributes mean 0 / std 1: it is already 0/1, and shifting it
+    would stop it meaning "member".
+    """
+    spec = t.spec_from_dict(
+        {
+            "Manifest": "m.json",
+            "Fields": ["q"],
+            "TargetFields": ["T"],
+            "Graph": {"Regions": True},
+        }
+    )
+    schema = {
+        "x_columns": ["q", "region:inlet", "region:wall"],
+        "y_columns": ["T"],
+        "x_sources": [
+            {"name": "q", "source": "q", "kind": "data", "component": None},
+            {
+                "name": "region:inlet",
+                "source": "inlet",
+                "kind": "region",
+                "component": None,
+            },
+            {
+                "name": "region:wall",
+                "source": "wall",
+                "kind": "region",
+                "component": None,
+            },
+        ],
+    }
+    stats = {"q_mean": [2.0], "q_std": [0.5], "T_mean": [1.0], "T_std": [1.0]}
+    card = t.card_from_run(
+        spec,
+        schema,
+        stats,
+        {"edge_mean": [0.0], "edge_std": [1.0]},
+        epoch=0,
+        valid_loss=None,
+        checkpoint="best.mdlus",
+    )
+    norms = t.normalizers_from_card(card)
+    assert len(norms["x_mean"]) == len(schema["x_columns"])
+    assert norms["x_mean"].tolist() == [2.0, 0.0, 0.0]
+    assert norms["x_std"].tolist() == [0.5, 1.0, 1.0]
+
+
+def test_a_multi_component_field_takes_its_own_component_statistics():
+    spec = t.spec_from_dict(
+        {"Manifest": "m.json", "Fields": ["v"], "TargetFields": ["T"]}
+    )
+    schema = {
+        "x_columns": ["v_0", "v_1"],
+        "y_columns": ["T"],
+        "x_sources": [
+            {"name": "v_0", "source": "v", "kind": "data", "component": 0},
+            {"name": "v_1", "source": "v", "kind": "data", "component": 1},
+        ],
+    }
+    stats = {"v_mean": [1.0, 9.0], "v_std": [2.0, 8.0], "T_mean": [0.0], "T_std": [1.0]}
+    card = t.card_from_run(
+        spec, schema, stats, {}, epoch=0, valid_loss=None, checkpoint="c.mdlus"
+    )
+    assert card["input_normalization"]["mean"] == [1.0, 9.0]
+    assert card["input_normalization"]["std"] == [2.0, 8.0]
+
+
+def test_a_card_without_an_edge_block_loads():
+    """A grid model has no edges at all, so its card carries no edge block."""
+    card = {
+        "input_normalization": {"mean": [0.0], "std": [1.0]},
+        "output_normalization": {"mean": [0.0], "std": [1.0]},
+    }
+    norms = t.normalizers_from_card(card)
+    assert norms["e_mean"].tolist() == []
+    assert norms["e_std"].tolist() == []
+
+
+# --------------------------------------------------------------------------- #
+# the srresnet family                                                         #
+# --------------------------------------------------------------------------- #
+SR_DOC = {
+    "Manifest": "m.json",
+    "Fields": ["T"],
+    "TargetFields": ["T"],
+    "Model": {"Name": "srresnet", "ScalingFactor": 2},
+    "Grid": {"Resolution": [8, 8, 8]},
+}
+
+
+def test_srresnet_round_trips_and_emits_only_its_own_blocks():
+    spec = t.spec_from_dict(SR_DOC)
+    doc = t.spec_to_dict(spec)
+    assert doc["Model"] == {
+        "Name": "srresnet",
+        "ScalingFactor": 2,
+        "ConvLayerSize": 32,
+        "ResidBlocks": 8,
+        "LargeKernelSize": 7,
+        "SmallKernelSize": 3,
+        "ActivationFn": "prelu",
+    }
+    assert doc["Grid"]["Resolution"] == [8, 8, 8]
+    # a superresolution document that listed graph aggregation would invite
+    # someone to change it and wonder why nothing happened
+    assert "Graph" not in doc
+    assert t.spec_from_dict(doc) == spec
+
+
+def test_meshgraphnet_still_emits_exactly_what_it_did():
+    """The other family's document must be untouched by the second one."""
+    doc = t.spec_to_dict(t.spec_from_dict(DOC))
+    assert doc["Model"] == {
+        "Name": "meshgraphnet",
+        "ProcessorSize": 8,
+        "HiddenDim": 32,
+        "Aggregation": "sum",
+    }
+    assert "Grid" not in doc
+
+
+@pytest.mark.parametrize(
+    "doc, needle",
+    [
+        # a hyperparameter meant for the other family is refused, not ignored
+        (
+            {**SR_DOC, "Model": {"Name": "srresnet", "HiddenDim": 32}},
+            "unknown key 'HiddenDim' in Model (with Name 'srresnet')",
+        ),
+        (
+            {**DOC, "Model": {"Name": "meshgraphnet", "ScalingFactor": 2}},
+            "unknown key 'ScalingFactor'",
+        ),
+        ({**DOC, "Grid": {"Resolution": [8, 8, 8]}}, "reads the Graph block, not Grid"),
+        ({**SR_DOC, "Graph": {"Regions": True}}, "reads the Grid block, not Graph"),
+        (
+            {**SR_DOC, "Model": {"Name": "srresnet", "ScalingFactor": 3}},
+            "Model.ScalingFactor must be one of 2, 4, 8",
+        ),
+        (
+            {**SR_DOC, "Grid": {"Resolution": [8, 8, 8], "Squeeze": 2}},
+            "Grid.Squeeze does not apply to 'srresnet'",
+        ),
+        (
+            {**SR_DOC, "Grid": {"Resolution": [8, 8, 8], "CellSize": 0.1}},
+            "exactly one of Grid.Resolution and Grid.CellSize",
+        ),
+        ({**SR_DOC, "Grid": {}}, "exactly one of Grid.Resolution and Grid.CellSize"),
+        ({**SR_DOC, "Grid": {"Bogus": 1}}, "unknown key 'Bogus' in Grid"),
+    ],
+)
+def test_cross_family_strictness_names_the_offender(doc, needle):
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        t.spec_from_dict(doc)
+
+
+def test_grid_kwargs_describe_the_pair():
+    spec = t.spec_from_dict(SR_DOC)
+    kwargs = spec.grid_kwargs()
+    assert kwargs["scaling_factor"] == 2
+    assert kwargs["coarse"]["resolution"] == [8, 8, 8]
+    assert kwargs["fields"] == ["T"] and kwargs["target_fields"] == ["T"]

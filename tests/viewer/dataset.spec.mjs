@@ -581,7 +581,7 @@ function makeTrainFake() {
         num_metrics: visible(),
         last: rows[visible() - 1],
     });
-    return (tool, body) => {
+    const call = (tool, body) => {
         if (tool === 'train_defaults') {
             return {
                 manifest_path: body.manifest_path,
@@ -668,6 +668,10 @@ function makeTrainFake() {
         }
         return { error: `unknown tool ${tool}`, error_type: 'KeyError' };
     };
+    // Hung off the callable so a test can read what the form actually posted.
+    // All of this runs in Node, not in the page.
+    call.state = state;
+    return call;
 }
 
 /** A minimal ASCII VTU carrying a `T_error` point array — what a prediction
@@ -699,6 +703,7 @@ const PREDICTION_VTU = `<?xml version="1.0"?>
  * with the right bearer token. */
 async function installServerFake(page) {
     const trainFake = makeTrainFake();
+    // returned so a test can assert on what the page sent
     await page.route('**/__mock-api/**', async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -759,8 +764,8 @@ async function installServerFake(page) {
         }
         return json(404, { error: 'unknown', error_type: 'KeyError' });
     });
+    return trainFake;
 }
-
 // The web build registers the COOP/COEP service worker (a speed enhancement
 // for the threaded wasm), and Playwright's `page.route` never sees a fetch
 // a service worker handled -- so the fake is only reachable with service
@@ -838,6 +843,70 @@ test('connect, bind cards by hash, scan on the server', async ({ page }) => {
 // sees a fetch the COOP/COEP worker answered first.
 test.describe('training', () => {
     test.use({ serviceWorkers: 'block' });
+
+test('the model selector swaps which hyperparameters the form posts', async ({
+    page,
+}) => {
+    await installOverviewMock(page);
+    const fake = await installServerFake(page);
+    await pickOverview(page);
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+
+    // the two families read different blocks, so only one set is ever shown
+    await expect(page.locator('#t-graph-opts')).toBeVisible();
+    await expect(page.locator('#t-grid-opts')).toBeHidden();
+    await page.locator('#t-model').selectOption('srresnet');
+    await expect(page.locator('#t-graph-opts')).toBeHidden();
+    await expect(page.locator('#t-grid-opts')).toBeVisible();
+
+    await page.locator('#t-fields').selectOption(['q']);
+    await page.locator('#t-targets').selectOption(['T']);
+    await page.locator('#t-resolution').fill('8,8,8');
+    await page.locator('#t-scaling').selectOption('4');
+    await page.locator('#t-start').click();
+
+    await expect.poll(() => Boolean(fake.state.started)).toBe(true);
+    const posted = fake.state.started;
+    expect(posted.model_name).toBe('srresnet');
+    expect(posted.resolution).toEqual([8, 8, 8]);
+    expect(posted.scaling_factor).toBe(4);
+    // the other family's keys must not ride along: the server refuses them by
+    // name, so posting a UI default would be an error nobody asked for
+    expect(posted.hidden_dim).toBeUndefined();
+    expect(posted.processor_size).toBeUndefined();
+});
+
+test('a malformed resolution is refused before anything is started', async ({
+    page,
+}) => {
+    await installOverviewMock(page);
+    await installServerFake(page);
+    await pickOverview(page);
+    const serverUrl = new URL('__mock-api', page.url()).toString();
+    await page.locator('#srv-url').fill(serverUrl);
+    await page.locator('#srv-token').fill(SERVER_TOKEN);
+    await page.locator('#srv-connect').click();
+    await expect
+        .poll(() => page.evaluate(() => window.__datasetState.server?.connected))
+        .toBe(true);
+    await page.locator('.card[data-path="dataset.json"] .card-open').click();
+    await waitStatus(page, 'ready');
+
+    await page.locator('#t-model').selectOption('srresnet');
+    await page.locator('#t-fields').selectOption(['q']);
+    await page.locator('#t-targets').selectOption(['T']);
+    await page.locator('#t-resolution').fill('8,8');
+    await page.locator('#t-start').click();
+    await expect(page.locator('#t-error')).toContainText('three positive cell counts');
+});
 
 test('launch a run from the manifest and follow it to completion', async ({
     page,
