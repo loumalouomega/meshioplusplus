@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v10.25.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
+Status at time of writing: **v10.26.0** — 43 formats, thirty-four mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 11).
 
 This document lists what is *not* built. Items are grouped by theme, each with an effort estimate and the reason it matters. Nothing here duplicates shipped functionality; where a feature partially exists, the gap is stated explicitly.
 
@@ -9,7 +9,28 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 ---
 
 
-## 1. Scale
+## 1. Physics-ML data paths beyond graphs
+
+**The gap.** meshio++ has one complete path into a physics-ML framework, and it is the *graph* one: [`graph_sample`](ml.md) builds nodes, edges, features and targets from a mesh's own connectivity, [`DatasetManifest`](datasets.md) catalogues the solves, [`run_training`](physicsnemo.md) fits a MeshGraphNet from a `TrainSpec`, and the [dashboard](dashboard.md) launches and follows the run. Every *other* shape a physics-ML model wants — a regular grid, a point cloud under a token budget, a proximity graph, a temporal window — has to be assembled by hand from the pieces, and some of the pieces do not exist. The [PhysicsNeMo basics](physicsnemo/overview.md) section is the map of what a model on the other side actually expects.
+
+**Where to port from.** Most of this exists, working and tested, in the Kratos `PhysicsNeMoApplication` (`applications/PhysicsNeMoApplication`, tracking physicsnemo 2.2), written against the same concepts and by the same author. It is the reference implementation to copy each item from rather than re-derive; the flow is expected to run the other way afterwards, with that application consuming meshio++ instead of carrying its own mesh layer. Nothing below needs C++, WASM or a binding change — this is all a Python data layer over operations the core already has.
+
+- **Grid/CNN data path (superresolution)** — the largest and the one worth doing first. Sample a mesh's `point_data` onto a regular lattice, run a 3-D CNN on it (`SRResNet` takes a coarse grid to a fine one at 2x, 4x or 8x), scatter the fine grid back onto a fine mesh. Most of the sampler already exists: `interpolate(..., "barycentric")` onto a simplexified `grid` reproduces a linear field at every lattice point to within 2e-15, and it accepts a cell-less target, so a 128³ grid costs points but no connectivity. What is missing is a serializable lattice value type, trilinear evaluation of a lattice (the sampled-grid counterpart to `interpolate`, and what every superresolution baseline is reported against), a coarse/fine pairing rule on a dataset entry, an `srresnet` family in `TrainSpec`, and an azimuthally averaged `power_spectrum` — the only honest measure of whether a super-resolved field has the right small-scale content rather than a plausible smoothed one, and a gap in the reference implementation too. **M**
+- **Point-cloud budgets** — farthest-point sampling, subsampling and bounding-box filters, so a large surface cloud fits a transformer's token budget. `feature_matrix` already produces the node table these models want; nothing reduces it to a fixed size. **S**
+- **Proximity graphs** — radius and k-nearest-neighbour neighbourhoods with a periodic minimum-image mode, multiscale (bistride) hierarchies, and "world" edges alongside the mesh edges. [`edge_index`](ml.md) builds a graph from mesh edges or the cell dual only, which is exactly wrong for particles, where the interaction radius and not the connectivity is what defines a neighbour. **M**
+- **Curved tessellation and a provenance map** — isoparametric subdivision of higher-order cells through synthetic points on a refinement lattice, interpolated on the way in and dropped on the way back; and a map from each simplex to the cell it came from, so a prediction made on a tetrahedron is written onto the hexahedron it was carved out of. [`convert_cells(simplexify)`](convert_cells.md) already splits conformingly (its hexahedron diagonal is fixed rather than chosen per cell, which is what makes neighbours agree); neither of the other two exists. **M**
+- **Formats a physics-ML pipeline expects** — `.pmsh` (memory-mapped, measured upstream at 20–135x faster loads than VTU and 2–7x smaller), the CAE `.npz` sample layout, OpenUSD, and Zarr mesh I/O. `.pmsh` is the one a training loop genuinely misses, since it is what the framework's own `MeshDataset` reads. **M**
+- **Temporal windowing datasets** — single-step, time-conditional and one-shot windows over a [`TimeSeries`](sequences.md), plus rollout evaluation (feed a prediction back in and measure the drift). `target_offset` pairs step k with step k+n, which is the first of those three and none of the rest. **S**
+- **Dataset-level augmentation** — [`transform(rotate_vector_data=True)`](transform.md) already rotates vector and rank-2 tensor fields coherently, which is the part upstream's own transforms get wrong. What is missing is only the wrapper: per-epoch, seeded, applied to a whole manifest. **S**
+- **Geometry guardrails** — out-of-distribution detection on the *shape* rather than on any field, over non-invariant surface descriptors. Unusually well suited to this library: `compute_stats`, `compute_quality` and `extract_surface` already produce every descriptor, `dataset_health` already summarizes a manifest, and fitting a density over those summaries is a small amount of code on top. The descriptors must stay non-invariant, which is the opposite of the usual instinct — a scaled part is a different part. **S**
+- **Mesh operations physicsnemo has and meshio++ does not expose** — per-vertex mean and Gaussian curvature as a node feature (computed inside [`remesh`](remesh.md)'s gradation path but not public, and a natural companion to the signed distance), mesh repair beyond [`clean`](clean.md), shrinkwrap, and Sobolev deformation. **S**
+- **Second model families** — the 2-D operators (FNO, AFNO) through the thin-axis squeeze idiom, and DeepONet for parameters-in/field-out, which is the shape a great many engineering problems actually have and the one people reach for a neural operator for by mistake. Both follow the grid path above rather than preceding it. **M**
+
+**Deliberately not.** Assembled solver residuals, adjoints and Sobolev training, co-simulation, active-learning *labeling*, adaptive remeshing driven by a surrogate, and MPI model-part gathering. Every one needs a live solver — an assembly routine, its tangent, its communicator — and meshio++ has no notion of a discrete system. They belong in the application that owns the solver, which is precisely the division [Symbolic and physics](physicsnemo/symbolic_and_physics.md) describes.
+
+---
+
+## 2. Scale
 
 The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit in RAM.
 
@@ -19,7 +40,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 2. Ecosystem reach
+## 3. Ecosystem reach
 
 - **Rust bindings** over the C API — the next language by scientific adoption after Julia/R, and the ABI/`SOVERSION` work makes it cheap. **M**
 - **Registration and distribution** — conda-forge, CRAN, Julia General, the Blender Extensions Platform, a proper ParaView reader plugin. All deferred at binding time; all pure logistics, and all blocking real adoption. The Blender extension zips are built and attached to every `v*` release (see `doc/blender.md`), so only the *listing* remains there. **M**
@@ -28,7 +49,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 3. Quality of implementation
+## 4. Quality of implementation
 
 - **Fuzzing the readers** (libFuzzer / AFL, OSS-Fuzz if it will take the project). 42 mostly hand-rolled parsers, reachable from a C ABI, a browser and an MCP server — untrusted input reaches them by design. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every format, with declared per-format lossiness, generalising the region round-trip test into executable documentation of what survives what. **M**
@@ -36,7 +57,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 4. NURBS and higher-order geometry (long run)
+## 5. NURBS and higher-order geometry (long run)
 
 **The gap.** The data model is strictly linear/Lagrange polytopes: a `CellBlock` is a cell-type string plus a node-index array. NURBS is a genuinely different object — control points, weights, knot vectors, and a parametric mapping — and CAD/IGA formats (STEP, IGES, Rhino 3dm, `.iga`) express geometry that no current cell type can hold. This is the most architecturally invasive item on the list and should be approached as a research spike, not a feature.
 
@@ -49,7 +70,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 5. Mesh generation
+## 6. Mesh generation
 
 **The gap.** Every operation transforms a mesh you already have; nothing creates one. This is the only empty category in the operations layer — **partly closed as a side effect of `remesh_volume`'s own delivery** (v10.13.0), which accepts a closed surface directly and generates a genuinely new tetrahedral volume mesh (isosurface stuffing over a BCC lattice) rather than transforming the input's own cells; a surface-in/volume-out capability this section previously lacked entirely. It does not close any bullet below, though: no primitive constructors, no extrude/revolve, and no 2D output (it is a 3D volume mesher, not a 2D triangulator) — those gaps stand as stated.
 
@@ -60,7 +81,7 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 
 ---
 
-## 6. CLI chatbot / conversational assistant (MCP-driven)
+## 7. CLI chatbot / conversational assistant (MCP-driven)
 
 **The gap.** The MCP server (`src/python/meshioplusplus/mcp/`, `doc/mcp.md`) exposes the whole Python surface to an AI *agent* — but only to one already speaking MCP over stdio (Claude Desktop, an IDE, a custom host). There is no way to have a natural-language conversation about a mesh **from the terminal itself**: a user with an LLM API key on hand cannot ask `meshioplusplus` "why does this file fail to convert" or "clean this mesh and tell me what changed" and get a tool-calling assistant that drives the existing operations for them. Every other surface (Python API, CLI verbs, MCP tools) is imperative-only; this is the one conversational entry point missing.
 
@@ -79,11 +100,12 @@ The benchmark is a ~52k-node bracket; nothing addresses meshes that do not fit i
 1. **Remeshing — shipped in full**, removed from this document entirely: v10.10.0 (`remesh`, a clean-room isotropic clustering engine derived from the MIT `pyvista/pyacvd` plus an original `metric="quadric"` synthesis over meshio++'s own pre-existing Garland-Heckbert quadric machinery, across every binding surface in one release); v10.11.0 (curvature gradation via a new osculating-paraboloid vertex-curvature estimator, plus boundary pinning/dual-edge insertion and separately-reported non-manifold-vertex detection, both extending `remesh` and its full binding surface); v10.12.0 (`metric="anisotropic"`, packing a curvature tensor into the existing quadric accumulator, closing the section's L estimate faster than expected once gradation had already supplied the curvature machinery it needed — `MESHIOPLUSPLUS_ABI_VERSION` 8→9); v10.13.0 (`remesh_volume`, isosurface stuffing over a BCC lattice, closing the volumetric bullet's *capability* by a predicate-free algorithm rather than the literal Delaunay/CVD method named, plus `SmoothMethod::Odt` closing its "ODT" half's *smoothing* piece on fixed connectivity — `MESHIOPLUSPLUS_ABI_VERSION` 9→10, not because either operation's own new option/result struct needed it, but because `SmoothMethod` gaining an explicit `: std::uint8_t` underlying type for the first time is itself a Tier A layout change under `doc/abi.md`'s own rule); v10.14.0 (`optimize_volume`, closing the "ODT" bullet's *remeshing* piece — predicate-free 2-3/3-2 topological flips alternated with the ODT vertex relocation, genuinely changing connectivity, Tier C additive with no ABI bump, full binding surface in one release). See `doc/remesh.md`, `doc/remesh_volume.md` and `doc/optimize_volume.md`.
 2. **Provenance in written files** — shipped in full and removed from this document: v10.15.0 (the audit-and-normalize bullet — one canonical, engine-identical credit line, plus the per-format comment-syntax table in `doc/formats.md#provenance`), v10.16.0 (the opt-in record — source/target, operation chain, conversion assumptions, timestamp, over a thread-local scope with a Python↔C++ bridge, and the `mio_provenance_*` C ABI), v10.17.0 (read-back through `read_metadata`/`info`, plus the Fortran/Julia/R/WASM bindings — `MESHIOPLUSPLUS_ABI_VERSION` 10→11, since `MeshMetadata` grew two fields). Widening conversion-assumption coverage past the wired formats is a documented follow-up in `doc/provenance.md`, not a roadmap gap. See `doc/provenance.md`.
 3. **GiD postprocess — shipped in full and removed from this document**: v10.18.0 (vendoring, build integration, all three write flavours, extension dispatch, every registry-driven surface), v10.19.0 (the hand-rolled reader, all three flavours, plus two upstream gidpost HDF5 bug fixes its own test suite surfaced; the `hexahedron20` node-order conflict against CIMNE's own documentation resolved in Kratos's favour; `hexahedron27`/`wedge15`/`pyramid13` added by deriving their orderings from Kratos's own geometry classes; all nine `GiD_ResultType`s, including `Matrix`/`Complex*`, via a `field_data` declaration; arbitrary Gauss points per element; `ResultGroup` reading; the `ascii_zipped` write mode; and multi-step series in both directions, including `Group`/`OnGroup` re-meshing), and v10.20.0 (the release CLI binaries and every published wheel gained `gid` write support via a `FetchContent`-vendored static zlib, `MESHIOPLUSPLUS_ZLIB_STATIC`, closing the section's last item). See `doc/formats/gid.md`.
-4. **Primitive constructors (§5, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
+4. **Primitive constructors (§6, first item)** — a few days, and it improves testing, docs and every demo surface at once. `grid` already shipped over `detail/grid_lattice.hpp`; `box`/`sphere`/`cylinder`/`disk` follow the same shape.
 5. **PhysicsNeMo integration** — shipped in full and removed from this document: v9.28.0 (recon note, adapter, dataset manager, recipes, GPU-executed example), v9.29.0 (dataset-manager UI), v9.30.0 (t→t+1 target pairing, the `physicsnemo.mesh.Mesh` bridge, persisted directory handles, per-entry quality summaries). See `doc/physicsnemo.md` and `doc/datasets.md`.
 6. **Remaining refinement and coarsening gaps** — shipped in full and removed from this document: v10.2.0 (error-estimator helpers — `estimate_error`), v10.3.0 (polyhedral refinement — `subdivide`), v10.4.0 (polyhedral coarsening — `agglomerate`), v10.5.0 (green-element undo — `undo_green`), v10.6.0 (volume decimation — `decimate_volume`, the section's last open item). See `doc/error.md`, `doc/subdivide.md`, `doc/agglomerate.md`, `doc/undo_green.md` and `doc/decimate_volume.md`.
 7. **Field capability beyond derivatives** — shipped in full and removed from this document: v10.8.0 (field integration — `data_integrate`, a cell-measure-weighted total/mean over cells, whole-mesh and per named Cell region), v10.9.0 (second derivatives — `hessian`, a composition of two `gradient` calls, exact for a linear field everywhere and for a quadratic field away from a structured mesh's own boundary, closing the section's last open item). See `doc/field_integration.md` and `doc/hessian.md`.
-8. **Fuzzing (§3)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
-9. **NURBS spike (§4)** — a documented investigation, scheduled independently of the rest.
+8. **Fuzzing (§4)** — should start in parallel with all of the above; it is not a feature and does not compete for the same attention.
+9. **NURBS spike (§5)** — a documented investigation, scheduled independently of the rest.
 10. **Dataset dashboard and training integration** — shipped in full and removed from this document: v10.22.0 (the multi-dataset overview, the per-dataset drill-down, browser-side health summaries, manifest diffing), v10.23.0 (the companion process `meshioplusplus-mcp --http` and its server-side health producer), v10.24.0 (the in-package trainer, the job manager as `train_*` tools, launch and monitoring, log tailing, the checkpoint browser) and v10.25.0 (run history and comparison, in-viewer prediction preview, run-completion webhooks, and the design pass). None of it touched C++, WASM or any binding. See [`doc/dashboard.md`](dashboard.md) and [`doc/physicsnemo.md`](physicsnemo.md#training-and-prediction).
-11. **CLI chatbot (§6)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.
+11. **Physics-ML data paths (§1)** — the grid/superresolution bullet first, since it is the largest, the one with a working reference implementation to port from, and the one every other grid-shaped model family (FNO, AFNO, DeepONet) then follows for free. The rest of the section is independent of it and of each other.
+12. **CLI chatbot (§7)** — small and self-contained (a thin client over the existing MCP tool registry); can proceed independently whenever a maintainer wants it, no sequencing dependency on anything above.

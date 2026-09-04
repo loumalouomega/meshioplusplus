@@ -1,0 +1,33 @@
+/*
+ * Diagram figures.
+ *
+ * The hand-authored SVGs under public/images/physicsnemo/ paint their own
+ * opaque white canvas, so on the dark theme they would otherwise read as bare
+ * white slabs bleeding into the page. Giving every standalone figure a card
+ * treatment - a light ground, rounded corners and a hairline border - makes
+ * that white deliberate rather than accidental, in both themes.
+ *
+ * The rule is scoped to a paragraph holding nothing but an image, which is what
+ * markdown produces for a figure line, so inline images and badges are
+ * untouched.
+ */
+.vp-doc p > img:only-child {
+  display: block;
+  margin: 0 auto;
+  padding: 12px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+/* The italic line under a figure is its caption. */
+.vp-doc p > img:only-child + em,
+.vp-doc p:has(> img:only-child) + p > em:only-child {
+  color: var(--vp-c-text-2);
+}
+
+.vp-doc p:has(> img:only-child) + p {
+  text-align: center;
+  font-size: 0.9em;
+  margin-top: 0.6em;
+}

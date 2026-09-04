@@ -1,5 +1,9 @@
 # PhysicsNeMo integration
 
+::: tip New to PhysicsNeMo?
+[**PhysicsNeMo basics**](./physicsnemo/overview.md) is a fourteen-page map of the framework itself — what a `Module` and a `.mdlus` checkpoint are, which of the 25 architecture families fits the shape of your data, how simulation output becomes batched tensors, and where meshio++ ends and the framework begins. This page assumes all of that.
+:::
+
 Feed meshes into [NVIDIA PhysicsNeMo](https://github.com/NVIDIA/physicsnemo) training pipelines — MeshGraphNet-style GNNs first of all — without writing the bespoke ingestion glue every project otherwise re-invents:
 
 ```python
