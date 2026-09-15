@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `CLAUDE.md`.
 
+## v11.0.0 (2026-09-15)
+
+**Version-only major bump, no functional change.** Marks roadmap section 1's completion in full (the `fno`/`afno`/`deeponet` model families, v10.40.0 below) landing on `master`, which also carried a fix for the FLAC3D `ZGROUP`/`FGROUP` cell-group index bug (issue #76 — see the `flac3d` entry in `CLAUDE.md`). No format, operation, API, or ABI change in this release; `MESHIOPLUSPLUS_ABI_VERSION` stays 12.
+
 ## v10.40.0 (2026-09-15)
 
 **Second model families: `fno`, `afno` and `deeponet`.** `TrainSpec` knew two families, MeshGraphNet and SRResNet, and every family-dependent branch was an `if srresnet ... else <graph>` that silently ran the graph code for anything else. This release closes roadmap section 1's last bullet — and with it the whole section — with the 2-D neural operators through the thin-axis squeeze idiom and DeepONet for parameters-in/field-out, all three as rows of one family table. Pure Python over machinery already shipped (`grid_sample_pair`'s squeeze, `select_points`, `feature_matrix`, `DatasetEntry.Metadata`) — **no C++, ABI, WASM, C/Fortran/Julia/R binding change**, no gtest/backend-matrix/WASM/amalgamation work needed, and `MESHIOPLUSPLUS_ABI_VERSION` stays 12. See [`doc/physicsnemo.md`](doc/physicsnemo.md#neural-operators-on-a-grid-the-fno-and-afno-families).
