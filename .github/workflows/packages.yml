@@ -68,15 +68,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install "conan>=2.0,<3"
           conan profile detect --force
+      - name: Use the platform's own cmake on arm64 (ConanCenter's binary is 403ing)
+        # ConanCenter's `cmake/binary` recipe fetches prebuilt tarballs straight
+        # from cmake.org rather than GitHub, and its conandata.yml entry for
+        # 3.31.12/Linux/armv8 (https://cmake.org/files/v3.31/cmake-3.31.12-linux-aarch64.tar.gz)
+        # currently 403s unconditionally from cmake.org's own server -- verified
+        # directly with `curl`, not runner-specific, and the identical asset on
+        # GitHub's release mirror serves fine. That is an upstream ConanCenter/
+        # Kitware-hosting problem, not anything in this repo or its recipe, and
+        # no retry clears a permanent 403. `[platform_tool_requires]` tells
+        # Conan the platform already provides this exact tool_requires match,
+        # so it never tries to fetch it -- the GitHub-hosted arm64 runner image
+        # ships a working system cmake already (the plain `Linux arm64` build
+        # job proves it works for this project). Drop this once ConanCenter's
+        # recipe points at a live URL for this version.
+        if: matrix.arch == 'arm64'
+        run: |
+          cmake --version
+          printf '[platform_tool_requires]\ncmake/3.31.12\n' >> "$(conan profile path default)"
       - name: conan create (${{ matrix.name }})
-        # A cold cache on this leg builds a chain of build-tool dependencies
-        # (cmake, ninja, meson, ...) from source via ConanCenter, each fetched
-        # straight from a GitHub release asset with no auth -- exactly the
-        # kind of request GitHub's anonymous rate limiting intermittently
-        # answers with a transient `403: Forbidden` on the arm64 runners.
-        # Retried 3x with backoff before failing the job for real; a build
-        # failure that is our own (a real recipe/source error) fails on every
-        # attempt identically and still turns the job red.
+        # Retried in case of genuine transient network flakiness elsewhere in
+        # the dependency chain; a build failure that is our own (a real
+        # recipe/source error) fails identically on every attempt and still
+        # turns the job red.
         run: |
           for attempt in 1 2 3; do
             if conan create . --test-folder=packages/conan --build=missing ${{ matrix.opts }}; then
