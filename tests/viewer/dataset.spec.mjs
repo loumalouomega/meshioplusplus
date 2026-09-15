@@ -905,7 +905,7 @@ test('a malformed resolution is refused before anything is started', async ({
     await page.locator('#t-targets').selectOption(['T']);
     await page.locator('#t-resolution').fill('8,8');
     await page.locator('#t-start').click();
-    await expect(page.locator('#t-error')).toContainText('three positive cell counts');
+    await expect(page.locator('#t-error')).toContainText('3 positive integers');
 });
 
 test('launch a run from the manifest and follow it to completion', async ({
@@ -932,9 +932,12 @@ test('launch a run from the manifest and follow it to completion', async ({
     await expect(page.locator('#t-start')).toBeEnabled();
     await expect(page.locator('#t-train-split')).toHaveValue('train');
 
-    // a run needs both selections; the form says so rather than starting
+    // a run needs both selections; the form says so rather than starting.
+    // Targets are checked first (v10.40.0's family-aware validation split
+    // one combined message into two), so with neither picked that is the
+    // one that fires.
     await page.locator('#t-start').click();
-    await expect(page.locator('#t-error')).toContainText('at least one input field');
+    await expect(page.locator('#t-error')).toContainText('at least one target field');
     await expect
         .poll(() => page.evaluate(() => window.__datasetState.activeJob))
         .toBeNull();
