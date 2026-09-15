@@ -57,6 +57,35 @@ Two accommodations make the compat lossless rather than nearly so:
 
 One sharp edge, shared with the old model: indices are captured against the mesh's blocks *at the time you set them*. Appending a cell block is safe; inserting, removing or reordering one invalidates them.
 
+### Recovering global cell indices from `cell_sets`
+
+A consumer that wants "which absolute cells are in this group" — the question a GUI importer
+usually has, since it numbers elements globally, not per block — should read `mesh.regions`
+rather than `mesh.cell_sets`: the entries are already global, and no format-specific offset
+arithmetic is needed.
+
+```python
+for r in mesh.regions:
+    if r.kind == "cell" and r.name == "wall":
+        global_ids = r.entries  # 0-based, block-major, ready to use
+```
+
+If code must work from `mesh.cell_sets` instead (its per-block local form), add each block's
+own offset — the running total of every earlier block's cell count, the same prefix sum
+`block_bases` computes internally:
+
+```python
+offset = 0
+global_ids = []
+for block, local in zip(mesh.cells, mesh.cell_sets["wall"]):
+    global_ids.extend(offset + i for i in local)
+    offset += len(block)
+```
+
+This is the fix for a consumer ported from a library or format convention where cell indices
+were global rather than block-local — see [`doc/formats/flac3d.md`](formats/flac3d.md#quirks--limitations)
+for a concrete case ([issue #76](https://github.com/loumalouomega/meshioplusplus/issues/76)).
+
 ## The format matrix
 
 | Format | `point` | `cell` | `side` | `tag` | Notes |
