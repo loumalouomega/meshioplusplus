@@ -10,9 +10,10 @@ cache would otherwise silently keep serving the pre-sabotage answer.
 
 from __future__ import annotations
 
-import meshioplusplus as mio
 import numpy as np
 import pytest
+
+import meshioplusplus as mio
 from meshioplusplus import _tessellation as T
 from meshioplusplus._regions import Region
 from meshioplusplus._tessellation import (
