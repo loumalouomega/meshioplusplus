@@ -97,6 +97,10 @@ A **non-finite** cell value never matches a predicate. That is deliberate rather
 
 ### How the closure works
 
+![Every triangle mask has a template; a quad admits only none, an opposite pair or all four split edges, and any other mask is promoted](/diagrams/refine_masks_2d.svg)
+
+![Representative admissible tetrahedron masks by number of split edges, and the three-edges-at-one-corner mask that is excluded on purpose](/diagrams/refine_masks_tetra.svg)
+
 A cell's state is a bitmask over its edges. Not every mask has a same-type subdivision, so a mask that has none is **promoted** to the smallest *admissible* superset — which splits more edges, which may promote further, and so on to a fixed point. Because each type's admissible masks are closed under intersection, "the smallest admissible superset" is well defined and the promotion is a monotone idempotent closure operator; the mesh-wide fixed point is therefore unique and **independent of the order cells are visited in**. Determinism here is a property of the formulation, not a convention about traversal.
 
 Whether a new node exists is likewise *derived*, never tabulated:
@@ -183,6 +187,8 @@ The name is **reserved**. An input that already carries it is *updated* rather t
 With `levels > 1` and a selector, level *k* refines the children of level *k − 1*'s fully split cells; green and untouched cells are not re-refined.
 
 ### `refine:cell_id` and `refine:parent_id` {#refinecell_id-and-refineparent_id}
+
+![The refine:cell_id and refine:parent_id arrays linking a fine mesh back to the coarse mesh it was refined from](/images/refine_hierarchy.png)
 
 `record_hierarchy=True` attaches two Int64 `cell_data` arrays that persist a parent/child hierarchy the caller can resolve *across separate calls*, unlike `mCellMaps` (which dies with the call) or `refine:parent_cell` (a row index into a mesh the caller may since have renumbered).
 

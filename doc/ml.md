@@ -15,6 +15,8 @@ t  = mio.to_torch(mesh)                       # torch tensors, adopted zero-copy
 
 Everything here is pure Python over existing machinery — the [interop table payload](./interop), the smoothing layer's edge topology, the [sequence machinery](./sequences) — and the C++/WASM/C/Fortran core is untouched. Together with the v9.26.0 [pandas/polars frames](./interop#pandas-and-polars) and the [GPU handoff](./gpu), this closes the roadmap's machine-learning section.
 
+![A mesh, a time series or a dataset manifest fans out into a graph, a feature matrix, an on-disk dataset or framework tensors, and from there into PyG and PhysicsNeMo](/diagrams/ml_fanout.svg)
+
 ## Graphs for GNNs: `edge_index`
 
 ```python

@@ -18,6 +18,8 @@ Unlike `refine`, which is driven by a fixed table per cell type (`detail/refine_
 
 ## The construction
 
+![A hexahedron with its new interior point, and the polyhedral child that one face becomes: the face unchanged plus one triangle per face edge](/diagrams/subdivide_cell.svg)
+
 For each eligible 3D cell:
 
 1. `detail::cell_rings` gives the cell's faces as global node-id rings, uniformly whether the cell is tabulated or already a polyhedron.

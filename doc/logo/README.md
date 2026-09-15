@@ -11,7 +11,7 @@ The current logo is built with **TikZ**: the **Stanford Bunny** mesh, read and r
                     # (meshioplusplus + numpy + pyvista + PyMuPDF + Pillow)
 ```
 
-This runs `gen_logo_tikz.py` (generates the projected bunny mesh into `_mesh_icon.tex`), compiles `logo.tex`/`logo-icon.tex` with `pdflatex`, and converts to SVG with `dvisvgm`. PNGs are produced with PyMuPDF (or `pdftoppm`/`convert` if present), then `make_icon_assets.py` derives the square icon, `favicon.ico`, and the GitHub social-preview PNG (see below; skipped with a warning if PyMuPDF/Pillow aren't installed). After regenerating, sync the copies used by the docs site: `cp logo-with-text.svg ../public/logo.svg` and `cp logo-icon.svg logo-icon.png ../public/` (`favicon.ico` is written directly to `../public/` by `make_icon_assets.py`, no copy needed).
+This runs `gen_logo_tikz.py` (generates the projected bunny mesh into `_mesh_icon.tex`), compiles `logo.tex`/`logo-icon.tex` with `pdflatex`, and converts to SVG with `dvisvgm`. PNGs are produced with PyMuPDF (or `pdftoppm`/`convert` if present), then `make_icon_assets.py` derives the square icon, `favicon.ico`, and the GitHub social-preview PNG (see below; skipped with a warning if PyMuPDF/Pillow aren't installed). After regenerating, sync the copies used by the docs site: `cp logo-with-text.svg ../public/logo.svg` and `cp logo-icon.svg logo-icon.png social-preview.png ../public/` — the last is the Open Graph / Twitter-card image `doc/.vitepress/config.mts` names, so the docs site's link previews follow the logo too (`favicon.ico` is written directly to `../public/` by `make_icon_assets.py`, no copy needed).
 
 ## Assets (committed)
 

@@ -14,6 +14,8 @@ This page covers `COMPONENTS CXX` only. The **C API is a different contract** an
 
 What matters is *what the change does*, not which file it lives in.
 
+![The decision flow from a changed installed header to Tier A, Tier B or Tier C, with the gate that catches each](/diagrams/abi_tiers.svg)
+
 ### Tier A — layout. Bump the ABI version.
 
 Anything that changes the shape of a type a consumer can name:

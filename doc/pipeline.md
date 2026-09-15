@@ -25,6 +25,8 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 }
 ```
 
+![A settings.json is parsed strictly, every step is validated before the input is read, the chain runs and writes through registry_write_ex, and every surface drives the same run_pipeline_steps](/diagrams/pipeline_flow.svg)
+
 ## The rules
 
 - **Vocabulary is PascalCase** for op names and parameter keys (`"Op": "ConvertCells"`, `"RemoveOrphans": true`). Enum *values* keep the exact lowercase spellings the rest of meshio++ uses (`"simplexify"`, `"redgreen"`, `"cell"`, `"rcm"`). Refine's comparison key is `Compare`, never `Op` — `Op` is the step discriminant.

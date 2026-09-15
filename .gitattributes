@@ -58,3 +58,8 @@ src/cpp/third_party/gidpost/** linguist-vendored
 # CI checkout without LFS would get a 130-byte pointer for the geometry file
 # and a real results sibling, failing in a thoroughly confusing way.
 tests/python/meshes/gid/** -filter -diff -merge text
+
+# Generated documentation diagrams: the SVG is emitted by doc/diagrams/gen_diagrams.py
+# (collapse it in diffs); the generator itself is this project's own Python, so it is
+# deliberately NOT marked vendored the way the TikZ sources under doc/icons and doc/logo are.
+doc/public/diagrams/*.svg linguist-generated=true

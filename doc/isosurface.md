@@ -81,6 +81,8 @@ The input is first simplexified with [`convert_cells`](/convert_cells) (every 3D
 
 The honest consequence: a hexahedron or wedge contour is the **union of its simplices' contours** — correctly located and shaped, just triangulated rather than returned as a single polygon. The field is resolved against the *simplexified* mesh, so a higher-order input contours the linearized field.
 
+![The marching-tetrahedra cases shared with slice: the sign mask of a simplex selects a triangle, a quad, a segment or nothing](/diagrams/marching_cases.svg)
+
 ## Degeneracy rule — plateaus
 
 A node whose value is exactly the isovalue (`d_i == 0`) is classified on the **positive** side (`d_i >= 0`). This one rule makes the sign mask *total*, which is what keeps the contour well-defined at the awkward cases:

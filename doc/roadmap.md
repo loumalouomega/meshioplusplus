@@ -6,6 +6,10 @@ This document lists what is *not* built. Items are grouped by theme, each with a
 
 Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **XL** = a project in its own right.
 
+## The map
+
+![The roadmap at a glance: open items grouped by theme, shaded by effort, with dependency arrows and the items that need a design pass or a research spike first](/diagrams/roadmap_map.svg)
+
 ---
 
 

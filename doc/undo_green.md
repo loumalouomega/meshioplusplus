@@ -22,6 +22,8 @@ The obvious approach — invert `refine`'s per-type subdivision tables against a
 
 ## Classification: red, green, untouched
 
+![A coarse grid, the fine mesh a selective refinement produces with its red and green cells, and the result of undo_green collapsing the green groups](/diagrams/undo_green_timeline.svg)
+
 A cell's split mask — and hence its red/green status — is uniform across every one of its children (`refine` sets it once per parent), so classification is per **sibling group** (cells sharing one `refine:parent_id`), not per cell:
 
 - a singleton group (`refine:cell_id == refine:parent_id`) is **untouched** — kept verbatim;

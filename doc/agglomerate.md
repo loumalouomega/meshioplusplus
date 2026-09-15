@@ -14,6 +14,8 @@ mp.write("bracket_coarse.vtu", coarse)
 
 ## The construction
 
+![Greedy seed-and-grow over shared faces on a grid of unequal cells, showing which neighbour each group absorbs and which faces are dropped](/diagrams/agglomerate_grow.svg)
+
 1. `detail::build_global_faces(mesh)` re-expresses the mesh's volume cells as a globally deduplicated face list with owner/neighbour pairing — the same machinery the OpenFOAM writer and the CGNS `NGON_n`/`NFACE_n` writer share. A mesh with any **non-manifold** face (used by three or more cells) is **refused**: the owner/neighbour classification below is only well-defined on a 2-manifold face, and guessing would silently misclassify a boundary.
 2. **Greedy seed-and-grow**, serial and deterministic: cells are seeded in ascending order; a group absorbs its unclaimed face-neighbour with the largest *accumulated* shared-face area (summed over every face the group's current members share with that neighbour) until it reaches `target_group_size`, or no unclaimed neighbour remains — a short group at a mesh boundary or pocket is expected, not an error.
 3. Each group emits **one** polyhedron cell: walk every member's faces. A face whose other side is also in the group is internal and dropped (this happens from both sides, so it is never emitted twice); every other face is the group's own external boundary and is kept, wound exactly as the member's own local orientation already records it — no new orientation logic is needed.

@@ -39,6 +39,8 @@ Everything here reads and writes through the existing format registry and runs o
 
 The mode is **inferred**. An explicit `Mode` (`"sequence"`, `"fan-in"`, `"fan-out"`) never *changes* the run: it **asserts** the inference and errors naming both on a mismatch. That is worth having because the inference depends on how many files a glob happened to match — a pattern matching exactly one file would otherwise quietly take the single-file path, and someone who wrote `"Mode": "fan-in"` wants that to fail.
 
+![Fan-in, fan-out and N-to-N sequences, and the multi-step-to-single-file case that is refused rather than truncated](/diagrams/sequences_shapes.svg)
+
 ## Ordering is natural-numeric
 
 A sequence has a defined order and it is **not lexicographic**: `out_10.vtu` must follow `out_9.vtu`, which a plain sort gets backwards. The rule is a documented contract, not an implementation detail:

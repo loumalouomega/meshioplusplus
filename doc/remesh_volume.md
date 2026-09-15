@@ -42,6 +42,8 @@ Implemented from the **published description only** of Labelle & Shewchuk, "Isos
 
 Determinism follows the repo's standard phase split: signed distances and warps are computed in parallel into disjoint per-vertex slots; cut points are deduplicated by a serial, ascending-edge-key pass (the `refine.cpp`/`surface.cpp` idiom), so two lattice tets sharing a face agree bit-for-bit on that face's cut points.
 
+![A body-centred cubic lattice cell with its tetrahedra, then the classify, warp and cut steps of isosurface stuffing on a 2-D cut](/diagrams/remesh_volume_bcc.svg)
+
 ## The warp/quality tradeoff, measured
 
 Every claim below is a measurement on this repo's own test fixtures (a 12×24 or 16×32 UV sphere), not an assertion carried over from the paper — the `RemeshOptions::max_anisotropy` precedent from the surface `remesh` operation, applied here.

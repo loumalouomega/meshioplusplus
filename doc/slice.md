@@ -27,6 +27,8 @@ meshioplusplus.write("section.vtu", section)
 
 The plane is `origin` (a point on it) plus `normal` (its normal — non-zero, need not be unit length; a zero normal raises). The result is a brand-new mesh whose points are all cut points, so `point_sets`/`cell_sets`, `mesh.info` and `gmsh_periodic` are **not** carried; each section cell inherits its parent cell's `cell_data`, and interpolated `point_data` is promoted to Float64.
 
+![crop keeps whole cells inside a box under the all-nodes or any-node rule, while slice returns the intersection itself one dimension lower](/diagrams/slice_vs_crop.svg)
+
 ## How it works — marching tetrahedra
 
 The input is first simplexified with [`convert_cells`](/convert_cells) (every 3D cell becomes a tetrahedron, every 2D cell a triangle), so each cell's cross-section is a well-defined convex primitive — no angular point-sorting and no non-convex-hex ambiguity. Per simplex the plane crosses 0, 3 or 4 edges of a tetra (a `triangle` or `quad`) or 0 or 2 edges of a triangle (a `line`), from a fixed case table keyed by the vertices' above/below-plane pattern.
@@ -34,6 +36,8 @@ The input is first simplexified with [`convert_cells`](/convert_cells) (every 3D
 The honest consequence: a hexahedron or wedge section is the **union of its simplices' sections** — correctly located and shaped, just triangulated rather than returned as a single polygon.
 
 The signed distance of node *i* to the plane is `d_i = dot(x_i − origin, normal)`. An edge `(i, j)` is crossed when `d_i` and `d_j` are on opposite sides; the crossing point is `x_i + t·(x_j − x_i)` with `t = d_i / (d_i − d_j)`, and every `point_data` array is interpolated at the same `t`.
+
+![The marching-tetrahedra cases: one positive node gives a triangle, two give a quad, a triangle gives a segment, and a uniform sign gives nothing](/diagrams/marching_cases.svg)
 
 ## Degeneracy rule
 

@@ -14,7 +14,9 @@ The C++ core has three interchangeable **in-memory mesh backends**, selected at 
 ./build/configure.sh --mesh-backend KRATOS --tests --build
 ```
 
-Every format reader/writer is written against a **uniform mesh API** (`src/cpp/include/meshioplusplus/mesh_api.hpp`), so all ~42 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
+Every format reader/writer is written against a **uniform mesh API** (`src/cpp/include/meshioplusplus/mesh_api.hpp`), so all 43 formats compile and round-trip identically under every backend — the full GoogleTest suite runs per backend in CI. Selecting `NATIVE`/`KRATOS` together with `MESHIOPLUSPLUS_BUILD_PYTHON=ON` is a CMake configure error: the zero-copy numpy boundary is written against MESHIO's exact struct layout.
+
+![Every reader, operation and binding calls the uniform mesh API, behind which exactly one of the MESHIO, NATIVE or KRATOS backends is compiled in](/diagrams/mesh_backends.svg)
 
 ## The uniform mesh API
 
