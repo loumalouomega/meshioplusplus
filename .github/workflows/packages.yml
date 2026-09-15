@@ -69,7 +69,23 @@ jobs:
           pip install "conan>=2.0,<3"
           conan profile detect --force
       - name: conan create (${{ matrix.name }})
-        run: conan create . --test-folder=packages/conan --build=missing ${{ matrix.opts }}
+        # A cold cache on this leg builds a chain of build-tool dependencies
+        # (cmake, ninja, meson, ...) from source via ConanCenter, each fetched
+        # straight from a GitHub release asset with no auth -- exactly the
+        # kind of request GitHub's anonymous rate limiting intermittently
+        # answers with a transient `403: Forbidden` on the arm64 runners.
+        # Retried 3x with backoff before failing the job for real; a build
+        # failure that is our own (a real recipe/source error) fails on every
+        # attempt identically and still turns the job red.
+        run: |
+          for attempt in 1 2 3; do
+            if conan create . --test-folder=packages/conan --build=missing ${{ matrix.opts }}; then
+              exit 0
+            fi
+            echo "conan create attempt ${attempt} failed" >&2
+            sleep $((attempt * 30))
+          done
+          exit 1
       - name: Save Conan package (release only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
