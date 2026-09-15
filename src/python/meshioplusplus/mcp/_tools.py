@@ -2450,20 +2450,47 @@ def _require_training_frameworks(op, model_name="meshgraphnet"):
     override's whole point).
 
     Only what the chosen family imports: a convolutional model never touches
-    PyTorch Geometric, so demanding it would refuse a runnable job.
+    PyTorch Geometric, so demanding it would refuse a runnable job. The
+    decision lives in the family table (`physicsnemo/_train.py`'s
+    `require_frameworks`), never in a second copy here.
     """
-    from .._gpu import _require_framework
+    from ..physicsnemo._train import require_frameworks
     from ._jobs import TRAIN_COMMAND_ENV
 
     if os.environ.get(TRAIN_COMMAND_ENV):
         return
-    if model_name != "srresnet":
-        _require_framework(
-            op, "torch_geometric", "pip install torch_geometric", doc=_PHYSICSNEMO_DOC
-        )
-    _require_framework(
-        op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_PHYSICSNEMO_DOC
-    )
+    require_frameworks(op, model_name, doc=_PHYSICSNEMO_DOC)
+
+
+#: Which `tool_train_start` keyword arguments each family's spec is built
+#: from. A keyed table rather than an `if srresnet ... else`: the else-branch
+#: used to build a meshgraphnet document for ANY other name and fail later,
+#: inside the spec parser, instead of naming the families up front.
+_TRAIN_START_KWARGS = {
+    "meshgraphnet": (
+        "processor_size",
+        "hidden_dim",
+        "aggregation",
+        "regions",
+        "kind",
+        "undirected",
+        "edge_features",
+        "target_offset",
+        "target_delta",
+    ),
+    "srresnet": (
+        "scaling_factor",
+        "conv_layer_size",
+        "resid_blocks",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+    ),
+}
 
 
 def tool_train_defaults(manifest_path, fields=None, target_fields=None):
@@ -2558,8 +2585,14 @@ def tool_train_start(
     extra, deliberately); a missing framework is a named error before anything
     is spawned.
     """
-    from ..physicsnemo._train import default_spec, spec_to_dict
+    from ..physicsnemo._train import _MODELS, default_spec, spec_to_dict
 
+    model_name = str(model_name).lower()
+    if model_name not in _TRAIN_START_KWARGS:
+        raise ValueError(
+            f"meshio++: mcp: unknown model_name {model_name!r} (known: "
+            f"{', '.join(_MODELS)})"
+        )
     manifest, resolved_manifest = _load_manifest(manifest_path)
     splits = {("" if k is None else str(k)): v for k, v in manifest.splits().items()}
     if train_split not in splits:
@@ -2569,7 +2602,6 @@ def tool_train_start(
         )
     for entry in manifest.entries(split=train_split):
         _sandbox_entry_paths(entry)
-    model_name = str(model_name).lower()
     _require_training_frameworks("train_start", model_name)
     common = dict(
         run_dir=get_runs_dir(),
@@ -2586,31 +2618,29 @@ def tool_train_start(
         notes=notes,
         tags=tuple(tags or ()),
     )
-    if model_name == "srresnet":
-        family = dict(
-            scaling_factor=int(scaling_factor),
-            conv_layer_size=int(conv_layer_size),
-            resid_blocks=int(resid_blocks),
-            resolution=tuple(resolution) if resolution else None,
-            cell_size=None if cell_size is None else float(cell_size),
-            bounds=tuple(bounds) if bounds else None,
-            padding=float(padding),
-            padding_relative=float(padding_relative),
-            extrapolate=bool(extrapolate),
-            fill_value=float(fill_value),
-        )
-    else:
-        family = dict(
-            processor_size=int(processor_size),
-            hidden_dim=int(hidden_dim),
-            aggregation=str(aggregation),
-            regions=bool(regions),
-            kind=str(kind),
-            undirected=bool(undirected),
-            edge_features=bool(edge_features),
-            target_offset=int(target_offset),
-            target_delta=bool(target_delta),
-        )
+    # Every family kwarg, coerced once; the table picks the chosen family's.
+    coerced = dict(
+        processor_size=int(processor_size),
+        hidden_dim=int(hidden_dim),
+        aggregation=str(aggregation),
+        regions=bool(regions),
+        kind=str(kind),
+        undirected=bool(undirected),
+        edge_features=bool(edge_features),
+        target_offset=int(target_offset),
+        target_delta=bool(target_delta),
+        scaling_factor=int(scaling_factor),
+        conv_layer_size=int(conv_layer_size),
+        resid_blocks=int(resid_blocks),
+        resolution=tuple(resolution) if resolution else None,
+        cell_size=None if cell_size is None else float(cell_size),
+        bounds=tuple(bounds) if bounds else None,
+        padding=float(padding),
+        padding_relative=float(padding_relative),
+        extrapolate=bool(extrapolate),
+        fill_value=float(fill_value),
+    )
+    family = {k: coerced[k] for k in _TRAIN_START_KWARGS[model_name]}
     spec = default_spec(resolved_manifest, fields, target_fields, **common, **family)
     return _json_safe(_jobs_manager().start(spec_to_dict(spec)))
 

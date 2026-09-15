@@ -19,9 +19,10 @@ tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 import json
 import os
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
 # --------------------------------------------------------------------------- #
@@ -1294,3 +1295,13 @@ def test_proximity_graph_tool_writes_the_graph_and_reports_degrees(tmp_path):
 
     bad = _tools.guard(_tools.tool_proximity_graph, input_path=src, output_path=out)
     assert bad["error_type"] == "ValueError" and "positive radius" in bad["error"]
+
+
+def test_train_start_refuses_an_unknown_family_before_building_a_spec(tmp_path):
+    from meshioplusplus.physicsnemo._train import _MODELS
+
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ValueError, match="unknown model_name 'gpt'") as excinfo:
+        _tools.tool_train_start(path, ["t"], ["t"], model_name="gpt")
+    for name in _MODELS:
+        assert name in str(excinfo.value)

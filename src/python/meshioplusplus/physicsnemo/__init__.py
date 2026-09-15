@@ -1178,9 +1178,14 @@ def run_training(spec, *, log=print):
     and ``nvidia-physicsnemo``; raises a named install error otherwise.
     Named ``run_training`` rather than ``train`` so importing the ``train``
     submodule can never shadow it. See ``doc/physicsnemo.md``."""
-    _require_framework(
-        "run_training", "torch_geometric", "pip install torch_geometric", doc=_DOC
-    )
+    # The spec is loaded FIRST so the gate can ask for only what its family
+    # imports: before this, torch_geometric was demanded unconditionally, so
+    # a grid run through the public API refused a runnable job over a
+    # dependency it never touches.
+    from ._train import require_frameworks
+
+    spec = load_spec(spec)
+    require_frameworks("run_training", spec.model_name, doc=_DOC)
     from .train import run
 
     return run(spec, log=log)

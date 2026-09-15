@@ -9,10 +9,11 @@ exercised on a real GPU machine, not by public CI.
 
 from __future__ import annotations
 
-import meshioplusplus
-import meshioplusplus.physicsnemo as mpn
 import numpy as np
 import pytest
+
+import meshioplusplus
+import meshioplusplus.physicsnemo as mpn
 from meshioplusplus import DatasetManifest, _gpu
 from meshioplusplus._mesh import Mesh
 from meshioplusplus._regions import Region
@@ -1176,3 +1177,37 @@ def test_read_sample_tessellates_and_scopes_to_node_kind_no_regions():
     # tessellate=None/False is untouched -- the mesh's own point count.
     time0, sample0 = _read_sample(series, 0, {**base, "tessellate": None})
     assert sample0.arrays["pos"].shape[0] == len(mesh.points)
+
+
+# --------------------------------------------------------------------------- #
+# the family table (v10.40.0)                                                 #
+# --------------------------------------------------------------------------- #
+def test_run_training_gates_on_the_family_not_unconditionally(monkeypatch, tmp_path):
+    """`run_training` used to demand torch_geometric before even loading the
+    spec, so a grid run through the public API was refused over a dependency
+    it never touches. Monkeypatched rather than skipped (the
+    `test_install_errors_name_the_command_and_no_extra` convention), so it
+    holds on a box that HAS the frameworks."""
+    monkeypatch.setattr(_gpu, "_importable", lambda module: False)
+    path = str(tmp_path / "m.json")
+    _manifest(tmp_path, n=1).save(path)
+    grid = mpn.default_spec(
+        path, ["T"], ["T"], model_name="srresnet", resolution=(4, 4, 4)
+    )
+    with pytest.raises(ImportError) as excinfo:
+        mpn.run_training(grid)
+    message = str(excinfo.value)
+    assert "pip install nvidia-physicsnemo" in message
+    assert "torch_geometric" not in message
+    with pytest.raises(ImportError, match="pip install torch_geometric"):
+        mpn.run_training(mpn.default_spec(path, ["T"], ["T"]))
+    # an unknown family is a spec error, before any framework is asked for
+    with pytest.raises(ValueError, match="Model.Name must be one of"):
+        mpn.run_training(
+            {
+                "Manifest": path,
+                "Fields": "T",
+                "TargetFields": "T",
+                "Model": {"Name": "gpt"},
+            }
+        )

@@ -36,7 +36,6 @@ import numpy as np
 
 from .. import DatasetManifest, write
 from ..__about__ import __version__
-from .._gpu import _require_framework
 from .._regions import block_bases
 from . import (
     _DOC,
@@ -47,6 +46,7 @@ from . import (
     make_dataset,
 )
 from ._train import (
+    _FAMILY,
     BEST_CHECKPOINT,
     CHECKPOINT_DIR,
     EDGE_STATS_FILE,
@@ -63,6 +63,7 @@ from ._train import (
     metrics_row,
     normalizers_from_card,
     read_json,
+    require_frameworks,
     save_spec,
     write_json_atomic,
 )
@@ -72,18 +73,21 @@ _STOP = {"requested": False}
 
 
 def _frameworks(op, model_name="meshgraphnet"):
-    """Require only what the chosen family actually imports.
+    """Require only what the chosen family actually imports -- the shared
+    :func:`~meshioplusplus.physicsnemo._train.require_frameworks`, which reads
+    the family table rather than a ``!= "srresnet"`` comparison."""
+    require_frameworks(op, model_name, doc=_DOC)
 
-    A convolutional model is torch plus physicsnemo; PyTorch Geometric exists to
-    batch ragged graphs and a grid is not one, so demanding it for an srresnet
-    run would refuse a perfectly runnable job over a dependency whose prebuilt
-    wheels routinely lag torch releases.
-    """
-    if model_name != "srresnet":
-        _require_framework(
-            op, "torch_geometric", "pip install torch_geometric", doc=_DOC
+
+def _family_block(model_name):
+    """The spec block a family reads (``Graph``/``Grid``), from the table."""
+    fam = _FAMILY.get(str(model_name).lower())
+    if fam is None:
+        raise ValueError(
+            f"{_ERR}the card names model family {model_name!r}, which this build "
+            f"does not know (known: {', '.join(_FAMILY)})"
         )
-    _require_framework(op, "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC)
+    return fam.block
 
 
 def _device(name):
@@ -186,9 +190,7 @@ def run(spec, *, log=print) -> dict:
     returns the final ``progress.json`` record."""
     spec = load_spec(spec)
     _frameworks("run_training", spec.model_name)
-    if spec.model_name == "srresnet":
-        return _run_grid(spec, log=log)
-    return _run_graph(spec, log=log)
+    return _RUNNERS[spec.model_name](spec, log=log)
 
 
 def _run_graph(spec, *, log=print) -> dict:
@@ -649,14 +651,18 @@ class _Loaded:
     ``predict`` it wants.
     """
 
-    __slots__ = ("model", "card", "norms", "device", "family")
+    __slots__ = ("model", "card", "norms", "device", "family", "block")
 
-    def __init__(self, model, card, norms, device, family):
+    def __init__(self, model, card, norms, device, family, block):
         self.model = model
         self.card = card
         self.norms = norms
         self.device = device
         self.family = family
+        #: the spec block the family reads -- what every per-mesh body and
+        #: normalizer loader is keyed on, so a new family in a known block
+        #: needs no new dispatch here
+        self.block = block
 
 
 def _load_checkpoint(checkpoint, device="auto") -> _Loaded:
@@ -669,10 +675,8 @@ def _load_checkpoint(checkpoint, device="auto") -> _Loaded:
             "only checkpoints written by this trainer carry one"
         )
     family = card.get("model", {}).get("name", "meshgraphnet")
-    if family == "srresnet" and card.get("layout") not in (
-        None,
-        "channels_first_zyx",
-    ):
+    block = _family_block(family)
+    if block == "Grid" and card.get("layout") not in (None, "channels_first_zyx"):
         raise ValueError(
             f"{_ERR}the card records layout {card['layout']!r}, which this build "
             "does not know how to read"
@@ -683,12 +687,8 @@ def _load_checkpoint(checkpoint, device="auto") -> _Loaded:
     device = _device(device)
     model = Module.from_checkpoint(checkpoint).to(device)
     model.eval()
-    norms = (
-        _grid_norm_tensors(card, device)
-        if family == "srresnet"
-        else _norm_tensors(card, device)
-    )
-    return _Loaded(model, card, norms, device, family)
+    norms = _NORM_LOADERS[block](card, device)
+    return _Loaded(model, card, norms, device, family, block)
 
 
 def _available_targets(mesh, card, location):
@@ -899,8 +899,7 @@ def predict_mesh(checkpoint, mesh, *, target_mesh=None, device="auto", label="me
     against itself.
     """
     loaded = _load_checkpoint(checkpoint, device)
-    body = _predict_grid_mesh if loaded.family == "srresnet" else _predict_graph_mesh
-    return body(loaded, mesh, target_mesh, label)
+    return _PREDICT_BODIES[loaded.block](loaded, mesh, target_mesh, label)
 
 
 def predict_file(
@@ -945,14 +944,13 @@ def predict_file(
     target_mesh = None
     if target_path is not None:
         target_mesh = TimeSeries(target_path, **read_kwargs)[step][1]
-    elif loaded.family != "srresnet":
+    elif loaded.block == "Graph":
         offset = int(dict(loaded.card["graph"]).get("target_offset", 0))
         if offset and step + offset < len(series):
             target_mesh = series[step + offset][1]
 
     label = f"'{input_path}'"
-    body = _predict_grid_mesh if loaded.family == "srresnet" else _predict_graph_mesh
-    out, row = body(loaded, mesh, target_mesh, label)
+    out, row = _PREDICT_BODIES[loaded.block](loaded, mesh, target_mesh, label)
     write(output_path, out, file_format=output_format)
     row["input_path"] = str(input_path)
     row["output_path"] = str(output_path)
@@ -1006,7 +1004,7 @@ def predict(
     :func:`predict_file` can do the same job for a file that was never
     catalogued."""
     loaded = _load_checkpoint(checkpoint, device)
-    if loaded.family == "srresnet":
+    if loaded.block == "Grid":
         return predict_grid(
             checkpoint,
             manifest,
@@ -1105,6 +1103,14 @@ def predict_grid(
         row["output_path"] = out_path
         rows.append(row)
     return rows
+
+
+#: The family -> trainer and block -> per-mesh body / normalizer tables.
+#: Keyed lookups, never an `else` branch: an unknown family fails by name
+#: instead of silently running some other family's code.
+_RUNNERS = {"meshgraphnet": _run_graph, "srresnet": _run_grid}
+_PREDICT_BODIES = {"Graph": _predict_graph_mesh, "Grid": _predict_grid_mesh}
+_NORM_LOADERS = {"Graph": _norm_tensors, "Grid": _grid_norm_tensors}
 
 
 def _spectrum_rel_l2(pred, truth, spec):

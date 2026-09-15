@@ -86,35 +86,113 @@ _TOP_KEYS = (
     "Augmentation",
     "Guard",
 )
-#: Every ``Model`` key, across families. Which of them are *legal* depends on
-#: ``Model.Name`` -- see ``_MODEL_FAMILY_KEYS`` -- so that a graph
-#: hyperparameter on a CNN is refused by name rather than silently ignored.
-_MODEL_KEYS = (
-    "Name",
-    # meshgraphnet
-    "ProcessorSize",
-    "HiddenDim",
-    "Aggregation",
-    # srresnet
-    "ScalingFactor",
-    "ConvLayerSize",
-    "ResidBlocks",
-    "LargeKernelSize",
-    "SmallKernelSize",
-    "ActivationFn",
-)
-_MODEL_FAMILY_KEYS = {
-    "meshgraphnet": ("Name", "ProcessorSize", "HiddenDim", "Aggregation"),
-    "srresnet": (
-        "Name",
-        "ScalingFactor",
-        "ConvLayerSize",
-        "ResidBlocks",
-        "LargeKernelSize",
-        "SmallKernelSize",
-        "ActivationFn",
+
+
+@dataclass(frozen=True)
+class _Family:
+    """One model family's contract with the spec: which ``Model`` keys it
+    reads, which block (``Graph``/``Grid``) it consumes, which frameworks it
+    imports, and the two things a grid family can disagree about (the thin-axis
+    squeeze). **The single table every family-dependent branch reads.** Before
+    it existed the branches were ``if name == "srresnet" ... else <graph>``,
+    which silently ran the graph branch for any third family -- the same
+    hazard the C++ core's ``RemeshMetric``/``SmoothMethod`` switch-safety
+    refactors fixed, and the reason a family is a row here rather than a
+    scattered set of string comparisons.
+    """
+
+    name: str
+    #: the spec block this family reads; the others are refused by name
+    block: str
+    #: the legal ``Model`` keys, ``Name`` included
+    model_keys: Tuple[str, ...]
+    #: the spatial dimensionality a grid family accepts: ``"3"``, ``"2"``,
+    #: ``"2|3"`` or ``None`` (not a grid family) -- informational
+    spatial: Optional[str]
+    #: the modules the trainer imports for it, in the order they are demanded
+    frameworks: Tuple[str, ...]
+    accepts_augmentation: bool
+    allows_squeeze: bool
+    requires_squeeze: bool
+    #: the reason clause of the by-name ``Augmentation`` refusal
+    augmentation_note: str = ""
+    #: the reason clause of the by-name "needs ``Grid.Squeeze``" refusal
+    squeeze_note: str = ""
+
+
+_FAMILIES: Tuple[_Family, ...] = (
+    _Family(
+        name="meshgraphnet",
+        block="Graph",
+        model_keys=("Name", "ProcessorSize", "HiddenDim", "Aggregation"),
+        spatial=None,
+        frameworks=("torch_geometric", "physicsnemo"),
+        accepts_augmentation=True,
+        allows_squeeze=False,
+        requires_squeeze=False,
     ),
+    _Family(
+        name="srresnet",
+        block="Grid",
+        model_keys=(
+            "Name",
+            "ScalingFactor",
+            "ConvLayerSize",
+            "ResidBlocks",
+            "LargeKernelSize",
+            "SmallKernelSize",
+            "ActivationFn",
+        ),
+        spatial="3",
+        frameworks=("physicsnemo",),
+        accepts_augmentation=False,
+        allows_squeeze=False,
+        requires_squeeze=False,
+        augmentation_note=(
+            "samples a fixed lattice, so rotating the mesh under it would "
+            "change the pair's own coverage"
+        ),
+    ),
+)
+_FAMILY = {f.name: f for f in _FAMILIES}
+_MODELS = tuple(f.name for f in _FAMILIES)
+#: Which ``Model`` keys are *legal* per ``Model.Name``, so that a graph
+#: hyperparameter on a CNN is refused by name rather than silently ignored.
+_MODEL_FAMILY_KEYS = {f.name: f.model_keys for f in _FAMILIES}
+#: Which spec block each family reads. The others are refused rather than
+#: ignored: a Grid block on a graph model means the author expected something
+#: that will not happen.
+_FAMILY_BLOCK = {f.name: f.block for f in _FAMILIES}
+#: Every block a family can read, so the refusal loop is over a list rather
+#: than a binary "the other one".
+_BLOCKS = ("Graph", "Grid")
+_FRAMEWORK_HINTS = {
+    "torch_geometric": "pip install torch_geometric",
+    "physicsnemo": "pip install nvidia-physicsnemo",
 }
+
+
+def require_frameworks(op, model_name="meshgraphnet", *, doc="doc/physicsnemo.md"):
+    """Require only what ``model_name``'s family actually imports, in order.
+
+    The ONE owner of the framework gate: ``train.py``, the public
+    ``run_training`` and the MCP ``train_start`` all delegate here. A
+    convolutional model is torch plus physicsnemo; PyTorch Geometric exists to
+    batch ragged graphs and a grid is not one, so demanding it for a grid run
+    would refuse a perfectly runnable job over a dependency whose prebuilt
+    wheels routinely lag torch releases. Imports ``_gpu`` lazily so this
+    module stays pure at import time.
+    """
+    from .._gpu import _require_framework
+
+    name = str(model_name).lower()
+    fam = _FAMILY.get(name)
+    if fam is None:
+        raise ValueError(f"{_ERR}Model.Name must be one of {', '.join(_MODELS)}")
+    for module in fam.frameworks:
+        _require_framework(op, module, _FRAMEWORK_HINTS[module], doc=doc)
+
+
 _GRAPH_KEYS = (
     "Regions",
     "Kind",
@@ -139,11 +217,6 @@ _GRID_KEYS = (
     "MaxCells",
     "Float32",
 )
-_MODELS = ("meshgraphnet", "srresnet")
-#: Which spec block each family reads. The other one is refused rather than
-#: ignored: a Grid block on a graph model means the author expected something
-#: that will not happen.
-_FAMILY_BLOCK = {"meshgraphnet": "Graph", "srresnet": "Grid"}
 #: `SRResNet` accepts only these, and says so itself -- but failing here names
 #: the spec key instead of surfacing from inside torch.
 _SCALING_FACTORS = (2, 4, 8)
@@ -451,32 +524,34 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
     if not isinstance(read, dict):
         raise ValueError(f"{_ERR}Read must be an object of read() keyword arguments")
     name = str(model.get("Name", "meshgraphnet")).lower()
-    if name not in _MODELS:
+    fam = _FAMILY.get(name)
+    if fam is None:
         raise ValueError(f"{_ERR}Model.Name must be one of {', '.join(_MODELS)}")
+    blocks = {"Graph": graph, "Grid": grid}
 
-    # Cross-family strictness. A hyperparameter meant for the other family is
+    # Cross-family strictness. A hyperparameter meant for another family is
     # refused by name rather than ignored: the author expected something that
     # is not going to happen, and a silently dropped key is how a run ends up
-    # training a model nobody asked for.
-    _check_keys(model, f"Model (with Name '{name}')", _MODEL_FAMILY_KEYS[name])
-    wanted = _FAMILY_BLOCK[name]
-    unwanted = "Grid" if wanted == "Graph" else "Graph"
-    if doc.get(unwanted):
-        raise ValueError(
-            f"{_ERR}a '{name}' model reads the {wanted} block, not {unwanted}; "
-            f"remove {unwanted} or change Model.Name"
-        )
+    # training a model nobody asked for. The loop is over EVERY block rather
+    # than "the other one", so a third family cannot slip a block past it.
+    _check_keys(model, f"Model (with Name '{name}')", fam.model_keys)
+    for block in _BLOCKS:
+        if block != fam.block and doc.get(block):
+            raise ValueError(
+                f"{_ERR}a '{name}' model reads the {fam.block} block, not {block}; "
+                f"remove {block} or change Model.Name"
+            )
 
     # Augmentation rotates and rescales the geometry, which moves a grid
     # sample's own lattice relative to the mesh and so changes its coverage.
-    # Refused by name for the grid family rather than silently applied.
+    # Refused by name for the families that cannot take it rather than
+    # silently applied.
     augmentation = doc.get("Augmentation")
     if augmentation is not None and augmentation is not False:
-        if name == "srresnet":
+        if not fam.accepts_augmentation:
             raise ValueError(
                 f"{_ERR}Augmentation applies to the graph families; a "
-                "'srresnet' samples a fixed lattice, so rotating the mesh "
-                "under it would change the pair's own coverage"
+                f"'{name}' {fam.augmentation_note}"
             )
         from ._augment import Augmentation
 
@@ -522,7 +597,7 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         raise ValueError(f"{_ERR}Graph.Kind must be one of {', '.join(_KINDS)}")
 
     scaling_factor = _int(model.get("ScalingFactor", 2), "Model.ScalingFactor", 1)
-    if name == "srresnet" and scaling_factor not in _SCALING_FACTORS:
+    if "ScalingFactor" in fam.model_keys and scaling_factor not in _SCALING_FACTORS:
         raise ValueError(
             f"{_ERR}Model.ScalingFactor must be one of "
             f"{', '.join(str(s) for s in _SCALING_FACTORS)} (SRResNet accepts no "
@@ -534,7 +609,7 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         if isinstance(cell_size, bool) or not isinstance(cell_size, (int, float)):
             raise ValueError(f"{_ERR}Grid.CellSize must be a number")
         cell_size = float(cell_size)
-    if name == "srresnet" and (resolution is None) == (cell_size is None):
+    if fam.block == "Grid" and (resolution is None) == (cell_size is None):
         raise ValueError(f"{_ERR}give exactly one of Grid.Resolution and Grid.CellSize")
     bounds = grid.get("Bounds")
     if bounds is not None:
@@ -548,11 +623,13 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         squeeze = _int(squeeze, "Grid.Squeeze")
         if squeeze not in (0, 1, 2):
             raise ValueError(f"{_ERR}Grid.Squeeze must be a world axis 0, 1 or 2")
-        if name == "srresnet":
+        if not fam.allows_squeeze:
             raise ValueError(
-                f"{_ERR}Grid.Squeeze does not apply to 'srresnet', which is 3-D "
+                f"{_ERR}Grid.Squeeze does not apply to '{name}', which is 3-D "
                 "throughout (Conv3d); it is for a 2-D operator"
             )
+    if fam.requires_squeeze and squeeze is None:
+        raise ValueError(f"{_ERR}a '{name}' {fam.squeeze_note}")
     squeeze_index = grid.get("SqueezeIndex")
     if squeeze_index is not None:
         squeeze_index = _int(squeeze_index, "Grid.SqueezeIndex")
@@ -596,7 +673,10 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         kind=kind,
         undirected=_bool(graph.get("Undirected", True), "Graph.Undirected"),
         edge_features=_bool(graph.get("EdgeFeatures", True), "Graph.EdgeFeatures"),
-        float32=_bool(graph.get("Float32", True), "Graph.Float32"),
+        # Read from the family's OWN block: `Grid.Float32` used to be accepted
+        # by the key check and emitted by spec_to_dict, yet read from Graph --
+        # so `Grid.Float32: false` on an srresnet was silently ignored.
+        float32=_bool(blocks[fam.block].get("Float32", True), f"{fam.block}.Float32"),
         target_offset=_int(graph.get("TargetOffset", 0), "Graph.TargetOffset"),
         target_delta=_bool(graph.get("TargetDelta", False), "Graph.TargetDelta"),
         proximity=_proximity(graph.get("Proximity"), "Graph.Proximity"),
@@ -620,6 +700,68 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
     )
 
 
+def _emit_grid_block(spec: TrainSpec) -> dict:
+    """The ``Grid`` block every grid family emits (the lattice vocabulary)."""
+    grid = {
+        "Padding": spec.padding,
+        "PaddingRelative": spec.padding_relative,
+        "Extrapolate": spec.extrapolate,
+        "FillValue": spec.fill_value,
+        "MaxCells": spec.max_cells,
+        "Float32": spec.float32,
+    }
+    if spec.resolution is not None:
+        grid["Resolution"] = list(spec.resolution)
+    if spec.cell_size is not None:
+        grid["CellSize"] = spec.cell_size
+    if spec.bounds is not None:
+        grid["Bounds"] = list(spec.bounds)
+    if spec.squeeze is not None:
+        grid["Squeeze"] = spec.squeeze
+    if spec.squeeze_index is not None:
+        grid["SqueezeIndex"] = spec.squeeze_index
+    return grid
+
+
+def _emit_meshgraphnet(spec: TrainSpec, doc: dict) -> None:
+    doc["Model"] = {
+        "Name": spec.model_name,
+        "ProcessorSize": spec.processor_size,
+        "HiddenDim": spec.hidden_dim,
+        "Aggregation": spec.aggregation,
+    }
+    doc["Graph"] = {
+        "Regions": spec.regions,
+        "Kind": spec.kind,
+        "Undirected": spec.undirected,
+        "EdgeFeatures": spec.edge_features,
+        "Float32": spec.float32,
+        "TargetOffset": spec.target_offset,
+        "TargetDelta": spec.target_delta,
+    }
+    if spec.proximity is not None:
+        doc["Graph"]["Proximity"] = _proximity_to_document(spec.proximity)
+    if spec.tessellate is not None:
+        doc["Graph"]["Tessellate"] = _tessellate_to_document(spec.tessellate)
+
+
+def _emit_srresnet(spec: TrainSpec, doc: dict) -> None:
+    doc["Model"] = {
+        "Name": spec.model_name,
+        "ScalingFactor": spec.scaling_factor,
+        "ConvLayerSize": spec.conv_layer_size,
+        "ResidBlocks": spec.resid_blocks,
+        "LargeKernelSize": spec.large_kernel_size,
+        "SmallKernelSize": spec.small_kernel_size,
+        "ActivationFn": spec.activation_fn,
+    }
+    doc["Grid"] = _emit_grid_block(spec)
+
+
+#: One document emitter per family (see :func:`spec_to_dict`).
+_EMITTERS = {"meshgraphnet": _emit_meshgraphnet, "srresnet": _emit_srresnet}
+
+
 def spec_to_dict(spec: TrainSpec) -> dict:
     """The PascalCase document (round-trip exact through :func:`spec_from_dict`)."""
     doc = {
@@ -638,58 +780,12 @@ def spec_to_dict(spec: TrainSpec) -> dict:
         "Device": spec.device,
     }
     # Only the family's own blocks are emitted. Round-tripping is still exact
-    # (the other family's fields keep their dataclass defaults), and it keeps a
-    # spec readable: a superresolution document that listed graph aggregation
-    # would invite someone to change it and wonder why nothing happened.
-    if spec.model_name == "srresnet":
-        doc["Model"] = {
-            "Name": spec.model_name,
-            "ScalingFactor": spec.scaling_factor,
-            "ConvLayerSize": spec.conv_layer_size,
-            "ResidBlocks": spec.resid_blocks,
-            "LargeKernelSize": spec.large_kernel_size,
-            "SmallKernelSize": spec.small_kernel_size,
-            "ActivationFn": spec.activation_fn,
-        }
-        grid = {
-            "Padding": spec.padding,
-            "PaddingRelative": spec.padding_relative,
-            "Extrapolate": spec.extrapolate,
-            "FillValue": spec.fill_value,
-            "MaxCells": spec.max_cells,
-            "Float32": spec.float32,
-        }
-        if spec.resolution is not None:
-            grid["Resolution"] = list(spec.resolution)
-        if spec.cell_size is not None:
-            grid["CellSize"] = spec.cell_size
-        if spec.bounds is not None:
-            grid["Bounds"] = list(spec.bounds)
-        if spec.squeeze is not None:
-            grid["Squeeze"] = spec.squeeze
-        if spec.squeeze_index is not None:
-            grid["SqueezeIndex"] = spec.squeeze_index
-        doc["Grid"] = grid
-    else:
-        doc["Model"] = {
-            "Name": spec.model_name,
-            "ProcessorSize": spec.processor_size,
-            "HiddenDim": spec.hidden_dim,
-            "Aggregation": spec.aggregation,
-        }
-        doc["Graph"] = {
-            "Regions": spec.regions,
-            "Kind": spec.kind,
-            "Undirected": spec.undirected,
-            "EdgeFeatures": spec.edge_features,
-            "Float32": spec.float32,
-            "TargetOffset": spec.target_offset,
-            "TargetDelta": spec.target_delta,
-        }
-        if spec.proximity is not None:
-            doc["Graph"]["Proximity"] = _proximity_to_document(spec.proximity)
-        if spec.tessellate is not None:
-            doc["Graph"]["Tessellate"] = _tessellate_to_document(spec.tessellate)
+    # (the other families' fields keep their dataclass defaults), and it keeps
+    # a spec readable: a superresolution document that listed graph aggregation
+    # would invite someone to change it and wonder why nothing happened. One
+    # emitter per family, keyed by name -- never an `else` branch, which would
+    # silently emit some other family's document for a new one.
+    _EMITTERS[spec.model_name](spec, doc)
     if spec.read:
         doc["Read"] = dict(spec.read)
     if spec.augmentation is not None:

@@ -471,3 +471,84 @@ def test_proximity_is_a_graph_key_and_not_a_grid_one():
     doc["Grid"] = {"Resolution": [4, 4, 4], "Proximity": {"Method": "radius"}}
     with pytest.raises(ValueError, match="unknown key 'Proximity' in Grid"):
         t.spec_from_dict(doc)
+
+
+# --------------------------------------------------------------------------- #
+# the family table (v10.40.0): every family x every block                     #
+# --------------------------------------------------------------------------- #
+#: A block-legal probe per block. The per-block `_check_keys` runs BEFORE the
+#: family's own refusal, so a probe must pass it -- an unknown key would be
+#: refused for the wrong reason and the test would prove nothing.
+_BLOCK_PROBES = {"Graph": {"Regions": True}, "Grid": {"Resolution": [8, 8, 8]}}
+#: Families whose own block needs more than the probe to be valid at all.
+_OWN_BLOCKS = {}
+
+
+def _minimal_doc(fam):
+    doc = {
+        "Manifest": "m.json",
+        "Fields": ["T"],
+        "TargetFields": ["T"],
+        "Model": {"Name": fam.name},
+    }
+    doc[fam.block] = _OWN_BLOCKS.get(fam.name, _BLOCK_PROBES[fam.block])
+    return doc
+
+
+def test_the_block_table_covers_every_family():
+    assert {f.block for f in t._FAMILIES} <= set(t._BLOCKS)
+    assert set(_BLOCK_PROBES) == set(t._BLOCKS)
+    assert t._MODELS == tuple(f.name for f in t._FAMILIES)
+
+
+@pytest.mark.parametrize("fam", t._FAMILIES, ids=lambda f: f.name)
+def test_every_family_parses_with_its_own_block(fam):
+    spec = t.spec_from_dict(_minimal_doc(fam))
+    assert spec.model_name == fam.name
+    assert t.spec_from_dict(t.spec_to_dict(spec)) == spec
+
+
+@pytest.mark.parametrize(
+    "fam, block",
+    [(f, b) for f in t._FAMILIES for b in t._BLOCKS if b != f.block],
+    ids=lambda v: v if isinstance(v, str) else v.name,
+)
+def test_every_foreign_block_is_refused_by_name(fam, block):
+    """The refusal loops over EVERY block, not "the other one": with a
+    third block a binary `unwanted = ...` lets a foreign block pass silently."""
+    doc = _minimal_doc(fam)
+    doc[block] = _BLOCK_PROBES[block]
+    needle = f"a '{fam.name}' model reads the {fam.block} block, not {block}"
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        t.spec_from_dict(doc)
+
+
+def test_grid_float32_is_read_from_the_grid_block():
+    """`Grid.Float32` was accepted by the key check and emitted by
+    `spec_to_dict`, but READ from the Graph block -- so `false` on an srresnet
+    was silently ignored and did not round-trip."""
+    doc = {**SR_DOC, "Grid": {"Resolution": [8, 8, 8], "Float32": False}}
+    spec = t.spec_from_dict(doc)
+    assert spec.float32 is False
+    assert spec.grid_kwargs()["float32"] is False
+    emitted = t.spec_to_dict(spec)
+    assert emitted["Grid"]["Float32"] is False
+    assert t.spec_from_dict(emitted) == spec
+    with pytest.raises(ValueError, match="Grid.Float32 must be"):
+        t.spec_from_dict({**SR_DOC, "Grid": {"Resolution": [8, 8, 8], "Float32": 1}})
+
+
+def test_require_frameworks_asks_only_for_the_family_s_own(monkeypatch):
+    from meshioplusplus import _gpu
+
+    asked = []
+    monkeypatch.setattr(_gpu, "_importable", lambda module: asked.append(module))
+    for fam in t._FAMILIES:
+        asked.clear()
+        with pytest.raises(ImportError) as excinfo:
+            t.require_frameworks("op", fam.name)
+        assert asked[0] == fam.frameworks[0]
+        assert t._FRAMEWORK_HINTS[fam.frameworks[0]] in str(excinfo.value)
+        assert "meshioplusplus[" not in str(excinfo.value)
+    with pytest.raises(ValueError, match="Model.Name must be one of"):
+        t.require_frameworks("op", "gpt")
