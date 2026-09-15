@@ -200,6 +200,9 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
+<details>
+<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
+
 #### Skin extraction
 
 `meshioplusplus.extract_skin` derives the boundary surface of a 3D volume mesh (the [Kratos `SkinDetectionProcess`](https://github.com/KratosMultiphysics/Kratos) face-hashing algorithm — faces occurring exactly once are boundary; points are compacted, `point_data` follows):
@@ -637,6 +640,11 @@ arrays = meshioplusplus.data_info(out)                     # list of per-array d
 
 These are likewise exposed across every binding surface, and as the nine CLI verbs under the `meshioplusplus data` group (`info`, `rename`, `drop`, `keep`, `to-cell`, `to-point`, `calc`, `clamp`, `normalize`). See `doc/data_operations.md`. A second nested group, `meshioplusplus dataset` (`add`, `list`, `split`, `tag`, `annotate`), curates the hand-editable [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections (Python CLI only, like `data export`).
 
+</details>
+
+<details>
+<summary><b>Time series and transient / multi-file datasets</b> (click to expand)</summary>
+
 #### Time series
 
 The [XDMF format](https://xdmf.org/index.php/XDMF_Model_and_Format) supports time series with a shared mesh. You can write times series data using meshio++ with
@@ -690,6 +698,11 @@ output is an error naming `{step}`, never a silent write of step 0. Available
 from Python, both CLIs, C, Fortran, Julia and R. See
 [`doc/sequences.md`](doc/sequences.md).
 
+</details>
+
+<details>
+<summary><b>Interactive viewer</b> — desktop (Polyscope) and browser (vtk.js) backends, screenshots, dataset manager (click to expand)</summary>
+
 ### Interactive viewer
 
 [![Try it in your browser](https://img.shields.io/badge/try%20it-in%20your%20browser-4c9ffe?logo=webassembly&logoColor=white)](https://loumalouomega.github.io/meshioplusplus/viewer/)
@@ -735,6 +748,11 @@ meshioplusplus screenshot part.msh part.png --size 1600 1200
 ```
 
 See [the viewer docs](https://loumalouomega.github.io/meshioplusplus/viewer.html) for how volume meshes are handled and what each backend can and cannot do.
+
+</details>
+
+<details>
+<summary><b>Interoperability</b> — PyVista/trimesh, Arrow/Parquet/pandas/polars, GPU handoff, ML graphs/features/datasets, PhysicsNeMo, grids, point clouds, proximity graphs (click to expand)</summary>
 
 ### Interoperability
 
@@ -845,6 +863,11 @@ The same call adds *world* edges beside a mesh's own — contact between surface
 
 If PhysicsNeMo itself is unfamiliar, [**PhysicsNeMo basics**](https://loumalouomega.github.io/meshioplusplus/physicsnemo/overview.html) is a fourteen-page map of the framework — what a `Module` and a `.mdlus` checkpoint are, which of the 25 architecture families fits the shape of your data, how simulation output becomes batched tensors, and where meshio++ ends and the framework begins. Each page closes by naming what meshio++ supplies, or by saying plainly that nothing does.
 
+</details>
+
+<details>
+<summary><b>MCP server</b> — expose every operation to AI agents over the Model Context Protocol (click to expand)</summary>
+
 ### MCP server
 
 Every operation in this README is also exposed to AI agents as a tool over the [Model Context Protocol](https://modelcontextprotocol.io/) — reading/writing all the formats, conversion, and the full mesh- and data-operation suite:
@@ -856,6 +879,11 @@ claude mcp add meshioplusplus -- meshioplusplus-mcp
 
 Then ask the agent to convert, inspect, slice, partition, … and it drives the 84 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
+</details>
+
+<details>
+<summary><b>Blender add-on</b> (click to expand)</summary>
+
 ### Blender add-on
 
 Blender ships Python and reads almost no FEA formats. The add-on puts all 43 of meshio++'s behind `File > Import`.
@@ -865,6 +893,11 @@ It is a Blender 4.2+ **extension**, so the meshio++ wheel travels inside the zip
 Volume meshes arrive as their boundary surface — Blender has no tetrahedron — with each `cell_data` array carried through to the faces of the cell that owned it, so a solid can still be coloured by its material. **Quads and n-gons are kept, not triangulated.** `point_data`, `cell_data` and named regions land as Blender attributes on the right domain.
 
 The same bridge is two public functions, usable from Blender's scripting console: `to_blender(mesh)` and `from_blender(obj)`. See [the Blender docs](https://loumalouomega.github.io/meshioplusplus/blender.html).
+
+</details>
+
+<details>
+<summary><b>ParaView plugin</b> (click to expand)</summary>
 
 ### ParaView plugin
 
@@ -880,6 +913,11 @@ If you have downloaded a binary version of ParaView, you may proceed as follows.
 
 You can now open all meshio++-supported files in ParaView.
 
+</details>
+
+<details>
+<summary><b>Benchmarks</b> — C++ core vs pure-Python meshio (click to expand)</summary>
+
 ### Benchmarks
 
 How much does the C++ core help? The [`benchmark/`](https://github.com/loumalouomega/meshioplusplus/tree/master/benchmark) folder times read/write conversions against the original pure-Python [meshio](https://github.com/nschloe/meshio) on the formats both support (same in-memory mesh, same machine). The headline input is the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/master/example/example.msh) — a real Gmsh bracket (~52k nodes, ~293k cells).
@@ -893,6 +931,11 @@ The speedup is per-element: text/parallel formats climb out of the small-mesh re
 <img alt="speedup vs mesh size" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/benchmark/plots/benchmark_scaling.svg" width="85%">
 
 Full methodology and a reproducible notebook are on the [Benchmarks](https://loumalouomega.github.io/meshioplusplus/benchmarks) doc page (source: [`benchmark/01_benchmark.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/master/benchmark/01_benchmark.ipynb)).
+
+</details>
+
+<details>
+<summary><b>Reading only what you need</b> — selective reads, time steps, memory mapping, codecs (click to expand)</summary>
 
 ### Reading only what you need
 
@@ -910,6 +953,11 @@ meta["time_values"]                                       # how many steps there
 VTU, VTP, XDMF and Gmsh skip the unwanted array bodies outright; other formats are read in full and filtered, and `meta["fell_back_to_full_read"]` says which happened. `time_step` picks one step of a multi-step file (`0` = the first, negative counts from the end); out of range is an error naming the available count rather than a silent fallback to step 0. Currently honoured by Exodus. A `lenient` option downgrades "this reader cannot represent construct X" errors to a warning plus a skip (currently MDPA's `Table`/`Geometries`/`Mesh`/`Constraints` blocks) — not "ignore all errors": a malformed file still fails. Large files can also be memory-mapped (automatic above 16 MiB), which roughly halves peak memory during a read. See [selective reads](doc/selective_read.md) and [memory-mapped reading](doc/mmap.md).
 
 VTK XML output can additionally use **lz4** (ParaView-readable) or **zstd** (a meshio++ extension) instead of zlib, when built with `-DMESHIOPLUSPLUS_WITH_LZ4=ON` / `-DMESHIOPLUSPLUS_WITH_ZSTD=ON`. zlib remains the default. See [compression codecs](doc/codecs.md).
+
+</details>
+
+<details>
+<summary><b>Installation</b> — PyPI, WebAssembly, Spack (click to expand)</summary>
 
 ### Installation
 
@@ -942,6 +990,11 @@ spack install py-meshioplusplus +hdf5 +netcdf +zlib
 ```
 
 See [Installation → Spack](https://loumalouomega.github.io/meshioplusplus/installation#spack) for the standalone C API package and the full variant list.
+
+</details>
+
+<details>
+<summary><b>C++ API</b> — installable CMake package, mesh backends, ABI pinning (click to expand)</summary>
 
 ### C++ API
 
@@ -977,6 +1030,11 @@ auto parts = meshioplusplus::partition(mesh, {.mNParts = 8});
 
 All three [mesh backends](#c-mesh-backends) install side by side (`meshioplusplus::core_meshio`, `::core_native`, `::core_kratos`), so one prefix serves consumers that disagree about the backend; each carries its own backend macro, making a mismatch a compile or link error rather than silent UB. Kratos consumers get the whole `ModelPart` surface: application entity names such as `SmallDisplacementElement3D4N` are preserved end to end (file → `Mesh` → `ModelPart` → file), material data crosses as `Properties` key/value pairs, and nested SubModelParts round-trip as `parent/child` region names. meshio++ itself is **serial** — there is no MPI anywhere in the API; `partition(mesh, {nparts, ghost_layers})` produces the shared-node halo an MPI assembly needs and each rank takes its own piece. See the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) doc page.
 
+</details>
+
+<details>
+<summary><b>C / Fortran API</b> — shared library, OO module, Conan/vcpkg/Spack (click to expand)</summary>
+
 ### C / Fortran API
 
 For HPC codes written in C or Fortran, the C++ core also builds as an installable shared library (`libmeshioplusplus`, pure-C99 header, pkg-config + `find_package` support) with a modern OO Fortran 2008 module on top:
@@ -1011,6 +1069,11 @@ spack install meshioplusplus +fortran +hdf5
 
 Full mesh access (build meshes from raw arrays, zero-copy readback) is covered on the [C API](https://loumalouomega.github.io/meshioplusplus/c_api) and [Fortran](https://loumalouomega.github.io/meshioplusplus/fortran) doc pages.
 
+</details>
+
+<details>
+<summary><b>Julia / R bindings</b> (click to expand)</summary>
+
 ### Julia / R bindings
 
 The same installed C library also carries bindings for **Julia** and **R**, the two remaining languages of the scientific-computing audience. Both are layered on `libmeshioplusplus` exactly as the Fortran module is — no new C++, and the core stays untouched:
@@ -1034,6 +1097,11 @@ Julia and R are both **column-major**, so — as in Fortran — points shaped `(
 
 See the [Julia](https://loumalouomega.github.io/meshioplusplus/julia) and [R](https://loumalouomega.github.io/meshioplusplus/r) doc pages.
 
+</details>
+
+<details>
+<summary><b>Single-header C++</b> — STB-style amalgamation, examples (click to expand)</summary>
+
 ### Single-header C++
 
 The whole C++ core is also amalgamated into one self-contained, [STB](https://github.com/nothings/stb)-style header — [`src/single_include/meshioplusplus/meshioplusplus.hpp`](src/single_include/meshioplusplus/meshioplusplus.hpp) — with pugixml bundled and no external dependencies by default. Drop it in, no CMake or linking required:
@@ -1053,6 +1121,11 @@ It is generated by `./tools/amalgamate.sh` and kept in sync by CI. See the [sing
 
 [`example/cpp/`](example/cpp/) is the C++ counterpart of [`example/python/`](example/python/): the same tour of meshio++, called directly against this single header instead of the Python bindings, on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel — no PyVista either, renders go through meshio++'s own SVG writer. [`example/julia/`](example/julia/) and [`example/r/`](example/r/) are the same tour again, called through the Julia and R bindings on their own Jupyter kernels ([IJulia](https://github.com/JuliaLang/IJulia.jl) / [IRkernel](https://irkernel.github.io/)) — since those flat-ABI bindings can't drive the SVG writer's data-driven colouring either, quality/field renders are small charts instead of colour.
 
+</details>
+
+<details>
+<summary><b>C++ mesh backends</b> — MESHIO / NATIVE / KRATOS (click to expand)</summary>
+
 ### C++ mesh backends
 
 Standalone C++ builds (no Python) can swap the in-memory mesh structure at compile time via `MESHIOPLUSPLUS_MESH_BACKEND` — every format works identically under each backend:
@@ -1066,6 +1139,8 @@ Standalone C++ builds (no Python) can swap the in-memory mesh structure at compi
 ```
 
 All three also install side by side from a single prefix (`MESHIOPLUSPLUS_INSTALL_CPP=ON`), as `meshioplusplus::core_meshio` / `::core_native` / `::core_kratos` — see the [C++ API](https://loumalouomega.github.io/meshioplusplus/cpp_api) page. See the [C++ mesh backends](https://loumalouomega.github.io/meshioplusplus/cpp_backends) doc page.
+
+</details>
 
 ### Testing
 
@@ -1086,6 +1161,9 @@ meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_
 Some code and test fixtures also come from [Simvia's `meshlane` fork](https://github.com/simvia-tech/meshlane) of meshio (MIT), credited per-change in [`CITATION.cff`](CITATION.cff) and [`CHANGELOG.md`](CHANGELOG.md).
 
 The C++ core is dependency-free by design. Everything below is either optional, bundled, or confined to one binding or tool.
+
+<details>
+<summary><b>Dependency and credit tables</b> (click to expand)</summary>
 
 #### Runtime dependencies (Python)
 
@@ -1139,3 +1217,5 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos) (BSD-3-Clause) is the source of the skin-detection algorithm, the EnSight writer logic, the KaHIP partitioning approach and the `FindKaHIP.cmake` module, all these 3 implementation are from the original author of this project as well. Also thanks to its `ModelPart` design informs the KRATOS mesh backend. [VTK](https://vtk.org/) and [Verdict](https://github.com/sandialabs/verdict) (both BSD-3-Clause) define the mesh-quality formulas. The documentation is built with [VitePress](https://vitepress.dev/) (MIT) and [Doxygen](https://www.doxygen.nl/) (GPL-2.0, used as a tool only). The logo renders the [Stanford Bunny](https://www.thingiverse.com/thing:88208) ("Stanford Bunny — Digitized!" by MakerBot, CC-BY).
 
 Thank you to all of them.
+
+</details>
