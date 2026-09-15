@@ -64,7 +64,23 @@ A region whose name is in any other shape — `solid`, say, carried in from Abaq
 
 - **Read/write section-order asymmetry**: the writer emits `* ZONES` before `* FACES` in the ascii file, but the reader concatenates faces-then-zones internally when building `Mesh.cells` — so the returned cell-block order after a read does not match the on-disk section order. This is harmless (the reader doesn't depend on write order) but a genuine structural asymmetry worth knowing about when comparing a file's raw section layout to `mesh.cells`.
 - **A group name is rewritten into the format's own vocabulary.** A region called `solid` comes back as `zone:solid:Default`; only a name already in `<zone|face>:<name>:<slot>` form survives verbatim. This is why FLAC3D is recorded in `tests/python/test_region_roundtrip.py`'s `NAMESPACED_REGIONS` bucket rather than as a row in the round-trip matrix, which asserts that names survive exactly.
-- **`mesh.cell_sets` values changed meaning in v10.36.0** ([issue #76](https://github.com/loumalouomega/meshioplusplus/issues/76)). They are now per-block **local** indices, the convention every other format and the whole region layer already used; before, this reader alone put *global* indices in the per-block slots, which `_regions.blocks_to_global` then rebased a second time — silently emptying three of the five groups in the bundled reference file. Code that read those values as global indices should read `mesh.regions` instead.
+- **`mesh.cell_sets` values changed meaning in v10.36.0** ([issue #76](https://github.com/loumalouomega/meshioplusplus/issues/76)). They are now per-block **local** indices, the convention every other format and the whole region layer already used; before, this reader alone put *global* indices in the per-block slots, which `_regions.blocks_to_global` then rebased a second time — silently emptying three of the five groups in the bundled reference file. Code that read those values as global indices should read `mesh.regions` instead:
+
+  ```python
+  mesh = meshioplusplus.read("grid.f3grid")
+  for r in mesh.regions:
+      if r.kind == "cell":
+          print(r.name, r.entries)  # global, 0-based, block-major
+  ```
+
+  This is a deliberate divergence from **upstream meshio**, whose FLAC3D reader never rebases:
+  its `cell_sets` values are global indices sitting in per-block slots, which is wrong on its
+  own terms (it breaks meshio's own `Mesh.cell_sets_dict`, which assumes block-local indices
+  like every other meshio format does) but happened to look right for a single-block group. A
+  consumer ported from meshio and carrying a FLAC3D-specific workaround for that — for
+  example, GiD's `meshio.tcl` treating FLAC3D element ids as absolute while every other format
+  gets a per-block offset added — should drop the workaround and use `mesh.regions`, or add
+  the offset itself (see [`doc/regions.md`](../regions.md#recovering-global-cell-indices-from-cell_sets)).
 
 ## Notes
 

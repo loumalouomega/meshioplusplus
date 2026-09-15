@@ -114,6 +114,29 @@ def test_reference_file_groups(filename, engine):
 
 
 @pytest.mark.parametrize("filename", REFERENCE_FILES)
+@pytest.mark.parametrize("engine", sorted(ENGINES))
+def test_reference_file_regions_are_gid_visible_ids(filename, engine):
+    """`mesh.regions` alone reproduces the exact 1-based ids issue #76 expects.
+
+    This is the consumer contract, not an internals check: a downstream
+    importer (GiD's `meshio.tcl` among them) wants "which absolute element
+    numbers are in this group", and `mesh.regions[*].entries` (global,
+    block-major, 0-based) is the public, unambiguous way to get that --
+    `mesh.cell_sets` is block-*local* and needs the block's own offset added
+    back in first. The reply to
+    https://github.com/loumalouomega/meshioplusplus/issues/76#issuecomment-5684866056
+    is built on exactly this: 11.0.0 already reproduces the reporter's own
+    "good" (pre-bug) numbers when read this way.
+    """
+    mesh = ENGINES[engine](MESH_DIR / filename)
+    gid_ids = {
+        r.name: (r.entries + 1).tolist() for r in mesh.regions if r.kind == "cell"
+    }
+    expected = {k: [i + 1 for i in v] for k, v in expected_groups().items()}
+    assert gid_ids == expected
+
+
+@pytest.mark.parametrize("filename", REFERENCE_FILES)
 def test_reference_file_cell_sets_are_block_local(filename):
     """`cell_sets` holds per-block LOCAL indices; `regions` holds global ones.
 
