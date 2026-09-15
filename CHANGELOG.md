@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v11.1.0 (2026-09-16)
+
+**Docs and a regression test, no functional change.** Follow-up to [issue #76](https://github.com/loumalouomega/meshioplusplus/issues/76): `mesh.regions` already reproduces the exact global element ids the issue expects as of v10.36.0 (pinned by a new test, `test_reference_file_regions_are_gid_visible_ids`), but a downstream importer ported from meshio can still carry a FLAC3D-specific workaround written against meshio's un-rebased `cell_sets`. `doc/formats/flac3d.md` and `doc/regions.md` now spell out the divergence and the fix (read `mesh.regions`, or add the block's own offset) explicitly, with a runnable snippet. No format, operation, API, or ABI change; `MESHIOPLUSPLUS_ABI_VERSION` stays 12 (see `doc/abi_reviews.md`).
+
 ## v11.0.0 (2026-09-15)
 
 **Version-only major bump, no functional change.** Marks roadmap section 1's completion in full (the `fno`/`afno`/`deeponet` model families, v10.40.0 below) landing on `master`, which also carried a fix for the FLAC3D `ZGROUP`/`FGROUP` cell-group index bug (issue #76 — see `doc/formats/flac3d.md`). No format, operation, API, or ABI change in this release; `MESHIOPLUSPLUS_ABI_VERSION` stays 12.
