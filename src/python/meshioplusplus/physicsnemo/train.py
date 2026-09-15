@@ -23,6 +23,7 @@ variable-size graphs natively. See ``doc/physicsnemo.md``.
 from __future__ import annotations
 
 import argparse
+import functools
 import glob
 import math
 import os
@@ -44,6 +45,7 @@ from . import (
     field_stats,
     graph_sample,
     make_dataset,
+    operator_sample,
 )
 from ._train import (
     _FAMILY,
@@ -318,14 +320,7 @@ def _run_graph(spec, *, log=print) -> dict:
     )
 
 
-def build_grid_model(spec: TrainSpec, schema: dict):
-    """The SRResNet a spec describes, sized from the recorded channel contract.
-
-    ``in_channels``/``out_channels`` come from ``schema``, never from
-    ``len(Fields)`` -- a multi-component array expands into one channel per
-    component, so the two are different numbers the moment a vector field is
-    involved. Same rule as :func:`build_model`, for the same reason.
-    """
+def _build_srresnet(spec: TrainSpec, schema: dict):
     from physicsnemo.models.srrn import SRResNet
 
     return SRResNet(
@@ -340,18 +335,158 @@ def build_grid_model(spec: TrainSpec, schema: dict):
     )
 
 
+def _build_fno(spec: TrainSpec, schema: dict):
+    """The FNO a spec describes; ``dimension`` IS the presence of a squeeze."""
+    from physicsnemo.models.fno import FNO
+
+    return FNO(
+        in_channels=len(schema["x_channels"]),
+        out_channels=len(schema["y_channels"]),
+        decoder_layers=spec.fno_decoder_layers,
+        decoder_layer_size=spec.fno_decoder_layer_size,
+        decoder_activation_fn=spec.fno_decoder_activation_fn,
+        dimension=2 if schema.get("squeeze") is not None else 3,
+        latent_channels=spec.latent_channels,
+        num_fno_layers=spec.num_fno_layers,
+        num_fno_modes=spec.num_fno_modes,
+        padding=spec.spectral_padding,
+        padding_type=spec.padding_type,
+        activation_fn=spec.fno_activation_fn,
+        coord_features=spec.coord_features,
+    )
+
+
+def _build_afno(spec: TrainSpec, schema: dict):
+    """The AFNO a spec describes, at the recorded 2-D sample shape.
+
+    AFNO patches a FIXED ``(H, W)`` image, so its shape is taken from the
+    recorded ``x_shape`` and the divisibility it needs is checked **before**
+    torch is imported, naming the off-by-one everyone hits: ``Grid.Resolution
+    [n, ...]`` gives ``n + 1`` sample points per axis.
+    """
+    inp_shape = [int(v) for v in schema["x_shape"]]
+    patch = [int(v) for v in spec.patch_size]
+    if len(inp_shape) != 2:
+        raise ValueError(
+            f"{_ERR}afno: the grid samples are {len(inp_shape)}-D ({inp_shape}); "
+            "AFNO is 2-D only -- give Grid.Squeeze the world axis to collapse"
+        )
+    for n, p in zip(inp_shape, patch):
+        if n % p:
+            raise ValueError(
+                f"{_ERR}afno: the grid's sample shape {inp_shape} is not divisible "
+                f"by Model.PatchSize {patch}; note that Grid.Resolution [n, ...] "
+                "gives n + 1 sample points per axis, so pick a resolution whose "
+                "n + 1 is a multiple of the patch"
+            )
+    if spec.embed_dim % spec.num_blocks:
+        raise ValueError(
+            f"{_ERR}afno: Model.EmbedDim {spec.embed_dim} must be divisible by "
+            f"Model.NumBlocks {spec.num_blocks}"
+        )
+    from physicsnemo.models.afno import AFNO
+
+    return AFNO(
+        inp_shape=inp_shape,
+        in_channels=len(schema["x_channels"]),
+        out_channels=len(schema["y_channels"]),
+        patch_size=patch,
+        embed_dim=spec.embed_dim,
+        depth=spec.depth,
+        mlp_ratio=spec.mlp_ratio,
+        drop_rate=spec.drop_rate,
+        num_blocks=spec.num_blocks,
+        sparsity_threshold=spec.sparsity_threshold,
+        hard_thresholding_fraction=spec.hard_thresholding_fraction,
+    )
+
+
+#: One constructor per grid family, keyed by name (never an else branch).
+_GRID_BUILDERS = {"srresnet": _build_srresnet, "fno": _build_fno, "afno": _build_afno}
+
+
+def build_grid_model(spec: TrainSpec, schema: dict):
+    """The grid model a spec describes, sized from the recorded channel
+    contract.
+
+    ``in_channels``/``out_channels`` come from ``schema``, never from
+    ``len(Fields)`` -- a multi-component array expands into one channel per
+    component, so the two are different numbers the moment a vector field is
+    involved. Same rule as :func:`build_model`, for the same reason.
+    """
+    return _GRID_BUILDERS[spec.model_name](spec, schema)
+
+
+def _grid_model_block(spec: TrainSpec, schema: dict) -> dict:
+    """The per-family ``"model"`` block of a grid card."""
+    x_channels = list(schema["x_channels"])
+    y_channels = list(schema["y_channels"])
+    common = {
+        "name": spec.model_name,
+        "in_channels": len(x_channels),
+        "out_channels": len(y_channels),
+    }
+    if spec.model_name == "srresnet":
+        return {
+            **common,
+            "scaling_factor": spec.scaling_factor,
+            "conv_layer_size": spec.conv_layer_size,
+            "resid_blocks": spec.resid_blocks,
+            "large_kernel_size": spec.large_kernel_size,
+            "small_kernel_size": spec.small_kernel_size,
+            "activation_fn": spec.activation_fn,
+        }
+    if spec.model_name == "fno":
+        return {
+            **common,
+            "dimension": 2 if schema.get("squeeze") is not None else 3,
+            "latent_channels": spec.latent_channels,
+            "num_fno_layers": spec.num_fno_layers,
+            "num_fno_modes": spec.num_fno_modes,
+            "spectral_padding": spec.spectral_padding,
+            "padding_type": spec.padding_type,
+            "activation_fn": spec.fno_activation_fn,
+            "decoder_layers": spec.fno_decoder_layers,
+            "decoder_layer_size": spec.fno_decoder_layer_size,
+            "decoder_activation_fn": spec.fno_decoder_activation_fn,
+            "coord_features": spec.coord_features,
+        }
+    if spec.model_name == "afno":
+        return {
+            **common,
+            "inp_shape": [int(v) for v in schema["x_shape"]],
+            "patch_size": list(spec.patch_size),
+            "embed_dim": spec.embed_dim,
+            "depth": spec.depth,
+            "mlp_ratio": spec.mlp_ratio,
+            "drop_rate": spec.drop_rate,
+            "num_blocks": spec.num_blocks,
+            "sparsity_threshold": spec.sparsity_threshold,
+            "hard_thresholding_fraction": spec.hard_thresholding_fraction,
+        }
+    raise ValueError(f"{_ERR}{spec.model_name!r} is not a grid family")
+
+
 def _grid_norm_tensors(card, device):
-    """Per-channel normalizers reshaped to broadcast over ``(B, C, D, H, W)``."""
+    """Per-channel normalizers reshaped to broadcast over ``(B, C, *spatial)``.
+
+    The spatial rank comes from the card's ``spatial_ndim`` (3, or 2 under a
+    squeeze). It used to be hard-coded to three: against a ``(B, C, H, W)``
+    batch a ``(1, C, 1, 1, 1)`` normalizer broadcasts along the BATCH axis with
+    no error whenever ``C == 1`` -- so this is asserted on the shape, never on
+    the arithmetic.
+    """
     import torch
 
     norms = normalizers_from_card(card)
+    ndim = int(card.get("spatial_ndim", 3))
     out = {}
     for key, values in norms.items():
         tensor = torch.as_tensor(values, dtype=torch.float32, device=device)
-        # (C,) -> (1, C, 1, 1, 1): a channel statistic applies across the whole
-        # volume, and the explicit reshape is what keeps that from silently
-        # broadcasting along the wrong axis.
-        out[key] = tensor.reshape(1, -1, 1, 1, 1)
+        # (C,) -> (1, C, 1, ..., 1): a channel statistic applies across the
+        # whole volume, and the explicit reshape is what keeps that from
+        # silently broadcasting along the wrong axis.
+        out[key] = tensor.reshape((1, -1) + (1,) * ndim)
     return out
 
 
@@ -394,26 +529,27 @@ def grid_card_from_run(
     There is no edge block -- a convolutional model has no edges -- which
     :func:`normalizers_from_card` treats as empty rather than as an error.
     """
-    from .._grid_transfer import GRID_LAYOUT
+    from .._grid_transfer import grid_layout_after_squeeze
 
     x_channels = list(schema["x_channels"])
     y_channels = list(schema["y_channels"])
+    squeeze = schema.get("squeeze")
     return {
         "version": 1,
         "meshioplusplus_version": __version__,
-        "model": {
-            "name": spec.model_name,
-            "scaling_factor": spec.scaling_factor,
-            "conv_layer_size": spec.conv_layer_size,
-            "resid_blocks": spec.resid_blocks,
-            "large_kernel_size": spec.large_kernel_size,
-            "small_kernel_size": spec.small_kernel_size,
-            "activation_fn": spec.activation_fn,
-            "in_channels": len(x_channels),
-            "out_channels": len(y_channels),
-        },
+        "model": _grid_model_block(spec, schema),
         "schema": schema,
-        "layout": GRID_LAYOUT,
+        # The layout string is a function of WHICH world axis was squeezed
+        # (the remaining axes' order depends on it), so it is derived rather
+        # than a constant; the shape contract beside it is what a 2-D family
+        # builds its model from and writes its answer back through.
+        "layout": grid_layout_after_squeeze(squeeze),
+        "spatial_ndim": 3 if squeeze is None else 2,
+        "squeeze": squeeze,
+        "squeeze_index": schema.get("squeeze_index"),
+        "x_shape": list(schema.get("x_shape") or []),
+        "expand_axis": squeeze,
+        "expand_size": schema.get("expand_size"),
         "x_columns": x_channels,
         "y_columns": y_channels,
         "x_channels": x_channels,
@@ -442,7 +578,8 @@ def grid_card_from_run(
 
 
 def _run_grid(spec, *, log=print) -> dict:
-    """Train an SRResNet on a manifest's coarse/fine grid pairs."""
+    """Train a grid family (srresnet/fno/afno) on a manifest's grid pairs --
+    shared unchanged by all three; only ``build_grid_model`` differs."""
     import torch
     from torch.utils.data import DataLoader
 
@@ -676,16 +813,24 @@ def _load_checkpoint(checkpoint, device="auto") -> _Loaded:
         )
     family = card.get("model", {}).get("name", "meshgraphnet")
     block = _family_block(family)
-    if block == "Grid" and card.get("layout") not in (None, "channels_first_zyx"):
-        raise ValueError(
-            f"{_ERR}the card records layout {card['layout']!r}, which this build "
-            "does not know how to read"
-        )
+    if block == "Grid":
+        from .._grid_transfer import grid_layout_after_squeeze
+
+        known = {grid_layout_after_squeeze(axis) for axis in (None, 0, 1, 2)}
+        if card.get("layout") not in known | {None}:
+            raise ValueError(
+                f"{_ERR}the card records layout {card['layout']!r}, which this "
+                "build does not know how to read"
+            )
     _frameworks("predict", family)
     from physicsnemo.core.module import Module
 
     device = _device(device)
-    model = Module.from_checkpoint(checkpoint).to(device)
+    with warnings.catch_warnings():
+        # the experimental DeepONet announces itself on import; a checkpoint
+        # load is not the place to hear it again
+        warnings.simplefilter("ignore")
+        model = Module.from_checkpoint(checkpoint).to(device)
     model.eval()
     norms = _NORM_LOADERS[block](card, device)
     return _Loaded(model, card, norms, device, family, block)
@@ -794,7 +939,7 @@ def _predict_grid_mesh(loaded, mesh, target_mesh=None, label="mesh"):
     """One mesh through a grid checkpoint -> ``(mesh, row)``; no file I/O."""
     import torch
 
-    from .._grid_transfer import GridArray, GridSpec, scatter_grid
+    from .._grid_transfer import GridArray, GridSpec, expand_grid, scatter_grid
     from . import grid_sample_pair
 
     card, norms, device = loaded.card, loaded.norms, loaded.device
@@ -810,18 +955,41 @@ def _predict_grid_mesh(loaded, mesh, target_mesh=None, label="mesh"):
             f"{_ERR}{label} produces channels {list(sample.x_channels)} but the "
             f"checkpoint was trained on {x_channels}"
         )
-    x = torch.from_numpy(sample.arrays["x"]).float().unsqueeze(0).to(device)
+    family = card.get("model", {}).get("name", "srresnet")
+    x_np = sample.arrays["x"]
+    inp_shape = card.get("model", {}).get("inp_shape")
+    if inp_shape is not None and tuple(x_np.shape[1:]) != tuple(inp_shape):
+        # AFNO's resolution is fixed at construction; fail by name here rather
+        # than inside its patch embedding.
+        raise ValueError(
+            f"{_ERR}{label} samples to shape {tuple(x_np.shape[1:])} but this "
+            f"'{family}' checkpoint was built for {tuple(inp_shape)} (AFNO patches "
+            "a fixed image; use the training grid)"
+        )
+    x = torch.from_numpy(x_np).float().unsqueeze(0).to(device)
     with torch.no_grad():
         pred = loaded.model((x - norms["x_mean"]) / norms["x_std"])
     pred = (pred * norms["y_std"] + norms["y_mean"])[0].cpu().numpy()
 
     truth = sample.arrays.get("y")
     if truth is not None and pred.shape != truth.shape:
+        reason = (
+            "the checkpoint's scaling factor does not match the pair this spec "
+            "builds"
+            if family == "srresnet"
+            else f"a '{family}' model is resolution-preserving, so its output "
+            "follows the input grid and the target grid must match it"
+        )
         raise ValueError(
             f"{_ERR}{label}: the model emitted {pred.shape} but the target grid "
-            f"is {truth.shape}; the checkpoint's scaling factor does not match "
-            "the pair this spec builds"
+            f"is {truth.shape}; {reason}"
         )
+    squeeze = card.get("squeeze")
+    if squeeze is not None:
+        # A 2-D prediction is written back over every plane of the thin axis.
+        pred = expand_grid(pred, card["expand_axis"], card["expand_size"])
+        if truth is not None:
+            truth = expand_grid(truth, card["expand_axis"], card["expand_size"])
     fine = GridSpec.from_dict(sample.schema["fine"])
     out_mesh = scatter_grid(
         GridArray(pred, fine, tuple(y_channels)),
@@ -836,7 +1004,11 @@ def _predict_grid_mesh(loaded, mesh, target_mesh=None, label="mesh"):
         error = pred - truth
         row["rmse"] = float(np.sqrt(np.mean(np.square(error))))
         row["max_error"] = float(np.max(np.abs(error)))
-        row["spectrum_rel_l2"] = _spectrum_rel_l2(pred, truth, fine)
+        # A 2-D power spectrum is a documented follow-up: reported as None
+        # under a squeeze rather than computed over duplicated planes.
+        row["spectrum_rel_l2"] = (
+            None if squeeze is not None else _spectrum_rel_l2(pred, truth, fine)
+        )
         truth_mesh = scatter_grid(
             GridArray(truth, fine, tuple(y_channels)),
             out_mesh,
@@ -854,6 +1026,396 @@ def _predict_grid_mesh(loaded, mesh, target_mesh=None, label="mesh"):
         row["max_error"] = None
     _check_guard(card, mesh, label, row)
     return out_mesh, row
+
+
+# --------------------------------------------------------------------------- #
+# the deeponet family: parameters in, field out                               #
+# --------------------------------------------------------------------------- #
+def build_operator_model(spec: TrainSpec, schema: dict):
+    """The DeepONet a spec describes: an MLP **branch** over the recorded
+    parameter columns, an MLP **trunk** over the 3 coordinates, both to
+    ``Width``, combined by the installed experimental ``DeepONet``.
+
+    Sized from the recorded schema, never from ``len(Operator.Parameters)``: a
+    length-``k`` parameter expands into ``k`` columns.
+    """
+    from physicsnemo.models.mlp.fully_connected import FullyConnected
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        from physicsnemo.experimental.models.xdeeponet import DeepONet
+
+    branch = FullyConnected(
+        in_features=len(schema["parameter_columns"]),
+        layer_size=spec.branch_layer_size,
+        out_features=spec.width,
+        num_layers=spec.branch_layers,
+        activation_fn=spec.deeponet_activation_fn,
+    )
+    trunk = FullyConnected(
+        in_features=3,
+        layer_size=spec.trunk_layer_size,
+        out_features=spec.width,
+        num_layers=spec.trunk_layers,
+        activation_fn=spec.deeponet_activation_fn,
+    )
+    return DeepONet(
+        branch,
+        trunk=trunk,
+        width=spec.width,
+        out_channels=len(schema["y_columns"]),
+        decoder_type=spec.decoder_type,
+        decoder_width=spec.decoder_width,
+        decoder_layers=spec.decoder_layers,
+        decoder_activation_fn=spec.decoder_activation_fn,
+    )
+
+
+def _operator_norm_tensors(card, device):
+    """The three normalizers of an operator card, shaped for their tensors:
+    parameters ``(1, p)`` against a ``(B, p)`` batch, the trunk ``(1, 3)``
+    against ``(T, 3)``, the output ``(1, 1, k)`` against ``(B, T, k)``."""
+    import torch
+
+    norms = normalizers_from_card(card)
+    trunk = card.get("trunk_normalization") or {"mean": [0.0] * 3, "std": [1.0] * 3}
+
+    def tensor(values, shape):
+        return torch.as_tensor(
+            np.asarray(values, dtype=np.float64), dtype=torch.float32, device=device
+        ).reshape(shape)
+
+    return {
+        "x_mean": tensor(norms["x_mean"], (1, -1)),
+        "x_std": tensor(norms["x_std"], (1, -1)),
+        "t_mean": tensor(trunk["mean"], (1, -1)),
+        "t_std": tensor(
+            np.maximum(np.asarray(trunk["std"], dtype=np.float64), STATS_STD_FLOOR),
+            (1, -1),
+        ),
+        "y_mean": tensor(norms["y_mean"], (1, 1, -1)),
+        "y_std": tensor(norms["y_std"], (1, 1, -1)),
+    }
+
+
+def _run_operator_epoch(model, loader, norms, trunk_norm, device, optimizer=None):
+    import torch
+
+    total, count = 0.0, 0
+    for params, y in loader:
+        params = params.to(device)
+        y = y.to(device)
+        x = (params - norms["x_mean"]) / norms["x_std"]
+        target = (y - norms["y_mean"]) / norms["y_std"]
+        pred = model(x, trunk_norm)
+        loss = torch.nn.functional.mse_loss(pred, target)
+        if optimizer is not None:
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        total += float(loss.detach()) * params.shape[0]
+        count += params.shape[0]
+    return total / max(count, 1) if count else None
+
+
+def operator_card_from_run(
+    spec: TrainSpec,
+    schema: dict,
+    stats: dict,
+    trunk_indices,
+    *,
+    epoch: int,
+    valid_loss,
+    checkpoint: str,
+) -> dict:
+    """The model card for a deeponet checkpoint.
+
+    Records the parameter contract (``parameters`` -- the expanded columns
+    the branch was trained on -- and ``parameter_names``, the ``Metadata``
+    keys they came from), the trunk construction, and **``trunk_indices``
+    when the trunk is a budget**: the trunk is rebuilt from the mesh at
+    predict time, so the indices are what detects a budget that selected
+    different points (a JSON card is no place for a ``(T, 3)`` array). Three
+    normalizations, one per tensor.
+    """
+    columns = list(schema["parameter_columns"])
+    y_columns = list(schema["y_columns"])
+    return {
+        "version": 1,
+        "meshioplusplus_version": __version__,
+        "model": {
+            "name": spec.model_name,
+            "branch_layers": spec.branch_layers,
+            "branch_layer_size": spec.branch_layer_size,
+            "trunk_layers": spec.trunk_layers,
+            "trunk_layer_size": spec.trunk_layer_size,
+            "width": spec.width,
+            "decoder_type": spec.decoder_type,
+            "decoder_width": spec.decoder_width,
+            "decoder_layers": spec.decoder_layers,
+            "decoder_activation_fn": spec.decoder_activation_fn,
+            "activation_fn": spec.deeponet_activation_fn,
+            "in_parameters": len(columns),
+            "out_channels": len(y_columns),
+        },
+        "schema": schema,
+        "x_columns": columns,
+        "y_columns": y_columns,
+        "parameters": columns,
+        "parameter_names": list(spec.parameters),
+        "fields": [],
+        "target_fields": list(spec.target_fields),
+        "operator": spec.operator_kwargs(),
+        "trunk": spec.trunk,
+        "trunk_count": spec.trunk_count,
+        "trunk_method": spec.trunk_method,
+        "trunk_seed": spec.trunk_seed,
+        "trunk_indices": (
+            None if trunk_indices is None else [int(i) for i in trunk_indices]
+        ),
+        "num_points": int(schema["num_points"]),
+        "read": dict(spec.read),
+        "augmentation": None,
+        "input_normalization": {
+            "mean": [float(v) for v in stats["params_mean"]],
+            "std": [max(float(v), STATS_STD_FLOOR) for v in stats["params_std"]],
+        },
+        "trunk_normalization": {
+            "mean": [float(v) for v in stats["trunk_mean"]],
+            "std": [max(float(v), STATS_STD_FLOOR) for v in stats["trunk_std"]],
+        },
+        "output_normalization": {
+            "mean": [float(v) for v in stats["y_mean"]],
+            "std": [max(float(v), STATS_STD_FLOOR) for v in stats["y_std"]],
+        },
+        "epoch": int(epoch),
+        "valid_loss": None if valid_loss is None else float(valid_loss),
+        "checkpoint": os.path.basename(checkpoint),
+    }
+
+
+def _run_operator(spec, *, log=print) -> dict:
+    """Train a DeepONet on a manifest's cases: each entry's ``Metadata``
+    parameters in, its target fields at the (shared) trunk points out."""
+    import torch
+    from torch.utils.data import DataLoader
+
+    from . import operator_stats
+    from ._torch import make_operator_dataset
+
+    run_dir = spec.resolved_run_dir()
+    manifest_path = spec.resolved_manifest()
+    os.makedirs(os.path.join(run_dir, CHECKPOINT_DIR), exist_ok=True)
+    if not os.path.isfile(os.path.join(run_dir, SPEC_FILE)):
+        save_spec(spec, os.path.join(run_dir, SPEC_FILE))
+    torch.manual_seed(spec.seed)
+    np.random.seed(spec.seed)
+    device = _device(spec.device)
+    log(f"device: {device}")
+
+    manifest = DatasetManifest.load(manifest_path)
+    read_kwargs = dict(spec.read)
+    guard = _fit_guard(spec, manifest, log)
+    op_kwargs = spec.operator_kwargs()
+
+    stats = operator_stats(manifest, split=spec.train_split, **op_kwargs, **read_kwargs)
+    write_json_atomic(os.path.join(run_dir, NODE_STATS_FILE), stats)
+
+    train_ds = make_operator_dataset(
+        manifest, split=spec.train_split, read_kwargs=read_kwargs, **op_kwargs
+    )
+    valid_ds = make_operator_dataset(
+        manifest, split=spec.valid_split, read_kwargs=read_kwargs, **op_kwargs
+    )
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"{_ERR}split '{spec.train_split}' of {manifest_path} yields no samples"
+        )
+    log(f"train: {len(train_ds)} cases, valid: {len(valid_ds)} cases")
+
+    schema = train_ds.schema
+    trunk_indices = train_ds.trunk_indices
+    log(
+        f"trunk: {schema['num_trunk']} of {schema['num_points']} points "
+        f"({spec.trunk}), {len(schema['parameter_columns'])} parameter column(s)"
+    )
+    model = build_operator_model(spec, schema).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=spec.learning_rate)
+    norms = _operator_norm_tensors(
+        operator_card_from_run(
+            spec, schema, stats, trunk_indices, epoch=0, valid_loss=None, checkpoint=""
+        ),
+        device,
+    )
+    trunk_norm = (train_ds.trunk.to(device) - norms["t_mean"]) / norms["t_std"]
+    train_loader = DataLoader(train_ds, batch_size=spec.batch_size, shuffle=True)
+    valid_loader = (
+        DataLoader(valid_ds, batch_size=spec.batch_size) if len(valid_ds) else None
+    )
+
+    def step(loader, optimizer_or_none):
+        return _run_operator_epoch(
+            model, loader, norms, trunk_norm, device, optimizer_or_none
+        )
+
+    def write_card(path, epoch, valid_loss):
+        card = operator_card_from_run(
+            spec,
+            schema,
+            stats,
+            trunk_indices,
+            epoch=epoch,
+            valid_loss=valid_loss,
+            checkpoint=path,
+        )
+        if guard is not None:
+            card["guard"] = guard.to_dict()
+        write_json_atomic(card_path(path), card)
+
+    return _epoch_loop(
+        spec,
+        run_dir,
+        device,
+        model,
+        optimizer,
+        train_loader,
+        valid_loader,
+        step=step,
+        write_card=write_card,
+        log=log,
+    )
+
+
+def _predict_operator_mesh(
+    loaded, mesh, target_mesh=None, label="mesh", parameters=None
+):
+    """One case through a deeponet checkpoint -> ``(mesh, row)``; no file I/O.
+
+    ``parameters`` is the case's ``Metadata``-shaped dict (required -- the
+    branch has nothing to read from a mesh). The trunk is rebuilt from the
+    mesh and checked against the card: the point count must match (fixed
+    geometry, named), and a budget must select the SAME points it did at
+    training time. Under a budget the write-back fills **NaN, never 0**, at
+    the points the model never saw.
+    """
+    import torch
+
+    card, norms, device = loaded.card, loaded.norms, loaded.device
+    family = card.get("model", {}).get("name", "deeponet")
+    names = list(card.get("parameter_names", []))
+    if parameters is None:
+        raise ValueError(
+            f"{_ERR}parameters= is required for a '{family}' checkpoint (this one "
+            f"expects {names})"
+        )
+    op_kwargs = dict(card["operator"])
+    y_columns = list(card["y_columns"])
+    y_mesh = target_mesh if target_mesh is not None else mesh
+    if not _available_targets(y_mesh, card, "point"):
+        op_kwargs["target_fields"] = None
+    sample = operator_sample(y_mesh, parameters, **op_kwargs)
+    if list(sample.parameter_columns) != list(card["parameters"]):
+        raise ValueError(
+            f"{_ERR}parameter drift: the checkpoint was trained on parameter "
+            f"columns {card['parameters']} but {label} yields "
+            f"{list(sample.parameter_columns)}"
+        )
+    num_points = int(card["num_points"])
+    if sample.schema["num_points"] != num_points:
+        raise ValueError(
+            f"{_ERR}{label} has {sample.schema['num_points']} points but the "
+            f"checkpoint's trunk was trained on {num_points}; a DeepONet is "
+            "fixed-geometry, so predict on the training geometry (or use "
+            "meshgraphnet for varying geometry)"
+        )
+    indices = sample.arrays.get("trunk_indices")
+    recorded = card.get("trunk_indices")
+    if recorded is not None and (
+        indices is None or [int(i) for i in indices] != list(recorded)
+    ):
+        raise ValueError(
+            f"{_ERR}{label}: the token budget selected different points than at "
+            "training time, so the trunk no longer matches the checkpoint; the "
+            "geometry has changed"
+        )
+
+    params = torch.from_numpy(np.asarray(sample.arrays["params"], dtype=np.float32))
+    trunk = torch.from_numpy(np.asarray(sample.arrays["trunk"], dtype=np.float32))
+    with torch.no_grad():
+        x = (params.unsqueeze(0).to(device) - norms["x_mean"]) / norms["x_std"]
+        t = (trunk.to(device) - norms["t_mean"]) / norms["t_std"]
+        pred_norm = loaded.model(x, t)
+        pred = (
+            (pred_norm * norms["y_std"] + norms["y_mean"])[0]
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+    truth = sample.arrays.get("y")
+    truth = None if truth is None else np.asarray(truth, dtype=np.float64)
+
+    def whole(values):
+        # every point of the mesh: the trunk's rows in place, NaN elsewhere
+        if indices is None:
+            return values
+        out = np.full(num_points, np.nan, dtype=np.float64)
+        out[np.asarray(indices, dtype=np.int64)] = values
+        return out
+
+    for i, column in enumerate(y_columns):
+        _attach(mesh, "node", f"{column}_pred", whole(pred[:, i]))
+        if truth is not None:
+            _attach(
+                mesh, "node", f"{column}_error", whole(np.abs(pred[:, i] - truth[:, i]))
+            )
+    error = None if truth is None else np.abs(pred - truth)
+    row = {
+        "num_rows": int(pred.shape[0]),
+        "rmse": None if error is None else float(math.sqrt(float(np.mean(error**2)))),
+        "max_error": None if error is None else float(error.max()),
+    }
+    _check_guard(card, mesh, label, row)
+    return mesh, row
+
+
+def predict_operator(
+    checkpoint,
+    manifest,
+    *,
+    entry_ids: Optional[List[str]] = None,
+    split: Optional[str] = "test",
+    step: int = 0,
+    output_dir,
+    device: str = "auto",
+) -> List[dict]:
+    """Predict over a manifest's entries with a deeponet checkpoint, each
+    entry's ``Metadata`` supplying its parameters -- :func:`predict`'s
+    operator counterpart, reached through it."""
+    loaded = _load_checkpoint(checkpoint, device)
+    read_kwargs = dict(loaded.card.get("read", {}))
+    manifest = DatasetManifest.load(manifest)
+    entries = list(manifest.entries(split=split))
+    if entry_ids:
+        wanted = set(entry_ids)
+        entries = [e for e in entries if e.id in wanted]
+    os.makedirs(output_dir, exist_ok=True)
+
+    rows = []
+    for entry in entries:
+        series = entry.time_series(**read_kwargs)
+        time_value, mesh = series[step]
+        mesh, row = _predict_operator_mesh(
+            loaded, mesh, None, f"entry '{entry.id}'", parameters=entry.metadata
+        )
+        suffix = "" if step == 0 else f"_s{step}"
+        out_path = os.path.join(output_dir, f"{entry.id}{suffix}.vtu")
+        write(out_path, mesh)
+        row["entry_id"] = entry.id
+        row["time"] = time_value
+        row["output_path"] = out_path
+        rows.append(row)
+        del mesh
+    return rows
 
 
 def _check_guard(card, mesh, label, row):
@@ -888,7 +1450,29 @@ def _check_guard(card, mesh, label, row):
         )
 
 
-def predict_mesh(checkpoint, mesh, *, target_mesh=None, device="auto", label="mesh"):
+def _body_for(loaded, parameters):
+    """The per-mesh body for a loaded checkpoint, with ``parameters`` bound
+    for an operator family and refused by name for the others."""
+    body = _PREDICT_BODIES[loaded.block]
+    if loaded.block == "Operator":
+        return functools.partial(body, parameters=parameters)
+    if parameters is not None:
+        raise ValueError(
+            f"{_ERR}parameters= applies to a 'deeponet' checkpoint; this one is a "
+            f"'{loaded.family}'"
+        )
+    return body
+
+
+def predict_mesh(
+    checkpoint,
+    mesh,
+    *,
+    target_mesh=None,
+    device="auto",
+    label="mesh",
+    parameters=None,
+):
     """Predict with a checkpoint on ONE in-memory mesh -> ``(mesh, row)``.
 
     The card says which family wrote the checkpoint, so a caller does not have
@@ -896,10 +1480,11 @@ def predict_mesh(checkpoint, mesh, *, target_mesh=None, device="auto", label="me
     options, the column contract, the normalization -- comes from the card;
     nothing here consults a manifest. A mesh carrying no truth predicts anyway,
     with ``rmse``/``max_error`` reported as ``None`` rather than measured
-    against itself.
+    against itself. A ``deeponet`` checkpoint needs ``parameters`` (the case's
+    ``Metadata``-shaped dict), the one thing a mesh cannot supply.
     """
     loaded = _load_checkpoint(checkpoint, device)
-    return _PREDICT_BODIES[loaded.block](loaded, mesh, target_mesh, label)
+    return _body_for(loaded, parameters)(loaded, mesh, target_mesh, label)
 
 
 def predict_file(
@@ -912,6 +1497,7 @@ def predict_file(
     input_format: Optional[str] = None,
     output_format: Optional[str] = None,
     device: str = "auto",
+    parameters=None,
 ) -> dict:
     """Predict with a checkpoint on ONE mesh file, writing the result.
 
@@ -950,7 +1536,7 @@ def predict_file(
             target_mesh = series[step + offset][1]
 
     label = f"'{input_path}'"
-    out, row = _PREDICT_BODIES[loaded.block](loaded, mesh, target_mesh, label)
+    out, row = _body_for(loaded, parameters)(loaded, mesh, target_mesh, label)
     write(output_path, out, file_format=output_format)
     row["input_path"] = str(input_path)
     row["output_path"] = str(output_path)
@@ -1004,8 +1590,8 @@ def predict(
     :func:`predict_file` can do the same job for a file that was never
     catalogued."""
     loaded = _load_checkpoint(checkpoint, device)
-    if loaded.block == "Grid":
-        return predict_grid(
+    if loaded.block in _MANIFEST_PREDICTORS:
+        return _MANIFEST_PREDICTORS[loaded.block](
             checkpoint,
             manifest,
             entry_ids=entry_ids,
@@ -1108,9 +1694,26 @@ def predict_grid(
 #: The family -> trainer and block -> per-mesh body / normalizer tables.
 #: Keyed lookups, never an `else` branch: an unknown family fails by name
 #: instead of silently running some other family's code.
-_RUNNERS = {"meshgraphnet": _run_graph, "srresnet": _run_grid}
-_PREDICT_BODIES = {"Graph": _predict_graph_mesh, "Grid": _predict_grid_mesh}
-_NORM_LOADERS = {"Graph": _norm_tensors, "Grid": _grid_norm_tensors}
+_RUNNERS = {
+    "meshgraphnet": _run_graph,
+    "srresnet": _run_grid,
+    "fno": _run_grid,
+    "afno": _run_grid,
+    "deeponet": _run_operator,
+}
+_PREDICT_BODIES = {
+    "Graph": _predict_graph_mesh,
+    "Grid": _predict_grid_mesh,
+    "Operator": _predict_operator_mesh,
+}
+_NORM_LOADERS = {
+    "Graph": _norm_tensors,
+    "Grid": _grid_norm_tensors,
+    "Operator": _operator_norm_tensors,
+}
+#: The manifest-walking predictors `predict` hands off to, by block (the
+#: graph family's loop is inline in `predict` itself).
+_MANIFEST_PREDICTORS = {"Grid": predict_grid, "Operator": predict_operator}
 
 
 def _spectrum_rel_l2(pred, truth, spec):

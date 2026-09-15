@@ -2490,13 +2490,55 @@ _TRAIN_START_KWARGS = {
         "extrapolate",
         "fill_value",
     ),
+    "fno": (
+        "latent_channels",
+        "num_fno_layers",
+        "num_fno_modes",
+        "spectral_padding",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+        "squeeze",
+        "squeeze_index",
+    ),
+    "afno": (
+        "patch_size",
+        "embed_dim",
+        "depth",
+        "num_blocks",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+        "squeeze",
+        "squeeze_index",
+    ),
+    "deeponet": (
+        "parameters",
+        "trunk",
+        "trunk_count",
+        "trunk_method",
+        "trunk_seed",
+        "branch_layers",
+        "branch_layer_size",
+        "trunk_layers",
+        "trunk_layer_size",
+        "width",
+    ),
 }
 
 
 def tool_train_defaults(manifest_path, fields=None, target_fields=None):
     """What a training launch form needs: the data arrays the manifest's
     first entry carries, the splits, and a complete default spec."""
-    from ..physicsnemo import has_physicsnemo, has_torch_geometric
+    from ..physicsnemo import has_deeponet, has_physicsnemo, has_torch_geometric
     from ..physicsnemo._train import TrainSpec, spec_to_dict
 
     manifest, resolved_manifest = _load_manifest(manifest_path)
@@ -2528,6 +2570,8 @@ def tool_train_defaults(manifest_path, fields=None, target_fields=None):
             "frameworks": {
                 "torch_geometric": has_torch_geometric(),
                 "physicsnemo": has_physicsnemo(),
+                # the experimental DeepONet the `deeponet` family trains
+                "deeponet": has_deeponet(),
             },
             "spec": spec_to_dict(spec),
         }
@@ -2558,6 +2602,26 @@ def tool_train_start(
     padding_relative=0.0,
     extrapolate=False,
     fill_value=0.0,
+    squeeze=None,
+    squeeze_index=None,
+    latent_channels=32,
+    num_fno_layers=4,
+    num_fno_modes=16,
+    spectral_padding=8,
+    patch_size=None,
+    embed_dim=256,
+    depth=4,
+    num_blocks=16,
+    parameters=None,
+    trunk="points",
+    trunk_count=None,
+    trunk_method="farthest",
+    trunk_seed=0,
+    branch_layers=4,
+    branch_layer_size=128,
+    trunk_layers=4,
+    trunk_layer_size=128,
+    width=64,
     regions=False,
     kind="node",
     undirected=True,
@@ -2577,13 +2641,18 @@ def tool_train_start(
     returns the job's initial status. Poll it with train_status /
     train_metrics / train_log.
 
-    model_name picks the family, and the two read different hyperparameters:
+    model_name picks the family, and each reads its own hyperparameters:
     'meshgraphnet' uses processor_size/hidden_dim/aggregation and the graph
-    options, 'srresnet' uses scaling_factor/conv_layer_size/resid_blocks and
-    the grid options (give exactly one of resolution and cell_size). Needs
-    nvidia-physicsnemo, plus torch_geometric for meshgraphnet only (no pip
-    extra, deliberately); a missing framework is a named error before anything
-    is spawned.
+    options; 'srresnet' uses scaling_factor/conv_layer_size/resid_blocks and
+    the grid options (give exactly one of resolution and cell_size); 'fno'
+    uses latent_channels/num_fno_layers/num_fno_modes/spectral_padding and the
+    grid options, 2-D when squeeze names a world axis; 'afno' uses
+    patch_size/embed_dim/depth/num_blocks and the grid options, and REQUIRES
+    squeeze (it is 2-D only); 'deeponet' takes no input fields at all -- its
+    inputs are the per-entry Metadata keys in `parameters`, with the trunk
+    over every point or a `trunk_count` budget. Needs nvidia-physicsnemo,
+    plus torch_geometric for meshgraphnet only (no pip extra, deliberately);
+    a missing framework is a named error before anything is spawned.
     """
     from ..physicsnemo._train import _MODELS, default_spec, spec_to_dict
 
@@ -2639,6 +2708,26 @@ def tool_train_start(
         padding_relative=float(padding_relative),
         extrapolate=bool(extrapolate),
         fill_value=float(fill_value),
+        squeeze=None if squeeze is None else int(squeeze),
+        squeeze_index=None if squeeze_index is None else int(squeeze_index),
+        latent_channels=int(latent_channels),
+        num_fno_layers=int(num_fno_layers),
+        num_fno_modes=int(num_fno_modes),
+        spectral_padding=int(spectral_padding),
+        patch_size=(16, 16) if not patch_size else tuple(int(v) for v in patch_size),
+        embed_dim=int(embed_dim),
+        depth=int(depth),
+        num_blocks=int(num_blocks),
+        parameters=tuple(parameters or ()),
+        trunk=str(trunk),
+        trunk_count=None if trunk_count is None else int(trunk_count),
+        trunk_method=str(trunk_method),
+        trunk_seed=int(trunk_seed),
+        branch_layers=int(branch_layers),
+        branch_layer_size=int(branch_layer_size),
+        trunk_layers=int(trunk_layers),
+        trunk_layer_size=int(trunk_layer_size),
+        width=int(width),
     )
     family = {k: coerced[k] for k in _TRAIN_START_KWARGS[model_name]}
     spec = default_spec(resolved_manifest, fields, target_fields, **common, **family)
@@ -2816,10 +2905,12 @@ def tool_predict_file(
     input_format=None,
     output_format=None,
     device="auto",
+    parameters=None,
 ):
     """Predict with a trained .mdlus checkpoint on ONE mesh file -- no
     manifest, no split, no entry. A file carrying no truth predicts anyway,
-    with rmse/max_error reported as null. Needs the frameworks.
+    with rmse/max_error reported as null. A deeponet checkpoint needs
+    `parameters` (the case's parameters as an object). Needs the frameworks.
     """
     resolved_checkpoint = _resolve(checkpoint, must_exist=True)
     resolved_input = _resolve(input_path, must_exist=True)
@@ -2845,6 +2936,7 @@ def tool_predict_file(
             input_format=input_format,
             output_format=output_format,
             device=device,
+            parameters=None if parameters is None else dict(parameters),
         )
     )
 

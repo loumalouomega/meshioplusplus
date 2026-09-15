@@ -32,6 +32,7 @@ export const COMPARED_FIELDS: { key: keyof JobSummary; label: string }[] = [
     { key: 'batch_size', label: 'batch' },
     { key: 'learning_rate', label: 'lr' },
     { key: 'seed', label: 'seed' },
+    { key: 'model_name', label: 'model' },
     { key: 'processor_size', label: 'layers' },
     { key: 'hidden_dim', label: 'hidden' },
     { key: 'best_valid_loss', label: 'best valid' },

@@ -182,3 +182,65 @@ k ≈ 7); the baseline has already fallen away by k ≈ 3 and misses them entire
 `grid_stats` · `TrainSpec`'s `srresnet` family and its `Grid` block ·
 `run_training` · the model card's recorded layout and grid specs · `predict`
 dispatching on the card · `scatter_grid` back onto the mesh · `power_spectrum`.
+
+---
+
+# Neural operators and DeepONet: `fno_darcy.py`, `afno_advection.py`, `deeponet_beam.py`
+
+The three examples that closed [roadmap section 1](../../doc/roadmap.md)'s last
+bullet in v10.40.0, one per family, over the same library surfaces as the two
+walk-throughs above: a dataset built with meshio++, a manifest, a
+[training spec](../../doc/physicsnemo.md#neural-operators-on-a-grid-the-fno-and-afno-families),
+`run_training`, and prediction through the shipped `predict`/`predict_mesh`
+(never by driving the model by hand). Each is scored against an honest baseline,
+and the results below say where the model does not win; the scores land in [`scores/`](scores/) and the renders in
+[`renders/`](renders/). `_common.py` holds what they share.
+
+| script | in → out | family | baseline |
+|---|---|---|---|
+| `fno_darcy.py` | log-normal permeability `K` → Darcy pressure `p` (`-div(K grad p) = 1`, 5-point FD) | `fno`, 2-D through `Grid.Squeeze: 2` on a thin `grid((32, 32, 1))` | the same solve with the effective medium `K_eff = exp(mean(log K))` |
+| `afno_advection.py` | blob `c0` + constant `(u, v)` → the exact spectral advection–diffusion solution at `t = T` | `afno`, `PatchSize [8, 8]` on 64 sample points (`Resolution 63` — the script prints the `n + 1` arithmetic) | first-order upwind with the true velocity; persistence as the floor |
+| `deeponet_beam.py` | `Metadata {Load, Modulus, PoissonRatio}` → cantilever deflection `w` (Euler–Bernoulli + Timoshenko shear, nonlinear in the parameters) | `deeponet`, `Operator.Parameters` over ONE `grid((20, 4, 4))` beam, `Trunk "points"` | per-node least squares on `[1, P, E, ν]` — exact if the map were linear |
+
+```sh
+python fno_darcy.py --cases 200 --epochs 100
+python afno_advection.py --cases 200 --epochs 100
+python deeponet_beam.py --cases 200 --epochs 150
+```
+
+None needs `torch_geometric`; `deeponet_beam.py` needs a PhysicsNeMo carrying
+the experimental `DeepONet` (2.2.0 does — `mpn.has_deeponet()` says).
+
+## Results, from real runs
+
+Executed on one RTX 2000 Ada (8 GB, WSL2), 2026-09-15, with `nvidia-physicsnemo` 2.2.0, torch 2.13.0+cu130 and meshio++ v10.40.0. Every number is the test split's mean, straight from `scores/*.json`; the best baseline in each table is in bold.
+
+**FNO, Darcy** — 200 cases, 100 epochs in 103.1 s, best validation epoch 96:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| effective-medium solve | 1.39e-2 | 0.373 |
+| **FNO** | **2.02e-3** | **0.0535** |
+
+**AFNO, advection–diffusion** — 200 cases, 100 epochs in 255.7 s, best validation epoch 98:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| persistence | 1.51e-1 | 1.03 |
+| **first-order upwind, true velocity** | **1.11e-2** | **0.0785** |
+| AFNO | 1.85e-2 | 0.130 |
+
+**DeepONet, cantilever** — 200 cases, 150 epochs in 21.7 s, best validation epoch 108:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| per-node least squares on `[1, P, E, ν]` | 5.20e-6 | 0.364 |
+| **DeepONet** | **3.13e-7** | **0.0158** |
+
+Two of the three beat their baseline clearly: the FNO by about 7 times, the DeepONet by about 17 times in RMSE, a margin that is entirely the nonlinearity a linear map cannot represent. **The AFNO does not beat upwind**, and that is reported rather than tuned away. It beats persistence by about 8 times, but upwind is handed the true velocity and integrates the equation, while the AFNO has to infer the displacement from its input channels. The run was still improving at its last epochs, and the error panel below shows the 8x8 patch seams along the blob's edge, where most of its residual sits. A smaller `PatchSize` or a longer run is the obvious next experiment.
+
+![FNO panels](renders/fno_panels.png)
+
+![AFNO panels](renders/afno_panels.png)
+
+![DeepONet deflection along the top fibre](renders/deeponet_deflection.png)

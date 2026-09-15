@@ -165,6 +165,9 @@
             <select id="t-model">
               <option value="meshgraphnet">MeshGraphNet (mesh graph)</option>
               <option value="srresnet">SRResNet (superresolution grid)</option>
+              <option value="fno">FNO (neural operator, grid)</option>
+              <option value="afno">AFNO (2-D operator, grid)</option>
+              <option value="deeponet" disabled title="Needs the experimental DeepONet in the companion's PhysicsNeMo">DeepONet (parameters in, field out)</option>
             </select>
           </label>
           <div class="grid2">
@@ -191,6 +194,54 @@
             </label>
             <label class="row"><span>Channels</span><input id="t-conv" type="number" min="1" value="32" /></label>
             <label class="row"><span>Blocks</span><input id="t-blocks" type="number" min="1" value="8" /></label>
+          </div>
+          <div class="grid2" id="t-fno-opts" hidden>
+            <label class="row">
+              <span title="The grid, in cells per axis; a resolution-preserving operator predicts on the same lattice">Resolution</span>
+              <input id="t-fno-resolution" type="text" value="16,16,16" />
+            </label>
+            <label class="row"><span title="Collapse a thin world axis to run the 2-D operator; leave blank for 3-D">Squeeze</span>
+              <select id="t-fno-squeeze">
+                <option value="">none (3-D)</option>
+                <option value="0">x</option>
+                <option value="1">y</option>
+                <option value="2">z</option>
+              </select>
+            </label>
+            <label class="row"><span>Latent</span><input id="t-fno-latent" type="number" min="1" value="32" /></label>
+            <label class="row"><span>Modes</span><input id="t-fno-modes" type="number" min="1" value="16" /></label>
+            <label class="row"><span>Layers</span><input id="t-fno-layers" type="number" min="1" value="4" /></label>
+          </div>
+          <div class="grid2" id="t-afno-opts" hidden>
+            <label class="row">
+              <span title="The grid, in cells per axis; n cells give n+1 samples, which the patch must divide">Resolution</span>
+              <input id="t-afno-resolution" type="text" value="15,15,1" />
+            </label>
+            <label class="row"><span title="The thin world axis to collapse (AFNO is 2-D only)">Squeeze</span>
+              <select id="t-afno-squeeze">
+                <option value="0">x</option>
+                <option value="1">y</option>
+                <option value="2" selected>z</option>
+              </select>
+            </label>
+            <label class="row"><span>Patch</span><input id="t-afno-patch" type="text" value="8,8" /></label>
+            <label class="row"><span>Embed</span><input id="t-afno-embed" type="number" min="1" value="256" /></label>
+            <label class="row"><span>Depth</span><input id="t-afno-depth" type="number" min="1" value="4" /></label>
+          </div>
+          <div class="grid2" id="t-deeponet-opts" hidden>
+            <label class="row">
+              <span title="The entry Metadata keys that are the model's inputs, in order">Parameters</span>
+              <input id="t-deep-params" type="text" placeholder="Load, Modulus" />
+            </label>
+            <label class="row"><span title="Every mesh point, or a token budget of them">Trunk</span>
+              <select id="t-deep-trunk">
+                <option value="points">points</option>
+                <option value="budget">budget</option>
+              </select>
+            </label>
+            <label class="row"><span title="How many points a budget trunk keeps">Count</span><input id="t-deep-trunk-count" type="number" min="1" /></label>
+            <label class="row"><span>Width</span><input id="t-deep-width" type="number" min="1" value="64" /></label>
+            <label class="row"><span>Branch layers</span><input id="t-deep-branch-layers" type="number" min="1" value="4" /></label>
           </div>
           <div class="row">
             <button id="t-start" class="button" type="button">Start training</button>

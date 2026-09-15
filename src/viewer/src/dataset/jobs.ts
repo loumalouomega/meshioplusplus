@@ -51,8 +51,23 @@ export interface JobSummary extends JobStatus {
     batch_size: number | null;
     learning_rate: number | null;
     seed: number | null;
+    /** the spec's `Model.Name` — the family the run trained */
+    model_name: string;
     hidden_dim: number | null;
     processor_size: number | null;
+    /** the other families' hyperparameters, lifted by name (null where the
+     * family has no such key) */
+    scaling_factor?: number | null;
+    conv_layer_size?: number | null;
+    resid_blocks?: number | null;
+    latent_channels?: number | null;
+    num_fno_modes?: number | null;
+    patch_size?: number[] | null;
+    embed_dim?: number | null;
+    width?: number | null;
+    parameters?: string[] | null;
+    resolution?: number[] | null;
+    squeeze?: number | null;
     tags: string[];
     notes: string | null;
     final_train_loss: number | null;

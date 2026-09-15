@@ -479,18 +479,20 @@ def test_proximity_is_a_graph_key_and_not_a_grid_one():
 #: A block-legal probe per block. The per-block `_check_keys` runs BEFORE the
 #: family's own refusal, so a probe must pass it -- an unknown key would be
 #: refused for the wrong reason and the test would prove nothing.
-_BLOCK_PROBES = {"Graph": {"Regions": True}, "Grid": {"Resolution": [8, 8, 8]}}
+_BLOCK_PROBES = {
+    "Graph": {"Regions": True},
+    "Grid": {"Resolution": [8, 8, 8]},
+    "Operator": {"Parameters": ["a"]},
+}
 #: Families whose own block needs more than the probe to be valid at all.
-_OWN_BLOCKS = {}
+_OWN_BLOCKS = {"afno": {"Resolution": [8, 8, 8], "Squeeze": 2}}
 
 
 def _minimal_doc(fam):
-    doc = {
-        "Manifest": "m.json",
-        "Fields": ["T"],
-        "TargetFields": ["T"],
-        "Model": {"Name": fam.name},
-    }
+    doc = {"Manifest": "m.json", "TargetFields": ["T"], "Model": {"Name": fam.name}}
+    # an operator family's inputs are its parameters, not a data array
+    if fam.block != "Operator":
+        doc["Fields"] = ["T"]
     doc[fam.block] = _OWN_BLOCKS.get(fam.name, _BLOCK_PROBES[fam.block])
     return doc
 
@@ -552,3 +554,373 @@ def test_require_frameworks_asks_only_for_the_family_s_own(monkeypatch):
         assert "meshioplusplus[" not in str(excinfo.value)
     with pytest.raises(ValueError, match="Model.Name must be one of"):
         t.require_frameworks("op", "gpt")
+
+
+# --------------------------------------------------------------------------- #
+# the fno / afno / deeponet families (v10.40.0)                               #
+# --------------------------------------------------------------------------- #
+FNO_DOC = {
+    "Manifest": "m.json",
+    "Fields": ["K"],
+    "TargetFields": ["p"],
+    "Model": {"Name": "fno", "NumFnoModes": 12},
+    "Grid": {"Resolution": [32, 32, 1], "Squeeze": 2, "SqueezeIndex": 0},
+}
+AFNO_DOC = {
+    "Manifest": "m.json",
+    "Fields": ["c0", "u", "v"],
+    "TargetFields": ["c"],
+    "Model": {"Name": "afno", "PatchSize": [8, 8]},
+    "Grid": {"Resolution": [63, 63, 1], "Squeeze": 2, "SqueezeIndex": 0},
+}
+DEEP_DOC = {
+    "Manifest": "m.json",
+    "TargetFields": ["w"],
+    "Model": {"Name": "deeponet"},
+    "Operator": {"Parameters": ["Load", "Modulus", "PoissonRatio"]},
+}
+
+
+def test_fno_round_trips_and_emits_only_its_own_blocks():
+    spec = t.spec_from_dict(FNO_DOC)
+    doc = t.spec_to_dict(spec)
+    assert doc["Model"] == {
+        "Name": "fno",
+        "LatentChannels": 32,
+        "NumFnoLayers": 4,
+        "NumFnoModes": 12,
+        "SpectralPadding": 8,
+        "PaddingType": "constant",
+        "ActivationFn": "gelu",
+        "DecoderLayers": 1,
+        "DecoderLayerSize": 32,
+        "DecoderActivationFn": "silu",
+        "CoordFeatures": True,
+    }
+    assert doc["Grid"]["Squeeze"] == 2 and doc["Grid"]["SqueezeIndex"] == 0
+    assert "Graph" not in doc and "Operator" not in doc
+    assert t.spec_from_dict(doc) == spec
+    # a 3-D fno needs no squeeze at all
+    three = t.spec_from_dict({**FNO_DOC, "Grid": {"Resolution": [8, 8, 8]}})
+    assert three.squeeze is None and three.grid_kwargs()["squeeze"] is None
+
+
+def test_afno_round_trips_and_emits_only_its_own_blocks():
+    spec = t.spec_from_dict(AFNO_DOC)
+    doc = t.spec_to_dict(spec)
+    assert doc["Model"] == {
+        "Name": "afno",
+        "PatchSize": [8, 8],
+        "EmbedDim": 256,
+        "Depth": 4,
+        "MlpRatio": 4.0,
+        "DropRate": 0.0,
+        "NumBlocks": 16,
+        "SparsityThreshold": 0.01,
+        "HardThresholdingFraction": 1.0,
+    }
+    assert spec.patch_size == (8, 8)
+    assert "Graph" not in doc and "Operator" not in doc
+    assert t.spec_from_dict(doc) == spec
+
+
+def test_deeponet_round_trips_and_emits_only_its_own_blocks():
+    spec = t.spec_from_dict(DEEP_DOC)
+    doc = t.spec_to_dict(spec)
+    assert doc["Model"] == {
+        "Name": "deeponet",
+        "BranchLayers": 4,
+        "BranchLayerSize": 128,
+        "TrunkLayers": 4,
+        "TrunkLayerSize": 128,
+        "Width": 64,
+        "DecoderType": "mlp",
+        "DecoderWidth": 128,
+        "DecoderLayers": 2,
+        "DecoderActivationFn": "relu",
+        "ActivationFn": "silu",
+    }
+    assert doc["Operator"] == {
+        "Parameters": ["Load", "Modulus", "PoissonRatio"],
+        "Trunk": "points",
+        "TrunkMethod": "farthest",
+        "TrunkSeed": 0,
+        "Float32": True,
+    }
+    assert doc["Fields"] == [] and "Grid" not in doc and "Graph" not in doc
+    assert t.spec_from_dict(doc) == spec
+    budget = t.spec_from_dict(
+        {
+            **DEEP_DOC,
+            "Operator": {"Parameters": ["Load"], "Trunk": "budget", "TrunkCount": 64},
+        }
+    )
+    assert t.spec_to_dict(budget)["Operator"]["TrunkCount"] == 64
+    assert budget.operator_kwargs() == {
+        "parameter_names": ["Load"],
+        "target_fields": ["w"],
+        "trunk": "budget",
+        "trunk_count": 64,
+        "trunk_method": "farthest",
+        "trunk_seed": 0,
+        "float32": True,
+    }
+
+
+def test_shared_keys_take_the_family_s_own_default():
+    """`ActivationFn` and `DecoderLayers` are shared PascalCase keys whose
+    constructor defaults differ per family; `default_spec` re-validates
+    through the document, so a shared dataclass field would hand fno
+    srresnet's prelu. The family-prefixed fields are what prevent that."""
+    assert t.spec_from_dict(FNO_DOC).fno_activation_fn == "gelu"
+    assert t.spec_from_dict(FNO_DOC).fno_decoder_layers == 1
+    assert t.spec_from_dict(DEEP_DOC).deeponet_activation_fn == "silu"
+    assert t.spec_from_dict(DEEP_DOC).decoder_layers == 2
+    assert t.spec_from_dict(SR_DOC).activation_fn == "prelu"
+    fno = t.default_spec("m.json", ["K"], ["p"], model_name="fno", resolution=(8, 8, 8))
+    assert fno.fno_activation_fn == "gelu" and fno.activation_fn == "prelu"
+    deep = t.default_spec(
+        "m.json", [], ["w"], model_name="deeponet", parameters=("Load",)
+    )
+    assert deep.deeponet_activation_fn == "silu" and deep.decoder_layers == 2
+
+
+def test_grid_kwargs_of_a_resolution_preserving_family_pair_the_grid_with_itself():
+    """fno/afno have no ScalingFactor: `upscale_samples(1)` is the identity,
+    so the coarse/fine pairing is reused unchanged with a factor of one."""
+    assert t.spec_from_dict(FNO_DOC).grid_kwargs()["scaling_factor"] == 1
+    assert t.spec_from_dict(AFNO_DOC).grid_kwargs()["scaling_factor"] == 1
+    assert t.spec_from_dict(SR_DOC).grid_kwargs()["scaling_factor"] == 2
+
+
+@pytest.mark.parametrize(
+    "doc, needle",
+    [
+        (
+            {**FNO_DOC, "Model": {"Name": "fno", "HiddenDim": 32}},
+            "unknown key 'HiddenDim' in Model (with Name 'fno')",
+        ),
+        (
+            {**FNO_DOC, "Model": {"Name": "fno", "ScalingFactor": 2}},
+            "unknown key 'ScalingFactor' in Model (with Name 'fno')",
+        ),
+        (
+            {**AFNO_DOC, "Grid": {"Resolution": [63, 63, 1]}},
+            "a 'afno' model is 2-D only (AFNO patches a fixed (H, W) image); give "
+            "Grid.Squeeze the world axis to collapse (0, 1 or 2)",
+        ),
+        (
+            {**SR_DOC, "Grid": {"Resolution": [8, 8, 8], "Squeeze": 2}},
+            "Grid.Squeeze does not apply to 'srresnet'",
+        ),
+        (
+            {**FNO_DOC, "Operator": {"Parameters": ["a"]}},
+            "a 'fno' model reads the Grid block, not Operator",
+        ),
+        (
+            {**DEEP_DOC, "Grid": {"Resolution": [8, 8, 8]}},
+            "a 'deeponet' model reads the Operator block, not Grid",
+        ),
+        (
+            {**DEEP_DOC, "Augmentation": {"Seed": 1, "Rotation": {"Axis": "z"}}},
+            "Augmentation applies to the graph families; a 'deeponet' shares one "
+            "trunk across the batch",
+        ),
+        (
+            {**FNO_DOC, "Augmentation": {"Seed": 1, "Rotation": {"Axis": "z"}}},
+            "a 'fno' samples a fixed lattice",
+        ),
+        (
+            {**DEEP_DOC, "Operator": {"Parameters": ["Load"], "Trunk": "budget"}},
+            "Operator.TrunkCount is required with Trunk 'budget'",
+        ),
+        (
+            {**DEEP_DOC, "Operator": {"Parameters": ["Load"], "TrunkCount": 8}},
+            "Operator.TrunkCount belongs to Trunk 'budget'",
+        ),
+        (
+            {
+                **DEEP_DOC,
+                "Model": {"Name": "deeponet", "DecoderType": "temporal_projection"},
+            },
+            "Model.DecoderType must be one of mlp; 'temporal_projection' needs an "
+            "output_window",
+        ),
+        (
+            {**DEEP_DOC, "Model": {"Name": "deeponet", "DecoderType": "conv"}},
+            "'conv' needs a spatial branch",
+        ),
+        (
+            {**DEEP_DOC, "Fields": ["T"]},
+            "a 'deeponet' model takes its inputs from Operator.Parameters, not Fields",
+        ),
+        ({**DEEP_DOC, "Operator": {}}, "Operator.Parameters must name at least one"),
+        (
+            {**DEEP_DOC, "Operator": {"Parameters": ["a", "a"]}},
+            "Operator.Parameters must not repeat",
+        ),
+        (
+            {**DEEP_DOC, "Operator": {"Parameters": ["a"], "TrunkMethod": "kd"}},
+            "Operator.TrunkMethod must be one of farthest, grid, random",
+        ),
+        (
+            {**AFNO_DOC, "Model": {"Name": "afno", "PatchSize": [8]}},
+            "Model.PatchSize must be two positive integers",
+        ),
+        ({**FNO_DOC, "Grid": {"Squeeze": 2}}, "exactly one of Grid.Resolution"),
+    ],
+)
+def test_new_family_strictness_names_the_offender(doc, needle):
+    with pytest.raises(ValueError, match=re.escape(needle)):
+        t.spec_from_dict(doc)
+
+
+def test_grid_card_records_the_squeeze_contract():
+    """The card of a 2-D grid family carries the layout of the REMAINING axes,
+    the spatial rank, the sample shape and how to expand a plane back --
+    without them a 2-D checkpoint could neither size its model nor write its
+    answer onto the thin lattice."""
+    from meshioplusplus.physicsnemo import train as trainer
+
+    schema = {
+        "x_channels": ["K"],
+        "y_channels": ["p"],
+        "squeeze": 2,
+        "squeeze_index": 0,
+        "x_shape": [16, 16],
+        "y_shape": [16, 16],
+        "expand_size": 2,
+        "coarse": None,
+        "fine": None,
+    }
+    stats = {"x_mean": [0.0], "x_std": [1.0], "y_mean": [0.0], "y_std": [1.0]}
+    card = trainer.grid_card_from_run(
+        t.spec_from_dict(FNO_DOC),
+        schema,
+        stats,
+        epoch=0,
+        valid_loss=None,
+        checkpoint="c",
+    )
+    assert card["layout"] == "channels_first_yx" and card["spatial_ndim"] == 2
+    assert card["squeeze"] == 2 and card["squeeze_index"] == 0
+    assert card["x_shape"] == [16, 16]
+    assert card["expand_axis"] == 2 and card["expand_size"] == 2
+    assert card["model"]["name"] == "fno" and card["model"]["dimension"] == 2
+    assert card["model"]["num_fno_modes"] == 12
+    afno = trainer.grid_card_from_run(
+        t.spec_from_dict(AFNO_DOC),
+        schema,
+        stats,
+        epoch=0,
+        valid_loss=None,
+        checkpoint="c",
+    )
+    assert afno["model"]["inp_shape"] == [16, 16] and afno["model"]["patch_size"] == [
+        8,
+        8,
+    ]
+    # the srresnet card is untouched in meaning: 3-D, the zyx layout
+    three = dict(
+        schema, squeeze=None, squeeze_index=None, x_shape=[5, 5, 5], expand_size=None
+    )
+    sr = trainer.grid_card_from_run(
+        t.spec_from_dict(SR_DOC), three, stats, epoch=0, valid_loss=None, checkpoint="c"
+    )
+    assert sr["layout"] == "channels_first_zyx" and sr["spatial_ndim"] == 3
+    assert sr["model"]["scaling_factor"] == 2 and "dimension" not in sr["model"]
+    assert t.normalizers_from_card(card)["e_mean"].tolist() == []
+
+
+def test_afno_divisibility_is_checked_before_torch_is_imported():
+    """A patch that does not divide the sample shape is refused naming the
+    off-by-one (`Grid.Resolution [n, ...]` gives n + 1 samples) BEFORE torch
+    is imported -- which is why this runs in the default matrix: were the
+    check after the constructor, this box, having no physicsnemo, would see
+    an ImportError instead."""
+    from meshioplusplus.physicsnemo import train as trainer
+
+    spec = t.spec_from_dict(AFNO_DOC)
+    schema = {"x_channels": ["c0"], "y_channels": ["c"], "x_shape": [65, 65]}
+    with pytest.raises(ValueError, match=r"n \+ 1 sample points"):
+        trainer._build_afno(spec, schema)
+    with pytest.raises(ValueError, match="AFNO is 2-D only"):
+        trainer._build_afno(spec, {**schema, "x_shape": [8, 8, 8]})
+    odd = t.spec_from_dict(
+        {
+            **AFNO_DOC,
+            "Model": {
+                "Name": "afno",
+                "PatchSize": [8, 8],
+                "EmbedDim": 12,
+                "NumBlocks": 8,
+            },
+        }
+    )
+    with pytest.raises(
+        ValueError, match="EmbedDim 12 must be divisible by Model.NumBlocks 8"
+    ):
+        trainer._build_afno(odd, {**schema, "x_shape": [64, 64]})
+
+
+def test_operator_card_records_the_parameter_and_trunk_contract():
+    from meshioplusplus.physicsnemo import train as trainer
+
+    spec = t.spec_from_dict(
+        {
+            **DEEP_DOC,
+            "Operator": {
+                "Parameters": ["Load", "E"],
+                "Trunk": "budget",
+                "TrunkCount": 3,
+            },
+        }
+    )
+    schema = {
+        "parameter_columns": ["Load", "E_0", "E_1"],
+        "y_columns": ["w"],
+        "num_points": 10,
+        "num_trunk": 3,
+    }
+    stats = {
+        "params_mean": [1.0, 2.0, 3.0],
+        "params_std": [0.0, 1.0, 1.0],
+        "trunk_mean": [0.5, 0.5, 0.0],
+        "trunk_std": [0.3, 0.3, 0.0],
+        "y_mean": [0.1],
+        "y_std": [0.2],
+    }
+    card = trainer.operator_card_from_run(
+        spec,
+        schema,
+        stats,
+        [1, 4, 7],
+        epoch=2,
+        valid_loss=0.5,
+        checkpoint="/r/best.mdlus",
+    )
+    assert card["model"]["name"] == "deeponet"
+    assert card["model"]["in_parameters"] == 3 and card["model"]["out_channels"] == 1
+    assert card["parameters"] == ["Load", "E_0", "E_1"]
+    assert card["parameter_names"] == ["Load", "E"]
+    assert card["trunk_indices"] == [1, 4, 7] and card["num_points"] == 10
+    assert card["input_normalization"]["std"][0] == t.STATS_STD_FLOOR
+    assert card["trunk_normalization"]["std"][2] == t.STATS_STD_FLOOR
+    assert card["fields"] == [] and card["operator"]["trunk_count"] == 3
+    norms = t.normalizers_from_card(card)
+    assert (
+        norms["x_mean"].tolist() == [1.0, 2.0, 3.0] and norms["e_mean"].tolist() == []
+    )
+
+
+def test_the_viewer_family_table_matches_the_python_one():
+    """`src/viewer/src/dataset/families.ts` drives the launch form; its
+    family names are pinned equal, in order, to `_MODELS` (the `manifest.ts`
+    parity precedent), so a family added on one side only is a red build."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(
+        here, "..", "..", "src", "viewer", "src", "dataset", "families.ts"
+    )
+    with open(path, encoding="utf-8") as fh:
+        names = re.findall(r"name: '([a-z]+)'", fh.read())
+    assert names == list(t._MODELS)

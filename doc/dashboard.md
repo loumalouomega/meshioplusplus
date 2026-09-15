@@ -105,6 +105,6 @@ The webhook is **a server-side setting, never a spec key or a tool parameter**, 
 - Only `*.json` files at the workspace root are treated as manifests: the manifest is the resolution anchor for the relative sources inside it, and the page saves back at the root.
 - Thumbnails are session-only and cost one preview render per manifest; untick *thumbnails* before **Scan all** on a large workspace.
 - A scan stages exactly one entry at a time (the WASM filesystem never reclaims memory), so **Scan all** over many large manifests is serial and slow the first time; the scan cache makes the next visit instant.
-- One model architecture (MeshGraphNet) and one training loop; a different architecture means a different trainer, not a form field.
+- Five model families (MeshGraphNet, SRResNet, FNO, AFNO, DeepONet) share one training loop, and the launch form shows only the chosen family's options (`src/viewer/src/dataset/families.ts`, a pure twin of the trainer's own family table); a *different* architecture still means a different trainer, not a form field. DeepONet is offered only when the companion process reports the experimental `DeepONet` installed.
 - At most three runs compare at once (the colour limit above), and a comparison is of validation curves and hyperparameters — not of predictions.
 - The companion process is a local convenience, not a multi-user service: one token, loopback by default, no accounts.

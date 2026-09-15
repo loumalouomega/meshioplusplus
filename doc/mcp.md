@@ -130,7 +130,7 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 | Tool | Notes |
 |---|---|
 | `train_defaults` | what a launch needs: the data arrays the manifest's first entry carries, its splits, whether the frameworks are installed, and a complete default [training spec](physicsnemo.md#training-and-prediction) |
-| `train_start` | *gated* — start a MeshGraphNet run (`fields` → `target_fields` over a split) as a subprocess; returns the job id. Needs `torch_geometric` + `nvidia-physicsnemo`, checked **before** spawning so a missing framework is a named error rather than a dead process |
+| `train_start` | *gated* — start a training run (`fields` → `target_fields` over a split) as a subprocess; returns the job id. `model_name` picks the family and each reads only its own hyperparameters: `meshgraphnet` (`processor_size`/`hidden_dim`/`aggregation` + the graph options), `srresnet` (`scaling_factor`/`conv_layer_size`/`resid_blocks` + the grid options), `fno` (`latent_channels`/`num_fno_layers`/`num_fno_modes`/`spectral_padding` + the grid options, 2-D when `squeeze` names a world axis), `afno` (`patch_size`/`embed_dim`/`depth`/`num_blocks` + the grid options, `squeeze` required) and `deeponet` (no `fields` — the per-entry `Metadata` keys in `parameters`, plus `trunk`/`trunk_count`/`trunk_method`/`trunk_seed` and the branch/trunk sizes). An unknown `model_name` is refused naming the five before any spec is built. Needs `nvidia-physicsnemo`, plus `torch_geometric` for `meshgraphnet` only, checked **before** spawning so a missing framework is a named error rather than a dead process |
 | `train_status` / `train_metrics` / `train_log` | the three incremental polls: state + progress + ETA, the per-epoch rows since an epoch, and the log from a byte offset |
 | `train_list` | every run (newest first) with its hyperparameters and final/best losses |
 | `train_stop` | SIGTERM (the trainer finishes its epoch and writes `final.mdlus`), SIGKILL after `grace_seconds` |
@@ -138,7 +138,7 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 | `train_predict` | *gated* — predict over a split with a job's (or an explicit) checkpoint, writing `<column>_pred`/`<column>_error` back into `output_dir/<entry_id>.vtu`; returns per-entry RMSE |
 | `guard_fit` | fit a geometry guardrail over a manifest split and write it as JSON — the description a trained model is scored against |
 | `guard_check` | describe one mesh's shape, and score it against a guardrail (or a model card carrying one) if given: verdict, score against the threshold, and the descriptors that put it there |
-| `predict_file` | *gated* — predict on ONE mesh file with a trained checkpoint: no manifest, no split, no entry. Everything comes from the checkpoint's own card, including which model family wrote it; `time_step` picks a step of a multi-step input and `target_path` supplies a paired mesh. A file carrying no truth predicts anyway, with `rmse`/`max_error` null |
+| `predict_file` | *gated* — predict on ONE mesh file with a trained checkpoint: no manifest, no split, no entry. Everything comes from the checkpoint's own card, including which model family wrote it; `time_step` picks a step of a multi-step input, `target_path` supplies a paired mesh, and `parameters` supplies a `deeponet` checkpoint's per-case inputs (an object of the `Metadata` keys it was trained on — required for that family, refused for the others). A file carrying no truth predicts anyway, with `rmse`/`max_error` null |
 
 ### Gated
 
@@ -148,7 +148,7 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 | `export_dataset` | `[arrow]` (`[zarr]`/h5py for those layouts) | a *set* of meshes → one `mesh_id`-keyed dataset (hive Parquet / zarr / hdf5; see [ML data handling](/ml)) |
 | `export_cae` | — | a *set* of meshes → one `.npz` per case in the [CAE sample layout](/formats/cae) (pure numpy, no extra) |
 | `screenshot` | `[viewer]` | off-screen PNG render, returned as MCP image content |
-| `train_start`, `train_predict`, `predict_file` | `torch_geometric` + `nvidia-physicsnemo` (no pip extra, [deliberately](physicsnemo.md#installation-deliberately-no-physicsnemo-extra)) | training and inference; the other `train_*` tools only read files and need neither |
+| `train_start`, `train_predict`, `predict_file` | `nvidia-physicsnemo`, plus `torch_geometric` for the `meshgraphnet` family (no pip extra, [deliberately](physicsnemo.md#installation-deliberately-no-physicsnemo-extra)) | training and inference; the other `train_*` tools only read files and need neither. `train_defaults` reports which of `torch_geometric`/`physicsnemo`/`deeponet` (the experimental `DeepONet`) the server has |
 
 ## Reports are strict JSON
 

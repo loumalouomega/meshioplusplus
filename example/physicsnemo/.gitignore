@@ -4,3 +4,7 @@ predictions/
 checkpoint.pt
 dataset_manifest.json
 runs/
+# the neural-operator examples' datasets regenerate from the seed
+fno_cases/
+afno_cases/
+deeponet_cases/

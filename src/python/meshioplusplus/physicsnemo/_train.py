@@ -80,6 +80,7 @@ _TOP_KEYS = (
     "Model",
     "Graph",
     "Grid",
+    "Operator",
     "Read",
     "Notes",
     "Tags",
@@ -153,6 +154,92 @@ _FAMILIES: Tuple[_Family, ...] = (
             "change the pair's own coverage"
         ),
     ),
+    # The 2-D/3-D neural operators (v10.40.0). Both are resolution-preserving,
+    # so `ScalingFactor` is not a key of theirs and `grid_kwargs()` pairs the
+    # coarse grid with itself (`upscale_samples(1)` is the identity).
+    _Family(
+        name="fno",
+        block="Grid",
+        model_keys=(
+            "Name",
+            "LatentChannels",
+            "NumFnoLayers",
+            "NumFnoModes",
+            "SpectralPadding",
+            "PaddingType",
+            "ActivationFn",
+            "DecoderLayers",
+            "DecoderLayerSize",
+            "DecoderActivationFn",
+            "CoordFeatures",
+        ),
+        spatial="2|3",
+        frameworks=("physicsnemo",),
+        accepts_augmentation=False,
+        # A squeeze is what makes it a 2-D operator; without one it is 3-D.
+        allows_squeeze=True,
+        requires_squeeze=False,
+        augmentation_note=(
+            "samples a fixed lattice, so rotating the mesh under it would "
+            "change the grid's own coverage"
+        ),
+    ),
+    _Family(
+        name="afno",
+        block="Grid",
+        model_keys=(
+            "Name",
+            "PatchSize",
+            "EmbedDim",
+            "Depth",
+            "MlpRatio",
+            "DropRate",
+            "NumBlocks",
+            "SparsityThreshold",
+            "HardThresholdingFraction",
+        ),
+        spatial="2",
+        frameworks=("physicsnemo",),
+        accepts_augmentation=False,
+        allows_squeeze=True,
+        requires_squeeze=True,
+        augmentation_note=(
+            "samples a fixed lattice, so rotating the mesh under it would "
+            "change the grid's own coverage"
+        ),
+        squeeze_note=(
+            "model is 2-D only (AFNO patches a fixed (H, W) image); give "
+            "Grid.Squeeze the world axis to collapse (0, 1 or 2)"
+        ),
+    ),
+    # Parameters in, field out (v10.40.0): a branch net over the case's
+    # `Metadata` parameters, a trunk net over the mesh's own points.
+    _Family(
+        name="deeponet",
+        block="Operator",
+        model_keys=(
+            "Name",
+            "BranchLayers",
+            "BranchLayerSize",
+            "TrunkLayers",
+            "TrunkLayerSize",
+            "Width",
+            "DecoderType",
+            "DecoderWidth",
+            "DecoderLayers",
+            "DecoderActivationFn",
+            "ActivationFn",
+        ),
+        spatial=None,
+        frameworks=("physicsnemo",),
+        accepts_augmentation=False,
+        allows_squeeze=False,
+        requires_squeeze=False,
+        augmentation_note=(
+            "shares one trunk across the batch, so every case must keep the "
+            "same points and cannot be posed differently per sample"
+        ),
+    ),
 )
 _FAMILY = {f.name: f for f in _FAMILIES}
 _MODELS = tuple(f.name for f in _FAMILIES)
@@ -165,7 +252,7 @@ _MODEL_FAMILY_KEYS = {f.name: f.model_keys for f in _FAMILIES}
 _FAMILY_BLOCK = {f.name: f.block for f in _FAMILIES}
 #: Every block a family can read, so the refusal loop is over a list rather
 #: than a binary "the other one".
-_BLOCKS = ("Graph", "Grid")
+_BLOCKS = ("Graph", "Grid", "Operator")
 _FRAMEWORK_HINTS = {
     "torch_geometric": "pip install torch_geometric",
     "physicsnemo": "pip install nvidia-physicsnemo",
@@ -217,6 +304,25 @@ _GRID_KEYS = (
     "MaxCells",
     "Float32",
 )
+#: `Operator` (deeponet): the per-case parameters and the trunk. `Parameters`
+#: names the ordered `Metadata` keys of every entry that become the branch
+#: input; the trunk is every mesh point (`"points"`) or a token budget
+#: (`"budget"`, `select_points`' own `TrunkCount`/`TrunkMethod`/`TrunkSeed`).
+_OPERATOR_KEYS = (
+    "Parameters",
+    "Trunk",
+    "TrunkCount",
+    "TrunkMethod",
+    "TrunkSeed",
+    "Float32",
+)
+_TRUNKS = ("points", "budget")
+_TRUNK_METHODS = ("farthest", "grid", "random")
+#: The installed `DeepONet` refuses `"conv"` for an MLP branch ("pass a
+#: SpatialBranch as branch1") and `"temporal_projection"` needs an
+#: `output_window`; neither is a hyperparameter this family exposes, so both
+#: are refused by name rather than surfacing from inside the constructor.
+_DECODER_TYPES = ("mlp",)
 #: `SRResNet` accepts only these, and says so itself -- but failing here names
 #: the spec key instead of surfacing from inside torch.
 _SCALING_FACTORS = (2, 4, 8)
@@ -396,6 +502,47 @@ class TrainSpec:
     large_kernel_size: int = 7
     small_kernel_size: int = 3
     activation_fn: str = "prelu"
+    # fno -- family-prefixed where the PascalCase key is shared with another
+    # family but the constructor default differs (`ActivationFn` is prelu /
+    # gelu / silu across srresnet / fno / deeponet; `DecoderLayers` is 1 for
+    # FNO and 2 for DeepONet): `default_spec` re-validates through the
+    # document, and a shared field would hand one family the other's default.
+    latent_channels: int = 32
+    num_fno_layers: int = 4
+    num_fno_modes: int = 16
+    spectral_padding: int = 8
+    padding_type: str = "constant"
+    fno_activation_fn: str = "gelu"
+    fno_decoder_layers: int = 1
+    fno_decoder_layer_size: int = 32
+    fno_decoder_activation_fn: str = "silu"
+    coord_features: bool = True
+    # afno
+    patch_size: Tuple[int, int] = (16, 16)
+    embed_dim: int = 256
+    depth: int = 4
+    mlp_ratio: float = 4.0
+    drop_rate: float = 0.0
+    num_blocks: int = 16
+    sparsity_threshold: float = 0.01
+    hard_thresholding_fraction: float = 1.0
+    # deeponet
+    branch_layers: int = 4
+    branch_layer_size: int = 128
+    trunk_layers: int = 4
+    trunk_layer_size: int = 128
+    width: int = 64
+    decoder_type: str = "mlp"
+    decoder_width: int = 128
+    decoder_layers: int = 2
+    decoder_activation_fn: str = "relu"
+    deeponet_activation_fn: str = "silu"
+    # Operator (deeponet)
+    parameters: Tuple[str, ...] = ()
+    trunk: str = "points"
+    trunk_count: Optional[int] = None
+    trunk_method: str = "farthest"
+    trunk_seed: int = 0
     regions: bool = False
     kind: str = "node"
     undirected: bool = True
@@ -448,11 +595,32 @@ class TrainSpec:
             "fields": list(self.fields),
             "target_fields": list(self.target_fields),
             "coarse": coarse,
-            "scaling_factor": self.scaling_factor,
+            # A resolution-preserving family (fno/afno) has no ScalingFactor:
+            # the coarse grid is paired with itself, `upscale_samples(1)`
+            # being the identity, so the same pairing serves both shapes.
+            "scaling_factor": (
+                self.scaling_factor
+                if "ScalingFactor" in _FAMILY[self.model_name].model_keys
+                else 1
+            ),
             "extrapolate": self.extrapolate,
             "fill_value": self.fill_value,
             "squeeze": self.squeeze,
             "squeeze_index": self.squeeze_index,
+            "float32": self.float32,
+        }
+
+    def operator_kwargs(self) -> Dict[str, Any]:
+        """The :func:`operator_sample` parameters this spec describes --
+        :meth:`graph_kwargs`' sibling for the parameters-in/field-out family,
+        recorded on the card and replayed verbatim at inference."""
+        return {
+            "parameter_names": list(self.parameters),
+            "target_fields": list(self.target_fields),
+            "trunk": self.trunk,
+            "trunk_count": self.trunk_count,
+            "trunk_method": self.trunk_method,
+            "trunk_seed": self.trunk_seed,
             "float32": self.float32,
         }
 
@@ -505,8 +673,6 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         raise ValueError(f"{_ERR}Manifest is required (a dataset manifest path)")
     fields = _names(doc.get("Fields", ()), "Fields")
     targets = _names(doc.get("TargetFields", ()), "TargetFields")
-    if not fields:
-        raise ValueError(f"{_ERR}Fields must name at least one input array")
     if not targets:
         raise ValueError(f"{_ERR}TargetFields must name at least one target array")
     model = doc.get("Model", {})
@@ -520,6 +686,10 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
     if not isinstance(grid, dict):
         raise ValueError(f"{_ERR}Grid must be an object")
     _check_keys(grid, "Grid", _GRID_KEYS)
+    operator = doc.get("Operator", {})
+    if not isinstance(operator, dict):
+        raise ValueError(f"{_ERR}Operator must be an object")
+    _check_keys(operator, "Operator", _OPERATOR_KEYS)
     read = doc.get("Read", {})
     if not isinstance(read, dict):
         raise ValueError(f"{_ERR}Read must be an object of read() keyword arguments")
@@ -527,7 +697,17 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
     fam = _FAMILY.get(name)
     if fam is None:
         raise ValueError(f"{_ERR}Model.Name must be one of {', '.join(_MODELS)}")
-    blocks = {"Graph": graph, "Grid": grid}
+    blocks = {"Graph": graph, "Grid": grid, "Operator": operator}
+    # An operator family's inputs are the case's parameters, not a data
+    # array: `Fields` is refused there rather than silently carried.
+    if fam.block == "Operator":
+        if fields:
+            raise ValueError(
+                f"{_ERR}a '{name}' model takes its inputs from "
+                "Operator.Parameters, not Fields; leave Fields empty"
+            )
+    elif not fields:
+        raise ValueError(f"{_ERR}Fields must name at least one input array")
 
     # Cross-family strictness. A hyperparameter meant for another family is
     # refused by name rather than ignored: the author expected something that
@@ -633,6 +813,54 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
     squeeze_index = grid.get("SqueezeIndex")
     if squeeze_index is not None:
         squeeze_index = _int(squeeze_index, "Grid.SqueezeIndex")
+    patch_size = model.get("PatchSize", [16, 16])
+    if (
+        not isinstance(patch_size, (list, tuple))
+        or len(patch_size) != 2
+        or any(
+            isinstance(v, bool) or not isinstance(v, int) or v < 1 for v in patch_size
+        )
+    ):
+        raise ValueError(f"{_ERR}Model.PatchSize must be two positive integers")
+    patch_size = (int(patch_size[0]), int(patch_size[1]))
+    decoder_type = str(model.get("DecoderType", "mlp"))
+    if decoder_type not in _DECODER_TYPES:
+        reason = (
+            "needs an output_window and a temporal trunk"
+            if decoder_type == "temporal_projection"
+            else "needs a spatial branch, and the branch here is an MLP over the "
+            "parameters"
+        )
+        raise ValueError(
+            f"{_ERR}Model.DecoderType must be one of {', '.join(_DECODER_TYPES)}; "
+            f"{decoder_type!r} {reason}"
+        )
+    parameters = _names(operator.get("Parameters", ()), "Operator.Parameters")
+    if fam.block == "Operator" and not parameters:
+        raise ValueError(
+            f"{_ERR}Operator.Parameters must name at least one Metadata key "
+            f"(the per-case inputs of a '{name}' model)"
+        )
+    if len(set(parameters)) != len(parameters):
+        raise ValueError(f"{_ERR}Operator.Parameters must not repeat a name")
+    trunk = str(operator.get("Trunk", "points"))
+    if trunk not in _TRUNKS:
+        raise ValueError(f"{_ERR}Operator.Trunk must be one of {', '.join(_TRUNKS)}")
+    trunk_count = operator.get("TrunkCount")
+    if trunk == "budget":
+        if trunk_count is None:
+            raise ValueError(
+                f"{_ERR}Operator.TrunkCount is required with Trunk 'budget' "
+                "(how many points select_points keeps)"
+            )
+        trunk_count = _int(trunk_count, "Operator.TrunkCount", 1)
+    elif trunk_count is not None:
+        raise ValueError(f"{_ERR}Operator.TrunkCount belongs to Trunk 'budget'")
+    trunk_method = str(operator.get("TrunkMethod", "farthest"))
+    if trunk_method not in _TRUNK_METHODS:
+        raise ValueError(
+            f"{_ERR}Operator.TrunkMethod must be one of {', '.join(_TRUNK_METHODS)}"
+        )
     device = str(doc.get("Device", "auto"))
     if not device.startswith(_DEVICES_PREFIX):
         raise ValueError(f"{_ERR}Device must be auto, cpu, cuda or cuda:N")
@@ -668,7 +896,70 @@ def spec_from_dict(doc, *, base_dir=None) -> TrainSpec:
         small_kernel_size=_int(
             model.get("SmallKernelSize", 3), "Model.SmallKernelSize", 1
         ),
-        activation_fn=str(model.get("ActivationFn", "prelu")),
+        activation_fn=(
+            str(model.get("ActivationFn", "prelu")) if name == "srresnet" else "prelu"
+        ),
+        latent_channels=_int(
+            model.get("LatentChannels", 32), "Model.LatentChannels", 1
+        ),
+        num_fno_layers=_int(model.get("NumFnoLayers", 4), "Model.NumFnoLayers", 1),
+        num_fno_modes=_int(model.get("NumFnoModes", 16), "Model.NumFnoModes", 1),
+        spectral_padding=_int(
+            model.get("SpectralPadding", 8), "Model.SpectralPadding", 0
+        ),
+        padding_type=str(model.get("PaddingType", "constant")),
+        fno_activation_fn=(
+            str(model.get("ActivationFn", "gelu")) if name == "fno" else "gelu"
+        ),
+        fno_decoder_layers=(
+            _int(model.get("DecoderLayers", 1), "Model.DecoderLayers", 1)
+            if name == "fno"
+            else 1
+        ),
+        fno_decoder_layer_size=_int(
+            model.get("DecoderLayerSize", 32), "Model.DecoderLayerSize", 1
+        ),
+        fno_decoder_activation_fn=(
+            str(model.get("DecoderActivationFn", "silu")) if name == "fno" else "silu"
+        ),
+        coord_features=_bool(model.get("CoordFeatures", True), "Model.CoordFeatures"),
+        patch_size=patch_size,
+        embed_dim=_int(model.get("EmbedDim", 256), "Model.EmbedDim", 1),
+        depth=_int(model.get("Depth", 4), "Model.Depth", 1),
+        mlp_ratio=float(model.get("MlpRatio", 4.0)),
+        drop_rate=float(model.get("DropRate", 0.0)),
+        num_blocks=_int(model.get("NumBlocks", 16), "Model.NumBlocks", 1),
+        sparsity_threshold=float(model.get("SparsityThreshold", 0.01)),
+        hard_thresholding_fraction=float(model.get("HardThresholdingFraction", 1.0)),
+        branch_layers=_int(model.get("BranchLayers", 4), "Model.BranchLayers", 1),
+        branch_layer_size=_int(
+            model.get("BranchLayerSize", 128), "Model.BranchLayerSize", 1
+        ),
+        trunk_layers=_int(model.get("TrunkLayers", 4), "Model.TrunkLayers", 1),
+        trunk_layer_size=_int(
+            model.get("TrunkLayerSize", 128), "Model.TrunkLayerSize", 1
+        ),
+        width=_int(model.get("Width", 64), "Model.Width", 1),
+        decoder_type=decoder_type,
+        decoder_width=_int(model.get("DecoderWidth", 128), "Model.DecoderWidth", 1),
+        decoder_layers=(
+            _int(model.get("DecoderLayers", 2), "Model.DecoderLayers", 1)
+            if name == "deeponet"
+            else 2
+        ),
+        decoder_activation_fn=(
+            str(model.get("DecoderActivationFn", "relu"))
+            if name == "deeponet"
+            else "relu"
+        ),
+        deeponet_activation_fn=(
+            str(model.get("ActivationFn", "silu")) if name == "deeponet" else "silu"
+        ),
+        parameters=parameters,
+        trunk=trunk,
+        trunk_count=trunk_count,
+        trunk_method=trunk_method,
+        trunk_seed=_int(operator.get("TrunkSeed", 0), "Operator.TrunkSeed"),
         regions=_bool(graph.get("Regions", False), "Graph.Regions"),
         kind=kind,
         undirected=_bool(graph.get("Undirected", True), "Graph.Undirected"),
@@ -758,8 +1049,72 @@ def _emit_srresnet(spec: TrainSpec, doc: dict) -> None:
     doc["Grid"] = _emit_grid_block(spec)
 
 
+def _emit_fno(spec: TrainSpec, doc: dict) -> None:
+    doc["Model"] = {
+        "Name": spec.model_name,
+        "LatentChannels": spec.latent_channels,
+        "NumFnoLayers": spec.num_fno_layers,
+        "NumFnoModes": spec.num_fno_modes,
+        "SpectralPadding": spec.spectral_padding,
+        "PaddingType": spec.padding_type,
+        "ActivationFn": spec.fno_activation_fn,
+        "DecoderLayers": spec.fno_decoder_layers,
+        "DecoderLayerSize": spec.fno_decoder_layer_size,
+        "DecoderActivationFn": spec.fno_decoder_activation_fn,
+        "CoordFeatures": spec.coord_features,
+    }
+    doc["Grid"] = _emit_grid_block(spec)
+
+
+def _emit_afno(spec: TrainSpec, doc: dict) -> None:
+    doc["Model"] = {
+        "Name": spec.model_name,
+        "PatchSize": list(spec.patch_size),
+        "EmbedDim": spec.embed_dim,
+        "Depth": spec.depth,
+        "MlpRatio": spec.mlp_ratio,
+        "DropRate": spec.drop_rate,
+        "NumBlocks": spec.num_blocks,
+        "SparsityThreshold": spec.sparsity_threshold,
+        "HardThresholdingFraction": spec.hard_thresholding_fraction,
+    }
+    doc["Grid"] = _emit_grid_block(spec)
+
+
+def _emit_deeponet(spec: TrainSpec, doc: dict) -> None:
+    doc["Model"] = {
+        "Name": spec.model_name,
+        "BranchLayers": spec.branch_layers,
+        "BranchLayerSize": spec.branch_layer_size,
+        "TrunkLayers": spec.trunk_layers,
+        "TrunkLayerSize": spec.trunk_layer_size,
+        "Width": spec.width,
+        "DecoderType": spec.decoder_type,
+        "DecoderWidth": spec.decoder_width,
+        "DecoderLayers": spec.decoder_layers,
+        "DecoderActivationFn": spec.decoder_activation_fn,
+        "ActivationFn": spec.deeponet_activation_fn,
+    }
+    operator = {
+        "Parameters": list(spec.parameters),
+        "Trunk": spec.trunk,
+        "TrunkMethod": spec.trunk_method,
+        "TrunkSeed": spec.trunk_seed,
+        "Float32": spec.float32,
+    }
+    if spec.trunk_count is not None:
+        operator["TrunkCount"] = spec.trunk_count
+    doc["Operator"] = operator
+
+
 #: One document emitter per family (see :func:`spec_to_dict`).
-_EMITTERS = {"meshgraphnet": _emit_meshgraphnet, "srresnet": _emit_srresnet}
+_EMITTERS = {
+    "meshgraphnet": _emit_meshgraphnet,
+    "srresnet": _emit_srresnet,
+    "fno": _emit_fno,
+    "afno": _emit_afno,
+    "deeponet": _emit_deeponet,
+}
 
 
 def spec_to_dict(spec: TrainSpec) -> dict:

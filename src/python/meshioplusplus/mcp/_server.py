@@ -2061,6 +2061,26 @@ def _register_training(server: FastMCP) -> None:
         padding_relative: float = 0.0,
         extrapolate: bool = False,
         fill_value: float = 0.0,
+        squeeze: Optional[int] = None,
+        squeeze_index: Optional[int] = None,
+        latent_channels: int = 32,
+        num_fno_layers: int = 4,
+        num_fno_modes: int = 16,
+        spectral_padding: int = 8,
+        patch_size: Optional[List[int]] = None,
+        embed_dim: int = 256,
+        depth: int = 4,
+        num_blocks: int = 16,
+        parameters: Optional[List[str]] = None,
+        trunk: str = "points",
+        trunk_count: Optional[int] = None,
+        trunk_method: str = "farthest",
+        trunk_seed: int = 0,
+        branch_layers: int = 4,
+        branch_layer_size: int = 128,
+        trunk_layers: int = 4,
+        trunk_layer_size: int = 128,
+        width: int = 64,
         regions: bool = False,
         kind: str = "node",
         undirected: bool = True,
@@ -2073,11 +2093,15 @@ def _register_training(server: FastMCP) -> None:
         notes: Optional[str] = None,
         tags: Optional[List[str]] = None,
     ) -> dict:
-        """Start training PhysicsNeMo's MeshGraphNet on a manifest split
-        (fields -> target_fields) as a background job under the runs
-        directory; returns the job id and initial status. Needs
-        torch_geometric + nvidia-physicsnemo (no pip extra); a missing
-        framework is a named error."""
+        """Start a PhysicsNeMo training run on a manifest split (fields ->
+        target_fields) as a background job under the runs directory; returns
+        the job id and initial status. model_name picks the family --
+        meshgraphnet (graph), srresnet / fno / afno (grid; fno is 2-D when
+        squeeze names a world axis, afno requires it) or deeponet (parameters
+        in, field out: no fields, the per-entry Metadata keys in parameters)
+        -- and each reads only its own hyperparameters. Needs
+        nvidia-physicsnemo, plus torch_geometric for meshgraphnet (no pip
+        extra); a missing framework is a named error."""
         return _guard(
             _tools.tool_train_start,
             manifest_path=manifest_path,
@@ -2103,6 +2127,26 @@ def _register_training(server: FastMCP) -> None:
             padding_relative=padding_relative,
             extrapolate=extrapolate,
             fill_value=fill_value,
+            squeeze=squeeze,
+            squeeze_index=squeeze_index,
+            latent_channels=latent_channels,
+            num_fno_layers=num_fno_layers,
+            num_fno_modes=num_fno_modes,
+            spectral_padding=spectral_padding,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            depth=depth,
+            num_blocks=num_blocks,
+            parameters=parameters,
+            trunk=trunk,
+            trunk_count=trunk_count,
+            trunk_method=trunk_method,
+            trunk_seed=trunk_seed,
+            branch_layers=branch_layers,
+            branch_layer_size=branch_layer_size,
+            trunk_layers=trunk_layers,
+            trunk_layer_size=trunk_layer_size,
+            width=width,
             regions=regions,
             kind=kind,
             undirected=undirected,
@@ -2247,6 +2291,7 @@ def _register_training(server: FastMCP) -> None:
         input_format: Optional[str] = None,
         output_format: Optional[str] = None,
         device: str = "auto",
+        parameters: Optional[dict] = None,
     ) -> dict:
         """Predict with a trained .mdlus checkpoint on ONE mesh file — no
         manifest, no split, no entry, for a mesh that was never catalogued.
@@ -2254,9 +2299,11 @@ def _register_training(server: FastMCP) -> None:
         card: which model family wrote it, the sample options, the read
         options, the column contract and the normalization. time_step picks a
         step of a multi-step input; target_path supplies the paired mesh a
-        t->t+n or coarse/fine checkpoint compares against. A file carrying no
-        truth predicts anyway, with rmse/max_error reported as null rather
-        than measured against itself. Needs the frameworks."""
+        t->t+n or coarse/fine checkpoint compares against; parameters supplies
+        a deeponet checkpoint's per-case inputs (an object of the Metadata
+        keys it was trained on). A file carrying no truth predicts anyway,
+        with rmse/max_error reported as null rather than measured against
+        itself. Needs the frameworks."""
         return _guard(
             _tools.tool_predict_file,
             checkpoint=checkpoint,
@@ -2267,6 +2314,7 @@ def _register_training(server: FastMCP) -> None:
             input_format=input_format,
             output_format=output_format,
             device=device,
+            parameters=parameters,
         )
 
 

@@ -12,6 +12,7 @@
 
 import { isToolError, type ApiClient } from './api';
 import { SERIES_COLORS, renderLineChart, type ChartSeries } from './chart';
+import { FAMILIES, familyArgs, familyFor } from './families';
 import { JobPoller, isTerminal, type CheckpointInfo, type JobStatus, type JobSummary, type MetricRow } from './jobs';
 import { notifyRunFinished, requestNotifications, resetTitle } from './notify';
 import { $, setOptions, show, svg$ } from '../ui/dom';
@@ -137,8 +138,16 @@ export class TrainPanel {
             splits.map((s) => ({ value: s, label: s })),
             splits.includes('valid') ? 'valid' : (splits[1] ?? splits[0] ?? ''),
         );
+        // A family that needs a framework the companion process lacks is
+        // offered greyed out rather than failing at launch by name.
+        const model = $<HTMLSelectElement>('t-model');
+        for (const family of FAMILIES) {
+            const option = [...model.options].find((o) => o.value === family.name);
+            if (option && family.requires) option.disabled = report.frameworks[family.requires] === false;
+        }
+        const optional = new Set(FAMILIES.map((f) => f.requires).filter(Boolean));
         const missing = Object.entries(report.frameworks)
-            .filter(([, present]) => !present)
+            .filter(([name, present]) => !present && !optional.has(name))
             .map(([name]) => name);
         if (missing.length) {
             $('t-error').textContent =
@@ -174,16 +183,19 @@ export class TrainPanel {
     }
 
     private specFromForm(manifest: string): Record<string, unknown> {
+        const family = familyFor($<HTMLSelectElement>('t-model').value);
         const fields = multiValues($<HTMLSelectElement>('t-fields'));
         const targets = multiValues($<HTMLSelectElement>('t-targets'));
-        if (!fields.length || !targets.length) {
-            throw new Error('meshio++: pick at least one input field and one target field');
+        if (!targets.length) throw new Error('meshio++: pick at least one target field');
+        // An operator family's inputs are its Metadata parameters, not a data
+        // array: the server refuses Fields for it, so none are sent.
+        if (family.block !== 'Operator' && !fields.length) {
+            throw new Error('meshio++: pick at least one input field');
         }
         const number = (id: string) => Number($<HTMLInputElement>(id).value);
-        const modelName = $<HTMLSelectElement>('t-model').value;
         const common = {
             manifest_path: manifest,
-            fields,
+            fields: family.block === 'Operator' ? [] : fields,
             target_fields: targets,
             train_split: $<HTMLSelectElement>('t-train-split').value,
             valid_split: $<HTMLSelectElement>('t-valid-split').value,
@@ -191,38 +203,24 @@ export class TrainPanel {
             batch_size: number('t-batch'),
             learning_rate: number('t-lr'),
             seed: number('t-seed'),
-            model_name: modelName,
+            model_name: family.name,
         };
-        // Only the chosen family's hyperparameters are sent. The server refuses
-        // the other family's by name, so posting both would turn a UI default
+        // Only the chosen family's hyperparameters are sent (the table in
+        // families.ts says which). The server refuses another family's by
+        // name, so posting every panel's defaults would turn a UI default
         // into an error the user never asked for.
-        if (modelName === 'srresnet') {
-            const resolution = $<HTMLInputElement>('t-resolution')
-                .value.split(',')
-                .map((part) => Number(part.trim()));
-            if (resolution.length !== 3 || resolution.some((v) => !(v > 0))) {
-                throw new Error('meshio++: resolution must be three positive cell counts, e.g. 16,16,16');
-            }
-            return {
-                ...common,
-                resolution,
-                scaling_factor: Number($<HTMLSelectElement>('t-scaling').value),
-                conv_layer_size: number('t-conv'),
-                resid_blocks: number('t-blocks'),
-            };
-        }
         return {
             ...common,
-            processor_size: number('t-processor'),
-            hidden_dim: number('t-hidden'),
+            ...familyArgs(family, (id) => $<HTMLInputElement | HTMLSelectElement>(id).value),
         };
     }
 
     /** Show only the chosen family's options. */
     syncModelOptions(): void {
-        const isGrid = $<HTMLSelectElement>('t-model').value === 'srresnet';
-        $('t-graph-opts').hidden = isGrid;
-        $('t-grid-opts').hidden = !isGrid;
+        const chosen = $<HTMLSelectElement>('t-model').value;
+        for (const family of FAMILIES) {
+            $(family.panelId).hidden = family.name !== chosen;
+        }
     }
 
     async start(): Promise<void> {

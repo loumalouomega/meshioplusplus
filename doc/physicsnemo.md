@@ -272,7 +272,7 @@ A checkpoint whose card records `Graph.Tessellate` rebuilds the same `Tessellati
 
 ## Superresolution: the `srresnet` family
 
-`TrainSpec` knows two model families, and they read different blocks. `Model.Name: "srresnet"` trains `physicsnemo.models.srrn.SRResNet` on the coarse/fine grid pairs [`grid_sample_pair`](#grid-samples) produces:
+`TrainSpec` knows five model families — `meshgraphnet`, `srresnet`, `fno`, `afno` and `deeponet`, one table (`_FAMILIES` in `physicsnemo/_train.py`) that the spec parser, the trainer, prediction, the MCP `train_start` tool and the dashboard's launch form all read — and each reads its own block. `Model.Name: "srresnet"` trains `physicsnemo.models.srrn.SRResNet` on the coarse/fine grid pairs [`grid_sample_pair`](#grid-samples) produces:
 
 ```json
 {
@@ -286,7 +286,7 @@ A checkpoint whose card records `Graph.Tessellate` rebuilds the same `Tessellati
 }
 ```
 
-**A hyperparameter meant for the other family is refused, not ignored.** `HiddenDim` on an srresnet, `ScalingFactor` on a meshgraphnet, a `Grid` block on a graph model, a `Graph` block on a CNN, a `ScalingFactor` outside {2, 4, 8}, or `Grid.Squeeze` on an srresnet (which is `Conv3d` throughout) each raise by name. A silently dropped key is how a run ends up training a model nobody asked for.
+**A hyperparameter meant for another family is refused, not ignored.** `HiddenDim` on an srresnet, `ScalingFactor` on a meshgraphnet or an fno, a `Grid` block on a graph model, a `Graph` or `Operator` block on a CNN, a `ScalingFactor` outside {2, 4, 8}, or `Grid.Squeeze` on an srresnet (which is `Conv3d` throughout) each raise by name — and the refusal loops over *every* block rather than "the other one", so a third block cannot slip past it. A silently dropped key is how a run ends up training a model nobody asked for. `Grid.Float32` is read from the family's own block (it used to be accepted and emitted but read from `Graph`, so `false` on an srresnet was silently ignored), and `run_training` loads the spec *before* asking for frameworks, so a grid run through the public API no longer demands `torch_geometric`.
 
 `Grid` takes the same lattice vocabulary as [`GridSpec.from_mesh`](./grids.md) — exactly one of `Resolution` and `CellSize`, plus `Bounds`, `Padding`, `PaddingRelative`, `Extrapolate`, `FillValue` and `MaxCells`. The **fine** grid is the coarse one through `upscale_samples(ScalingFactor)`, which is what makes the target's shape equal the model's output shape; see [that method's note](./grids.md#pairing-a-coarse-grid-with-a-fine-one) for why `upscale` is the wrong one here.
 
@@ -306,6 +306,79 @@ That last number is the one to report. A pointwise error cannot distinguish a fi
 | SRResNet | **0.0081** | **0.0027** |
 
 Nineteen times better pointwise, and **ninety-three times** closer in the spectrum. The two ratios differ that much because they measure different things: the baseline gets the large scales roughly right and loses the small ones entirely, which is precisely what a pointwise error under-reports. See [`example/physicsnemo/superresolution.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/physicsnemo/superresolution.py).
+
+## Neural operators on a grid: the `fno` and `afno` families
+
+`Model.Name: "fno"` and `"afno"` train `physicsnemo.models.fno.FNO` and `physicsnemo.models.afno.AFNO` on the same [grid samples](#grid-samples) the `srresnet` family reads — and they are the families [roadmap section 1](./roadmap)'s last bullet asked for, closing it. Both are **resolution-preserving**: the model answers on the grid it was given, so neither has a `ScalingFactor` and `grid_kwargs()` pairs the coarse grid with *itself* (`upscale_samples(1)` is the identity, which is what lets the coarse/fine machinery serve both shapes with no second code path).
+
+```jsonc
+{
+  "Manifest": "fno_cases/manifest.json", "RunDir": "runs/fno",
+  "Fields": ["K"], "TargetFields": ["p"], "Epochs": 100,
+  "Model": { "Name": "fno", "NumFnoModes": 12, "LatentChannels": 32, "NumFnoLayers": 4 },
+  "Grid":  { "Resolution": [32, 32, 1], "Squeeze": 2, "SqueezeIndex": 0 }
+}
+```
+
+**`Grid.Squeeze` is what makes an operator 2-D.** A lattice always has at least two planes on every axis, so a planar problem lives on a *thin* 3-D grid and the squeeze collapses one world axis — `SqueezeIndex` keeps that plane, omitting it averages over the axis (the [thin-axis idiom](./grids#two-dimensional-operators)). For `fno` the squeeze is optional and its presence *is* the FNO's `dimension` (3-D without it); for `afno` it is **required**, since AFNO patches a fixed `(H, W)` image, and the family refuses a spec without one by name. The FNO's `SpectralPadding` maps to the model's own `padding` — the name avoids colliding with `Grid.Padding`, the lattice's bounding-box padding, which is a different thing.
+
+**AFNO's shape is fixed at construction, and the arithmetic everyone trips on once is stated by the error.** `Grid.Resolution [n, ...]` gives `n + 1` sample points per axis (n cells have n + 1 corners), and `PatchSize` must divide that: `[63, 63, 1]` gives 64 points, which `[8, 8]` divides; `[64, 64, 1]` gives 65, which nothing does. The check runs **before torch is imported** — a non-dividing patch, a 3-D grid, or an `EmbedDim` not divisible by `NumBlocks` is refused naming the spec key, never surfacing from inside the model's patch embedding. At inference the card's recorded `inp_shape` is checked against the mesh's sample shape the same way, before the forward.
+
+**The card records the squeeze contract, and every part of it is load-bearing.** A 2-D grid card carries `layout` (the layout of the axes that *remain* — `channels_first_yx` for a squeezed z, `channels_first_zx` for y, `channels_first_zy` for x; `grid_layout_after_squeeze(axis)` in `meshioplusplus._grid_transfer` is the single owner, and a constant would be wrong because which axes remain depends on which one went), `spatial_ndim` (2 or 3), `squeeze`/`squeeze_index`, `x_shape` (the sample shape after the squeeze, what AFNO is built from) and `expand_axis`/`expand_size` (how a plane is duplicated back over the thin axis when the prediction is written onto the mesh). The grid-sample schema gained `x_shape`/`y_shape`/`expand_size` for this, so **`GRID_SAMPLE_VERSION` is now 2** — a stored v1 schema compares unequal, which is the drift guard doing its job. The normalizers are shaped from `spatial_ndim` rather than hard-coded to five dimensions, and that fix is asserted on the *shape*: against a `(B, C, H, W)` batch a `(1, C, 1, 1, 1)` normalizer broadcasts along the batch axis silently whenever `C == 1`, so the arithmetic alone could not have discriminated.
+
+`predict`, `predict_mesh` and `predict_file` need no new call — the card says which family wrote the checkpoint — and write `<field>_pred`/`_true`/`_error` onto the mesh's own points, expanding the 2-D answer over every plane of the thin axis first. `spectrum_rel_l2` is reported as **`None`** for a squeezed card: a 2-D power spectrum is a documented follow-up, and computing the 3-D one over duplicated planes would be a number that means nothing. Neither family needs `torch_geometric`, and neither accepts `Augmentation` (a grid sampled on a fixed lattice has its own coverage changed by rotating the mesh under it — the `srresnet` rule).
+
+Two worked examples, both executed on a GPU, in [`example/physicsnemo/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/physicsnemo): [`fno_darcy.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/physicsnemo/fno_darcy.py) (a log-normal permeability field in, the Darcy pressure out, against the effective-medium solve) and [`afno_advection.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/physicsnemo/afno_advection.py) (an initial blob and a velocity in, the exact spectral advection–diffusion solution out, against first-order upwind and persistence). Over 200 Darcy cases, 100 epochs in 103.1 s:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| effective-medium solve | 1.39e-2 | 0.373 |
+| FNO | **2.02e-3** | **0.0535** |
+
+and over 200 advection cases, 100 epochs in 255.7 s:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| persistence (`c(T) = c0`) | 1.51e-1 | 1.03 |
+| first-order upwind, true velocity | **1.11e-2** | **0.0785** |
+| AFNO | 1.85e-2 | 0.130 |
+
+The two operators land on opposite sides of their stronger baseline, and both results are reported as run. The FNO beats the effective-medium solve by about 7 times in RMSE and relative L2: a constant permeability cannot place the pressure maximum where the low-permeability pockets trap it, and the operator learns exactly that. The AFNO beats persistence by about 8 times but does **not** beat first-order upwind — its RMSE is about 1.7 times upwind's. That baseline is strong on purpose: it is handed the true velocity and integrates the transport equation, whereas the AFNO has to infer the displacement from the `u`/`v` channels. Two things say the gap is not the family's ceiling, and neither was tuned away here. The run had not converged, its best validation epoch being 98 of 100. And the error map shows the 8x8 patch seams of the patch embedding along the blob's edge, where most of the residual sits — a smaller `PatchSize` or a longer run is the obvious next experiment, left to the reader rather than folded into the committed numbers.
+
+## Parameters in, field out: the `deeponet` family
+
+A great many engineering problems have no *field* as input at all — a load, a modulus, an inlet speed, a handful of numbers per case — and want a field out, and that is the shape people reach for a neural operator for by mistake. `Model.Name: "deeponet"` trains the installed PhysicsNeMo's experimental `DeepONet` (`physicsnemo.experimental.models.xdeeponet`, pinned to 2.2's keyword-only constructor; `mpn.has_deeponet()` says whether the framework has it, quietly): an MLP **branch** over the case's parameters, an MLP **trunk** over the mesh's own points, combined into the field at every trunk point. It reads its own block, `Operator`, and **no `Fields` at all** — its inputs come from each entry's [`Metadata`](./datasets):
+
+```jsonc
+{
+  "Manifest": "deeponet_cases/manifest.json", "RunDir": "runs/deeponet",
+  "TargetFields": ["w"], "Epochs": 150,
+  "Model": { "Name": "deeponet", "Width": 64, "BranchLayers": 4, "TrunkLayers": 4 },
+  "Operator": { "Parameters": ["Load", "Modulus", "PoissonRatio"], "Trunk": "points" }
+}
+```
+
+| `Operator` key | meaning |
+|---|---|
+| `Parameters` | required — the ordered `Metadata` keys that become the branch input, on **every** entry. A scalar is one column under its own name; a list of numbers expands to `name_0`…`name_{k-1}` (the `feature_matrix`/pandas suffix rule, one rule repo-wide); a bool, a string or anything nested is refused by name; a missing key names the entry |
+| `Trunk` | `"points"` (every mesh point, the default) or `"budget"` (a token budget through [`select_points`](./point_budgets), in ascending index order) |
+| `TrunkCount`, `TrunkMethod`, `TrunkSeed` | the budget's size (required with `"budget"`, refused with `"points"`), `select_points`' method (`farthest`/`grid`/`random`) and seed |
+| `Float32` | the sample dtype, as for the other blocks |
+
+`Model` takes `BranchLayers`/`BranchLayerSize`, `TrunkLayers`/`TrunkLayerSize`, `Width` (the branch–trunk product dimension), `DecoderType`/`DecoderWidth`/`DecoderLayers`/`DecoderActivationFn` and `ActivationFn`. **`DecoderType` accepts only `"mlp"`**: the installed `DeepONet` refuses `"conv"` for an MLP branch itself ("pass a SpatialBranch as branch1") and `"temporal_projection"` needs an `output_window`, so both are refused by name here rather than from inside the constructor. Where a PascalCase key is shared with another family but the constructor default differs (`ActivationFn` is prelu/gelu/silu across srresnet/fno/deeponet, `DecoderLayers` is 1 for FNO and 2 for DeepONet), the spec holds a family-prefixed field, because `default_spec` re-validates through the document and a shared field would hand one family the other's default.
+
+**Fixed geometry in v1, checked and named.** A DeepONet's trunk is *shared across the batch* — the model is called as `model(params_batch, trunk)` with one `(T, 3)` trunk broadcast over every case — so every mesh must present the same points. `iter_operator_samples`/`operator_stats`/`make_operator_dataset` read each entry's first step once at index-build time and refuse a point count or a parameter shape that differs from the first entry's, naming both: `entry 'b' yields 1234 point rows but entry 'a' yields 1000 -- a DeepONet trunk is shared across the batch, so every mesh must have the same points; use meshgraphnet for varying geometry`. The streaming invariant holds regardless: one mesh alive per sample.
+
+The pure data path is `operator_sample(mesh, metadata, parameter_names=..., target_fields=..., trunk=...)` → an `OperatorSample` of `params` `(p,)`, `trunk` `(T, 3)` and `y` `(T, k)` (through `feature_matrix`'s column contract), `iter_operator_samples` over a manifest, and `operator_stats` (three normalizers — parameters, trunk coordinates, output — streamed). The **card** records the expanded `parameters` and their source `parameter_names`, the trunk construction and, for a budget, the **`trunk_indices`** it selected: the trunk is rebuilt from the mesh at predict time, and the indices are what detects a budget that selected different points (a JSON card is no place for a `(T, 3)` array). Prediction through the manifest takes each entry's parameters from its `Metadata`; `predict_mesh`/`predict_file` (and the MCP `predict_file` tool) take `parameters=` — a `deeponet` checkpoint without them is refused naming the keys it expects, and any other family given them is refused too. Under a budget the write-back fills **NaN, never 0**, at the points the model never saw. Neither `torch_geometric` nor `Augmentation` applies.
+
+The worked example, [`deeponet_beam.py`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/physicsnemo/deeponet_beam.py): ONE simplexified cantilever (`grid((20, 4, 4))`, L = 1, h = 0.2) and 200 cases differing only in `Metadata: {Load, Modulus, PoissonRatio}`, the truth an Euler–Bernoulli deflection plus a Timoshenko shear term so that `w = (P/E)·[f1(x) + f2(x)(1 + ν)]` is genuinely nonlinear in the parameters. The baseline is a per-node least-squares fit on `[1, P, E, ν]` over the training cases — exact if the map were linear, so the DeepONet's whole margin over it is the nonlinearity. 150 epochs in 21.7 s:
+
+| | RMSE | relative L2 |
+|---|---|---|
+| least squares on `[1, P, E, ν]` | 5.20e-6 | 0.364 |
+| DeepONet | **3.13e-7** | **0.0158** |
+
+The DeepONet's error is about 17 times lower in RMSE and 23 times lower in relative L2 than the least-squares fit, and that margin is the nonlinearity and nothing else: a per-node linear map on `[1, P, E, ν]` cannot represent the `P/E` ratio or its product with `ν`, so the baseline's 0.364 relative error is where any linear surrogate stops on this problem. The run had converged — its best validation epoch was 108 of 150 — so the margin is not an artefact of stopping early.
 
 ## Temporal windows and rollout
 

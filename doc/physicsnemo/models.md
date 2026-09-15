@@ -11,7 +11,7 @@ description: The 25 architecture families under physicsnemo.models, and how to p
 
 | Your data is | Use | What meshio++ gives you |
 |---|---|---|
-| A regular grid, same resolution in and out | FNO, AFNO, UNet | `grid`, `voxelize` and `write_vti` produce the lattice |
+| A regular grid, same resolution in and out | FNO, AFNO, UNet | the [grid data path](../grids.md) and the `fno`/`afno` families in `TrainSpec` (2-D through `Grid.Squeeze`); `grid`, `voxelize` and `write_vti` produce the lattice |
 | A coarse grid in, a fine grid out | SRResNet (`srrn`) | the [grid data path](../grids.md), a paired `Target` in the manifest, and the `srresnet` family in `TrainSpec` |
 | An unstructured mesh with connectivity | MeshGraphNet family | `graph_sample` — nodes, edges, features, targets |
 | An unordered point cloud | Transolver, FIGConvNet, FLARE | `feature_matrix` gives the node table, `select_points` the [token budget](../point_budgets.md) |
@@ -84,7 +84,7 @@ A **volumetric** 3-D denoiser exists too, under `physicsnemo.experimental.models
 | `dpot` | `DPOTNet` | a PDE *foundation model* (AFNO mixing, pretrained across equation families) to fine-tune on your own grids |
 | `topodiff` | `TopoDiff` | generative topology optimization with constraint channels, on compliance data |
 | `pix2pix` | `Pix2Pix`, `Pix2PixUnet` | a plain convolutional image-to-image translator; fits any grid pipeline mechanically |
-| `experimental.xdeeponet` | `DeepONet` | branch (parameters) plus trunk (coordinates) operator learning — parameters in, field at the mesh nodes out, without a POD basis |
+| `experimental.xdeeponet` | `DeepONet` | branch (parameters) plus trunk (coordinates) operator learning — parameters in, field at the mesh nodes out, without a POD basis; the `deeponet` family in `TrainSpec`, over each entry's `Metadata` |
 | `experimental.globe` | `GLOBE` | boundary-driven elliptic problems, from named boundary meshes |
 | `experimental.aerojepa` | `AeroJEPA` | self-supervised pretraining on geometry alone, before any labels exist |
 | `experimental.strata`, `experimental.healda` | `Strata`, `VideoHealDA` | weather emulation on the sphere and HEALPix data assimilation; the assimilation idea matters for digital twins, the API is calendar-shaped |
@@ -99,7 +99,7 @@ A **volumetric** 3-D denoiser exists too, under `physicsnemo.experimental.models
 
 ## In meshio++
 
-Two families are wired end to end: `MeshGraphNet`, through `TrainSpec`'s `Model.Name: "meshgraphnet"`, `graph_sample` for the tensors and `predict` for the write-back, and `SRResNet`, through `Model.Name: "srresnet"` over the [grid data path](../grids.md)'s coarse/fine pairs. The first choice is not arbitrary — a mesh with connectivity is the shape meshio++ natively holds, and PyG batches ragged graphs of different sizes natively, which is what makes a dataset of differently-sized meshes trainable with no padding convention of its own.
+Five families are wired end to end, one per data shape in the chart: `MeshGraphNet`, through `TrainSpec`'s `Model.Name: "meshgraphnet"`, `graph_sample` for the tensors and `predict` for the write-back; `SRResNet`, through `Model.Name: "srresnet"` over the [grid data path](../grids.md)'s coarse/fine pairs; `FNO` and `AFNO`, through `"fno"`/`"afno"` over the same grid path with the coarse grid paired with itself, 2-D through the thin-axis squeeze (AFNO is 2-D only and patches a fixed image, so the squeeze is required and the sample shape must divide the patch); and the experimental `DeepONet`, through `"deeponet"`, whose branch reads each entry's `Metadata` parameters and whose trunk is the mesh's own points — parameters in, field out, on a fixed geometry. See [the neural-operator families](../physicsnemo.md#neural-operators-on-a-grid-the-fno-and-afno-families) and [parameters in, field out](../physicsnemo.md#parameters-in-field-out-the-deeponet-family). The graph family came first for a reason — a mesh with connectivity is the shape meshio++ natively holds, and PyG batches ragged graphs of different sizes natively, which is what makes a dataset of differently-sized meshes trainable with no padding convention of its own.
 
 Everything else on the chart above is reachable by hand: `feature_matrix` gives you the node table any point-cloud model wants, `select_points` reduces it to a token budget, `to_torch`/`to_dlpack` move it to the device without a file round trip, and the model is then ordinary PyTorch. The rest of the *dataset* half has since shipped too — [`proximity_graph`](../proximity_graphs.md) (v10.31.0) builds the radius/kNN graphs a particle method needs, and [`make_window`/`iter_windows`/`rollout`](../physicsnemo.md#temporal-windows-and-rollout) (v10.33.0) give a sequence model its history and its autoregressive evaluation loop.
 

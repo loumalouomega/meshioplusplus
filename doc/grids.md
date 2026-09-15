@@ -100,7 +100,7 @@ Three properties worth knowing. The power sums **exactly** to `mean(field**2)` (
 
 ## Two-dimensional operators
 
-FNO, AFNO and 2-D U-Nets take `(C, H, W)`. A lattice always has at least two points on every axis — one cell has two corners — so the thin axis of a planar problem still arrives with a plane at each face:
+FNO, AFNO and 2-D U-Nets take `(C, H, W)`. The training spec's `fno` and `afno` families do exactly this through `Grid.Squeeze` — see [the neural-operator families](physicsnemo.md#neural-operators-on-a-grid-the-fno-and-afno-families); `grid_layout_after_squeeze(axis)` names the layout of the axes that *remain*, which depends on which one went. A lattice always has at least two points on every axis — one cell has two corners — so the thin axis of a planar problem still arrives with a plane at each face:
 
 ```python
 plane = mio.squeeze_grid(array.values, axis=2, index=0)   # world z, the lo face
@@ -139,4 +139,4 @@ See [paired cases](datasets.md#paired-cases) for describing the two sides in a m
 
 ## What is not here
 
-An `srresnet` family in the training spec is the next item on [the roadmap](roadmap.md). `cell_data` is deliberately refused in both directions: a piecewise-constant field has no value at a point, so convert it with `cell_data_to_point_data` (CLI `data to-point`) first, which makes the approximation explicit rather than hiding it inside the sampler.
+The `srresnet` family in the [training spec](physicsnemo.md#superresolution-the-srresnet-family) is what consumes such a pair; the resolution-preserving `fno` and `afno` families pair the grid with itself (a scaling factor of one). `cell_data` is deliberately refused in both directions: a piecewise-constant field has no value at a point, so convert it with `cell_data_to_point_data` (CLI `data to-point`) first, which makes the approximation explicit rather than hiding it inside the sampler.

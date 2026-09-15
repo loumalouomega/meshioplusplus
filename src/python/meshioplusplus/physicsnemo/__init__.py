@@ -32,6 +32,7 @@ from .._gpu import _require_framework
 from .._grid_transfer import GridSpec
 from .._interop import _emit, _importable
 from .._ml import FEATURE_SCHEMA_VERSION, edge_index, feature_matrix
+from .._point_budget import select_points
 from .._proximity import _graph_positions, edge_vectors, proximity_graph
 from .._tessellation import tessellate
 from ._augment import Augmentation
@@ -54,6 +55,11 @@ __all__ = [
     "grid_sample_pair",
     "iter_grid_samples",
     "grid_stats",
+    "OperatorSample",
+    "operator_sample",
+    "iter_operator_samples",
+    "operator_stats",
+    "has_deeponet",
     "field_stats",
     "edge_stats",
     "Augmentation",
@@ -118,6 +124,16 @@ def has_torch_geometric():
     """Whether PyTorch Geometric is importable. There is deliberately no pip
     extra (install ``torch_geometric`` directly)."""
     return _importable("torch_geometric")
+
+
+def has_deeponet():
+    """Whether the installed PhysicsNeMo carries the experimental ``DeepONet``
+    (``physicsnemo.experimental.models.xdeeponet``) the ``deeponet`` family
+    trains. Importing ``physicsnemo.experimental`` emits an
+    ``ExperimentalFeatureWarning`` once; a predicate must not."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return _importable("physicsnemo.experimental.models.xdeeponet")
 
 
 @dataclass(frozen=True)
@@ -490,7 +506,12 @@ def iter_samples(manifest, *, split=None, augmentation=None, epoch=0, **kwargs):
 # Grid samples: the coarse/fine pair a convolutional model trains on          #
 # --------------------------------------------------------------------------- #
 #: Bumped when the recorded grid-sample contract changes meaning.
-GRID_SAMPLE_VERSION = 1
+#: Version 2 (v10.40.0): the schema gained `x_shape`/`y_shape` (the array
+#: spatial shapes AFTER a squeeze) and `expand_size` (how many planes a 2-D
+#: prediction is duplicated back over) -- what a 2-D operator's card needs
+#: to build the model and write its answer back. A stored v1 schema now
+#: compares unequal, which is the drift guard doing its job.
+GRID_SAMPLE_VERSION = 2
 
 _GRID_KWARGS = (
     "fields",
@@ -585,7 +606,7 @@ def grid_sample_pair(
     :meth:`GridSpec.upscale_samples`). ``squeeze`` collapses a world axis for a
     2-D operator: an integer index keeps that plane, ``"mean"`` averages.
     """
-    from .._grid_transfer import sample_grid, squeeze_grid
+    from .._grid_transfer import grid_layout_after_squeeze, sample_grid, squeeze_grid
 
     coarse, fine, factor = _grid_specs(mesh, coarse, fine, scaling_factor)
     target_fields = list(target_fields) if target_fields else None
@@ -614,8 +635,12 @@ def grid_sample_pair(
         arrays["y"] = y.values
         y_channels = y.channels
 
+    expand_size = None
     if squeeze is not None:
         axis, reduce = _squeeze_args(squeeze, squeeze_index)
+        # The plane count of the FINE lattice along the squeezed world axis:
+        # `expand_grid` duplicates a 2-D prediction back over exactly these.
+        expand_size = int(fine.shape[2 - axis])
         for key in list(arrays):
             arrays[key] = squeeze_grid(
                 arrays[key], axis, index=squeeze_index, reduce=reduce
@@ -625,15 +650,18 @@ def grid_sample_pair(
         "grid_sample_version": GRID_SAMPLE_VERSION,
         "grid_schema_version": x.schema["grid_schema_version"],
         "meshioplusplus_version": str(__version__),
-        "layout": x.schema["layout"],
+        "layout": grid_layout_after_squeeze(squeeze),
         "coarse": coarse.to_dict(),
         "fine": fine.to_dict(),
         "scaling_factor": factor,
         "squeeze": squeeze,
         "squeeze_index": squeeze_index,
+        "expand_size": expand_size,
         "float32": bool(float32),
         "x_channels": list(x.channels),
         "y_channels": list(y_channels),
+        "x_shape": [int(v) for v in arrays["x"].shape[1:]],
+        "y_shape": None if y is None else [int(v) for v in arrays["y"].shape[1:]],
         "x_coverage": x.coverage,
         "y_coverage": None if y is None else y.coverage,
     }
@@ -755,6 +783,274 @@ def grid_stats(manifest, *, split=None, **kwargs):
         "y_std": [] if y_acc is None else y_acc.std().tolist(),
         "coverage": (coverage / seen) if seen else None,
     }
+    return stats
+
+
+# --------------------------------------------------------------------------- #
+# Operator samples: parameters in, field out (the deeponet family)           #
+# --------------------------------------------------------------------------- #
+#: Bumped when the recorded operator-sample contract changes meaning.
+OPERATOR_SAMPLE_VERSION = 1
+
+_OPERATOR_KWARGS = (
+    "parameter_names",
+    "target_fields",
+    "trunk",
+    "trunk_count",
+    "trunk_method",
+    "trunk_seed",
+    "float32",
+)
+
+
+@dataclass(frozen=True)
+class OperatorSample:
+    """One case's worth of DeepONet arrays, plus the recorded contract.
+
+    ``arrays`` holds ``params`` (``(p,)``, the branch input -- the case's
+    parameters expanded into columns), ``trunk`` (``(T, 3)``, the query
+    points) and optionally ``y`` (``(T, k)``, the field at those points).
+    ``parameter_columns`` names the branch columns -- a length-``k`` parameter
+    expands to ``name_0``..``name_{k-1}``, :func:`~meshioplusplus.feature_matrix`'s
+    ONE suffix rule -- and ``y_columns`` the output ones; ``schema`` is the
+    JSON-serializable record to store at training time and compare at
+    inference time.
+    """
+
+    arrays: dict
+    parameter_columns: tuple
+    y_columns: tuple
+    schema: dict
+
+
+def _parameter_vector(metadata, parameter_names, *, where="operator_sample"):
+    """A case's ``Metadata`` -> the branch input vector and its column names.
+
+    A missing key is a named error (every case must carry every parameter --
+    a silently zero-filled one would train the model on a value the case
+    never had). A scalar contributes one column under its own name; a
+    sequence of numbers contributes ``name_0``..``name_{k-1}`` (the pandas /
+    ``feature_matrix`` suffix rule, so the convention is one rule repo-wide);
+    a bool, a string or anything nested is refused by name rather than
+    coerced.
+    """
+    prefix = f"meshio++: {where}: "
+    values, columns = [], []
+    metadata = dict(metadata or {})
+    for name in parameter_names:
+        if name not in metadata:
+            raise ValueError(
+                f"{prefix}the entry's Metadata has no '{name}' (has: "
+                f"{sorted(metadata)}); every name in Operator.Parameters must "
+                "be present on every case"
+            )
+        value = metadata[name]
+        if isinstance(value, bool) or isinstance(value, str) or value is None:
+            raise ValueError(
+                f"{prefix}Metadata['{name}'] is {value!r}; a parameter must be "
+                "a number or a list of numbers"
+            )
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+            columns.append(name)
+            continue
+        if isinstance(value, (list, tuple)) and value:
+            if all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+            ):
+                for i, v in enumerate(value):
+                    values.append(float(v))
+                    columns.append(f"{name}_{i}")
+                continue
+        raise ValueError(
+            f"{prefix}Metadata['{name}'] is {value!r}; a parameter must be a "
+            "number or a flat list of numbers"
+        )
+    return np.asarray(values, dtype=np.float64), columns
+
+
+def _trunk_points(mesh):
+    points = np.asarray(mesh.points, dtype=np.float64)
+    if points.ndim != 2:
+        raise ValueError("meshio++: operator_sample: points must be (N, d)")
+    if points.shape[1] < 3:
+        points = np.column_stack([points, np.zeros((len(points), 3 - points.shape[1]))])
+    return np.ascontiguousarray(points[:, :3])
+
+
+def operator_sample(
+    mesh,
+    metadata,
+    *,
+    parameter_names,
+    target_fields=None,
+    trunk="points",
+    trunk_count=None,
+    trunk_method="farthest",
+    trunk_seed=0,
+    float32=True,
+):
+    """One case as the tensors a DeepONet consumes: parameters in, field out.
+
+    :func:`graph_sample`'s counterpart for the parameters-in/field-out
+    shape. The **branch** input is ``metadata``'s ``parameter_names`` (in that
+    order, expanded by :func:`_parameter_vector`); the **trunk** is the mesh's
+    own points -- every one of them (``trunk="points"``) or a token budget
+    (``trunk="budget"``, ``trunk_count`` of them chosen by
+    :func:`~meshioplusplus.select_points` with ``trunk_method``/``trunk_seed``,
+    in ascending index order); ``y`` is the target fields at the trunk points,
+    through :func:`~meshioplusplus.feature_matrix`'s column contract. Nothing
+    here is cached, so the caller's streaming invariant is untouched.
+    """
+    prefix = "meshio++: operator_sample: "
+    params, columns = _parameter_vector(metadata, parameter_names)
+    points = _trunk_points(mesh)
+    if trunk not in ("points", "budget"):
+        raise ValueError(f"{prefix}trunk must be 'points' or 'budget', got {trunk!r}")
+    indices = None
+    if trunk == "budget":
+        if trunk_count is None:
+            raise ValueError(f"{prefix}trunk_count is required with trunk='budget'")
+        budget = select_points(
+            mesh,
+            int(trunk_count),
+            method=trunk_method,
+            seed=int(trunk_seed),
+            start=None,
+        )
+        indices = budget.sorted_indices
+        trunk_points = points[indices]
+    else:
+        trunk_points = points
+    arrays = {"params": params, "trunk": trunk_points}
+    y_columns = ()
+    if target_fields:
+        table = feature_matrix(
+            mesh, "point", fields=list(target_fields), coords=False, regions=False
+        )
+        y = table.matrix if indices is None else table.matrix[indices]
+        arrays["y"] = np.ascontiguousarray(y)
+        y_columns = tuple(table.columns)
+    if float32:
+        arrays = {
+            k: np.ascontiguousarray(v, dtype=np.float32) for k, v in arrays.items()
+        }
+    if indices is not None:
+        arrays["trunk_indices"] = np.ascontiguousarray(indices, dtype=np.int64)
+    schema = {
+        "operator_sample_version": OPERATOR_SAMPLE_VERSION,
+        "meshioplusplus_version": str(__version__),
+        "parameter_names": list(parameter_names),
+        "parameter_columns": list(columns),
+        "y_columns": list(y_columns),
+        "target_fields": list(target_fields) if target_fields else [],
+        "trunk": trunk,
+        "trunk_count": None if trunk_count is None else int(trunk_count),
+        "trunk_method": trunk_method,
+        "trunk_seed": int(trunk_seed),
+        "num_points": int(len(points)),
+        "num_trunk": int(len(trunk_points)),
+        "float32": bool(float32),
+    }
+    return OperatorSample(
+        arrays=arrays,
+        parameter_columns=tuple(columns),
+        y_columns=y_columns,
+        schema=schema,
+    )
+
+
+def _operator_flat_items(manifest, split, read_kwargs, parameter_names):
+    """The flat (entry, step) index for operator samples.
+
+    **Fixed geometry, checked and named.** A DeepONet's trunk is shared
+    across the batch, so every case must present the same points: each
+    entry's step 0 is read ONCE here (and released -- the streaming invariant
+    holds) to compare its point count, and its ``Metadata`` is expanded to
+    compare the parameter columns, against the first entry's. A mismatch is
+    refused by name, naming both entries, rather than surfacing as a shape
+    error inside a loss an epoch later.
+    """
+    prefix = "meshio++: physicsnemo: "
+    items = []
+    reference = None
+    for entry in _as_manifest(manifest).entries(split=split):
+        series = entry.time_series(**read_kwargs)
+        _, columns = _parameter_vector(
+            entry.metadata, parameter_names, where=f"entry '{entry.id}'"
+        )
+        num_points = int(len(series[0][1].points))
+        if reference is None:
+            reference = (entry.id, num_points, columns)
+        else:
+            ref_id, ref_points, ref_columns = reference
+            if num_points != ref_points:
+                raise ValueError(
+                    f"{prefix}entry '{entry.id}' yields {num_points} point rows but "
+                    f"entry '{ref_id}' yields {ref_points} -- a DeepONet trunk is "
+                    "shared across the batch, so every mesh must have the same "
+                    "points; use meshgraphnet for varying geometry"
+                )
+            if columns != ref_columns:
+                raise ValueError(
+                    f"{prefix}entry '{entry.id}' expands Operator.Parameters to "
+                    f"{columns} but entry '{ref_id}' to {ref_columns}; every case "
+                    "must carry the same parameter shape"
+                )
+        for step in range(len(series)):
+            items.append((entry.id, series, step, dict(entry.metadata)))
+    return items
+
+
+def iter_operator_samples(manifest, *, split=None, **kwargs):
+    """Yield ``(entry_id, time, OperatorSample)`` over a manifest's entries.
+
+    :func:`iter_samples`' counterpart for the ``deeponet`` family, honouring
+    the same streaming invariant: one mesh alive per yielded sample. The
+    per-case parameters come from each entry's ``Metadata``.
+    """
+    operator_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in _OPERATOR_KWARGS}
+    if "parameter_names" not in operator_kwargs:
+        raise ValueError("meshio++: iter_operator_samples: parameter_names is required")
+    read_kwargs = kwargs
+    for entry_id, series, step, metadata in _operator_flat_items(
+        manifest, split, read_kwargs, operator_kwargs["parameter_names"]
+    ):
+        time, mesh = series[step]
+        yield entry_id, time, operator_sample(mesh, metadata, **operator_kwargs)
+
+
+def operator_stats(manifest, *, split=None, **kwargs):
+    """Mean/std of the parameters, the trunk coordinates and the targets over
+    a manifest's cases -- what a DeepONet's three normalizers need, streamed
+    one mesh at a time. Keys ``params_mean``/``params_std`` (per parameter
+    column), ``trunk_mean``/``trunk_std`` (per coordinate) and
+    ``y_mean``/``y_std`` (per output column)."""
+    acc = {}
+    names = {}
+    for _, _, sample in iter_operator_samples(manifest, split=split, **kwargs):
+        for key, columns in (
+            ("params", list(sample.parameter_columns)),
+            ("trunk", ["x", "y", "z"]),
+            ("y", list(sample.y_columns)),
+        ):
+            if key not in sample.arrays:
+                continue
+            rows = np.asarray(sample.arrays[key], dtype=np.float64).reshape(
+                -1, len(columns)
+            )
+            if key not in acc:
+                acc[key], names[key] = _Moments(len(columns)), columns
+            elif names[key] != columns:
+                raise ValueError(
+                    f"meshio++: operator_stats: the {key} columns changed across "
+                    f"the dataset ({names[key]} -> {columns})"
+                )
+            acc[key].add(rows)
+    stats = {}
+    for key in ("params", "trunk", "y"):
+        stats[f"{key}_mean"] = [] if key not in acc else acc[key].mean().tolist()
+        stats[f"{key}_std"] = [] if key not in acc else acc[key].std().tolist()
     return stats
 
 
@@ -1222,20 +1518,34 @@ def predict(
     )
 
 
-def predict_mesh(checkpoint, mesh, *, target_mesh=None, device="auto", label="mesh"):
+def predict_mesh(
+    checkpoint,
+    mesh,
+    *,
+    target_mesh=None,
+    device="auto",
+    label="mesh",
+    parameters=None,
+):
     """Predict with a trained ``.mdlus`` checkpoint on ONE in-memory mesh,
     returning ``(mesh, row)`` -- the mesh carrying ``<column>_pred`` (and
     ``<column>_error`` where the truth is present) plus a report row. The
     card says which family wrote the checkpoint, so a caller does not have
-    to, and nothing here consults a manifest. Needs ``nvidia-physicsnemo``
-    (and ``torch_geometric`` for a graph checkpoint)."""
+    to, and nothing here consults a manifest. A ``deeponet`` checkpoint needs
+    ``parameters`` (the case's ``Metadata``-shaped dict). Needs
+    ``nvidia-physicsnemo`` (and ``torch_geometric`` for a graph checkpoint)."""
     _require_framework(
         "predict_mesh", "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC
     )
     from .train import predict_mesh as _predict_mesh
 
     return _predict_mesh(
-        checkpoint, mesh, target_mesh=target_mesh, device=device, label=label
+        checkpoint,
+        mesh,
+        target_mesh=target_mesh,
+        device=device,
+        label=label,
+        parameters=parameters,
     )
 
 
@@ -1249,13 +1559,16 @@ def predict_file(
     input_format=None,
     output_format=None,
     device="auto",
+    parameters=None,
 ):
     """Predict with a trained ``.mdlus`` checkpoint on ONE mesh file, writing
     the result. The single-mesh counterpart of :func:`predict`: no manifest,
     no split, no entry -- point a checkpoint at a file that was never
     catalogued and get the prediction written back. A file carrying no truth
-    predicts anyway, with ``rmse``/``max_error`` reported ``None``. Needs
-    ``nvidia-physicsnemo`` (and ``torch_geometric`` for a graph checkpoint)."""
+    predicts anyway, with ``rmse``/``max_error`` reported ``None``. A
+    ``deeponet`` checkpoint needs ``parameters`` (the case's parameters as a
+    dict). Needs ``nvidia-physicsnemo`` (and ``torch_geometric`` for a graph
+    checkpoint)."""
     _require_framework(
         "predict_file", "physicsnemo", "pip install nvidia-physicsnemo", doc=_DOC
     )
@@ -1270,4 +1583,5 @@ def predict_file(
         input_format=input_format,
         output_format=output_format,
         device=device,
+        parameters=parameters,
     )

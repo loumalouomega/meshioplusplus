@@ -83,6 +83,7 @@ __all__ = [
     "resample_grid",
     "squeeze_grid",
     "expand_grid",
+    "grid_layout_after_squeeze",
     "power_spectrum",
 ]
 
@@ -92,6 +93,25 @@ GRID_SCHEMA_VERSION = 1
 #: The layout, recorded verbatim in every schema. A checkpoint that does not say
 #: which axis is which produces finite, plausible, transposed numbers.
 GRID_LAYOUT = "channels_first_zyx"
+
+
+def grid_layout_after_squeeze(axis: Optional[int]) -> str:
+    """The layout string of a grid with **world** axis ``axis`` squeezed out.
+
+    Dropping world axis ``w`` removes tensor axis ``3 - w`` of ``(C, D, H, W)``
+    (see :func:`_tensor_axis`), so the axes that REMAIN depend on which one
+    went -- which is why this is a function of the axis and not a single
+    ``GRID_LAYOUT_2D`` constant: a 2-D operator trained on ``(C, H, W)`` and fed
+    ``(C, D, W)`` produces finite, plausible, transposed numbers. ``None`` is
+    the unsqueezed :data:`GRID_LAYOUT`.
+    """
+    if axis is None:
+        return GRID_LAYOUT
+    _tensor_axis(axis)  # validates the world axis
+    return {0: "channels_first_zy", 1: "channels_first_zx", 2: "channels_first_yx"}[
+        int(axis)
+    ]
+
 
 _PREFIX = "meshio++: sample_grid: "
 

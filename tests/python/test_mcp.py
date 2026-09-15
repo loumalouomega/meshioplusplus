@@ -1155,7 +1155,7 @@ def test_train_defaults_describes_the_manifest(tmp_path):
     assert report["available_fields"]["point"] == ["t"]
     # case_0 also carries the quality:* cell arrays attach_quality wrote
     assert "c" in report["available_fields"]["cell"]
-    assert set(report["frameworks"]) == {"torch_geometric", "physicsnemo"}
+    assert set(report["frameworks"]) == {"torch_geometric", "physicsnemo", "deeponet"}
     assert report["spec"]["Fields"] == ["t"] and report["spec"]["Manifest"] == path
     assert report["spec"]["Model"]["Name"] == "meshgraphnet"
     assert report["runs_dir"].endswith("runs")
@@ -1305,3 +1305,75 @@ def test_train_start_refuses_an_unknown_family_before_building_a_spec(tmp_path):
         _tools.tool_train_start(path, ["t"], ["t"], model_name="gpt")
     for name in _MODELS:
         assert name in str(excinfo.value)
+
+
+def test_train_start_builds_each_family_s_own_spec(tmp_path, fake_trainer):
+    """Every family's `train_start` kwargs land in its own block of the
+    written spec -- and nothing of another family's."""
+    from meshioplusplus.physicsnemo._train import load_spec
+
+    path = _health_manifest(tmp_path)
+    cases = {
+        "fno": dict(
+            fields=["t"],
+            resolution=[7, 7, 1],
+            squeeze=2,
+            squeeze_index=0,
+            num_fno_modes=6,
+        ),
+        "afno": dict(
+            fields=["t"],
+            resolution=[7, 7, 1],
+            squeeze=2,
+            patch_size=[4, 4],
+            embed_dim=8,
+            num_blocks=2,
+        ),
+        "deeponet": dict(fields=[], parameters=["Load"], trunk="budget", trunk_count=8),
+    }
+    for name, kwargs in cases.items():
+        fields = kwargs.pop("fields")
+        started = _dump(
+            _tools.tool_train_start(
+                path, fields, ["t"], model_name=name, epochs=1, **kwargs
+            )
+        )
+        spec = load_spec(os.path.join(started["run_dir"], "spec.json"))
+        assert spec.model_name == name
+        _wait_terminal(started["job_id"])
+    doc = _tools._jobs_manager().status
+    summary = _dump(_tools.tool_train_list())["jobs"]
+    by_name = {job["model_name"]: job for job in summary}
+    assert by_name["fno"]["num_fno_modes"] == 6 and by_name["fno"]["squeeze"] == 2
+    assert by_name["afno"]["patch_size"] == [4, 4] and by_name["afno"]["embed_dim"] == 8
+    assert (
+        by_name["deeponet"]["parameters"] == ["Load"]
+        and by_name["deeponet"]["width"] == 64
+    )
+    assert (
+        by_name["fno"]["hidden_dim"] is None
+        and by_name["deeponet"]["resolution"] is None
+    )
+    del doc
+
+
+def test_server_mirrors_the_train_start_and_predict_file_parameters():
+    """`_server.py`'s typed wrappers contribute the JSON schema and nothing
+    else, so their parameter lists must equal the pure tools' -- checked from
+    the source with `ast`, so it runs without the SDK installed."""
+    import ast
+    import inspect
+
+    from meshioplusplus.mcp import _server
+
+    tree = ast.parse(inspect.getsource(_server))
+    mirrored = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "train_start",
+            "predict_file",
+        ):
+            mirrored[node.name] = [a.arg for a in node.args.args]
+    for name in ("train_start", "predict_file"):
+        pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
+        assert mirrored[name] == pure, name

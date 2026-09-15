@@ -1,0 +1,25 @@
+{
+  "scores": {
+    "persistence": {
+      "rmse": 0.15132421755733752,
+      "rel_l2": 1.0292780237854955
+    },
+    "upwind": {
+      "rmse": 0.011094313331154933,
+      "rel_l2": 0.0784641015142786
+    },
+    "model": {
+      "rmse": 0.01846659266730672,
+      "rel_l2": 0.1303564127663767
+    }
+  },
+  "cases": 200,
+  "epochs": 100,
+  "best_epoch": 98,
+  "best_valid_loss": 0.02642516642808914,
+  "train_seconds": 255.72765159606934,
+  "device": "NVIDIA RTX 2000 Ada Generation Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "physicsnemo": "2.2.0",
+  "meshioplusplus": "10.40.0"
+}

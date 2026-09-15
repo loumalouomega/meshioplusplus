@@ -1211,3 +1211,598 @@ def test_run_training_gates_on_the_family_not_unconditionally(monkeypatch, tmp_p
                 "Model": {"Name": "gpt"},
             }
         )
+
+
+# --------------------------------------------------------------------------- #
+# the 2-D operators' squeeze contract and the deeponet data path (v10.40.0)   #
+# --------------------------------------------------------------------------- #
+def test_grid_layout_after_squeeze_names_the_remaining_axes():
+    from meshioplusplus._grid_transfer import GRID_LAYOUT, grid_layout_after_squeeze
+
+    assert grid_layout_after_squeeze(None) == GRID_LAYOUT == "channels_first_zyx"
+    # dropping world axis w removes tensor axis 3 - w; what REMAINS depends on w
+    assert grid_layout_after_squeeze(0) == "channels_first_zy"
+    assert grid_layout_after_squeeze(1) == "channels_first_zx"
+    assert grid_layout_after_squeeze(2) == "channels_first_yx"
+    with pytest.raises(ValueError, match="axis must be 0"):
+        grid_layout_after_squeeze(3)
+
+
+def test_grid_sample_pair_records_the_squeeze_contract(tmp_path):
+    """A 2-D operator needs the array shape after the squeeze, and its
+    prediction needs to know how many planes to expand back over; both ride
+    the schema, whose version bumps to say so."""
+    from meshioplusplus._grid_transfer import expand_grid
+
+    mesh = meshioplusplus.read(_grid_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(4, 4, 4))
+    kwargs = dict(scaling_factor=1, fields=["T"], target_fields=["T"])
+    flat = mpn.grid_sample_pair(mesh, coarse, squeeze=2, squeeze_index=0, **kwargs)
+    assert mpn.GRID_SAMPLE_VERSION == 2
+    assert flat.schema["grid_sample_version"] == 2
+    assert flat.schema["x_shape"] == [5, 5] and flat.schema["y_shape"] == [5, 5]
+    assert flat.schema["expand_size"] == 5  # the fine lattice's planes along z
+    assert flat.schema["layout"] == "channels_first_yx"
+    back = expand_grid(flat.arrays["y"], 2, flat.schema["expand_size"])
+    assert back.shape == (1, 5, 5, 5)
+    full = mpn.grid_sample_pair(mesh, coarse, **kwargs)
+    assert full.schema["x_shape"] == [5, 5, 5] and full.schema["expand_size"] is None
+    assert full.schema["layout"] == "channels_first_zyx"
+    assert np.array_equal(back[0, 0], full.arrays["y"][0, 0])
+
+
+def test_parameter_vector_expands_and_names_the_missing_key():
+    vector, columns = mpn._parameter_vector(
+        {"Load": 2, "E": [1.5, 2.5], "extra": "ignored"}, ["Load", "E"]
+    )
+    assert vector.tolist() == [2.0, 1.5, 2.5]
+    assert columns == ["Load", "E_0", "E_1"]  # the feature_matrix suffix rule
+    with pytest.raises(ValueError, match="Metadata has no 'nu'"):
+        mpn._parameter_vector({"Load": 1}, ["Load", "nu"])
+    for bad in (True, "big", None, [1, "x"], [], {"a": 1}):
+        with pytest.raises(ValueError, match="must be a number"):
+            mpn._parameter_vector({"Load": bad}, ["Load"])
+
+
+def _operator_case(tmp_path, name, load, modulus, n=(3, 2, 2)):
+    mesh = meshioplusplus.convert_cells(meshioplusplus.grid(n), mode="simplexify")
+    p = mesh.points
+    mesh.point_data["w"] = load * p[:, 0] ** 2 / modulus
+    mesh.point_data["v"] = np.column_stack([p[:, 0] * load, p[:, 1] / modulus])
+    path = tmp_path / f"{name}.vtu"
+    meshioplusplus.write(path, mesh)
+    return path
+
+
+def _operator_manifest(tmp_path, cases=3, split="train"):
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    for c in range(cases):
+        _operator_case(tmp_path, f"case_{c}", 1.0 + c, 2.0 + 0.5 * c)
+        manifest.add(
+            f"case_{c}.vtu",
+            id=f"c{c}",
+            split=split,
+            metadata={"Load": 1.0 + c, "Modulus": 2.0 + 0.5 * c},
+        )
+    return manifest
+
+
+def test_operator_sample_shapes_trunk_and_budget(tmp_path):
+    mesh = meshioplusplus.read(_operator_case(tmp_path, "one", 2.0, 4.0))
+    n = len(mesh.points)
+    sample = mpn.operator_sample(
+        mesh,
+        {"Load": 2.0, "Modulus": 4.0},
+        parameter_names=["Load", "Modulus"],
+        target_fields=["w", "v"],
+    )
+    assert sample.arrays["params"].shape == (2,)
+    assert sample.arrays["trunk"].shape == (n, 3)
+    assert sample.arrays["y"].shape == (n, 3)
+    assert sample.y_columns == ("w", "v_0", "v_1")
+    assert sample.parameter_columns == ("Load", "Modulus")
+    assert all(a.dtype == np.float32 for k, a in sample.arrays.items())
+    assert sample.schema["num_points"] == n and sample.schema["num_trunk"] == n
+    assert "trunk_indices" not in sample.arrays
+    budget = mpn.operator_sample(
+        mesh,
+        {"Load": 2.0, "Modulus": 4.0},
+        parameter_names=["Load"],
+        target_fields=["w"],
+        trunk="budget",
+        trunk_count=5,
+        float32=False,
+    )
+    idx = budget.arrays["trunk_indices"]
+    assert budget.arrays["trunk"].shape == (5, 3) and budget.arrays["y"].shape == (5, 1)
+    assert list(idx) == sorted(idx) and len(set(idx.tolist())) == 5
+    assert np.array_equal(budget.arrays["trunk"], mesh.points[idx])
+    assert np.array_equal(budget.arrays["y"][:, 0], mesh.point_data["w"][idx])
+    assert budget.arrays["y"].dtype == np.float64
+    with pytest.raises(ValueError, match="trunk_count is required"):
+        mpn.operator_sample(mesh, {"Load": 1}, parameter_names=["Load"], trunk="budget")
+
+
+def test_operator_flat_items_refuse_a_mixed_point_count_by_name(tmp_path):
+    """A DeepONet's trunk is shared across the batch, so varying geometry is
+    refused at index-build time naming BOTH entries -- not as a shape error
+    inside a loss an epoch later."""
+    manifest = _operator_manifest(tmp_path, cases=2)
+    _operator_case(tmp_path, "bigger", 1.0, 2.0, n=(4, 2, 2))
+    manifest.add(
+        "bigger.vtu", id="big", split="train", metadata={"Load": 1, "Modulus": 2}
+    )
+    with pytest.raises(
+        ValueError, match="entry 'big' yields 45 point rows but entry 'c0' yields 36"
+    ):
+        mpn._operator_flat_items(manifest, "train", {}, ["Load", "Modulus"])
+    (tmp_path / "shape").mkdir()
+    shape = _operator_manifest(tmp_path / "shape", cases=1)
+    _operator_case(tmp_path / "shape", "vec", 1.0, 2.0)
+    shape.add(
+        "vec.vtu", id="vec", split="train", metadata={"Load": [1, 2], "Modulus": 2}
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"expands Operator.Parameters to \['Load_0', 'Load_1', 'Modulus'\] but entry 'c0'",
+    ):
+        mpn._operator_flat_items(shape, "train", {}, ["Load", "Modulus"])
+    # a missing key names the entry
+    (tmp_path / "missing").mkdir()
+    missing = _operator_manifest(tmp_path / "missing", cases=1)
+    with pytest.raises(
+        ValueError, match="entry 'c0': the entry's Metadata has no 'nu'"
+    ):
+        mpn._operator_flat_items(missing, "train", {}, ["Load", "nu"])
+
+
+def test_iter_operator_samples_walks_a_manifest_and_stats_stream(tmp_path, monkeypatch):
+    from meshioplusplus import _sequence
+
+    manifest = _operator_manifest(tmp_path, cases=3)
+    reads = []
+    real_read = _sequence.read
+
+    def counting_read(path, *args, **kwargs):
+        reads.append(str(path))
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(_sequence, "read", counting_read)
+    kwargs = dict(parameter_names=["Load", "Modulus"], target_fields=["w"])
+    got = list(mpn.iter_operator_samples(manifest, split="train", **kwargs))
+    assert [entry_id for entry_id, _, _ in got] == ["c0", "c1", "c2"]
+    assert [s.arrays["params"].tolist() for _, _, s in got] == [
+        [1.0, 2.0],
+        [2.0, 2.5],
+        [3.0, 3.0],
+    ]
+    # one read per entry for the fixed-geometry check, then one per sample --
+    # never a batch of meshes held at once
+    assert len(reads) == 6
+    reads.clear()
+    stats = mpn.operator_stats(manifest, split="train", **kwargs)
+    assert len(reads) == 6
+    assert set(stats) == {
+        "params_mean",
+        "params_std",
+        "trunk_mean",
+        "trunk_std",
+        "y_mean",
+        "y_std",
+    }
+    assert stats["params_mean"] == pytest.approx([2.0, 2.5])
+    assert stats["params_std"] == pytest.approx([np.sqrt(2 / 3), np.sqrt(1 / 6)])
+    w = np.concatenate([s.arrays["y"][:, 0].astype(np.float64) for _, _, s in got])
+    assert stats["y_mean"] == pytest.approx([float(w.mean())])
+    assert len(stats["trunk_mean"]) == 3
+
+
+def test_has_deeponet_is_a_quiet_bool():
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        assert mpn.has_deeponet() in (True, False)
+    assert not [w for w in caught if "xperimental" in str(w.message)]
+
+
+def test_run_training_gate_for_the_new_families(monkeypatch, tmp_path):
+    monkeypatch.setattr(_gpu, "_importable", lambda module: False)
+    path = str(tmp_path / "m.json")
+    _manifest(tmp_path, n=1).save(path)
+    for name, extra in (
+        ("fno", dict(resolution=(4, 4, 4))),
+        ("afno", dict(resolution=(4, 4, 1), squeeze=2, patch_size=(5, 5))),
+    ):
+        spec = mpn.default_spec(path, ["T"], ["T"], model_name=name, **extra)
+        with pytest.raises(ImportError) as excinfo:
+            mpn.run_training(spec)
+        assert "nvidia-physicsnemo" in str(excinfo.value)
+        assert "torch_geometric" not in str(excinfo.value)
+    deep = mpn.default_spec(
+        path, [], ["T"], model_name="deeponet", parameters=("Load",)
+    )
+    with pytest.raises(ImportError, match="nvidia-physicsnemo"):
+        mpn.run_training(deep)
+
+
+# --------------------------------------------------------------------------- #
+# gated: the real models' shapes and an end-to-end run per new family         #
+# --------------------------------------------------------------------------- #
+def _thin_case(tmp_path, name, phase=0.0, n=7):
+    """A planar problem on a thin lattice: both z-planes carry the same field,
+    so squeezing world z at plane 0 is honest."""
+    # isotropic spacing on purpose: `_spectrum_rel_l2` already returns None on
+    # an anisotropic lattice, so only an isotropic one can show that a squeezed
+    # card reports None for the squeeze's OWN reason
+    mesh = meshioplusplus.convert_cells(
+        meshioplusplus.grid((n, n, 1), spacing=(1 / n, 1 / n, 1 / n)), mode="simplexify"
+    )
+    p = mesh.points
+    mesh.point_data["K"] = 1.0 + 0.5 * np.sin(4 * p[:, 0] + phase) * np.cos(3 * p[:, 1])
+    mesh.point_data["p"] = np.sin(2 * p[:, 0] + phase) * p[:, 1]
+    path = tmp_path / f"{name}.vtu"
+    meshioplusplus.write(path, mesh)
+    return path
+
+
+def _thin_manifest(tmp_path, cases=6):
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    for c in range(cases):
+        _thin_case(tmp_path, f"case_{c}", phase=0.3 * c)
+        manifest.add(
+            f"case_{c}.vtu", id=f"c{c}", split="train" if c < cases - 1 else "test"
+        )
+    path = str(tmp_path / "m.json")
+    manifest.save(path)
+    return path
+
+
+def test_grid_pair_shape_matches_a_real_fno(tmp_path):
+    """A 2-D FNO (via the squeeze) and a 3-D one both emit the pair's target
+    shape -- the oracle for the resolution-preserving pairing rule."""
+    torch = pytest.importorskip("torch")
+    fno = pytest.importorskip("physicsnemo.models.fno")
+    from meshioplusplus.physicsnemo import _train as t
+
+    mesh = meshioplusplus.read(_thin_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(7, 7, 1))
+    for squeeze in (2, None):
+        sample = mpn.grid_sample_pair(
+            mesh,
+            coarse,
+            scaling_factor=1,
+            fields=["K"],
+            target_fields=["p"],
+            squeeze=squeeze,
+            squeeze_index=None if squeeze is None else 0,
+        )
+        spec = t.spec_from_dict(
+            {
+                "Manifest": "m",
+                "Fields": ["K"],
+                "TargetFields": ["p"],
+                "Model": {
+                    "Name": "fno",
+                    "LatentChannels": 4,
+                    "NumFnoLayers": 1,
+                    "NumFnoModes": 3,
+                },
+                "Grid": {
+                    "Resolution": [7, 7, 1],
+                    **(
+                        {"Squeeze": 2, "SqueezeIndex": 0} if squeeze is not None else {}
+                    ),
+                },
+            }
+        )
+        from meshioplusplus.physicsnemo import train as trainer
+
+        model = trainer.build_grid_model(spec, sample.schema)
+        assert isinstance(model, fno.FNO)
+        x = torch.from_numpy(sample.arrays["x"]).unsqueeze(0).float()
+        assert tuple(model(x).shape[1:]) == sample.arrays["y"].shape
+
+
+def test_afno_takes_its_shape_from_the_schema(tmp_path):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("physicsnemo.models.afno")
+    from meshioplusplus.physicsnemo import _train as t
+    from meshioplusplus.physicsnemo import train as trainer
+
+    mesh = meshioplusplus.read(_thin_case(tmp_path, "one"))
+    coarse = meshioplusplus.GridSpec.from_mesh(mesh, resolution=(7, 7, 1))
+    sample = mpn.grid_sample_pair(
+        mesh,
+        coarse,
+        scaling_factor=1,
+        fields=["K"],
+        target_fields=["p"],
+        squeeze=2,
+        squeeze_index=0,
+    )
+    assert sample.schema["x_shape"] == [8, 8]
+    doc = {
+        "Manifest": "m",
+        "Fields": ["K"],
+        "TargetFields": ["p"],
+        "Model": {
+            "Name": "afno",
+            "PatchSize": [4, 4],
+            "EmbedDim": 8,
+            "Depth": 1,
+            "NumBlocks": 2,
+        },
+        "Grid": {"Resolution": [7, 7, 1], "Squeeze": 2, "SqueezeIndex": 0},
+    }
+    model = trainer.build_grid_model(t.spec_from_dict(doc), sample.schema)
+    x = torch.from_numpy(sample.arrays["x"]).unsqueeze(0).float()
+    assert tuple(model(x).shape[1:]) == sample.arrays["y"].shape
+    # a non-dividing patch is OUR error, raised before torch, not AFNO's own
+    odd = t.spec_from_dict({**doc, "Model": {**doc["Model"], "PatchSize": [3, 3]}})
+    with pytest.raises(ValueError, match=r"n \+ 1 sample points"):
+        trainer.build_grid_model(odd, sample.schema)
+
+
+def test_grid_norm_tensors_follow_the_card_s_spatial_rank():
+    """Asserted on the SHAPE: against a (B, C, H, W) batch a (1, C, 1, 1, 1)
+    normalizer broadcasts along the batch axis silently when C == 1, so the
+    arithmetic cannot discriminate."""
+    pytest.importorskip("torch")
+    from meshioplusplus.physicsnemo import train as trainer
+
+    card = {
+        "input_normalization": {"mean": [0.0], "std": [1.0]},
+        "output_normalization": {"mean": [0.0, 1.0], "std": [1.0, 2.0]},
+    }
+    flat = trainer._grid_norm_tensors({**card, "spatial_ndim": 2}, "cpu")
+    assert tuple(flat["x_mean"].shape) == (1, 1, 1, 1)
+    assert tuple(flat["y_std"].shape) == (1, 2, 1, 1)
+    full = trainer._grid_norm_tensors(card, "cpu")  # a pre-v10.40.0 card: 3-D
+    assert tuple(full["x_mean"].shape) == (1, 1, 1, 1, 1)
+
+
+def test_deeponet_output_shape_and_checkpoint_round_trip(tmp_path):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("physicsnemo")
+    if not mpn.has_deeponet():
+        pytest.skip("this physicsnemo has no experimental DeepONet")
+    from physicsnemo.core.module import Module
+
+    from meshioplusplus.physicsnemo import _train as t
+    from meshioplusplus.physicsnemo import train as trainer
+
+    mesh = meshioplusplus.read(_operator_case(tmp_path, "one", 2.0, 4.0))
+    sample = mpn.operator_sample(
+        mesh,
+        {"Load": 2.0, "Modulus": 4.0},
+        parameter_names=["Load", "Modulus"],
+        target_fields=["w", "v"],
+    )
+    spec = t.spec_from_dict(
+        {
+            "Manifest": "m",
+            "TargetFields": ["w", "v"],
+            "Model": {
+                "Name": "deeponet",
+                "Width": 8,
+                "BranchLayers": 2,
+                "BranchLayerSize": 8,
+                "TrunkLayers": 2,
+                "TrunkLayerSize": 8,
+                "DecoderWidth": 8,
+            },
+            "Operator": {"Parameters": ["Load", "Modulus"]},
+        }
+    )
+    model = trainer.build_operator_model(spec, sample.schema)
+    params = torch.from_numpy(sample.arrays["params"]).unsqueeze(0)
+    trunk = torch.from_numpy(sample.arrays["trunk"])
+    out = model(params, trunk)
+    assert tuple(out.shape) == (1, len(mesh.points), 3)
+    path = str(tmp_path / "d.mdlus")
+    model.save(path)
+    again = Module.from_checkpoint(path)
+    assert torch.allclose(again(params, trunk), out)
+
+
+@pytest.mark.parametrize("family", ["fno", "afno"])
+def test_grid_operator_families_train_and_predict_end_to_end(tmp_path, family):
+    pytest.importorskip("torch")
+    pytest.importorskip("physicsnemo")
+    from meshioplusplus.physicsnemo import _train as t
+
+    manifest_path = _thin_manifest(tmp_path)
+    model = (
+        {"Name": "fno", "LatentChannels": 4, "NumFnoLayers": 1, "NumFnoModes": 3}
+        if family == "fno"
+        else {
+            "Name": "afno",
+            "PatchSize": [4, 4],
+            "EmbedDim": 8,
+            "Depth": 1,
+            "NumBlocks": 2,
+        }
+    )
+    spec = t.spec_from_dict(
+        {
+            "Manifest": manifest_path,
+            "RunDir": str(tmp_path / "run"),
+            "Fields": ["K"],
+            "TargetFields": ["p"],
+            "ValidSplit": "test",
+            "Epochs": 2,
+            "BatchSize": 2,
+            "Device": "cpu",
+            "CheckpointEvery": 0,
+            "Model": model,
+            "Grid": {"Resolution": [7, 7, 1], "Squeeze": 2, "SqueezeIndex": 0},
+        }
+    )
+    lines = []
+    progress = mpn.run_training(spec, log=lines.append)
+    assert progress["completed"] and progress["epoch"] == 2
+    card = t.read_json(t.card_path(progress["best_checkpoint"]))
+    assert card["model"]["name"] == family
+    assert card["layout"] == "channels_first_yx" and card["spatial_ndim"] == 2
+    assert (
+        card["x_shape"] == [8, 8]
+        and card["expand_axis"] == 2
+        and card["expand_size"] == 2
+    )
+    if family == "afno":
+        assert card["model"]["inp_shape"] == [8, 8]
+    stats = t.read_json(str(tmp_path / "run" / t.NODE_STATS_FILE))
+    assert len(stats["x_mean"]) == 1
+    # predict on the held-out case: written back onto the thin 3-D lattice
+    mesh = meshioplusplus.read(str(tmp_path / "case_5.vtu"))
+    out, row = mpn.predict_mesh(progress["best_checkpoint"], mesh)
+    assert {"p_pred", "p_true", "p_error"} <= set(out.point_data)
+    assert out.point_data["p_pred"].shape == (len(mesh.points),)
+    assert np.isfinite(out.point_data["p_pred"]).all()
+    assert row["rmse"] is not None and row["max_error"] >= 0
+    assert row["spectrum_rel_l2"] is None  # a 2-D spectrum is a follow-up
+    # the same row through the manifest path and the file path
+    rows = mpn.predict(
+        progress["best_checkpoint"],
+        manifest_path,
+        split="test",
+        output_dir=str(tmp_path / "pred"),
+    )
+    assert rows[0]["entry_id"] == "c5" and rows[0]["rmse"] == pytest.approx(row["rmse"])
+    single = mpn.predict_file(
+        progress["best_checkpoint"],
+        str(tmp_path / "case_5.vtu"),
+        str(tmp_path / "s.vtu"),
+    )
+    assert single["rmse"] == pytest.approx(row["rmse"])
+    # a truthless mesh predicts anyway
+    bare = meshioplusplus.read(str(tmp_path / "case_5.vtu"))
+    del bare.point_data["p"]
+    out2, row2 = mpn.predict_mesh(progress["best_checkpoint"], bare)
+    assert (
+        row2["rmse"] is None
+        and "p_pred" in out2.point_data
+        and "p_error" not in out2.point_data
+    )
+    with pytest.raises(
+        ValueError, match="parameters= applies to a 'deeponet' checkpoint"
+    ):
+        mpn.predict_mesh(progress["best_checkpoint"], mesh, parameters={"a": 1})
+    if family == "afno":
+        # A grid sampling to another shape than the card's recorded inp_shape
+        # is refused by name BEFORE AFNO's own patch-embedding error. The
+        # spec's Resolution is in cells, so every mesh samples to the same
+        # shape; the disagreement is staged on the loaded card itself.
+        from meshioplusplus.physicsnemo import train as trainer
+
+        loaded = trainer._load_checkpoint(progress["best_checkpoint"], "cpu")
+        loaded.card["model"]["inp_shape"] = [4, 4]
+        with pytest.raises(ValueError, match="AFNO patches a fixed image"):
+            trainer._predict_grid_mesh(loaded, mesh)
+
+
+@pytest.mark.parametrize("trunk", ["points", "budget"])
+def test_deeponet_trains_and_predicts_end_to_end(tmp_path, trunk):
+    pytest.importorskip("torch")
+    pytest.importorskip("physicsnemo")
+    if not mpn.has_deeponet():
+        pytest.skip("this physicsnemo has no experimental DeepONet")
+    from meshioplusplus.physicsnemo import _train as t
+
+    manifest = _operator_manifest(tmp_path, cases=6)
+    manifest_path = str(tmp_path / "m.json")
+    manifest.save(manifest_path)
+    operator = {"Parameters": ["Load", "Modulus"], "Trunk": trunk}
+    if trunk == "budget":
+        operator["TrunkCount"] = 12
+    spec = t.spec_from_dict(
+        {
+            "Manifest": manifest_path,
+            "RunDir": str(tmp_path / "run"),
+            "TargetFields": ["w"],
+            "ValidSplit": "train",
+            "Epochs": 2,
+            "BatchSize": 2,
+            "Device": "cpu",
+            "CheckpointEvery": 0,
+            "Model": {
+                "Name": "deeponet",
+                "Width": 8,
+                "BranchLayers": 2,
+                "BranchLayerSize": 8,
+                "TrunkLayers": 2,
+                "TrunkLayerSize": 8,
+                "DecoderWidth": 8,
+            },
+            "Operator": operator,
+        }
+    )
+    progress = mpn.run_training(spec, log=lambda *_: None)
+    assert progress["completed"] and progress["epoch"] == 2
+    card = t.read_json(t.card_path(progress["best_checkpoint"]))
+    assert card["model"]["name"] == "deeponet" and card["parameters"] == [
+        "Load",
+        "Modulus",
+    ]
+    assert card["num_points"] == 36 and card["fields"] == []
+    assert (card["trunk_indices"] is None) == (trunk == "points")
+    assert set(card) >= {
+        "input_normalization",
+        "trunk_normalization",
+        "output_normalization",
+    }
+    stats = t.read_json(str(tmp_path / "run" / t.NODE_STATS_FILE))
+    assert len(stats["params_mean"]) == 2 and len(stats["trunk_mean"]) == 3
+
+    mesh = meshioplusplus.read(str(tmp_path / "case_2.vtu"))
+    out, row = mpn.predict_mesh(
+        progress["best_checkpoint"], mesh, parameters={"Load": 3.0, "Modulus": 3.0}
+    )
+    assert {"w_pred", "w_error"} <= set(out.point_data)
+    assert out.point_data["w_pred"].shape == (36,)
+    if trunk == "budget":
+        # NaN, never 0, at the points the model never saw
+        assert row["num_rows"] == 12
+        assert np.isnan(out.point_data["w_pred"]).sum() == 24
+        assert np.isfinite(out.point_data["w_pred"][card["trunk_indices"]]).all()
+        assert not np.any(
+            out.point_data["w_pred"][np.isfinite(out.point_data["w_pred"])] == 0.0
+        )
+    else:
+        assert row["num_rows"] == 36 and np.isfinite(out.point_data["w_pred"]).all()
+    assert row["rmse"] is not None
+    # the manifest path supplies each entry's parameters from its Metadata
+    rows = mpn.predict(
+        progress["best_checkpoint"],
+        manifest_path,
+        split="train",
+        entry_ids=["c2"],
+        output_dir=str(tmp_path / "pred"),
+    )
+    assert rows[0]["entry_id"] == "c2" and rows[0]["rmse"] == pytest.approx(row["rmse"])
+    # the file path needs the parameters said explicitly, and says so
+    with pytest.raises(
+        ValueError,
+        match=r"parameters= is required for a 'deeponet' checkpoint \(this one expects \['Load', 'Modulus'\]\)",
+    ):
+        mpn.predict_file(
+            progress["best_checkpoint"],
+            str(tmp_path / "case_2.vtu"),
+            str(tmp_path / "o.vtu"),
+        )
+    single = mpn.predict_file(
+        progress["best_checkpoint"],
+        str(tmp_path / "case_2.vtu"),
+        str(tmp_path / "o.vtu"),
+        parameters={"Load": 3.0, "Modulus": 3.0},
+    )
+    assert single["rmse"] == pytest.approx(row["rmse"])
+    # varying geometry is refused by name
+    other = meshioplusplus.read(
+        _operator_case(tmp_path, "bigger", 1.0, 2.0, n=(4, 2, 2))
+    )
+    with pytest.raises(ValueError, match="fixed-geometry"):
+        mpn.predict_mesh(
+            progress["best_checkpoint"], other, parameters={"Load": 1, "Modulus": 2}
+        )
