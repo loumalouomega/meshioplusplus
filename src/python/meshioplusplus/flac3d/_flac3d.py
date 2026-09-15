@@ -468,7 +468,15 @@ def write(filename, mesh: Mesh, float_fmt: str = ".16e", binary: bool = False):
     zcells, fcells, zsets, fsets = split_f_z(mesh)
 
     mode = "wb" if binary else "w"
-    with open_file(filename, mode) as f:
+    # newline="" for the ASCII mode: the C++ writer always writes raw `\n`
+    # (no text-mode translation exists in a binary-opened std::ofstream), so
+    # the plain text-mode default here would silently translate every `\n`
+    # to `\r\n` on Windows and break the two engines' documented byte-for-
+    # byte parity (test_cpp_matches_python_write) -- caught only once real
+    # Windows CI ran this file, since every prior local/CI run of it had
+    # been on Linux/macOS, where the default happens to already be `\n`.
+    open_kwargs = {} if binary else {"newline": ""}
+    with open_file(filename, mode, **open_kwargs) as f:
         if binary:
             # Don't know what these values represent
             f.write(struct.pack("<2I", 1375135718, 3))

@@ -6,6 +6,8 @@ face indices for a unit cube, a total area of 6, unit normals, and a linear
 nodal field averaged onto a triangle equalling its value at the centroid.
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -263,7 +265,9 @@ def test_export_cases_over_a_glob(tmp_path):
         meshioplusplus.write(tmp_path / f"run_{index}.vtu", mesh)
     out = tmp_path / "cases"
     written = cae.export_cases(str(tmp_path / "run_*.vtu"), out)
-    assert [p.split("/")[-1] for p in written] == [
+    # os.path.basename, not a hardcoded "/" split: `written` entries are
+    # native paths, and Windows' `\` separator left the whole path unsplit.
+    assert [os.path.basename(p) for p in written] == [
         "case_0.npz",
         "case_1.npz",
         "case_2.npz",
