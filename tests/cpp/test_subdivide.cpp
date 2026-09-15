@@ -22,7 +22,7 @@
 // they only coincide by symmetry), and that a single output block can hold
 // children of genuinely different shapes with no grouping step at all, which
 // is what makes `AddPolyhedronBlock`'s "no same-shape constraint" claim
-// (CLAUDE.md, the "Ragged cell blocks" entry) load-bearing for this operation.
+// (see doc/polyhedra.md) load-bearing for this operation.
 
 // System includes
 #include <cmath>

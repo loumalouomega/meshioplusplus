@@ -116,7 +116,7 @@ def write(filename, mesh, mode="auto", analysis_name="meshio++", step=1.0):
 # `read` is passed directly rather than wrapped in the usual
 # try-C++/except-fall-back-to-Python shim, because there is no Python engine to
 # fall back to. Swallowing the exception would hide a core gap from the only
-# tests most people run -- the hazard CLAUDE.md records for gmsh.
+# tests most people run -- see AGENTS.md, "Adding a new format or operation".
 register_format(
     "gid", [".post.msh", ".post.res", ".post.bin", ".post.h5"], read, {"gid": write}
 )

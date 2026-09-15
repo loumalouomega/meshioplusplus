@@ -63,7 +63,7 @@
  * `bindings/c/c_api.cpp`.
  *
  * @note Bumping the release means editing this file too -- see the "Version
- * bumps" section of `CLAUDE.md`. Forgetting is a configure-time error, not a
+ * bumps" section of `AGENTS.md`. Forgetting is a configure-time error, not a
  * wrong answer.
  */
 

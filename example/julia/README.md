@@ -15,7 +15,7 @@ core directly. This binding rides on the same flat C API as [Fortran](../../doc/
 
 There is no PyVista/VTK in Julia, so like the C++ notebooks these lean on meshio++'s own **SVG writer**.
 Unlike the C++ notebooks, though, this binding reaches that writer only through the **flat C API**'s
-`mio.write(mesh, path; format="svg")` — and `CLAUDE.md` documents that data-driven colouring is a
+`mio.write(mesh, path; format="svg")` — and `doc/formats/svg.md` documents that data-driven colouring is a
 **flat-ABI gap**: `registry.cpp`'s `(path, mesh)` writer lambdas cannot carry per-call parameters (`color_by`,
 `cmap`, `colorbar`, camera angles), so every render here uses the writer's fixed default styling. Where the
 C++ notebook colours a mesh by a quality metric or a field, these notebooks show the same information as a

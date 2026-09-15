@@ -12,8 +12,7 @@ name: cli
 # OFF and the parallel backend is SEQ, so the release binary has no optional
 # native dependency and no OpenMP/TBB runtime to bundle. HDF5/netCDF formats
 # still work through this binary the same way they don't -- they were never
-# reachable without Python (see the "Documented gaps" note in CLAUDE.md's
-# native-CLI section); users who need them, or multi-threaded operations,
+# reachable without Python (see doc/c_api.md#native-command-line-binary); users who need them, or multi-threaded operations,
 # should build from source with `build/configure.sh --cli` instead. zlib is
 # the one exception to "optional native paths are off": MESHIOPLUSPLUS_ZLIB_STATIC
 # vendors a pinned, statically-linked zlib (see CMakeLists.txt) instead of

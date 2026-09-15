@@ -3,7 +3,7 @@
 #
 # It is generated rather than committed because the bundled wheel file names
 # carry the meshio++ version, so a hand-maintained list would rot on the next
-# version bump. That keeps CLAUDE.md's version-file list at ten and lets CI
+# version bump. That keeps AGENTS.md's version-file list at ten and lets CI
 # assert the manifest/pyproject equality instead of anyone remembering it.
 #
 # Note this header must not itself contain the substitution tokens -- they are

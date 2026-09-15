@@ -65,7 +65,7 @@ function(_mio_check_version_header path prefix)
     message(FATAL_ERROR
       "meshio++: ${path} says ${prefix} version ${_got}, but project() says "
       "${PROJECT_VERSION}. Bump every version file together -- see the "
-      "\"Version bumps\" section of CLAUDE.md.")
+      "\"Version bumps\" section of AGENTS.md.")
   endif()
 endfunction()
 

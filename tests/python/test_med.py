@@ -1553,7 +1553,7 @@ def test_gmsh_physical_groups_written_as_med_families(tmp_path):
     # every physical id became a group with the right cells. Looked up by
     # CELL TYPE, not a fixed block index: MED reorders MAI blocks
     # alphabetically by type code on read through the C++ path (see
-    # CLAUDE.md's "Note on med"), so block *position* does not survive a
+    # doc/formats/med.md), so block *position* does not survive a
     # round-trip even though block *identity* (and therefore group
     # membership) does.
     assert set(back.cell_sets) == {"group_100", "group_200", "group_300"}

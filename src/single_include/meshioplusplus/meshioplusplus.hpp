@@ -5580,7 +5580,7 @@ inline bool surface_edge_supported(CellType Type) {
  *    doc-comment/face array, whose orientation is famously inconsistent).
  *  - pyramid: base `(0,1,2,3)` normal points toward apex 4.
  *  - wedge15 mid-node numbering is pure VTK_QUADRATIC_WEDGE — EnSight's
- *    penta15 involution (see CLAUDE.md) must NOT be applied here.
+ *    penta15 involution (see formats/ensight.cpp) must NOT be applied here.
  *
  * The outward winding of every row is enforced by a gtest invariant
  * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal
@@ -9114,7 +9114,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  * `bindings/c/c_api.cpp`.
  *
  * @note Bumping the release means editing this file too -- see the "Version
- * bumps" section of `CLAUDE.md`. Forgetting is a configure-time error, not a
+ * bumps" section of `AGENTS.md`. Forgetting is a configure-time error, not a
  * wrong answer.
  */
 

@@ -129,7 +129,7 @@ jobs:
           pkg-config --exists meshioplusplus
           # Query the version actually installed rather than hardcoding it a
           # second time -- CMakeLists.txt's project(VERSION ...) is the single
-          # source of truth (see CLAUDE.md's "Version bumps"); this stays in
+          # source of truth (see AGENTS.md's "Version bumps"); this stays in
           # sync with it automatically.
           pkg_version="$(pkg-config --modversion meshioplusplus)"
           gcc -std=c99 doc/examples/c_api_example.c \

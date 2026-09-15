@@ -37,7 +37,7 @@
  *    doc-comment/face array, whose orientation is famously inconsistent).
  *  - pyramid: base `(0,1,2,3)` normal points toward apex 4.
  *  - wedge15 mid-node numbering is pure VTK_QUADRATIC_WEDGE — EnSight's
- *    penta15 involution (see CLAUDE.md) must NOT be applied here.
+ *    penta15 involution (see formats/ensight.cpp) must NOT be applied here.
  *
  * The outward winding of every row is enforced by a gtest invariant
  * (`tests/cpp/test_skin.cpp`): on the reference element, the Newell normal

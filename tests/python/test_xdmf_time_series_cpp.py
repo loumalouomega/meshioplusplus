@@ -10,7 +10,7 @@ API. `test_python_writer_is_untouched` below pins that.
 The read-back oracle is deliberately the *Python* `TimeSeriesReader` plus the
 ordinary `meshioplusplus.read`, not the writer's own C++ reader -- a format's
 own writer is not a sufficient test oracle for that format's reader (the
-exodus lesson in CLAUDE.md).
+Exodus cases in doc/formats/exodus.md).
 """
 
 from __future__ import annotations

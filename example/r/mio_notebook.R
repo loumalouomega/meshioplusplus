@@ -1,6 +1,6 @@
 # Notebook-only display helpers for the meshio++ R examples.
 #
-# This binding rides on the flat C API (see doc/r.md), and CLAUDE.md documents
+# This binding rides on the flat C API (see doc/r.md), and doc/formats/svg.md documents
 # that data-driven SVG colouring is a flat-ABI gap: registry.cpp's (path, mesh)
 # writer lambdas can't carry per-call parameters, so mio_write() always emits
 # the fixed default styling -- no color_by, no colorbar, no camera control

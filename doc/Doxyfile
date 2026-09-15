@@ -2,7 +2,7 @@
 # Unset options fall back to Doxygen's built-in defaults.
 # Generated into doc/doxygen-build/html, then copied into the VitePress
 # dist output at /api/ by .github/workflows/docs.yml (see doc/README or
-# CLAUDE.md "Docs (VitePress)" for the local reproduction steps).
+# AGENTS.md "Commands" for the local reproduction steps).
 
 PROJECT_NAME           = "meshio++"
 PROJECT_BRIEF          = "C++ / C API reference"

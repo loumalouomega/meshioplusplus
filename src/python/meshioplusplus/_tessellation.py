@@ -58,7 +58,7 @@ shape:
   choice exists for a triangle) and tetra -> 8 children (four corner
   tetrahedra plus the central octahedron split along the fixed *interior*
   diagonal between the midpoints of edges (0,1) and (2,3), in the exact ring
-  order CLAUDE.md records for :func:`meshioplusplus.refine`'s own template:
+  order used by :func:`meshioplusplus.refine`'s template:
   mid(0,2) -> mid(0,3) -> mid(1,3) -> mid(1,2)). Every point this produces is
   an exact dyadic rational with denominator dividing ``2**levels``, so a
   simple ``round(coord * 2**levels)`` integer key deduplicates points created
@@ -433,7 +433,7 @@ def _tetra_full_split(c):
     """One tetrahedron's fixed same-type split into 8 (``refine``'s own
     template): four corner tetrahedra plus the central octahedron split
     along the fixed interior diagonal mid(0,1)-mid(2,3), fanned in the ring
-    order CLAUDE.md records (mid(0,2) -> mid(0,3) -> mid(1,3) -> mid(1,2)).
+    order mid(0,2) -> mid(0,3) -> mid(1,3) -> mid(1,2).
     Strictly interior to the parent, so this choice never has to agree with
     a neighbour."""
     m01 = 0.5 * (c[0] + c[1])

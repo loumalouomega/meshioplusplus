@@ -31,7 +31,7 @@ An earlier design considered simplexifying every cell (curved or not) into one u
 Two lattice families, chosen per base shape:
 
 - **Tensor bases** (`quad`, `hexahedron`): a plain `(n+1)`-point-per-axis grid at `t = linspace(-1, 1, n+1)`, whose endpoints are exactly `-1.0`/`1.0` in floating point — what makes the boundary classification below exact rather than tolerance-based.
-- **Simplex bases** (`triangle`, `tetra`): built by recursively applying the same fixed same-type subdivision template `refine` already documents for a single reference cell — triangle to 4 children (three corner triangles plus one central one, unambiguous, no diagonal choice exists for a triangle) and tetra to 8 children (four corner tetrahedra plus the central octahedron split along the fixed *interior* diagonal between the midpoints of edges (0,1) and (2,3), in the exact ring order CLAUDE.md records for `refine`'s own template).
+- **Simplex bases** (`triangle`, `tetra`): built by recursively applying the same fixed same-type subdivision template `refine` already documents for a single reference cell — triangle to 4 children (three corner triangles plus one central one, unambiguous, no diagonal choice exists for a triangle) and tetra to 8 children (four corner tetrahedra plus the central octahedron split along the fixed *interior* diagonal between the midpoints of edges (0,1) and (2,3), in the ring order `mid(0,2) → mid(0,3) → mid(1,3) → mid(1,2)`).
 
 Every point this produces is an exact dyadic rational with denominator dividing `2**levels`, so a simple `round(coord * 2**levels)` integer key deduplicates points created by sibling recursive calls with no floating-point tolerance anywhere.
 

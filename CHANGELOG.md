@@ -6,11 +6,11 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Breaking:**; everything else is additive unless stated otherwise.
 
 **Keep this file current: add an entry in the same change as every version bump.** See the
-"Version bumps" section of `CLAUDE.md`.
+"Version bumps" section of `AGENTS.md`.
 
 ## v11.0.0 (2026-09-15)
 
-**Version-only major bump, no functional change.** Marks roadmap section 1's completion in full (the `fno`/`afno`/`deeponet` model families, v10.40.0 below) landing on `master`, which also carried a fix for the FLAC3D `ZGROUP`/`FGROUP` cell-group index bug (issue #76 — see the `flac3d` entry in `CLAUDE.md`). No format, operation, API, or ABI change in this release; `MESHIOPLUSPLUS_ABI_VERSION` stays 12.
+**Version-only major bump, no functional change.** Marks roadmap section 1's completion in full (the `fno`/`afno`/`deeponet` model families, v10.40.0 below) landing on `master`, which also carried a fix for the FLAC3D `ZGROUP`/`FGROUP` cell-group index bug (issue #76 — see `doc/formats/flac3d.md`). No format, operation, API, or ABI change in this release; `MESHIOPLUSPLUS_ABI_VERSION` stays 12.
 
 ## v10.40.0 (2026-09-15)
 
@@ -3279,7 +3279,7 @@ host buffer sharing and on-device adoption, never to the transfer itself.
   the CUDA device path runs under gated tests (`importorskip("cupy")` plus a
   real device check) and is **not covered by public CI** — its lines read as
   uncovered on the Codecov patch check by design.
-- Housekeeping: the `CLAUDE.md` version-bump checklist grew from six to
+- Housekeeping: the `AGENTS.md` version-bump checklist grew from six to
   **eight** files — the Julia (`bindings/julia/MeshioPlusPlus/Project.toml`)
   and R (`bindings/r/meshioplusplus/DESCRIPTION`) manifests added in v8.3.0
   carry versions too and are exactly the kind that drift unnoticed.
@@ -3579,7 +3579,7 @@ kept 1:1); a volume mesh raises by name pointing at `extract_surface`.
   viewer's worker can reach it), and a `decimate` verb in both CLIs.
 - Docs: `doc/decimate.md`, README "Decimation" section, notebook demo cell.
 
-Also: fixed two path strings in `CLAUDE.md` corrupted by the repository
+Also: fixed two path strings in `AGENTS.md` corrupted by the repository
 restructure's `cpp/` → `src/cpp/` rewrite, and its "five version files"
 sentence (there are six).
 
@@ -3629,7 +3629,7 @@ Fixed: `src/viewer/package-lock.json` recorded `@meshioplusplus/wasm@7.10.0`
 while the package itself was at 7.14.0, which makes `npm ci` hard-fail
 (`does not satisfy`) and so broke the viewer jobs in `ci.yml` and `docs.yml`.
 The lock's `"../wasm"` version is now part of the version bump — see the
-"Version bumps" section of `CLAUDE.md`.
+"Version bumps" section of `AGENTS.md`.
 
 Internal, **no behaviour change**: slice's marching-tetrahedra cutter — the
 simplexify, the sign-mask case table, the watertight edge dedup, the winding, the
@@ -3805,7 +3805,7 @@ gains click-to-inspect.
   components), the nearest vertex, and the originating volume cell for a solid
   — with the picked cell outlined. On click only, never on hover, and disabled
   above two million cells rather than made slow.
-- **Fixed:** `CLAUDE.md`'s "documented gaps vs the Python CLI" list omitted the
+- **Fixed:** `AGENTS.md`'s "documented gaps vs the Python CLI" list omitted the
   two verbs v7.9.0 added, and its verb list was a release out of date.
 
 Internal: `gather_cell_data_onto_surface` moves from the WebAssembly binding

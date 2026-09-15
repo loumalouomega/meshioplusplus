@@ -11,7 +11,7 @@ Two halves, mirroring test_interop.py's split:
   payload shape.
 
 The parity guard (`test_every_operation_has_a_tool`) is the enforcement
-mechanism behind CLAUDE.md's "keep the MCP server in sync" rule: a new public
+mechanism behind AGENTS.md's "keep the MCP server in sync" rule: a new public
 operation in ``meshioplusplus.__all__`` fails here until it is claimed by a
 tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 """
@@ -511,7 +511,7 @@ def test_every_operation_has_a_tool():
         f"public operations without an MCP tool: {missing} — add a tool to "
         "meshioplusplus/mcp/_tools.py (and register it in _server.py) or, if "
         "the API is genuinely not path-expressible, add a conscious exemption "
-        "to _NOT_TOOLS above. See CLAUDE.md 'Keep the MCP server in sync'."
+        "to _NOT_TOOLS above. See AGENTS.md 'Change checklist'."
     )
 
 

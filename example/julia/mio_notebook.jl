@@ -1,6 +1,6 @@
 # Notebook-only display helpers for the meshio++ Julia examples.
 #
-# This binding rides on the flat C API (see doc/julia.md), and CLAUDE.md
+# This binding rides on the flat C API (see doc/julia.md), and doc/formats/svg.md
 # documents that data-driven SVG colouring is a flat-ABI gap: registry.cpp's
 # (path, mesh) writer lambdas can't carry per-call parameters, so `mio.write`
 # always emits the fixed default styling -- no color_by, no colorbar, no

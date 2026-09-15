@@ -58,7 +58,7 @@
  *   representation that makes region equality — and hence the cross-format
  *   round-trip matrix — exact rather than heuristic.
  *
- * See the "C++ core" section of the repository's top-level `CLAUDE.md` for
+ * See the "C++ core" section of the repository's top-level `AGENTS.md` for
  * the broader architectural picture (side-channel structs for the remaining
  * data this layer does not carry, the `allow_ragged` opt-in policy, etc.).
  */

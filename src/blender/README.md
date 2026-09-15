@@ -53,7 +53,7 @@ ln -s "$PWD/src/blender/addon" ~/.config/blender/4.2/scripts/addons/meshiopluspl
 `blender_manifest.toml`, `wheels/` and `dist/` are all gitignored. The manifest
 is generated rather than committed because the bundled wheel **file names**
 carry the meshio++ version, so a hand-maintained `wheels = [...]` would rot on
-the next version bump — and `CLAUDE.md`'s version-bump ritual is already ten
+the next version bump — and `AGENTS.md`'s version-bump ritual is already ten
 files long, with two of them cited as having silently drifted. The
 `blender-packaging` CI job asserts that the generated manifest's version equals
 `pyproject.toml`'s and that its wheel list matches the zip exactly, so the

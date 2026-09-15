@@ -221,7 +221,7 @@ def test_nastran_sentinel_is_cpp_only(tmp_path):
 
 
 def test_openfoam_is_cpp_only(tmp_path):
-    """OpenFOAM has no Python writer twin (documented in CLAUDE.md); the C++
+    """OpenFOAM has no Python writer twin (documented in doc/formats/openfoam.md); the C++
     writer's banner still carries the tag. Unlike every other format, the
     credit cell is fixed-width (padded with trailing spaces up to the box's
     closing ``|``), so the match is a prefix check, not an exact one."""
@@ -437,7 +437,7 @@ def test_pipeline_records_source_target_and_operations(tmp_path):
 
 def test_cpp_and_python_pipeline_engines_agree_on_the_operation_chain(tmp_path):
     """Python's `_pipeline.py` is a separate, pure-Python engine
-    (CLAUDE.md's own description) -- this pins that its rendering of a step
+    (see doc/pipeline.md) -- this pins that its rendering of a step
     still matches the C++ engine's `pipe_render_op`, for the common
     bool/int/string parameter shapes."""
     in_path = tmp_path / "in.obj"
