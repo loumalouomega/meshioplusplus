@@ -68,7 +68,7 @@ Triangles come from the same fan [`convert_cells(simplexify)`](/convert_cells) u
 
 ## numpy fallback: a partial twin
 
-`dual_area="barycentric"` has a **real, bit-exact numpy twin** — every expression on that path is `+ - * / sqrt` and one `atan2`, and it is pinned against the compiled core with exact array equality, angle-defect included.
+`dual_area="barycentric"` has a **real numpy twin** — every expression on that path is `+ - * / sqrt` and one `atan2` — pinned against the compiled core to a tight tolerance (`rtol=atol=1e-9`), angle-defect included. The one place exact equality does not hold is that final `atan2`: the C++ side goes through `std::atan2` and the Python side through numpy's vectorized `arctan2`, two independent transcendental-function implementations with no cross-library bit-exactness guarantee — measured at up to ~1e-14 relative difference on some platforms, many orders of magnitude tighter than a real algorithmic disagreement would produce.
 
 `dual_area="mixed-voronoi"` (the **default**) has **no** numpy fallback and raises `NotImplementedError` naming the reason when the compiled core is unavailable: its obtuse/non-obtuse test is a discrete branch on a sign, so two implementations could land on opposite sides of a near-right-angle corner and disagree macroscopically rather than in the last ulp — the same class of refusal `_smooth.py`'s inversion guard and `_sdf.py`'s `sign="winding-number"` mode already make. The raise only fires when `meshioplusplus._core` is genuinely absent, which it never is on a normal `pip install`.
 

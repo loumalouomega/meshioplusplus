@@ -1360,13 +1360,24 @@ def test_train_start_builds_each_family_s_own_spec(tmp_path, fake_trainer):
 def test_server_mirrors_the_train_start_and_predict_file_parameters():
     """`_server.py`'s typed wrappers contribute the JSON schema and nothing
     else, so their parameter lists must equal the pure tools' -- checked from
-    the source with `ast`, so it runs without the SDK installed."""
+    the source text with `ast`, so it runs without the SDK installed.
+
+    Deliberately never ``from meshioplusplus.mcp import _server`` (or
+    ``importlib.import_module``): that line executes the module, whose own
+    top-level ``from mcp.server.fastmcp import FastMCP`` raises
+    ``ModuleNotFoundError`` on the SDK-absent default matrix this test is
+    meant to run in -- the same pure/gated split `_tools.py`'s import chain
+    already keeps. Reading the ``.py`` file's text directly is what actually
+    "runs without the SDK installed."
+    """
     import ast
     import inspect
+    import pathlib
 
-    from meshioplusplus.mcp import _server
-
-    tree = ast.parse(inspect.getsource(_server))
+    server_path = (
+        pathlib.Path(inspect.getfile(meshioplusplus.mcp)).parent / "_server.py"
+    )
+    tree = ast.parse(server_path.read_text(encoding="utf-8"))
     mirrored = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in (

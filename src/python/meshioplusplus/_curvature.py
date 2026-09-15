@@ -33,7 +33,11 @@ before trusting a sign. This operation never silently repairs its input.
 ``dual_area="barycentric"`` is branch-free -- every vertex gets a third of each
 incident triangle's area -- so this module implements it as a genuine numpy
 twin of the C++ core and ``tests/python/test_curvature.py`` pins the two
-against each other with exact equality.
+against each other to a tight tolerance (not exact equality: the one
+``atan2`` in the angle-defect computation goes through ``std::atan2`` on the
+C++ side and numpy's vectorized ``arctan2`` on the Python side, and those two
+transcendental-function implementations carry no cross-library bit-exactness
+guarantee -- measured at up to ~1e-14 relative difference on some platforms).
 
 ``dual_area="mixed-voronoi"`` (the default) is not twinned and **raises**
 :class:`NotImplementedError`: its obtuse/non-obtuse test is a discrete branch
