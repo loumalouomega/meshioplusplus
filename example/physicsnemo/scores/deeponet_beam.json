@@ -1,0 +1,21 @@
+{
+  "scores": {
+    "least_squares": {
+      "rmse": 5.202953966251201e-06,
+      "rel_l2": 0.3641962123246674
+    },
+    "model": {
+      "rmse": 3.1302455940909473e-07,
+      "rel_l2": 0.01582823441210995
+    }
+  },
+  "cases": 200,
+  "epochs": 150,
+  "best_epoch": 108,
+  "best_valid_loss": 9.056167570330824e-05,
+  "train_seconds": 21.710588216781616,
+  "device": "NVIDIA RTX 2000 Ada Generation Laptop GPU",
+  "torch": "2.13.0+cu130",
+  "physicsnemo": "2.2.0",
+  "meshioplusplus": "10.40.0"
+}

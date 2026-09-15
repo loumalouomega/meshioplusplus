@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="450" viewBox="0 0 1100 450" font-family="Helvetica, Arial, sans-serif">
+  <title>The active-learning loop and its four phases</title>
+  <desc>A Driver runs four phases in order - train, metrology, query, label - joined by queues. The unlabeled pool feeds the query phase; the label phase hands each chosen case to a solver, and the labeled samples drain back into the training pool.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+    <marker id="arrowg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2e6b2e"/>
+    </marker>
+    <marker id="arrowr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a03060"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="450" fill="#ffffff"/>
+
+  <text x="180" y="34" font-size="14" font-weight="bold" fill="#1f4e79">Driver — one active_learning_step(), repeated until max_steps</text>
+  <rect x="180" y="44" width="900" height="170" rx="10" fill="#eaf2fb" stroke="#1f4e79" stroke-width="1.5"/>
+
+  <!-- unlabeled pool -->
+  <rect x="20" y="100" width="145" height="90" rx="8" fill="#f6f6f6" stroke="#666" stroke-width="1.5"/>
+  <text x="92" y="128" text-anchor="middle" font-size="13" font-weight="bold" fill="#333">Unlabeled pool</text>
+  <text x="92" y="150" text-anchor="middle" font-size="11.5" fill="#666">candidate cases,</text>
+  <text x="92" y="166" text-anchor="middle" font-size="11.5" fill="#666">not yet solved</text>
+
+  <!-- phases -->
+  <g font-size="12.5">
+    <rect x="196" y="90" width="205" height="100" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+    <text x="298" y="116" text-anchor="middle" font-weight="bold" fill="#1f4e79">1. Train</text>
+    <text x="298" y="140" text-anchor="middle" fill="#444">fit or fine-tune the</text>
+    <text x="298" y="157" text-anchor="middle" fill="#444">surrogate on everything</text>
+    <text x="298" y="174" text-anchor="middle" fill="#444">labeled so far</text>
+
+    <rect x="416" y="90" width="205" height="100" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+    <text x="518" y="116" text-anchor="middle" font-weight="bold" fill="#1f4e79">2. Metrology</text>
+    <text x="518" y="140" text-anchor="middle" fill="#444">measure progress</text>
+    <text x="518" y="157" text-anchor="middle" fill="#444">beyond the validation</text>
+    <text x="518" y="174" text-anchor="middle" fill="#444">loss  (optional)</text>
+
+    <rect x="636" y="90" width="205" height="100" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+    <text x="738" y="116" text-anchor="middle" font-weight="bold" fill="#1f4e79">3. Query strategy</text>
+    <text x="738" y="140" text-anchor="middle" fill="#444">score the pool, enqueue</text>
+    <text x="738" y="157" text-anchor="middle" fill="#444">the cases the model is</text>
+    <text x="738" y="174" text-anchor="middle" fill="#444">least sure about</text>
+
+    <rect x="856" y="90" width="205" height="100" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+    <text x="958" y="116" text-anchor="middle" font-weight="bold" fill="#1f4e79">4. Label strategy</text>
+    <text x="958" y="140" text-anchor="middle" fill="#444">produce ground truth</text>
+    <text x="958" y="157" text-anchor="middle" fill="#444">for each queued case</text>
+  </g>
+
+  <g stroke="#555" stroke-width="1.8" fill="none">
+    <line x1="401" y1="140" x2="414" y2="140" marker-end="url(#arrow)"/>
+    <line x1="621" y1="140" x2="634" y2="140" marker-end="url(#arrow)"/>
+    <line x1="841" y1="140" x2="854" y2="140" marker-end="url(#arrow)"/>
+    <path d="M 165 145 L 178 145 L 178 68 L 738 68 L 738 86" marker-end="url(#arrow)"/>
+  </g>
+  <text x="450" y="61" text-anchor="middle" font-size="11" fill="#666">the pool the query strategy scores</text>
+  <text x="700" y="80" text-anchor="end" font-size="11" fill="#666">query queue</text>
+
+  <!-- solver -->
+  <rect x="830" y="250" width="250" height="112" rx="8" fill="#eef7ee" stroke="#2e6b2e" stroke-width="1.5"/>
+  <text x="955" y="276" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e6b2e">The solver, as labeler</text>
+  <text x="955" y="298" text-anchor="middle" font-size="11.5" fill="#444">one process per case, so its own</text>
+  <text x="955" y="314" text-anchor="middle" font-size="11.5" fill="#444">MPI ranks and torch's ranks never</text>
+  <text x="955" y="330" text-anchor="middle" font-size="11.5" fill="#444">share a world; results come back</text>
+  <text x="955" y="346" text-anchor="middle" font-size="11.5" fill="#444">as files the case already writes</text>
+  <line x1="958" y1="190" x2="958" y2="246" stroke="#2e6b2e" stroke-width="1.8" marker-end="url(#arrowg)"/>
+
+  <!-- return -->
+  <path d="M 830 300 L 298 300 L 298 194" stroke="#a03060" stroke-width="1.8" fill="none" stroke-dasharray="6 4" marker-end="url(#arrowr)"/>
+  <text x="564" y="292" text-anchor="middle" font-size="11.5" fill="#a03060">serialize queue: labeled samples drain into the training pool</text>
+
+  <g font-size="12.5" fill="#444">
+    <text x="20" y="400" font-weight="bold">Two contracts:</text>
+    <text x="140" y="400">every phase can be skipped, which is how you validate the plumbing on pre-computed data before launching a single solve; and the</text>
+    <text x="20" y="419">phases only ever talk through queues, so a query strategy, a labeler or the queue itself can be replaced without touching the others.</text>
+  </g>
+</svg>

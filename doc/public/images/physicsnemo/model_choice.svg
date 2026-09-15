@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="548" viewBox="0 0 1100 548" font-family="Helvetica, Arial, sans-serif">
+  <title>Choosing an architecture family from the shape of one sample</title>
+  <desc>Three lanes - a regular grid, an unstructured mesh, and everything else - each listing the sub-cases and the physicsnemo architecture families that fit them.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    </marker>
+  </defs>
+  <rect width="1100" height="548" fill="#ffffff"/>
+
+  <rect x="350" y="18" width="400" height="44" rx="22" fill="#f6f6f6" stroke="#666" stroke-width="1.5"/>
+  <text x="550" y="46" text-anchor="middle" font-size="16" font-weight="bold" fill="#333">What does one sample look like?</text>
+  <g stroke="#555" stroke-width="1.6" fill="none">
+    <path d="M 480 62 L 480 78 L 195 78 L 195 88" marker-end="url(#arrow)"/>
+    <path d="M 550 62 L 550 88" marker-end="url(#arrow)"/>
+    <path d="M 620 62 L 620 78 L 910 78 L 910 88" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- a regular grid -->
+  <g>
+    <rect x="20" y="90" width="350" height="382" rx="10" fill="#eaf2fb" stroke="#1f4e79" stroke-width="1.5"/>
+    <text x="36" y="117" font-size="15" font-weight="bold" fill="#1f4e79">a regular grid</text>
+    <g font-size="12" fill="#666">
+      <text x="36" y="146">same resolution in and out</text>
+      <text x="36" y="208">coarse in, fine out</text>
+      <text x="36" y="270">a time series of grids</text>
+      <text x="36" y="332">a distribution, not one answer</text>
+    </g>
+    <g font-size="12.5" fill="#1f4e79" font-weight="bold">
+      <rect x="36" y="152" width="318" height="32" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+      <text x="195" y="173" text-anchor="middle">FNO, AFNO, UNet</text>
+      <rect x="36" y="214" width="318" height="32" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+      <text x="195" y="235" text-anchor="middle">SRResNet</text>
+      <rect x="36" y="276" width="318" height="32" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+      <text x="195" y="297" text-anchor="middle">One2ManyRNN, FNO with dimension 4</text>
+      <rect x="36" y="338" width="318" height="32" rx="6" fill="#ffffff" stroke="#1f4e79"/>
+      <text x="195" y="359" text-anchor="middle">diffusion U-Nets, DiT, DiffusionUNet3D</text>
+    </g>
+    <text x="36" y="398" font-size="12" fill="#666">The lattice comes from a sampler, not from</text>
+    <text x="36" y="415" font-size="12" fill="#666">the mesh: a grid model never sees connectivity,</text>
+    <text x="36" y="432" font-size="12" fill="#666">so the fields have to be resampled onto it first</text>
+    <text x="36" y="449" font-size="12" fill="#666">and scattered back afterwards.</text>
+  </g>
+
+  <!-- an unstructured mesh -->
+  <g>
+    <rect x="380" y="90" width="350" height="382" rx="10" fill="#eef7ee" stroke="#2e6b2e" stroke-width="1.5"/>
+    <text x="396" y="117" font-size="15" font-weight="bold" fill="#2e6b2e">an unstructured mesh</text>
+    <g font-size="12" fill="#666">
+      <text x="396" y="146">use the connectivity</text>
+      <text x="396" y="208">ignore it, points only</text>
+      <text x="396" y="270">a CAD surface plus a volume</text>
+      <text x="396" y="332">a time series of nodal states</text>
+    </g>
+    <g font-size="12.5" fill="#2e6b2e" font-weight="bold">
+      <rect x="396" y="152" width="318" height="32" rx="6" fill="#ffffff" stroke="#2e6b2e"/>
+      <text x="555" y="173" text-anchor="middle">MeshGraphNet, BiStride, Hybrid, KAN</text>
+      <rect x="396" y="214" width="318" height="32" rx="6" fill="#ffffff" stroke="#2e6b2e"/>
+      <text x="555" y="235" text-anchor="middle">Transolver, GeoTransolver, FLARE</text>
+      <rect x="396" y="276" width="318" height="32" rx="6" fill="#ffffff" stroke="#2e6b2e"/>
+      <text x="555" y="297" text-anchor="middle">DoMINO</text>
+      <rect x="396" y="338" width="318" height="32" rx="6" fill="#ffffff" stroke="#2e6b2e"/>
+      <text x="555" y="359" text-anchor="middle">any per-node model, rolled forward</text>
+    </g>
+    <text x="396" y="398" font-size="12" fill="#666">The one shape a mesh library holds natively.</text>
+    <text x="396" y="415" font-size="12" fill="#666">Everything a graph model needs - nodes, edges,</text>
+    <text x="396" y="432" font-size="12" fill="#666">per-node features and targets - is already in</text>
+    <text x="396" y="449" font-size="12" fill="#666">the file; nothing has to be resampled.</text>
+  </g>
+
+  <!-- something else -->
+  <g>
+    <rect x="740" y="90" width="340" height="382" rx="10" fill="#fff4e0" stroke="#c27c0e" stroke-width="1.5"/>
+    <text x="756" y="117" font-size="15" font-weight="bold" fill="#7a4d00">something else</text>
+    <g font-size="12" fill="#666">
+      <text x="756" y="146">particles with trajectories</text>
+      <text x="756" y="208">a few parameters to a whole field</text>
+      <text x="756" y="270">no data, only the PDE</text>
+    </g>
+    <g font-size="12.5" fill="#7a4d00" font-weight="bold">
+      <rect x="756" y="152" width="308" height="32" rx="6" fill="#ffffff" stroke="#c27c0e"/>
+      <text x="910" y="173" text-anchor="middle" font-size="11.5">MeshGraphNet on a proximity graph, VFGN</text>
+      <rect x="756" y="214" width="308" height="32" rx="6" fill="#ffffff" stroke="#c27c0e"/>
+      <text x="910" y="235" text-anchor="middle">FullyConnected, or POD plus a small net</text>
+      <rect x="756" y="276" width="308" height="32" rx="6" fill="#ffffff" stroke="#c27c0e"/>
+      <text x="910" y="297" text-anchor="middle">a PINN network</text>
+    </g>
+    <text x="756" y="332" font-size="12" fill="#666">The middle row is the one people skip and</text>
+    <text x="756" y="349" font-size="12" fill="#666">should not: a handful of case parameters in,</text>
+    <text x="756" y="366" font-size="12" fill="#666">a whole field out, is a plain MLP problem far</text>
+    <text x="756" y="383" font-size="12" fill="#666">more often than it is a neural-operator one.</text>
+    <text x="756" y="415" font-size="12" fill="#666">A PINN needs no dataset at all - only the</text>
+    <text x="756" y="432" font-size="12" fill="#666">equation, the domain and its boundary</text>
+    <text x="756" y="449" font-size="12" fill="#666">conditions.</text>
+  </g>
+
+  <g font-size="12.5" fill="#444">
+    <text x="20" y="503" font-weight="bold">The rule:</text>
+    <text x="88" y="503">the shape of one sample picks the family, and the family then dictates what the data pipeline has to produce.  Picking a model first and</text>
+    <text x="20" y="522">discovering afterwards that nothing can feed it is the usual way a physics-ML project loses its first month.</text>
+  </g>
+</svg>

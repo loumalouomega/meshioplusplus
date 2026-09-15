@@ -930,6 +930,177 @@ mio_remesh <- function(mesh, num_clusters, subdivide = -1L, subsample_ratio = 10
   )
 }
 
+
+#' Per-vertex mean and Gaussian curvature of a surface mesh
+#'
+#' `K` (Gaussian curvature) by the angle defect, `H` (mean curvature) by the
+#' cotangent Laplace-Beltrami operator -- the estimators the
+#' discrete-differential-geometry convergence results are about, and NVIDIA
+#' PhysicsNeMo's own `gaussian_curvature_vertices`/`mean_curvature_vertices`
+#' use. The signed distance's natural companion as a node feature: `sdf` says
+#' how far a point is from the surface, this says how the surface bends
+#' there.
+#'
+#' Writes `curvature:mean` and `curvature:gaussian` as point data, optionally
+#' `curvature:area` (the dual area each was divided by) and
+#' `curvature:principal` (an `(n, 2)` matrix, `k1 >= k2`). Geometry,
+#' connectivity and existing data are carried through unchanged. Triangles
+#' come from the same fan `convert_cells(simplexify)` uses, so a quad mesh's
+#' curvature is the curvature of its canonical triangulation; a volume or
+#' polyhedron block is refused by name pointing at `extract_surface`, a
+#' higher-order one pointing at `linearize`.
+#'
+#' `total_angle_defect` is the oracle: on a CLOSED surface it is `2*pi*chi`
+#' exactly -- `4*pi` for anything sphere-like -- whatever the tessellation and
+#' whichever `dual_area`, so a value that is not that means the input is not
+#' closed or the result is not sane.
+#'
+#' `H` is orientation-dependent and `K` is not, so check
+#' `quality$inconsistent_pairs` before trusting a sign: a nonzero count means
+#' facets disagree about which side is out. This never repairs its input.
+#'
+#' @param mesh A `mio_mesh` (surface only).
+#' @param mean Attach `curvature:mean` (`TRUE` by default).
+#' @param gaussian Attach `curvature:gaussian` (`TRUE` by default).
+#' @param dual_area `"mixed-voronoi"` (default, converges better on an
+#'   irregular tessellation) or `"barycentric"` (cruder but branch-free).
+#' @param include_boundary Compute a biased value at boundary vertices
+#'   instead of leaving them `NaN`. Isolated vertices are `NaN` either way.
+#' @param record_area Also attach `curvature:area`.
+#' @param record_principal Also attach `curvature:principal`.
+#' @param region Restrict to this named cell region; `""` (default) takes
+#'   every surface cell.
+#' @return A list of `mesh`, `quality` (a list of `boundary_edges`,
+#'   `non_manifold_edges`, `inconsistent_pairs`, `degenerate_triangles`,
+#'   `watertight`), `num_boundary`, `num_isolated`, `num_degenerate` and
+#'   `total_angle_defect`.
+#' @export
+mio_compute_curvature <- function(mesh, mean = TRUE, gaussian = TRUE,
+                                  dual_area = "mixed-voronoi",
+                                  include_boundary = FALSE, record_area = FALSE,
+                                  record_principal = FALSE, region = "") {
+  .Call(
+    R_mio_compute_curvature, mesh, isTRUE(mean), isTRUE(gaussian),
+    as.character(dual_area), isTRUE(include_boundary), isTRUE(record_area),
+    isTRUE(record_principal), as.character(region)
+  )
+}
+
+#' Repair a surface mesh's orientation, holes and pinched vertices
+#'
+#' Surface repair beyond `mio_clean()`: weld (opt-in) -> triangulate (blocks
+#' 1:1) -> split bowties (a vertex whose triangle star is edge-disconnected is
+#' duplicated, geometry unchanged) -> orient by the topological half-edge rule
+#' per connected component (two triangles sharing an edge agree iff they
+#' traverse it in opposite directions -- exact, where a normal test fails
+#' across a crease) -> fan-fill boundary loops of at most `max_hole_edges`
+#' edges, wound to agree with the surrounding surface -> orient closed
+#' components outward. Adapted from NVIDIA PhysicsNeMo's `mesh.repair`.
+#'
+#' Lower-dimensional blocks ride along; fill triangles land in one trailing
+#' `triangle` block (only when there is one). Non-manifold *edges* are counted,
+#' never split or crossed. The C++ index maps are not exposed on the flat ABI.
+#'
+#' @param mesh A `mio_mesh` (surface only; a volume block is refused naming
+#'   `extract_surface`, a higher-order one naming `linearize`).
+#' @param fix_orientation Rewind triangles so neighbours agree (`TRUE`).
+#' @param orient_outward Flip closed components with a negative volume (`TRUE`).
+#' @param fill_holes Fan-fill boundary loops (`TRUE`).
+#' @param split_non_manifold Duplicate bowtie vertices (`TRUE`).
+#' @param max_hole_edges Longest loop still filled (`10`); `<= 0` means no limit.
+#' @param weld_tolerance Weld coincident points within this distance first;
+#'   `0` (the default) skips the weld.
+#' @param record_provenance Attach `repair:parent_point` and `repair:hole`.
+#' @return A list of `mesh`, `quality_before`, `quality_after` (each a list of
+#'   `boundary_edges`, `non_manifold_edges`, `inconsistent_pairs`,
+#'   `degenerate_triangles`, `watertight`) and the counters `num_flipped`,
+#'   `num_components`, `largest_component`, `num_oriented_outward`,
+#'   `num_unorientable`, `num_vertices_split`, `num_holes_detected`,
+#'   `num_holes_filled`, `num_holes_skipped`, `num_faces_added`,
+#'   `num_points_added`, `points_welded`.
+#' @export
+mio_repair <- function(mesh, fix_orientation = TRUE, orient_outward = TRUE,
+                       fill_holes = TRUE, split_non_manifold = TRUE,
+                       max_hole_edges = 10, weld_tolerance = 0.0,
+                       record_provenance = FALSE) {
+  .Call(
+    R_mio_repair, mesh, isTRUE(fix_orientation), isTRUE(orient_outward),
+    isTRUE(fill_holes), isTRUE(split_non_manifold), as.numeric(max_hole_edges),
+    as.numeric(weld_tolerance), isTRUE(record_provenance)
+  )
+}
+
+#' Project a mesh's points onto a target surface (shrinkwrap)
+#'
+#' `x' = x + w (p + offset n - x)` with `p` the closest point on the target
+#' surface and `n` the unit pseudonormal of the hit FEATURE (the bisector at a
+#' crease, not the selected triangle's normal) -- one projection, no
+#' iteration, no self-intersection guard, as in NVIDIA PhysicsNeMo's
+#' `mesh.shrinkwrap`. Every point of `mesh` moves whatever cells it carries;
+#' only `target` must be a surface (quads and polygons are fanned). A point
+#' farther than `max_distance` from the target is left alone and counted.
+#' Connectivity, data, regions and property sets pass through verbatim.
+#'
+#' @param mesh The `mio_mesh` whose points move.
+#' @param target The surface `mio_mesh` to project onto.
+#' @param offset Signed offset along the feature pseudonormal.
+#' @param max_distance Leave points farther than this alone; `<= 0` means unlimited.
+#' @param weights Name of a `(n,)` point-data array on the source: nonzero
+#'   selects, a fractional value blends. `""` (default) moves every point.
+#' @param target_region Restrict the target to this named cell region.
+#' @param normal_weight `"angle"` (default) or `"area"` vertex-pseudonormal weighting.
+#' @param record_distance Attach `shrinkwrap:distance`.
+#' @param record_closest_cell Attach `shrinkwrap:closest_cell`.
+#' @return A list of `mesh`, `quality` (the target's), `num_projected`,
+#'   `num_missed`, `num_skipped` and `max_displacement`.
+#' @export
+mio_shrinkwrap <- function(mesh, target, offset = 0.0, max_distance = 0.0,
+                           weights = "", target_region = "",
+                           normal_weight = "angle", record_distance = FALSE,
+                           record_closest_cell = FALSE) {
+  .Call(
+    R_mio_shrinkwrap, mesh, target, as.numeric(offset), as.numeric(max_distance),
+    as.character(weights), as.character(target_region), as.character(normal_weight),
+    isTRUE(record_distance), isTRUE(record_closest_cell)
+  )
+}
+
+#' Sobolev (Helmholtz-filtered) deformation
+#'
+#' Solves `(M + l^2 K) u = M d` over the mesh's own P1 finite-element
+#' operators -- `K` the stiffness matrix from the simplex edge Gram matrix,
+#' `M` the uniform mean lumped vertex mass, matrix-free Jacobi-preconditioned
+#' conjugate gradients -- and moves the points by `u`: a screened-Poisson
+#' low-pass filter of the raw displacement `d` whose cutoff wavelength is
+#' `length_scale`, as in NVIDIA PhysicsNeMo's `mesh.sobolev_deform`. Every
+#' top-dimensional block must be a linear simplex (`line`, `triangle`,
+#' `tetra`); lower-dimensional blocks ride along. Nothing is pinned by default
+#' (a constant displacement is preserved exactly). Non-convergence is
+#' reported, never raised: the last iterate is returned.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param array Name of the `(n, dim)` point-data displacement array.
+#' @param length_scale The smoothing length; `0` applies the raw field at free points.
+#' @param fixed_points_array Name of a point-data array whose nonzero entries
+#'   pin their point (`""` pins nothing this way). Note R writes point data as
+#'   `Float64`, which this accepts.
+#' @param fix_boundary Also pin every point on a boundary facet.
+#' @param record_filtered Attach `sobolev:displacement`.
+#' @param max_iterations Conjugate-gradient cap (`128`).
+#' @param tolerance Relative residual tolerance (`1e-10`).
+#' @return A list of `mesh`, `num_iterations`, `residual`, `converged`,
+#'   `num_fixed`, `num_isolated` and `max_displacement`.
+#' @export
+mio_sobolev_deform <- function(mesh, array, length_scale, fixed_points_array = "",
+                               fix_boundary = FALSE, record_filtered = FALSE,
+                               max_iterations = 128L, tolerance = 1e-10) {
+  .Call(
+    R_mio_sobolev_deform, mesh, as.character(array), as.numeric(length_scale),
+    as.character(fixed_points_array), isTRUE(fix_boundary), isTRUE(record_filtered),
+    as.integer(max_iterations), as.numeric(tolerance)
+  )
+}
+
 #' Retetrahedralize a volume mesh (or a closed surface) by isosurface stuffing
 #'
 #' The volumetric sibling of [mio_remesh()], generating an entirely new tet

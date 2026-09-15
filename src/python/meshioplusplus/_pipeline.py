@@ -30,6 +30,7 @@ from ._agglomerate import agglomerate
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
+from ._curvature import compute_curvature
 from ._data_average import cell_data_to_point_data, point_data_to_cell_data
 from ._data_calc import data_calc
 from ._data_condition import data_condition
@@ -51,10 +52,12 @@ from ._refine import refine
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
 from ._reorder import reorder
+from ._repair import repair
 from ._sdf import compute_sdf
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
+from ._sobolev_deform import sobolev_deform
 from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._transform import transform
@@ -112,6 +115,33 @@ _OP_TABLE = {
     "Section": ("Point", "Normal", "RecordParentIds"),  # alias of Slice
     "Gradient": ("Array", "Operator", "Method", "Location", "Output", "Component"),
     "Hessian": ("Array", "Method", "Location", "Output"),
+    "Curvature": (
+        "Mean",
+        "Gaussian",
+        "DualArea",
+        "IncludeBoundary",
+        "RecordArea",
+        "RecordPrincipal",
+        "Region",
+    ),
+    "Repair": (
+        "FixOrientation",
+        "OrientOutward",
+        "FillHoles",
+        "SplitNonManifold",
+        "MaxHoleEdges",
+        "WeldTolerance",
+        "RecordProvenance",
+    ),
+    "SobolevDeform": (
+        "Array",
+        "LengthScale",
+        "FixedPointsArray",
+        "FixBoundary",
+        "RecordFiltered",
+        "MaxIterations",
+        "Tolerance",
+    ),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "Remesh": (
         "NumClusters",
@@ -225,6 +255,8 @@ _EXCLUDED_OPS = {
     "pipeline step; use the `interpolate` CLI verb",
     "Split": "'Split' produces several output meshes and is not a pipeline "
     "step; use the `split` CLI verb",
+    "Shrinkwrap": "'Shrinkwrap' needs a second (target) mesh and is not a "
+    "pipeline step; use the `shrinkwrap` CLI verb",
     "Diff": "'Diff' compares two meshes and is not a pipeline step; use the "
     "`diff` CLI verb",
     "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
@@ -549,6 +581,87 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 f"hessian: {report['num_skipped']} cell(s) could not be "
                 "evaluated and are NaN"
+            )
+    elif op == "Curvature":
+        mesh, report = compute_curvature(
+            mesh,
+            mean=_flag(step, "Mean", True),
+            gaussian=_flag(step, "Gaussian", True),
+            dual_area=_text(step, "DualArea", "mixed-voronoi"),
+            include_boundary=_flag(step, "IncludeBoundary", False),
+            record_area=_flag(step, "RecordArea", False),
+            record_principal=_flag(step, "RecordPrincipal", False),
+            region=_text(step, "Region", ""),
+            return_report=True,
+        )
+        entry["NumBoundary"] = report["num_boundary"]
+        entry["NumIsolated"] = report["num_isolated"]
+        entry["NumDegenerate"] = report["num_degenerate"]
+        entry["TotalAngleDefect"] = report["total_angle_defect"]
+        # H's sign comes from the surface's own winding, so a mesh whose facets
+        # disagree about which side is out yields sign-flipped patches with no
+        # error raised. Say so rather than letting it pass silently.
+        if report["quality"]["inconsistent_pairs"] > 0:
+            warnings.append(
+                f"curvature: {report['quality']['inconsistent_pairs']} edge "
+                "pair(s) wind the same way, so the sign of 'curvature:mean' is "
+                "not trustworthy"
+            )
+    elif op == "Repair":
+        mesh, report = repair(
+            mesh,
+            fix_orientation=_flag(step, "FixOrientation", True),
+            orient_outward=_flag(step, "OrientOutward", True),
+            fill_holes=_flag(step, "FillHoles", True),
+            split_non_manifold=_flag(step, "SplitNonManifold", True),
+            max_hole_edges=int(_number(step, "MaxHoleEdges", 10)),
+            weld_tolerance=_number(step, "WeldTolerance", 0.0),
+            record_provenance=_flag(step, "RecordProvenance", False),
+            return_report=True,
+        )
+        entry["NumFlipped"] = report["num_flipped"]
+        entry["NumComponents"] = report["num_components"]
+        entry["NumVerticesSplit"] = report["num_vertices_split"]
+        entry["NumHolesFilled"] = report["num_holes_filled"]
+        entry["NumHolesSkipped"] = report["num_holes_skipped"]
+        entry["NumFacesAdded"] = report["num_faces_added"]
+        entry["NumPointsAdded"] = report["num_points_added"]
+        entry["PointsWelded"] = report["points_welded"]
+        # What repair could NOT fix is worth saying.
+        if report["num_unorientable"] > 0:
+            warnings.append(
+                f"repair: {report['num_unorientable']} component(s) are not "
+                "orientable; their winding is a best effort"
+            )
+        if report["quality_after"]["non_manifold_edges"] > 0:
+            warnings.append(
+                f"repair: {report['quality_after']['non_manifold_edges']} "
+                "non-manifold edge(s) remain; repair counts them, it does not "
+                "split them"
+            )
+    elif op == "SobolevDeform":
+        mesh, report = sobolev_deform(
+            mesh,
+            _text(step, "Array", ""),
+            _number(step, "LengthScale", 0.0),
+            fixed_points=_text(step, "FixedPointsArray", "") or None,
+            fix_boundary=_flag(step, "FixBoundary", False),
+            record_filtered=_flag(step, "RecordFiltered", False),
+            max_iterations=int(_number(step, "MaxIterations", 128)),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            return_report=True,
+        )
+        entry["NumIterations"] = report["num_iterations"]
+        entry["Residual"] = report["residual"]
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        entry["NumFixed"] = report["num_fixed"]
+        entry["NumIsolated"] = report["num_isolated"]
+        entry["MaxDisplacement"] = report["max_displacement"]
+        if not report["converged"]:
+            warnings.append(
+                f"sobolev_deform: conjugate gradients did not converge in "
+                f"{report['num_iterations']} iteration(s); the last iterate is "
+                "returned"
             )
     elif op == "EstimateError":
         mesh, report = estimate_error(

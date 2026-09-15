@@ -762,6 +762,105 @@ meshioplusplus optimize-volume volume.vtu optimized.vtu --max-iterations 20
 
 ---
 
+## meshioplusplus repair
+
+Fix a surface's orientation, holes and pinched vertices — the three defects `clean` does not touch (see [surface repair](/repair)).
+
+```
+meshioplusplus repair [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--no-fix-orientation` | Do not rewind triangles so neighbours across a manifold edge agree |
+| `--no-orient-outward` | Do not flip closed components whose signed volume is negative |
+| `--no-fill-holes` | Do not fan-fill boundary loops |
+| `--no-split-non-manifold` | Do not duplicate bowtie (pinched) vertices |
+| `--max-hole-edges N` | Longest boundary loop still filled; `<= 0` means no limit (default `10`) |
+| `--weld-tolerance T` | Weld coincident points within this distance first, through `clean` (default `0`, off) |
+| `--record-provenance` | Attach `repair:parent_point` (point) and `repair:hole` (cell) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The passes run in the order weld → triangulate → split bowties → orient → fill holes → orient outward, and the summary reports both the input's and the output's defect counts, so what was fixed and what remains are both visible. Orientation uses the topological half-edge rule — two triangles sharing an edge agree iff they traverse it in opposite directions — which is exact where a normal-angle test mis-orients across a sharp crease. Output is all-triangle at the surface with blocks 1:1 with the input, lower-dimensional blocks carried verbatim, and fill triangles in one trailing `triangle` block. Non-manifold *edges* are counted, never split.
+
+**Examples:**
+
+```sh
+meshioplusplus repair scan.stl fixed.vtu
+meshioplusplus repair scan.stl fixed.vtu --max-hole-edges 0
+meshioplusplus repair scan.stl fixed.vtu --weld-tolerance 1e-9
+meshioplusplus repair in.vtu out.vtu --no-fill-holes --record-provenance
+```
+
+---
+
+## meshioplusplus shrinkwrap
+
+Project a mesh's points onto a target triangle surface (see [shrinkwrap](/shrinkwrap)).
+
+```
+meshioplusplus shrinkwrap [options] INFILE TARGET OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--offset=X` | Signed offset along the hit feature's unit pseudonormal (a negative value needs the `--offset=` form) |
+| `--max-distance D` | Leave points farther than this from the target alone; `<= 0` means unlimited |
+| `--weights NAME` | Scalar `point_data` array on the source: integer/bool selects, float blends (unclamped) |
+| `--target-region NAME` | Restrict the target to this named cell region |
+| `--normal-weight angle\|area` | Vertex-pseudonormal weighting of the target (default `angle`) |
+| `--record-distance` | Attach `shrinkwrap:distance` (NaN where not queried) |
+| `--record-closest-cell` | Attach `shrinkwrap:closest_cell` (`-1` where not queried) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--target-format` | Force the target's format |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+One projection, not an iteration: there is no self-intersection or inversion guard. Every point of the source moves whatever cells it carries — a volume mesh's interior points too — and only the *target* must be a surface. The offset goes along the hit feature's pseudonormal, which at a crease is the bisector rather than either face's normal.
+
+**Examples:**
+
+```sh
+meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu
+meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --offset=0.5
+meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --max-distance 2.0
+meshioplusplus shrinkwrap template.vtu scan.stl out.vtu --weights mask --record-distance
+```
+
+---
+
+## meshioplusplus sobolev-deform
+
+Filter a raw displacement field through the mesh's own P1 operators, then move the points by it (see [Sobolev deformation](/sobolev_deform)).
+
+```
+meshioplusplus sobolev-deform [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | **Required.** The `point_data` array holding the raw displacement, `(n, dim)` |
+| `--length-scale L` | **Required.** The smoothing length in mesh units; `0` applies the raw field at the free points |
+| `--fixed-points-array NAME` | An integer/bool `point_data` array whose nonzero entries pin their point |
+| `--fix-boundary` | Also pin every point on a boundary facet of the top-dimensional cells |
+| `--record-filtered` | Attach `sobolev:displacement`, the filtered field |
+| `--max-iterations N` | Conjugate-gradient iteration cap (default `128`) |
+| `--tolerance T` | Relative residual tolerance (default `1e-10`) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Solves `(M + l^2 K) u = M d` and sets `x' = x + u` — a screened-Poisson low-pass filter whose cutoff wavelength is the length scale. Every block at the mesh's top topological dimension must be a linear simplex (`line`, `triangle`, `tetra`); lower-dimensional blocks ride along. Nothing is pinned by default, so a constant displacement is preserved exactly in zero iterations. Non-convergence is reported rather than raised, with the last iterate returned.
+
+**Examples:**
+
+```sh
+meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5
+meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5 --fix-boundary
+meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 1.0 --record-filtered
+```
+
+---
+
 ## meshioplusplus smooth
 
 Relax point coordinates toward their edge-neighbour centroids to improve element shape (see [smoothing](/smooth)).
@@ -890,8 +989,16 @@ meshioplusplus data <subcommand> [options]
 | `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
+| `export-cae` | Export a *set* of meshes as one `.npz` per case in the [CAE sample layout](/formats/cae) PhysicsNeMo's DoMINO/Transolver datapipes read |
 
-Every verb takes `--input-format` (`-i`), and every verb but `info` and `integrate` takes an `OUTFILE` and `--output-format` (`-o`) — the mesh is never modified by either of those two, so there is nothing to write. `export` and `export-dataset` are the exceptions on the output side: they write Parquet / zarr / hdf5, so they take no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5` instead, plus `--mesh-id stem|index`, and its input is several paths, one quoted glob, or one multi-step file — the sequence source language). Both are **Python CLI only**; both need the matching optional extra.
+Every verb takes `--input-format` (`-i`), and every verb but `info` and `integrate` takes an `OUTFILE` and `--output-format` (`-o`) — the mesh is never modified by either of those two, so there is nothing to write. `export` and `export-dataset` are the exceptions on the output side: they write Parquet / zarr / hdf5, so they take no `--output-format` (`export-dataset` has `--format parquet|zarr|hdf5` instead, plus `--mesh-id stem|index`, and its input is several paths, one quoted glob, or one multi-step file — the sequence source language). All three are **Python CLI only**; `export` and `export-dataset` need the matching optional extra, while `export-cae` needs none — it is pure numpy.
+
+`export-cae` takes the same sequence source (several paths, one quoted glob, or one multi-step file) plus a target *directory*, and writes `case_{index}.npz` into it. `--surface-fields`/`--volume-fields` name and order the columns of the two concatenated field blocks (default: every numeric array, sorted); `--global NAME=VALUE` and `--global-reference NAME=VALUE` are repeatable case parameters and `--global-order` fixes their stacking order, which DoMINO is sensitive to. One mesh is alive at a time.
+
+```sh
+meshioplusplus data export-cae 'run_*.vtu' dataset/ \
+    --surface-fields p --global stream_velocity=30 --global-order stream_velocity
+```
 
 ::: tip `data gradient`, `data hessian`, `data estimate-error` and `data integrate` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by definition never touches geometry. `gradient` consumes and produces data arrays but **reads** geometry and topology (face areas, cell volumes, cell adjacency), so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion one order further, a composition of two `gradient` calls; `estimate-error` composes `gradient` itself; `integrate` reads the same cell measures to weight its totals. All four are grouped here because that is where a user looks for them. See [field derivatives](/gradient), [second derivatives](/hessian), [error estimation](/error) and [field integration](/field_integration).
@@ -1061,7 +1168,7 @@ meshioplusplus dataset <subcommand> [options]
 
 | verb | does |
 |---|---|
-| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent |
+| `add MANIFEST SOURCE...` | add a case — one quoted glob, one file, or several paths; `--id` (default: the stem), `--format`, `--times T,T`, `--time-from`, `--sort`, plus curation `--split`/`--tag` (repeatable)/`--group`/`--notes`/`--meta K=V` (repeatable; `V` parses as JSON when it can). The source is expanded once so an empty glob fails now, by name (`--no-validate` skips). Creates the manifest file if absent. `--target SOURCE` (repeatable) records a paired coarse/fine series, with its own `--target-format`/`--target-times`/`--target-time-from`/`--target-sort`; the two must have the same steps at the same instants, checked here. Omit it for the ordinary self-supervised case |
 | `list MANIFEST` | entries filtered by `--split`/`--tag`/`--group`; `--resolve` expands each plan (checks files exist, reads no mesh); `--json` emits the entries (plus `Resolved` plans) as JSON |
 | `split MANIFEST` | `--set S` on `--id` (repeatable) or `--all`; or `--assign train=0.8,valid=0.1,test=0.1` over every entry — deterministic (`--seed`), `--by-group` keeps entries sharing a `Group` together |
 | `tag MANIFEST` | `--add T,T` / `--remove T,T` on `--id` (repeatable) or `--all` |
@@ -1070,6 +1177,7 @@ meshioplusplus dataset <subcommand> [options]
 ```sh
 meshioplusplus dataset add m.json 'runs/c42/out_*.vtu' --split train --meta Re=100
 meshioplusplus dataset add m.json a.vtu b.vtu --id pair --tag coarse
+meshioplusplus dataset add m.json 'coarse/*.vtu' --target 'fine/*.vtu' --id sr
 meshioplusplus dataset split m.json --assign train=0.8,valid=0.1,test=0.1 --seed 0
 meshioplusplus dataset list m.json --split train --resolve
 meshioplusplus dataset annotate m.json --id pair --notes "restarted at t=0.3"
@@ -1230,6 +1338,113 @@ meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
 | `--max-cells N` | refuse above this many cells (default ~256³) |
 
 See [`doc/voxelize.md`](voxelize.md) and [`doc/sdf.md`](sdf.md).
+
+## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
+
+The mesh-to-grid data path a convolutional or superresolution model needs.
+
+```bash
+meshioplusplus grid-sample   case.vtu grid.vti --resolution 64,64,64
+meshioplusplus grid-resample grid.vti fine.vti --factor 2
+meshioplusplus grid-scatter  fine.vti case.vtu predicted.vtu
+meshioplusplus grid-spectrum grid.vti --field T --json
+```
+
+Write grids as **`.vti`**: it stores the lattice as origin/spacing/extent and regenerates the points arithmetically, so the grid is recovered exactly on the way back in. A grid written to `.vtu` is a lossy round trip for this purpose and reading one back as a grid fails by name.
+
+| flag | verb | meaning |
+|---|---|---|
+| `--resolution nx,ny,nz` / `--cell-size S` | sample | the lattice; exactly one, the same six-field vocabulary as `voxelize` and `sdf` |
+| `--bounds=xlo,...,zhi` | sample | explicit bounds. For a coarse/fine pair take the box from the **fine** mesh, so every fine node is inside the coarse grid |
+| `--padding` / `--padding-relative` | sample | grow the box on every side |
+| `--fields a,b` | all | which point data to carry; every array by default |
+| `--extrapolate` | sample | give a grid point outside the mesh its nearest value instead of the fill |
+| `--fill-value=V` | sample | what an outside point gets (`nan` makes the fill visible downstream) |
+| `--factor N` / `--resolution nx,ny,nz` | resample | integer upscale, or explicit counts, over the same box; exactly one |
+| `--on-conflict error\|overwrite\|suffix` | scatter | when the target already has an array of that name |
+| `--field NAME` | spectrum | required; a multi-component array's components are summed |
+| `--max-bins N` / `--json` | spectrum | truncate the printed table / emit JSON |
+
+`grid-sample` reports the **coverage**, the fraction of grid points inside the mesh — a grid around a concave domain is mostly fill, and a model trained on it learns the fill. `cell_data` is refused in both directions: convert it with `data to-point` first.
+
+## `subsample`
+
+Reduce a mesh to a point cloud of exactly `--count` points, so a large surface fits a transformer's token budget.
+
+```bash
+meshioplusplus subsample wing.stl wing_4096.vtp --count 4096                 # farthest-point sampling
+meshioplusplus subsample wing.stl wing_4096.vtp --count 4096 --method grid   # O(N + count^2), for big clouds
+meshioplusplus subsample wing.stl tip.vtp --count 512 --bounds=0.8,-1,-1,1,1,1 --record-ids
+```
+
+| flag | meaning |
+|---|---|
+| `--count N` | required; how many points to keep |
+| `--method farthest\|grid\|random` | exact farthest-point sampling (`O(N*count)`, the most uniform coverage), lattice representatives then farthest-point sampling (`O(N + count^2)`, the scalable choice above a few hundred thousand points), or a uniform draw |
+| `--start N` / `--start random` | the first selected point for `farthest`/`grid`; `random` draws it from `--seed` |
+| `--seed S` | drives `random`, and `--start random` |
+| `--bounds=xlo,...,zhi` | only points inside this box are candidates |
+| `--record-ids` | attach `budget:original_point_id`, each point's index in the source |
+
+The output keeps the selected points, their `point_data` and Point regions, and gets a `vertex` block so every format can hold it; cells, `cell_data` and Cell/Side regions are dropped with a warning naming what went. See [point-cloud budgets](point_budgets.md).
+
+See [`doc/grids.md`](grids.md).
+
+## `proximity-graph`
+
+Build a graph from geometry rather than connectivity: the neighbourhoods a particle method needs, where the interaction radius and not a shared element is what links two points.
+
+```bash
+meshioplusplus proximity-graph particles.vtu graph.vtu --radius 0.015
+meshioplusplus proximity-graph particles.vtu graph.vtu --knn 16
+meshioplusplus proximity-graph particles.vtu graph.vtu --radius 0.015 --box 2.0   # periodic
+```
+
+| flag | meaning |
+|---|---|
+| `--radius R` | link every pair closer than `R`; one of `--radius`/`--knn` is required |
+| `--knn K` | link each point to its `K` nearest, then symmetrize (near-constant degree) |
+| `--box L` / `--box Lx,Ly,Lz` | a periodic box: pairs are linked by their minimum image, and a radius past half the smallest side is refused |
+| `--kind node\|cell` | vertices are mesh points (default) or block-major cell centroids |
+
+The graph is written as `line` cells over those positions with a `degree` point array, and the summary prints the vertex and edge counts, the degree spread and how many vertices came out isolated — the numbers that say whether the radius was well chosen. See [proximity graphs](proximity_graphs.md).
+
+## `predict`
+
+Run a trained PhysicsNeMo checkpoint on one mesh file — no manifest, no split, no entry.
+
+```bash
+meshioplusplus predict runs/example/checkpoints/best.mdlus part.vtu part_pred.vtu
+meshioplusplus predict best.mdlus series.xdmf step_pred.vtu --time-step 4
+```
+
+| flag | meaning |
+|---|---|
+| `--time-step N` | which step of a multi-step input to predict on (default the first) |
+| `--target PATH` | the paired mesh a t→t+n or coarse/fine checkpoint compares against |
+| `--device auto\|cpu\|cuda[:N]` | where to run (default `auto`) |
+
+Everything else comes from the checkpoint's own model card, including which model family wrote it. A mesh carrying no truth predicts anyway, and the summary says the error was not measured rather than reporting one against the input itself. Needs `nvidia-physicsnemo` (and `torch_geometric` for a graph checkpoint); without them the verb fails by name and returns 1. See [PhysicsNeMo integration](physicsnemo.md#single-mesh-inference).
+
+## `guard-fit`, `guard-check`
+
+Fit a description of the shapes a dataset contains, and score a new mesh against it — the check a trained surrogate cannot make for itself.
+
+```bash
+meshioplusplus guard-fit dataset_manifest.json guard.json --split train --margin 1.5
+meshioplusplus guard-check guard.json new_part.vtu
+meshioplusplus guard-check runs/example/checkpoints/best.mdlus.card.json new_part.vtu --json
+```
+
+| flag | meaning |
+|---|---|
+| `--split S` | which split to fit on (default `train`) |
+| `--margin M` | threshold = `M` × the worst training score (default 1.5) |
+| `--no-quality` | skip the quality descriptors (faster on large meshes) |
+| `--top N` | how many descriptors `guard-check` names (default 3) |
+| `--json` | emit the raw report |
+
+`guard-check` accepts a fitted guard or a **model card** carrying one, and prints the verdict, the score against the threshold and the descriptors that put it there. The descriptors are deliberately not scale- or position-invariant: a scaled part is a different part. See [geometry guardrails](geometry_guardrails.md).
 
 ## `sdf`
 

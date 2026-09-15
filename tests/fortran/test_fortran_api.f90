@@ -1174,6 +1174,10 @@ program test_fortran_api
     ! ---- regular grids and signed distance -------------------------------
     call check_grids_and_distance()
 
+    ! ---- per-vertex curvature --------------------------------------------
+    call check_curvature()
+    call check_repair_shrinkwrap_sobolev()
+
     if (fails /= 0) then
         write (error_unit, '(a,i0,a)') 'test_fortran_api: ', fails, ' check(s) FAILED'
         error stop 1
@@ -1382,6 +1386,194 @@ contains
         call field%free()
         call g%free()
         call cube%free()
+    end subroutine
+
+    subroutine check_curvature()
+        type(mio_mesh) :: oct, curv, bad
+        integer(int64) :: nb, ni, nd, incons
+        real(real64) :: defect
+        logical :: wt
+        integer :: ierr
+        real(real64) :: oct_points(3, 6)
+        integer(int64) :: oct_conn(3, 8)
+
+        ! A regular octahedron: the smallest closed, consistently wound
+        ! triangle surface, so Gauss-Bonnet applies exactly.
+        oct_points = reshape([ 1.0_real64,  0.0_real64,  0.0_real64, &
+                              -1.0_real64,  0.0_real64,  0.0_real64, &
+                               0.0_real64,  1.0_real64,  0.0_real64, &
+                               0.0_real64, -1.0_real64,  0.0_real64, &
+                               0.0_real64,  0.0_real64,  1.0_real64, &
+                               0.0_real64,  0.0_real64, -1.0_real64], [3, 6])
+        oct_conn = reshape([1_int64, 3_int64, 5_int64, &
+                            3_int64, 2_int64, 5_int64, &
+                            2_int64, 4_int64, 5_int64, &
+                            4_int64, 1_int64, 5_int64, &
+                            3_int64, 1_int64, 6_int64, &
+                            2_int64, 3_int64, 6_int64, &
+                            4_int64, 2_int64, 6_int64, &
+                            1_int64, 4_int64, 6_int64], [3, 8])
+        call oct%create()
+        call oct%set_points(oct_points)
+        call oct%add_cell_block('triangle', oct_conn)
+
+        curv = oct%curvature(record_principal=.true., num_boundary=nb, &
+                             num_isolated=ni, num_degenerate=nd, &
+                             total_angle_defect=defect, inconsistent_pairs=incons, &
+                             watertight=wt, stat=ierr)
+        call check(ierr == 0, 'curvature succeeded')
+        ! The tessellation-independent oracle: on a closed surface the angle
+        ! defects sum to 2*pi*chi, which is 4*pi for anything sphere-like.
+        call check(abs(defect - 4.0_real64*3.141592653589793_real64) < 1.0e-12_real64, &
+                   'curvature satisfies Gauss-Bonnet on a closed surface')
+        call check(nb == 0_int64, 'a closed surface has no boundary vertices')
+        call check(ni == 0_int64, 'no isolated vertices')
+        call check(nd == 0_int64, 'no degenerate triangles')
+        call check(incons == 0_int64, 'the octahedron is consistently wound')
+        call check(wt, 'the octahedron is watertight')
+        call check(curv%num_points() == 6_int64, 'curvature is a pure data step')
+        call check(curv%num_point_data() >= 3_int64, 'curvature attached its arrays')
+        call curv%free()
+
+        ! An unknown dual area is refused by name rather than silently defaulted.
+        bad = oct%curvature(dual_area='nope', stat=ierr)
+        call check(ierr /= 0, 'curvature rejects an unknown dual area')
+        call oct%free()
+    end subroutine
+
+    subroutine check_repair_shrinkwrap_sobolev()
+        type(mio_mesh) :: oct, fixed, holed, filled, target, cloud, wrapped, grid, moved
+        integer(int64) :: nflip, nholes, nfaces, npts, nproj, nskip, nit, nfixed
+        integer(int64) :: incons
+        logical :: wt, conv
+        integer :: ierr, i, j
+        real(real64) :: oct_points(3, 6), cloud_points(3, 3), grid_points(3, 16)
+        real(real64) :: disp(3, 16), pin(16), pick(3), maxd
+        real(real64), allocatable :: out_points(:, :)
+        integer(int64) :: oct_conn(3, 8), seven(3, 7), vconn(1, 3), gconn(3, 18)
+
+        oct_points = reshape([ 1.0_real64,  0.0_real64,  0.0_real64, &
+                              -1.0_real64,  0.0_real64,  0.0_real64, &
+                               0.0_real64,  1.0_real64,  0.0_real64, &
+                               0.0_real64, -1.0_real64,  0.0_real64, &
+                               0.0_real64,  0.0_real64,  1.0_real64, &
+                               0.0_real64,  0.0_real64, -1.0_real64], [3, 6])
+        oct_conn = reshape([1_int64, 3_int64, 5_int64, &
+                            3_int64, 2_int64, 5_int64, &
+                            2_int64, 4_int64, 5_int64, &
+                            4_int64, 1_int64, 5_int64, &
+                            3_int64, 1_int64, 6_int64, &
+                            2_int64, 3_int64, 6_int64, &
+                            4_int64, 2_int64, 6_int64, &
+                            1_int64, 4_int64, 6_int64], [3, 8])
+        ! Flip facet 0 (swap its second and third corners).
+        oct_conn(2, 1) = 5_int64
+        oct_conn(3, 1) = 3_int64
+        call oct%create()
+        call oct%set_points(oct_points)
+        call oct%add_cell_block('triangle', oct_conn)
+        fixed = oct%repair(num_flipped=nflip, inconsistent_pairs_after=incons, &
+                           watertight_after=wt, stat=ierr)
+        call check(ierr == 0, 'repair succeeded')
+        call check(nflip == 1_int64, 'repair rewound exactly the flipped facet')
+        call check(incons == 0_int64, 'repair left no inconsistent pair')
+        call check(wt, 'repair output is watertight')
+        call check(fixed%num_points() == 6_int64, 'repair added no point to a closed surface')
+        call fixed%free()
+        call oct%free()
+
+        ! Drop one facet: the hole is filled by three triangles and one point.
+        seven = oct_conn(:, 2:8)
+        call holed%create()
+        call holed%set_points(oct_points)
+        call holed%add_cell_block('triangle', seven)
+        filled = holed%repair(num_holes_filled=nholes, num_faces_added=nfaces, &
+                              num_points_added=npts, watertight_after=wt, stat=ierr)
+        call check(ierr == 0, 'repair of a holed surface succeeded')
+        call check(nholes == 1_int64 .and. nfaces == 3_int64 .and. npts == 1_int64, &
+                   'repair filled the hole with a centroid fan')
+        call check(wt, 'the filled surface is watertight')
+        call check(filled%num_cell_blocks() == 2_int64, 'fill triangles land in a trailing block')
+        call filled%free()
+        ! fill_holes off leaves it open.
+        filled = holed%repair(fill_holes=.false., num_holes_filled=nholes, stat=ierr)
+        call check(ierr == 0 .and. nholes == 0_int64, 'repair honours fill_holes=.false.')
+        call filled%free()
+        call holed%free()
+
+        ! Shrinkwrap three points onto a z = 0 square, offset 0.25, one point
+        ! deselected by an integer-valued weights array.
+        call target%create()
+        call target%set_points(reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                                        4.0_real64, 0.0_real64, 0.0_real64, &
+                                        4.0_real64, 4.0_real64, 0.0_real64, &
+                                        0.0_real64, 4.0_real64, 0.0_real64], [3, 4]))
+        call target%add_cell_block('triangle', reshape([1_int64, 2_int64, 3_int64, &
+                                                        1_int64, 3_int64, 4_int64], [3, 2]))
+        cloud_points = reshape([1.0_real64, 1.0_real64, 0.5_real64, &
+                                2.0_real64, 2.0_real64, -0.7_real64, &
+                                3.0_real64, 1.0_real64, 1.5_real64], [3, 3])
+        vconn = reshape([1_int64, 2_int64, 3_int64], [1, 3])
+        pick = [1.0_real64, 0.0_real64, 1.0_real64]
+        call cloud%create()
+        call cloud%set_points(cloud_points)
+        call cloud%add_cell_block('vertex', vconn)
+        call cloud%add_point_data('pick', pick)
+        wrapped = mio_shrinkwrap(cloud, target, offset=0.25_real64, weights='pick', &
+                                 num_projected=nproj, num_skipped=nskip, &
+                                 max_displacement=maxd, target_watertight=wt, stat=ierr)
+        call check(ierr == 0, 'shrinkwrap succeeded')
+        call check(nproj == 2_int64 .and. nskip == 1_int64, 'shrinkwrap honoured the selection')
+        call check(abs(maxd - 1.25_real64) < 1.0e-12_real64, 'shrinkwrap max displacement')
+        call wrapped%get_points(out_points)
+        call check(abs(out_points(3, 1) - 0.25_real64) < 1.0e-12_real64, &
+                   'shrinkwrap put the first point at the offset height')
+        call check(abs(out_points(3, 2) + 0.7_real64) < 1.0e-12_real64, &
+                   'shrinkwrap left the deselected point alone')
+        call wrapped%free()
+        ! An unknown normal weight is refused by name.
+        wrapped = mio_shrinkwrap(cloud, target, normal_weight='nope', stat=ierr)
+        call check(ierr /= 0, 'shrinkwrap rejects an unknown normal weight')
+        call cloud%free()
+        call target%free()
+
+        ! Sobolev deformation of a checkerboard on a 3x3 triangle grid with one
+        ! corner pinned by array: converges, damps, pins.
+        do j = 0, 3
+            do i = 0, 3
+                grid_points(:, j*4 + i + 1) = [real(i, real64), real(j, real64), 0.0_real64]
+                disp(:, j*4 + i + 1) = [0.0_real64, 0.0_real64, &
+                                        merge(0.1_real64, -0.1_real64, mod(i + j, 2) == 1)]
+            end do
+        end do
+        do j = 0, 2
+            do i = 0, 2
+                gconn(:, (j*3 + i)*2 + 1) = [j*4 + i + 1, j*4 + i + 2, j*4 + i + 6]
+                gconn(:, (j*3 + i)*2 + 2) = [j*4 + i + 1, j*4 + i + 6, j*4 + i + 5]
+            end do
+        end do
+        pin = 0.0_real64
+        pin(1) = 1.0_real64
+        call grid%create()
+        call grid%set_points(grid_points)
+        call grid%add_cell_block('triangle', gconn)
+        call grid%add_point_data('d', disp)
+        call grid%add_point_data('pin', pin)
+        moved = grid%sobolev_deform('d', 2.0_real64, fixed_points_array='pin', &
+                                    record_filtered=.true., num_iterations=nit, &
+                                    converged=conv, num_fixed=nfixed, &
+                                    max_displacement=maxd, stat=ierr)
+        call check(ierr == 0, 'sobolev_deform succeeded')
+        call check(conv .and. nit > 0_int64, 'sobolev_deform converged')
+        call check(nfixed == 1_int64, 'sobolev_deform pinned by array')
+        call check(maxd > 0.0_real64 .and. maxd < 0.1_real64, 'sobolev_deform damped the field')
+        call moved%get_points(out_points)
+        call check(abs(out_points(3, 1)) < 1.0e-15_real64, 'the pinned point did not move')
+        call moved%free()
+        ! A missing array is refused.
+        moved = grid%sobolev_deform('missing', 1.0_real64, stat=ierr)
+        call check(ierr /= 0, 'sobolev_deform rejects a missing array')
+        call grid%free()
     end subroutine
 
     subroutine check(ok, what)

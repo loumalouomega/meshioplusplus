@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from mcp.server.fastmcp import FastMCP, Image
 
@@ -34,23 +34,29 @@ directory by the server's --root option.
 """
 
 
-def _guard(fn, /, **kwargs):
-    try:
-        return fn(**kwargs)
-    except Exception as e:  # noqa: BLE001 — the client needs a payload, not a traceback
-        return {"error": str(e), "error_type": type(e).__name__}
+# The one guard, shared with the HTTP front-end's dispatch: a tool failure is
+# a {"error", "error_type"} payload, never a traceback (or a 500).
+_guard = _tools.guard
 
 
-def create_server(root: Optional[str] = None) -> FastMCP:
-    """Build the FastMCP server with every tool and resource registered."""
+def create_server(root: Optional[str] = None, host: Optional[str] = None) -> FastMCP:
+    """Build the FastMCP server with every tool and resource registered.
+
+    ``host`` matters only for the HTTP front-end: FastMCP enables its
+    DNS-rebinding protection (Host/Origin allow-lists) when the host is a
+    loopback name, so a ``--host 0.0.0.0`` server must be told, or the
+    ``/mcp`` endpoint would reject every non-loopback ``Host`` header.
+    """
     if root is not None:
         _tools.set_root(root)
-    server = FastMCP("meshioplusplus", instructions=_INSTRUCTIONS)
+    kwargs = {"host": host} if host is not None else {}
+    server = FastMCP("meshioplusplus", instructions=_INSTRUCTIONS, **kwargs)
     _register_inspection(server)
     _register_conversion(server)
     _register_operations(server)
     _register_data(server)
     _register_dataset(server)
+    _register_training(server)
     _register_gated(server)
     _register_resources(server)
     return server
@@ -514,6 +520,193 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def grid_sample(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        fields: Optional[List[str]] = None,
+        extrapolate: bool = False,
+        fill_value: float = 0.0,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Sample a mesh's point data onto a regular grid - the step a CNN or a
+        superresolution model needs before it can see a mesh at all. Give exactly
+        one of resolution (nx, ny, nz cell counts) or cell_size. Writes the grid
+        as a lattice mesh; use .vti so the lattice survives the round trip.
+        Reports the channel names (a k-component array expands to name_0..name_k)
+        and the coverage, the fraction of grid points inside the mesh - a low
+        coverage means the grid is mostly fill and a model would learn it."""
+        return _guard(
+            _tools.tool_grid_sample,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            fields=fields,
+            extrapolate=extrapolate,
+            fill_value=fill_value,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def grid_scatter(
+        grid_path: str,
+        target_path: str,
+        output_path: str,
+        grid_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+        on_conflict: str = "error",
+    ) -> dict:
+        """Write a grid's fields back onto a mesh's points by trilinear
+        interpolation - grid_sample's inverse, and the step that turns a model's
+        output back into something every format can hold. Consecutive
+        name_0/name_1/name_2 channels rebuild one multi-component array.
+        on_conflict is 'error', 'overwrite' or 'suffix'."""
+        return _guard(
+            _tools.tool_grid_scatter,
+            grid_path=grid_path,
+            target_path=target_path,
+            output_path=output_path,
+            grid_format=grid_format,
+            target_format=target_format,
+            output_format=output_format,
+            fields=fields,
+            on_conflict=on_conflict,
+        )
+
+    @server.tool()
+    def grid_resample(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        factor: Optional[int] = None,
+        resolution: Optional[List[int]] = None,
+        fields: Optional[List[str]] = None,
+    ) -> dict:
+        """Resample a grid onto a finer or coarser lattice covering the same box,
+        by trilinear interpolation. This is the baseline a superresolution model
+        has to beat. Give exactly one of factor (an integer upscale) or
+        resolution (nx, ny, nz cell counts)."""
+        return _guard(
+            _tools.tool_grid_resample,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            factor=factor,
+            resolution=resolution,
+            fields=fields,
+        )
+
+    @server.tool()
+    def grid_power_spectrum(
+        input_path: str,
+        field: str,
+        input_format: Optional[str] = None,
+        max_bins: int = 256,
+    ) -> dict:
+        """The azimuthally averaged power spectrum of one field on a regular
+        grid - whether a super-resolved or generated field carries the right
+        small-scale content, which a pointwise error cannot see. Needs an
+        isotropic grid (equal spacing on every axis) and reports power per
+        wavenumber bin plus the mode count per bin. The power sums to
+        mean(field**2) exactly."""
+        return _guard(
+            _tools.tool_grid_power_spectrum,
+            input_path=input_path,
+            field=field,
+            input_format=input_format,
+            max_bins=max_bins,
+        )
+
+    @server.tool()
+    def subsample(
+        input_path: str,
+        output_path: str,
+        count: int,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "farthest",
+        seed: int = 0,
+        start: Optional[int] = 0,
+        bounds: Optional[List[float]] = None,
+        record_ids: bool = False,
+    ) -> dict:
+        """Reduce a mesh to a point cloud of exactly count points, so a large
+        surface fits a transformer's token budget. method is 'farthest' (exact
+        farthest-point sampling, O(N*count), the most uniform coverage), 'grid'
+        (lattice representatives then farthest-point sampling, O(N + count^2),
+        the scalable choice above a few hundred thousand points) or 'random'.
+        start is the index of the first selected point (None draws it from
+        seed); bounds (xlo, ylo, zlo, xhi, yhi, zhi) restricts the candidates to
+        a box. The output keeps the selected points, their point_data and Point
+        regions, and gets a vertex block so every format can hold it; cells and
+        cell_data are dropped. record_ids attaches budget:original_point_id."""
+        return _guard(
+            _tools.tool_subsample,
+            input_path=input_path,
+            output_path=output_path,
+            count=count,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            seed=seed,
+            start=start,
+            bounds=bounds,
+            record_ids=record_ids,
+        )
+
+    @server.tool()
+    def proximity_graph(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        method: str = "radius",
+        radius: Optional[float] = None,
+        max_neighbors: Optional[int] = None,
+        box_size: Optional[List[float]] = None,
+        kind: str = "node",
+    ) -> dict:
+        """Build a graph from geometry rather than connectivity, for a particle
+        state that has positions and no cells, or for contact edges between
+        surfaces that are near but not connected. method is 'radius' (every pair
+        closer than radius -- the physical interaction cutoff, degree varies with
+        density) or 'knn' (each point's max_neighbors nearest, then symmetrized,
+        so degree is near-constant). box_size (one value or one per axis) turns
+        on the periodic minimum-image convention, so a pair either side of a
+        boundary is linked by its short image; a radius past half the smallest
+        box side is refused, the minimum image being ambiguous there. kind is
+        'node' (mesh points) or 'cell' (cell centroids). The output is the graph
+        as line cells over those positions, with a 'degree' point array."""
+        return _guard(
+            _tools.tool_proximity_graph,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            method=method,
+            radius=radius,
+            max_neighbors=max_neighbors,
+            box_size=box_size,
+            kind=kind,
+        )
+
+    @server.tool()
     def compute_sdf(
         input_path: str,
         output_path: str,
@@ -716,6 +909,230 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def curvature(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        mean: bool = True,
+        gaussian: bool = True,
+        dual_area: str = "mixed-voronoi",
+        include_boundary: bool = False,
+        record_area: bool = False,
+        record_principal: bool = False,
+        region: str = "",
+    ) -> dict:
+        """Per-vertex mean (H) and Gaussian (K) curvature of a surface mesh --
+        the signed distance's natural companion as a node feature: sdf says
+        how far a point is from the surface, this says how the surface bends
+        there.
+
+        K is the angle defect and H the cotangent Laplace-Beltrami operator,
+        the estimators the discrete-differential-geometry convergence results
+        are about. Writes curvature:mean and curvature:gaussian, optionally
+        curvature:area (the dual area each was divided by) and
+        curvature:principal ((n,2), k1 >= k2). Triangles come from the same
+        fan convert_cells(simplexify) uses, so a quad mesh's curvature is the
+        curvature of its canonical triangulation; a volume or polyhedron block
+        is refused by name pointing at extract_surface and a higher-order one
+        pointing at linearize. dual_area is "mixed-voronoi" (default, better
+        on an irregular tessellation) or "barycentric" (cruder but
+        branch-free). Boundary vertices are NaN unless include_boundary, and
+        isolated ones always; both are counted. total_angle_defect is the
+        oracle: on a CLOSED surface it is 2*pi*chi exactly -- 4*pi for
+        anything sphere-like -- whatever the tessellation and whichever dual
+        area, so a value that is not that means the input is not closed or the
+        result is not sane. H's sign is orientation-dependent and K's is not,
+        so check quality.inconsistent_pairs before trusting a sign: a nonzero
+        count means facets disagree about which side is out and H is
+        sign-flipped in patches. This never repairs its input."""
+        return _guard(
+            _tools.tool_curvature,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            mean=mean,
+            gaussian=gaussian,
+            dual_area=dual_area,
+            include_boundary=include_boundary,
+            record_area=record_area,
+            record_principal=record_principal,
+            region=region,
+        )
+
+    @server.tool()
+    def repair(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        fix_orientation: bool = True,
+        orient_outward: bool = True,
+        fill_holes: bool = True,
+        split_non_manifold: bool = True,
+        max_hole_edges: int = 10,
+        weld_tolerance: float = 0.0,
+        record_provenance: bool = False,
+    ) -> dict:
+        """Repair a surface mesh's orientation, holes and pinched vertices --
+        the three defects `clean` does not touch (it welds, drops degenerate
+        and duplicate cells, and prunes orphans; it never rewinds a triangle
+        or closes a hole).
+
+        The passes run in order: weld (opt-in, `weld_tolerance`) ->
+        triangulate (quads and polygons fan exactly as convert_cells
+        simplexify does, blocks staying 1:1) -> split bowties (a vertex whose
+        triangle star is edge-disconnected is duplicated, geometry unchanged)
+        -> orient (a BFS per connected component by the TOPOLOGICAL half-edge
+        rule -- two triangles sharing an edge agree iff they traverse it in
+        opposite directions, which is exact where a normal-angle test
+        mis-orients across a sharp crease; fewest flips wins ties) -> fill
+        holes (every traceable boundary loop of at most max_hole_edges edges,
+        `<= 0` for no limit, gets one centroid point and one triangle per loop
+        edge, wound to AGREE with the surrounding surface) -> orient outward
+        (every closed component whose signed volume is negative is flipped
+        whole). Lower-dimensional blocks (boundary lines) ride along; fill
+        triangles land in one trailing triangle block, added only when there
+        is one, so a closed input keeps its block count.
+
+        Reports the input's and the output's defect counts, so what was fixed
+        and what remains are both visible. Non-manifold EDGES (used by three or
+        more triangles) are neither split nor crossed -- they are counted;
+        nested cavities are not detected, so every closed component is
+        oriented outward on its own. Point and Cell regions survive (a split
+        copy joins its source's); Side regions are dropped, since a flip
+        permutes a triangle's edge numbering."""
+        return _guard(
+            _tools.tool_repair,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            fix_orientation=fix_orientation,
+            orient_outward=orient_outward,
+            fill_holes=fill_holes,
+            split_non_manifold=split_non_manifold,
+            max_hole_edges=max_hole_edges,
+            weld_tolerance=weld_tolerance,
+            record_provenance=record_provenance,
+        )
+
+    @server.tool()
+    def shrinkwrap(
+        input_path: str,
+        target_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        offset: float = 0.0,
+        max_distance: float = 0.0,
+        weights: str = "",
+        target_region: str = "",
+        normal_weight: str = "angle",
+        record_distance: bool = False,
+        record_closest_cell: bool = False,
+    ) -> dict:
+        """Project a mesh's points onto a target triangle surface:
+        x' = x + w (p + offset*n - x), with p the closest point on the target
+        and n the unit pseudonormal there -- the fitting step a scanned skin, a
+        CAD shell or a coarse solve needs before it can be used as a template.
+
+        It is ONE projection, not an iteration: there is no self-intersection
+        guard and no inversion guard, because a wrap is a fit and not a
+        smoothing. Every point of the input moves whatever cells it carries --
+        a volume mesh's interior points are projected too; only the TARGET must
+        be a surface (quads and polygons are fanned, a volume or higher-order
+        block is refused by name). Use `weights` to select or blend: an
+        integer/bool point_data array selects (nonzero moves), a float one
+        blends, applied unclamped so a caller can overshoot on purpose. A
+        point farther than max_distance (`<= 0` means unlimited) is left where
+        it is and counted, as is one whose hit feature has no direction to
+        offset along.
+
+        The offset goes along the pseudonormal of the hit FEATURE (face, edge
+        or vertex), not of the selected triangle: at a crease the offset
+        surface's normal is the bisector, so a face normal would land the
+        point off that surface and make the result depend on which of two
+        equidistant faces won the tie-break. Connectivity, data, regions and
+        property sets pass through verbatim, and the points keep their
+        dtype."""
+        return _guard(
+            _tools.tool_shrinkwrap,
+            input_path=input_path,
+            target_path=target_path,
+            output_path=output_path,
+            input_format=input_format,
+            target_format=target_format,
+            output_format=output_format,
+            offset=offset,
+            max_distance=max_distance,
+            weights=weights,
+            target_region=target_region,
+            normal_weight=normal_weight,
+            record_distance=record_distance,
+            record_closest_cell=record_closest_cell,
+        )
+
+    @server.tool()
+    def sobolev_deform(
+        input_path: str,
+        output_path: str,
+        array: str,
+        length_scale: float,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        fixed_points_array: str = "",
+        fix_boundary: bool = False,
+        record_filtered: bool = False,
+        max_iterations: int = 128,
+        tolerance: float = 1e-10,
+    ) -> dict:
+        """Sobolev (Helmholtz-filtered) deformation: smooth a raw per-point
+        displacement field through the mesh's own P1 finite-element operators,
+        then move the points by the smoothed field.
+
+        Solves (M + l^2 K) u = M d per ambient component and sets x' = x + u,
+        with K the P1 stiffness matrix assembled from the simplex edge Gram
+        matrix, M a uniform vertex mass and l = length_scale -- a
+        screened-Poisson low-pass filter whose cutoff wavelength is l, which
+        is what turns a jagged per-node displacement (a shape gradient, a
+        scattered measurement, a model's raw output) into one a mesh can
+        follow without tangling. length_scale = 0 applies the raw field at the
+        free points.
+
+        `array` names the (n, dim) point_data displacement. Every cell block
+        at the mesh's top topological dimension must be a linear simplex --
+        line, triangle or tetra -- since that is what the assembly is defined
+        on; a quadratic block is refused naming linearize, anything else
+        naming convert_cells(simplexify). Lower-dimensional blocks ride along,
+        and a point in no top-dimensional cell receives its raw displacement.
+
+        Nothing is pinned by default: an unfixed boundary carries the natural
+        Neumann condition, so a constant displacement is preserved exactly.
+        fixed_points_array (an integer/bool point_data mask) and fix_boundary
+        impose zero-Dirichlet rows instead. Non-convergence within
+        max_iterations is reported through `converged` with the last iterate
+        returned -- a partially smoothed field is still usable, and `residual`
+        says how far it got. This is a pure coordinate move: connectivity,
+        every data array, regions and property sets pass through."""
+        return _guard(
+            _tools.tool_sobolev_deform,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            length_scale=length_scale,
+            input_format=input_format,
+            output_format=output_format,
+            fixed_points_array=fixed_points_array,
+            fix_boundary=fix_boundary,
+            record_filtered=record_filtered,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+        )
+
+    @server.tool()
     def estimate_error(
         input_path: str,
         output_path: str,
@@ -813,6 +1230,40 @@ def _register_operations(server: FastMCP) -> None:
             output_format=output_format,
             mode=mode,
             record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
+    def tessellate(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        levels: int = 2,
+        curved: bool = True,
+        fields: bool = True,
+        record_stencil: bool = False,
+    ) -> dict:
+        """Isoparametric subdivision of a mesh's curved cells (quad9, quad8,
+        triangle6, tetra10, hexahedron27) onto a levels-divisions-per-axis
+        reference lattice mapped through each cell's own shape functions;
+        every other cell (linear types, hexahedron20, wedge/pyramid,
+        VTK-Lagrange, ragged/polyhedron) passes through unchanged. curved=
+        False disables curved handling entirely (a full no-op). fields=True
+        interpolates point_data/broadcasts cell_data onto the output.
+        Attaches tessellate:source_point/source_cell/sub_index provenance
+        (a synthetic point's source_point is -1); record_stencil also
+        attaches tessellate:stencil/weights so the tessellation can be
+        reconstructed (Tessellation.from_mesh) after a file round trip."""
+        return _guard(
+            _tools.tool_tessellate,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            levels=levels,
+            curved=curved,
+            fields=fields,
+            record_stencil=record_stencil,
         )
 
     @server.tool()
@@ -1434,6 +1885,12 @@ def _register_dataset(server: FastMCP) -> None:
         time_from: Optional[str] = None,
         times: Optional[List[float]] = None,
         sort: bool = False,
+        target_pattern: Optional[str] = None,
+        target_paths: Optional[List[str]] = None,
+        target_format: Optional[str] = None,
+        target_time_from: Optional[str] = None,
+        target_times: Optional[List[float]] = None,
+        target_sort: bool = False,
         split: Optional[str] = None,
         tags: Optional[List[str]] = None,
         group: Optional[str] = None,
@@ -1443,7 +1900,11 @@ def _register_dataset(server: FastMCP) -> None:
         """Add a case to a dataset manifest JSON (created if absent). Give
         exactly one of input_pattern (a glob) or input_paths; the source is
         validated now and stored relative to the manifest's directory.
-        Optional curation: split, tags, group, notes, metadata."""
+        The optional target_* family records a paired coarse/fine series for a
+        superresolution dataset: the two must have the same number of steps at
+        the same instants, checked here. Leave it out for the ordinary case --
+        an entry without a target is self-supervised, one mesh supplying both
+        sides. Optional curation: split, tags, group, notes, metadata."""
         return _guard(
             _tools.tool_dataset_add,
             manifest_path=manifest_path,
@@ -1454,6 +1915,12 @@ def _register_dataset(server: FastMCP) -> None:
             time_from=time_from,
             times=times,
             sort=sort,
+            target_pattern=target_pattern,
+            target_paths=target_paths,
+            target_format=target_format,
+            target_time_from=target_time_from,
+            target_times=target_times,
+            target_sort=target_sort,
             split=split,
             tags=tags,
             group=group,
@@ -1518,6 +1985,338 @@ def _register_dataset(server: FastMCP) -> None:
             drop_metadata=drop_metadata,
         )
 
+    @server.tool()
+    def dataset_find(root_dir: str = ".", max_depth: int = 2) -> dict:
+        """Find dataset manifests: every *.json at most max_depth levels
+        below root_dir that parses as a DatasetManifest, with its name,
+        entry count, splits, modification time and SHA-256 content hash."""
+        return _guard(_tools.tool_dataset_find, root_dir=root_dir, max_depth=max_depth)
+
+    @server.tool()
+    def dataset_health(
+        manifest_path: str,
+        split: Optional[str] = None,
+        entry_ids: Optional[List[str]] = None,
+        quality: bool = True,
+        all_steps: bool = False,
+    ) -> dict:
+        """Scan a dataset manifest's entries (optionally one split / given
+        ids) and report their health: per entry the step count, NaN/Inf
+        counts over data arrays, inverted/degenerate cells, worst scaled
+        Jacobian and arrays present; per manifest the split balance, totals,
+        fields missing across entries and the bad entries. Reads one mesh at
+        a time (step 0, or every step with all_steps)."""
+        return _guard(
+            _tools.tool_dataset_health,
+            manifest_path=manifest_path,
+            split=split,
+            entry_ids=entry_ids,
+            quality=quality,
+            all_steps=all_steps,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Training jobs (doc/dashboard.md)                                            #
+# --------------------------------------------------------------------------- #
+def _register_training(server: FastMCP) -> None:
+    @server.tool()
+    def train_defaults(
+        manifest_path: str,
+        fields: Optional[List[str]] = None,
+        target_fields: Optional[List[str]] = None,
+    ) -> dict:
+        """What a training launch needs: the point/cell data arrays the
+        manifest's first entry carries, its splits, whether the frameworks
+        are installed, and a complete default training spec."""
+        return _guard(
+            _tools.tool_train_defaults,
+            manifest_path=manifest_path,
+            fields=fields,
+            target_fields=target_fields,
+        )
+
+    @server.tool()
+    def train_start(
+        manifest_path: str,
+        fields: List[str],
+        target_fields: List[str],
+        train_split: str = "train",
+        valid_split: str = "valid",
+        epochs: int = 100,
+        batch_size: int = 8,
+        learning_rate: float = 1e-3,
+        seed: int = 0,
+        model_name: str = "meshgraphnet",
+        processor_size: int = 8,
+        hidden_dim: int = 64,
+        aggregation: str = "sum",
+        scaling_factor: int = 2,
+        conv_layer_size: int = 32,
+        resid_blocks: int = 8,
+        resolution: Optional[List[int]] = None,
+        cell_size: Optional[float] = None,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.0,
+        extrapolate: bool = False,
+        fill_value: float = 0.0,
+        squeeze: Optional[int] = None,
+        squeeze_index: Optional[int] = None,
+        latent_channels: int = 32,
+        num_fno_layers: int = 4,
+        num_fno_modes: int = 16,
+        spectral_padding: int = 8,
+        patch_size: Optional[List[int]] = None,
+        embed_dim: int = 256,
+        depth: int = 4,
+        num_blocks: int = 16,
+        parameters: Optional[List[str]] = None,
+        trunk: str = "points",
+        trunk_count: Optional[int] = None,
+        trunk_method: str = "farthest",
+        trunk_seed: int = 0,
+        branch_layers: int = 4,
+        branch_layer_size: int = 128,
+        trunk_layers: int = 4,
+        trunk_layer_size: int = 128,
+        width: int = 64,
+        regions: bool = False,
+        kind: str = "node",
+        undirected: bool = True,
+        edge_features: bool = True,
+        float32: bool = True,
+        target_offset: int = 0,
+        target_delta: bool = False,
+        checkpoint_every: int = 10,
+        device: str = "auto",
+        notes: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> dict:
+        """Start a PhysicsNeMo training run on a manifest split (fields ->
+        target_fields) as a background job under the runs directory; returns
+        the job id and initial status. model_name picks the family --
+        meshgraphnet (graph), srresnet / fno / afno (grid; fno is 2-D when
+        squeeze names a world axis, afno requires it) or deeponet (parameters
+        in, field out: no fields, the per-entry Metadata keys in parameters)
+        -- and each reads only its own hyperparameters. Needs
+        nvidia-physicsnemo, plus torch_geometric for meshgraphnet (no pip
+        extra); a missing framework is a named error."""
+        return _guard(
+            _tools.tool_train_start,
+            manifest_path=manifest_path,
+            fields=fields,
+            target_fields=target_fields,
+            train_split=train_split,
+            valid_split=valid_split,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            seed=seed,
+            model_name=model_name,
+            processor_size=processor_size,
+            hidden_dim=hidden_dim,
+            aggregation=aggregation,
+            scaling_factor=scaling_factor,
+            conv_layer_size=conv_layer_size,
+            resid_blocks=resid_blocks,
+            resolution=resolution,
+            cell_size=cell_size,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            extrapolate=extrapolate,
+            fill_value=fill_value,
+            squeeze=squeeze,
+            squeeze_index=squeeze_index,
+            latent_channels=latent_channels,
+            num_fno_layers=num_fno_layers,
+            num_fno_modes=num_fno_modes,
+            spectral_padding=spectral_padding,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            depth=depth,
+            num_blocks=num_blocks,
+            parameters=parameters,
+            trunk=trunk,
+            trunk_count=trunk_count,
+            trunk_method=trunk_method,
+            trunk_seed=trunk_seed,
+            branch_layers=branch_layers,
+            branch_layer_size=branch_layer_size,
+            trunk_layers=trunk_layers,
+            trunk_layer_size=trunk_layer_size,
+            width=width,
+            regions=regions,
+            kind=kind,
+            undirected=undirected,
+            edge_features=edge_features,
+            float32=float32,
+            target_offset=target_offset,
+            target_delta=target_delta,
+            checkpoint_every=checkpoint_every,
+            device=device,
+            notes=notes,
+            tags=tags,
+        )
+
+    @server.tool()
+    def train_status(job_id: str) -> dict:
+        """A training job's status (running/finished/failed/stopped), epoch
+        progress, best validation loss, ETA and last metrics row."""
+        return _guard(_tools.tool_train_status, job_id=job_id)
+
+    @server.tool()
+    def train_list(
+        status: Optional[str] = None, manifest_path: Optional[str] = None
+    ) -> dict:
+        """Every training job (newest first) with its hyperparameters and
+        final/best losses; optionally filtered by status or manifest."""
+        return _guard(
+            _tools.tool_train_list, status=status, manifest_path=manifest_path
+        )
+
+    @server.tool()
+    def train_stop(job_id: str, grace_seconds: float = 10.0) -> dict:
+        """Stop a job: SIGTERM lets the trainer finish its epoch and write
+        final.mdlus; SIGKILL after grace_seconds."""
+        return _guard(
+            _tools.tool_train_stop, job_id=job_id, grace_seconds=grace_seconds
+        )
+
+    @server.tool()
+    def train_log(job_id: str, offset: int = 0, max_bytes: int = 65536) -> dict:
+        """A window of a job's stdout/stderr from a byte offset; poll with
+        next_offset to tail it."""
+        return _guard(
+            _tools.tool_train_log, job_id=job_id, offset=offset, max_bytes=max_bytes
+        )
+
+    @server.tool()
+    def train_metrics(job_id: str, since_epoch: int = 0) -> dict:
+        """A job's per-epoch metrics rows (train/valid loss, lr, timing)."""
+        return _guard(_tools.tool_train_metrics, job_id=job_id, since_epoch=since_epoch)
+
+    @server.tool()
+    def train_checkpoints(job_id: str) -> dict:
+        """A job's .mdlus checkpoints (periodic/best/final) with epoch,
+        validation loss, size and which is marked best."""
+        return _guard(_tools.tool_train_checkpoints, job_id=job_id)
+
+    @server.tool()
+    def train_mark_best(job_id: str, checkpoint: str) -> dict:
+        """Mark one of a job's checkpoints as best (copied to best.mdlus)."""
+        return _guard(_tools.tool_train_mark_best, job_id=job_id, checkpoint=checkpoint)
+
+    @server.tool()
+    def train_predict(
+        manifest_path: str,
+        job_id: Optional[str] = None,
+        checkpoint: Optional[str] = None,
+        entry_ids: Optional[List[str]] = None,
+        split: Optional[str] = "test",
+        step: int = 0,
+        output_dir: Optional[str] = None,
+    ) -> dict:
+        """Predict over a manifest split with a job's (best or named)
+        checkpoint or an explicit .mdlus, writing <column>_pred /
+        <column>_error data arrays into output_dir/<entry_id>.vtu; returns
+        per-entry RMSE. Needs the frameworks."""
+        return _guard(
+            _tools.tool_train_predict,
+            manifest_path=manifest_path,
+            job_id=job_id,
+            checkpoint=checkpoint,
+            entry_ids=entry_ids,
+            split=split,
+            step=step,
+            output_dir=output_dir,
+        )
+
+    @server.tool()
+    def guard_fit(
+        manifest_path: str,
+        output_path: str,
+        split: Optional[str] = "train",
+        margin: float = 1.5,
+        quality: bool = True,
+    ) -> dict:
+        """Fit a geometry guardrail over a manifest split and write it as JSON.
+
+        A trained surrogate answers any mesh it is given, and the answer for a
+        part unlike anything it saw is finite, plausible and wrong. This
+        describes the shapes in a split — extents, centroid, area, volume,
+        counts, surface area and quality summaries — so a new mesh can be
+        scored against them. The descriptors are deliberately NOT invariant:
+        a scaled part is a different part, and a model trained on brackets 10
+        cm across has learnt physics at that scale. The threshold is margin
+        times the worst training score."""
+        return _guard(
+            _tools.tool_guard_fit,
+            manifest_path=manifest_path,
+            output_path=output_path,
+            split=split,
+            margin=margin,
+            quality=quality,
+        )
+
+    @server.tool()
+    def guard_check(
+        input_path: str,
+        guard_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        top: int = 3,
+    ) -> dict:
+        """Describe one mesh's shape, and score it against a guardrail if given.
+
+        Returns the raw descriptors always; with guard_path (a fitted guard, or
+        a model card carrying one) it adds the score, the threshold, a verdict
+        of 'in' or 'out', and the top descriptors that put it there — so a flag
+        is actionable rather than a bare number. Advisory: nothing is refused."""
+        return _guard(
+            _tools.tool_guard_check,
+            input_path=input_path,
+            guard_path=guard_path,
+            input_format=input_format,
+            top=top,
+        )
+
+    @server.tool()
+    def predict_file(
+        checkpoint: str,
+        input_path: str,
+        output_path: str,
+        time_step: Optional[int] = None,
+        target_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        device: str = "auto",
+        parameters: Optional[dict] = None,
+    ) -> dict:
+        """Predict with a trained .mdlus checkpoint on ONE mesh file — no
+        manifest, no split, no entry, for a mesh that was never catalogued.
+        Everything the prediction needs comes from the checkpoint's own model
+        card: which model family wrote it, the sample options, the read
+        options, the column contract and the normalization. time_step picks a
+        step of a multi-step input; target_path supplies the paired mesh a
+        t->t+n or coarse/fine checkpoint compares against; parameters supplies
+        a deeponet checkpoint's per-case inputs (an object of the Metadata
+        keys it was trained on). A file carrying no truth predicts anyway,
+        with rmse/max_error reported as null rather than measured against
+        itself. Needs the frameworks."""
+        return _guard(
+            _tools.tool_predict_file,
+            checkpoint=checkpoint,
+            input_path=input_path,
+            output_path=output_path,
+            time_step=time_step,
+            target_path=target_path,
+            input_format=input_format,
+            output_format=output_format,
+            device=device,
+            parameters=parameters,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Gated tools (optional extras)                                               #
@@ -1564,6 +2363,39 @@ def _register_gated(server: FastMCP) -> None:
             location=location,
             dataset_format=dataset_format,
             mesh_id=mesh_id,
+        )
+
+    @server.tool()
+    def export_cae(
+        output_dir: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        input_format: Optional[str] = None,
+        surface_fields: Optional[List[str]] = None,
+        volume_fields: Optional[List[str]] = None,
+        global_params: Optional[Dict[str, float]] = None,
+        global_params_reference: Optional[Dict[str, float]] = None,
+        global_params_order: Optional[List[str]] = None,
+        name_template: str = "case_{index}.npz",
+    ) -> dict:
+        """Export a SET of meshes as one .npz per case in the CAE sample
+        layout PhysicsNeMo's DoMINO/Transolver datapipes read: the
+        triangulated skin with normals and areas, the volume's nodes, the
+        named field blocks and the case's global parameters. Give exactly one
+        of input_pattern (a glob) or input_paths. Returns the files written
+        and the keys of the first one."""
+        return _guard(
+            _tools.tool_export_cae,
+            output_dir=output_dir,
+            input_pattern=input_pattern,
+            input_paths=input_paths,
+            input_format=input_format,
+            surface_fields=surface_fields,
+            volume_fields=volume_fields,
+            global_params=global_params,
+            global_params_reference=global_params_reference,
+            global_params_order=global_params_order,
+            name_template=name_template,
         )
 
     @server.tool()
@@ -1628,6 +2460,73 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--version", action="version", version=f"meshioplusplus {__version__}"
     )
+    http = parser.add_argument_group(
+        "HTTP front-end",
+        "serve the browser dataset manager's JSON API and MCP over HTTP from "
+        "this process instead of stdio (needs the [dashboard] extra; "
+        "doc/dashboard.md)",
+    )
+    http.add_argument("--http", action="store_true", help="serve over HTTP")
+    http.add_argument("--host", default=None, help="bind address (default 127.0.0.1)")
+    http.add_argument("--port", type=int, default=None, help="port (default 8765)")
+    http.add_argument(
+        "--token",
+        default=None,
+        help="the bearer token to require (default: a fresh random one, printed)",
+    )
+    http.add_argument(
+        "--no-token",
+        action="store_true",
+        help="require no token (only on a machine you alone use)",
+    )
+    http.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help="an extra browser origin to admit (loopback origins and the hosted "
+        "docs site are always admitted); repeatable",
+    )
+    http.add_argument(
+        "--runs-dir",
+        default=None,
+        help="where training runs land (default: <root or cwd>/runs)",
+    )
+    http.add_argument(
+        "--webhook",
+        default=None,
+        metavar="URL",
+        help="POST a JSON payload to this URL when a training job finishes, "
+        "fails or is stopped (server-side by design: a client-supplied URL "
+        "would be server-side request forgery)",
+    )
     args = parser.parse_args(argv)
-    create_server(root=args.root).run()
+    if args.runs_dir:
+        _tools.set_runs_dir(args.runs_dir)
+    if args.webhook:
+        _tools.set_webhook(args.webhook)
+    if not args.http:
+        create_server(root=args.root).run()
+        return 0
+    from . import _require_http
+
+    try:
+        _http = _require_http()
+    except ImportError as e:
+        import sys
+
+        print(str(e), file=sys.stderr)
+        return 1
+    host = args.host or _http.DEFAULT_HOST
+    port = args.port if args.port is not None else _http.DEFAULT_PORT
+    token = None if args.no_token else (args.token or _http.new_token())
+    app = _http.build_app(
+        create_server(root=args.root, host=host),
+        token=token,
+        allowed_origins=[*_http.DEFAULT_ALLOWED_ORIGINS, *args.allow_origin],
+        root=_tools.get_root(),
+        runs_dir=args.runs_dir,
+        watch_jobs=bool(args.webhook),
+    )
+    _http.serve(app, host=host, port=port)
     return 0

@@ -938,44 +938,34 @@ def roadmap_map():
     )
     columns = [
         (
-            "§1 dashboard + training",
-            [
-                ("overview · drill-down · health", "M"),
-                ("companion service — design first", "L"),
-                ("launch · monitor · history · logs", "M"),
-                ("prediction preview in-viewer", "M"),
-            ],
-            [(1, 2)],
-        ),
-        (
-            "§2 scale",
+            "§1 scale",
             [
                 ("10M+ cell benchmark tier", "S"),
                 ("streaming writes of one mesh", "L"),
                 ("out-of-core operations", "XL"),
             ],
-            [(0, 1), (1, 2)],
+            [(0, 1), (0, 2)],
         ),
         (
-            "§3 ecosystem",
+            "§2 ecosystem reach",
             [
+                ("WASM: extend unsupported features", "S"),
                 ("Rust bindings over the C API", "M"),
-                ("conda-forge · CRAN · Julia General", "M"),
-                ("Blender / ParaView listings", "S"),
+                ("conda-forge · CRAN · Julia · ParaView", "M"),
             ],
             [],
         ),
         (
-            "§4 quality",
+            "§3 quality",
             [
-                ("fuzzing the 43 readers", "M"),
+                ("fuzzing the 42 readers", "M"),
                 ("format conformance matrix", "M"),
-                ("property-based tests", "M"),
+                ("property-based tests (Hypothesis)", "M"),
             ],
             [],
         ),
         (
-            "§5 NURBS — spike first",
+            "§4 NURBS — spike first",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),
@@ -984,41 +974,26 @@ def roadmap_map():
             [(0, 1), (1, 2)],
         ),
         (
-            "§6 generation",
+            "§5 mesh generation",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude", "M"),
                 ("revolve", "M"),
-                ("constrained 2-D meshing", "L"),
+                ("Delaunay / constrained 2-D", "L"),
             ],
             [(0, 1), (1, 2)],
         ),
-        ("§7 chat", [("chat verb over TOOL_REGISTRY", "M")], []),
         (
-            "§8 binding parity",
+            "§6 CLI chatbot (MCP-driven)",
             [
-                ("decimate_volume bindings", "S"),
-                ("flat-ABI gaps (frozen, sets, …)", "M"),
+                ("REPL verb over TOOL_REGISTRY", "M"),
+                ("v1 scope: stateless per-turn loop", "S"),
+                ("new `chat` extra + docs", "S"),
             ],
-            [],
-        ),
-        (
-            "§9 formats",
-            [
-                ("exodus writer: sets, multi-step", "M"),
-                ("regions Phase 2 formats", "M"),
-                ("read_med_metadata", "S"),
-                ("gmsh $Periodic / 4.0, pyramid14", "M"),
-            ],
-            [],
-        ),
-        (
-            "§10 follow-ups elsewhere",
-            [("pipeline · gpu · interop · julia · mcp", "S")],
             [],
         ),
     ]
-    per_row = 5
+    per_row = 3
     col_w = 176
     col_gap = (960 - 48 - per_row * col_w) / (per_row - 1)
     box_h = 40

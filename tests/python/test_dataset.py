@@ -15,6 +15,7 @@ import pytest
 
 import meshioplusplus
 from meshioplusplus import DatasetEntry, DatasetManifest
+from meshioplusplus._dataset import check_pairing
 from meshioplusplus._mesh import Mesh
 
 
@@ -94,6 +95,16 @@ def test_load_accepts_dict_json_text_and_path(tmp_path):
         (
             lambda d: d["Entries"][0].update(Source={"Pattern": "x", "Path": "y"}),
             "exactly one of",
+        ),
+        # A Target failure must name Target, not Source -- the validator is
+        # shared, so the block name has to be threaded through it.
+        (
+            lambda d: d["Entries"][0].update(Target={"Pattern": "x", "Zz": 1}),
+            "unknown key 'Zz' in Entries[0].Target",
+        ),
+        (
+            lambda d: d["Entries"][0].update(Target={}),
+            "Entries[0].Target needs exactly one of",
         ),
         (
             lambda d: d["Entries"][0].update(Source={"Pattern": "x", "Zz": 1}),
@@ -360,3 +371,137 @@ def test_public_api_is_exported():
         assert name in meshioplusplus.__all__
         assert hasattr(meshioplusplus, name)
     assert isinstance(DatasetEntry(id="x", source={"Path": "p"}), DatasetEntry)
+
+
+# --------------------------------------------------------------------------- #
+# paired coarse/fine entries                                                  #
+# --------------------------------------------------------------------------- #
+def _series(tmp_path, name, times, n=2):
+    """A directory of single-step meshes whose filenames carry the step index."""
+    import meshioplusplus
+
+    directory = tmp_path / name
+    directory.mkdir()
+    for index, _ in enumerate(times):
+        meshioplusplus.write(
+            directory / f"out_{index:04d}.vtu", meshioplusplus.grid((n, n, n))
+        )
+    return directory
+
+
+def test_target_is_optional_and_absent_serializes_identically(tmp_path):
+    """The whole backward-compatibility claim: an entry with no Target must
+    produce exactly the document it did before the key existed."""
+    manifest = DatasetManifest()
+    manifest.add({"Path": "a.vtu"}, validate_source=False)
+    entry_doc = manifest.to_dict()["Entries"][0]
+    assert set(entry_doc) == {"Id", "Source"}
+    assert manifest["a"].target is None
+
+
+def test_a_target_survives_the_save_round_trip(tmp_path):
+    """`_with` rebuilds every entry on save; a field it forgets is dropped
+    silently, so this is the guard for that whole class of bug."""
+    path = tmp_path / "m.json"
+    manifest = DatasetManifest()
+    manifest.add(
+        {"Pattern": "coarse/*.vtu"},
+        target={"Pattern": "fine/*.vtu", "Format": "vtu"},
+        id="sr",
+        validate_source=False,
+    )
+    manifest.save(path)
+    reloaded = DatasetManifest.load(path)
+    assert reloaded["sr"].target == {"Pattern": "fine/*.vtu", "Format": "vtu"}
+    # and a second save is byte-stable
+    before = path.read_text(encoding="utf-8")
+    reloaded.save(path)
+    assert path.read_text(encoding="utf-8") == before
+    assert "Target" in before
+
+
+def test_target_time_series_and_entries_mirror_the_source_pair(tmp_path):
+    coarse = _series(tmp_path, "coarse", [0, 1, 2], n=2)
+    fine = _series(tmp_path, "fine", [0, 1, 2], n=4)
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    entry = manifest.add(
+        {"Pattern": "coarse/*.vtu"}, target={"Pattern": "fine/*.vtu"}, id="sr"
+    )
+    assert len(entry.entries()) == len(entry.target_entries()) == 3
+    assert len(entry.time_series()) == len(entry.target_time_series()) == 3
+    _, coarse_mesh = entry.time_series()[0]
+    _, fine_mesh = entry.target_time_series()[0]
+    assert len(fine_mesh.points) > len(coarse_mesh.points)
+    assert str(coarse) and str(fine)  # both directories were used
+
+
+def test_an_entry_without_a_target_says_so_by_name(tmp_path):
+    manifest = DatasetManifest()
+    entry = manifest.add({"Path": "a.vtu"}, validate_source=False)
+    with pytest.raises(ValueError, match="has no Target"):
+        entry.target_time_series()
+    with pytest.raises(ValueError, match="self-supervised"):
+        entry.target_entries()
+
+
+def test_pairing_refuses_a_mismatched_step_count(tmp_path):
+    _series(tmp_path, "coarse", [0, 1, 2])
+    _series(tmp_path, "fine", [0, 1])
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="pairs 3 source steps with 2 target steps"):
+        manifest.add(
+            {"Pattern": "coarse/*.vtu"}, target={"Pattern": "fine/*.vtu"}, id="sr"
+        )
+
+
+def test_pairing_refuses_runs_at_different_instants(tmp_path):
+    """The silent corruption the count check cannot see: two plans of the same
+    length whose steps are at different times. Index pairing would train the
+    model to map one moment onto another."""
+    _series(tmp_path, "coarse", [0, 1, 2])
+    _series(tmp_path, "fine", [0, 1, 2])
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="are not at the same instants"):
+        manifest.add(
+            {"Pattern": "coarse/*.vtu", "Times": [0.0, 0.5, 1.0]},
+            target={"Pattern": "fine/*.vtu", "Times": [0.0, 0.25, 0.5]},
+            id="sr",
+        )
+
+
+def test_pairing_accepts_times_declared_meaningless(tmp_path):
+    """`TimeFrom: index` says the times carry no information, so there is
+    nothing for the two sides to disagree about -- the escape hatch the error
+    message names.
+
+    An explicit ``Times`` list always overrides ``TimeFrom`` (the plan then
+    reports ``time_source="explicit"``), so the two cannot be combined to mean
+    "ignore these times" -- declaring times is taken to mean them.
+    """
+    _series(tmp_path, "coarse", [0, 1, 2])
+    _series(tmp_path, "fine", [0, 1, 2])
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    entry = manifest.add(
+        {"Pattern": "coarse/*.vtu", "TimeFrom": "index"},
+        target={"Pattern": "fine/*.vtu", "TimeFrom": "index"},
+        id="sr",
+    )
+    assert check_pairing(entry) == 3
+
+    with pytest.raises(ValueError, match="are not at the same instants"):
+        DatasetManifest(base_dir=str(tmp_path)).add(
+            {"Pattern": "coarse/*.vtu", "Times": [0.0, 0.5, 1.0], "TimeFrom": "index"},
+            target={
+                "Pattern": "fine/*.vtu",
+                "Times": [0.0, 0.25, 0.5],
+                "TimeFrom": "index",
+            },
+            id="sr",
+        )
+
+
+def test_check_pairing_counts_a_self_supervised_entry(tmp_path):
+    _series(tmp_path, "coarse", [0, 1, 2])
+    manifest = DatasetManifest(base_dir=str(tmp_path))
+    entry = manifest.add({"Pattern": "coarse/*.vtu"}, id="solo")
+    assert check_pairing(entry) == 3

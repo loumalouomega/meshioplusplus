@@ -4,6 +4,7 @@ from . import (
     ansys,
     ansysInp,
     avsucd,
+    cae,
     cgns,
     dex,
     dolfin,
@@ -31,6 +32,7 @@ from . import (
     openfoam,
     permas,
     ply,
+    pmsh,
     stl,
     su2,
     svg,
@@ -40,12 +42,14 @@ from . import (
     triangle,
     ugrid,
     unv,
+    usd,
     vti,
     vtk,
     vtp,
     vtu,
     wkt,
     xdmf,
+    zarr,
 )
 from .__about__ import __version__
 from ._agglomerate import agglomerate
@@ -54,6 +58,7 @@ from ._clean import clean
 from ._conservative_interpolate import conservative_interpolate
 from ._convert_cells import convert_cells
 from ._crop import crop
+from ._curvature import compute_curvature
 from ._data_average import cell_data_to_point_data, point_data_to_cell_data
 from ._data_calc import data_calc
 from ._data_condition import data_condition
@@ -79,6 +84,19 @@ from ._gpu import (
 )
 from ._gradient import gradient
 from ._grid import grid
+from ._grid_transfer import (
+    GridArray,
+    GridSpec,
+    PowerSpectrum,
+    expand_grid,
+    interpolate_grid,
+    power_spectrum,
+    resample_grid,
+    sample_grid,
+    scatter_grid,
+    squeeze_grid,
+)
+from ._guard import GeometryGuard, geometry_descriptors
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -117,12 +135,20 @@ from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_data
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._pipeline import run_pipeline
+from ._point_budget import PointBudget, select_points, subsample_points
+from ._proximity import (
+    BistrideHierarchy,
+    bistride_hierarchy,
+    edge_vectors,
+    proximity_graph,
+)
 from ._quality import attach_quality, compute_quality
 from ._refine import refine
 from ._regions import Region
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
 from ._reorder import compute_bandwidth, reorder
+from ._repair import repair
 from ._sdf import (
     compute_sdf,
     distance_to_surface,
@@ -136,14 +162,17 @@ from ._sequence import (
     sequence_entries,
     write_sequence,
 )
+from ._shrinkwrap import shrinkwrap
 from ._skin import extract_skin
 from ._slice import slice
 from ._smooth import smooth
 from ._sniff import sniff_format
+from ._sobolev_deform import sobolev_deform
 from ._split import split
 from ._stats import compute_stats
 from ._subdivide import subdivide
 from ._surface import extract_surface
+from ._tessellation import Tessellation, tessellate
 from ._transform import transform
 from ._undo_green import undo_green
 from ._viewer import has_viewer, screenshot, view
@@ -154,6 +183,7 @@ __all__ = [
     "ansys",
     "ansysInp",
     "avsucd",
+    "cae",
     "cgns",
     "dex",
     "dolfin",
@@ -181,6 +211,7 @@ __all__ = [
     "openfoam",
     "permas",
     "ply",
+    "pmsh",
     "stl",
     "su2",
     "svg",
@@ -190,12 +221,14 @@ __all__ = [
     "triangle",
     "ugrid",
     "unv",
+    "usd",
     "vti",
     "vtk",
     "vtp",
     "vtu",
     "wkt",
     "xdmf",
+    "zarr",
     "_cli",
     "read",
     "read_metadata",
@@ -208,6 +241,7 @@ __all__ = [
     "extract_skin",
     "extract_surface",
     "compute_quality",
+    "compute_curvature",
     "attach_quality",
     "sniff_format",
     "reorder",
@@ -225,9 +259,12 @@ __all__ = [
     "isosurface",
     "transform",
     "clean",
+    "repair",
     "crop",
     "split",
     "convert_cells",
+    "tessellate",
+    "Tessellation",
     "subdivide",
     "agglomerate",
     "refine",
@@ -244,6 +281,8 @@ __all__ = [
     "surface_watertight_check",
     "compute_sdf",
     "smooth",
+    "shrinkwrap",
+    "sobolev_deform",
     "partition",
     "partition_labels",
     "run_pipeline",
@@ -290,6 +329,25 @@ __all__ = [
     "FeatureMatrix",
     "write_dataset",
     "has_zarr",
+    "GridSpec",
+    "GridArray",
+    "PowerSpectrum",
+    "sample_grid",
+    "scatter_grid",
+    "interpolate_grid",
+    "resample_grid",
+    "squeeze_grid",
+    "expand_grid",
+    "power_spectrum",
+    "PointBudget",
+    "select_points",
+    "subsample_points",
+    "GeometryGuard",
+    "geometry_descriptors",
+    "BistrideHierarchy",
+    "bistride_hierarchy",
+    "edge_vectors",
+    "proximity_graph",
     "DatasetManifest",
     "DatasetEntry",
     "to_dlpack",

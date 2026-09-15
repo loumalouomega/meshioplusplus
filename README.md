@@ -22,12 +22,13 @@ There are various mesh formats available for representing unstructured meshes. m
 > ANSYS msh (`.msh`),
 > [Ansys/APDL coded database](https://www.ansys.com) (`.cdb`, `.inp`),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
+> [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
 > [COMSOL](https://www.comsol.com) (`.mphtxt`),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`),
-> [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`),
+> [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`, named cell groups),
 > [FLUX](https://www.altair.com/flux/) (mesh `.pf3`, field `.dex`),
 > [FreeFem++](https://freefem.org/) (`.msh`),
 > [GiD postprocess](https://www.gidsimulation.com/) (`.post.msh`/`.post.res`, `.post.bin`, `.post.h5`; writing via a vendored gidpost, reading is meshio++'s own code),
@@ -46,7 +47,9 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
+> [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
+> [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
 > [Tecplot .dat](http://paulbourke.net/dataformats/tp/),
@@ -61,7 +64,8 @@ There are various mesh formats available for representing unstructured meshes. m
 > [VTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtp`),
 > [VTU](https://vtk.org/Wiki/VTK_XML_Formats) (`.vtu`),
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
-> [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`).
+> [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`),
+> [Zarr](https://zarr.dev/) (`.zarr`, the PhysicsNeMo mesh layout).
 
 <p align="center">
   <img alt="" src="https://raw.githubusercontent.com/loumalouomega/meshioplusplus/master/doc/logo/logo-icon-square.png" width="64">
@@ -115,6 +119,10 @@ meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positi
 meshioplusplus smooth     in.vtu out.vtu --method odt        # ODT smoothing, tet-only
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
+meshioplusplus curvature  in.vtu out.vtu                     # per-vertex mean/Gaussian curvature
+meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
+meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
+meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement
 meshioplusplus isosurface in.vtu out.vtu --array T --values 350  # level set of a field
 meshioplusplus sdf        skin.stl field.vti --resolution 128,128,128  # signed distance field
 meshioplusplus data gradient in.vtu out.vtu --array T           # grad / div / curl of a field
@@ -332,6 +340,17 @@ quadratic = meshioplusplus.convert_cells(mesh, mode="elevate")
 ```
 
 Each mode is idempotent on cells it does not apply to, so it is safe on a mixed-order mesh, and output is byte-identical across mesh backends and thread counts.
+
+#### Curved tessellation
+
+**`meshioplusplus.tessellate`** isoparametrically subdivides the five higher-order cell types (`triangle6`/`quad8`/`quad9`/`tetra10`/`hexahedron27`, deliberately excluding `hexahedron20` — see `doc/tessellation.md`) onto a refinement lattice, using each cell's own shape functions so a curved boundary tessellates onto the curve rather than being chopped straight. Unlike `convert_cells(mode="simplexify")`, it records a full provenance map (`Tessellation.source_point`/`source_cell`) from every synthetic point and tessellated cell back to the higher-order cell it was carved out of, so a prediction made on a tetrahedron is written onto the hexahedron it was carved out of via `Tessellation.gather`/`.scatter`/`.aggregate`. `fields=True` (default) interpolates the input's own `point_data`/`cell_data` onto the tessellated mesh. See `doc/tessellation.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+tess = meshioplusplus.tessellate(mesh, levels=2)
+mp.write("curved_bracket_tessellated.vtu", tess.mesh)
+```
 
 #### Polyhedral refinement (subdivide)
 
@@ -562,7 +581,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus remesh`, `meshioplusplus remesh-volume`, `meshioplusplus optimize-volume`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, and `meshioplusplus isosurface` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus tessellate`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus remesh`, `meshioplusplus remesh-volume`, `meshioplusplus optimize-volume`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, `meshioplusplus isosurface`, `meshioplusplus curvature`, `meshioplusplus repair`, `meshioplusplus shrinkwrap` and `meshioplusplus sobolev-deform` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Second derivatives (Hessian)
 
@@ -702,7 +721,7 @@ meshioplusplus.screenshot(mesh, "part.png", color_by="temperature")
 
 The **[browser](https://loumalouomega.github.io/meshioplusplus/viewer/)** backend needs nothing extra. The same app is hosted as a live demo: drag in any supported format, colour by point or cell data, and convert and download to another format — all client-side, with no server and no upload. Since it runs the WebAssembly build, every format meshio++ reads works there too.
 
-A second page, the **[dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)**, curates the [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections visually — directory picking with in-place manifest save (Chromium), per-entry previews with a time-series scrubber, and NaN/Inf scanning — against the same hand-editable JSON the CLI and Python API use:
+A second page, the **[dataset manager](https://loumalouomega.github.io/meshioplusplus/viewer/dataset.html)**, curates the [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections visually — an overview of every manifest in a directory (cards with split balance, health badges and thumbnails, plus a manifest diff view, and — with an optional local companion process — server-side scans and PhysicsNeMo training launched, followed, compared and previewed from the page; see [the dashboard page](https://loumalouomega.github.io/meshioplusplus/dashboard.html)), directory picking with in-place manifest save (Chromium), per-entry previews with a time-series scrubber, and NaN/Inf/quality scanning — against the same hand-editable JSON the CLI and Python API use:
 
 <img alt="the meshio++ dataset manager, previewing a transient case with a step scrubber and a per-array NaN/Inf summary table" src="https://loumalouomega.github.io/meshioplusplus/viewer/dataset-manager.png" width="85%">
 
@@ -783,9 +802,48 @@ t = meshioplusplus.to_torch(mesh)                     # torch tensors, adopted z
 
 `feature_matrix`'s column order is a stated, versioned contract recorded in the returned schema, so training and inference cannot silently disagree; `write_dataset` streams a glob / directory / transient series into hive-partitioned Parquet (or chunked zarr/hdf5 groups, `[zarr]`/h5py) with a strict shared schema and a JSON manifest; `to_torch`/`to_jax` adopt the DLPack payload per framework (no `[torch]`/`[jax]` extra, deliberately — the CuPy precedent). See [the ML docs](https://loumalouomega.github.io/meshioplusplus/ml.html).
 
-A *collection* of solution outputs is catalogued by a hand-editable [dataset manifest](https://loumalouomega.github.io/meshioplusplus/datasets.html) (`DatasetManifest` — sources, train/valid/test splits, tags, groups, notes; curated in Python, by the `meshioplusplus dataset` CLI group, over MCP, or with a text editor, all against the same JSON), and the [PhysicsNeMo adapter](https://loumalouomega.github.io/meshioplusplus/physicsnemo.html) (`meshioplusplus.physicsnemo`) trains straight off it: `graph_sample` builds the MeshGraphNet tensor set per mesh, `field_stats`/`edge_stats` stream normalization stats in PhysicsNeMo's own convention, `make_dataset` yields a PyTorch Geometric dataset and `make_reader` a Gen-2 `Reader` — with a worked, GPU-executed end-to-end example in [`example/physicsnemo/`](example/physicsnemo/).
+A *collection* of solution outputs is catalogued by a hand-editable [dataset manifest](https://loumalouomega.github.io/meshioplusplus/datasets.html) (`DatasetManifest` — sources, train/valid/test splits, tags, groups, notes; curated in Python, by the `meshioplusplus dataset` CLI group, over MCP, or with a text editor, all against the same JSON), and the [PhysicsNeMo adapter](https://loumalouomega.github.io/meshioplusplus/physicsnemo.html) (`meshioplusplus.physicsnemo`) trains straight off it: `graph_sample` builds the MeshGraphNet tensor set per mesh, `field_stats`/`edge_stats` stream normalization stats in PhysicsNeMo's own convention, `make_dataset` yields a PyTorch Geometric dataset and `make_reader` a Gen-2 `Reader`, and `run_training`/`predict` (also `python -m meshioplusplus.physicsnemo.train --spec`, and the dashboard's *Start training*) run the loop and write predictions back onto the mesh — for five model families (MeshGraphNet on the mesh graph; SRResNet, FNO and AFNO on [regular grids](https://loumalouomega.github.io/meshioplusplus/grids.html), the operators 2-D through a thin-axis squeeze; and DeepONet for parameters-in/field-out over each entry's `Metadata`) — with worked, GPU-executed end-to-end examples in [`example/physicsnemo/`](example/physicsnemo/).
 
 See [the interoperability docs](https://loumalouomega.github.io/meshioplusplus/interop.html) for the full mapping tables, the zero-copy contract, and the Open3D/DOLFINx design sketch, and [the GPU docs](https://loumalouomega.github.io/meshioplusplus/gpu.html) for the device handoff.
+
+For a **grid-shaped** model — a 3-D CNN, or a superresolution network taking a coarse grid to a fine one — the shape a mesh has to become is a dense array, and `sample_grid` is that step:
+
+```python
+spec  = mio.GridSpec.from_mesh(mesh, resolution=(64, 64, 64))
+array = mio.sample_grid(mesh, spec, fields=["T", "vel"])   # (C, D, H, W), channels first then z,y,x
+array.coverage                                             # how much of the grid is actually inside the mesh
+result = mio.scatter_grid(prediction, mesh)                # and back onto the mesh, trilinearly
+```
+
+Grids are ordinary hexahedron meshes, so `view`, `crop` and every writer work on one; cache them as `.vti`, which stores the lattice exactly. `power_spectrum` reports whether a super-resolved field carries the right small-scale content, which a pointwise error cannot see. See [mesh and regular grids](https://loumalouomega.github.io/meshioplusplus/grids.html).
+
+For a **point-cloud** model — Transolver, FLARE, DoMINO, anything whose cost is quadratic in its token count — the shape is a fixed number of points, and `select_points` is that step:
+
+```python
+budget = mio.select_points(mesh, 4096)                     # farthest-point sampling; method="grid" scales to millions
+tokens = budget.take(mio.feature_matrix(mesh).matrix)      # (4096, F), the column contract intact
+cloud  = mio.subsample_points(mesh, budget)                # a vertex-block point cloud every writer accepts
+```
+
+The selection is kept in selection order, so one farthest-point budget at 8192 serves 4096 and 2048 by slicing. See [point-cloud budgets](https://loumalouomega.github.io/meshioplusplus/point_budgets.html).
+
+For a **particle** method there is no connectivity to build a graph from at all — a smoothed-particle or discrete-element state is a cloud of positions, and what makes two particles interact is the interaction radius:
+
+```python
+edges = mio.proximity_graph(cloud, radius=0.015)                    # or method="knn", max_neighbors=16
+edges = mio.proximity_graph(cloud, radius=0.015, box_size=[2, 2, 2])  # periodic: minimum image
+attrs = mio.edge_vectors(cloud.points, edges)                       # displacement, then its norm
+```
+
+For a **transient** surrogate the shape is a window — the last K states of every node, oldest first — and `iter_windows` builds them in three schemes over a manifest, while `rollout` feeds a model its own predictions back and reports how the error grows, which a one-step validation loss cannot show. `Augmentation` randomizes each case's pose per epoch, drawn deterministically from `(seed, epoch, index)` and replayed coherently across a paired input and target.
+
+A trained model answers any mesh it is given, and the answer for a part unlike anything it saw is finite, plausible and wrong. `GeometryGuard` is the check it cannot make for itself — fit a description of the shapes a dataset contains, score a new one against it, and get back the descriptors that put it there. The descriptors are deliberately not scale- or position-invariant, because a scaled part is a different part.
+
+Once a model is trained, applying it to one mesh needs no manifest at all — `meshioplusplus predict model.mdlus part.vtu part_pred.vtu`, or `predict_file` from Python. Everything comes from the checkpoint's own model card, and a mesh carrying no truth predicts anyway rather than reporting an error against itself.
+
+The same call adds *world* edges beside a mesh's own — contact between surfaces that are near but not connected — and `bistride_hierarchy` coarsens a graph so a signal crosses the mesh in logarithmically many message-passing steps. See [proximity graphs](https://loumalouomega.github.io/meshioplusplus/proximity_graphs.html).
+
+If PhysicsNeMo itself is unfamiliar, [**PhysicsNeMo basics**](https://loumalouomega.github.io/meshioplusplus/physicsnemo/overview.html) is a fourteen-page map of the framework — what a `Module` and a `.mdlus` checkpoint are, which of the 25 architecture families fits the shape of your data, how simulation output becomes batched tensors, and where meshio++ ends and the framework begins. Each page closes by naming what meshio++ supplies, or by saying plainly that nothing does.
 
 ### MCP server
 
@@ -796,7 +854,7 @@ pip install "meshioplusplus[mcp]"     # the mcp SDK needs Python >= 3.10
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
-Then ask the agent to convert, inspect, slice, partition, … and it drives the 57 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
+Then ask the agent to convert, inspect, slice, partition, … and it drives the 84 tools itself. Tools are stateless and file-path based (optionally sandboxed with `--root DIR`), and every report is strict JSON. `meshioplusplus-mcp --http` (`pip install "meshioplusplus[dashboard]"`) serves the same tools over HTTP — MCP over streamable HTTP for agents, plus the JSON API the browser [dataset dashboard](https://loumalouomega.github.io/meshioplusplus/dashboard.html) uses as its local companion process. See [the MCP docs](https://loumalouomega.github.io/meshioplusplus/mcp.html) for the tool table and client setup.
 
 ### Blender add-on
 
@@ -895,7 +953,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 10.21.1 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 10.40.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

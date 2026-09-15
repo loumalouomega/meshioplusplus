@@ -30,6 +30,7 @@ import json
 import os
 import random
 from dataclasses import dataclass, field
+from dataclasses import fields as _dataclass_fields
 
 from ._sequence import TimeSeries, sequence_entries
 
@@ -37,7 +38,16 @@ DATASET_MANIFEST_VERSION = 1
 
 _TIME_FROM = ("auto", "file", "filename", "index")
 _TOP_KEYS = ("Version", "Name", "Description", "Metadata", "Entries")
-_ENTRY_KEYS = ("Id", "Source", "Split", "Tags", "Group", "Notes", "Metadata")
+_ENTRY_KEYS = (
+    "Id",
+    "Source",
+    "Target",
+    "Split",
+    "Tags",
+    "Group",
+    "Notes",
+    "Metadata",
+)
 _SOURCE_KEYS = ("Pattern", "Path", "Paths", "Format", "Times", "TimeFrom", "Sort")
 
 
@@ -51,15 +61,20 @@ def _check_keys(obj, where, allowed):
             raise _err(f"unknown key '{key}' in {where} (known: {', '.join(allowed)})")
 
 
-def _validate_source(source, where):
-    """Validate a ``Source`` object; returns a normalized plain-dict copy."""
+def _validate_source(source, where, block="Source"):
+    """Validate a ``Source``-shaped object; returns a normalized plain-dict copy.
+
+    ``block`` is the key being validated, so an entry's optional ``Target``
+    reports ``Entries[0].Target.Paths ...`` rather than naming ``Source``.
+    """
+    where = f"{where}.{block}"
     if not isinstance(source, dict):
-        raise _err(f"{where}.Source must be an object")
-    _check_keys(source, f"{where}.Source", _SOURCE_KEYS)
+        raise _err(f"{where} must be an object")
+    _check_keys(source, where, _SOURCE_KEYS)
     kinds = [k for k in ("Pattern", "Path", "Paths") if k in source]
     if len(kinds) != 1:
         raise _err(
-            f"{where}.Source needs exactly one of Pattern, Path or Paths "
+            f"{where} needs exactly one of Pattern, Path or Paths "
             f"(got {', '.join(kinds) if kinds else 'none'})"
         )
     kind = kinds[0]
@@ -67,43 +82,56 @@ def _validate_source(source, where):
     if kind == "Paths":
         paths = source["Paths"]
         if not isinstance(paths, (list, tuple)) or not paths:
-            raise _err(f"{where}.Source.Paths must be a non-empty array of paths")
+            raise _err(f"{where}.Paths must be a non-empty array of paths")
         if not all(isinstance(p, str) and p for p in paths):
-            raise _err(f"{where}.Source.Paths entries must be non-empty strings")
+            raise _err(f"{where}.Paths entries must be non-empty strings")
         out["Paths"] = list(paths)
     else:
         value = source[kind]
         if not isinstance(value, str) or not value:
-            raise _err(f"{where}.Source.{kind} must be a non-empty string")
+            raise _err(f"{where}.{kind} must be a non-empty string")
         out[kind] = value
     if "Format" in source:
         if not isinstance(source["Format"], str) or not source["Format"]:
-            raise _err(f"{where}.Source.Format must be a non-empty string")
+            raise _err(f"{where}.Format must be a non-empty string")
         out["Format"] = source["Format"]
     if "Times" in source:
         times = source["Times"]
         if not isinstance(times, (list, tuple)) or not all(
             isinstance(t, (int, float)) and not isinstance(t, bool) for t in times
         ):
-            raise _err(f"{where}.Source.Times must be an array of numbers")
+            raise _err(f"{where}.Times must be an array of numbers")
         out["Times"] = [float(t) for t in times]
     if "TimeFrom" in source:
         if source["TimeFrom"] not in _TIME_FROM:
             raise _err(
-                f"{where}.Source.TimeFrom must be one of "
+                f"{where}.TimeFrom must be one of "
                 f"{', '.join(repr(v) for v in _TIME_FROM)}"
             )
         out["TimeFrom"] = source["TimeFrom"]
     if "Sort" in source:
         if not isinstance(source["Sort"], bool):
-            raise _err(f"{where}.Source.Sort must be true or false")
+            raise _err(f"{where}.Sort must be true or false")
         if kind != "Paths":
             # A pattern is always sorted and a single path has nothing to
             # sort; accepting the key there would imply a choice that does
             # not exist.
-            raise _err(f"{where}.Source.Sort applies only with Paths")
+            raise _err(f"{where}.Sort applies only with Paths")
         out["Sort"] = source["Sort"]
     return out
+
+
+def _coerce_source(source, where, block="Source"):
+    """A Source object, a plain string, or a list of paths -> a validated dict."""
+    if isinstance(source, dict):
+        return _validate_source(source, where, block=block)
+    if isinstance(source, (str, os.PathLike)):
+        text = os.fspath(source)
+        key = "Pattern" if ("*" in text or "?" in text) else "Path"
+        return _validate_source({key: text}, where, block=block)
+    return _validate_source(
+        {"Paths": [os.fspath(p) for p in source]}, where, block=block
+    )
 
 
 def _validate_metadata(value, where):
@@ -145,10 +173,18 @@ class DatasetEntry:
     ``base_dir`` (the directory relative source paths resolve against; set by
     :meth:`DatasetManifest.load`) is carried for resolution only and is not
     part of the document or of equality.
+
+    ``target`` is an optional **second** source of the same shape, describing
+    the paired series a coarse/fine problem needs -- a superresolution model
+    trains on ``(Source, Target)`` pairs. It is absent for most entries, and
+    absent means *self-supervised*: one mesh supplying both sides, which is the
+    usual shape of a superresolution dataset since you normally have only the
+    high-resolution solve.
     """
 
     id: str
     source: dict
+    target: dict = None
     split: str = None
     tags: tuple = ()
     group: str = None
@@ -167,6 +203,9 @@ class DatasetEntry:
         if "Source" not in obj:
             raise _err(f"{where}.Source is required")
         source = _validate_source(obj["Source"], where)
+        target = None
+        if obj.get("Target") is not None:
+            target = _validate_source(obj["Target"], where, block="Target")
         split = obj.get("Split")
         if split is not None and (not isinstance(split, str) or not split):
             raise _err(f"{where}.Split must be a non-empty string")
@@ -185,6 +224,7 @@ class DatasetEntry:
         return cls(
             id=entry_id,
             source=source,
+            target=target,
             split=split,
             tags=tuple(tags),
             group=group,
@@ -197,6 +237,8 @@ class DatasetEntry:
         """The entry as its document object -- PascalCase, optional keys
         omitted when empty so a hand-edited file stays minimal."""
         out = {"Id": self.id, "Source": dict(self.source)}
+        if self.target:
+            out["Target"] = dict(self.target)
         if self.split is not None:
             out["Split"] = self.split
         if self.tags:
@@ -209,32 +251,113 @@ class DatasetEntry:
             out["Metadata"] = dict(self.metadata)
         return out
 
-    def _resolved_source(self, base_dir):
+    def _resolved_source(self, base_dir, source=None):
+        source = self.source if source is None else source
         base = self.base_dir if base_dir is None else base_dir
-        if "Paths" in self.source:
-            return [_resolve_source_path(p, base) for p in self.source["Paths"]]
-        key = "Pattern" if "Pattern" in self.source else "Path"
-        return _resolve_source_path(self.source[key], base)
+        if "Paths" in source:
+            return [_resolve_source_path(p, base) for p in source["Paths"]]
+        key = "Pattern" if "Pattern" in source else "Path"
+        return _resolve_source_path(source[key], base)
 
-    def _plan_kwargs(self):
+    @staticmethod
+    def _plan_kwargs(source):
         return {
-            "file_format": self.source.get("Format"),
-            "times": self.source.get("Times"),
-            "time_from": self.source.get("TimeFrom", "auto"),
-            "sort": self.source.get("Sort", False),
+            "file_format": source.get("Format"),
+            "times": source.get("Times"),
+            "time_from": source.get("TimeFrom", "auto"),
+            "sort": source.get("Sort", False),
         }
+
+    def _require_target(self, op):
+        if not self.target:
+            raise _err(
+                f"entry '{self.id}' has no Target, so {op} has nothing to pair with "
+                "(an entry without a Target is self-supervised: one mesh supplies "
+                "both sides)"
+            )
+        return self.target
 
     def time_series(self, *, base_dir=None, **read_kwargs):
         """The entry's :class:`~meshioplusplus.TimeSeries` -- the Source
         mapped 1:1 onto the sequence machinery; plan only, no mesh read."""
         return TimeSeries(
-            self._resolved_source(base_dir), **self._plan_kwargs(), **read_kwargs
+            self._resolved_source(base_dir),
+            **self._plan_kwargs(self.source),
+            **read_kwargs,
+        )
+
+    def target_time_series(self, *, base_dir=None, **read_kwargs):
+        """The paired ``Target`` series, or a named error when there is none.
+
+        :meth:`time_series`' twin. Use :attr:`target` to test for one first --
+        an entry without a ``Target`` is self-supervised, not broken.
+        """
+        target = self._require_target("target_time_series()")
+        return TimeSeries(
+            self._resolved_source(base_dir, target),
+            **self._plan_kwargs(target),
+            **read_kwargs,
         )
 
     def entries(self, *, base_dir=None):
         """The resolved :func:`~meshioplusplus.sequence_entries` plan
         (``{"path", "step", "time", "time_source"}`` dicts); no mesh read."""
-        return sequence_entries(self._resolved_source(base_dir), **self._plan_kwargs())
+        return sequence_entries(
+            self._resolved_source(base_dir), **self._plan_kwargs(self.source)
+        )
+
+    def target_entries(self, *, base_dir=None):
+        """The paired ``Target``'s resolved plan; no mesh read."""
+        target = self._require_target("target_entries()")
+        return sequence_entries(
+            self._resolved_source(base_dir, target), **self._plan_kwargs(target)
+        )
+
+
+#: Two plans' times must agree to this, relatively, to count as the same step.
+PAIRING_TIME_RTOL = 1e-9
+
+
+def check_pairing(entry, *, base_dir=None):
+    """Check that an entry's ``Source`` and ``Target`` describe the same steps.
+
+    Returns the number of paired steps. An entry with no ``Target`` is
+    self-supervised and pairs with itself, so this returns its own step count.
+
+    Two things are checked, and the second is the one that matters. **Equal step
+    counts** catches the obvious mismatch. **Agreeing times** catches the silent
+    one: a coarse run written at a different output interval produces two plans
+    of the same length whose steps are at different instants, so index pairing
+    would train the model to map one moment onto another. That is a quiet
+    corruption rather than a crash, so it is refused here.
+
+    Times are only compared where both sides carry a real one -- a plan whose
+    ``time_source`` is ``"index"`` says nothing about when its steps happened,
+    so there is nothing to disagree with.
+    """
+    plan = entry.entries(base_dir=base_dir)
+    if not entry.target:
+        return len(plan)
+    target = entry.target_entries(base_dir=base_dir)
+    if len(plan) != len(target):
+        raise _err(
+            f"entry '{entry.id}' pairs {len(plan)} source steps with "
+            f"{len(target)} target steps; a coarse/fine pair must have the same "
+            "number of steps"
+        )
+    for step, (a, b) in enumerate(zip(plan, target)):
+        if a.get("time_source") == "index" or b.get("time_source") == "index":
+            continue
+        ta, tb = float(a["time"]), float(b["time"])
+        if abs(ta - tb) > PAIRING_TIME_RTOL * max(abs(ta), abs(tb), 1.0):
+            raise _err(
+                f"entry '{entry.id}' step {step} is at time {ta!r} in its Source "
+                f"and {tb!r} in its Target; the two runs are not at the same "
+                "instants (give both sides agreeing Times, or -- if the instants "
+                "are not meaningful -- drop Times and set TimeFrom: index, which "
+                "an explicit Times list always overrides)"
+            )
+    return len(plan)
 
 
 class DatasetManifest:
@@ -401,6 +524,7 @@ class DatasetManifest:
         self,
         source,
         *,
+        target=None,
         id=None,
         split=None,
         tags=(),
@@ -418,17 +542,14 @@ class DatasetManifest:
         overwrite. ``validate_source=True`` expands the plan once
         (:func:`~meshioplusplus.sequence_entries`), so a glob matching
         nothing fails here, by name, not at first training access.
+
+        ``target`` takes the same three shapes and records the paired series a
+        coarse/fine problem needs. Leave it out for the ordinary case: an entry
+        without a target is self-supervised.
         """
-        if isinstance(source, dict):
-            source = _validate_source(source, "add()")
-        elif isinstance(source, (str, os.PathLike)):
-            text = os.fspath(source)
-            key = "Pattern" if ("*" in text or "?" in text) else "Path"
-            source = {key: text}
-        else:
-            source = _validate_source(
-                {"Paths": [os.fspath(p) for p in source]}, "add()"
-            )
+        source = _coerce_source(source, "add()")
+        if target is not None:
+            target = _coerce_source(target, "add()", block="Target")
         entry_id = self._derive_id(source) if id is None else id
         if not isinstance(entry_id, str) or not entry_id:
             raise _err("the entry id must be a non-empty string")
@@ -437,6 +558,7 @@ class DatasetManifest:
         entry = DatasetEntry(
             id=entry_id,
             source=source,
+            target=target,
             split=split,
             tags=tuple([tags] if isinstance(tags, str) else tags),
             group=group,
@@ -446,6 +568,9 @@ class DatasetManifest:
         )
         if validate_source:
             entry.entries()  # raises, naming the offender, on a bad source
+            if target is not None:
+                entry.target_entries()
+                check_pairing(entry)
         self._append(entry)
         return entry
 
@@ -560,18 +685,12 @@ class DatasetManifest:
 
     @staticmethod
     def _with(entry, **changes):
-        fields = {
-            "id": entry.id,
-            "source": entry.source,
-            "split": entry.split,
-            "tags": entry.tags,
-            "group": entry.group,
-            "notes": entry.notes,
-            "metadata": entry.metadata,
-            "base_dir": entry.base_dir,
-        }
-        fields.update(changes)
-        return DatasetEntry(**fields)
+        # Derived from the dataclass rather than enumerated by hand: this runs
+        # on every save(), so a field missing from the list would be silently
+        # dropped from the document the next time the manifest is written.
+        values = {f.name: getattr(entry, f.name) for f in _dataclass_fields(entry)}
+        values.update(changes)
+        return DatasetEntry(**values)
 
     def _replace(self, entry_id, **changes):
         entry = self[entry_id]

@@ -453,6 +453,29 @@ _NOT_TOOLS = {
     "edge_index",  # in-memory (2, E) array; no path-based form
     "feature_matrix",  # in-memory matrix + schema; no path-based form
     "FeatureMatrix",
+    # An in-memory value (the mesh plus its provenance arrays); the
+    # `tessellate` tool covers the path-in/path-out case, writing the mesh
+    # with its tessellate:* arrays attached.
+    "Tessellation",
+    # Grid values and the lattice they live on are in-memory arrays; the four
+    # grid_* tools cover every path-in/path-out case (sample, scatter, resample,
+    # spectrum).
+    "GridSpec",
+    "GridArray",
+    "PowerSpectrum",
+    "interpolate_grid",  # in-memory (C, M) evaluation at caller-supplied points
+    "squeeze_grid",  # in-memory array reshape for a 2-D operator
+    "expand_grid",
+    # A budget is a selection as an in-memory value (indices in selection
+    # order, meant to slice a feature matrix); the `subsample` tool covers the
+    # path-in/path-out case, writing the selected points as a point cloud.
+    "PointBudget",
+    "select_points",
+    # In-memory arrays: an edge index and a coarsening hierarchy are values a
+    # caller holds, not files a path-based tool could hand back.
+    "edge_vectors",
+    "bistride_hierarchy",
+    "BistrideHierarchy",
     "has_zarr",
     "to_dlpack",
     "to_cupy",
@@ -502,7 +525,7 @@ def test_wraps_names_are_real_public_api():
 def test_registry_entries_are_wellformed():
     for name, spec in TOOL_REGISTRY.items():
         assert callable(spec["fn"]), name
-        assert spec["gated"] in (None, "arrow", "viewer"), name
+        assert spec["gated"] in (None, "arrow", "viewer", "physicsnemo"), name
 
 
 def test_every_tool_function_is_callable():
@@ -560,6 +583,164 @@ def test_compute_sdf_tool(tmp_path):
         _tools.tool_compute_sdf(
             mesh_file, str(tree), structure="octree", resolution=[4, 4, 4]
         )
+
+
+def _grid_source(tmp_path):
+    """Anisotropic box, linear scalar plus a vector -- see test_grid_transfer."""
+    mesh = meshioplusplus.convert_cells(
+        meshioplusplus.grid((3, 3, 3), spacing=(1 / 3, 2 / 3, 4 / 3)), mode="simplexify"
+    )
+    p = mesh.points
+    mesh.point_data["u"] = 1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2]
+    mesh.point_data["v"] = np.column_stack([p[:, 0], 2.0 * p[:, 1], -p[:, 2]])
+    path = tmp_path / "src.vtu"
+    meshioplusplus.write(path, mesh)
+    return str(path)
+
+
+def test_dataset_add_records_a_paired_target(tmp_path):
+    src = tmp_path / "coarse"
+    tgt = tmp_path / "fine"
+    for d, n in ((src, 2), (tgt, 4)):
+        d.mkdir()
+        for i in range(3):
+            meshioplusplus.write(d / f"out_{i:04d}.vtu", meshioplusplus.grid((n, n, n)))
+    manifest = str(tmp_path / "m.json")
+
+    report = _tools.tool_dataset_add(
+        manifest,
+        input_pattern=str(src / "*.vtu"),
+        target_pattern=str(tgt / "*.vtu"),
+        entry_id="sr",
+        split="train",
+    )
+    assert report["num_steps"] == 3
+    assert report["num_target_steps"] == 3
+
+    listed = _tools.tool_dataset_list(manifest)["entries"][0]
+    assert listed["Target"] == {"Pattern": "fine/*.vtu"}
+    assert listed["Source"] == {"Pattern": "coarse/*.vtu"}
+
+
+def test_dataset_add_refuses_a_target_outside_the_root(tmp_path):
+    """A Target is client input *inside* the document, so the sandbox has to
+    hold on it exactly as it does on the Source."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.vtu").write_bytes(b"")
+    meshioplusplus.write(root / "a.vtu", meshioplusplus.grid((2, 2, 2)))
+    outside = tmp_path / "outside.vtu"
+    meshioplusplus.write(outside, meshioplusplus.grid((2, 2, 2)))
+
+    _tools.set_root(str(root))
+    try:
+        with pytest.raises(ValueError):
+            _tools.tool_dataset_add(
+                str(root / "m.json"),
+                input_paths=["a.vtu"],
+                target_paths=[str(outside)],
+                entry_id="sr",
+            )
+    finally:
+        _tools.set_root(None)
+
+
+def test_dataset_health_reports_a_broken_pairing(tmp_path):
+    src = tmp_path / "coarse"
+    src.mkdir()
+    for i in range(3):
+        meshioplusplus.write(src / f"out_{i:04d}.vtu", meshioplusplus.grid((2, 2, 2)))
+    one = tmp_path / "only.vtu"
+    meshioplusplus.write(one, meshioplusplus.grid((2, 2, 2)))
+
+    manifest = meshioplusplus.DatasetManifest(base_dir=str(tmp_path))
+    manifest.add({"Pattern": "coarse/*.vtu"}, id="ok")
+    manifest.add(
+        {"Pattern": "coarse/*.vtu"},
+        target={"Path": "only.vtu"},
+        id="bad",
+        validate_source=False,
+    )
+    path = tmp_path / "m.json"
+    manifest.save(path)
+
+    report = _tools.tool_dataset_health(str(path), quality=False)
+    entries = report["entries"]
+    assert entries["ok"]["target_steps"] is None  # self-supervised, not broken
+    assert entries["ok"]["pairing_error"] is None
+    assert "pairs 3 source steps with 1 target steps" in entries["bad"]["pairing_error"]
+    assert "bad" in report["bad_entries"] and "ok" not in report["bad_entries"]
+
+
+def test_grid_tools_round_trip(tmp_path):
+    """sample -> resample -> scatter over paths, with the reports checked.
+
+    The whole point of the grid tools is that an agent can drive the data path
+    without holding a mesh, so every step here goes through a file.
+    """
+    src = _grid_source(tmp_path)
+    gridfile = str(tmp_path / "g.vti")
+    report = _tools.tool_grid_sample(src, gridfile, resolution=[4, 4, 4])
+    assert report["channels"] == ["u", "v_0", "v_1", "v_2"]
+    assert report["coverage"] == 1.0
+    assert report["grid"]["dims"] == [4, 4, 4]
+    assert report["grid"]["shape"] == [5, 5, 5]
+    assert report["grid"]["layout"] == "channels_first_zyx"
+
+    upfile = str(tmp_path / "up.vti")
+    report = _tools.tool_grid_resample(gridfile, upfile, factor=2)
+    assert report["scaling_factor"] == [2, 2, 2]
+    assert report["grid"]["dims"] == [8, 8, 8]
+
+    fine = str(tmp_path / "fine.vtu")
+    meshioplusplus.write(
+        fine, meshioplusplus.grid((6, 6, 6), spacing=(1 / 6, 2 / 6, 4 / 6))
+    )
+    out = str(tmp_path / "out.vtu")
+    report = _tools.tool_grid_scatter(upfile, fine, out)
+    assert report["point_data"] == ["u", "v"]
+
+    got = meshioplusplus.read(out)
+    p = got.points
+    assert got.point_data["u"] == pytest.approx(
+        1.0 + 2.0 * p[:, 0] + 3.0 * p[:, 1] - 5.0 * p[:, 2], abs=1e-12
+    )
+
+
+def test_grid_power_spectrum_tool_is_json_safe(tmp_path):
+    mesh = meshioplusplus.grid((15, 15, 15), spacing=(1 / 16, 1 / 16, 1 / 16))
+    mesh.point_data["u"] = np.cos(2 * np.pi * 3 * mesh.points[:, 0])
+    path = str(tmp_path / "g.vti")
+    meshioplusplus.write(path, mesh)
+
+    report = _dump(_tools.tool_grid_power_spectrum(path, "u"))
+    assert report["units"] == "cycles per unit length"
+    assert report["total_power"] == pytest.approx(
+        float((mesh.point_data["u"] ** 2).mean()), rel=1e-12
+    )
+    loud = int(np.argmax(report["power"]))
+    assert report["wavenumber"][loud] == pytest.approx(3.0)
+
+
+def test_grid_tools_report_a_named_error_rather_than_a_traceback(tmp_path):
+    src = _grid_source(tmp_path)
+    gridfile = str(tmp_path / "g.vti")
+    _tools.tool_grid_sample(src, gridfile, resolution=[2, 2, 2])
+
+    guarded = _tools.guard(
+        _tools.tool_grid_power_spectrum, input_path=gridfile, field="nope"
+    )
+    assert guarded["error_type"] == "ValueError"
+    assert "no channel named 'nope'" in guarded["error"]
+
+    # a mesh that is not a lattice cannot be read as a grid
+    guarded = _tools.guard(
+        _tools.tool_grid_scatter,
+        grid_path=src,
+        target_path=src,
+        output_path=str(tmp_path / "o.vtu"),
+    )
+    assert "not a dense regular lattice" in guarded["error"]
 
 
 def test_crop_tool_takes_a_data_predicate(mesh_file, tmp_path):
@@ -796,3 +977,414 @@ def test_dataset_list_sandboxes_hand_edited_sources(tmp_path, monkeypatch):
     _dump(_tools.tool_dataset_list(str(manifest)))  # data-only: allowed
     with pytest.raises(ValueError, match="outside the configured root"):
         _tools.tool_dataset_list(str(manifest), resolve=True)
+
+
+# --------------------------------------------------------------------------- #
+# Pure half: dataset health / find and the registry dispatch (v10.23.0)       #
+# --------------------------------------------------------------------------- #
+def _health_manifest(tmp_path):
+    """Three cases: case_0 carries quality:* arrays (whose NaN must not count),
+    case_1 carries a NaN in a data array, case_2 lacks the point array."""
+    from meshioplusplus import DatasetManifest, attach_quality
+
+    cases = tmp_path / "cases"
+    cases.mkdir(exist_ok=True)
+    meshioplusplus.write(str(cases / "case_0.vtu"), attach_quality(_mixed_mesh()))
+    bad = _mixed_mesh()
+    bad.point_data["t"][2] = float("nan")
+    meshioplusplus.write(str(cases / "case_1.vtu"), bad)
+    sparse = _mixed_mesh()
+    del sparse.point_data["t"]
+    meshioplusplus.write(str(cases / "case_2.vtu"), sparse)
+    m = DatasetManifest(name="health", base_dir=str(tmp_path))
+    m.add("cases/case_0.vtu", split="train")
+    m.add("cases/case_1.vtu", split="train")
+    m.add("cases/case_2.vtu")
+    path = str(tmp_path / "m.json")
+    m.save(path)
+    return path
+
+
+def test_dataset_health_reports_per_entry_and_aggregates(tmp_path):
+    report = _dump(_tools.tool_dataset_health(_health_manifest(tmp_path)))
+    assert report["producer"] == "server"
+    assert report["name"] == "health"
+    assert report["num_entries"] == 3 and report["scanned"] == 3
+    assert len(report["sha256"]) == 64
+    assert report["splits"] == {"train": 2, "": 1}
+    assert report["split_balance"] == [
+        {"split": "train", "count": 2, "fraction": 2 / 3},
+        {"split": "", "count": 1, "fraction": 1 / 3},
+    ]
+    entries = report["entries"]
+    assert set(entries) == {"case_0", "case_1", "case_2"}
+    for scan in entries.values():
+        assert scan["steps"] == 1
+        assert isinstance(scan["min_scaled_jacobian"], float)
+    # quality:* NaN (metric N/A) never counts; a data NaN does
+    assert entries["case_0"]["num_nan"] == 0
+    assert entries["case_1"]["num_nan"] == 1
+    assert not any(a.startswith("quality:") for a in entries["case_0"]["arrays"])
+    # fields missing = union over readable entries minus each entry's own
+    assert list(report["fields_missing"]) == ["case_2"]
+    assert report["fields_missing"]["case_2"][0].endswith(":t")
+    assert report["totals"]["num_nan"] == 1
+    assert report["totals"]["num_inverted"] == 0
+    assert report["bad_entries"] == ["case_1"]
+
+
+def test_dataset_health_filters_and_reports_unreadable_entries(tmp_path):
+    from meshioplusplus import DatasetManifest
+
+    path = _health_manifest(tmp_path)
+    only = _dump(_tools.tool_dataset_health(path, split="train"))
+    assert only["scanned"] == 2 and set(only["entries"]) == {"case_0", "case_1"}
+    one = _dump(_tools.tool_dataset_health(path, entry_ids=["case_2"], quality=False))
+    assert set(one["entries"]) == {"case_2"}
+    assert one["entries"]["case_2"]["min_scaled_jacobian"] is None
+    with pytest.raises(ValueError, match="unknown entry id"):
+        _tools.tool_dataset_health(path, entry_ids=["nope"])
+    # an entry whose file vanished is reported, never fatal
+    m = DatasetManifest.load(path)
+    m.add("cases/case_1.vtu", id="ghost", validate_source=False)
+    os.remove(str(tmp_path / "cases" / "case_1.vtu"))
+    m.save(path)
+    report = _dump(_tools.tool_dataset_health(path))
+    assert report["entries"]["ghost"]["steps"] == 0
+    assert "error" in report["entries"]["ghost"]
+    assert "ghost" in report["bad_entries"]
+    # the sandbox holds on the manifest AND on what it resolves to
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_health(path)
+
+
+def test_dataset_find_lists_manifests_and_skips_other_json(tmp_path):
+    from meshioplusplus import DatasetManifest
+
+    _case_files(tmp_path)
+    top = DatasetManifest(name="top", base_dir=str(tmp_path))
+    top.add("cases/case_0.vtu", split="train")
+    top.save(str(tmp_path / "top.json"))
+    (tmp_path / "other.json").write_text('{"foo": 1}', encoding="utf-8")
+    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
+    nested = tmp_path / "campaign" / "sub"
+    nested.mkdir(parents=True)
+    DatasetManifest(name="nested").save(str(nested / "n.json"))
+    deep = nested / "deeper" / "deepest"
+    deep.mkdir(parents=True)
+    DatasetManifest(name="deep").save(str(deep / "d.json"))
+
+    report = _dump(_tools.tool_dataset_find(str(tmp_path)))
+    found = {m["relpath"]: m for m in report["manifests"]}
+    assert set(found) == {"top.json", "campaign/sub/n.json"}
+    assert found["top.json"]["name"] == "top"
+    assert found["top.json"]["num_entries"] == 1
+    assert found["top.json"]["splits"] == {"train": 1}
+    assert len(found["top.json"]["sha256"]) == 64
+    assert found["top.json"]["mtime"] > 0
+    deeper = _dump(_tools.tool_dataset_find(str(tmp_path), max_depth=4))
+    assert "campaign/sub/deeper/deepest/d.json" in {
+        m["relpath"] for m in deeper["manifests"]
+    }
+    with pytest.raises(ValueError, match="directory not found"):
+        _tools.tool_dataset_find(str(tmp_path / "nowhere"))
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_dataset_find(str(tmp_path))
+
+
+def test_call_tool_dispatches_through_the_registry(mesh_file, tmp_path):
+    report = _tools.call_tool("info", {"input_path": mesh_file})
+    assert report["num_points"] == 5
+    failed = _tools.call_tool("info", {"input_path": str(tmp_path / "nope.vtu")})
+    assert failed["error_type"] == "ValueError"
+    wrong = _tools.call_tool("info", {"bogus": 1})
+    assert wrong["error_type"] == "TypeError"
+    with pytest.raises(KeyError, match="unknown tool 'nope'"):
+        _tools.call_tool("nope", {})
+    assert _tools.call_tool("formats")["readable"]
+
+
+def test_has_dashboard_is_a_bool_and_names_the_extra():
+    import meshioplusplus.mcp as mmcp
+
+    assert isinstance(mmcp.has_dashboard(), bool)
+    if not mmcp.has_dashboard():
+        with pytest.raises(ImportError, match=r"meshioplusplus\[dashboard\]"):
+            mmcp._require_http()
+
+
+# --------------------------------------------------------------------------- #
+# Pure half: training-job tools over the fake trainer (v10.24.0)              #
+# --------------------------------------------------------------------------- #
+import sys  # noqa: E402
+import time  # noqa: E402
+
+_FAKE_TRAINER = [
+    sys.executable,
+    os.path.join(os.path.dirname(__file__), "_fake_trainer.py"),
+]
+
+
+@pytest.fixture()
+def fake_trainer(monkeypatch, tmp_path):
+    from meshioplusplus.mcp import _jobs
+
+    monkeypatch.setenv(_jobs.TRAIN_COMMAND_ENV, json.dumps(_FAKE_TRAINER))
+    _tools.set_runs_dir(str(tmp_path / "runs"))
+    yield
+    _tools.set_runs_dir(None)
+    _tools._MANAGERS.clear()
+
+
+def _wait_terminal(job_id, timeout=20.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = _tools.tool_train_status(job_id)
+        if state["status"] in ("finished", "failed", "stopped"):
+            return state
+        time.sleep(0.05)
+    raise AssertionError(state)
+
+
+def test_train_defaults_describes_the_manifest(tmp_path):
+    path = _health_manifest(tmp_path)
+    report = _dump(_tools.tool_train_defaults(path, fields=["t"], target_fields=["t"]))
+    assert report["num_entries"] == 3 and report["splits"] == {"train": 2, "": 1}
+    assert report["available_fields"]["point"] == ["t"]
+    # case_0 also carries the quality:* cell arrays attach_quality wrote
+    assert "c" in report["available_fields"]["cell"]
+    assert set(report["frameworks"]) == {"torch_geometric", "physicsnemo", "deeponet"}
+    assert report["spec"]["Fields"] == ["t"] and report["spec"]["Manifest"] == path
+    assert report["spec"]["Model"]["Name"] == "meshgraphnet"
+    assert report["runs_dir"].endswith("runs")
+
+
+def test_train_tools_drive_a_job_end_to_end(tmp_path, fake_trainer):
+    path = _health_manifest(tmp_path)
+    started = _dump(
+        _tools.tool_train_start(
+            path,
+            ["t"],
+            ["t"],
+            epochs=4,
+            checkpoint_every=2,
+            tags=["smoke"],
+            notes="mcp",
+        )
+    )
+    job_id = started["job_id"]
+    assert started["status"] == "running"
+    assert started["run_dir"].startswith(str(tmp_path / "runs"))
+    state = _wait_terminal(job_id)
+    assert state["status"] == "finished" and state["completed"] and state["epoch"] == 4
+    log = _dump(_tools.tool_train_log(job_id))
+    assert "fake trainer: done" in log["text"] and log["done"]
+    metrics = _dump(_tools.tool_train_metrics(job_id, since_epoch=3))
+    assert [r["epoch"] for r in metrics["rows"]] == [3]
+    ckpts = _dump(_tools.tool_train_checkpoints(job_id))
+    names = {c["name"] for c in ckpts["checkpoints"]}
+    assert {"Fake.0.1.mdlus", "Fake.0.3.mdlus", "best.mdlus", "final.mdlus"} <= names
+    marked = _dump(_tools.tool_train_mark_best(job_id, "Fake.0.1.mdlus"))
+    assert [c["name"] for c in marked["checkpoints"] if c["is_best"]] == ["best.mdlus"]
+    listed = _dump(_tools.tool_train_list())
+    assert listed["jobs"][0]["job_id"] == job_id and listed["jobs"][0]["tags"] == [
+        "smoke"
+    ]
+    assert _dump(_tools.tool_train_list(status="running"))["jobs"] == []
+    assert (
+        _dump(_tools.tool_train_list(manifest_path=path))["jobs"][0]["job_id"] == job_id
+    )
+    # a stop on a finished job is a no-op; unknown jobs are named errors
+    assert _dump(_tools.tool_train_stop(job_id))["status"] == "finished"
+    with pytest.raises(ValueError, match="no job 'nope'"):
+        _tools.tool_train_status("nope")
+
+
+def test_train_start_validates_before_spawning(tmp_path, fake_trainer):
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ValueError, match="no split 'nope'"):
+        _tools.tool_train_start(path, ["t"], ["t"], train_split="nope")
+    with pytest.raises(ValueError, match="TargetFields must name"):
+        _tools.tool_train_start(path, ["t"], [])
+    with pytest.raises(ValueError, match="Epochs must be"):
+        _tools.tool_train_start(path, ["t"], ["t"], epochs=0)
+    # the sandbox holds on the entries the split resolves to
+    _tools.set_root(str(tmp_path / "cases"))
+    with pytest.raises(ValueError, match="outside the configured root"):
+        _tools.tool_train_start(path, ["t"], ["t"])
+
+
+def test_train_start_names_the_missing_frameworks(tmp_path, monkeypatch):
+    from meshioplusplus import _gpu
+    from meshioplusplus.mcp import _jobs
+
+    monkeypatch.delenv(_jobs.TRAIN_COMMAND_ENV, raising=False)
+    monkeypatch.setattr(_gpu, "_importable", lambda name: False)
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ImportError, match="pip install torch_geometric"):
+        _tools.tool_train_start(path, ["t"], ["t"])
+    with pytest.raises(ImportError, match="torch_geometric"):
+        _tools.tool_train_predict(path, checkpoint=path, output_dir=str(tmp_path / "p"))
+    with pytest.raises(ValueError, match="give job_id or checkpoint"):
+        _tools.tool_train_predict(path)
+
+
+def test_subsample_tool_writes_a_point_cloud_and_is_json_safe(tmp_path):
+    mesh = meshioplusplus.extract_surface(
+        meshioplusplus.convert_cells(meshioplusplus.grid((4, 4, 4)), mode="simplexify")
+    )
+    mesh.point_data["u"] = mesh.points[:, 0]
+    src = str(tmp_path / "surf.vtu")
+    meshioplusplus.write(src, mesh)
+    out = str(tmp_path / "cloud.vtu")
+
+    report = _dump(
+        _tools.tool_subsample(src, out, 16, method="grid", seed=2, record_ids=True)
+    )
+    assert report["count"] == 16 and report["num_source_points"] == 98
+    assert report["method"] == "grid"
+    assert report["cell_blocks"] == [{"type": "vertex", "num_cells": 16}]
+    assert "budget:original_point_id" in report["point_data"]
+    got = meshioplusplus.read(out)
+    ids = got.point_data["budget:original_point_id"].astype(int)
+    assert np.allclose(got.point_data["u"], mesh.point_data["u"][ids])
+
+    guarded = _tools.guard(
+        _tools.tool_subsample, input_path=src, output_path=out, count=1000
+    )
+    assert guarded["error_type"] == "ValueError"
+    assert "count is 1000 but only 98" in guarded["error"]
+
+
+def test_predict_file_tool_is_gated_and_guarded(tmp_path):
+    src = str(tmp_path / "grid.vtu")
+    meshioplusplus.write(src, meshioplusplus.grid((2, 2, 2)))
+    checkpoint = tmp_path / "model.mdlus"
+    checkpoint.write_bytes(b"")
+
+    assert _tools.TOOL_REGISTRY["predict_file"]["gated"] == "physicsnemo"
+    guarded = _tools.guard(
+        _tools.tool_predict_file,
+        checkpoint=str(checkpoint),
+        input_path=src,
+        output_path=str(tmp_path / "out.vtu"),
+    )
+    # Without the frameworks it is a named payload, never a traceback.
+    assert guarded["error_type"] == "ImportError"
+    assert "nvidia-physicsnemo" in guarded["error"]
+
+
+def test_proximity_graph_tool_writes_the_graph_and_reports_degrees(tmp_path):
+    src = str(tmp_path / "grid.vtu")
+    meshioplusplus.write(src, meshioplusplus.grid((4, 4, 4)))
+    out = str(tmp_path / "graph.vtu")
+
+    report = _dump(_tools.tool_proximity_graph(src, out, radius=1.1))
+    expected = meshioplusplus.proximity_graph(
+        meshioplusplus.grid((4, 4, 4)), radius=1.1
+    )
+    assert report["num_vertices"] == 125
+    assert report["num_edges"] == expected.shape[1] // 2
+    assert report["cell_blocks"] == [{"type": "line", "num_cells": report["num_edges"]}]
+    assert report["num_isolated"] == 0 and report["degree_max"] == 6
+
+    knn = _dump(_tools.tool_proximity_graph(src, out, method="knn", max_neighbors=4))
+    assert knn["degree_min"] >= 4
+
+    bad = _tools.guard(_tools.tool_proximity_graph, input_path=src, output_path=out)
+    assert bad["error_type"] == "ValueError" and "positive radius" in bad["error"]
+
+
+def test_train_start_refuses_an_unknown_family_before_building_a_spec(tmp_path):
+    from meshioplusplus.physicsnemo._train import _MODELS
+
+    path = _health_manifest(tmp_path)
+    with pytest.raises(ValueError, match="unknown model_name 'gpt'") as excinfo:
+        _tools.tool_train_start(path, ["t"], ["t"], model_name="gpt")
+    for name in _MODELS:
+        assert name in str(excinfo.value)
+
+
+def test_train_start_builds_each_family_s_own_spec(tmp_path, fake_trainer):
+    """Every family's `train_start` kwargs land in its own block of the
+    written spec -- and nothing of another family's."""
+    from meshioplusplus.physicsnemo._train import load_spec
+
+    path = _health_manifest(tmp_path)
+    cases = {
+        "fno": dict(
+            fields=["t"],
+            resolution=[7, 7, 1],
+            squeeze=2,
+            squeeze_index=0,
+            num_fno_modes=6,
+        ),
+        "afno": dict(
+            fields=["t"],
+            resolution=[7, 7, 1],
+            squeeze=2,
+            patch_size=[4, 4],
+            embed_dim=8,
+            num_blocks=2,
+        ),
+        "deeponet": dict(fields=[], parameters=["Load"], trunk="budget", trunk_count=8),
+    }
+    for name, kwargs in cases.items():
+        fields = kwargs.pop("fields")
+        started = _dump(
+            _tools.tool_train_start(
+                path, fields, ["t"], model_name=name, epochs=1, **kwargs
+            )
+        )
+        spec = load_spec(os.path.join(started["run_dir"], "spec.json"))
+        assert spec.model_name == name
+        _wait_terminal(started["job_id"])
+    doc = _tools._jobs_manager().status
+    summary = _dump(_tools.tool_train_list())["jobs"]
+    by_name = {job["model_name"]: job for job in summary}
+    assert by_name["fno"]["num_fno_modes"] == 6 and by_name["fno"]["squeeze"] == 2
+    assert by_name["afno"]["patch_size"] == [4, 4] and by_name["afno"]["embed_dim"] == 8
+    assert (
+        by_name["deeponet"]["parameters"] == ["Load"]
+        and by_name["deeponet"]["width"] == 64
+    )
+    assert (
+        by_name["fno"]["hidden_dim"] is None
+        and by_name["deeponet"]["resolution"] is None
+    )
+    del doc
+
+
+def test_server_mirrors_the_train_start_and_predict_file_parameters():
+    """`_server.py`'s typed wrappers contribute the JSON schema and nothing
+    else, so their parameter lists must equal the pure tools' -- checked from
+    the source text with `ast`, so it runs without the SDK installed.
+
+    Deliberately never ``from meshioplusplus.mcp import _server`` (or
+    ``importlib.import_module``): that line executes the module, whose own
+    top-level ``from mcp.server.fastmcp import FastMCP`` raises
+    ``ModuleNotFoundError`` on the SDK-absent default matrix this test is
+    meant to run in -- the same pure/gated split `_tools.py`'s import chain
+    already keeps. Reading the ``.py`` file's text directly is what actually
+    "runs without the SDK installed."
+    """
+    import ast
+    import inspect
+    import pathlib
+
+    server_path = (
+        pathlib.Path(inspect.getfile(meshioplusplus.mcp)).parent / "_server.py"
+    )
+    tree = ast.parse(server_path.read_text(encoding="utf-8"))
+    mirrored = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in (
+            "train_start",
+            "predict_file",
+        ):
+            mirrored[node.name] = [a.arg for a in node.args.args]
+    for name in ("train_start", "predict_file"):
+        pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
+        assert mirrored[name] == pure, name

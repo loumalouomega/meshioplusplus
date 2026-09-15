@@ -12,6 +12,7 @@ from . import (
     _convert,
     _convert_cells,
     _crop,
+    _curvature,
     _data,
     _dataset,
     _decimate,
@@ -19,6 +20,8 @@ from . import (
     _decompress,
     _diff,
     _extract_surface,
+    _grid_transfer,
+    _guard,
     _info,
     _interpolate,
     _isosurface,
@@ -26,18 +29,25 @@ from . import (
     _optimize_volume,
     _partition,
     _pipeline,
+    _point_budget,
+    _predict,
+    _proximity,
     _quality,
     _refine,
     _regions,
     _remesh,
     _remesh_volume,
     _reorder,
+    _repair,
     _sdf,
+    _shrinkwrap,
     _slice,
     _smooth,
+    _sobolev,
     _split,
     _stats,
     _subdivide,
+    _tessellate,
     _transform,
     _undo_green,
     _view,
@@ -91,6 +101,34 @@ def main(argv=None):
     )
     _quality.add_args(parser)
     parser.set_defaults(func=_quality.quality)
+
+    parser = subparsers.add_parser(
+        "curvature",
+        help="Per-vertex mean and Gaussian curvature of a surface",
+    )
+    _curvature.add_args(parser)
+    parser.set_defaults(func=_curvature.curvature_cmd)
+
+    parser = subparsers.add_parser(
+        "repair",
+        help="Fix a surface's orientation, holes and pinched vertices",
+    )
+    _repair.add_args(parser)
+    parser.set_defaults(func=_repair.repair_cmd)
+
+    parser = subparsers.add_parser(
+        "shrinkwrap",
+        help="Project a mesh's points onto a target surface",
+    )
+    _shrinkwrap.add_args(parser)
+    parser.set_defaults(func=_shrinkwrap.shrinkwrap_cmd)
+
+    parser = subparsers.add_parser(
+        "sobolev-deform",
+        help="Filter a displacement field over the mesh's P1 operators and apply it",
+    )
+    _sobolev.add_args(parser)
+    parser.set_defaults(func=_sobolev.sobolev_cmd)
 
     parser = subparsers.add_parser(
         "extract-surface",
@@ -164,6 +202,69 @@ def main(argv=None):
     parser.set_defaults(func=_voxelize.voxelize_cmd)
 
     parser = subparsers.add_parser(
+        "grid-sample",
+        help="Sample a mesh's point data onto a regular grid (for a CNN)",
+    )
+    _grid_transfer.add_sample_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_sample_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-scatter",
+        help="Write a grid's fields back onto a mesh (grid-sample's inverse)",
+    )
+    _grid_transfer.add_scatter_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_scatter_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-resample",
+        help="Resample a grid onto a finer or coarser lattice over the same box",
+    )
+    _grid_transfer.add_resample_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_resample_cmd)
+
+    parser = subparsers.add_parser(
+        "grid-spectrum",
+        help="Azimuthally averaged power spectrum of a field on a regular grid",
+    )
+    _grid_transfer.add_spectrum_args(parser)
+    parser.set_defaults(func=_grid_transfer.grid_spectrum_cmd)
+
+    parser = subparsers.add_parser(
+        "subsample",
+        help="Reduce a mesh to a point cloud under a token budget (farthest-point)",
+    )
+    _point_budget.add_args(parser)
+    parser.set_defaults(func=_point_budget.subsample_cmd)
+
+    parser = subparsers.add_parser(
+        "proximity-graph",
+        help="Build a radius or k-nearest-neighbour graph over a mesh's points",
+    )
+    _proximity.add_args(parser)
+    parser.set_defaults(func=_proximity.proximity_cmd)
+
+    parser = subparsers.add_parser(
+        "predict",
+        help="Run a trained PhysicsNeMo checkpoint on one mesh file",
+    )
+    _predict.add_args(parser)
+    parser.set_defaults(func=_predict.predict_cmd)
+
+    parser = subparsers.add_parser(
+        "guard-fit",
+        help="Fit a geometry guardrail over a dataset manifest's split",
+    )
+    _guard.add_fit_args(parser)
+    parser.set_defaults(func=_guard.guard_fit_cmd)
+
+    parser = subparsers.add_parser(
+        "guard-check",
+        help="Score a mesh against a fitted geometry guardrail",
+    )
+    _guard.add_check_args(parser)
+    parser.set_defaults(func=_guard.guard_check_cmd)
+
+    parser = subparsers.add_parser(
         "sdf",
         help="Signed distance field: generate a grid over a surface and fill it",
     )
@@ -200,6 +301,17 @@ def main(argv=None):
     )
     _subdivide.add_args(parser)
     parser.set_defaults(func=_subdivide.subdivide_cmd)
+
+    parser = subparsers.add_parser(
+        "tessellate",
+        help=(
+            "Isoparametric subdivision of a mesh's curved cells (quad9, "
+            "quad8, triangle6, tetra10, hexahedron27) onto a refinement "
+            "lattice, recording tessellate:* provenance"
+        ),
+    )
+    _tessellate.add_args(parser)
+    parser.set_defaults(func=_tessellate.tessellate_cmd)
 
     parser = subparsers.add_parser(
         "agglomerate",

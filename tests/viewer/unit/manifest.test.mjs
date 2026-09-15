@@ -36,6 +36,8 @@ import {
  *   m.add({"Paths": ["a.vtu", "b.vtu"], "Sort": True}, id="pair",
  *         validate_source=False)
  *   m.add("single.vtu", validate_source=False)
+ *   m.add({"Pattern": "coarse/*.vtu"}, target={"Pattern": "fine/*.vtu"},
+ *         id="sr", split="train", validate_source=False)
  *   m.save(path)
  */
 const PYTHON_FIXTURE = `{
@@ -84,6 +86,16 @@ const PYTHON_FIXTURE = `{
       "Source": {
         "Path": "single.vtu"
       }
+    },
+    {
+      "Id": "sr",
+      "Source": {
+        "Pattern": "coarse/*.vtu"
+      },
+      "Target": {
+        "Pattern": "fine/*.vtu"
+      },
+      "Split": "train"
     }
   ]
 }

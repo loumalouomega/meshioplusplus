@@ -80,6 +80,35 @@ def add_add_args(parser):
         action="store_true",
         help="natural-numeric sort an explicit path list",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        action="append",
+        default=[],
+        help="paired target source for a coarse/fine case (repeatable for a path "
+        "list); omit for a self-supervised entry, which is the usual case",
+    )
+    parser.add_argument(
+        "--target-format", type=str, default=None, help="forced target input format"
+    )
+    parser.add_argument(
+        "--target-time-from",
+        type=str,
+        choices=["auto", "file", "filename", "index"],
+        default=None,
+        help="target time-value source",
+    )
+    parser.add_argument(
+        "--target-times",
+        type=str,
+        default=None,
+        help="explicit target times, comma-separated",
+    )
+    parser.add_argument(
+        "--target-sort",
+        action="store_true",
+        help="natural-numeric sort an explicit target path list",
+    )
     parser.add_argument("--split", type=str, default=None, help="split assignment")
     parser.add_argument("--tag", action="append", default=[], help="tag (repeatable)")
     parser.add_argument("--group", type=str, default=None, help="group path (a/b/c)")
@@ -98,25 +127,53 @@ def add_add_args(parser):
     )
 
 
+def _source_block(paths, manifest_path, *, fmt, times, time_from, sort):
+    """One command-line source family -> a Source object.
+
+    Shared by ``--source`` and ``--target`` so the two cannot diverge on the
+    Pattern/Path/Paths rule or on storing paths relative to the manifest.
+    """
+    stored = [_manifest_relative(s, manifest_path) for s in paths]
+    if len(stored) == 1:
+        one = stored[0]
+        key = "Pattern" if ("*" in one or "?" in one) else "Path"
+        source = {key: one}
+    else:
+        source = {"Paths": stored}
+    if fmt:
+        source["Format"] = fmt
+    if times:
+        source["Times"] = [float(t) for t in _split_csv(times)]
+    if time_from:
+        source["TimeFrom"] = time_from
+    if sort:
+        source["Sort"] = True
+    return source
+
+
 def add_cmd(args):
     manifest = _load_or_new(args.manifest)
-    sources = [_manifest_relative(s, args.manifest) for s in args.source]
-    if len(sources) == 1:
-        source = sources[0]
-        key = "Pattern" if ("*" in source or "?" in source) else "Path"
-        source = {key: source}
-    else:
-        source = {"Paths": sources}
-    if args.format:
-        source["Format"] = args.format
-    if args.times:
-        source["Times"] = [float(t) for t in _split_csv(args.times)]
-    if args.time_from:
-        source["TimeFrom"] = args.time_from
-    if args.sort:
-        source["Sort"] = True
+    source = _source_block(
+        args.source,
+        args.manifest,
+        fmt=args.format,
+        times=args.times,
+        time_from=args.time_from,
+        sort=args.sort,
+    )
+    target = None
+    if args.target:
+        target = _source_block(
+            args.target,
+            args.manifest,
+            fmt=args.target_format,
+            times=args.target_times,
+            time_from=args.target_time_from,
+            sort=args.target_sort,
+        )
     entry = manifest.add(
         source,
+        target=target,
         id=args.id,
         split=args.split,
         tags=args.tag,
@@ -127,7 +184,8 @@ def add_cmd(args):
     )
     manifest.save(args.manifest)
     steps = "not validated" if args.no_validate else f"{len(entry.entries())} step(s)"
-    print(f"added '{entry.id}' ({steps}); {len(manifest)} entr(ies) total")
+    paired = ", paired with a target" if entry.target else ""
+    print(f"added '{entry.id}' ({steps}{paired}); {len(manifest)} entr(ies) total")
     return 0
 
 

@@ -36,11 +36,15 @@ from collections import OrderedDict
 import numpy as np
 
 from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
     agglomerate,
     attach_quality,
     cell_data_to_point_data,
     clean,
     compute_bandwidth,
+    compute_curvature,
     compute_quality,
     compute_sdf,
     compute_stats,
@@ -59,6 +63,7 @@ from .. import (
     estimate_error,
     extract_skin,
     extract_surface,
+    geometry_descriptors,
     gradient,
     grid,
     hessian,
@@ -68,23 +73,33 @@ from .. import (
     optimize_volume,
     partition,
     point_data_to_cell_data,
+    power_spectrum,
+    proximity_graph,
     read,
     read_metadata,
     refine,
     remesh,
     remesh_volume,
     reorder,
+    repair,
+    resample_grid,
     run_pipeline,
     sample_distance,
+    sample_grid,
+    scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
+from .. import shrinkwrap
 from .. import slice as _slice_op
 from .. import (
     smooth,
     sniff_format,
+    sobolev_deform,
     split,
     subdivide,
+    subsample_points,
     surface_watertight_check,
+    tessellate,
     transform,
     undo_green,
     voxelize,
@@ -114,6 +129,52 @@ def get_root():
     return _ROOT
 
 
+# Where training jobs land (doc/dashboard.md): `<root or cwd>/runs` unless the
+# server's --runs-dir says otherwise. Job ids are validated by the manager, so
+# a job path can never leave this directory.
+_RUNS_DIR = None
+_WEBHOOK = None
+_MANAGERS = {}
+
+
+def set_runs_dir(path):
+    global _RUNS_DIR
+    _RUNS_DIR = os.path.realpath(str(path)) if path else None
+    _MANAGERS.clear()
+
+
+def set_webhook(url):
+    """The URL a terminal job is POSTed to (the server's ``--webhook``).
+
+    Deliberately a server-side setting rather than a spec key or a tool
+    parameter: a URL supplied by a client and fetched by the server is
+    server-side request forgery by design.
+    """
+    global _WEBHOOK
+    _WEBHOOK = str(url) if url else None
+    _MANAGERS.clear()
+
+
+def get_webhook():
+    return _WEBHOOK
+
+
+def get_runs_dir():
+    return _RUNS_DIR or os.path.join(
+        _ROOT if _ROOT is not None else os.getcwd(), "runs"
+    )
+
+
+def _jobs_manager():
+    from ._jobs import JobManager
+
+    runs = get_runs_dir()
+    manager = _MANAGERS.get(runs)
+    if manager is None:
+        manager = _MANAGERS[runs] = JobManager(runs, webhook=_WEBHOOK)
+    return manager
+
+
 def _resolve(path, must_exist=False, for_write=False):
     """Resolve a client-supplied path, enforcing the sandbox when configured."""
     raw = os.path.expanduser(str(path))
@@ -126,7 +187,10 @@ def _resolve(path, must_exist=False, for_write=False):
                 f"meshio++: mcp: path '{path}' resolves outside the configured "
                 f"root '{root}'"
             )
-    if must_exist and not os.path.isfile(resolved):
+    # A directory counts as existing: `pmsh` and `zarr` inputs ARE directories
+    # (the `openfoam` shape). A directory that is not one of those still fails,
+    # just later and with the format's own error rather than "not found".
+    if must_exist and not (os.path.isfile(resolved) or os.path.isdir(resolved)):
         raise ValueError(f"meshio++: mcp: input file not found: '{resolved}'")
     if for_write:
         parent = os.path.dirname(resolved)
@@ -519,7 +583,7 @@ def _resolve_pattern(pattern):
     containment-checked first, and every matched file then goes back through
     ``_resolve`` individually.
     """
-    from .._sequence import glob_match
+    from .._sequence import glob_match, is_sample_path
 
     raw = os.path.expanduser(str(pattern))
     # os.path.split, not a manual os.sep rpartition: on Windows os.sep is
@@ -540,7 +604,7 @@ def _resolve_pattern(pattern):
     matched = sorted(
         os.path.join(directory, name)
         for name in os.listdir(directory)
-        if glob_match(base, name) and os.path.isfile(os.path.join(directory, name))
+        if glob_match(base, name) and is_sample_path(os.path.join(directory, name))
     )
     if not matched:
         raise ValueError(f"meshio++: mcp: pattern '{pattern}' matched no files")
@@ -834,6 +898,228 @@ def tool_voxelize(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def _grid_spec_report(spec):
+    return {
+        "origin": [float(v) for v in spec.origin],
+        "spacing": [float(v) for v in spec.spacing],
+        "dims": [int(v) for v in spec.dims],
+        "shape": list(spec.shape),
+        "layout": "channels_first_zyx",
+    }
+
+
+def tool_grid_sample(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    fields=None,
+    extrapolate=False,
+    fill_value=0.0,
+    max_cells=20000000,
+):
+    """Sample a mesh's point data onto a regular grid, written as a lattice mesh."""
+    mesh = _load(input_path, input_format)
+    spec = GridSpec.from_mesh(
+        mesh,
+        resolution=resolution,
+        cell_size=cell_size,
+        bounds=bounds,
+        padding=padding,
+        padding_relative=padding_relative,
+        max_cells=max_cells,
+    )
+    array = sample_grid(
+        mesh,
+        spec,
+        fields=fields,
+        extrapolate=extrapolate,
+        fill_value=fill_value,
+    )
+    out = array.to_mesh()
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        coverage=array.coverage,
+        grid=_grid_spec_report(spec),
+    )
+
+
+def tool_grid_scatter(
+    grid_path,
+    target_path,
+    output_path,
+    grid_format=None,
+    target_format=None,
+    output_format=None,
+    fields=None,
+    on_conflict="error",
+):
+    """Write a grid's fields back onto a mesh's points by trilinear interpolation."""
+    array = GridArray.from_mesh(_load(grid_path, grid_format), fields=fields)
+    target = _load(target_path, target_format)
+    out = scatter_grid(array, target, on_conflict=on_conflict)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        grid=_grid_spec_report(array.spec),
+    )
+
+
+def tool_grid_resample(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    factor=None,
+    resolution=None,
+    fields=None,
+):
+    """Resample a grid onto a finer or coarser one - the trilinear upsampling baseline."""
+    array = GridArray.from_mesh(_load(input_path, input_format), fields=fields)
+    if (factor is None) == (resolution is None):
+        raise ValueError(
+            "meshio++: grid_resample: give exactly one of factor and resolution"
+        )
+    if factor is not None:
+        target = array.spec.upscale(factor)
+    else:
+        lo, hi = array.spec.bounds
+        dims = np.asarray(resolution, dtype=np.int64).reshape(-1)
+        if dims.size != 3:
+            raise ValueError(
+                "meshio++: grid_resample: resolution must be three cell counts"
+            )
+        target = GridSpec(origin=lo, spacing=(hi - lo) / dims.astype(float), dims=dims)
+    values = resample_grid(array.values, array.spec, target)
+    out = GridArray(values, target, array.channels, dict(array.schema)).to_mesh()
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        channels=list(array.channels),
+        source_grid=_grid_spec_report(array.spec),
+        grid=_grid_spec_report(target),
+        scaling_factor=array.spec.scaling_factor(target),
+    )
+
+
+def tool_grid_power_spectrum(input_path, field, input_format=None, max_bins=256):
+    """The azimuthally averaged power spectrum of one field on a regular grid."""
+    array = GridArray.from_mesh(_load(input_path, input_format))
+    names = [c for c in array.channels if c == field or c.startswith(field + "_")]
+    if not names:
+        raise ValueError(
+            f"meshio++: grid_power_spectrum: no channel named {field!r} "
+            f"(have {list(array.channels)})"
+        )
+    values = np.stack([array.channel(n) for n in names], axis=0)
+    ps = power_spectrum(values, array.spec)
+    keep = (
+        min(int(max_bins), len(ps.power))
+        if max_bins and max_bins > 0
+        else len(ps.power)
+    )
+    return _json_safe(
+        {
+            "field": field,
+            "channels": names,
+            "units": ps.units,
+            "wavenumber": ps.wavenumber[:keep],
+            "power": ps.power[:keep],
+            "counts": ps.counts[:keep],
+            "num_bins": int(len(ps.power)),
+            "total_power": float(ps.power.sum()),
+            "grid": _grid_spec_report(array.spec),
+        }
+    )
+
+
+def tool_subsample(
+    input_path,
+    output_path,
+    count,
+    input_format=None,
+    output_format=None,
+    method="farthest",
+    seed=0,
+    start=0,
+    bounds=None,
+    record_ids=False,
+):
+    """Reduce a mesh to a point cloud of exactly `count` points under a token budget."""
+    mesh = _load(input_path, input_format)
+    out = subsample_points(
+        mesh,
+        int(count),
+        method=method,
+        seed=seed,
+        start=start,
+        bounds=bounds,
+        record_ids=record_ids,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        method=method,
+        count=int(len(out.points)),
+        num_source_points=int(len(mesh.points)),
+    )
+
+
+def tool_proximity_graph(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    method="radius",
+    radius=None,
+    max_neighbors=None,
+    box_size=None,
+    kind="node",
+):
+    """Build a radius or k-nearest-neighbour graph over a mesh's points or cell centroids."""
+    import numpy as np
+
+    from .._mesh import Mesh
+    from .._proximity import _graph_positions
+
+    mesh = _load(input_path, input_format)
+    edges = proximity_graph(
+        mesh,
+        method=method,
+        radius=radius,
+        max_neighbors=max_neighbors,
+        box_size=box_size,
+        kind=kind,
+    )
+    points = _graph_positions(mesh, kind)
+    half = edges[:, edges[0] < edges[1]]
+    degree = np.bincount(edges[0], minlength=len(points)).astype(np.int64)
+    out = Mesh(
+        points,
+        [("line", np.ascontiguousarray(half.T))],
+        point_data={"degree": degree},
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        method=method,
+        num_vertices=int(len(points)),
+        num_edges=int(half.shape[1]),
+        degree_min=int(degree.min()) if degree.size else 0,
+        degree_mean=float(degree.mean()) if degree.size else 0.0,
+        degree_max=int(degree.max()) if degree.size else 0,
+        num_isolated=int((degree == 0).sum()),
+    )
+
+
 def tool_distance_to_surface(
     input_path,
     surface_path,
@@ -998,6 +1284,187 @@ def tool_hessian(
     )
 
 
+def tool_curvature(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    mean=True,
+    gaussian=True,
+    dual_area="mixed-voronoi",
+    include_boundary=False,
+    record_area=False,
+    record_principal=False,
+    region="",
+):
+    """Per-vertex mean and Gaussian curvature of a surface, by the angle defect
+    (K) and the cotangent Laplace-Beltrami operator (H) -- the signed
+    distance's companion as a node feature. Reports total_angle_defect, which
+    is 2*pi*chi exactly for a closed surface (4*pi for a sphere) whatever the
+    tessellation: the cheapest check that a result is sane."""
+    mesh = _load(input_path, input_format)
+    out, report = compute_curvature(
+        mesh,
+        mean=mean,
+        gaussian=gaussian,
+        dual_area=dual_area,
+        include_boundary=include_boundary,
+        record_area=record_area,
+        record_principal=record_principal,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_boundary=int(report["num_boundary"]),
+        num_isolated=int(report["num_isolated"]),
+        num_degenerate=int(report["num_degenerate"]),
+        total_angle_defect=float(report["total_angle_defect"]),
+        quality=report["quality"],
+    )
+
+
+def tool_repair(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    fix_orientation=True,
+    orient_outward=True,
+    fill_holes=True,
+    split_non_manifold=True,
+    max_hole_edges=10,
+    weld_tolerance=0.0,
+    record_provenance=False,
+):
+    """Repair a surface mesh's orientation, holes and pinched vertices -- the
+    three defects `clean` does not touch. Triangles are rewound so neighbours
+    agree (by the topological half-edge rule, exact across any crease),
+    boundary loops of at most max_hole_edges edges are fan-filled consistently
+    with the surrounding surface, bowtie vertices are duplicated, and closed
+    components are oriented outward. Reports both surfaces' defect counts, so
+    what was fixed and what remains are both visible."""
+    mesh = _load(input_path, input_format)
+    out, report = repair(
+        mesh,
+        fix_orientation=fix_orientation,
+        orient_outward=orient_outward,
+        fill_holes=fill_holes,
+        split_non_manifold=split_non_manifold,
+        max_hole_edges=max_hole_edges,
+        weld_tolerance=weld_tolerance,
+        record_provenance=record_provenance,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        quality_before=report["quality_before"],
+        quality_after=report["quality_after"],
+        num_flipped=int(report["num_flipped"]),
+        num_components=int(report["num_components"]),
+        largest_component=int(report["largest_component"]),
+        num_oriented_outward=int(report["num_oriented_outward"]),
+        num_unorientable=int(report["num_unorientable"]),
+        num_vertices_split=int(report["num_vertices_split"]),
+        num_holes_detected=int(report["num_holes_detected"]),
+        num_holes_filled=int(report["num_holes_filled"]),
+        num_holes_skipped=int(report["num_holes_skipped"]),
+        num_faces_added=int(report["num_faces_added"]),
+        num_points_added=int(report["num_points_added"]),
+        points_welded=int(report["points_welded"]),
+    )
+
+
+def tool_shrinkwrap(
+    input_path,
+    target_path,
+    output_path,
+    input_format=None,
+    target_format=None,
+    output_format=None,
+    offset=0.0,
+    max_distance=0.0,
+    weights="",
+    target_region="",
+    normal_weight="angle",
+    record_distance=False,
+    record_closest_cell=False,
+):
+    """Project every (selected) point of the input mesh onto the surface of
+    the target: one projection, no iteration, optionally offset along the hit
+    feature's pseudonormal. Every point of the source moves whatever cells it
+    carries; only the target must be a surface. A point farther than
+    max_distance is left alone and counted."""
+    mesh = _load(input_path, input_format)
+    target = _load(target_path, target_format)
+    out, report = shrinkwrap(
+        mesh,
+        target,
+        offset=offset,
+        max_distance=max_distance,
+        weights=weights or None,
+        target_region=target_region,
+        normal_weight=normal_weight,
+        record_distance=record_distance,
+        record_closest_cell=record_closest_cell,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_projected=int(report["num_projected"]),
+        num_missed=int(report["num_missed"]),
+        num_skipped=int(report["num_skipped"]),
+        max_displacement=float(report["max_displacement"]),
+        quality=report["quality"],
+    )
+
+
+def tool_sobolev_deform(
+    input_path,
+    output_path,
+    array,
+    length_scale,
+    input_format=None,
+    output_format=None,
+    fixed_points_array="",
+    fix_boundary=False,
+    record_filtered=False,
+    max_iterations=128,
+    tolerance=1e-10,
+):
+    """Sobolev (Helmholtz-filtered) deformation: smooth a raw per-point
+    displacement field through the mesh's own P1 finite-element operators and
+    move the points by the result -- a low-pass filter whose cutoff wavelength
+    is length_scale, which turns a jagged displacement into one a mesh can
+    follow without tangling. Every top-dimensional block must be a linear
+    simplex. Non-convergence is reported, never raised."""
+    mesh = _load(input_path, input_format)
+    out, report = sobolev_deform(
+        mesh,
+        array,
+        length_scale,
+        fixed_points=fixed_points_array or None,
+        fix_boundary=fix_boundary,
+        record_filtered=record_filtered,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_iterations=int(report["num_iterations"]),
+        residual=float(report["residual"]),
+        converged=bool(report["converged"]),
+        num_fixed=int(report["num_fixed"]),
+        num_isolated=int(report["num_isolated"]),
+        max_displacement=float(report["max_displacement"]),
+    )
+
+
 def tool_estimate_error(
     input_path,
     output_path,
@@ -1093,6 +1560,40 @@ def tool_subdivide(
     mesh = _load(input_path, input_format)
     out = subdivide(mesh, record_parent_ids=record_parent_ids)
     return _result(_store(out, output_path, output_format), out)
+
+
+def tool_tessellate(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    levels=2,
+    curved=True,
+    fields=True,
+    record_stencil=False,
+):
+    """Isoparametric subdivision of a mesh's curved cells (quad9, quad8,
+    triangle6, tetra10, hexahedron27) onto a refinement lattice; every
+    other cell passes through unchanged. Attaches tessellate:source_point/
+    source_cell/sub_index provenance; record_stencil also attaches
+    tessellate:stencil/weights (expensive) so the tessellation can be
+    reconstructed after a file round trip."""
+    mesh = _load(input_path, input_format)
+    tess = tessellate(
+        mesh,
+        levels=levels,
+        curved=curved,
+        fields=fields,
+        record_stencil=record_stencil,
+    )
+    return _result(
+        _store(tess.mesh, output_path, output_format),
+        tess.mesh,
+        levels=int(levels),
+        num_curved_source_cells=tess.schema["num_curved_source_cells"],
+        num_pass_through_source_cells=tess.schema["num_pass_through_source_cells"],
+        watertight=tess.schema["watertight"],
+    )
 
 
 def tool_agglomerate(
@@ -1642,11 +2143,51 @@ def _sandbox_entry_paths(entry):
     """Enforce the root on the paths a manifest entry resolves to — a
     hand-edited manifest can name anything, so the sandbox must hold on the
     *resolved* plan, not only on the manifest file (the pipeline-tool rule:
-    paths inside the document are client input too)."""
+    paths inside the document are client input too).
+
+    An entry's optional ``Target`` is a second source of exactly the same kind,
+    so it is walked too; skipping it would leave the whole sandbox open through
+    one extra key."""
     plan = entry.entries()
     for item in plan:
         _resolve(item["path"], must_exist=True)
+    if entry.target:
+        for item in entry.target_entries():
+            _resolve(item["path"], must_exist=True)
     return plan
+
+
+def _mcp_source_block(pattern, paths, base, fmt, times, time_from, sort):
+    """One sandboxed source family -> a Source object stored relative to `base`.
+
+    Shared by a manifest entry's Source and its optional Target so the two
+    cannot diverge on sandboxing or on path portability.
+    """
+    from .._dataset import portable_relpath
+
+    if pattern is not None:
+        _resolve_pattern(pattern)  # sandbox + non-empty, before storing
+        head, tail = os.path.split(str(pattern))
+        rel_head = portable_relpath(_resolve(head or "."), base)
+        # Not os.path.normpath/join: on Windows those re-introduce a native
+        # backslash into what must stay a portable, "/"-only manifest path
+        # (doc/datasets.md) -- string-join instead, since rel_head is already
+        # normalized and `tail` (from os.path.split) never contains its own
+        # separator.
+        stored = f"{rel_head}/{tail}" if rel_head not in ("", ".") else tail
+        source = {"Pattern": stored}
+    else:
+        resolved = [_resolve(p, must_exist=True) for p in paths]
+        source = {"Paths": [portable_relpath(p, base) for p in resolved]}
+        if sort:
+            source["Sort"] = True
+    if fmt:
+        source["Format"] = fmt
+    if times is not None:
+        source["Times"] = [float(t) for t in times]
+    if time_from:
+        source["TimeFrom"] = time_from
+    return source
 
 
 def tool_dataset_add(
@@ -1658,6 +2199,12 @@ def tool_dataset_add(
     time_from=None,
     times=None,
     sort=False,
+    target_pattern=None,
+    target_paths=None,
+    target_format=None,
+    target_time_from=None,
+    target_times=None,
+    target_sort=False,
     split=None,
     tags=None,
     group=None,
@@ -1675,34 +2222,30 @@ def tool_dataset_add(
         raise ValueError(
             "meshio++: mcp: give exactly one of input_pattern or input_paths"
         )
+    if target_pattern is not None and target_paths is not None:
+        raise ValueError(
+            "meshio++: mcp: give at most one of target_pattern or target_paths"
+        )
     manifest, resolved_manifest = _load_manifest(manifest_path, must_exist=False)
     base = os.path.dirname(resolved_manifest)
-    from .._dataset import portable_relpath
 
-    if input_pattern is not None:
-        _resolve_pattern(input_pattern)  # sandbox + non-empty, before storing
-        head, tail = os.path.split(str(input_pattern))
-        rel_head = portable_relpath(_resolve(head or "."), base)
-        # Not os.path.normpath/join: on Windows those re-introduce a native
-        # backslash into what must stay a portable, "/"-only manifest path
-        # (doc/datasets.md) -- string-join instead, since rel_head is already
-        # normalized and `tail` (from os.path.split) never contains its own
-        # separator.
-        pattern = f"{rel_head}/{tail}" if rel_head not in ("", ".") else tail
-        source = {"Pattern": pattern}
-    else:
-        resolved = [_resolve(p, must_exist=True) for p in input_paths]
-        source = {"Paths": [portable_relpath(p, base) for p in resolved]}
-        if sort:
-            source["Sort"] = True
-    if input_format:
-        source["Format"] = input_format
-    if times is not None:
-        source["Times"] = [float(t) for t in times]
-    if time_from:
-        source["TimeFrom"] = time_from
+    source = _mcp_source_block(
+        input_pattern, input_paths, base, input_format, times, time_from, sort
+    )
+    target = None
+    if target_pattern is not None or target_paths is not None:
+        target = _mcp_source_block(
+            target_pattern,
+            target_paths,
+            base,
+            target_format,
+            target_times,
+            target_time_from,
+            target_sort,
+        )
     entry = manifest.add(
         source,
+        target=target,
         id=entry_id,
         split=split,
         tags=tags or (),
@@ -1716,6 +2259,7 @@ def tool_dataset_add(
             "manifest_path": resolved_manifest,
             "entry_id": entry.id,
             "num_steps": len(entry.entries()),
+            "num_target_steps": len(entry.target_entries()) if entry.target else None,
             "num_entries": len(manifest),
         }
     )
@@ -1803,6 +2347,600 @@ def tool_dataset_update(
     )
 
 
+def tool_dataset_find(root_dir=".", max_depth=2):
+    """Find dataset manifests under a directory (sandboxed walk).
+
+    Every ``*.json`` at most ``max_depth`` levels below ``root_dir`` that
+    ``DatasetManifest.load`` accepts is listed with its content hash -- the
+    identity a browser-side card (which never sees an absolute path) binds
+    to. Other JSON files are skipped silently; dot-directories are not
+    entered.
+    """
+    import hashlib
+
+    from .._dataset import DatasetManifest, portable_relpath
+
+    base = _resolve(root_dir)
+    if not os.path.isdir(base):
+        raise ValueError(f"meshio++: mcp: directory not found: '{base}'")
+    depth = int(max_depth)
+    if depth < 0:
+        raise ValueError("meshio++: mcp: max_depth must be >= 0")
+    found = []
+    for current, dirs, files in os.walk(base):
+        rel = os.path.relpath(current, base)
+        level = 0 if rel == "." else rel.count(os.sep) + 1
+        dirs[:] = (
+            sorted(d for d in dirs if not d.startswith(".")) if level < depth else []
+        )
+        for name in sorted(files):
+            if not name.lower().endswith(".json"):
+                continue
+            path = os.path.join(current, name)
+            try:
+                manifest = DatasetManifest.load(path)
+            except Exception:  # noqa: BLE001 - not a manifest, or a broken one
+                continue
+            with open(path, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            found.append(
+                {
+                    "path": path,
+                    "relpath": portable_relpath(path, base),
+                    "sha256": digest,
+                    "name": manifest.name,
+                    "num_entries": len(manifest),
+                    "splits": {str(k): v for k, v in manifest.splits().items()},
+                    "mtime": int(os.path.getmtime(path) * 1000),
+                }
+            )
+    return _json_safe({"root": base, "manifests": found})
+
+
+def tool_dataset_health(
+    manifest_path, split=None, entry_ids=None, quality=True, all_steps=False
+):
+    """Scan a manifest's entries and summarize their health (server side).
+
+    Per entry: step count, NaN/Inf counts over the data arrays (quality:*
+    arrays excluded -- their NaN means "N/A for this cell type"), inverted /
+    degenerate cell counts and the worst scaled Jacobian from
+    compute_quality, and the arrays present. Per manifest: split balance,
+    totals, fields missing across entries, and the bad entries. Meshes are
+    read one at a time; every entry's resolved paths are sandbox-checked
+    (a hand-edited manifest is client input too).
+    """
+    import hashlib
+
+    from ._health import manifest_health
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    selected = manifest.entries(split=split)
+    if entry_ids:
+        wanted = list(entry_ids)
+        known = {e.id for e in selected}
+        unknown = [i for i in wanted if i not in known]
+        if unknown:
+            raise ValueError(f"meshio++: mcp: unknown entry id(s): {unknown}")
+        selected = [e for e in selected if e.id in set(wanted)]
+    report = manifest_health(
+        manifest,
+        selected,
+        quality=bool(quality),
+        all_steps=bool(all_steps),
+        before_entry=_sandbox_entry_paths,
+    )
+    with open(resolved_manifest, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+    report["manifest_path"] = resolved_manifest
+    report["sha256"] = digest
+    return _json_safe(report)
+
+
+# --------------------------------------------------------------------------- #
+# Training jobs (doc/dashboard.md, doc/physicsnemo.md)                        #
+# --------------------------------------------------------------------------- #
+_PHYSICSNEMO_DOC = "doc/physicsnemo.md"
+
+
+def _require_training_frameworks(op, model_name="meshgraphnet"):
+    """The trainer subprocess's frameworks -- checked here, BEFORE spawning, so
+    a missing one is a named payload rather than a dead subprocess. Skipped when
+    MESHIOPLUSPLUS_TRAIN_COMMAND names a trainer from another interpreter (the
+    override's whole point).
+
+    Only what the chosen family imports: a convolutional model never touches
+    PyTorch Geometric, so demanding it would refuse a runnable job. The
+    decision lives in the family table (`physicsnemo/_train.py`'s
+    `require_frameworks`), never in a second copy here.
+    """
+    from ..physicsnemo._train import require_frameworks
+    from ._jobs import TRAIN_COMMAND_ENV
+
+    if os.environ.get(TRAIN_COMMAND_ENV):
+        return
+    require_frameworks(op, model_name, doc=_PHYSICSNEMO_DOC)
+
+
+#: Which `tool_train_start` keyword arguments each family's spec is built
+#: from. A keyed table rather than an `if srresnet ... else`: the else-branch
+#: used to build a meshgraphnet document for ANY other name and fail later,
+#: inside the spec parser, instead of naming the families up front.
+_TRAIN_START_KWARGS = {
+    "meshgraphnet": (
+        "processor_size",
+        "hidden_dim",
+        "aggregation",
+        "regions",
+        "kind",
+        "undirected",
+        "edge_features",
+        "target_offset",
+        "target_delta",
+    ),
+    "srresnet": (
+        "scaling_factor",
+        "conv_layer_size",
+        "resid_blocks",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+    ),
+    "fno": (
+        "latent_channels",
+        "num_fno_layers",
+        "num_fno_modes",
+        "spectral_padding",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+        "squeeze",
+        "squeeze_index",
+    ),
+    "afno": (
+        "patch_size",
+        "embed_dim",
+        "depth",
+        "num_blocks",
+        "resolution",
+        "cell_size",
+        "bounds",
+        "padding",
+        "padding_relative",
+        "extrapolate",
+        "fill_value",
+        "squeeze",
+        "squeeze_index",
+    ),
+    "deeponet": (
+        "parameters",
+        "trunk",
+        "trunk_count",
+        "trunk_method",
+        "trunk_seed",
+        "branch_layers",
+        "branch_layer_size",
+        "trunk_layers",
+        "trunk_layer_size",
+        "width",
+    ),
+}
+
+
+def tool_train_defaults(manifest_path, fields=None, target_fields=None):
+    """What a training launch form needs: the data arrays the manifest's
+    first entry carries, the splits, and a complete default spec."""
+    from ..physicsnemo import has_deeponet, has_physicsnemo, has_torch_geometric
+    from ..physicsnemo._train import TrainSpec, spec_to_dict
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    entries = list(manifest)
+    if not entries:
+        raise ValueError(
+            f"meshio++: mcp: the manifest '{resolved_manifest}' has no entries"
+        )
+    plan = _sandbox_entry_paths(entries[0])
+    meta = read_metadata(plan[0]["path"])
+    spec = TrainSpec(
+        manifest=resolved_manifest,
+        fields=tuple(fields or ()),
+        target_fields=tuple(target_fields or ()),
+        run_dir=get_runs_dir(),
+    )
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "num_entries": len(manifest),
+            "splits": {
+                ("" if k is None else str(k)): v for k, v in manifest.splits().items()
+            },
+            "available_fields": {
+                "point": list(meta.get("point_data_names", [])),
+                "cell": list(meta.get("cell_data_names", [])),
+            },
+            "runs_dir": get_runs_dir(),
+            "frameworks": {
+                "torch_geometric": has_torch_geometric(),
+                "physicsnemo": has_physicsnemo(),
+                # the experimental DeepONet the `deeponet` family trains
+                "deeponet": has_deeponet(),
+            },
+            "spec": spec_to_dict(spec),
+        }
+    )
+
+
+def tool_train_start(
+    manifest_path,
+    fields,
+    target_fields,
+    train_split="train",
+    valid_split="valid",
+    epochs=100,
+    batch_size=8,
+    learning_rate=1e-3,
+    seed=0,
+    model_name="meshgraphnet",
+    processor_size=8,
+    hidden_dim=64,
+    aggregation="sum",
+    scaling_factor=2,
+    conv_layer_size=32,
+    resid_blocks=8,
+    resolution=None,
+    cell_size=None,
+    bounds=None,
+    padding=0.0,
+    padding_relative=0.0,
+    extrapolate=False,
+    fill_value=0.0,
+    squeeze=None,
+    squeeze_index=None,
+    latent_channels=32,
+    num_fno_layers=4,
+    num_fno_modes=16,
+    spectral_padding=8,
+    patch_size=None,
+    embed_dim=256,
+    depth=4,
+    num_blocks=16,
+    parameters=None,
+    trunk="points",
+    trunk_count=None,
+    trunk_method="farthest",
+    trunk_seed=0,
+    branch_layers=4,
+    branch_layer_size=128,
+    trunk_layers=4,
+    trunk_layer_size=128,
+    width=64,
+    regions=False,
+    kind="node",
+    undirected=True,
+    edge_features=True,
+    float32=True,
+    target_offset=0,
+    target_delta=False,
+    checkpoint_every=10,
+    device="auto",
+    notes=None,
+    tags=None,
+):
+    """Start a training job against a manifest split.
+
+    Builds the PascalCase spec, lays out `<runs_dir>/<job_id>/` and spawns
+    `python -m meshioplusplus.physicsnemo.train --spec` as a subprocess;
+    returns the job's initial status. Poll it with train_status /
+    train_metrics / train_log.
+
+    model_name picks the family, and each reads its own hyperparameters:
+    'meshgraphnet' uses processor_size/hidden_dim/aggregation and the graph
+    options; 'srresnet' uses scaling_factor/conv_layer_size/resid_blocks and
+    the grid options (give exactly one of resolution and cell_size); 'fno'
+    uses latent_channels/num_fno_layers/num_fno_modes/spectral_padding and the
+    grid options, 2-D when squeeze names a world axis; 'afno' uses
+    patch_size/embed_dim/depth/num_blocks and the grid options, and REQUIRES
+    squeeze (it is 2-D only); 'deeponet' takes no input fields at all -- its
+    inputs are the per-entry Metadata keys in `parameters`, with the trunk
+    over every point or a `trunk_count` budget. Needs nvidia-physicsnemo,
+    plus torch_geometric for meshgraphnet only (no pip extra, deliberately);
+    a missing framework is a named error before anything is spawned.
+    """
+    from ..physicsnemo._train import _MODELS, default_spec, spec_to_dict
+
+    model_name = str(model_name).lower()
+    if model_name not in _TRAIN_START_KWARGS:
+        raise ValueError(
+            f"meshio++: mcp: unknown model_name {model_name!r} (known: "
+            f"{', '.join(_MODELS)})"
+        )
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    splits = {("" if k is None else str(k)): v for k, v in manifest.splits().items()}
+    if train_split not in splits:
+        raise ValueError(
+            f"meshio++: mcp: the manifest has no split '{train_split}' "
+            f"(available: {sorted(splits)})"
+        )
+    for entry in manifest.entries(split=train_split):
+        _sandbox_entry_paths(entry)
+    _require_training_frameworks("train_start", model_name)
+    common = dict(
+        run_dir=get_runs_dir(),
+        train_split=str(train_split),
+        valid_split=str(valid_split),
+        epochs=int(epochs),
+        batch_size=int(batch_size),
+        learning_rate=float(learning_rate),
+        seed=int(seed),
+        model_name=model_name,
+        float32=bool(float32),
+        checkpoint_every=int(checkpoint_every),
+        device=str(device),
+        notes=notes,
+        tags=tuple(tags or ()),
+    )
+    # Every family kwarg, coerced once; the table picks the chosen family's.
+    coerced = dict(
+        processor_size=int(processor_size),
+        hidden_dim=int(hidden_dim),
+        aggregation=str(aggregation),
+        regions=bool(regions),
+        kind=str(kind),
+        undirected=bool(undirected),
+        edge_features=bool(edge_features),
+        target_offset=int(target_offset),
+        target_delta=bool(target_delta),
+        scaling_factor=int(scaling_factor),
+        conv_layer_size=int(conv_layer_size),
+        resid_blocks=int(resid_blocks),
+        resolution=tuple(resolution) if resolution else None,
+        cell_size=None if cell_size is None else float(cell_size),
+        bounds=tuple(bounds) if bounds else None,
+        padding=float(padding),
+        padding_relative=float(padding_relative),
+        extrapolate=bool(extrapolate),
+        fill_value=float(fill_value),
+        squeeze=None if squeeze is None else int(squeeze),
+        squeeze_index=None if squeeze_index is None else int(squeeze_index),
+        latent_channels=int(latent_channels),
+        num_fno_layers=int(num_fno_layers),
+        num_fno_modes=int(num_fno_modes),
+        spectral_padding=int(spectral_padding),
+        patch_size=(16, 16) if not patch_size else tuple(int(v) for v in patch_size),
+        embed_dim=int(embed_dim),
+        depth=int(depth),
+        num_blocks=int(num_blocks),
+        parameters=tuple(parameters or ()),
+        trunk=str(trunk),
+        trunk_count=None if trunk_count is None else int(trunk_count),
+        trunk_method=str(trunk_method),
+        trunk_seed=int(trunk_seed),
+        branch_layers=int(branch_layers),
+        branch_layer_size=int(branch_layer_size),
+        trunk_layers=int(trunk_layers),
+        trunk_layer_size=int(trunk_layer_size),
+        width=int(width),
+    )
+    family = {k: coerced[k] for k in _TRAIN_START_KWARGS[model_name]}
+    spec = default_spec(resolved_manifest, fields, target_fields, **common, **family)
+    return _json_safe(_jobs_manager().start(spec_to_dict(spec)))
+
+
+def tool_train_status(job_id):
+    """A job's status, progress (epoch/epochs, best, ETA) and last metrics row."""
+    return _json_safe(_jobs_manager().status(str(job_id)))
+
+
+def tool_train_list(status=None, manifest_path=None):
+    """Every job under the runs directory (newest first), summarized with its
+    hyperparameters and final/best losses; filter by status or manifest."""
+    manifest = _resolve(manifest_path, must_exist=True) if manifest_path else None
+    manager = _jobs_manager()
+    return _json_safe(
+        {
+            "runs_dir": manager.runs_dir,
+            "jobs": manager.list_jobs(status=status, manifest=manifest),
+        }
+    )
+
+
+def tool_train_stop(job_id, grace_seconds=10.0):
+    """Stop a job: SIGTERM (the trainer finishes its epoch and writes
+    final.mdlus), SIGKILL after grace_seconds."""
+    return _json_safe(_jobs_manager().stop(str(job_id), grace=float(grace_seconds)))
+
+
+def tool_train_log(job_id, offset=0, max_bytes=65536):
+    """A window of the job's log from a byte offset (tail with next_offset)."""
+    return _json_safe(
+        _jobs_manager().log(str(job_id), offset=int(offset), max_bytes=int(max_bytes))
+    )
+
+
+def tool_train_metrics(job_id, since_epoch=0):
+    """The per-epoch metrics rows from since_epoch on."""
+    return _json_safe(
+        _jobs_manager().metrics(str(job_id), since_epoch=int(since_epoch))
+    )
+
+
+def tool_train_checkpoints(job_id):
+    """The job's .mdlus checkpoints with epoch / validation loss / size."""
+    return _json_safe(_jobs_manager().checkpoints(str(job_id)))
+
+
+def tool_train_mark_best(job_id, checkpoint):
+    """Copy one of the job's checkpoints (and its card) to best.mdlus."""
+    return _json_safe(_jobs_manager().mark_best(str(job_id), str(checkpoint)))
+
+
+def tool_train_predict(
+    manifest_path,
+    job_id=None,
+    checkpoint=None,
+    entry_ids=None,
+    split="test",
+    step=0,
+    output_dir=None,
+):
+    """Predict over a manifest split with a job's checkpoint (its marked
+    best, or a named one) or with an explicit .mdlus path; writes
+    <column>_pred / <column>_error back into output_dir/<entry_id>.vtu
+    (default: the job's predictions/ directory). Needs the frameworks.
+    """
+    from ..physicsnemo._train import PREDICTIONS_DIR
+
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    for entry in manifest.entries(split=split) if split else manifest:
+        _sandbox_entry_paths(entry)
+    manager = _jobs_manager()
+    if job_id:
+        resolved_checkpoint = manager.resolve_checkpoint(str(job_id), checkpoint)
+        out = output_dir or os.path.join(manager.job_dir(str(job_id)), PREDICTIONS_DIR)
+    elif checkpoint:
+        resolved_checkpoint = _resolve(checkpoint, must_exist=True)
+        if not output_dir:
+            raise ValueError(
+                "meshio++: mcp: output_dir is required with an explicit checkpoint"
+            )
+        out = output_dir
+    else:
+        raise ValueError("meshio++: mcp: give job_id or checkpoint")
+    out = _resolve(out, for_write=True)
+    from .._gpu import _require_framework
+
+    _require_framework(
+        "train_predict",
+        "torch_geometric",
+        "pip install torch_geometric",
+        doc=_PHYSICSNEMO_DOC,
+    )
+    _require_framework(
+        "train_predict",
+        "physicsnemo",
+        "pip install nvidia-physicsnemo",
+        doc=_PHYSICSNEMO_DOC,
+    )
+    from ..physicsnemo import predict
+
+    rows = predict(
+        resolved_checkpoint,
+        manifest,
+        entry_ids=list(entry_ids) if entry_ids else None,
+        split=split,
+        step=int(step),
+        output_dir=out,
+    )
+    finite = [r["rmse"] for r in rows if r.get("rmse") is not None]
+    return _json_safe(
+        {
+            "checkpoint": resolved_checkpoint,
+            "output_dir": out,
+            "predictions": rows,
+            "mean_rmse": (sum(finite) / len(finite)) if finite else None,
+        }
+    )
+
+
+def tool_guard_fit(
+    manifest_path,
+    output_path,
+    split="train",
+    margin=1.5,
+    quality=True,
+):
+    """Fit a geometry guardrail over a manifest split and write it as JSON."""
+    manifest, resolved_manifest = _load_manifest(manifest_path)
+    for entry in manifest.entries(split=split) if split else manifest:
+        _sandbox_entry_paths(entry)
+    out = _resolve(output_path, for_write=True)
+    guard = GeometryGuard.fit(
+        manifest, split=split, margin=float(margin), quality=bool(quality)
+    )
+    guard.save(out)
+    return _json_safe(
+        {
+            "manifest_path": resolved_manifest,
+            "output_path": out,
+            "num_samples": guard.schema.get("num_samples"),
+            "threshold": guard.threshold,
+            "descriptors": list(guard.names),
+        }
+    )
+
+
+def tool_guard_check(input_path, guard_path=None, input_format=None, top=3):
+    """Describe one mesh's shape, and score it against a guardrail if given.
+
+    Without guard_path this reports the raw descriptors, which is what a
+    caller comparing two parts by hand wants.
+    """
+    mesh = _load(input_path, input_format)
+    descriptors = geometry_descriptors(mesh)
+    report = {
+        "input_path": _resolve(input_path, must_exist=True),
+        "descriptors": descriptors,
+    }
+    if guard_path is not None:
+        guard = GeometryGuard.load(_resolve(guard_path, must_exist=True))
+        report.update(guard.check(descriptors, top=int(top)))
+        report["guard_path"] = _resolve(guard_path, must_exist=True)
+    return _json_safe(report)
+
+
+def tool_predict_file(
+    checkpoint,
+    input_path,
+    output_path,
+    time_step=None,
+    target_path=None,
+    input_format=None,
+    output_format=None,
+    device="auto",
+    parameters=None,
+):
+    """Predict with a trained .mdlus checkpoint on ONE mesh file -- no
+    manifest, no split, no entry. A file carrying no truth predicts anyway,
+    with rmse/max_error reported as null. A deeponet checkpoint needs
+    `parameters` (the case's parameters as an object). Needs the frameworks.
+    """
+    resolved_checkpoint = _resolve(checkpoint, must_exist=True)
+    resolved_input = _resolve(input_path, must_exist=True)
+    resolved_target = _resolve(target_path, must_exist=True) if target_path else None
+    resolved_output = _resolve(output_path, for_write=True)
+    from .._gpu import _require_framework
+
+    _require_framework(
+        "predict_file",
+        "physicsnemo",
+        "pip install nvidia-physicsnemo",
+        doc=_PHYSICSNEMO_DOC,
+    )
+    from ..physicsnemo import predict_file
+
+    return _json_safe(
+        predict_file(
+            resolved_checkpoint,
+            resolved_input,
+            resolved_output,
+            time_step=None if time_step is None else int(time_step),
+            target_path=resolved_target,
+            input_format=input_format,
+            output_format=output_format,
+            device=device,
+            parameters=None if parameters is None else dict(parameters),
+        )
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Gated tools (optional extras; the wrapped functions raise the named error)  #
 # --------------------------------------------------------------------------- #
@@ -1854,6 +2992,71 @@ def tool_export_dataset(
         file_format=input_format,
     )
     return _json_safe({"output_path": resolved_out, **manifest})
+
+
+def tool_export_cae(
+    output_dir,
+    input_pattern=None,
+    input_paths=None,
+    input_format=None,
+    surface_fields=None,
+    volume_fields=None,
+    global_params=None,
+    global_params_reference=None,
+    global_params_order=None,
+    name_template="case_{index}.npz",
+):
+    """Export a set of meshes as one .npz per case in the CAE sample layout.
+
+    The per-sample layout PhysicsNeMo's DoMINO and Transolver datapipes read:
+    the triangulated skin, its normals and areas, the volume's nodes, the
+    named field blocks and the case's global parameters. Same input shape as
+    the `sequence` tool: exactly one of input_pattern (a sandboxed glob) or
+    input_paths.
+    """
+    from ..cae import export_cases
+
+    if (input_pattern is None) == (input_paths is None):
+        raise ValueError(
+            "meshio++: mcp: give exactly one of input_pattern or input_paths"
+        )
+    if not output_dir:
+        raise ValueError("meshio++: mcp: output_dir is required")
+    if input_pattern is not None:
+        resolved_in = _resolve_pattern(input_pattern)
+    else:
+        resolved_in = [_resolve(p, must_exist=True) for p in input_paths]
+    resolved_out = _resolve(output_dir, for_write=True)
+
+    written = export_cases(
+        resolved_in,
+        resolved_out,
+        name_template=name_template,
+        file_format=input_format,
+        surface_fields=list(surface_fields) if surface_fields else None,
+        volume_fields=list(volume_fields) if volume_fields else None,
+        global_params=dict(global_params) if global_params else None,
+        global_params_reference=(
+            dict(global_params_reference) if global_params_reference else None
+        ),
+        global_params_order=(
+            list(global_params_order) if global_params_order else None
+        ),
+    )
+    keys = []
+    if written:
+        import numpy as np
+
+        with np.load(written[0]) as data:
+            keys = sorted(str(name) for name in data.files)
+    return _json_safe(
+        {
+            "output_dir": resolved_out,
+            "files": written,
+            "num_cases": len(written),
+            "keys": keys,
+        }
+    )
 
 
 def tool_screenshot(
@@ -1952,11 +3155,56 @@ TOOL_REGISTRY = OrderedDict(
         ("gradient", {"fn": tool_gradient, "wraps": ("gradient",), "gated": None}),
         ("hessian", {"fn": tool_hessian, "wraps": ("hessian",), "gated": None}),
         (
+            "curvature",
+            {"fn": tool_curvature, "wraps": ("compute_curvature",), "gated": None},
+        ),
+        ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
+        (
+            "shrinkwrap",
+            {"fn": tool_shrinkwrap, "wraps": ("shrinkwrap",), "gated": None},
+        ),
+        (
+            "sobolev_deform",
+            {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
             "estimate_error",
             {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
         ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
+        (
+            "grid_sample",
+            {"fn": tool_grid_sample, "wraps": ("sample_grid",), "gated": None},
+        ),
+        (
+            "grid_scatter",
+            {"fn": tool_grid_scatter, "wraps": ("scatter_grid",), "gated": None},
+        ),
+        (
+            "grid_resample",
+            {"fn": tool_grid_resample, "wraps": ("resample_grid",), "gated": None},
+        ),
+        (
+            "grid_power_spectrum",
+            {
+                "fn": tool_grid_power_spectrum,
+                "wraps": ("power_spectrum",),
+                "gated": None,
+            },
+        ),
+        (
+            "subsample",
+            {"fn": tool_subsample, "wraps": ("subsample_points",), "gated": None},
+        ),
+        (
+            "proximity_graph",
+            {
+                "fn": tool_proximity_graph,
+                "wraps": ("proximity_graph",),
+                "gated": None,
+            },
+        ),
         (
             "compute_sdf",
             {"fn": tool_compute_sdf, "wraps": ("compute_sdf",), "gated": None},
@@ -1985,6 +3233,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "convert_cells",
             {"fn": tool_convert_cells, "wraps": ("convert_cells",), "gated": None},
+        ),
+        (
+            "tessellate",
+            {"fn": tool_tessellate, "wraps": ("tessellate",), "gated": None},
         ),
         (
             "subdivide",
@@ -2063,6 +3315,55 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_dataset_update, "wraps": (), "gated": None},
         ),
         (
+            "dataset_find",
+            {"fn": tool_dataset_find, "wraps": (), "gated": None},
+        ),
+        (
+            "dataset_health",
+            {"fn": tool_dataset_health, "wraps": (), "gated": None},
+        ),
+        (
+            "train_defaults",
+            {"fn": tool_train_defaults, "wraps": (), "gated": None},
+        ),
+        (
+            "train_start",
+            {"fn": tool_train_start, "wraps": (), "gated": "physicsnemo"},
+        ),
+        ("train_status", {"fn": tool_train_status, "wraps": (), "gated": None}),
+        ("train_list", {"fn": tool_train_list, "wraps": (), "gated": None}),
+        ("train_stop", {"fn": tool_train_stop, "wraps": (), "gated": None}),
+        ("train_log", {"fn": tool_train_log, "wraps": (), "gated": None}),
+        ("train_metrics", {"fn": tool_train_metrics, "wraps": (), "gated": None}),
+        (
+            "train_checkpoints",
+            {"fn": tool_train_checkpoints, "wraps": (), "gated": None},
+        ),
+        (
+            "train_mark_best",
+            {"fn": tool_train_mark_best, "wraps": (), "gated": None},
+        ),
+        (
+            "guard_fit",
+            {"fn": tool_guard_fit, "wraps": ("GeometryGuard",), "gated": None},
+        ),
+        (
+            "guard_check",
+            {
+                "fn": tool_guard_check,
+                "wraps": ("geometry_descriptors",),
+                "gated": None,
+            },
+        ),
+        (
+            "predict_file",
+            {"fn": tool_predict_file, "wraps": (), "gated": "physicsnemo"},
+        ),
+        (
+            "train_predict",
+            {"fn": tool_train_predict, "wraps": (), "gated": "physicsnemo"},
+        ),
+        (
             "data_export",
             {"fn": tool_data_export, "wraps": ("write_parquet",), "gated": "arrow"},
         ),
@@ -2071,8 +3372,41 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_export_dataset, "wraps": ("write_dataset",), "gated": "arrow"},
         ),
         (
+            "export_cae",
+            {"fn": tool_export_cae, "wraps": ("cae",), "gated": None},
+        ),
+        (
             "screenshot",
             {"fn": tool_screenshot, "wraps": ("screenshot",), "gated": "viewer"},
         ),
     ]
 )
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch                                                                    #
+# --------------------------------------------------------------------------- #
+def guard(fn, /, **kwargs):
+    """Run a tool; a failure is a ``{"error", "error_type"}`` payload, never a
+    traceback. The one guard, shared by the FastMCP wrappers and the HTTP
+    front-end's dispatch."""
+    try:
+        return fn(**kwargs)
+    except Exception as e:  # noqa: BLE001 - the client needs a payload
+        return {"error": str(e), "error_type": type(e).__name__}
+
+
+def call_tool(name, kwargs=None):
+    """Dispatch a tool by registry name with keyword arguments.
+
+    The single entry point the HTTP front-end (``POST /api/tools/<name>``)
+    goes through, so it inherits the sandbox and the strict-JSON sanitizer
+    every tool already applies. An unknown name is a ``KeyError`` (the
+    caller's 404); a tool failure -- including bad keyword arguments -- is a
+    guarded payload.
+    """
+    try:
+        spec = TOOL_REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"meshio++: mcp: unknown tool '{name}'") from None
+    return guard(spec["fn"], **(kwargs or {}))

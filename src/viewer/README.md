@@ -63,6 +63,19 @@ the old behaviour). The second one is the expensive one.
 CI never hits this: it builds the package with emsdk and then runs `npm ci`,
 which wipes `node_modules` first.
 
+## Pages
+
+The web build ships two pages: `index.html` (the viewer) and `dataset.html`
+(the dataset manager, `src/dataset/`). The latter has two depths — an
+overview of every manifest in the picked directory (cards, health, diff) and
+one manifest's curation view — documented in `doc/dashboard.md`; its
+dashboard-only CSS lives in `src/dataset/style.css`, never in the shared
+`src/style.css`, so the embed build's bytes cannot drift. It can optionally
+connect to a local `meshioplusplus-mcp --http` companion process
+(`src/dataset/api.ts`); the Playwright spec fakes that server with a
+same-origin `page.route`, which only works with service workers blocked —
+the COOP/COEP service worker would otherwise answer the fetch first.
+
 ## Builds
 
 | script | output | used by |

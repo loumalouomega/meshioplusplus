@@ -36,6 +36,9 @@ export interface SourceSpec {
 export interface ManifestEntry {
     id: string;
     source: SourceSpec;
+    /** The paired coarse/fine series, when there is one. Null means
+     *  self-supervised: one mesh supplies both sides. */
+    target: SourceSpec | null;
     split: string | null;
     tags: string[];
     group: string | null;
@@ -51,7 +54,7 @@ export interface Manifest {
 }
 
 const TOP_KEYS = ['Version', 'Name', 'Description', 'Metadata', 'Entries'];
-const ENTRY_KEYS = ['Id', 'Source', 'Split', 'Tags', 'Group', 'Notes', 'Metadata'];
+const ENTRY_KEYS = ['Id', 'Source', 'Target', 'Split', 'Tags', 'Group', 'Notes', 'Metadata'];
 const SOURCE_KEYS = ['Pattern', 'Path', 'Paths', 'Format', 'Times', 'TimeFrom', 'Sort'];
 const TIME_FROM: TimeFrom[] = ['auto', 'file', 'filename', 'index'];
 
@@ -71,13 +74,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function validateSource(raw: unknown, where: string): SourceSpec {
-    if (!isObject(raw)) throw err(`${where}.Source must be an object`);
-    checkKeys(raw, `${where}.Source`, SOURCE_KEYS);
+function validateSource(raw: unknown, where: string, block = 'Source'): SourceSpec {
+    where = `${where}.${block}`;
+    if (!isObject(raw)) throw err(`${where} must be an object`);
+    checkKeys(raw, where, SOURCE_KEYS);
     const kinds = (['Pattern', 'Path', 'Paths'] as const).filter((k) => k in raw);
     if (kinds.length !== 1) {
         throw err(
-            `${where}.Source needs exactly one of Pattern, Path or Paths ` +
+            `${where} needs exactly one of Pattern, Path or Paths ` +
                 `(got ${kinds.length ? kinds.join(', ') : 'none'})`,
         );
     }
@@ -86,29 +90,29 @@ function validateSource(raw: unknown, where: string): SourceSpec {
     if (kind === 'Paths') {
         const paths = raw.Paths;
         if (!Array.isArray(paths) || paths.length === 0) {
-            throw err(`${where}.Source.Paths must be a non-empty array of paths`);
+            throw err(`${where}.Paths must be a non-empty array of paths`);
         }
         if (!paths.every((p) => typeof p === 'string' && p.length > 0)) {
-            throw err(`${where}.Source.Paths entries must be non-empty strings`);
+            throw err(`${where}.Paths entries must be non-empty strings`);
         }
         out.Paths = [...paths];
     } else {
         const value = raw[kind];
         if (typeof value !== 'string' || !value) {
-            throw err(`${where}.Source.${kind} must be a non-empty string`);
+            throw err(`${where}.${kind} must be a non-empty string`);
         }
         out[kind] = value;
     }
     if ('Format' in raw) {
         if (typeof raw.Format !== 'string' || !raw.Format) {
-            throw err(`${where}.Source.Format must be a non-empty string`);
+            throw err(`${where}.Format must be a non-empty string`);
         }
         out.Format = raw.Format;
     }
     if ('Times' in raw) {
         const times = raw.Times;
         if (!Array.isArray(times) || !times.every((t) => typeof t === 'number')) {
-            throw err(`${where}.Source.Times must be an array of numbers`);
+            throw err(`${where}.Times must be an array of numbers`);
         }
         out.Times = [...times];
     }
@@ -116,7 +120,7 @@ function validateSource(raw: unknown, where: string): SourceSpec {
         const tf = raw.TimeFrom;
         if (typeof tf !== 'string' || !(TIME_FROM as string[]).includes(tf)) {
             throw err(
-                `${where}.Source.TimeFrom must be one of ` +
+                `${where}.TimeFrom must be one of ` +
                     TIME_FROM.map((v) => `'${v}'`).join(', '),
             );
         }
@@ -124,10 +128,10 @@ function validateSource(raw: unknown, where: string): SourceSpec {
     }
     if ('Sort' in raw) {
         if (typeof raw.Sort !== 'boolean') {
-            throw err(`${where}.Source.Sort must be true or false`);
+            throw err(`${where}.Sort must be true or false`);
         }
         if (kind !== 'Paths') {
-            throw err(`${where}.Source.Sort applies only with Paths`);
+            throw err(`${where}.Sort applies only with Paths`);
         }
         out.Sort = raw.Sort;
     }
@@ -149,6 +153,10 @@ function parseEntry(raw: unknown, where: string): ManifestEntry {
     }
     if (!('Source' in raw)) throw err(`${where}.Source is required`);
     const source = validateSource(raw.Source, where);
+    const target =
+        raw.Target === undefined || raw.Target === null
+            ? null
+            : validateSource(raw.Target, where, 'Target');
     const split = raw.Split;
     if (split !== undefined && (typeof split !== 'string' || !split)) {
         throw err(`${where}.Split must be a non-empty string`);
@@ -168,6 +176,7 @@ function parseEntry(raw: unknown, where: string): ManifestEntry {
     return {
         id,
         source,
+        target,
         split: typeof split === 'string' ? split : null,
         tags: [...tags],
         group: typeof group === 'string' ? group : null,
@@ -218,6 +227,7 @@ export function parseManifest(input: string | unknown): Manifest {
 
 function entryToDoc(entry: ManifestEntry): Record<string, unknown> {
     const out: Record<string, unknown> = { Id: entry.id, Source: { ...entry.source } };
+    if (entry.target !== null) out.Target = { ...entry.target };
     if (entry.split !== null) out.Split = entry.split;
     if (entry.tags.length) out.Tags = [...entry.tags];
     if (entry.group !== null) out.Group = entry.group;
@@ -272,6 +282,7 @@ export function addEntry(
     source: SourceSpec,
     opts: {
         id?: string;
+        target?: SourceSpec | null;
         split?: string | null;
         tags?: string[];
         group?: string | null;
@@ -287,6 +298,7 @@ export function addEntry(
     const entry: ManifestEntry = {
         id,
         source: validated,
+        target: opts.target ? validateSource(opts.target, 'add()', 'Target') : null,
         split: opts.split ?? null,
         tags: [...(opts.tags ?? [])],
         group: opts.group ?? null,

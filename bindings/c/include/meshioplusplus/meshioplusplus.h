@@ -235,8 +235,8 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 10
-#define MIO_VERSION_MINOR 21
-#define MIO_VERSION_PATCH 1
+#define MIO_VERSION_MINOR 40
+#define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
 /** Whether the header being compiled against is at least major.minor.patch. */
@@ -2396,6 +2396,247 @@ MIO_API mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, 
                                       int64_t* num_32_flips, int64_t* num_vertices_moved,
                                       int64_t* num_tets, double* min_quality_before,
                                       double* min_quality_after);
+
+/** Which dual area a per-vertex curvature is divided by. */
+typedef enum mio_curvature_dual_area {
+    /** Meyer et al.'s mixed Voronoi area. The default; converges better on an
+     *  irregular tessellation. */
+    MIO_CURVATURE_MIXED_VORONOI = 0,
+    /** A third of each incident triangle's area. Cruder, but branch-free. */
+    MIO_CURVATURE_BARYCENTRIC = 1
+} mio_curvature_dual_area;
+
+/**
+ * Options for mio_compute_curvature.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_curvature_opts_init() rather than by hand -- `mean` and `gaussian`
+ * default to ON, so an all-zero struct is NOT the default here.
+ *
+ * Ships only this options-struct form: like mio_compute_sdf, a brand-new entry
+ * point has no back-compat flat signature to keep, so there is nothing to grow
+ * out of later the way mio_remesh had to.
+ */
+typedef struct mio_curvature_opts {
+    /** Restrict to this named cell region; NULL or "" takes every surface cell. */
+    const char* region;
+    int32_t mean;             /**< nonzero (the default) attaches curvature:mean */
+    int32_t gaussian;         /**< nonzero (the default) attaches curvature:gaussian */
+    int32_t dual_area;        /**< a mio_curvature_dual_area */
+    int32_t include_boundary; /**< nonzero computes a biased value at boundary vertices */
+    int32_t record_area;      /**< nonzero attaches curvature:area */
+    int32_t record_principal; /**< nonzero attaches curvature:principal, (n, 2) */
+    int64_t reserved[6];      /**< must be zero; room for additive growth */
+} mio_curvature_opts;
+
+/**
+ * Zero-initialize curvature options to their defaults: mean and gaussian ON,
+ * the mixed-Voronoi dual area, every opt-in off and no region restriction.
+ */
+MIO_API void mio_curvature_opts_init(mio_curvature_opts* opts);
+
+/** What mio_compute_curvature computed, and what it found on the way. */
+typedef struct mio_curvature_report {
+    /** The verdict for the INPUT surface. A nonzero `inconsistent_pairs` means
+     *  the SIGN of curvature:mean is not trustworthy -- H is
+     *  orientation-dependent and K is not. This never repairs its input. */
+    mio_surface_quality quality;
+    int64_t num_boundary;   /**< vertices left NaN because they sit on a boundary */
+    int64_t num_isolated;   /**< vertices left NaN because no triangle references them */
+    int64_t num_degenerate; /**< triangles skipped for zero area */
+    /** The sum of every vertex's angle defect. For a CLOSED surface this is
+     *  2*pi*chi exactly -- 4*pi for a sphere -- whatever the tessellation and
+     *  whichever dual area was chosen. The cheapest check that a result is
+     *  sane, and the reason it is reported rather than kept internal. */
+    double total_angle_defect;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_curvature_report;
+
+/**
+ * Per-vertex mean and Gaussian curvature of a surface mesh, by the angle
+ * defect (K) and the cotangent Laplace-Beltrami operator (H).
+ *
+ * Triangles come from the same fan convert_cells(simplexify) uses; a volume or
+ * polyhedron block is refused by name pointing at extract_surface, a
+ * higher-order one pointing at linearize. See doc/curvature.md.
+ *
+ * @param mesh   a surface mesh.
+ * @param opts   options; NULL means every mio_curvature_opts_init() default.
+ * @param report optional out: the counters and the input surface's verdict.
+ * @return the mesh with the requested point_data attached (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_compute_curvature(const mio_mesh* mesh, const mio_curvature_opts* opts,
+                                        mio_curvature_report* report);
+
+/**
+ * Options for mio_repair.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always initialize through
+ * mio_repair_opts_init() rather than by hand -- the four passes default to ON,
+ * so an all-zero struct is NOT the default here.
+ */
+typedef struct mio_repair_opts {
+    int32_t fix_orientation;    /**< nonzero (the default) rewinds triangles so neighbours agree */
+    int32_t orient_outward;     /**< nonzero (the default) flips closed components with a negative volume */
+    int32_t fill_holes;         /**< nonzero (the default) fan-fills boundary loops */
+    int32_t split_non_manifold; /**< nonzero (the default) duplicates bowtie vertices */
+    int32_t record_provenance;  /**< nonzero attaches repair:parent_point and repair:hole */
+    int32_t reserved_pad;       /**< must be zero; keeps the int64 tail aligned */
+    int64_t max_hole_edges;     /**< longest loop still filled (default 10); <= 0 means no limit */
+    double weld_tolerance;      /**< weld coincident points within this first; 0 (the default) skips */
+    int64_t reserved[5];        /**< must be zero; room for additive growth */
+} mio_repair_opts;
+
+/** Initialize repair options to their defaults (every pass on, limit 10, no weld). */
+MIO_API void mio_repair_opts_init(mio_repair_opts* opts);
+
+/** What mio_repair did. */
+typedef struct mio_repair_report {
+    mio_surface_quality quality_before; /**< the (welded, triangulated) input's defects */
+    mio_surface_quality quality_after;  /**< the output's defects */
+    int64_t num_flipped;                /**< input triangles rewound */
+    int64_t num_components;             /**< edge-connected components */
+    int64_t largest_component;          /**< triangles in the largest one */
+    int64_t num_oriented_outward;       /**< closed components flipped whole */
+    int64_t num_unorientable;           /**< components with a parity conflict */
+    int64_t num_vertices_split;         /**< bowtie vertices duplicated */
+    int64_t num_holes_detected;         /**< boundary loops found */
+    int64_t num_holes_filled;
+    int64_t num_holes_skipped;          /**< too long, or not traceable */
+    int64_t num_faces_added;            /**< fill triangles */
+    int64_t num_points_added;           /**< copies plus centroids */
+    int64_t points_welded;              /**< from the optional weld */
+    int64_t reserved[4];                /**< must be zero; room for additive growth */
+} mio_repair_report;
+
+/**
+ * Repair a surface mesh's orientation, holes and pinched vertices: weld
+ * (opt-in) -> triangulate (blocks 1:1) -> split bowties -> orient by the
+ * topological half-edge rule per component -> fan-fill boundary loops ->
+ * orient closed components outward. The output is all-triangle at the surface
+ * with lower-dimensional blocks carried verbatim, plus one trailing triangle
+ * block of fill triangles when there are any. See doc/repair.md.
+ *
+ * The C++ result's point/cell index maps are not exposed here (a documented
+ * flat-ABI gap, like mio_smooth's frozen mask).
+ *
+ * @param mesh   a surface mesh (a volume or higher-order block is refused by name).
+ * @param opts   options; NULL means every mio_repair_opts_init() default.
+ * @param report optional out: the counters and both verdicts.
+ * @return the repaired mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_repair(const mio_mesh* mesh, const mio_repair_opts* opts,
+                             mio_repair_report* report);
+
+/**
+ * Options for mio_shrinkwrap.
+ *
+ * ABI NOTE: part of the permanent ABI; append-only, replacing `reserved`.
+ * Initialize through mio_shrinkwrap_opts_init().
+ */
+typedef struct mio_shrinkwrap_opts {
+    /** A `(n,)` point_data array on the SOURCE: float blends (unclamped),
+     *  integer/bool selects (nonzero moves). NULL or "" moves every point. */
+    const char* weights;
+    /** Restrict the TARGET to this named cell region; NULL or "" takes all. */
+    const char* target_region;
+    double offset;              /**< signed offset along the hit feature's unit pseudonormal */
+    double max_distance;        /**< farther points are left alone; <= 0 means unlimited */
+    double grid_cell_size;      /**< accelerator bucket size; 0 derives one (never changes the answer) */
+    int32_t normal_weight;      /**< a mio_sdf_weight; MIO_SDF_WEIGHT_ANGLE by default */
+    int32_t record_distance;    /**< nonzero attaches shrinkwrap:distance */
+    int32_t record_closest_cell;/**< nonzero attaches shrinkwrap:closest_cell */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[5];        /**< must be zero; room for additive growth */
+} mio_shrinkwrap_opts;
+
+/** Initialize shrinkwrap options to their defaults. */
+MIO_API void mio_shrinkwrap_opts_init(mio_shrinkwrap_opts* opts);
+
+/** What mio_shrinkwrap did. */
+typedef struct mio_shrinkwrap_report {
+    mio_surface_quality quality; /**< the TARGET's defects */
+    int64_t num_projected;       /**< points moved onto the target */
+    int64_t num_missed;          /**< queried but left alone: beyond max_distance, or no normal */
+    int64_t num_skipped;         /**< never queried (weight zero) */
+    double max_displacement;     /**< the largest |x' - x| */
+    int64_t reserved[4];         /**< must be zero; room for additive growth */
+} mio_shrinkwrap_report;
+
+/**
+ * Project every (selected) point of `mesh` onto the surface of `target`:
+ * x' = x + w (p + offset n - x), one projection, no iteration. Every point of
+ * the source moves whatever cells it carries; only the target must be a
+ * surface. The offset goes along the hit FEATURE's pseudonormal (the bisector
+ * at a crease), not the selected triangle's normal. See doc/shrinkwrap.md.
+ *
+ * @param mesh   the mesh whose points move.
+ * @param target the surface to project onto (quads/polygons are fanned; a
+ *               volume or higher-order block is refused by name).
+ * @param opts   options; NULL means every mio_shrinkwrap_opts_init() default.
+ * @param report optional out: the counters and the target's verdict.
+ * @return the moved mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_shrinkwrap(const mio_mesh* mesh, const mio_mesh* target,
+                                 const mio_shrinkwrap_opts* opts, mio_shrinkwrap_report* report);
+
+/**
+ * Options for mio_sobolev_deform.
+ *
+ * ABI NOTE: part of the permanent ABI; append-only, replacing `reserved`.
+ * Initialize through mio_sobolev_opts_init(); `array` is required.
+ */
+typedef struct mio_sobolev_opts {
+    /** The point_data array holding the raw displacement, (n, dim). Required. */
+    const char* array;
+    /** An integer/bool (n,) point_data array; nonzero pins the point. NULL or
+     *  "" pins nothing this way. (The C++ mask form is a flat-ABI gap, like
+     *  mio_smooth's frozen.) */
+    const char* fixed_points_array;
+    double length_scale;        /**< the smoothing length; 0 applies the raw field at free points */
+    double tolerance;           /**< relative residual tolerance (default 1e-10) */
+    int32_t max_iterations;     /**< conjugate-gradient cap (default 128) */
+    int32_t fix_boundary;       /**< nonzero pins every point on a boundary facet */
+    int32_t record_filtered;    /**< nonzero attaches sobolev:displacement */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[5];        /**< must be zero; room for additive growth */
+} mio_sobolev_opts;
+
+/** Initialize Sobolev options to their defaults (no array, l = 0, 128 iterations, 1e-10). */
+MIO_API void mio_sobolev_opts_init(mio_sobolev_opts* opts);
+
+/** What mio_sobolev_deform did. */
+typedef struct mio_sobolev_report {
+    int64_t num_iterations;  /**< conjugate-gradient iterations run */
+    int64_t num_fixed;       /**< points pinned */
+    int64_t num_isolated;    /**< points in no top-dimensional cell (they get the raw field) */
+    double residual;         /**< the final relative residual */
+    double max_displacement; /**< the largest |u| */
+    int32_t converged;       /**< zero when the cap was hit; the last iterate is still returned */
+    int32_t reserved_pad;    /**< must be zero */
+    int64_t reserved[4];     /**< must be zero; room for additive growth */
+} mio_sobolev_report;
+
+/**
+ * Sobolev (Helmholtz-filtered) deformation: solve (M + l^2 K) u = M d over
+ * the mesh's own P1 operators (K from the simplex edge Gram matrix, M the
+ * uniform mean lumped mass, matrix-free Jacobi-PCG) and move the points by
+ * u. Every top-dimensional block must be a linear simplex (line, triangle or
+ * tetra); lower-dimensional blocks ride along. Nothing is pinned by default.
+ * Non-convergence is reported, never thrown. See doc/sobolev_deform.md.
+ *
+ * @param mesh   the mesh.
+ * @param opts   options; `array` is required.
+ * @param report optional out: the solve's counters.
+ * @return the moved mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
+                                     mio_sobolev_report* report);
 
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */

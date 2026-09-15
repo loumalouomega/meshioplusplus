@@ -78,6 +78,8 @@
  *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
  *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
  *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
+ *  | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back |
+ *  | 12  | v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 |
  *
  * ### This is the ONE place the number is written
  *
@@ -96,7 +98,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 11
+#define MESHIOPLUSPLUS_ABI_VERSION 12
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -760,7 +762,11 @@ public:
      * @param shape Row-major dimensions; total element count is their product.
      */
     NDArray(DType dt, std::vector<std::size_t> shape) : mDtype(dt), mShape(std::move(shape)) {
-        const std::size_t nb = Nbytes();
+        // ShapeCount, not Nbytes(): no buffer exists yet, and `Size()` reports
+        // 0 for a rank-0 array until one does (see its doc comment). Asking it
+        // here would allocate nothing for a scalar and then hand out a null
+        // pointer for its single element.
+        const std::size_t nb = ShapeCount(mShape) * dtype_size(mDtype);
         mOwned.resize(nb);                  // uninitialised (OwnedBuf)
         std::memset(mOwned.data(), 0, nb);  // explicit zero-fill
     }
@@ -786,7 +792,7 @@ public:
         NDArray a;
         a.mDtype = dt;
         a.mShape = std::move(shape);
-        a.mOwned.resize(a.Nbytes());  // no memset
+        a.mOwned.resize(ShapeCount(a.mShape) * dtype_size(a.mDtype));  // no memset
         return a;
     }
 
@@ -817,12 +823,32 @@ public:
     /** @brief Whether this array is a non-owning view (vs. owning its buffer). */
     bool IsView() const { return mView != nullptr; }
 
-    /** @brief Total element count (product of `Shape()`), or 0 if `Shape()` is empty. */
+    /**
+     * @brief The number of elements the buffer holds: the product of `Shape()`.
+     *
+     * An empty shape is the one case needing a word, because it means two
+     * different things. A **rank-0 array is a scalar** and holds exactly one
+     * element -- the empty product, and numpy's own `np.array(1.0).size`. A
+     * **default-constructed** `NDArray` also has an empty shape and holds
+     * nothing at all. Nothing else separates them: `mDtype` defaults to a
+     * valid `Float64` and `DType` has no null enumerator.
+     *
+     * The buffer is what tells them apart, and stating the rule that way makes
+     * it general rather than a special case: *`Size()` counts what the buffer
+     * actually holds*, which is equally true of every non-empty shape (a
+     * `{0, 3}` array allocates nothing and counts nothing).
+     *
+     * Callers depend on both halves. `PropertyValue::IsText`
+     * (`properties.hpp`) and `KratosMesh`'s `ConcatKind` sentinel read
+     * `Size() == 0` to mean "absent"; every byte-copy path -- `MakeOwned`,
+     * `Nbytes`, `data_owned_copy` and the per-operation copies built on it --
+     * needs a scalar to count as one element, or a 0-d value crossing from
+     * numpy is silently dropped on the first clone.
+     */
     std::size_t Size() const {
         if (mShape.empty())
-            return 0;
-        return std::accumulate(mShape.begin(), mShape.end(), std::size_t{1},
-                               std::multiplies<std::size_t>());
+            return Data() == nullptr ? 0 : 1;
+        return ShapeCount(mShape);
     }
     /** @brief Total buffer size in bytes: `Size() * dtype_size(Dtype())`. */
     std::size_t Nbytes() const { return Size() * dtype_size(mDtype); }
@@ -840,11 +866,9 @@ public:
      * @param new_shape The desired row-major dimensions.
      */
     void Reshape(std::vector<std::size_t> new_shape) {
-        std::size_t n = new_shape.empty()
-                            ? 0
-                            : std::accumulate(new_shape.begin(), new_shape.end(), std::size_t{1},
-                                              std::multiplies<std::size_t>());
-        if (n != Size())
+        // ShapeCount, so a one-element array moves freely between `{1}` and
+        // `{}` (a scalar); an array holding nothing still refuses both.
+        if (ShapeCount(new_shape) != Size())
             return;  // ignore inconsistent reshape
         mShape = std::move(new_shape);
     }
@@ -883,6 +907,20 @@ public:
     }
 
 private:
+    /**
+     * @brief The element count a shape implies: the product of its extents.
+     *
+     * One for an EMPTY shape, by construction -- `std::accumulate`'s init
+     * value over an empty range -- which is the right answer for a rank-0
+     * scalar. `Size()` is what decides whether an empty shape is a scalar at
+     * all; this only does the arithmetic, so the constructors can size a
+     * buffer before one exists.
+     */
+    static std::size_t ShapeCount(const std::vector<std::size_t>& rShape) {
+        return std::accumulate(rShape.begin(), rShape.end(), std::size_t{1},
+                               std::multiplies<std::size_t>());
+    }
+
     DType mDtype = DType::Float64;
     std::vector<std::size_t> mShape;
     detail::OwnedBuf mOwned;
@@ -9083,9 +9121,9 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 10
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 21
+#define MESHIOPLUSPLUS_VERSION_MINOR 40
 /// Patch component of the release version.
-#define MESHIOPLUSPLUS_VERSION_PATCH 1
+#define MESHIOPLUSPLUS_VERSION_PATCH 0
 
 /// The release version as one ordered integer: `major*10000 + minor*100 + patch`.
 #define MESHIOPLUSPLUS_VERSION                                                   \
@@ -9093,7 +9131,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "10.21.1"
+#define MESHIOPLUSPLUS_VERSION_STRING "10.40.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -10596,9 +10634,15 @@ struct TriangleSoup {
     std::vector<Vec3> mCorners;
     /// Per triangle, the global (block-major) index of the input cell it came from.
     std::vector<std::int64_t> mSourceCell;
-    /// Per triangle, the three vertex ids in the *welded* numbering below.
+    /// Per triangle, the three vertex ids -- the INPUT MESH's own point ids.
+    /// `build_triangle_soup` does not weld: it copies every mesh point verbatim,
+    /// so `mPoints[i]` is mesh point `i`, index for index, orphans included.
+    /// Two coincident-but-distinct points therefore read as two vertices here,
+    /// which is why an edge between them counts as a boundary edge and why
+    /// `repair` offers `mWeldTolerance` to merge points before it looks at
+    /// orientation or holes.
     std::vector<std::array<std::int64_t, 3>> mVertices;
-    /// Distinct vertex positions, indexed by the ids in `mVertices`.
+    /// Every input point, in the input's own order (see `mVertices`).
     std::vector<Vec3> mPoints;
 
     std::size_t NumTriangles() const { return mSourceCell.size(); }
@@ -10617,9 +10661,6 @@ struct TriangleSoup {
 MESHIOPLUSPLUS_API TriangleSoup build_triangle_soup(const Mesh& rSurface,
                                                     const std::string& rRegion);
 
-/// The four edge defect counts of a soup, and the resulting verdict.
-MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
-
 /// An undirected edge, as the sorted pair of its endpoints' vertex ids.
 using SurfaceEdgeKey = std::array<std::int64_t, 2>;
 
@@ -10632,6 +10673,42 @@ struct SurfaceEdgeKeyHash {
         return h;
     }
 };
+
+/**
+ * @brief What one undirected edge of a soup is used by.
+ *
+ * `mUsed` is how many triangles reference the edge and `mForward` how many
+ * traverse it low->high. A consistently wound closed surface has `mUsed == 2`
+ * and `mForward == 1` on every edge: the two triangles walk their shared edge
+ * in opposite directions, which is exactly what "they agree about which side
+ * is out" means. `mUsed == 1` is a boundary edge, `mUsed > 2` non-manifold,
+ * and `mUsed == 2 && mForward != 1` a wound-the-same-way pair.
+ *
+ * `mFirstTriangle` is the lowest-indexed triangle using the edge, which is
+ * what lets a caller walk the face dual without building a second incidence
+ * structure.
+ */
+struct SurfaceEdgeRecord {
+    std::int64_t mUsed = 0;
+    std::int64_t mForward = 0;
+    std::int64_t mFirstTriangle = -1;
+};
+
+/// Every undirected edge of a soup, keyed by its sorted endpoint pair.
+using SurfaceEdgeMap = std::unordered_map<SurfaceEdgeKey, SurfaceEdgeRecord, SurfaceEdgeKeyHash>;
+
+/**
+ * @brief The per-edge use record of a soup.
+ *
+ * `soup_quality` is a fold over this, and it is what a reorientation BFS walks
+ * and what a boundary-loop walk starts from -- so the three cannot disagree
+ * about what a boundary edge is. Hoisted out of `soup_quality`'s body, which
+ * built exactly this map and then discarded it.
+ */
+MESHIOPLUSPLUS_API SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup);
+
+/// The four edge defect counts of a soup, and the resulting verdict.
+MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup);
 
 /**
  * @brief A soup prepared for querying: the accelerator plus the normal tables.
@@ -10670,9 +10747,9 @@ struct DistanceHit {
  * Parallel over query points, which are independent; each point's own search is
  * serial and totally ordered, so the result does not depend on thread count.
  */
-MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(
-    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints,
-    const SurfaceDistanceOptions& rOptions);
+MESHIOPLUSPLUS_API std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
+                                                            const std::vector<Vec3>& rPoints,
+                                                            const SurfaceDistanceOptions& rOptions);
 
 /// What `query_closest_points` resolved a single query point to. A new,
 /// additive type (Tier C) rather than a field added to `DistanceHit` -- see
@@ -10712,6 +10789,43 @@ struct ClosestPointHit {
  *         field exists so a caller need not assume).
  */
 MESHIOPLUSPLUS_API std::vector<ClosestPointHit> query_closest_points(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
+
+/// What `query_surface_projections` resolved a single query point to. A
+/// second additive sibling (Tier C), for the same reason `ClosestPointHit` is
+/// one: `ClosestPointHit`'s layout is installed-header state, and `shrinkwrap`
+/// needs three things it does not carry -- the soup-local triangle, the
+/// feature the hit landed on, and that feature's pseudonormal.
+struct SurfaceProjection {
+    Vec3 mPoint{0.0, 0.0, 0.0};  ///< The nearest point on the soup.
+    /// The UNNORMALIZED pseudonormal of the hit FEATURE, read straight from
+    /// the `DistanceQuery` tables: the face's cross product for a face hit, the
+    /// sum of the two incident unit normals for an edge hit, the weighted sum
+    /// of the incident unit normals for a vertex hit. Zero only when every
+    /// triangle touching the feature is degenerate.
+    Vec3 mNormal{0.0, 0.0, 0.0};
+    double mDistance = 0.0;                            ///< Its distance from the query (unsigned).
+    std::int64_t mTriangle = -1;                       ///< The soup-local triangle the hit is on.
+    std::int64_t mSourceCell = -1;                     ///< The input cell it came from.
+    TriangleFeature mFeature = TriangleFeature::Face;  ///< Which feature was nearest.
+    bool mFound = false;  ///< False only when the soup has no triangles at all.
+};
+
+/**
+ * @brief The nearest point on the soup to each of @p rPoints, together with
+ * the feature it lies on and that feature's pseudonormal.
+ *
+ * `shrinkwrap`'s primitive. It runs the identical `sd_nearest_triangle` search
+ * `query_distances`/`query_closest_points` run and reads the feature normal
+ * through the same lookup `query_distances`' pseudonormal sign uses
+ * (`sd_feature_normal`), so the three cannot disagree about which triangle is
+ * nearest or which way its feature faces. The normal is the FEATURE's -- at an
+ * edge or vertex hit the offset surface's normal is the bisector, which is a
+ * property of the feature and not of whichever of the equidistant triangles
+ * won the tie-break -- and it is returned unnormalized so a caller can tell a
+ * degenerate feature (zero) from a genuine direction.
+ */
+MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
 
 }  // namespace detail
@@ -12493,9 +12607,17 @@ MESHIOPLUSPLUS_API int exo_face_index(const std::string& rCellType, int ExodusSi
  * have a flipped variant; `triangle`/`quad` do not need one). This
  * determinant check only happens on write — the read-side reorder is a
  * fixed, unconditional permutation, assuming a well-formed file already
- * stores correctly-handed zones. `ZGROUP`/`FGROUP` cell-group sections are
- * always deferred to the Python fallback (see @ref read_flac3d). See
- * doc/formats/flac3d.md for the full node-order tables.
+ * stores correctly-handed zones.
+ *
+ * `ZGROUP`/`FGROUP` cell-group sections are read and written as named
+ * `RegionKind::Cell` regions. A FLAC3D group is identified by all three of
+ * (`ZGROUP` vs `FGROUP`, name, slot) -- zones and faces are separate
+ * namespaces and a slot partitions the groups within one -- so a region is
+ * named `<zone|face>:<name>:<slot>` and the writer decomposes that back, which
+ * is what makes a file read from disk a fixed point. **Zone and face cell ids
+ * are separate 1-based namespaces** (a real file numbers its zones 1..nz and
+ * its faces 1..nf independently), so each section is written with its own
+ * counter. See doc/formats/flac3d.md for the full node-order tables.
  */
 
 // System includes
@@ -12520,10 +12642,13 @@ namespace meshioplusplus {
  *        binary)
  * @param binary write the binary FLAC3D layout (`true`) or ASCII (`false`)
  * @throws WriteError if a file cannot be opened for writing
- * @note the shim only attempts this C++ path when `mesh.cell_sets` is
- *       empty — `ZGROUP`/`FGROUP` are always written by the Python fallback,
- *       which also hardcodes group slots (`SLOT 1` ASCII / `"Default"`
- *       binary) rather than preserving an original slot name
+ * @note every `RegionKind::Cell` region is emitted as a `ZGROUP` and/or an
+ *       `FGROUP`, its name decomposed by the `<zone|face>:<name>:<slot>` rule
+ *       above (a name in any other shape keeps its whole self and takes the
+ *       `Default` slot, so it can land in both sections at once when its
+ *       members span them). `Point` and `Side` regions have no FLAC3D
+ *       equivalent and are ignored. Output is byte-identical to the Python
+ *       reference writer's in both encodings.
  */
 MESHIOPLUSPLUS_API void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
                   bool binary);
@@ -12545,12 +12670,13 @@ MESHIOPLUSPLUS_API void write_flac3d(const std::string& rPath, const Mesh& rMesh
  *         zones)
  * @throws ReadError if the file can't be opened, the file ends
  *         unexpectedly, a cell's node count doesn't match any known FLAC3D
- *         type, or the file contains a `ZGROUP`/`FGROUP` section (ASCII) or
- *         binary group section — always deferring the whole file to the
- *         Python fallback, since `cell_sets` (built from those groups) is
- *         not carried by the Mesh conversion layer
+ *         type, or a `ZGROUP`/`FGROUP` header is malformed
  * @note point_data/field_data are never produced; `cell_data["cell_ids"]` is
- *       the only key this reader sets
+ *       the only key this reader sets. Each `ZGROUP`/`FGROUP` becomes one
+ *       `RegionKind::Cell` region named `<zone|face>:<name>:<slot>`, with
+ *       `mDim`/`mTag` left at -1; a group member the file never defined is
+ *       dropped with a warning rather than guessed at, and an empty group is
+ *       still carried, since the name is information.
  */
 MESHIOPLUSPLUS_API Mesh read_flac3d(const std::string& rPath);
 
@@ -17753,6 +17879,162 @@ MESHIOPLUSPLUS_API CropResult crop_predicate(const Mesh& rMesh, const std::strin
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/crop.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/curvature.hpp =====
+/**
+ * @file operations/curvature.hpp
+ * @brief Per-vertex mean and Gaussian curvature of a surface, by the standard
+ * discrete estimators: the angle defect for `K` and the cotangent
+ * Laplace-Beltrami operator for `H`.
+ *
+ * These are the estimators the discrete-differential-geometry literature's
+ * convergence results are about, and the ones NVIDIA PhysicsNeMo's own
+ * `gaussian_curvature_vertices`/`mean_curvature_vertices` use -- so the numbers
+ * here are comparable with a model's. Implemented from the published
+ * definitions; no upstream code is read or vendored.
+ *
+ * **Deliberately NOT `remesh`'s estimator.** `remesh.cpp` fits an osculating
+ * paraboloid over each 1-ring to drive `RemeshOptions::mGradation` and the
+ * anisotropic metric. That is a legitimate estimator, but it returns only the
+ * larger-magnitude principal curvature as a magnitude, it runs on remesh's own
+ * subdivided working copy rather than the caller's mesh, and it has no
+ * structural invariant to test against. It is left exactly as it is: this
+ * operation adds a second, independent estimator rather than changing one two
+ * other features depend on.
+ *
+ * **The oracle that makes this testable is Gauss-Bonnet.** For a closed surface
+ * the angle defects sum to `2*pi*chi` -- `4*pi` for a sphere, whatever the
+ * tessellation and whichever dual area is chosen. `CurvatureResult` reports that
+ * sum (`mTotalAngleDefect`) precisely so the invariant is observable from every
+ * binding rather than only from a gtest. Note it is `2*pi*chi` only for a
+ * **closed** surface; on an open one it is that minus the boundary's turning.
+ *
+ * **`H` is orientation-dependent** and `K` is not. The mean curvature's sign
+ * comes from the surface's own winding, so a mesh whose facets disagree about
+ * which side is out yields sign-flipped patches with no error raised. That is
+ * why the result carries the input's `SurfaceQuality`: check
+ * `mQuality.mInconsistentPairs` before trusting a sign, and run
+ * `repair(mesh, {.mFixOrientation = true})` if it is non-zero. This operation
+ * never silently repairs its input.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data: the mean curvature `H`, one Float64 per point.
+inline constexpr const char* kCurvatureMeanName = "curvature:mean";
+/// Point data: the Gaussian curvature `K`, one Float64 per point.
+inline constexpr const char* kCurvatureGaussianName = "curvature:gaussian";
+/// Point data: the dual (vertex) area each curvature was divided by. Opt-in.
+inline constexpr const char* kCurvatureAreaName = "curvature:area";
+/// Point data: the two principal curvatures as `(n, 2)`, `k1 >= k2`. Opt-in.
+inline constexpr const char* kCurvaturePrincipalName = "curvature:principal";
+
+/**
+ * @brief Which dual area a per-vertex curvature is divided by.
+ *
+ * Both partition the surface exactly, so `mTotalAngleDefect` -- and therefore
+ * the Gauss-Bonnet invariant -- is identical under either.
+ */
+enum class CurvatureDualArea : std::uint8_t {
+    /// Meyer et al.'s mixed Voronoi area: the Voronoi cell where the triangle is
+    /// non-obtuse, and a bisected area where it is. Reuses the cotangents the
+    /// mean-curvature pass already computes, so it is nearly free, and it
+    /// converges better on an irregular tessellation. The default.
+    MixedVoronoi = 0,
+    /// A third of each incident triangle's area. Cruder, but **branch-free**,
+    /// which is what makes it bit-exactly reproducible by the numpy twin --
+    /// the same second-mode-for-twinnability argument `SdfPseudonormalWeight`
+    /// already makes.
+    Barycentric = 1,
+};
+
+/**
+ * @brief Parses a dual-area name.
+ * @param rName One of `"mixed-voronoi"`, `"barycentric"` (case-sensitive, as
+ *        elsewhere in the operations layer).
+ * @return The matching enumerator.
+ * @throws std::invalid_argument if the name is not recognised.
+ */
+MESHIOPLUSPLUS_API CurvatureDualArea curvature_dual_area_from_name(const std::string& rName);
+
+/// The spelling `curvature_dual_area_from_name` accepts for `Mode`, so the flat
+/// bindings, both CLIs and the pipeline report a name a caller can pass back.
+MESHIOPLUSPLUS_API const char* curvature_dual_area_name(CurvatureDualArea Mode);
+
+/// What `compute_curvature` should compute and attach.
+struct CurvatureOptions {
+    /// Attach `curvature:mean`.
+    bool mMean = true;
+    /// Attach `curvature:gaussian`.
+    bool mGaussian = true;
+    /// Which dual area to divide by.
+    CurvatureDualArea mDualArea = CurvatureDualArea::MixedVoronoi;
+    /// Compute a value at boundary vertices instead of leaving them NaN.
+    ///
+    /// Off by default, matching upstream: a boundary vertex has no closed
+    /// 1-ring, so both estimators are biased there and the honest answer is
+    /// "not defined". On, `K` uses the geodesic form `pi - sum(theta)` and `H`
+    /// the raw one-sided operator; both are biased and documented as such.
+    /// Isolated vertices are NaN either way -- there is nothing to average.
+    bool mIncludeBoundary = false;
+    /// Also attach `curvature:area`.
+    bool mRecordArea = false;
+    /// Also attach `curvature:principal`, the `(n, 2)` pair `k1 >= k2` recovered
+    /// as `H +- sqrt(H^2 - K)`. Free: no new machinery, just the two outputs.
+    bool mRecordPrincipal = false;
+    /// Restrict to this named `Cell` region; empty takes every surface cell.
+    std::string mRegion;
+};
+
+/// What `compute_curvature` computed, and what it found on the way.
+struct CurvatureResult {
+    /// The input mesh with the requested arrays attached.
+    Mesh mMesh;
+    /// The INPUT surface's defect counts. `mInconsistentPairs != 0` means the
+    /// sign of `H` is not trustworthy; see this header's file comment.
+    SurfaceQuality mQuality;
+    /// Vertices left NaN because they sit on a boundary.
+    std::int64_t mNumBoundary = 0;
+    /// Vertices left NaN because no surviving triangle references them.
+    std::int64_t mNumIsolated = 0;
+    /// Triangles skipped for zero area, by the same predicate `soup_quality`
+    /// uses -- so the two agree about what "degenerate" means.
+    std::int64_t mNumDegenerate = 0;
+    /// The sum of every vertex's angle defect, boundary vertices included.
+    ///
+    /// For a CLOSED surface this is `2*pi*chi` exactly -- `4*pi` for a sphere --
+    /// whatever the tessellation and whichever `CurvatureDualArea` was chosen.
+    /// On an open surface it is that minus the boundary's total turning, which
+    /// is a different (still meaningful) quantity.
+    double mTotalAngleDefect = 0.0;
+};
+
+/**
+ * @brief Per-vertex mean and Gaussian curvature of a surface mesh.
+ *
+ * Triangles come from `detail::build_triangle_soup`, which fans quads and
+ * rectangular polygons on the same diagonal `convert_cells(Simplexify)` uses,
+ * refuses a 3-D or polyhedron block by name pointing at `extract_surface`, and
+ * refuses a higher-order block pointing at `linearize`. A quad mesh's curvature
+ * is therefore the curvature of its canonical triangulation, not of the quad
+ * surface itself.
+ *
+ * @param rMesh a surface mesh.
+ * @param rOptions what to compute; see `CurvatureOptions`.
+ * @return the mesh with the requested `point_data` attached, plus the counters.
+ * @throws std::invalid_argument on a non-surface input (naming the fix) or an
+ *         unknown region name.
+ */
+MESHIOPLUSPLUS_API CurvatureResult compute_curvature(const Mesh& rMesh,
+                                                     const CurvatureOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/curvature.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/data_average.hpp =====
 /**
  * @file operations/data_average.hpp
@@ -21169,6 +21451,146 @@ MESHIOPLUSPLUS_API ReorderResult reorder(const Mesh& rMesh, ReorderMethod method
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/reorder.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/repair.hpp =====
+/**
+ * @file operations/repair.hpp
+ * @brief Surface repair beyond `clean`: consistent orientation, hole filling
+ * and non-manifold (pinched-vertex) splitting -- the three defects
+ * `SurfaceQuality` counts and `clean` does not touch.
+ *
+ * Adapted from NVIDIA PhysicsNeMo's `physicsnemo.mesh.repair` (2.2:
+ * `fix_orientation`, `fill_holes`, and the generator's private
+ * `split_pinched_vertices`); algorithms only, rewritten over meshio++'s own
+ * machinery, no upstream code read or vendored. `clean` remains the place for
+ * welding, degenerate/duplicate removal and orphan pruning -- `repair`
+ * composes it (`mWeldTolerance`) rather than duplicating it.
+ *
+ * **Two deliberate divergences from upstream, and why.** (1) Orientation is
+ * propagated by the TOPOLOGICAL half-edge rule -- two triangles sharing an
+ * edge agree iff they traverse it in opposite directions -- which is exact,
+ * where upstream's `dot(n_child, n_parent) < 0` test is a local-flatness
+ * approximation that mis-orients across any crease sharper than 90 degrees
+ * (a strip folded at 150 degrees pins the difference). It is the rule
+ * `detail::orient_rings` already applies to one polyhedron's faces, made
+ * tolerant of boundaries, non-manifold edges and several components. (2) A
+ * hole's fan is wound to AGREE with the surrounding surface (against the one
+ * triangle on each boundary edge), where upstream winds it from the loop's
+ * own traversal direction and so may leave the fill inconsistent with its
+ * neighbours -- which `mQualityAfter.mInconsistentPairs` would then report.
+ *
+ * **What it does, in order.** Weld (opt-in) -> triangulate (quads and polygons
+ * fan exactly as `convert_cells(Simplexify)` does, blocks staying 1:1) ->
+ * split bowties (a vertex whose triangle star is edge-disconnected is
+ * duplicated once per extra component, geometry unchanged) -> orient (BFS per
+ * connected component over manifold edges, fewest flips wins ties) -> fill
+ * holes (every traceable boundary loop of at most `mMaxHoleEdges` edges gets
+ * one centroid point and one triangle per loop edge) -> orient outward
+ * (every CLOSED component whose divergence-theorem volume is negative is
+ * flipped whole). Split first so a pinched boundary vertex traces as two
+ * loops rather than one aborted figure-eight; orient before fill so the fill
+ * inherits a consistent neighbourhood; outward after fill so a sphere with a
+ * hole is closed when its volume is taken.
+ *
+ * **What it does not do.** Non-manifold EDGES (used by three or more
+ * triangles) are neither split nor crossed by the orientation BFS; they are
+ * counted in `mQualityAfter`. Nested cavities are not detected: every closed
+ * component is oriented outward on its own. A boundary loop through a vertex
+ * of boundary degree other than two is left open and counted as skipped.
+ *
+ * **Output shape.** All-triangle at the surface, blocks 1:1 with the input
+ * (a quad block becomes a triangle block of twice the rows), lower-dimensional
+ * blocks (boundary `line`s) carried verbatim, plus ONE trailing `triangle`
+ * block holding every fill triangle -- only when there is one, so a closed
+ * input keeps its block count. Points: the originals, then the split copies,
+ * then the hole centroids. `cell_data` rows follow their cell (the trailing
+ * block gets NaN for float and 0 for integer arrays); `point_data` copies
+ * inherit their source row and centroids the mean of their loop's rows,
+ * dtype preserved. Point and Cell regions survive (a copy joins its source's
+ * regions); Side regions are dropped by name, since a flip permutes a
+ * triangle's edge numbering. There is deliberately no numpy twin: the
+ * outward test is a branch on the sign of a rounded volume.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (opt-in): Int64 `(n_out,)`, the INPUT point each output point
+/// came from -- itself for an original, its source for a split copy, -1 for
+/// a hole centroid.
+inline constexpr const char* kRepairParentPointName = "repair:parent_point";
+/// Cell data (opt-in): Int64 per block, -1 for every input triangle and the
+/// hole's ordinal (0-based, in detection order) for each fill triangle.
+inline constexpr const char* kRepairHoleName = "repair:hole";
+
+/// What `repair` should do.
+struct RepairOptions {
+    /// Rewind triangles so neighbours across every manifold edge agree.
+    bool mFixOrientation = true;
+    /// After orientation and filling, flip every CLOSED component whose
+    /// signed volume is negative. Ignored when `mFixOrientation` is off.
+    bool mOrientOutward = true;
+    /// Fan-fill boundary loops of at most `mMaxHoleEdges` edges.
+    bool mFillHoles = true;
+    /// Duplicate a vertex whose triangle star is edge-disconnected.
+    bool mSplitNonManifold = true;
+    /// Attach `repair:parent_point` and `repair:hole`.
+    bool mRecordProvenance = false;
+    /// Longest boundary loop that is still filled; longer ones are counted as
+    /// skipped and left open. Non-positive means no limit.
+    std::int64_t mMaxHoleEdges = 10;
+    /// Weld coincident points within this distance FIRST (through `clean`),
+    /// so two stacked-but-distinct points stop reading as a boundary. 0 = off.
+    double mWeldTolerance = 0.0;
+};
+
+/// What `repair` did.
+struct RepairResult {
+    Mesh mMesh;
+    /// Per input block, Int64 `(cells_in_block,)`: input cell -> first output
+    /// cell (the `FirstChild` shape, identity on an all-triangle input). The
+    /// trailing hole-fill block has no input counterpart and no entry.
+    std::vector<NDArray> mCellMaps;
+    /// Int64 `(points_in,)`, input point -> output point. The identity unless
+    /// `mWeldTolerance > 0`; copies and centroids are appended, never mapped to.
+    NDArray mPointMap;
+    /// The (welded, triangulated) input's defect counts.
+    SurfaceQuality mQualityBefore;
+    /// The output's defect counts.
+    SurfaceQuality mQualityAfter;
+    std::int64_t mNumFlipped = 0;          ///< Input triangles rewound.
+    std::int64_t mNumComponents = 0;       ///< Edge-connected components.
+    std::int64_t mLargestComponent = 0;    ///< Triangles in the largest one.
+    std::int64_t mNumOrientedOutward = 0;  ///< Closed components flipped whole.
+    std::int64_t mNumUnorientable = 0;     ///< Components with a parity conflict.
+    std::int64_t mNumVerticesSplit = 0;    ///< Bowtie vertices duplicated.
+    std::int64_t mNumHolesDetected = 0;    ///< Boundary loops found.
+    std::int64_t mNumHolesFilled = 0;
+    std::int64_t mNumHolesSkipped = 0;  ///< Too long, or not traceable.
+    std::int64_t mNumFacesAdded = 0;    ///< Fill triangles.
+    std::int64_t mNumPointsAdded = 0;   ///< Copies plus centroids.
+    std::int64_t mPointsWelded = 0;     ///< From the optional weld.
+};
+
+/**
+ * @brief Repair a surface mesh's orientation, holes and pinched vertices.
+ *
+ * @param rMesh a surface mesh: triangle/quad/polygon blocks, optionally with
+ *        lower-dimensional blocks that ride along. A 3-D or polyhedron block
+ *        is refused naming `extract_surface`, a higher-order surface block
+ *        naming `linearize`.
+ * @param rOptions see `RepairOptions`.
+ * @return the repaired mesh, the maps and the counters.
+ * @throws std::invalid_argument on an out-of-scope input.
+ */
+MESHIOPLUSPLUS_API RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/repair.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/sequence.hpp =====
 /**
  * @file operations/sequence.hpp
@@ -21657,6 +22079,130 @@ MESHIOPLUSPLUS_API PipelineReport run_sequence_file(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/sequence.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/shrinkwrap.hpp =====
+/**
+ * @file operations/shrinkwrap.hpp
+ * @brief Project a mesh's points onto a target triangle surface, optionally
+ * offset along the surface normal -- the fitting step a scanned skin, a CAD
+ * shell or a coarse solve needs before it can be used as a template.
+ *
+ * Adapted from NVIDIA PhysicsNeMo's `physicsnemo.mesh.shrinkwrap` (2.2):
+ * `x' = x + w * (p + offset * n - x)` with `p` the closest point on the
+ * target surface, `n` a unit normal there and `w` a per-point weight. It is ONE
+ * projection, not an iteration: there is no self-intersection guard and no
+ * inversion guard, exactly as upstream, because a wrap is a fit and not a
+ * smoothing. Rewritten over meshio++'s own bucket-grid nearest-triangle search
+ * (`detail/surface_distance.hpp`, the one `sample_distance` uses), so the point
+ * a query is projected to is the point `sample_distance` measures to.
+ *
+ * **One deliberate divergence from upstream, and the reason for it.** Upstream
+ * offsets along the normal of the SELECTED triangle. At an edge or a vertex hit
+ * that is the wrong direction: the offset surface of a creased mesh is the
+ * rounded one (its Minkowski sum with a ball), whose normal at the crease is
+ * the bisector of the two incident faces, and offsetting along one face's
+ * normal from the crease lands off that surface by a factor `1/cos(theta/2)` --
+ * and, worse, makes the result depend on which of the two equidistant faces
+ * won the tie-break. meshio++ offsets along the pseudonormal of the hit
+ * FEATURE (face, edge or vertex), the same tables the signed distance's sign
+ * already reads, which is a property of the feature and not of the tie-break.
+ * A 90-degree "book" target pins the difference.
+ *
+ * **What moves.** Every point of the source mesh, whatever cells it carries --
+ * a volume mesh's interior points are projected too (the source is not
+ * required to be a surface; only the TARGET is). Use `mWeights` to select or
+ * blend: an integer/bool `point_data` array selects (nonzero moves), a float
+ * one blends (`w` is applied unclamped, matching upstream, so a caller can
+ * overshoot on purpose). A point farther than `mMaxDistance` from the target
+ * is left where it is and counted, as is a point whose hit feature has no
+ * direction to offset along (every triangle touching it degenerate).
+ *
+ * **What survives.** Everything: connectivity, `point_data`, `cell_data`,
+ * `field_data`, regions and property sets pass through verbatim, since this is
+ * a pure coordinate move. The points array keeps its input dtype.
+ *
+ * **Determinism.** The nearest-triangle search is totally ordered on
+ * `(distance^2, triangle id)`, so the bucket size cannot change the answer
+ * (`mGridCellSize` is public precisely so a test can prove it); the update is
+ * per-point and elementwise. Byte-identical across backends and thread counts,
+ * and -- the pseudonormal's own `acos` aside -- across the C++/numpy boundary.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (opt-in): Float64 `(n,)`, each point's distance to the target
+/// BEFORE the move; NaN where the point was not queried (weight zero).
+inline constexpr const char* kShrinkwrapDistanceName = "shrinkwrap:distance";
+/// Point data (opt-in): Int64 `(n,)`, the target cell (block-major global id)
+/// each point was projected onto; -1 where not queried.
+inline constexpr const char* kShrinkwrapClosestCellName = "shrinkwrap:closest_cell";
+
+/// How `shrinkwrap` projects.
+struct ShrinkwrapOptions {
+    /// Signed offset along the hit feature's unit pseudonormal. Positive is
+    /// the target's outward side when the target is consistently wound.
+    double mOffset = 0.0;
+    /// A point farther than this from the target is left where it is and
+    /// counted in `mNumMissed`. Non-positive means unlimited.
+    double mMaxDistance = 0.0;
+    /// Name of a `(n,)` `point_data` array on the SOURCE. Float dtype: the
+    /// blend factor `w` (unclamped). Integer/bool dtype: a selection, nonzero
+    /// moves with `w = 1`. Empty: every point moves with `w = 1`.
+    std::string mWeights;
+    /// Restrict the TARGET to this named `Cell` region; empty takes all of it.
+    std::string mTargetRegion;
+    /// How the target's vertex pseudonormals are weighted. `Area` is the mode
+    /// the numpy twin reproduces bit for bit under a nonzero offset.
+    SdfPseudonormalWeight mNormalWeight = SdfPseudonormalWeight::Angle;
+    /// Attach `shrinkwrap:distance`.
+    bool mRecordDistance = false;
+    /// Attach `shrinkwrap:closest_cell`.
+    bool mRecordClosestCell = false;
+    /// Bucket size of the nearest-triangle accelerator; 0 derives one from the
+    /// target. Public so a test can prove the accelerator is unobservable.
+    double mGridCellSize = 0.0;
+};
+
+/// What `shrinkwrap` did.
+struct ShrinkwrapResult {
+    /// The source mesh with its points moved.
+    Mesh mMesh;
+    /// The TARGET surface's defect counts. A nonzero offset on a target with
+    /// inconsistent winding offsets different points to different sides.
+    SurfaceQuality mQuality;
+    /// Points moved onto the target.
+    std::int64_t mNumProjected = 0;
+    /// Points queried but left alone: beyond `mMaxDistance`, or no direction
+    /// to offset along.
+    std::int64_t mNumMissed = 0;
+    /// Points never queried (weight zero / unselected).
+    std::int64_t mNumSkipped = 0;
+    /// The largest `|x' - x|` over every point.
+    double mMaxDisplacement = 0.0;
+};
+
+/**
+ * @brief Project @p rMesh's points onto the surface of @p rTarget.
+ *
+ * @param rMesh the mesh whose points move (any cell types).
+ * @param rTarget the surface to project onto, through `detail::build_triangle_soup`:
+ *        quads and polygons are fanned, a volume or higher-order block is
+ *        refused by name.
+ * @param rOptions see `ShrinkwrapOptions`.
+ * @return the moved mesh and the counters.
+ * @throws std::invalid_argument on an unusable target, an unknown region or
+ *         weights array, or a weights array of the wrong shape.
+ */
+MESHIOPLUSPLUS_API ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
+                                               const ShrinkwrapOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/shrinkwrap.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/slice.hpp =====
 /**
  * @file slice.hpp
@@ -22007,6 +22553,141 @@ MESHIOPLUSPLUS_API std::string sniff_format(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/sniff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/sobolev_deform.hpp =====
+/**
+ * @file operations/sobolev_deform.hpp
+ * @brief Sobolev (Helmholtz-filtered) deformation: smooth a raw per-point
+ * displacement field through the mesh's own P1 finite-element operators, then
+ * move the points by the smoothed field.
+ *
+ * Adapted from NVIDIA PhysicsNeMo's `physicsnemo.mesh.sobolev_deform` (2.2):
+ * solve, per ambient component,
+ *
+ *     (M + l^2 K) u = M d,    x' = x + u
+ *
+ * with `K` the P1 stiffness matrix, `M` a uniform vertex mass and `l` the
+ * `mLengthScale` -- a screened-Poisson low-pass filter of the raw field `d`
+ * whose cutoff wavelength is `l`, which is what turns a jagged per-node
+ * displacement (a shape gradient, a scattered measurement, a model's raw
+ * output) into one a mesh can follow without tangling. Implemented from the
+ * published description over meshio++'s own machinery; no upstream code is
+ * read or vendored.
+ *
+ * **What is matched exactly, and why.** Three of upstream's choices are
+ * reproduced rather than "improved", because they are what make a parity test
+ * against the reference a valid oracle and because each is defensible on its
+ * own: (1) `K` is assembled dimension-generically from the simplex edge Gram
+ * matrix, `K_loc = |c| B G^-1 B^T` with `B = [-1; I]`, so one formula serves a
+ * polyline in 2-D, a triangle surface in 3-D and a tetrahedral volume alike;
+ * (2) `M` is UNIFORM -- the mean of the positive lumped P1 vertex masses,
+ * applied to every vertex -- which makes the filter's response depend on
+ * `l` alone rather than on the local element size, and is what upstream
+ * needs for the operator to be self-adjoint in plain vertex coordinates;
+ * (3) ONE global Jacobi-preconditioned conjugate-gradient solve with one
+ * global stopping test `||r|| <= tol * ||b||`, the components decoupling
+ * through `K`'s block structure but sharing the convergence history.
+ *
+ * **Scope.** Every cell block at the mesh's top topological dimension must be
+ * a linear simplex -- `line`, `triangle` or `tetra` -- since that is what the
+ * Gram-matrix assembly is defined on; a quadratic block is refused naming
+ * `linearize`, any other type naming `convert_cells(Simplexify)`. Lower-
+ * dimensional blocks ride along untouched (their points are still points).
+ * A point in no top-dimensional cell is isolated: it receives its raw
+ * displacement, as upstream does, and is counted.
+ *
+ * **Boundaries.** Nothing is pinned by default: an unfixed boundary carries
+ * the natural homogeneous Neumann condition, so a constant displacement is
+ * preserved exactly when nothing is fixed. `mFixedPoints` / `mFixedPointsArray`
+ * / `mFixBoundary` impose zero-Dirichlet rows instead.
+ *
+ * **Determinism.** The operator is applied in GATHER form -- each vertex's
+ * row is evaluated by one thread from a fixed sequence of incident cells in
+ * ascending cell order, no scatter, no atomics -- and every inner product is a
+ * fixed-chunk parallel partial sum folded serially, so the iterate is
+ * byte-identical across backends and thread counts. There is deliberately NO
+ * numpy twin: the stopping test is a branch on a rounded reduction and the
+ * iterate depends on how many iterations ran, so a second implementation
+ * could stop one iteration early or late and disagree macroscopically.
+ *
+ * **What survives.** Everything: this is a pure coordinate move, so
+ * connectivity, every data array, regions and property sets pass through and
+ * the points keep their input dtype. Non-convergence within `mMaxIterations`
+ * is a warning plus `mConverged == false`, and the last iterate is returned --
+ * a partially smoothed field is still a usable one, and `mResidual` says how
+ * far it got.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (opt-in): Float64 `(n, PointDim)`, the filtered displacement `u`.
+inline constexpr const char* kSobolevDisplacementName = "sobolev:displacement";
+
+/// How `sobolev_deform` filters.
+struct SobolevOptions {
+    /// The `point_data` array holding the raw displacement `d`: `(n, PointDim)`,
+    /// or `(n, 3)` on a 2-D mesh (the z column is ignored, with a warning).
+    std::string mArrayName;
+    /// The smoothing length `l`, in mesh coordinate units. 0 applies `d`
+    /// directly at the free points (no solve).
+    double mLengthScale = 0.0;
+    /// Optional pin mask, empty or `(n,)`: nonzero pins the point (`u = 0`).
+    /// The same shape contract as `SmoothOptions::mFrozen`.
+    std::vector<std::uint8_t> mFixedPoints;
+    /// The flat bindings' route to the same thing: an integer/bool `(n,)`
+    /// `point_data` array, nonzero pins. Unioned with `mFixedPoints`.
+    std::string mFixedPointsArray;
+    /// Also pin every point on a boundary facet of the top-dimensional cells
+    /// (a facet used by exactly one cell).
+    bool mFixBoundary = false;
+    /// Attach `sobolev:displacement`.
+    bool mRecordFiltered = false;
+    /// Conjugate-gradient iteration cap.
+    int mMaxIterations = 128;
+    /// Relative residual tolerance: stop once `||r|| <= mTolerance * ||b||`.
+    double mTolerance = 1e-10;
+};
+
+/// What `sobolev_deform` did.
+struct SobolevResult {
+    /// The input mesh with its points moved by the filtered displacement.
+    Mesh mMesh;
+    /// Conjugate-gradient iterations run (0 when `l == 0` or `d == 0`).
+    std::int64_t mNumIterations = 0;
+    /// The final relative residual `||r|| / ||b||` (0 when no solve ran).
+    double mResidual = 0.0;
+    /// False when the cap was hit or the iteration broke down; the last
+    /// iterate is still returned.
+    bool mConverged = true;
+    /// Points pinned by any of the three mechanisms.
+    std::int64_t mNumFixed = 0;
+    /// Points in no top-dimensional cell (they receive `d` verbatim).
+    std::int64_t mNumIsolated = 0;
+    /// The largest `|u|` over every point.
+    double mMaxDisplacement = 0.0;
+};
+
+/**
+ * @brief Move @p rMesh's points by the Sobolev-filtered version of a raw
+ * displacement field.
+ *
+ * @param rMesh the mesh; see the file comment for the scope.
+ * @param rOptions see `SobolevOptions` (`mArrayName` is required).
+ * @return the moved mesh and the solve's counters.
+ * @throws std::invalid_argument on a missing/mis-shaped displacement array, a
+ *         non-simplex top-dimensional block (naming the fix), a degenerate
+ *         cell when `l > 0`, or a mis-sized pin mask.
+ */
+MESHIOPLUSPLUS_API SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/sobolev_deform.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/split.hpp =====
 /**
  * @file operations/split.hpp
@@ -43745,6 +44426,30 @@ TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegio
     return soup;
 }
 
+SurfaceEdgeMap build_surface_edges(const TriangleSoup& rSoup) {
+    // Per undirected edge: how many triangles use it, and how many use it in the
+    // low->high direction. A consistently wound closed surface has every edge
+    // used exactly twice, once in each direction.
+    const std::size_t ntri = rSoup.NumTriangles();
+    SurfaceEdgeMap edges;
+    edges.reserve(ntri * 3 * 2);
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t u = v[e];
+            const std::int64_t w = v[(e + 1) % 3];
+            const SurfaceEdgeKey key{u < w ? u : w, u < w ? w : u};
+            SurfaceEdgeRecord& rec = edges[key];
+            ++rec.mUsed;
+            if (u < w)
+                ++rec.mForward;
+            if (rec.mFirstTriangle < 0)
+                rec.mFirstTriangle = static_cast<std::int64_t>(t);
+        }
+    }
+    return edges;
+}
+
 SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
     SurfaceQuality q;
     const std::size_t ntri = rSoup.NumTriangles();
@@ -43757,26 +44462,10 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup) {
             ++q.mDegenerateTriangles;
     }
 
-    // Per undirected edge: how many triangles use it, and how many use it in the
-    // low->high direction. A consistently wound closed surface has every edge
-    // used exactly twice, once in each direction.
-    std::unordered_map<SurfaceEdgeKey, std::array<std::int64_t, 2>, SurfaceEdgeKeyHash> edges;
-    edges.reserve(ntri * 3 * 2);
-    for (std::size_t t = 0; t < ntri; ++t) {
-        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        for (std::size_t e = 0; e < 3; ++e) {
-            const std::int64_t u = v[e];
-            const std::int64_t w = v[(e + 1) % 3];
-            const SurfaceEdgeKey key{u < w ? u : w, u < w ? w : u};
-            std::array<std::int64_t, 2>& rec = edges[key];
-            ++rec[0];
-            if (u < w)
-                ++rec[1];
-        }
-    }
+    const SurfaceEdgeMap edges = build_surface_edges(rSoup);
     for (const auto& kv : edges) {
-        const std::int64_t used = kv.second[0];
-        const std::int64_t forward = kv.second[1];
+        const std::int64_t used = kv.second.mUsed;
+        const std::int64_t forward = kv.second.mForward;
         if (used == 1)
             ++q.mBoundaryEdges;
         else if (used > 2)
@@ -43968,6 +44657,48 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
     return {best_tri, best_hit};
 }
 
+// The pseudonormal of the FEATURE a hit landed on, not of the nearest
+// triangle: using the triangle's own normal is right on convex geometry and
+// wrong on the concave side of every crease. Hoisted verbatim out of
+// query_distances (a pure refactor -- that function's own suite is the
+// regression guard) so query_surface_projections reads the same tables the
+// same way. Returned unnormalized.
+Vec3 sd_feature_normal(const DistanceQuery& rQuery, const TriangleSoup& rSoup, std::int64_t Tri,
+                       TriangleFeature Feature) {
+    const std::size_t ti = static_cast<std::size_t>(Tri);
+    const std::array<std::int64_t, 3>& v = rSoup.mVertices[ti];
+    Vec3 normal = rQuery.mFaceNormal[ti];
+    switch (Feature) {
+        case TriangleFeature::VertexA:
+            normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[0])];
+            break;
+        case TriangleFeature::VertexB:
+            normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[1])];
+            break;
+        case TriangleFeature::VertexC:
+            normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[2])];
+            break;
+        case TriangleFeature::EdgeAB:
+        case TriangleFeature::EdgeBC:
+        case TriangleFeature::EdgeCA: {
+            const std::size_t e = Feature == TriangleFeature::EdgeAB
+                                      ? 0
+                                      : (Feature == TriangleFeature::EdgeBC ? 1 : 2);
+            const std::int64_t a = v[e];
+            const std::int64_t b = v[(e + 1) % 3];
+            const SurfaceEdgeKey key{a < b ? a : b, a < b ? b : a};
+            auto it = rQuery.mEdgeNormal.find(key);
+            if (it != rQuery.mEdgeNormal.end())
+                normal = it->second;
+            break;
+        }
+        case TriangleFeature::Face:
+        default:
+            break;
+    }
+    return normal;
+}
+
 }  // namespace
 
 std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
@@ -44037,8 +44768,8 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
                 const double lb = vec3_norm(b);
                 const double lc = vec3_norm(c);
                 const double num = triple_product(a, b, c);
-                const double den = la * lb * lc + vec3_dot(a, b) * lc + vec3_dot(b, c) * la +
-                                   vec3_dot(c, a) * lb;
+                const double den =
+                    la * lb * lc + vec3_dot(a, b) * lc + vec3_dot(b, c) * la + vec3_dot(c, a) * lb;
                 w += 2.0 * std::atan2(num, den);
             }
             const bool inside = w / (4.0 * 3.14159265358979323846) > 0.5;
@@ -44047,39 +44778,8 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         }
 
         // Pseudonormal: the normal of the nearest FEATURE, not of the nearest
-        // triangle. Using the triangle's own normal here is right on convex
-        // geometry and wrong on the concave side of every crease.
-        const std::size_t ti = static_cast<std::size_t>(best_tri);
-        const std::array<std::int64_t, 3>& v = soup.mVertices[ti];
-        Vec3 normal = rQuery.mFaceNormal[ti];
-        switch (best_hit.mFeature) {
-            case TriangleFeature::VertexA:
-                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[0])];
-                break;
-            case TriangleFeature::VertexB:
-                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[1])];
-                break;
-            case TriangleFeature::VertexC:
-                normal = rQuery.mVertexNormal[static_cast<std::size_t>(v[2])];
-                break;
-            case TriangleFeature::EdgeAB:
-            case TriangleFeature::EdgeBC:
-            case TriangleFeature::EdgeCA: {
-                const std::size_t e = best_hit.mFeature == TriangleFeature::EdgeAB
-                                          ? 0
-                                          : (best_hit.mFeature == TriangleFeature::EdgeBC ? 1 : 2);
-                const std::int64_t a = v[e];
-                const std::int64_t b = v[(e + 1) % 3];
-                const SurfaceEdgeKey key{a < b ? a : b, a < b ? b : a};
-                auto it = rQuery.mEdgeNormal.find(key);
-                if (it != rQuery.mEdgeNormal.end())
-                    normal = it->second;
-                break;
-            }
-            case TriangleFeature::Face:
-            default:
-                break;
-        }
+        // triangle (sd_feature_normal says why).
+        const Vec3 normal = sd_feature_normal(rQuery, soup, best_tri, best_hit.mFeature);
         const double side = vec3_dot(vec3_sub(query, best_hit.mPoint), normal);
         res.mSignedDistance = side < 0.0 ? -dist : dist;
     });
@@ -44088,14 +44788,14 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
 }
 
 std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
-                                                   const std::vector<Vec3>& rPoints) {
+                                                  const std::vector<Vec3>& rPoints) {
     const TriangleSoup& soup = *rQuery.mpSoup;
     const std::size_t n = rPoints.size();
     std::vector<ClosestPointHit> out(n);
 
     parallel_for(n, [&](std::size_t p) {
-        const SdNearestTriangle found = sd_nearest_triangle(
-            rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+        const SdNearestTriangle found =
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
         ClosestPointHit& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -44105,6 +44805,32 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
         res.mPoint = found.mHit.mPoint;
         res.mDistance = std::sqrt(found.mHit.mDistanceSq);
         res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
+    });
+
+    return out;
+}
+
+std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQuery,
+                                                         const std::vector<Vec3>& rPoints) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<SurfaceProjection> out(n);
+
+    parallel_for(n, [&](std::size_t p) {
+        const SdNearestTriangle found =
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+        SurfaceProjection& res = out[p];
+        if (found.mTri < 0) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mTriangle = found.mTri;
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
+        res.mFeature = found.mHit.mFeature;
+        res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
     });
 
     return out;
@@ -52270,10 +52996,12 @@ void write_exodus(const std::string& rPath, const Mesh& rMesh) {
 #endif  // MESHIOPLUSPLUS_HAS_NETCDF
 // ===== end src/cpp/src/formats/exodus.cpp =====
 // ===== begin src/cpp/src/formats/flac3d.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -52390,6 +53118,99 @@ void add_cell(std::vector<Flac3dRawBlock>& rBlocks, const std::string& rType,
     rBlocks.back().mRows.push_back(std::move(cell));
 }
 
+// The slot a group is written into when its name does not name one; the twin
+// of `_flac3d.DEFAULT_SLOT`.
+const char* const kFlac3dDefaultSlot = "Default";
+
+// One ZGROUP/FGROUP as it appears in the file: a (namespace, name, slot)
+// triple plus the file's own cell ids. Zone and face ids are SEPARATE 1-based
+// namespaces, which is why `mIsFace` has to be carried rather than inferred.
+struct Flac3dGroup {
+    bool mIsFace = false;
+    std::string mName;
+    std::string mSlot;
+    std::vector<std::int64_t> mIds;
+};
+
+std::uint16_t flac3d_ru16(std::istream& rIn) {
+    std::uint16_t v;
+    rIn.read(reinterpret_cast<char*>(&v), 2);
+    if (rIn.gcount() != 2)
+        throw ReadError("FLAC3D: unexpected end of file");
+    return v;
+}
+void flac3d_wu16(std::ostream& rOs, std::uint16_t v) {
+    rOs.write(reinterpret_cast<const char*>(&v), 2);
+}
+
+// A length-prefixed (uint16) string, the binary group section's name/slot.
+std::string flac3d_read_str(std::istream& rIn) {
+    const std::uint16_t n = flac3d_ru16(rIn);
+    std::string out(n, '\0');
+    if (n != 0) {
+        rIn.read(&out[0], n);
+        if (rIn.gcount() != static_cast<std::streamsize>(n))
+            throw ReadError("FLAC3D: unexpected end of file");
+    }
+    return out;
+}
+
+std::string flac3d_trim(const std::string& rS) {
+    std::size_t b = rS.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos)
+        return std::string();
+    std::size_t e = rS.find_last_not_of(" \t\r\n");
+    return rS.substr(b, e - b + 1);
+}
+
+// The ascii slot is the raw remainder of the header line and may or may not be
+// quoted (`SLOT "Default"` and `SLOT 5` are both real); the binary one is a
+// bare length-prefixed string. Stripping here is what makes the two readers
+// agree on a group's name for the same mesh -- the Python twin does the same
+// in `_strip_quotes`.
+std::string flac3d_unquote(const std::string& rS) {
+    if (rS.size() >= 2 && rS.front() == rS.back() && (rS.front() == '"' || rS.front() == '\''))
+        return rS.substr(1, rS.size() - 2);
+    return rS;
+}
+
+// `ZGROUP "name" SLOT "slot"` / `FGROUP 'name' SLOT 5`.
+Flac3dGroup flac3d_parse_group_header(const std::string& rLine, bool face) {
+    const std::size_t q1 = rLine.find_first_of("'\"");
+    if (q1 == std::string::npos)
+        throw ReadError("FLAC3D: malformed group header: " + rLine);
+    const std::size_t q2 = rLine.find(rLine[q1], q1 + 1);
+    if (q2 == std::string::npos)
+        throw ReadError("FLAC3D: malformed group header: " + rLine);
+
+    Flac3dGroup g;
+    g.mIsFace = face;
+    g.mName = rLine.substr(q1 + 1, q2 - q1 - 1);
+
+    const std::string rest = rLine.substr(q2 + 1);
+    const std::size_t kw = rest.find("SLOT");
+    if (kw == std::string::npos)
+        throw ReadError("FLAC3D: expected SLOT in group header: " + rLine);
+    g.mSlot = flac3d_unquote(flac3d_trim(rest.substr(kw + 4)));
+    return g;
+}
+
+// The reader's `<zone|face>:<name>:<slot>` key, inverted. Split on the LAST
+// colon because a group name may contain one while a slot may not; a name in
+// any other shape keeps its whole self and takes the default slot. Keep this
+// in step with `_flac3d._decompose_group_name` -- a drift here silently breaks
+// the round trip's idempotence.
+std::pair<std::string, std::string> flac3d_decompose_group_name(const std::string& rLabel,
+                                                                const char* pFlag) {
+    const std::string prefix = std::string(pFlag) + ":";
+    const std::string rest =
+        rLabel.compare(0, prefix.size(), prefix) == 0 ? rLabel.substr(prefix.size()) : rLabel;
+    const std::size_t colon = rest.rfind(':');
+    if (colon == std::string::npos)
+        return {rest, kFlac3dDefaultSlot};
+    return {rest.substr(0, colon), rest.substr(colon + 1)};
+}
+
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
     std::istringstream iss(rS);
@@ -52422,6 +53243,7 @@ Mesh read_flac3d(const std::string& rPath) {
     std::unordered_map<std::int64_t, std::int64_t> point_ids;  // file id -> index
     std::vector<Flac3dRawBlock> z_blocks, f_blocks;
     std::vector<std::int64_t> z_ids, f_ids;
+    std::vector<Flac3dGroup> groups;
 
     if (binary) {
         std::ifstream in(rPath, std::ios::binary);
@@ -52457,17 +53279,47 @@ Mesh read_flac3d(const std::string& rPath) {
                 ids.push_back(cid);
                 add_cell(blocks, it->second, std::move(cell));
             }
-            std::uint32_t num_groups = ru32(in);
-            if (num_groups > 0)
-                throw ReadError("FLAC3D: cell groups handled by Python fallback");
+            // Group section: uint32 count, then per group a uint16-prefixed
+            // name, a uint16-prefixed slot, and a uint32-counted id list.
+            const std::uint32_t num_groups = ru32(in);
+            for (std::uint32_t g = 0; g < num_groups; ++g) {
+                Flac3dGroup grp;
+                grp.mIsFace = (fi == 1);
+                grp.mName = flac3d_read_str(in);
+                grp.mSlot = flac3d_read_str(in);
+                const std::uint32_t n = ru32(in);
+                grp.mIds.resize(n);
+                for (std::uint32_t j = 0; j < n; ++j)
+                    grp.mIds[j] = static_cast<std::int64_t>(ru32(in));
+                groups.push_back(std::move(grp));
+            }
         }
     } else {
         std::ifstream in(rPath, std::ios::binary);
         std::string line;
+        // Index of the group whose id list the following lines belong to
+        // (`npos` = none). A group header is followed by whitespace-separated
+        // id lines until anything that is not one -- a comment, a new group, a
+        // cell record, a blank line or EOF.
+        std::size_t active = std::string::npos;
         while (std::getline(in, line)) {
             std::vector<std::string> s = flac3d_split_ws(line);
-            if (s.empty())
+            if (s.empty()) {
+                active = std::string::npos;
                 continue;
+            }
+            if (s[0] == "ZGROUP" || s[0] == "FGROUP") {
+                groups.push_back(flac3d_parse_group_header(line, s[0] == "FGROUP"));
+                active = groups.size() - 1;
+                continue;
+            }
+            if (active != std::string::npos && s[0][0] != '*' && s[0] != "G" && s[0] != "Z" &&
+                s[0] != "F") {
+                for (const std::string& t : s)
+                    groups[active].mIds.push_back(std::strtoll(t.c_str(), nullptr, 10));
+                continue;
+            }
+            active = std::string::npos;
             if (s[0] == "G") {
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
@@ -52493,8 +53345,6 @@ Mesh read_flac3d(const std::string& rPath) {
                     f_ids.push_back(cid);
                     add_cell(f_blocks, it->second, std::move(cell));
                 }
-            } else if (s[0] == "ZGROUP" || s[0] == "FGROUP") {
-                throw ReadError("FLAC3D: cell groups handled by Python fallback");
             }
             // other lines (comments starting with '*') are ignored
         }
@@ -52526,6 +53376,51 @@ Mesh read_flac3d(const std::string& rPath) {
     emit(f_blocks);
     emit(z_blocks);
 
+    // ZGROUP/FGROUP -> one `RegionKind::Cell` region each.
+    //
+    // `emit` walks f_blocks then z_blocks in read order, so the global
+    // (block-major) index of the i-th face read is exactly `i` and of the i-th
+    // zone `f_ids.size() + i` -- the same invariant the cell_ids block below
+    // already relies on. Zone and face ids live in separate 1-based namespaces,
+    // hence two maps.
+    if (!groups.empty()) {
+        std::unordered_map<std::int64_t, std::int64_t> f_map, z_map;
+        f_map.reserve(f_ids.size());
+        z_map.reserve(z_ids.size());
+        for (std::size_t i = 0; i < f_ids.size(); ++i)
+            f_map[f_ids[i]] = static_cast<std::int64_t>(i);
+        const std::int64_t z_base = static_cast<std::int64_t>(f_ids.size());
+        for (std::size_t i = 0; i < z_ids.size(); ++i)
+            z_map[z_ids[i]] = z_base + static_cast<std::int64_t>(i);
+
+        for (const Flac3dGroup& g : groups) {
+            const auto& map = g.mIsFace ? f_map : z_map;
+            std::vector<std::int64_t> ent;
+            ent.reserve(g.mIds.size());
+            std::size_t dropped = 0;
+            for (std::int64_t id : g.mIds) {
+                auto it = map.find(id);
+                if (it == map.end()) {
+                    ++dropped;  // an id the file never defined -- never guessed at
+                    continue;
+                }
+                ent.push_back(it->second);
+            }
+            if (dropped != 0)
+                log::warn(
+                    "FLAC3D: group '{}' names {} cell id(s) the file does not define; "
+                    "ignored",
+                    g.mName, dropped);
+            NDArray entries(DType::Int64, {ent.size()});
+            std::copy(ent.begin(), ent.end(), entries.As<std::int64_t>());
+            // An empty group is still carried: the name is information (the
+            // same rule detail/region_remap.hpp applies to every operation).
+            mesh.AddRegion(
+                Region(std::string(g.mIsFace ? "face:" : "zone:") + g.mName + ":" + g.mSlot,
+                       RegionKind::Cell, std::move(entries)));
+        }
+    }
+
     // Global cell ids -> cell_data["cell_ids"], split per block.
     if (mesh.NumCellBlocks() != 0) {
         std::int64_t z_offset = static_cast<std::int64_t>(f_ids.size());
@@ -52552,6 +53447,99 @@ Mesh read_flac3d(const std::string& rPath) {
 }
 
 namespace {
+
+// One group as it is about to be written: name, slot and this category's own
+// 1-based cell ids.
+struct Flac3dGroupOut {
+    std::string mName;
+    std::string mSlot;
+    std::vector<std::uint32_t> mIds;
+};
+
+// Collect the mesh's `RegionKind::Cell` regions for one FLAC3D category.
+//
+// `rIdx` is that category's block list *in write order*, so the running
+// counter here reproduces `_write_cells`' own `gid` exactly. A region whose
+// name explicitly names the other category is skipped; one that names this
+// category is emitted even when empty, so a file read from disk is a fixed
+// point. Anything else is placed by its members alone, which is how a region
+// carried in from another format can land in both sections at once.
+std::vector<Flac3dGroupOut> flac3d_groups_for(const Mesh& rMesh,
+                                              const std::vector<std::size_t>& rIdx,
+                                              const char* pFlag, const char* pOther) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+
+    std::unordered_map<std::size_t, std::int64_t> local_base;
+    std::int64_t gid = 0;
+    for (std::size_t b : rIdx) {
+        local_base[b] = gid;
+        gid += static_cast<std::int64_t>(rMesh.Cells(b).NumCells());
+    }
+
+    const std::string own_prefix = std::string(pFlag) + ":";
+    const std::string other_prefix = std::string(pOther) + ":";
+
+    std::vector<Flac3dGroupOut> out;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        if (r.mName.compare(0, other_prefix.size(), other_prefix) == 0)
+            continue;
+
+        std::vector<std::uint32_t> ids;
+        const std::int64_t* e = r.Entries();
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            const auto [b, row] = detail::global_to_block_row(bases, e[k]);
+            auto it = local_base.find(b);
+            if (b == static_cast<std::size_t>(-1) || it == local_base.end())
+                continue;  // a cell of the other category, or out of range
+            ids.push_back(
+                static_cast<std::uint32_t>(it->second + static_cast<std::int64_t>(row) + 1));
+        }
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+
+        const bool named_for_us = r.mName.compare(0, own_prefix.size(), own_prefix) == 0;
+        if (ids.empty() && !named_for_us)
+            continue;
+
+        const auto [name, slot] = flac3d_decompose_group_name(r.mName, pFlag);
+        out.push_back(Flac3dGroupOut{name, slot, std::move(ids)});
+    }
+    return out;
+}
+
+// Group section emitters. The ascii layout -- 20 ids per line, each preceded
+// by a space -- byte-matches `_flac3d._write_table`, and the binary one is the
+// reader's own (uint16-prefixed name, uint16-prefixed slot, uint32-counted id
+// list), so a file is readable whichever engine produced it.
+void flac3d_write_groups_ascii(std::ostream& rOs, const std::vector<Flac3dGroupOut>& rGroups,
+                               const char* pSection) {
+    rOs << "* " << pSection << " GROUPS\n";
+    const std::string kw = std::string(pSection) == "ZONE" ? "ZGROUP" : "FGROUP";
+    for (const Flac3dGroupOut& g : rGroups) {
+        rOs << kw << " \"" << g.mName << "\" SLOT \"" << g.mSlot << "\"\n";
+        for (std::size_t k = 0; k < g.mIds.size(); ++k) {
+            rOs << ' ' << g.mIds[k];
+            if ((k + 1) % 20 == 0 || k + 1 == g.mIds.size())
+                rOs << '\n';
+        }
+    }
+}
+
+void flac3d_write_groups_binary(std::ostream& rOs, const std::vector<Flac3dGroupOut>& rGroups) {
+    wu32(rOs, static_cast<std::uint32_t>(rGroups.size()));
+    for (const Flac3dGroupOut& g : rGroups) {
+        flac3d_wu16(rOs, static_cast<std::uint16_t>(g.mName.size()));
+        rOs.write(g.mName.data(), static_cast<std::streamsize>(g.mName.size()));
+        flac3d_wu16(rOs, static_cast<std::uint16_t>(g.mSlot.size()));
+        rOs.write(g.mSlot.data(), static_cast<std::streamsize>(g.mSlot.size()));
+        wu32(rOs, static_cast<std::uint32_t>(g.mIds.size()));
+        for (std::uint32_t v : g.mIds)
+            wu32(rOs, v);
+    }
+}
 
 // Reorder one zone cell to FLAC3D order, choosing the right-handed permutation
 // via the scalar triple product of the first four ordered corners.
@@ -52609,6 +53597,9 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     const std::size_t pdim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
 
+    const std::vector<Flac3dGroupOut> zgroups = flac3d_groups_for(rMesh, zone_idx, "zone", "face");
+    const std::vector<Flac3dGroupOut> fgroups = flac3d_groups_for(rMesh, face_idx, "face", "zone");
+
     if (binary) {
         wu32(f, 1375135718u);
         wu32(f, 3u);
@@ -52617,9 +53608,12 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         for (std::size_t i = 0; i < npts; ++i) {
             wu32(f, static_cast<std::uint32_t>(i + 1));
             for (int c = 0; c < 3; ++c)
-                wf64(f, c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c)
-                                                   : 0.0);
+                wf64(f,
+                     c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0);
         }
+        // ZONES and FACES are numbered independently in a FLAC3D file -- both
+        // start at 1 -- so each section gets its own counter. Sharing one made
+        // the ids disagree with the group lists written beside them.
         std::uint32_t gid = 0;
         // zones
         std::uint32_t nz = 0;
@@ -52645,8 +53639,9 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
                     wu32(f, static_cast<std::uint32_t>(v + 1));
             }
         }
-        wu32(f, 0u);  // zone groups
+        flac3d_write_groups_binary(f, zgroups);
         // faces
+        gid = 0;
         std::uint32_t nf = 0;
         for (auto i : face_idx)
             nf += static_cast<std::uint32_t>(rMesh.Cells(i).NumCells());
@@ -52666,7 +53661,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
                          static_cast<std::uint32_t>(detail::read_int(conn, r * ncols + local) + 1));
             }
         }
-        wu32(f, 0u);  // face groups
+        flac3d_write_groups_binary(f, fgroups);
         return;
     }
 
@@ -52675,7 +53670,10 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
     f << "* GRIDPOINTS\n";
     char buf[64];
     for (std::size_t i = 0; i < npts; ++i) {
-        f << "G\t" << (i + 1) << "\t";
+        // `setw(8)` matches the Python reference writer's `"G\t{:8}\t"`, which
+        // is what makes the two engines' ascii output byte-identical; the field
+        // is whitespace-tokenized on read, so the padding carries no meaning.
+        f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
             double v =
                 c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
@@ -52704,8 +53702,9 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             f << "\n";
         }
     }
-    f << "* ZONE GROUPS\n";
+    flac3d_write_groups_ascii(f, zgroups, "ZONE");
 
+    gid = 0;
     f << "* FACES\n";
     for (auto i : face_idx) {
         const auto cb = rMesh.Cells(i);
@@ -52722,7 +53721,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             f << "\n";
         }
     }
-    f << "* FACE GROUPS\n";
+    flac3d_write_groups_ascii(f, fgroups, "FACE");
 }
 
 }  // namespace meshioplusplus
@@ -75339,6 +76338,295 @@ CropResult crop_predicate(const Mesh& rMesh, const std::string& rArray, RefineCo
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/crop.cpp =====
+// ===== begin src/cpp/src/operations/curvature.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+using detail::Vec3;
+
+constexpr double kCurvTwoPi = 6.283185307179586476925286766559;
+constexpr double kCurvPi = 3.141592653589793238462643383279;
+
+/// One triangle corner's angle and the cotangent of it.
+///
+/// Both come from the same `(cross, dot)` pair, which is what keeps them
+/// consistent. The angle is `atan2(|cross|, dot)` rather than `acos` of a
+/// clamped ratio: `detail::sd_corner_angle` takes the `acos` route because a
+/// pseudonormal weight does not care about the last few digits, but an angle
+/// DEFECT is a sum of angles minus `2*pi`, so the digits are exactly what
+/// survives -- do not unify the two.
+///
+/// The cotangent is `dot / |cross|`, trig-free and correctly NEGATIVE at an
+/// obtuse corner. Never clamp it: clamping is the usual "fix" and it destroys
+/// the operator's linear precision, which is the whole reason to use cotangent
+/// weights rather than a uniform graph Laplacian.
+struct CurvCorner {
+    double mAngle = 0.0;
+    double mCotangent = 0.0;
+};
+
+CurvCorner curv_corner(const Vec3& rApex, const Vec3& rB, const Vec3& rC) {
+    const Vec3 u = detail::vec3_sub(rB, rApex);
+    const Vec3 v = detail::vec3_sub(rC, rApex);
+    const Vec3 cross = detail::vec3_cross(u, v);
+    const double cross_norm = std::sqrt(detail::vec3_norm_sq(cross));
+    const double dot = detail::vec3_dot(u, v);
+    CurvCorner out;
+    out.mAngle = std::atan2(cross_norm, dot);
+    out.mCotangent = cross_norm > 0.0 ? dot / cross_norm : 0.0;
+    return out;
+}
+
+/// Everything one serial pass over the triangles accumulates.
+struct CurvAccumulators {
+    std::vector<double> mAngleSum;  ///< sum of incident corner angles
+    std::vector<Vec3> mLaplacian;   ///< the cotangent Laplacian of the positions
+    std::vector<double> mArea;      ///< the dual area
+    std::vector<Vec3> mNormal;      ///< area-weighted vertex normal
+    std::vector<char> mTouched;     ///< referenced by at least one live triangle
+    std::int64_t mNumDegenerate = 0;
+};
+
+/// The per-vertex dual-area contributions of one triangle.
+///
+/// Mixed Voronoi (Meyer et al. 2003): a non-obtuse triangle contributes
+/// `(1/8) * (cot(alpha) * |e1|^2 + cot(beta) * |e2|^2)` to each of its corners,
+/// where the cotangents are at the two corners OPPOSITE the respective edges.
+/// An obtuse triangle has no valid Voronoi region, so it contributes half its
+/// area at the obtuse corner and a quarter at each of the others.
+void curv_dual_area(const Vec3& rA, const Vec3& rB, const Vec3& rC, const CurvCorner& rCa,
+                    const CurvCorner& rCb, const CurvCorner& rCc, double TriArea,
+                    CurvatureDualArea Mode, double* pOut) {
+    if (Mode == CurvatureDualArea::Barycentric) {
+        // Branch-free, hence bit-exactly twinnable in numpy.
+        const double third = TriArea / 3.0;
+        pOut[0] = third;
+        pOut[1] = third;
+        pOut[2] = third;
+        return;
+    }
+    const bool obtuse_a = rCa.mAngle > 0.5 * kCurvPi;
+    const bool obtuse_b = rCb.mAngle > 0.5 * kCurvPi;
+    const bool obtuse_c = rCc.mAngle > 0.5 * kCurvPi;
+    if (obtuse_a || obtuse_b || obtuse_c) {
+        pOut[0] = obtuse_a ? 0.5 * TriArea : 0.25 * TriArea;
+        pOut[1] = obtuse_b ? 0.5 * TriArea : 0.25 * TriArea;
+        pOut[2] = obtuse_c ? 0.5 * TriArea : 0.25 * TriArea;
+        return;
+    }
+    const double ab = detail::vec3_norm_sq(detail::vec3_sub(rB, rA));
+    const double bc = detail::vec3_norm_sq(detail::vec3_sub(rC, rB));
+    const double ca = detail::vec3_norm_sq(detail::vec3_sub(rA, rC));
+    // Edge AB is opposite corner C, BC opposite A, CA opposite B.
+    pOut[0] = 0.125 * (rCc.mCotangent * ab + rCb.mCotangent * ca);
+    pOut[1] = 0.125 * (rCc.mCotangent * ab + rCa.mCotangent * bc);
+    pOut[2] = 0.125 * (rCa.mCotangent * bc + rCb.mCotangent * ca);
+}
+
+/// The serial accumulation pass.
+///
+/// Serial deliberately: this is a scatter into shared per-vertex slots, so a
+/// `parallel_for` would be both racy and -- once made safe -- order-dependent
+/// in the last bits. The finalize pass below is the parallel half, and it is
+/// per-vertex and order-independent. The same phase split `surface_distance`
+/// and `surface.cpp` already use.
+CurvAccumulators curv_accumulate(const detail::TriangleSoup& rSoup, CurvatureDualArea Mode) {
+    const std::size_t npts = rSoup.mPoints.size();
+    CurvAccumulators acc;
+    acc.mAngleSum.assign(npts, 0.0);
+    acc.mLaplacian.assign(npts, Vec3{0.0, 0.0, 0.0});
+    acc.mArea.assign(npts, 0.0);
+    acc.mNormal.assign(npts, Vec3{0.0, 0.0, 0.0});
+    acc.mTouched.assign(npts, 0);
+
+    const std::size_t ntri = rSoup.NumTriangles();
+    for (std::size_t t = 0; t < ntri; ++t) {
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        const Vec3 cross = detail::vec3_cross(detail::vec3_sub(b, a), detail::vec3_sub(c, a));
+        // Exactly `soup_quality`'s predicate, so the two cannot disagree about
+        // which triangles are degenerate.
+        if (!(detail::vec3_norm_sq(cross) > 0.0)) {
+            ++acc.mNumDegenerate;
+            continue;
+        }
+        const double tri_area = 0.5 * std::sqrt(detail::vec3_norm_sq(cross));
+
+        const CurvCorner ca = curv_corner(a, b, c);
+        const CurvCorner cb = curv_corner(b, c, a);
+        const CurvCorner cc = curv_corner(c, a, b);
+
+        double dual[3] = {0.0, 0.0, 0.0};
+        curv_dual_area(a, b, c, ca, cb, cc, tri_area, Mode, dual);
+
+        const Vec3* corner[3] = {&a, &b, &c};
+        const CurvCorner* angle[3] = {&ca, &cb, &cc};
+        for (std::size_t i = 0; i < 3; ++i) {
+            const std::size_t vi = static_cast<std::size_t>(v[i]);
+            acc.mTouched[vi] = 1;
+            acc.mAngleSum[vi] += angle[i]->mAngle;
+            acc.mArea[vi] += dual[i];
+            acc.mNormal[vi] = detail::vec3_add(acc.mNormal[vi], cross);  // area-weighted
+        }
+        // The cotangent Laplacian of the positions. Edge (i, j)'s weight is the
+        // cotangent at the corner OPPOSITE it; each triangle contributes one
+        // half of each of its three edges' weights, and the two triangles
+        // sharing an edge complete the usual (cot a + cot b) / 2.
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::size_t i = e;
+            const std::size_t j = (e + 1) % 3;
+            const std::size_t k = (e + 2) % 3;  // the opposite corner
+            const double w = 0.5 * angle[k]->mCotangent;
+            const Vec3 d = detail::vec3_sub(*corner[i], *corner[j]);
+            const std::size_t vi = static_cast<std::size_t>(v[i]);
+            const std::size_t vj = static_cast<std::size_t>(v[j]);
+            acc.mLaplacian[vi] = detail::vec3_add(acc.mLaplacian[vi], detail::vec3_scale(d, w));
+            acc.mLaplacian[vj] = detail::vec3_add(acc.mLaplacian[vj], detail::vec3_scale(d, -w));
+        }
+    }
+    return acc;
+}
+
+/// Which vertices sit on a boundary, from the SAME edge map `soup_quality` and
+/// `repair` read -- so the three cannot disagree about what a boundary is.
+std::vector<char> curv_boundary_vertices(const detail::TriangleSoup& rSoup,
+                                         const detail::SurfaceEdgeMap& rEdges) {
+    std::vector<char> is_boundary(rSoup.mPoints.size(), 0);
+    for (const auto& kv : rEdges) {
+        if (kv.second.mUsed != 1)
+            continue;
+        // A self-loop can only come from a triangle with a repeated corner,
+        // which is degenerate and was skipped by the accumulation pass. Letting
+        // it mark a boundary would NaN out a perfectly good vertex because of a
+        // triangle that contributed nothing -- and `soup_quality` counts it as
+        // a boundary edge (correctly, for its own purpose), so the shared map
+        // carries it and this is where it has to be filtered.
+        if (kv.first[0] == kv.first[1])
+            continue;
+        is_boundary[static_cast<std::size_t>(kv.first[0])] = 1;
+        is_boundary[static_cast<std::size_t>(kv.first[1])] = 1;
+    }
+    return is_boundary;
+}
+
+}  // namespace
+
+CurvatureDualArea curvature_dual_area_from_name(const std::string& rName) {
+    if (rName == "mixed-voronoi")
+        return CurvatureDualArea::MixedVoronoi;
+    if (rName == "barycentric")
+        return CurvatureDualArea::Barycentric;
+    throw std::invalid_argument("meshio++: curvature: unknown dual area '" + rName +
+                                "' (expected 'mixed-voronoi' or 'barycentric')");
+}
+
+const char* curvature_dual_area_name(CurvatureDualArea Mode) {
+    switch (Mode) {
+        case CurvatureDualArea::MixedVoronoi:
+            return "mixed-voronoi";
+        case CurvatureDualArea::Barycentric:
+            return "barycentric";
+    }
+    return "mixed-voronoi";
+}
+
+CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOptions) {
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
+    const detail::SurfaceEdgeMap edges = detail::build_surface_edges(soup);
+
+    CurvatureResult out;
+    out.mQuality = detail::soup_quality(soup);
+    out.mMesh = detail::clone_mesh(
+        rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
+
+    const std::size_t npts = soup.mPoints.size();
+    const CurvAccumulators acc = curv_accumulate(soup, rOptions.mDualArea);
+    const std::vector<char> is_boundary = curv_boundary_vertices(soup, edges);
+    out.mNumDegenerate = acc.mNumDegenerate;
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    NDArray mean(DType::Float64, {npts});
+    NDArray gauss(DType::Float64, {npts});
+    NDArray area(DType::Float64, {npts});
+    NDArray principal(DType::Float64, {npts, 2});
+    double* p_mean = mean.As<double>();
+    double* p_gauss = gauss.As<double>();
+    double* p_area = area.As<double>();
+    double* p_principal = principal.As<double>();
+
+    // Per-vertex and order-independent: the parallel half of the phase split.
+    parallel_for(npts, [&](std::size_t i) {
+        const double a = acc.mArea[i];
+        p_area[i] = acc.mTouched[i] ? a : nan;
+        if (!acc.mTouched[i] || !(a > 0.0) || (is_boundary[i] && !rOptions.mIncludeBoundary)) {
+            p_mean[i] = nan;
+            p_gauss[i] = nan;
+            p_principal[i * 2] = nan;
+            p_principal[i * 2 + 1] = nan;
+            return;
+        }
+        // The geodesic form on a boundary vertex, the closed one otherwise.
+        const double turn = is_boundary[i] ? kCurvPi : kCurvTwoPi;
+        const double k = (turn - acc.mAngleSum[i]) / a;
+        // ||L p|| / 2A is |H|; the sign comes from whether the mean-curvature
+        // normal points along the surface normal or against it. That is what
+        // makes H orientation-dependent and K not.
+        const Vec3& lp = acc.mLaplacian[i];
+        const double h_mag = 0.5 * std::sqrt(detail::vec3_norm_sq(lp)) / a;
+        // `mLaplacian` accumulates sum(w * (p_i - p_j)), which is the NEGATIVE
+        // of the usual Laplacian sum(w * (p_j - p_i)), so the mean-curvature
+        // normal is -lp. On a convex outward-oriented surface that points along
+        // the vertex normal, and H must come out positive there.
+        const double sign = detail::vec3_dot(lp, acc.mNormal[i]) > 0.0 ? 1.0 : -1.0;
+        const double h = h_mag * sign;
+        p_mean[i] = h;
+        p_gauss[i] = k;
+        // k1, k2 = H +- sqrt(H^2 - K). The radicand is negative only through
+        // discretization error, so clamp rather than produce NaN.
+        const double disc = h * h - k;
+        const double root = std::sqrt(disc > 0.0 ? disc : 0.0);
+        p_principal[i * 2] = h + root;
+        p_principal[i * 2 + 1] = h - root;
+    });
+
+    for (std::size_t i = 0; i < npts; ++i) {
+        if (!acc.mTouched[i])
+            ++out.mNumIsolated;
+        else if (is_boundary[i])
+            ++out.mNumBoundary;
+        out.mTotalAngleDefect += acc.mTouched[i] ? (kCurvTwoPi - acc.mAngleSum[i]) : 0.0;
+    }
+
+    if (rOptions.mMean)
+        out.mMesh.AddPointData(kCurvatureMeanName, std::move(mean));
+    if (rOptions.mGaussian)
+        out.mMesh.AddPointData(kCurvatureGaussianName, std::move(gauss));
+    if (rOptions.mRecordArea)
+        out.mMesh.AddPointData(kCurvatureAreaName, std::move(area));
+    if (rOptions.mRecordPrincipal)
+        out.mMesh.AddPointData(kCurvaturePrincipalName, std::move(principal));
+
+    if (out.mQuality.mInconsistentPairs != 0)
+        log::warn(
+            "curvature: {} edge pair(s) wind the same way, so the sign of "
+            "'{}' is not trustworthy; run repair(mesh, {{.mFixOrientation = true}}) first",
+            out.mQuality.mInconsistentPairs, kCurvatureMeanName);
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/curvature.cpp =====
 // ===== begin src/cpp/src/operations/data_average.cpp =====
 #include <cmath>
 #include <cstddef>
@@ -83789,6 +85077,15 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
+        {"Curvature",
+         {"Mean", "Gaussian", "DualArea", "IncludeBoundary", "RecordArea", "RecordPrincipal",
+          "Region"}},
+        {"Repair",
+         {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
+          "WeldTolerance", "RecordProvenance"}},
+        {"SobolevDeform",
+         {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
+          "MaxIterations", "Tolerance"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
@@ -83848,6 +85145,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "Split")
         return "'Split' produces several output meshes and is not a pipeline "
                "step; use the `split` CLI verb";
+    if (rOp == "Shrinkwrap")
+        return "'Shrinkwrap' needs a second (target) mesh and is not a pipeline "
+               "step; use the `shrinkwrap` CLI verb";
     if (rOp == "Diff")
         return "'Diff' compares two meshes and is not a pipeline step; use the "
                "`diff` CLI verb";
@@ -84219,6 +85519,89 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(hr.mMesh);
     }
+    if (op == "Curvature") {
+        // A pure data step: geometry is untouched, so the pipeline carries the
+        // mesh straight through with the curvature arrays attached.
+        CurvatureOptions opts;
+        opts.mMean = pipe_flag(rStep, "Mean", true);
+        opts.mGaussian = pipe_flag(rStep, "Gaussian", true);
+        opts.mDualArea =
+            curvature_dual_area_from_name(pipe_text(rStep, "DualArea", "mixed-voronoi"));
+        opts.mIncludeBoundary = pipe_flag(rStep, "IncludeBoundary", false);
+        opts.mRecordArea = pipe_flag(rStep, "RecordArea", false);
+        opts.mRecordPrincipal = pipe_flag(rStep, "RecordPrincipal", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        CurvatureResult cr = compute_curvature(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumBoundary", static_cast<double>(cr.mNumBoundary)},
+                        {"NumIsolated", static_cast<double>(cr.mNumIsolated)},
+                        {"NumDegenerate", static_cast<double>(cr.mNumDegenerate)},
+                        {"TotalAngleDefect", cr.mTotalAngleDefect}});
+        // H's sign comes from the surface's own winding, so a mesh whose facets
+        // disagree about which side is out yields sign-flipped patches with no
+        // error raised. Say so rather than letting it pass silently.
+        if (cr.mQuality.mInconsistentPairs > 0)
+            rReport.mWarnings.push_back(
+                "curvature: " + std::to_string(cr.mQuality.mInconsistentPairs) +
+                " edge pair(s) wind the same way, so the sign of 'curvature:mean' is not "
+                "trustworthy");
+        return std::move(cr.mMesh);
+    }
+    if (op == "Repair") {
+        RepairOptions opts;
+        opts.mFixOrientation = pipe_flag(rStep, "FixOrientation", true);
+        opts.mOrientOutward = pipe_flag(rStep, "OrientOutward", true);
+        opts.mFillHoles = pipe_flag(rStep, "FillHoles", true);
+        opts.mSplitNonManifold = pipe_flag(rStep, "SplitNonManifold", true);
+        opts.mMaxHoleEdges = static_cast<std::int64_t>(pipe_number(rStep, "MaxHoleEdges", 10));
+        opts.mWeldTolerance = pipe_number(rStep, "WeldTolerance", 0.0);
+        opts.mRecordProvenance = pipe_flag(rStep, "RecordProvenance", false);
+        RepairResult rr = repair(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlipped", static_cast<double>(rr.mNumFlipped)},
+                        {"NumComponents", static_cast<double>(rr.mNumComponents)},
+                        {"NumVerticesSplit", static_cast<double>(rr.mNumVerticesSplit)},
+                        {"NumHolesFilled", static_cast<double>(rr.mNumHolesFilled)},
+                        {"NumHolesSkipped", static_cast<double>(rr.mNumHolesSkipped)},
+                        {"NumFacesAdded", static_cast<double>(rr.mNumFacesAdded)},
+                        {"NumPointsAdded", static_cast<double>(rr.mNumPointsAdded)},
+                        {"PointsWelded", static_cast<double>(rr.mPointsWelded)}});
+        // What repair could NOT fix is worth saying: a component whose
+        // orientation has no consistent assignment, and non-manifold edges,
+        // which are counted rather than split.
+        if (rr.mNumUnorientable > 0)
+            rReport.mWarnings.push_back(
+                "repair: " + std::to_string(rr.mNumUnorientable) +
+                " component(s) are not orientable; their winding is a best effort");
+        if (rr.mQualityAfter.mNonManifoldEdges > 0)
+            rReport.mWarnings.push_back(
+                "repair: " + std::to_string(rr.mQualityAfter.mNonManifoldEdges) +
+                " non-manifold edge(s) remain; repair counts them, it does not split them");
+        return std::move(rr.mMesh);
+    }
+    if (op == "SobolevDeform") {
+        SobolevOptions opts;
+        opts.mArrayName = pipe_text(rStep, "Array", "");
+        opts.mLengthScale = pipe_number(rStep, "LengthScale", 0.0);
+        opts.mFixedPointsArray = pipe_text(rStep, "FixedPointsArray", "");
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", false);
+        opts.mRecordFiltered = pipe_flag(rStep, "RecordFiltered", false);
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 128));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        SobolevResult sr = sobolev_deform(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumIterations", static_cast<double>(sr.mNumIterations)},
+                        {"Residual", sr.mResidual},
+                        {"Converged", sr.mConverged ? 1.0 : 0.0},
+                        {"NumFixed", static_cast<double>(sr.mNumFixed)},
+                        {"NumIsolated", static_cast<double>(sr.mNumIsolated)},
+                        {"MaxDisplacement", sr.mMaxDisplacement}});
+        if (!sr.mConverged)
+            rReport.mWarnings.push_back("sobolev_deform: conjugate gradients did not converge in " +
+                                        std::to_string(sr.mNumIterations) +
+                                        " iteration(s); the last iterate is returned");
+        return std::move(sr.mMesh);
+    }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the
         // mesh straight through with the indicator (and, if requested, the
@@ -84266,8 +85649,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
              {"NumNonManifoldVertices", static_cast<double>(rr.mNumNonManifoldVertices)}});
         if (rr.mNumIsolatedClusters > 0 || rr.mNumNonManifoldVertices > 0)
             rReport.mWarnings.push_back(
-                "remesh: " + std::to_string(rr.mNumIsolatedClusters) +
-                " isolated cluster(s), " + std::to_string(rr.mNumNonManifoldVertices) +
+                "remesh: " + std::to_string(rr.mNumIsolatedClusters) + " isolated cluster(s), " +
+                std::to_string(rr.mNumNonManifoldVertices) +
                 " non-manifold vertex/vertices could not be repaired; output may be "
                 "non-manifold near them");
         return std::move(rr.mMesh);
@@ -89808,6 +91191,787 @@ ReorderResult reorder(const Mesh& rMesh, ReorderMethod method) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/reorder.cpp =====
+// ===== begin src/cpp/src/operations/repair.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+using detail::Vec3;
+using RepairTri = std::array<std::int64_t, 3>;
+
+constexpr const char* kRepairPrefix = "meshio++: repair: ";
+
+// Reject, by name, every construct outside the surface scope -- BEFORE the
+// simplexify call, whose own policy is to pass unsupported blocks through.
+// Lower-dimensional blocks are allowed and ride along (repair.hpp says why).
+void repair_check_blocks(const Mesh& rMesh) {
+    bool has_surface = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(std::string(kRepairPrefix) +
+                                        "mesh contains a polyhedron cell block; repair operates "
+                                        "on surface meshes (run extract_surface first)");
+        const CellType ct = cell_type_from_name(type);
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(std::string(kRepairPrefix) +
+                                        "mesh contains 3D volume cell block '" + type +
+                                        "'; repair operates on surface meshes (extract_surface "
+                                        "first)");
+        if (dim != 2)
+            continue;
+        has_surface = true;
+        const bool polygon = type.rfind("polygon", 0) == 0;
+        if (!polygon && ct != CellType::Triangle && ct != CellType::Quad)
+            throw std::invalid_argument(std::string(kRepairPrefix) +
+                                        "cannot repair higher-order cell block '" + type +
+                                        "' (linearize the mesh first)");
+        if (cb.IsRagged() && !polygon)
+            throw std::invalid_argument(std::string(kRepairPrefix) +
+                                        "cannot repair ragged cell block '" + type + "'");
+    }
+    if (!has_surface)
+        throw std::invalid_argument(std::string(kRepairPrefix) +
+                                    "mesh contains no surface (2D) cell block");
+}
+
+// --- the half-edge table ------------------------------------------------------
+// 3T records sorted by (lo, hi, tri, slot); an undirected edge is a run of
+// equal (lo, hi). Parallel fill, SERIAL sort, so the edge ids are a function
+// of the connectivity alone. A self-loop (a repeated corner) gets no edge id
+// and is never crossed or traced.
+struct RepairHalfEdge {
+    std::int64_t mLo = 0;
+    std::int64_t mHi = 0;
+    std::int64_t mTri = 0;
+    std::uint8_t mSlot = 0;     // which of the triangle's three edges
+    std::uint8_t mForward = 0;  // traversed lo -> hi as stored
+    bool operator<(const RepairHalfEdge& rO) const {
+        if (mLo != rO.mLo)
+            return mLo < rO.mLo;
+        if (mHi != rO.mHi)
+            return mHi < rO.mHi;
+        if (mTri != rO.mTri)
+            return mTri < rO.mTri;
+        return mSlot < rO.mSlot;
+    }
+};
+
+struct RepairEdges {
+    std::vector<RepairHalfEdge> mRecs;  // sorted
+    std::vector<std::size_t> mBegin;    // per edge: first record
+    std::vector<std::size_t> mEnd;      // per edge: one past the last record
+    std::vector<std::int64_t> mEdgeOf;  // per (tri, slot): edge id, -1 for a self-loop
+    std::size_t NumEdges() const { return mBegin.size(); }
+    std::size_t Count(std::size_t e) const { return mEnd[e] - mBegin[e]; }
+};
+
+RepairEdges repair_build_edges(const std::vector<RepairTri>& rTris) {
+    const std::size_t ntri = rTris.size();
+    RepairEdges out;
+    out.mRecs.resize(ntri * 3);
+    parallel_for(ntri, [&](std::size_t t) {
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t u = rTris[t][e];
+            const std::int64_t w = rTris[t][(e + 1) % 3];
+            RepairHalfEdge& r = out.mRecs[t * 3 + e];
+            r.mLo = u < w ? u : w;
+            r.mHi = u < w ? w : u;
+            r.mTri = static_cast<std::int64_t>(t);
+            r.mSlot = static_cast<std::uint8_t>(e);
+            r.mForward = u < w ? 1 : 0;
+        }
+    });
+    std::sort(out.mRecs.begin(), out.mRecs.end());
+    out.mEdgeOf.assign(ntri * 3, -1);
+    std::size_t i = 0;
+    while (i < out.mRecs.size()) {
+        std::size_t j = i + 1;
+        while (j < out.mRecs.size() && out.mRecs[j].mLo == out.mRecs[i].mLo &&
+               out.mRecs[j].mHi == out.mRecs[i].mHi)
+            ++j;
+        if (out.mRecs[i].mLo != out.mRecs[i].mHi) {
+            const std::int64_t id = static_cast<std::int64_t>(out.mBegin.size());
+            out.mBegin.push_back(i);
+            out.mEnd.push_back(j);
+            for (std::size_t k = i; k < j; ++k)
+                out.mEdgeOf[static_cast<std::size_t>(out.mRecs[k].mTri) * 3 + out.mRecs[k].mSlot] =
+                    id;
+        }
+        i = j;
+    }
+    return out;
+}
+
+// --- bowtie splitting -----------------------------------------------------------
+// A vertex whose star is edge-disconnected is duplicated once per extra
+// component (geometry unchanged); the lowest-triangle group keeps the id.
+// Detection runs in parallel per vertex over the ORIGINAL connectivity into
+// disjoint slots; ids are handed out in a serial ascending-vertex pass, so
+// they are stable. Decisions at different vertices cannot interfere: two
+// triangles in different groups at v share no edge (v, w) by definition, so
+// w's own connectivity through v-edges is unaffected by the split.
+struct RepairStar {
+    std::vector<std::size_t> mOffsets;  // n + 1
+    std::vector<std::int64_t> mTri;     // ascending per vertex
+};
+
+RepairStar repair_build_star(const std::vector<RepairTri>& rTris, std::size_t n) {
+    RepairStar s;
+    s.mOffsets.assign(n + 1, 0);
+    for (const RepairTri& t : rTris)
+        for (const std::int64_t v : t)
+            ++s.mOffsets[static_cast<std::size_t>(v) + 1];
+    for (std::size_t i = 0; i < n; ++i)
+        s.mOffsets[i + 1] += s.mOffsets[i];
+    s.mTri.resize(s.mOffsets[n]);
+    std::vector<std::size_t> fill(s.mOffsets.begin(), s.mOffsets.end() - 1);
+    for (std::size_t t = 0; t < rTris.size(); ++t)
+        for (const std::int64_t v : rTris[t])
+            s.mTri[fill[static_cast<std::size_t>(v)]++] = static_cast<std::int64_t>(t);
+    return s;
+}
+
+std::int64_t repair_uf_find(std::vector<std::int64_t>& rParent, std::int64_t i) {
+    while (rParent[static_cast<std::size_t>(i)] != i) {
+        rParent[static_cast<std::size_t>(i)] =
+            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(i)])];
+        i = rParent[static_cast<std::size_t>(i)];
+    }
+    return i;
+}
+
+/// Splits bowties in place. Returns the number of vertices split; appends the
+/// source of every new point to @p rParentOfNew and returns the new point count
+/// through @p rNumPoints.
+std::int64_t repair_split_bowties(std::vector<RepairTri>& rTris, std::size_t& rNumPoints,
+                                  std::vector<std::int64_t>& rParentOfNew) {
+    const std::size_t n = rNumPoints;
+    const RepairStar star = repair_build_star(rTris, n);
+    // Per incident slot: the group (0 = keeps the id) of that triangle at v.
+    std::vector<std::int32_t> slot_group(star.mTri.size(), 0);
+    std::vector<std::int32_t> ngroups(n, 0);
+    parallel_for(n, [&](std::size_t v) {
+        const std::size_t lo = star.mOffsets[v], hi = star.mOffsets[v + 1];
+        const std::size_t m = hi - lo;
+        if (m < 2) {
+            ngroups[v] = m == 0 ? 0 : 1;
+            return;
+        }
+        std::vector<std::int64_t> parent(m);
+        for (std::size_t k = 0; k < m; ++k)
+            parent[k] = static_cast<std::int64_t>(k);
+        // The other two corners of every incident triangle; two triangles
+        // that share one of them share the edge (v, w).
+        std::vector<std::pair<std::int64_t, std::size_t>> others;
+        others.reserve(m * 2);
+        for (std::size_t k = 0; k < m; ++k) {
+            const RepairTri& t = rTris[static_cast<std::size_t>(star.mTri[lo + k])];
+            for (const std::int64_t w : t)
+                if (w != static_cast<std::int64_t>(v))
+                    others.push_back({w, k});
+        }
+        std::sort(others.begin(), others.end());
+        for (std::size_t a = 0; a + 1 < others.size(); ++a)
+            if (others[a].first == others[a + 1].first) {
+                const std::int64_t ra =
+                    repair_uf_find(parent, static_cast<std::int64_t>(others[a].second));
+                const std::int64_t rb =
+                    repair_uf_find(parent, static_cast<std::int64_t>(others[a + 1].second));
+                if (ra != rb)
+                    parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+            }
+        // Groups numbered by first appearance in ascending triangle order.
+        std::vector<std::int32_t> group_of_root(m, -1);
+        std::int32_t g = 0;
+        for (std::size_t k = 0; k < m; ++k) {
+            const std::size_t r =
+                static_cast<std::size_t>(repair_uf_find(parent, static_cast<std::int64_t>(k)));
+            if (group_of_root[r] < 0)
+                group_of_root[r] = g++;
+            slot_group[lo + k] = group_of_root[r];
+        }
+        ngroups[v] = g;
+    });
+
+    std::int64_t split = 0;
+    std::size_t next_id = n;
+    for (std::size_t v = 0; v < n; ++v) {
+        if (ngroups[v] <= 1)
+            continue;
+        ++split;
+        std::vector<std::int64_t> new_id(static_cast<std::size_t>(ngroups[v]), -1);
+        for (std::int32_t g = 1; g < ngroups[v]; ++g) {
+            new_id[static_cast<std::size_t>(g)] = static_cast<std::int64_t>(next_id++);
+            rParentOfNew.push_back(static_cast<std::int64_t>(v));
+        }
+        for (std::size_t k = star.mOffsets[v]; k < star.mOffsets[v + 1]; ++k) {
+            const std::int32_t g = slot_group[k];
+            if (g == 0)
+                continue;
+            RepairTri& t = rTris[static_cast<std::size_t>(star.mTri[k])];
+            for (std::int64_t& c : t)
+                if (c == static_cast<std::int64_t>(v))
+                    c = new_id[static_cast<std::size_t>(g)];
+        }
+    }
+    rNumPoints = next_id;
+    return split;
+}
+
+// --- orientation ------------------------------------------------------------------
+struct RepairOrientation {
+    std::vector<std::uint8_t> mFlip;       // per triangle, after the fewest-flips rule
+    std::vector<std::int64_t> mComponent;  // per triangle
+    std::vector<std::int64_t> mSize;       // per component
+    std::vector<std::uint8_t> mUnorientable;
+};
+
+/// The topological rule: two triangles sharing a manifold edge agree iff they
+/// traverse it in opposite directions. Boundary and non-manifold edges are
+/// walls; a parity conflict is recorded, never thrown.
+RepairOrientation repair_orient(const std::vector<RepairTri>& rTris, const RepairEdges& rEdges) {
+    const std::size_t ntri = rTris.size();
+    RepairOrientation o;
+    std::vector<std::int8_t> flip(ntri, -1);
+    o.mComponent.assign(ntri, -1);
+    std::vector<std::int64_t> stack;
+    std::vector<std::int64_t> members;
+    for (std::size_t seed = 0; seed < ntri; ++seed) {
+        if (flip[seed] >= 0)
+            continue;
+        const std::int64_t comp = static_cast<std::int64_t>(o.mSize.size());
+        bool conflict = false;
+        flip[seed] = 0;
+        stack.assign(1, static_cast<std::int64_t>(seed));
+        members.clear();
+        while (!stack.empty()) {
+            const std::int64_t t = stack.back();
+            stack.pop_back();
+            members.push_back(t);
+            o.mComponent[static_cast<std::size_t>(t)] = comp;
+            for (std::size_t e = 0; e < 3; ++e) {
+                const std::int64_t edge = rEdges.mEdgeOf[static_cast<std::size_t>(t) * 3 + e];
+                if (edge < 0 || rEdges.Count(static_cast<std::size_t>(edge)) != 2)
+                    continue;
+                const RepairHalfEdge& r0 =
+                    rEdges.mRecs[rEdges.mBegin[static_cast<std::size_t>(edge)]];
+                const RepairHalfEdge& r1 =
+                    rEdges.mRecs[rEdges.mBegin[static_cast<std::size_t>(edge)] + 1];
+                const RepairHalfEdge& mine = r0.mTri == t && r0.mSlot == e ? r0 : r1;
+                const RepairHalfEdge& other = &mine == &r0 ? r1 : r0;
+                if (other.mTri == t)
+                    continue;  // the same triangle on both sides: nothing to propagate
+                const std::uint8_t mine_fwd = mine.mForward ^ flip[static_cast<std::size_t>(t)];
+                // Agree iff opposite directions: other must end up != mine_fwd.
+                const std::int8_t want = other.mForward == mine_fwd ? 1 : 0;
+                std::int8_t& of = flip[static_cast<std::size_t>(other.mTri)];
+                if (of < 0) {
+                    of = want;
+                    stack.push_back(other.mTri);
+                } else if (of != want) {
+                    conflict = true;
+                }
+            }
+        }
+        std::int64_t nflip = 0;
+        for (const std::int64_t m : members)
+            nflip += flip[static_cast<std::size_t>(m)];
+        if (nflip * 2 > static_cast<std::int64_t>(members.size()))
+            for (const std::int64_t m : members)
+                flip[static_cast<std::size_t>(m)] ^= 1;
+        o.mSize.push_back(static_cast<std::int64_t>(members.size()));
+        o.mUnorientable.push_back(conflict ? 1 : 0);
+    }
+    o.mFlip.resize(ntri);
+    for (std::size_t t = 0; t < ntri; ++t)
+        o.mFlip[t] = static_cast<std::uint8_t>(flip[t]);
+    return o;
+}
+
+// --- hole filling ---------------------------------------------------------------------
+struct RepairHole {
+    std::vector<std::int64_t> mLoop;  // boundary vertices, in fill order
+    std::int64_t mComponent = -1;     // of the triangle owning its first edge
+};
+
+struct RepairHoles {
+    std::vector<RepairHole> mFilled;
+    std::int64_t mDetected = 0;
+    std::int64_t mSkipped = 0;
+};
+
+/// Trace every boundary loop against the surface's own traversal (so the fan
+/// `(v_i, v_{i+1}, c)` winds opposite to the neighbour across each edge).
+RepairHoles repair_trace_holes(const std::vector<RepairTri>& rTris, const RepairEdges& rEdges,
+                               const std::vector<std::int64_t>& rComponent, std::size_t n,
+                               std::int64_t MaxEdges) {
+    std::vector<std::int64_t> next(n, -1);
+    std::vector<std::int64_t> owner(n, -1);
+    std::vector<std::uint8_t> indeg(n, 0), outdeg(n, 0);
+    for (std::size_t t = 0; t < rTris.size(); ++t)
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t edge = rEdges.mEdgeOf[t * 3 + e];
+            if (edge < 0 || rEdges.Count(static_cast<std::size_t>(edge)) != 1)
+                continue;
+            const std::int64_t a = rTris[t][e];
+            const std::int64_t b = rTris[t][(e + 1) % 3];
+            // The triangle traverses a -> b; the loop runs b -> a.
+            next[static_cast<std::size_t>(b)] = a;
+            owner[static_cast<std::size_t>(b)] = static_cast<std::int64_t>(t);
+            if (outdeg[static_cast<std::size_t>(b)] < 255)
+                ++outdeg[static_cast<std::size_t>(b)];
+            if (indeg[static_cast<std::size_t>(a)] < 255)
+                ++indeg[static_cast<std::size_t>(a)];
+        }
+    RepairHoles out;
+    std::vector<std::uint8_t> visited(n, 0);
+    for (std::size_t s = 0; s < n; ++s) {
+        if (outdeg[s] == 0 || visited[s])
+            continue;
+        RepairHole hole;
+        bool ok = true;
+        std::int64_t cur = static_cast<std::int64_t>(s);
+        while (true) {
+            const std::size_t c = static_cast<std::size_t>(cur);
+            if (visited[c]) {
+                ok = ok && cur == static_cast<std::int64_t>(s) && !hole.mLoop.empty();
+                break;
+            }
+            visited[c] = 1;
+            hole.mLoop.push_back(cur);
+            if (indeg[c] != 1 || outdeg[c] != 1) {
+                ok = false;
+                break;
+            }
+            cur = next[c];
+            if (cur < 0) {
+                ok = false;
+                break;
+            }
+        }
+        ++out.mDetected;
+        const std::int64_t len = static_cast<std::int64_t>(hole.mLoop.size());
+        if (!ok || len < 3 || (MaxEdges > 0 && len > MaxEdges)) {
+            ++out.mSkipped;
+            continue;
+        }
+        hole.mComponent = rComponent[static_cast<std::size_t>(owner[s])];
+        out.mFilled.push_back(std::move(hole));
+    }
+    return out;
+}
+
+// The signed volume of a set of triangles by the divergence theorem, recentred
+// on their corner mean (poly_measure's numerical-stability lesson); serial in
+// ascending triangle order.
+double repair_signed_volume(const std::vector<RepairTri>& rTris,
+                            const std::vector<std::int64_t>& rIds, const std::vector<Vec3>& rXyz) {
+    Vec3 c0{0.0, 0.0, 0.0};
+    std::size_t count = 0;
+    for (const std::int64_t t : rIds)
+        for (const std::int64_t v : rTris[static_cast<std::size_t>(t)]) {
+            c0 = detail::vec3_add(c0, rXyz[static_cast<std::size_t>(v)]);
+            ++count;
+        }
+    if (count == 0)
+        return 0.0;
+    c0 = detail::vec3_scale(c0, 1.0 / static_cast<double>(count));
+    double vol = 0.0;
+    for (const std::int64_t t : rIds) {
+        const RepairTri& tri = rTris[static_cast<std::size_t>(t)];
+        const Vec3 a = detail::vec3_sub(rXyz[static_cast<std::size_t>(tri[0])], c0);
+        const Vec3 b = detail::vec3_sub(rXyz[static_cast<std::size_t>(tri[1])], c0);
+        const Vec3 c = detail::vec3_sub(rXyz[static_cast<std::size_t>(tri[2])], c0);
+        vol += detail::triple_product(a, b, c) / 6.0;
+    }
+    return vol;
+}
+
+}  // namespace
+
+RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
+    repair_check_blocks(rMesh);
+    RepairResult result;
+
+    // --- phase 0: optional weld, through clean -----------------------------------
+    Mesh welded;
+    const Mesh* p_base = &rMesh;
+    const std::size_t n_in = rMesh.NumPoints();
+    if (rOptions.mWeldTolerance > 0.0) {
+        CleanOptions co;
+        co.weld = true;
+        co.atol = rOptions.mWeldTolerance;
+        co.remove_orphans = false;
+        co.drop_degenerate = false;
+        co.drop_duplicate_cells = false;
+        CleanResult cr = clean(rMesh, co);
+        welded = std::move(cr.mMesh);
+        result.mPointMap = std::move(cr.mPointMap);
+        result.mPointsWelded = cr.mPointsWelded;
+        p_base = &welded;
+    } else {
+        result.mPointMap = NDArray::Uninit(DType::Int64, {n_in});
+        std::int64_t* pm = result.mPointMap.As<std::int64_t>();
+        for (std::size_t i = 0; i < n_in; ++i)
+            pm[i] = static_cast<std::int64_t>(i);
+    }
+    const Mesh& base = *p_base;
+    result.mQualityBefore = detail::soup_quality(detail::build_triangle_soup(base, ""));
+
+    // --- phase 1: triangulate, blocks 1:1 ---------------------------------------
+    ConvertCellsResult prep =
+        convert_cells(base, {ConvertCellsMode::Simplexify, /*mRecordParentIds=*/true});
+    const Mesh& simp = prep.mMesh;
+    const std::size_t nblocks = simp.NumCellBlocks();
+    const std::size_t n = simp.NumPoints();  // the ORIGINAL count; copies/centroids append
+    const std::size_t dim = simp.PointDim();
+    std::vector<Vec3> xyz(n);
+    {
+        const NDArray& points = simp.Points();
+        parallel_for_bw(n, [&](std::size_t i) {
+            xyz[i] = detail::read_point(points, dim, static_cast<std::int64_t>(i));
+        });
+    }
+    // The flat triangle table: every 2-D block's rows, in block order.
+    std::vector<RepairTri> tris;
+    std::vector<std::size_t> block_tri_base(nblocks + 1, 0);
+    std::vector<std::uint8_t> block_is_surface(nblocks, 0);
+    {
+        std::size_t bi = 0;
+        for (const auto cb : simp.CellRange()) {
+            block_tri_base[bi] = tris.size();
+            const CellType ct = cell_type_from_name(std::string(cb.Type()));
+            if (cell_type_dimension(ct) == 2) {
+                if (ct != CellType::Triangle || cb.IsRagged())
+                    throw std::invalid_argument(std::string(kRepairPrefix) +
+                                                "internal error: simplexified block '" +
+                                                std::string(cb.Type()) + "' is not triangles");
+                block_is_surface[bi] = 1;
+                const NDArray& conn = cb.Conn();
+                for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                    tris.push_back({detail::read_int(conn, c * 3),
+                                    detail::read_int(conn, c * 3 + 1),
+                                    detail::read_int(conn, c * 3 + 2)});
+            }
+            ++bi;
+        }
+        block_tri_base[nblocks] = tris.size();
+    }
+    const std::size_t ntri_in = tris.size();
+    for (const RepairTri& t : tris)
+        for (const std::int64_t v : t)
+            if (v < 0 || static_cast<std::size_t>(v) >= n)
+                throw std::invalid_argument(std::string(kRepairPrefix) +
+                                            "connectivity references point " + std::to_string(v) +
+                                            " but the mesh has " + std::to_string(n) + " points");
+
+    // --- phase 2: bowties ------------------------------------------------------------
+    std::vector<std::int64_t> parent_of_new;  // per point beyond n: its source
+    if (rOptions.mSplitNonManifold) {
+        std::size_t n_split = n;
+        result.mNumVerticesSplit = repair_split_bowties(tris, n_split, parent_of_new);
+        for (const std::int64_t p : parent_of_new)
+            xyz.push_back(xyz[static_cast<std::size_t>(p)]);
+    }
+    const std::size_t n_copies = parent_of_new.size();
+
+    // --- phase 3: orientation BFS ------------------------------------------------------
+    RepairEdges edges = repair_build_edges(tris);
+    RepairOrientation orient = repair_orient(tris, edges);
+    result.mNumComponents = static_cast<std::int64_t>(orient.mSize.size());
+    for (std::size_t c = 0; c < orient.mSize.size(); ++c) {
+        result.mLargestComponent = std::max(result.mLargestComponent, orient.mSize[c]);
+        result.mNumUnorientable += orient.mUnorientable[c];
+    }
+    if (!rOptions.mFixOrientation)
+        std::fill(orient.mFlip.begin(), orient.mFlip.end(), 0);
+    parallel_for(ntri_in, [&](std::size_t t) {
+        if (orient.mFlip[t])
+            std::swap(tris[t][1], tris[t][2]);
+    });
+
+    // --- phase 4: holes -----------------------------------------------------------------
+    std::vector<RepairHole> holes;
+    std::vector<std::int64_t> fill_component;  // per fill triangle
+    std::vector<std::int64_t> fill_hole;       // per fill triangle
+    if (rOptions.mFillHoles) {
+        RepairHoles found =
+            repair_trace_holes(tris, edges, orient.mComponent, xyz.size(), rOptions.mMaxHoleEdges);
+        result.mNumHolesDetected = found.mDetected;
+        result.mNumHolesSkipped = found.mSkipped;
+        result.mNumHolesFilled = static_cast<std::int64_t>(found.mFilled.size());
+        holes = std::move(found.mFilled);
+        for (std::size_t h = 0; h < holes.size(); ++h) {
+            const std::vector<std::int64_t>& loop = holes[h].mLoop;
+            Vec3 c{0.0, 0.0, 0.0};
+            for (const std::int64_t v : loop)
+                c = detail::vec3_add(c, xyz[static_cast<std::size_t>(v)]);
+            c = detail::vec3_scale(c, 1.0 / static_cast<double>(loop.size()));
+            const std::int64_t cid = static_cast<std::int64_t>(xyz.size());
+            xyz.push_back(c);
+            for (std::size_t i = 0; i < loop.size(); ++i) {
+                tris.push_back({loop[i], loop[(i + 1) % loop.size()], cid});
+                fill_component.push_back(holes[h].mComponent);
+                fill_hole.push_back(static_cast<std::int64_t>(h));
+            }
+        }
+        result.mNumFacesAdded = static_cast<std::int64_t>(tris.size() - ntri_in);
+    }
+    const std::size_t n_out = xyz.size();
+    result.mNumPointsAdded = static_cast<std::int64_t>(n_out - n);
+    const std::size_t ntri_out = tris.size();
+
+    // --- phase 5: outward ----------------------------------------------------------------
+    if (rOptions.mFixOrientation && rOptions.mOrientOutward && result.mNumComponents > 0) {
+        const RepairEdges all_edges = repair_build_edges(tris);
+        const std::size_t ncomp = orient.mSize.size();
+        auto comp_of = [&](std::size_t t) {
+            return t < ntri_in ? orient.mComponent[t] : fill_component[t - ntri_in];
+        };
+        std::vector<std::uint8_t> closed(ncomp, 1);
+        for (std::size_t t = 0; t < ntri_out; ++t) {
+            const std::int64_t c = comp_of(t);
+            if (c < 0)
+                continue;
+            for (std::size_t e = 0; e < 3; ++e) {
+                const std::int64_t edge = all_edges.mEdgeOf[t * 3 + e];
+                if (edge < 0 || all_edges.Count(static_cast<std::size_t>(edge)) != 2)
+                    closed[static_cast<std::size_t>(c)] = 0;
+            }
+        }
+        std::vector<std::vector<std::int64_t>> members(ncomp);
+        for (std::size_t t = 0; t < ntri_out; ++t) {
+            const std::int64_t c = comp_of(t);
+            if (c >= 0)
+                members[static_cast<std::size_t>(c)].push_back(static_cast<std::int64_t>(t));
+        }
+        for (std::size_t c = 0; c < ncomp; ++c) {
+            if (!closed[c] || orient.mUnorientable[c])
+                continue;
+            if (!(repair_signed_volume(tris, members[c], xyz) < 0.0))
+                continue;
+            ++result.mNumOrientedOutward;
+            for (const std::int64_t t : members[c]) {
+                std::swap(tris[static_cast<std::size_t>(t)][1],
+                          tris[static_cast<std::size_t>(t)][2]);
+                if (static_cast<std::size_t>(t) < ntri_in)
+                    orient.mFlip[static_cast<std::size_t>(t)] ^= 1;
+            }
+        }
+    }
+    for (std::size_t t = 0; t < ntri_in; ++t)
+        result.mNumFlipped += orient.mFlip[t];
+
+    // --- phase 6: emit ---------------------------------------------------------------------
+    Mesh& out = result.mMesh;
+    {
+        const NDArray& points = simp.Points();
+        NDArray pts = NDArray::Uninit(points.Dtype(), {n_out, dim});
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            T* dst = pts.As<T>();
+            parallel_for_bw(n_out, [&](std::size_t i) {
+                for (std::size_t d = 0; d < dim; ++d)
+                    dst[i * dim + d] = static_cast<T>(xyz[i][d]);
+            });
+        });
+        out.AssignPoints(std::move(pts));
+    }
+    const bool has_parent = simp.HasCellData("convert:parent_cell");
+    {
+        std::vector<std::size_t> in_cells;
+        for (const auto cb : base.CellRange())
+            in_cells.push_back(cb.NumCells());
+        std::size_t bi = 0;
+        for (const auto cb : simp.CellRange()) {
+            const std::size_t nc = cb.NumCells();
+            if (block_is_surface[bi]) {
+                NDArray block = NDArray::Uninit(DType::Int64, {nc, 3});
+                std::int64_t* dst = block.As<std::int64_t>();
+                const std::size_t tb = block_tri_base[bi];
+                for (std::size_t c = 0; c < nc; ++c)
+                    for (std::size_t k = 0; k < 3; ++k)
+                        dst[c * 3 + k] = tris[tb + c][k];
+                out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
+            } else {
+                out.AddCellBlock(std::string(cb.Type()), detail::data_owned_copy(cb.Conn()));
+            }
+            const NDArray* p_parent =
+                has_parent ? &simp.CellData("convert:parent_cell", bi) : nullptr;
+            std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
+            for (std::size_t c = 0; c < nc; ++c) {
+                const std::int64_t parent = p_parent != nullptr ? detail::read_int(*p_parent, c)
+                                                                : static_cast<std::int64_t>(c);
+                if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
+                    cell_map[static_cast<std::size_t>(parent)] < 0)
+                    cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(c);
+            }
+            NDArray cm = NDArray::Uninit(DType::Int64, {cell_map.size()});
+            std::memcpy(cm.Data(), cell_map.data(), cell_map.size() * sizeof(std::int64_t));
+            result.mCellMaps.push_back(std::move(cm));
+            ++bi;
+        }
+    }
+    const std::size_t n_fill = ntri_out - ntri_in;
+    if (n_fill > 0) {
+        NDArray block = NDArray::Uninit(DType::Int64, {n_fill, 3});
+        std::int64_t* dst = block.As<std::int64_t>();
+        for (std::size_t c = 0; c < n_fill; ++c)
+            for (std::size_t k = 0; k < 3; ++k)
+                dst[c * 3 + k] = tris[ntri_in + c][k];
+        out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
+    }
+
+    // cell_data: the input blocks' own rows (simplexify already replicated a
+    // parent's row to its triangles); the fill block gets NaN / 0.
+    for (const std::string& name : simp.CellDataNames()) {
+        if (name == "convert:parent_cell")
+            continue;
+        const std::size_t ndata = simp.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(ndata + 1);
+        for (std::size_t b = 0; b < ndata; ++b)
+            blocks.push_back(detail::data_owned_copy(simp.CellData(name, b)));
+        if (n_fill > 0 && ndata == nblocks && ndata > 0) {
+            const NDArray& a = simp.CellData(name, 0);
+            std::vector<std::size_t> shape = a.Shape();
+            if (shape.empty())
+                shape.push_back(0);
+            shape[0] = n_fill;
+            NDArray fill(a.Dtype(), shape);
+            if (detail::is_float_dtype(a.Dtype()))
+                for (std::size_t i = 0; i < fill.Size(); ++i)
+                    detail::write_double(fill, i, std::numeric_limits<double>::quiet_NaN());
+            blocks.push_back(std::move(fill));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+
+    // point_data: originals verbatim, copies from their source row, centroids
+    // the mean of their loop's rows (dtype preserved).
+    for (const std::string& name : simp.PointDataNames()) {
+        const NDArray& a = simp.PointData(name);
+        if (detail::rows(a) != n || n == 0) {
+            out.AddPointData(name, detail::data_owned_copy(a));
+            continue;
+        }
+        const std::size_t ncomp = a.Size() / n;
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = n_out;
+        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
+        std::memcpy(b.Data(), a.Data(), a.Nbytes());
+        const std::size_t row_bytes = a.Nbytes() / n;
+        for (std::size_t k = 0; k < n_copies; ++k)
+            std::memcpy(b.Data() + (n + k) * row_bytes,
+                        a.Data() + static_cast<std::size_t>(parent_of_new[k]) * row_bytes,
+                        row_bytes);
+        auto src_row = [&](std::int64_t id) {
+            return static_cast<std::size_t>(id) < n
+                       ? static_cast<std::size_t>(id)
+                       : static_cast<std::size_t>(parent_of_new[static_cast<std::size_t>(id) - n]);
+        };
+        for (std::size_t h = 0; h < holes.size(); ++h) {
+            const std::vector<std::int64_t>& loop = holes[h].mLoop;
+            const double inv = 1.0 / static_cast<double>(loop.size());
+            for (std::size_t c = 0; c < ncomp; ++c) {
+                double sum = 0.0;
+                for (const std::int64_t v : loop)
+                    sum += detail::read_double(a, src_row(v) * ncomp + c);
+                detail::write_double(b, (n + n_copies + h) * ncomp + c, sum * inv);
+            }
+        }
+        out.AddPointData(name, std::move(b));
+    }
+    for (const std::string& name : simp.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(simp.FieldData(name)));
+
+    if (rOptions.mRecordProvenance) {
+        NDArray pp = NDArray::Uninit(DType::Int64, {n_out});
+        std::int64_t* dst = pp.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            dst[i] = static_cast<std::int64_t>(i);
+        for (std::size_t k = 0; k < n_copies; ++k)
+            dst[n + k] = parent_of_new[k];
+        for (std::size_t h = 0; h < holes.size(); ++h)
+            dst[n + n_copies + h] = -1;
+        out.AddPointData(kRepairParentPointName, std::move(pp));
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const std::size_t nc = simp.Cells(b).NumCells();
+            NDArray a = NDArray::Uninit(DType::Int64, {nc});
+            std::int64_t* d = a.As<std::int64_t>();
+            for (std::size_t c = 0; c < nc; ++c)
+                d[c] = -1;
+            blocks.push_back(std::move(a));
+        }
+        if (n_fill > 0) {
+            NDArray a = NDArray::Uninit(DType::Int64, {n_fill});
+            std::int64_t* d = a.As<std::int64_t>();
+            for (std::size_t c = 0; c < n_fill; ++c)
+                d[c] = fill_hole[c];
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(kRepairHoleName, std::move(blocks));
+    }
+
+    // Regions: FirstChild through the triangulation, points through the weld
+    // map; Side regions drop by name. Then a split copy joins its source's
+    // Point regions.
+    {
+        detail::RegionRemap rmap;
+        rmap.pPointMap = &result.mPointMap;
+        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
+        rmap.pCellMaps = &result.mCellMaps;
+        rmap.mOpName = "repair";
+        detail::remap_regions(rMesh, out, rmap);
+    }
+    if (n_copies > 0) {
+        std::vector<meshioplusplus::Region> augmented;
+        for (std::size_t i = 0; i < out.NumRegions(); ++i) {
+            const meshioplusplus::Region& r = out.Region(i);
+            if (r.mKind != RegionKind::Point)
+                continue;
+            std::vector<std::int64_t> entries(r.mEntries.Size());
+            for (std::size_t e = 0; e < entries.size(); ++e)
+                entries[e] = detail::read_int(r.mEntries, e);
+            std::vector<std::int64_t> extra;
+            for (std::size_t k = 0; k < n_copies; ++k)
+                if (std::binary_search(entries.begin(), entries.end(), parent_of_new[k]))
+                    extra.push_back(static_cast<std::int64_t>(n + k));
+            if (extra.empty())
+                continue;
+            entries.insert(entries.end(), extra.begin(), extra.end());
+            meshioplusplus::Region nr = r;
+            nr.mEntries = NDArray::Uninit(DType::Int64, {entries.size()});
+            std::memcpy(nr.mEntries.Data(), entries.data(), entries.size() * sizeof(std::int64_t));
+            augmented.push_back(std::move(nr));
+        }
+        for (meshioplusplus::Region& r : augmented)
+            out.AddRegion(std::move(r));
+    }
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(rMesh.GetPropertySet(i));
+
+    result.mQualityAfter = detail::soup_quality(detail::build_triangle_soup(out, ""));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/repair.cpp =====
 // ===== begin src/cpp/src/operations/sdf.cpp =====
 #include <array>
 #include <cmath>
@@ -91020,6 +93184,194 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sequence.cpp =====
+// ===== begin src/cpp/src/operations/shrinkwrap.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kSwrapPrefix = "meshio++: shrinkwrap: ";
+
+// Write the leading `dim` columns of a flat (n, 3) double buffer back out,
+// preserving the source dtype (smooth.cpp's write-back, same shape).
+NDArray swrap_write_coords(const NDArray& rPoints, const std::vector<Vec3>& rXyz, std::size_t n,
+                           std::size_t dim) {
+    NDArray out = NDArray::Uninit(rPoints.Dtype(), {n, dim});
+    if (n == 0 || dim == 0)
+        return out;
+    detail::dispatch_dtype(rPoints.Dtype(), [&]<class T>() {
+        T* dst = out.As<T>();
+        parallel_for_bw(n, [&](std::size_t i) {
+            for (std::size_t d = 0; d < dim && d < 3; ++d)
+                dst[i * dim + d] = static_cast<T>(rXyz[i][d]);
+        });
+    });
+    return out;
+}
+
+// The per-point weight: 1 everywhere, or the named array's value (a float
+// array blends, an integer/bool one selects).
+std::vector<double> swrap_weights(const Mesh& rMesh, const std::string& rName, std::size_t n) {
+    std::vector<double> w(n, 1.0);
+    if (rName.empty())
+        return w;
+    if (!rMesh.HasPointData(rName))
+        throw std::invalid_argument(std::string(kSwrapPrefix) +
+                                    data_unknown_key_message(rMesh, DataLocation::Point, rName));
+    const NDArray& a = rMesh.PointData(rName);
+    if (detail::rows(a) != n || (n > 0 && a.Size() != n))
+        throw std::invalid_argument(std::string(kSwrapPrefix) + "weights array '" + rName +
+                                    "' must be a scalar per point (" + std::to_string(n) +
+                                    " rows, 1 component)");
+    const bool is_float = detail::is_float_dtype(a.Dtype());
+    parallel_for_bw(n, [&](std::size_t i) {
+        w[i] = is_float ? detail::read_double(a, i) : (detail::read_int(a, i) != 0 ? 1.0 : 0.0);
+    });
+    return w;
+}
+
+}  // namespace
+
+ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
+                            const ShrinkwrapOptions& rOptions) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (dim < 2 || dim > 3)
+        throw std::invalid_argument(std::string(kSwrapPrefix) + "points must be 2-D or 3-D");
+
+    // --- the target: soup, quality, accelerator ------------------------------
+    detail::TriangleSoup soup;
+    try {
+        soup = detail::build_triangle_soup(rTarget, rOptions.mTargetRegion);
+    } catch (const std::invalid_argument& e) {
+        std::string what = e.what();
+        const std::string kernel = "meshio++: surface distance: ";
+        if (what.rfind(kernel, 0) == 0)
+            what = what.substr(kernel.size());
+        throw std::invalid_argument(std::string(kSwrapPrefix) + "target: " + what);
+    }
+    if (soup.NumTriangles() == 0)
+        throw std::invalid_argument(std::string(kSwrapPrefix) +
+                                    "target: the surface has no triangles to project onto");
+
+    ShrinkwrapResult result;
+    result.mQuality = detail::soup_quality(soup);
+    if (!result.mQuality.mWatertight)
+        log::warn(
+            "{}the target is not watertight: {} boundary edge(s), {} non-manifold edge(s), {} "
+            "inconsistently wound pair(s), {} degenerate triangle(s) -- a nonzero offset may "
+            "point to different sides near the defects",
+            kSwrapPrefix, result.mQuality.mBoundaryEdges, result.mQuality.mNonManifoldEdges,
+            result.mQuality.mInconsistentPairs, result.mQuality.mDegenerateTriangles);
+
+    SurfaceDistanceOptions sd_opts;
+    sd_opts.mWeight = rOptions.mNormalWeight;
+    sd_opts.mGridCellSize = rOptions.mGridCellSize;
+    const detail::DistanceQuery query = detail::build_distance_query(soup, sd_opts);
+
+    // --- the source: coordinates and the selection ---------------------------
+    const std::vector<double> w = swrap_weights(rMesh, rOptions.mWeights, n);
+    std::vector<Vec3> xyz(n);
+    {
+        const NDArray& points = rMesh.Points();
+        parallel_for_bw(n, [&](std::size_t i) {
+            xyz[i] = detail::read_point(points, dim, static_cast<std::int64_t>(i));
+        });
+    }
+    std::vector<std::size_t> moving;  // serial, ascending: the query order
+    moving.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (w[i] != 0.0)
+            moving.push_back(i);
+    result.mNumSkipped = static_cast<std::int64_t>(n - moving.size());
+
+    std::vector<Vec3> qpts(moving.size());
+    parallel_for_bw(moving.size(), [&](std::size_t k) { qpts[k] = xyz[moving[k]]; });
+    const std::vector<detail::SurfaceProjection> hits =
+        detail::query_surface_projections(query, qpts);
+
+    // --- the move ------------------------------------------------------------
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> distance(n, nan);
+    std::vector<std::int64_t> closest(n, -1);
+    std::vector<std::uint8_t> missed(moving.size(), 0);
+    std::vector<double> disp(moving.size(), 0.0);
+    const double maxd = rOptions.mMaxDistance;
+    const double offset = rOptions.mOffset;
+    parallel_for(moving.size(), [&](std::size_t k) {
+        const std::size_t i = moving[k];
+        const detail::SurfaceProjection& h = hits[k];
+        const Vec3 x = xyz[i];
+        if (!h.mFound) {
+            missed[k] = 1;
+            return;
+        }
+        distance[i] = h.mDistance;
+        closest[i] = h.mSourceCell;
+        if (maxd > 0.0 && h.mDistance > maxd) {
+            missed[k] = 1;
+            return;
+        }
+        Vec3 target = h.mPoint;
+        if (offset != 0.0) {
+            const double nn = detail::vec3_norm(h.mNormal);
+            if (!(nn > 0.0)) {
+                missed[k] = 1;
+                return;
+            }
+            // Order is load-bearing for the numpy twin: offset / |n| first,
+            // then scale, then add.
+            target = detail::vec3_add(target, detail::vec3_scale(h.mNormal, offset / nn));
+        }
+        const Vec3 moved =
+            detail::vec3_add(x, detail::vec3_scale(detail::vec3_sub(target, x), w[i]));
+        xyz[i] = moved;
+        disp[k] = detail::vec3_norm(detail::vec3_sub(moved, x));
+    });
+
+    // Serial folds, ascending.
+    for (std::size_t k = 0; k < moving.size(); ++k) {
+        if (missed[k])
+            ++result.mNumMissed;
+        else
+            ++result.mNumProjected;
+        if (disp[k] > result.mMaxDisplacement)
+            result.mMaxDisplacement = disp[k];
+    }
+
+    // --- output ---------------------------------------------------------------
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AssignPoints(swrap_write_coords(rMesh.Points(), xyz, n, dim));
+    if (rOptions.mRecordDistance) {
+        NDArray a(DType::Float64, {n});
+        double* dst = a.As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            dst[i] = distance[i];
+        result.mMesh.AddPointData(kShrinkwrapDistanceName, std::move(a));
+    }
+    if (rOptions.mRecordClosestCell) {
+        NDArray a(DType::Int64, {n});
+        std::int64_t* dst = a.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            dst[i] = closest[i];
+        result.mMesh.AddPointData(kShrinkwrapClosestCellName, std::move(a));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/shrinkwrap.cpp =====
 // ===== begin src/cpp/src/operations/slice.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -92337,6 +94689,564 @@ std::string sniff_format(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sniff.cpp =====
+// ===== begin src/cpp/src/operations/sobolev_deform.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kSoboPrefix = "meshio++: sobolev_deform: ";
+
+/// Fixed chunk for the inner products: a constant, never derived from the
+/// thread count, so the fold order is the same on every machine.
+constexpr std::size_t kSoboChunk = 4096;
+
+/// The top-dimensional simplices, flattened: `mConn` is `(ncells, D+1)`.
+struct SoboCells {
+    int mDim = 0;
+    std::size_t mNumCells = 0;
+    std::vector<std::int64_t> mConn;
+};
+
+/// Reject, by name, everything outside the simplex scope, and gather the
+/// top-dimensional cells.
+SoboCells sobo_gather_cells(const Mesh& rMesh) {
+    int top = -1;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                std::string(kSoboPrefix) +
+                "mesh contains a polyhedron cell block; the P1 assembly needs simplices "
+                "(run convert_cells(simplexify) first)");
+        const int d = cell_type_dimension(cell_type_from_name(std::string(cb.Type())));
+        top = std::max(top, d);
+    }
+    if (top < 1)
+        throw std::invalid_argument(std::string(kSoboPrefix) +
+                                    "mesh has no cells of dimension 1, 2 or 3 to assemble on");
+
+    SoboCells out;
+    out.mDim = top;
+    const std::size_t nv = static_cast<std::size_t>(top) + 1;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        if (cell_type_dimension(ct) != top)
+            continue;  // lower-dimensional blocks ride along untouched
+        const bool simplex =
+            ct == CellType::Line || ct == CellType::Triangle || ct == CellType::Tetra;
+        if (!simplex) {
+            const bool quadratic =
+                ct == CellType::Line3 || ct == CellType::Triangle6 || ct == CellType::Tetra10;
+            throw std::invalid_argument(
+                std::string(kSoboPrefix) + "cell block '" + type + "' is not a linear simplex; " +
+                (quadratic ? "linearize the mesh first" : "run convert_cells(simplexify) first"));
+        }
+        if (cb.IsRagged())
+            throw std::invalid_argument(std::string(kSoboPrefix) + "cell block '" + type +
+                                        "' is ragged");
+        const std::size_t nc = cb.NumCells();
+        const NDArray& conn = cb.Conn();
+        const std::size_t base = out.mConn.size();
+        out.mConn.resize(base + nc * nv);
+        for (std::size_t c = 0; c < nc * nv; ++c)
+            out.mConn[base + c] = detail::read_int(conn, c);
+        out.mNumCells += nc;
+    }
+    return out;
+}
+
+/// Vertex -> (cell, local corner) incidence, CSR, each row in ascending cell
+/// order (a counting sort over pairs generated in ascending (cell, corner)).
+struct SoboStar {
+    std::vector<std::size_t> mOffsets;
+    std::vector<std::int64_t> mCell;
+    std::vector<std::uint8_t> mLocal;
+};
+
+SoboStar sobo_build_star(const SoboCells& rCells, std::size_t n) {
+    const std::size_t nv = static_cast<std::size_t>(rCells.mDim) + 1;
+    SoboStar s;
+    s.mOffsets.assign(n + 1, 0);
+    for (std::size_t c = 0; c < rCells.mNumCells; ++c)
+        for (std::size_t k = 0; k < nv; ++k) {
+            const std::int64_t v = rCells.mConn[c * nv + k];
+            if (v < 0 || static_cast<std::size_t>(v) >= n)
+                throw std::invalid_argument(std::string(kSoboPrefix) + "cell " + std::to_string(c) +
+                                            " references point " + std::to_string(v) +
+                                            " but the mesh has " + std::to_string(n) + " points");
+            ++s.mOffsets[static_cast<std::size_t>(v) + 1];
+        }
+    for (std::size_t i = 0; i < n; ++i)
+        s.mOffsets[i + 1] += s.mOffsets[i];
+    s.mCell.resize(s.mOffsets[n]);
+    s.mLocal.resize(s.mOffsets[n]);
+    std::vector<std::size_t> fill(s.mOffsets.begin(), s.mOffsets.end() - 1);
+    for (std::size_t c = 0; c < rCells.mNumCells; ++c)
+        for (std::size_t k = 0; k < nv; ++k) {
+            const std::size_t v = static_cast<std::size_t>(rCells.mConn[c * nv + k]);
+            s.mCell[fill[v]] = static_cast<std::int64_t>(c);
+            s.mLocal[fill[v]] = static_cast<std::uint8_t>(k);
+            ++fill[v];
+        }
+    return s;
+}
+
+/// The boundary points of the top-dimensional cells: every point on a facet
+/// used by exactly one cell. Facets of a D-simplex are its D+1 sub-simplices
+/// omitting one corner; a sorted, -1-padded key is what makes two cells agree.
+std::vector<std::uint8_t> sobo_boundary_points(const SoboCells& rCells, std::size_t n) {
+    const std::size_t nv = static_cast<std::size_t>(rCells.mDim) + 1;
+    using Key = std::array<std::int64_t, 3>;
+    std::vector<Key> keys;
+    keys.reserve(rCells.mNumCells * nv);
+    for (std::size_t c = 0; c < rCells.mNumCells; ++c)
+        for (std::size_t omit = 0; omit < nv; ++omit) {
+            Key key{-1, -1, -1};
+            std::size_t w = 0;
+            for (std::size_t k = 0; k < nv; ++k)
+                if (k != omit)
+                    key[w++] = rCells.mConn[c * nv + k];
+            std::sort(key.begin(), key.begin() + static_cast<std::ptrdiff_t>(w));
+            keys.push_back(key);
+        }
+    std::sort(keys.begin(), keys.end());
+    std::vector<std::uint8_t> boundary(n, 0);
+    for (std::size_t i = 0; i < keys.size();) {
+        std::size_t j = i + 1;
+        while (j < keys.size() && keys[j] == keys[i])
+            ++j;
+        if (j - i == 1)
+            for (const std::int64_t v : keys[i])
+                if (v >= 0)
+                    boundary[static_cast<std::size_t>(v)] = 1;
+        i = j;
+    }
+    return boundary;
+}
+
+/// Per-cell local stiffness `K_loc = |c| B G^-1 B^T` (row-major, `nv x nv`)
+/// and measure `|c| = sqrt(det G) / D!`, from the edge Gram matrix
+/// `G = E E^T`, `E_k = x_k - x_0`. The closed forms are written out per
+/// dimension so the operation order is fixed. Throws on a degenerate cell.
+void sobo_assemble(const SoboCells& rCells, const std::vector<double>& rXyz, std::size_t dim,
+                   std::vector<double>& rKloc, std::vector<double>& rMeasure) {
+    const int D = rCells.mDim;
+    const std::size_t nv = static_cast<std::size_t>(D) + 1;
+    rKloc.assign(rCells.mNumCells * nv * nv, 0.0);
+    rMeasure.assign(rCells.mNumCells, 0.0);
+    std::vector<std::uint8_t> bad(rCells.mNumCells, 0);
+
+    parallel_for(rCells.mNumCells, [&](std::size_t c) {
+        // Edge vectors relative to corner 0, in the mesh's own ambient dim.
+        double E[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        const std::size_t v0 = static_cast<std::size_t>(rCells.mConn[c * nv]);
+        for (int k = 1; k <= D; ++k) {
+            const std::size_t vk = static_cast<std::size_t>(rCells.mConn[c * nv + k]);
+            for (std::size_t a = 0; a < dim; ++a)
+                E[k - 1][a] = rXyz[vk * dim + a] - rXyz[v0 * dim + a];
+        }
+        // Gram matrix and its inverse, closed form per D.
+        double G[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        for (int i = 0; i < D; ++i)
+            for (int j = 0; j < D; ++j) {
+                double s = 0.0;
+                for (std::size_t a = 0; a < dim; ++a)
+                    s += E[i][a] * E[j][a];
+                G[i][j] = s;
+            }
+        double det = 0.0;
+        double Gi[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+        double factorial = 1.0;
+        if (D == 1) {
+            det = G[0][0];
+            if (!(std::isfinite(det) && det > 0.0)) {
+                bad[c] = 1;
+                return;
+            }
+            Gi[0][0] = 1.0 / det;
+        } else if (D == 2) {
+            det = G[0][0] * G[1][1] - G[0][1] * G[1][0];
+            if (!(std::isfinite(det) && det > 0.0)) {
+                bad[c] = 1;
+                return;
+            }
+            Gi[0][0] = G[1][1] / det;
+            Gi[0][1] = -G[0][1] / det;
+            Gi[1][0] = -G[1][0] / det;
+            Gi[1][1] = G[0][0] / det;
+            factorial = 2.0;
+        } else {
+            const double c00 = G[1][1] * G[2][2] - G[1][2] * G[2][1];
+            const double c01 = -(G[1][0] * G[2][2] - G[1][2] * G[2][0]);
+            const double c02 = G[1][0] * G[2][1] - G[1][1] * G[2][0];
+            det = G[0][0] * c00 + G[0][1] * c01 + G[0][2] * c02;
+            if (!(std::isfinite(det) && det > 0.0)) {
+                bad[c] = 1;
+                return;
+            }
+            const double c10 = -(G[0][1] * G[2][2] - G[0][2] * G[2][1]);
+            const double c11 = G[0][0] * G[2][2] - G[0][2] * G[2][0];
+            const double c12 = -(G[0][0] * G[2][1] - G[0][1] * G[2][0]);
+            const double c20 = G[0][1] * G[1][2] - G[0][2] * G[1][1];
+            const double c21 = -(G[0][0] * G[1][2] - G[0][2] * G[1][0]);
+            const double c22 = G[0][0] * G[1][1] - G[0][1] * G[1][0];
+            // inverse = adjugate / det; adjugate = transpose of cofactors.
+            Gi[0][0] = c00 / det;
+            Gi[0][1] = c10 / det;
+            Gi[0][2] = c20 / det;
+            Gi[1][0] = c01 / det;
+            Gi[1][1] = c11 / det;
+            Gi[1][2] = c21 / det;
+            Gi[2][0] = c02 / det;
+            Gi[2][1] = c12 / det;
+            Gi[2][2] = c22 / det;
+            factorial = 6.0;
+        }
+        const double measure = std::sqrt(det) / factorial;
+        rMeasure[c] = measure;
+        // B = [-1^T ; I_D]  ((D+1) x D): B[0][a] = -1, B[i][a] = (i-1 == a).
+        // K[i][j] = |c| * sum_ab B[i][a] Gi[a][b] B[j][b].
+        double* K = &rKloc[c * nv * nv];
+        for (std::size_t i = 0; i < nv; ++i)
+            for (std::size_t j = 0; j < nv; ++j) {
+                double s = 0.0;
+                for (int a = 0; a < D; ++a) {
+                    const double bi = i == 0 ? -1.0 : (static_cast<int>(i) - 1 == a ? 1.0 : 0.0);
+                    if (bi == 0.0)
+                        continue;
+                    for (int b = 0; b < D; ++b) {
+                        const double bj =
+                            j == 0 ? -1.0 : (static_cast<int>(j) - 1 == b ? 1.0 : 0.0);
+                        if (bj == 0.0)
+                            continue;
+                        s += bi * Gi[a][b] * bj;
+                    }
+                }
+                K[i * nv + j] = measure * s;
+            }
+    });
+    for (std::size_t c = 0; c < rCells.mNumCells; ++c)
+        if (bad[c])
+            throw std::invalid_argument(
+                std::string(kSoboPrefix) + "top-dimensional cell " + std::to_string(c) +
+                " is degenerate (non-positive Gram determinant); run clean(drop_degenerate) first");
+}
+
+/// Inner product of two `(n, dim)` flat vectors: fixed-chunk parallel
+/// partials folded serially, the `accumulate_stats` idiom.
+double sobo_dot(const std::vector<double>& rA, const std::vector<double>& rB, std::size_t n,
+                std::size_t dim) {
+    const std::size_t nchunks = (n + kSoboChunk - 1) / kSoboChunk;
+    std::vector<double> partial(nchunks, 0.0);
+    parallel_for(
+        nchunks,
+        [&](std::size_t ci) {
+            const std::size_t lo = ci * kSoboChunk;
+            const std::size_t hi = std::min(n, lo + kSoboChunk);
+            double s = 0.0;
+            for (std::size_t i = lo; i < hi; ++i)
+                for (std::size_t d = 0; d < dim; ++d)
+                    s += rA[i * dim + d] * rB[i * dim + d];
+            partial[ci] = s;
+        },
+        1);
+    double total = 0.0;
+    for (const double p : partial)
+        total += p;
+    return total;
+}
+
+}  // namespace
+
+SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (dim < 1 || dim > 3)
+        throw std::invalid_argument(std::string(kSoboPrefix) + "points must be 1-D, 2-D or 3-D");
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kSoboPrefix) +
+                                    "a displacement array name is required");
+    if (!rMesh.HasPointData(rOptions.mArrayName))
+        throw std::invalid_argument(
+            std::string(kSoboPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    if (!(rOptions.mLengthScale >= 0.0) || !std::isfinite(rOptions.mLengthScale))
+        throw std::invalid_argument(std::string(kSoboPrefix) + "length_scale must be >= 0");
+    if (rOptions.mMaxIterations < 0)
+        throw std::invalid_argument(std::string(kSoboPrefix) + "max_iterations must be >= 0");
+    if (!(rOptions.mTolerance > 0.0))
+        throw std::invalid_argument(std::string(kSoboPrefix) + "tolerance must be > 0");
+    if (!rOptions.mFixedPoints.empty() && rOptions.mFixedPoints.size() != n)
+        throw std::invalid_argument(std::string(kSoboPrefix) + "fixed_points has " +
+                                    std::to_string(rOptions.mFixedPoints.size()) +
+                                    " entries but the mesh has " + std::to_string(n) + " points");
+
+    // --- the raw displacement d, (n, dim) ---------------------------------------
+    const NDArray& darr = rMesh.PointData(rOptions.mArrayName);
+    const std::size_t drows = detail::rows(darr);
+    const std::size_t dcomp = drows == 0 ? 0 : darr.Size() / drows;
+    if (drows != n || !(dcomp == dim || (dim == 2 && dcomp == 3)))
+        throw std::invalid_argument(std::string(kSoboPrefix) + "displacement array '" +
+                                    rOptions.mArrayName + "' must be (" + std::to_string(n) + ", " +
+                                    std::to_string(dim) + ")" +
+                                    (dim == 2 ? " or (n, 3) with the z column ignored" : ""));
+    if (dcomp != dim)
+        log::warn("{}'{}' has 3 components on a 2-D mesh; the z column is ignored", kSoboPrefix,
+                  rOptions.mArrayName);
+    std::vector<double> d(n * dim, 0.0);
+    parallel_for_bw(n, [&](std::size_t i) {
+        for (std::size_t k = 0; k < dim; ++k)
+            d[i * dim + k] = detail::read_double(darr, i * dcomp + k);
+    });
+
+    // --- the cells, the star, the pins -----------------------------------------
+    const SoboCells cells = sobo_gather_cells(rMesh);
+    const SoboStar star = sobo_build_star(cells, n);
+    std::vector<std::uint8_t> fixed(n, 0);
+    if (!rOptions.mFixedPoints.empty())
+        for (std::size_t i = 0; i < n; ++i)
+            fixed[i] = rOptions.mFixedPoints[i] ? 1 : 0;
+    if (!rOptions.mFixedPointsArray.empty()) {
+        if (!rMesh.HasPointData(rOptions.mFixedPointsArray))
+            throw std::invalid_argument(
+                std::string(kSoboPrefix) +
+                data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mFixedPointsArray));
+        const NDArray& a = rMesh.PointData(rOptions.mFixedPointsArray);
+        if (detail::rows(a) != n || (n > 0 && a.Size() != n))
+            throw std::invalid_argument(std::string(kSoboPrefix) + "fixed_points array '" +
+                                        rOptions.mFixedPointsArray +
+                                        "' must be a scalar per point");
+        for (std::size_t i = 0; i < n; ++i)
+            if (detail::read_double(a, i) != 0.0)
+                fixed[i] = 1;
+    }
+    if (rOptions.mFixBoundary) {
+        const std::vector<std::uint8_t> boundary = sobo_boundary_points(cells, n);
+        for (std::size_t i = 0; i < n; ++i)
+            if (boundary[i])
+                fixed[i] = 1;
+    }
+
+    SobolevResult result;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (fixed[i])
+            ++result.mNumFixed;
+        if (star.mOffsets[i + 1] == star.mOffsets[i])
+            ++result.mNumIsolated;
+    }
+
+    // --- the filtered displacement u -------------------------------------------
+    std::vector<double> u(n * dim, 0.0);
+    const double l2 = rOptions.mLengthScale * rOptions.mLengthScale;
+    if (rOptions.mLengthScale == 0.0) {
+        parallel_for_bw(n, [&](std::size_t i) {
+            if (fixed[i])
+                return;
+            for (std::size_t k = 0; k < dim; ++k)
+                u[i * dim + k] = d[i * dim + k];
+        });
+    } else {
+        // Coordinates as a flat (n, dim) double buffer.
+        std::vector<double> xyz(n * dim, 0.0);
+        {
+            const NDArray& points = rMesh.Points();
+            parallel_for_bw(n, [&](std::size_t i) {
+                for (std::size_t k = 0; k < dim; ++k)
+                    xyz[i * dim + k] = detail::read_double(points, i * dim + k);
+            });
+        }
+        std::vector<double> kloc;
+        std::vector<double> measure;
+        sobo_assemble(cells, xyz, dim, kloc, measure);
+        const std::size_t nv = static_cast<std::size_t>(cells.mDim) + 1;
+
+        // Lumped mass and stiffness diagonal, gathered per vertex in ascending
+        // cell order; then the uniform mean mass.
+        std::vector<double> lumped(n, 0.0);
+        std::vector<double> diagk(n, 0.0);
+        parallel_for(n, [&](std::size_t i) {
+            double m = 0.0;
+            double dk = 0.0;
+            for (std::size_t s = star.mOffsets[i]; s < star.mOffsets[i + 1]; ++s) {
+                const std::size_t c = static_cast<std::size_t>(star.mCell[s]);
+                const std::size_t k = star.mLocal[s];
+                m += measure[c] / static_cast<double>(nv);
+                dk += kloc[c * nv * nv + k * nv + k];
+            }
+            lumped[i] = m;
+            diagk[i] = dk;
+        });
+        double mass_sum = 0.0;
+        std::int64_t mass_count = 0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (lumped[i] > 0.0) {
+                mass_sum += lumped[i];
+                ++mass_count;
+            }
+        const double mbar = mass_count > 0 ? mass_sum / static_cast<double>(mass_count) : 1.0;
+
+        // The operator, gather form: y_i = mbar x_i + l^2 sum_star K[k][j] x_j
+        // over FREE j; identity on a fixed row. One thread per vertex, fixed
+        // order, no scatter.
+        auto apply = [&](const std::vector<double>& rX, std::vector<double>& rY) {
+            parallel_for(n, [&](std::size_t i) {
+                if (fixed[i]) {
+                    for (std::size_t kk = 0; kk < dim; ++kk)
+                        rY[i * dim + kk] = rX[i * dim + kk];
+                    return;
+                }
+                double acc[3] = {0.0, 0.0, 0.0};
+                for (std::size_t kk = 0; kk < dim; ++kk)
+                    acc[kk] = mbar * rX[i * dim + kk];
+                for (std::size_t s = star.mOffsets[i]; s < star.mOffsets[i + 1]; ++s) {
+                    const std::size_t c = static_cast<std::size_t>(star.mCell[s]);
+                    const std::size_t k = star.mLocal[s];
+                    const double* K = &kloc[c * nv * nv + k * nv];
+                    for (std::size_t j = 0; j < nv; ++j) {
+                        const std::size_t vj = static_cast<std::size_t>(cells.mConn[c * nv + j]);
+                        if (fixed[vj])
+                            continue;
+                        const double w = l2 * K[j];
+                        for (std::size_t kk = 0; kk < dim; ++kk)
+                            acc[kk] += w * rX[vj * dim + kk];
+                    }
+                }
+                for (std::size_t kk = 0; kk < dim; ++kk)
+                    rY[i * dim + kk] = acc[kk];
+            });
+        };
+
+        const double tiny = std::numeric_limits<double>::min();
+        std::vector<double> b(n * dim, 0.0);
+        std::vector<double> diag(n, 1.0);
+        parallel_for_bw(n, [&](std::size_t i) {
+            if (fixed[i])
+                return;
+            for (std::size_t kk = 0; kk < dim; ++kk)
+                b[i * dim + kk] = mbar * d[i * dim + kk];
+            const double dg = mbar + l2 * diagk[i];
+            diag[i] = dg > tiny ? dg : tiny;
+        });
+        const double b2 = sobo_dot(b, b, n, dim);
+
+        if (b2 > 0.0) {
+            // Initial guess: the raw displacement at the free points.
+            std::vector<double> x(n * dim, 0.0);
+            parallel_for_bw(n, [&](std::size_t i) {
+                if (fixed[i])
+                    return;
+                for (std::size_t kk = 0; kk < dim; ++kk)
+                    x[i * dim + kk] = d[i * dim + kk];
+            });
+            std::vector<double> r(n * dim), z(n * dim), p(n * dim), q(n * dim);
+            apply(x, q);
+            parallel_for_bw(n, [&](std::size_t i) {
+                for (std::size_t kk = 0; kk < dim; ++kk) {
+                    r[i * dim + kk] = b[i * dim + kk] - q[i * dim + kk];
+                    z[i * dim + kk] = r[i * dim + kk] / diag[i];
+                    p[i * dim + kk] = z[i * dim + kk];
+                }
+            });
+            double rz = sobo_dot(r, z, n, dim);
+            double r2 = sobo_dot(r, r, n, dim);
+            const double thr = rOptions.mTolerance * rOptions.mTolerance * (b2 > tiny ? b2 : tiny);
+            bool breakdown = false;
+            std::int64_t it = 0;
+            while (r2 > thr && it < rOptions.mMaxIterations) {
+                apply(p, q);
+                const double pq = sobo_dot(p, q, n, dim);
+                if (!(std::isfinite(rz) && std::isfinite(pq) && pq > tiny)) {
+                    breakdown = true;
+                    break;
+                }
+                const double alpha = rz / pq;
+                parallel_for_bw(n, [&](std::size_t i) {
+                    for (std::size_t kk = 0; kk < dim; ++kk) {
+                        x[i * dim + kk] += alpha * p[i * dim + kk];
+                        r[i * dim + kk] -= alpha * q[i * dim + kk];
+                        z[i * dim + kk] = r[i * dim + kk] / diag[i];
+                    }
+                });
+                const double rz_new = sobo_dot(r, z, n, dim);
+                r2 = sobo_dot(r, r, n, dim);
+                ++it;
+                if (!std::isfinite(rz_new)) {
+                    breakdown = true;
+                    break;
+                }
+                const double beta = rz_new / (rz > tiny ? rz : tiny);
+                parallel_for_bw(n, [&](std::size_t i) {
+                    for (std::size_t kk = 0; kk < dim; ++kk)
+                        p[i * dim + kk] = z[i * dim + kk] + beta * p[i * dim + kk];
+                });
+                rz = rz_new;
+            }
+            result.mNumIterations = it;
+            result.mResidual = std::sqrt(r2 / b2);
+            result.mConverged = (r2 <= thr) && !breakdown;
+            if (!result.mConverged)
+                log::warn(
+                    "{}conjugate gradients did not converge in {} iteration(s) (relative "
+                    "residual {}); the last iterate is returned -- raise max_iterations or "
+                    "lower length_scale",
+                    kSoboPrefix, it, result.mResidual);
+            parallel_for_bw(n, [&](std::size_t i) {
+                if (fixed[i])
+                    return;
+                for (std::size_t kk = 0; kk < dim; ++kk)
+                    u[i * dim + kk] = x[i * dim + kk];
+            });
+        }
+    }
+
+    for (std::size_t i = 0; i < n; ++i) {
+        double s = 0.0;
+        for (std::size_t kk = 0; kk < dim; ++kk)
+            s += u[i * dim + kk] * u[i * dim + kk];
+        const double mag = std::sqrt(s);
+        if (mag > result.mMaxDisplacement)
+            result.mMaxDisplacement = mag;
+    }
+
+    // --- output ---------------------------------------------------------------------
+    result.mMesh = detail::clone_mesh(rMesh);
+    {
+        const NDArray& points = rMesh.Points();
+        NDArray moved = NDArray::Uninit(points.Dtype(), {n, dim});
+        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
+            T* dst = moved.As<T>();
+            parallel_for_bw(n, [&](std::size_t i) {
+                for (std::size_t kk = 0; kk < dim; ++kk)
+                    dst[i * dim + kk] =
+                        static_cast<T>(detail::read_double(points, i * dim + kk) + u[i * dim + kk]);
+            });
+        });
+        result.mMesh.AssignPoints(std::move(moved));
+    }
+    if (rOptions.mRecordFiltered) {
+        NDArray a = NDArray::Uninit(DType::Float64, {n, dim});
+        double* dst = a.As<double>();
+        for (std::size_t i = 0; i < n * dim; ++i)
+            dst[i] = u[i];
+        result.mMesh.AddPointData(kSobolevDisplacementName, std::move(a));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/sobolev_deform.cpp =====
 // ===== begin src/cpp/src/operations/split.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -93959,11 +96869,24 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
             out.AddPointData(name, transform_owned_copy(a));
     }
 
-    // Cell data + field data (carried through unchanged).
+    // Cell data (optionally rotated too -- a vector living on a cell rotates
+    // exactly as one living on a point does; the block's row count is its own
+    // cell count, so each block is widened independently).
+    std::vector<std::size_t> cell_counts;
+    for (const auto cb : rMesh.CellRange())
+        cell_counts.push_back(cb.NumCells());
     for (const std::string& name : rMesh.CellDataNames()) {
         std::vector<NDArray> blocks;
-        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.push_back(transform_owned_copy(rMesh.CellData(name, b)));
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t rows = b < cell_counts.size() ? cell_counts[b] : 0;
+            const std::size_t cols = rows > 0 ? a.Size() / rows : 0;
+            if (rotate_vector_data && transform_is_float(a.Dtype()) && rows > 0 &&
+                (cols == 3 || cols == 9))
+                blocks.push_back(transform_rotate_point_data(a, rows, cols, R));
+            else
+                blocks.push_back(transform_owned_copy(a));
+        }
         out.AddCellData(name, std::move(blocks));
     }
     for (const std::string& name : rMesh.FieldDataNames())
