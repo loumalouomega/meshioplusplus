@@ -44,6 +44,35 @@ function resolveVariant(variant) {
 }
 
 /**
+ * Thrown by `loadMeshioPlusPlus()` when a WASM module fails to instantiate,
+ * so a caller can tell a wrong `.wasm` URL from an environment that cannot
+ * run Wasm threads from a plain network failure, instead of catching a bare
+ * Emscripten abort. See doc/wasm.md's "Loading" section.
+ */
+export class MeshioPlusPlusLoadError extends Error {
+    /**
+     * @param {string} message
+     * @param {object} details
+     * @param {'mt'|'seq'} details.variant - which artifact was being loaded.
+     * @param {string} details.glue - the glue module specifier (e.g.
+     *   '../dist/meshioplusplus_wasm_mt.mjs').
+     * @param {string} [details.requestedFile] - the filename Emscripten asked
+     *   `locateFile` to resolve, if it got that far.
+     * @param {string} [details.resolvedUrl] - what `locateFile` returned for it.
+     * @param {unknown} [details.cause] - the underlying error/abort reason.
+     */
+    constructor(message, { variant, glue, requestedFile, resolvedUrl, cause }) {
+        super(message, cause === undefined ? undefined : { cause });
+        this.name = 'MeshioPlusPlusLoadError';
+        this.variant = variant;
+        this.glue = glue;
+        this.requestedFile = requestedFile;
+        this.resolvedUrl = resolvedUrl;
+        this.cause = cause;
+    }
+}
+
+/**
  * A rectangular (uniform node count) group of cells.
  * @typedef {Object} RectangularCellBlock
  * @property {string} type - meshio++ cell type name (e.g. "triangle", "tetra10").
@@ -107,10 +136,12 @@ function resolveVariant(variant) {
  * Instantiate a fresh meshio++ WASM module.
  *
  * @param {object} [moduleOverrides] - forwarded to the Emscripten module
- *   factory as-is (e.g. `{ locateFile: (p) => new URL(p, import.meta.url) }`
- *   if you need to relocate the `.wasm` binary for a bundler/CDN setup).
- *   `locateFile` receives the requested filename, so return the URL matching
- *   the loaded variant (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
+ *   factory (with `locateFile`/`onAbort` wrapped for diagnostics -- see
+ *   {@link MeshioPlusPlusLoadError} -- your own overrides still run first).
+ *   `{ locateFile: (p) => new URL(p, import.meta.url) }` relocates the
+ *   `.wasm` binary for a bundler/CDN setup; `locateFile` receives the
+ *   requested filename, so return the URL matching the loaded variant
+ *   (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
  * @param {object} [options]
  * @param {'auto'|'mt'|'seq'} [options.variant='auto'] - which native artifact to
  *   load. `auto` picks the threaded (`mt`) build under Node and in a
@@ -200,16 +231,73 @@ function resolveVariant(variant) {
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
  * }>}
+ * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
 export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
     const chosen = resolveVariant(variant);
+    const glue =
+        chosen === 'mt' ? '../dist/meshioplusplus_wasm_mt.mjs' : '../dist/meshioplusplus_wasm.mjs';
     // Literal specifiers so bundlers emit both chunks; the sequential one is
     // the fallback whenever threads are unavailable.
     const { default: createRawModule } =
         chosen === 'mt'
             ? await import('../dist/meshioplusplus_wasm_mt.mjs')
             : await import('../dist/meshioplusplus_wasm.mjs');
-    const Module = await createRawModule(moduleOverrides);
+
+    // Wrap locateFile/onAbort (rather than passing moduleOverrides through
+    // untouched) so a failed instantiation can be reported with which file
+    // Emscripten actually asked for and what locateFile resolved it to,
+    // instead of a bare Emscripten abort message. onAbort is overridden even
+    // though the try/catch below is the primary path, because an abort under
+    // Node does not always surface as a catchable rejection in every
+    // Emscripten build -- this guarantees the reason is captured regardless.
+    const userLocateFile = moduleOverrides.locateFile;
+    const userOnAbort = moduleOverrides.onAbort;
+    let requestedFile;
+    let resolvedUrl;
+    let abortReason;
+    const wrappedOverrides = {
+        ...moduleOverrides,
+        locateFile: (path, prefix) => {
+            requestedFile = path;
+            resolvedUrl = userLocateFile ? userLocateFile(path, prefix) : prefix + path;
+            return resolvedUrl;
+        },
+        onAbort: (reason) => {
+            abortReason = reason;
+            if (userOnAbort) userOnAbort(reason);
+        },
+    };
+
+    let Module;
+    try {
+        Module = await createRawModule(wrappedOverrides);
+    } catch (cause) {
+        throw new MeshioPlusPlusLoadError(
+            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+                `${abortReason ?? cause.message ?? cause}. Emscripten requested ` +
+                `'${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
+            { variant: chosen, glue, requestedFile, resolvedUrl, cause },
+        );
+    }
+
+    // A mismatched locateFile (e.g. the seq .wasm handed to the mt glue) does
+    // not always fail instantiation with a LinkError -- the two binaries share
+    // enough of an export surface that it can link and then silently behave
+    // like the wrong variant. parallelBackend() is the cheap, always-present
+    // tell: catch it here rather than let every caller re-discover it.
+    const expectedBackend = chosen === 'mt' ? 'openmp' : 'seq';
+    const actualBackend = Module.parallelBackend();
+    if (actualBackend !== expectedBackend) {
+        throw new MeshioPlusPlusLoadError(
+            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+                `loaded, but reports parallel backend '${actualBackend}' (expected ` +
+                `'${expectedBackend}') -- locateFile likely returned the wrong .wasm binary. ` +
+                `Emscripten requested '${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
+            { variant: chosen, glue, requestedFile, resolvedUrl },
+        );
+    }
+
     return {
         FS: Module.FS,
         readMesh: (path, format = '') => Module.readMesh(path, format),

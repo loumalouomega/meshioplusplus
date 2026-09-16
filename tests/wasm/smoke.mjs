@@ -17,6 +17,7 @@
 // has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
 
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
 
 let failed = false;
@@ -30,6 +31,63 @@ function step(name, fn) {
         console.error(err);
     }
 }
+
+async function asyncStep(name, fn) {
+    try {
+        await fn();
+        console.log(`ok - ${name}`);
+    } catch (err) {
+        failed = true;
+        console.error(`NOT OK - ${name}`);
+        console.error(err);
+    }
+}
+
+// Loader diagnostics (see doc/wasm.md's "Loading" section): a bad locateFile
+// must surface as a catchable MeshioPlusPlusLoadError naming the variant and
+// the requested/resolved file, never a bare Emscripten abort escaping the
+// Promise chain (the risk that motivates wrapping onAbort in src/index.mjs).
+await asyncStep(
+    'locateFile resolving to a missing file rejects with MeshioPlusPlusLoadError',
+    async () => {
+        await assert.rejects(
+            () =>
+                loadMeshioPlusPlus(
+                    { locateFile: () => '/definitely/does/not/exist.wasm' },
+                    { variant: 'seq' },
+                ),
+            (err) => {
+                assert.equal(err.name, 'MeshioPlusPlusLoadError');
+                assert.equal(err.variant, 'seq');
+                assert.match(err.resolvedUrl, /does\/not\/exist\.wasm/);
+                assert.match(err.message, /'seq' variant/);
+                assert.match(err.message, /does\/not\/exist\.wasm/);
+                return true;
+            },
+        );
+    },
+);
+
+await asyncStep(
+    'locateFile resolving to the seq .wasm for the mt glue is caught, not silently mislabelled',
+    async () => {
+        const seqWasmPath = fileURLToPath(
+            new URL('../../src/wasm/dist/meshioplusplus_wasm.wasm', import.meta.url),
+        );
+        await assert.rejects(
+            () =>
+                loadMeshioPlusPlus(
+                    { locateFile: (path) => (path.endsWith('.wasm') ? seqWasmPath : path) },
+                    { variant: 'mt' },
+                ),
+            (err) => {
+                assert.equal(err.name, 'MeshioPlusPlusLoadError');
+                assert.equal(err.variant, 'mt');
+                return true;
+            },
+        );
+    },
+);
 
 const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
 step('threaded (mt) build reports the openmp parallel backend', () => {

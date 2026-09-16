@@ -255,6 +255,8 @@ const meshio = await loadMeshioPlusPlus({
 
 Under Node no headers are needed — Wasm threads use `worker_threads`. The threaded artifact pre-spawns a worker pool of `navigator.hardwareConcurrency` (falling back to 8 where `navigator` is absent, e.g. Node < 21, then growing on demand).
 
+If instantiation fails — a missing `.wasm` file, a `locateFile` that resolved to the wrong URL, or an environment that cannot host the requested variant — `loadMeshioPlusPlus()` rejects with a `MeshioPlusPlusLoadError` (extends `Error`) instead of a bare Emscripten abort. It carries `variant`, `glue`, `requestedFile` and `resolvedUrl` (what Emscripten asked `locateFile` for and what it returned) and `cause` (the underlying error). A `locateFile` that returns the sequential `.wasm` for the threaded glue (or vice versa) can link successfully and only then report the wrong `parallelBackend()`; `loadMeshioPlusPlus()` checks for this and rejects with the same error type rather than returning a module that silently runs the other variant.
+
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.

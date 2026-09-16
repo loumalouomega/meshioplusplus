@@ -1937,16 +1937,54 @@ export interface MeshioPlusPlusModule {
  * instantiation otherwise. `variant: 'auto'` (default) picks the threaded build
  * under Node and in a cross-origin-isolated browser, else the sequential one.
  *
- * @param moduleOverrides forwarded as-is to the Emscripten module factory
- *   (e.g. `{ locateFile }` to relocate the `.wasm` binary for a bundler/CDN).
- *   `locateFile` receives the requested filename, so return the URL matching the
- *   loaded variant (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
+ * @param moduleOverrides forwarded to the Emscripten module factory, with
+ *   `locateFile`/`onAbort` wrapped for diagnostics (your own overrides still
+ *   run first) -- see {@link MeshioPlusPlusLoadError}. `locateFile` receives
+ *   the requested filename, so return the URL matching the loaded variant
+ *   (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
  * @param options.variant which native artifact to load: `'auto'` (default),
  *   `'mt'` (force threaded), or `'seq'` (force sequential).
+ * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
 export function loadMeshioPlusPlus(
-    moduleOverrides?: object,
+    moduleOverrides?: ModuleOverrides,
     options?: { variant?: 'auto' | 'mt' | 'seq' },
 ): Promise<MeshioPlusPlusModule>;
+
+/** Overrides forwarded to the underlying Emscripten module factory. */
+export interface ModuleOverrides {
+  /**
+   * Resolve the URL for a native artifact Emscripten wants to fetch (the
+   * `.wasm` binary, and under a threaded build its worker script). Receives
+   * the requested filename and Emscripten's own default prefix; return the
+   * URL to actually load. Must return the file matching the loaded variant
+   * (`meshioplusplus_wasm.wasm` vs `meshioplusplus_wasm_mt.wasm`) -- a
+   * mismatch either fails instantiation or, in the case of the sequential
+   * binary handed to the threaded glue, loads successfully but reports the
+   * wrong {@link MeshioPlusPlusModule.parallelBackend}, which
+   * `loadMeshioPlusPlus` detects and rejects with a {@link MeshioPlusPlusLoadError}.
+   */
+  locateFile?(path: string, prefix: string): string;
+  /** Called by Emscripten when the module aborts during instantiation. */
+  onAbort?(reason: unknown): void;
+  [key: string]: unknown;
+}
+
+/**
+ * Thrown by `loadMeshioPlusPlus()` when a WASM module fails to instantiate.
+ * `cause` is the underlying error (or abort reason) that triggered it.
+ */
+export interface MeshioPlusPlusLoadError extends Error {
+  name: 'MeshioPlusPlusLoadError';
+  /** Which native artifact was being loaded. */
+  variant: 'mt' | 'seq';
+  /** The glue module specifier (e.g. '../dist/meshioplusplus_wasm_mt.mjs'). */
+  glue: string;
+  /** The filename Emscripten asked `locateFile` to resolve, if it got that far. */
+  requestedFile?: string;
+  /** What `locateFile` returned for `requestedFile`. */
+  resolvedUrl?: string;
+  cause?: unknown;
+}
 
 export default loadMeshioPlusPlus;
