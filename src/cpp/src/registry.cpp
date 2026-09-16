@@ -141,7 +141,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
              return meshioplusplus::read_openfoam(path, info);
          }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"cgns", meshioplusplus::read_cgns},
+        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
+        // name ambiguous (the exodus/mdpa/med story again).
+        {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
         {"h5m", meshioplusplus::read_h5m},
         {"hmf", meshioplusplus::read_hmf},
         {"med",
@@ -465,6 +467,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              meshioplusplus::MedInfo info;
              return meshioplusplus::read_med(path, info, opts);
          }},
+        // CGNS honours mTimeStep the same way exodus/med do -- selects one
+        // FlowSolution_t of a transient (BaseIterativeData_t/
+        // ZoneIterativeData_t) file. IWYU pragma: keep
+        {"cgns", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
 #endif
         {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
@@ -484,6 +491,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gid", meshioplusplus::read_gid_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
+        {"cgns", meshioplusplus::read_cgns_metadata},
 #endif
         {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},

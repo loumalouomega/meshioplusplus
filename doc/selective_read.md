@@ -38,7 +38,7 @@ meshioplusplus.read_metadata("run.exo")["time_values"]   # [0.0, 0.5, 1.0]
 - Unlike `points_only`/`arrays`, this is **not** a narrowing option: no caller-side filter can recover a step that was never read. So a format whose reader has no time concept **raises** rather than quietly returning the first step.
 - `read_metadata(...)["time_values"]` reports the recorded times, so a request is checkable before it is issued. It is always present — empty for a format with no time concept — so `len(meta["time_values"])` needs no key test.
 
-Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload) and **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order). `time_step` selection dates to v9.9.0; `read_metadata`'s `time_values` — the steps' `PDT` attributes, unioned across every field — is native since v11.3.0 (`read_med_metadata`, roadmap §1 tier B1) rather than a full-read fallback. A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to. CGNS also has a time concept and is the natural next adopter; it still takes the first step today.
+Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload), **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order) and **`cgns`** (`BaseIterativeData_t`/`ZoneIterativeData_t`: `mTimeStep` resolves against `NumberOfSteps` and picks the one `FlowSolution_t` its `FlowSolutionPointers` names for that step, instead of reading every one). `time_step` selection on MED dates to v9.9.0; on CGNS, `read_metadata`'s `time_values` and the step selection itself are both native since v11.3.0 (`read_med_metadata`/`read_cgns_metadata`, roadmap §1 tier B1) rather than a full-read fallback or "takes the first step" default. A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to; a transient CGNS file used to silently concatenate every `FlowSolution_t`'s arrays under whichever one's array name won last.
 
 ## Summarizing without loading
 
@@ -62,9 +62,10 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 | Gmsh 2.2 | native | falls back to a full read | n/a |
 | Exodus | read whole, then filtered | falls back to a full read, but reports `time_values` | ✅ |
 | MED | read whole, then filtered | native, and genuinely O(1) | ✅ |
+| CGNS | read whole, then filtered | native, and genuinely O(1) | ✅ |
 | everything else | read whole, then filtered | falls back to a full read | ✗ |
 
-`reader_supports_options(fmt)` reports whether a format has a native options-aware path at all. Note that "options-aware" is not one capability but several: Exodus is on that list for `time_step`, not because it narrows arrays natively, and MED is on it for `time_step` and `lenient` (see [MED](formats/med.md#lenient-reads)).
+`reader_supports_options(fmt)` reports whether a format has a native options-aware path at all. Note that "options-aware" is not one capability but several: Exodus is on that list for `time_step`, not because it narrows arrays natively, and MED/CGNS are on it for `time_step` (MED also for `lenient`, see [MED](formats/med.md#lenient-reads)).
 
 **A fallback is correct, just not fast**, and it always says so via `fell_back_to_full_read`. A partial read that silently wasn't partial would be worse than no feature at all, so the flag is exposed on every binding surface.
 

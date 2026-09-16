@@ -2598,6 +2598,28 @@ step('CGNS round-trips a surface-only (triangle) mesh', () => {
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
 });
 
+step('cgns reports its time steps via a native metadata path (roadmap §1 tier B1)', () => {
+    // read_cgns_metadata (v11.3.0) is a native path over Zone_t's own
+    // dimension triple and BaseIterativeData_t/TimeValues, never a full read
+    // -- fellBackToFullRead must be false. A genuinely transient fixture
+    // needs raw HDF5 group/attribute writes this JS layer has no library for
+    // (BaseIterativeData_t/ZoneIterativeData_t/FlowSolutionPointers), and a
+    // committed .cgns binary fixture would be Git-LFS (see the exodus/med
+    // steps above for the same reasoning), so -- exactly like those steps --
+    // this proves the format is reachable and the new metadata plumbing is
+    // wired end to end; tests/cpp/test_cgns.cpp's
+    // Cgns.TransientReadSelectsOneStepByFlowSolutionPointers and
+    // CgnsMll.TransientReadSelectsOneStepByFlowSolutionPointers hand-build a
+    // real two-step file (against real cgnslib bytes, for the MLL path) and
+    // pin the length-2 case this file cannot.
+    m.writeMesh('/meta.cgns', tet, 'cgns');
+    const meta = m.readMetadata('/meta.cgns', 'cgns');
+    assert.equal(meta.format, 'cgns');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.equal(meta.timeValues.length, 0);
+    assert.equal(meta.numPoints, tet.points.length / 3);
+});
+
 // --- multi-component (vector/tensor) data across the object boundary --------
 //
 // Before v9.9.0 point_data/cell_data/field_data crossed as flat, SHAPELESS

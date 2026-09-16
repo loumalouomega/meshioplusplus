@@ -194,10 +194,12 @@ std::string seq_resolve_read_format(const std::string& rPath, const std::string&
 bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
-    // it reported one step and this predicate had nothing to gate on. med
-    // joined in v11.3.0 (roadmap §1 tier B1): read_med_metadata is the first
-    // native metadata path to fill mTimeValues for it.
-    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med";
+    // it reported one step and this predicate had nothing to gate on. med and
+    // cgns joined in v11.3.0 (roadmap §1 tier B1): read_med_metadata and
+    // read_cgns_metadata are their first native metadata paths to fill
+    // mTimeValues.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+          rFormat == "cgns";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

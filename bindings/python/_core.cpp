@@ -2739,9 +2739,14 @@ finalizes.
             pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         meshioplusplus::write_cgns(path, cpp, gzip_level);
     });
-    m.def("cgns_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path));
-    });
+    m.def(
+        "cgns_read",
+        [](const std::string& path, int time_step) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = time_step;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_cgns(path, opts));
+        },
+        py::arg("path"), py::arg("time_step") = 0);
 
     // HMF writer / reader (.hmf).
     m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {

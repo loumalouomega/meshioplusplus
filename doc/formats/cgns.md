@@ -107,6 +107,14 @@ Zone1/
 
 **`FlowSolution_t` is only read for a single-zone file.** Across several zones the arrays would have to be concatenated in whatever order the zones happen to be listed in, and a solution present on only some zones has no defensible filler; a multi-zone file's solutions are skipped with a warning. meshio++'s own writer always emits one zone.
 
+## Transient files: selecting a time step
+
+A CGNS file records time series through two optional SIDS nodes: `BaseIterativeData_t` (found by `label`, not by its own name — cgnslib itself writes it as `TimeIterValues` by convention) gives `NumberOfSteps` and a `TimeValues` array; `ZoneIterativeData_t` under the zone gives `FlowSolutionPointers`, one `FlowSolution_t` name per step. Since v11.3.0 (roadmap §1 tier B1) `ReadOptions::mTimeStep` (0-based, negative counts from the end — the `ResolveTimeStep` contract, see [selective reads](../selective_read.md#reading-one-time-step)) resolves against `NumberOfSteps` and reads **only** the one `FlowSolution_t` the resolved step's `FlowSolutionPointers` entry names, instead of every `FlowSolution_t` in the zone.
+
+**Without iterative data**, behaviour is unchanged from before: every `FlowSolution_t` is read. The one change is that an array name written by more than one `FlowSolution_t` now `log::warn`s naming both instead of silently letting whichever one HDF5 happens to iterate last win — a pre-existing footgun this closes without changing the (still "last one wins") outcome.
+
+`read_cgns_metadata` is the native (no full read) counterpart: `Zone_t`'s own `" data"` payload (`[NVertex, NCell, NBoundVertex]`) gives point/cell counts with no `GridCoordinates`/`Elements_t` decode, `Elements_t`'s `ElementRange` alone gives each block's type and count (never `ElementConnectivity`; a face-based `NGON_n`/`NFACE_n` section reports a single ragged `polygon`/`polyhedron` entry rather than the full reader's precise per-node-count grouping, which needs the face data this path does not read), and `BaseIterativeData_t/TimeValues` fills `mTimeValues`. Both the hand-rolled HDF5 reader and the [cgnslib backend](#the-optional-cgnslib-backend) implement this independently — the latter through `cg_biter_read`/`cg_ziter_read`/`cg_array_read` rather than hand-parsed HDF5 groups — and `read_cgns`/`read_cgns_metadata` dispatch between them exactly as the plain reader already does.
+
 ## Polyhedral cells (`NGON_n` / `NFACE_n`)
 
 Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, with no optional dependency — so polyhedral CGNS works in the default build, the PyPI wheels and the WASM artifact. A `polyhedron<N>` block becomes an `NGON_n` face list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning "traverse this face reversed"); a jagged `polygon<N>` block is itself a face list, so it becomes an `NGON_n` on its own.
