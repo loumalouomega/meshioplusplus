@@ -90,6 +90,6 @@ a$mesh; a$cell_map
 const out = await m.agglomerate(mesh, 8);
 ```
 
-On the flat ABIs, `AgglomerateResult` carries a single **flat** cell map (unlike `SubdivideResult`'s per-block one) — an output cell's index is a function of which group it joined, not which input block it came from. The C API's `mio_agglomerate_result_cell_map` accordingly takes **no `block` parameter**, and there is correspondingly no `mio_agglomerate_result_num_cell_maps` (there is exactly one array). WASM does not carry the cell map across the JS boundary at all.
+On the flat ABIs, `AgglomerateResult` carries a single **flat** cell map (unlike `SubdivideResult`'s per-block one) — an output cell's index is a function of which group it joined, not which input block it came from. The C API's `mio_agglomerate_result_cell_map` accordingly takes **no `block` parameter**, and there is correspondingly no `mio_agglomerate_result_num_cell_maps` (there is exactly one array). WASM's `agglomerate(mesh, targetGroupSize, returnMaps)` returns `{mesh, cellMap}` (the same flat shape) when `returnMaps` is set.
 
 This operation is also reachable as an `Agglomerate` step in the [settings pipeline](/pipeline) and in the browser viewer's `convertSurfaceOps` chain (`{op: 'agglomerate', targetGroupSize: 8}`).

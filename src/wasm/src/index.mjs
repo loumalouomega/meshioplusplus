@@ -200,16 +200,16 @@ export class MeshioPlusPlusLoadError extends Error {
  *   computeBandwidth: (mesh: Mesh) => number,
  *   diff: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => object,
  *   meshesEqual: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => boolean,
- *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean) => Mesh,
+ *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMaps: Int32Array[], cellMaps: Int32Array[]},
  *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
- *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number},
+ *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean, returnMaps?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean, frozen?: number[]|Int32Array|null) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
  *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
  *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
  *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
- *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
- *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
- *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean) => Mesh,
+ *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
@@ -228,15 +228,15 @@ export class MeshioPlusPlusLoadError extends Error {
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
- *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
- *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
- *   subdivide: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
- *   agglomerate: (mesh: Mesh, targetGroupSize?: number) => Mesh,
+ *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
+ *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
+ *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMap: Int32Array},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
- *            options?: object) => Mesh,
- *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
- *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
- *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string) => {partId: number, mesh: Mesh}[],
+ *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
  *   stats: (mesh: Mesh) => object,
  *   withProvenance: <T>(mode: number|null|undefined, fn: () => T) => T,
@@ -426,6 +426,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             Module.diff(a, b, atol, rtol, unordered),
         meshesEqual: (a, b, atol = 0, rtol = 0, unordered = false) =>
             Module.meshesEqual(a, b, atol, rtol, unordered),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMaps, cellMaps}` instead of a bare mesh -- one array
+        // per input mesh, in input order.
         merge: (
             meshes,
             weld = false,
@@ -433,9 +436,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             sourceTag = true,
             dataPolicy = 'intersection',
             dropDuplicateCells = false,
-        ) => Module.merge(meshes, weld, atol, sourceTag, dataPolicy, dropDuplicateCells),
+            returnMaps = false,
+        ) =>
+            Module.merge(
+                meshes, weld, atol, sourceTag, dataPolicy, dropDuplicateCells, returnMaps,
+            ),
         transform: (mesh, matrix, rotateVectorData = false) =>
             Module.transform(mesh, matrix, rotateVectorData),
+        // `returnMaps` (default false): when true, the result also carries
+        // `pointMap`/`cellMaps` (input index -> output index, -1 if dropped).
         clean: (
             mesh,
             weld = false,
@@ -443,7 +452,11 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             removeOrphans = true,
             dropDegenerate = true,
             dropDuplicateCells = true,
-        ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
+            returnMaps = false,
+        ) =>
+            Module.clean(
+                mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells, returnMaps,
+            ),
         // `method` is 'taubin', 'laplacian' or 'odt' (tet-only). A negative
         // `lambda` means "this method's own default" (0.5 Laplacian, 0.33
         // Taubin) and is forwarded unchanged. `frozen` is an optional array of
@@ -514,12 +527,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // Restore `fine`'s transitional (green) cells to their coarse parent,
         // read verbatim from `coarse` (a lookup, not a reconstruction).
         undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),
-        cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
-            Module.cropBbox(mesh, lo, hi, mode, recordIds),
-        cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>
-            Module.cropPlane(mesh, point, normal, mode, recordIds),
-        cropPredicate: (mesh, array, compare = '<', value = 0, recordIds = false) =>
-            Module.cropPredicate(mesh, array, compare, value, recordIds),
+        // Each crop* returns a bare mesh, or `{mesh, pointMap, cellMaps}` when
+        // `returnMaps` (the trailing argument, default false) is set.
+        cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false, returnMaps = false) =>
+            Module.cropBbox(mesh, lo, hi, mode, recordIds, returnMaps),
+        cropPlane: (mesh, point, normal, mode = 'all', recordIds = false, returnMaps = false) =>
+            Module.cropPlane(mesh, point, normal, mode, recordIds, returnMaps),
+        cropPredicate: (
+            mesh, array, compare = '<', value = 0, recordIds = false, returnMaps = false,
+        ) => Module.cropPredicate(mesh, array, compare, value, recordIds, returnMaps),
         slice: (mesh, origin, normal, recordParentIds = false) =>
             Module.slice(mesh, origin, normal, recordParentIds),
         grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
@@ -721,16 +737,33 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.sobolevDeform(mesh, array, lengthScale, fixedPointsArray, fixBoundary,
                 recordFiltered, maxIterations, tolerance),
-        split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
-        convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
-            Module.convertCells(mesh, mode, recordParentIds),
-        subdivide: (mesh, recordParentIds = false) => Module.subdivide(mesh, recordParentIds),
-        agglomerate: (mesh, targetGroupSize = 8) => Module.agglomerate(mesh, targetGroupSize),
-        refine: (mesh, levels = 1, recordParentIds = false, options = undefined) =>
-            Module.refine(mesh, levels, recordParentIds, options),
+        // `returnMaps` (default false): when true, each `{key, mesh}` piece
+        // also carries `pointMap`/`cellMaps`.
+        split: (mesh, by, tagName = '', returnMaps = false) =>
+            Module.split(mesh, by, tagName, returnMaps),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
+        convertCells: (mesh, mode = 'linearize', recordParentIds = false, returnMaps = false) =>
+            Module.convertCells(mesh, mode, recordParentIds, returnMaps),
+        // `returnMaps` (default false): when true, returns `{mesh, cellMaps}`
+        // instead of a bare mesh -- there is no point map (subdivide never
+        // prunes or renumbers a point).
+        subdivide: (mesh, recordParentIds = false, returnMaps = false) =>
+            Module.subdivide(mesh, recordParentIds, returnMaps),
+        // `returnMaps` (default false): when true, returns `{mesh, cellMap}`
+        // instead of a bare mesh -- a single FLAT array (global cell index ->
+        // global cell index), unlike the other ops' per-block `cellMaps`.
+        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false) =>
+            Module.agglomerate(mesh, targetGroupSize, returnMaps),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
+        refine: (mesh, levels = 1, recordParentIds = false, options = undefined,
+            returnMaps = false) =>
+            Module.refine(mesh, levels, recordParentIds, options, returnMaps),
         // Exactly one of ratio / targetFaces / maxError must be non-negative.
         // `frozen` is an optional array of 0-based point ids to pin outright;
-        // an out-of-range id throws by name.
+        // an out-of-range id throws by name. `returnMaps` (default false):
+        // when true, the result also carries `pointMap`/`cellMaps`.
         decimate: (
             mesh,
             ratio = -1,
@@ -741,6 +774,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveFeatures = true,
             featureAngle = 30,
             frozen = null,
+            returnMaps = false,
         ) =>
             Module.decimate(
                 mesh,
@@ -752,12 +786,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveFeatures,
                 featureAngle,
                 frozen,
+                returnMaps,
             ),
         // Tetrahedral VOLUME decimation (decimate's tet-edge-collapse sibling).
         // Exactly one of ratio / targetCells / maxError must be non-negative.
         // `preserveBoundary` defaults to false here, matching the C++ default
         // (decimate's own default is true) -- decimateVolume's boundary is
         // usually interior geometry a solver still wants simplified.
+        // `returnMaps` (default false): when true, the result also carries
+        // `pointMap`/`cellMaps`.
         decimateVolume: (
             mesh,
             ratio = -1,
@@ -768,6 +805,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveFeatures = true,
             featureAngle = 30,
             frozen = null,
+            returnMaps = false,
         ) =>
             Module.decimateVolume(
                 mesh,
@@ -779,7 +817,10 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveFeatures,
                 featureAngle,
                 frozen,
+                returnMaps,
             ),
+        // `returnMaps` (default false): when true, each `{partId, mesh}`
+        // piece also carries `pointMap`/`cellMaps`.
         partition: (
             mesh,
             nparts,
@@ -790,6 +831,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             recordIds = false,
             ghostLayers = 0,
             weightsKey = '',
+            returnMaps = false,
         ) =>
             Module.partition(
                 mesh,
@@ -801,6 +843,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 recordIds,
                 ghostLayers,
                 weightsKey,
+                returnMaps,
             ),
         partitionLabels: (
             mesh,

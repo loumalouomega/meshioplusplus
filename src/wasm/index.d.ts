@@ -40,6 +40,20 @@ export type DataArray =
   | Uint32Array
   | BigUint64Array;
 
+/**
+ * The index maps an op that prunes/renumbers points and cells returns when
+ * called with `returnMaps: true`, alongside its `mesh`: `pointMap` is input
+ * point index -> output point index (-1 if pruned), `cellMaps` is one array
+ * per **input** cell block, input cell -> output index within the
+ * corresponding output block (-1 if dropped). See doc/wasm.md's "Index maps"
+ * section for the per-op semantics (e.g. what a collapsed/welded point's
+ * -1-or-survivor value means).
+ */
+export interface PointCellMaps {
+  pointMap: Int32Array;
+  cellMaps: Int32Array[];
+}
+
 export interface RectangularCellBlock {
   /** meshio++ cell type name, e.g. "triangle", "tetra10", "hexahedron". */
   type: string;
@@ -1040,7 +1054,13 @@ export interface MeshioPlusPlusModule {
   /** Whether two meshes are equal within tolerance. */
   meshesEqual(a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean): boolean;
 
-  /** Combine several meshes into one, optionally welding coincident points. */
+  /**
+   * Combine several meshes into one, optionally welding coincident points.
+   * With `returnMaps: true`, also returns `pointMaps`/`cellMaps`: one array
+   * per INPUT MESH (not per input block, unlike every other op's maps), each
+   * input's local point/cell index -> the output index (cellMaps: -1 if
+   * dropped as a duplicate).
+   */
   merge(
     meshes: Mesh[],
     weld?: boolean,
@@ -1048,12 +1068,23 @@ export interface MeshioPlusPlusModule {
     sourceTag?: boolean,
     dataPolicy?: MergeDataPolicy,
     dropDuplicateCells?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  merge(
+    meshes: Mesh[],
+    weld?: boolean,
+    atol?: number,
+    sourceTag?: boolean,
+    dataPolicy?: MergeDataPolicy,
+    dropDuplicateCells?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh; pointMaps: Int32Array[]; cellMaps: Int32Array[] };
 
   /** Apply a row-major 4x4 affine transform to the point coordinates. */
   transform(mesh: Mesh, matrix: number[], rotateVectorData?: boolean): Mesh;
 
-  /** Weld / prune / de-duplicate in one pass. */
+  /** Weld / prune / de-duplicate in one pass. With `returnMaps: true`, the
+   * result also carries `pointMap`/`cellMaps` (see {@link PointCellMaps}). */
   clean(
     mesh: Mesh,
     weld?: boolean,
@@ -1061,12 +1092,15 @@ export interface MeshioPlusPlusModule {
     removeOrphans?: boolean,
     dropDegenerate?: boolean,
     dropDuplicateCells?: boolean,
+    returnMaps?: boolean,
   ): {
     mesh: Mesh;
     pointsWelded: number;
     pointsRemovedOrphan: number;
     cellsDroppedDegenerate: number;
     cellsDroppedDuplicate: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
   };
 
   /**
@@ -1161,17 +1195,37 @@ export interface MeshioPlusPlusModule {
     fine: Mesh,
   ): { mesh: Mesh; numGroupsUndone: number; numCellsRemoved: number };
 
-  /** Subset a mesh to an axis-aligned bounding box. */
-  cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
+  /** Subset a mesh to an axis-aligned bounding box. With `returnMaps: true`,
+   * returns `{mesh, pointMap, cellMaps}` (see {@link PointCellMaps}) instead
+   * of a bare mesh. */
+  cropBbox(
+    mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean,
+    returnMaps?: false,
+  ): Mesh;
+  cropBbox(
+    mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
-  /** Subset a mesh to the half-space `(p - point) . normal >= 0`. */
+  /** Subset a mesh to the half-space `(p - point) . normal >= 0`. With
+   * `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of a
+   * bare mesh. */
   cropPlane(
     mesh: Mesh,
     point: number[],
     normal: number[],
     mode?: CropMode,
     recordIds?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  cropPlane(
+    mesh: Mesh,
+    point: number[],
+    normal: number[],
+    mode?: CropMode,
+    recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Subset a mesh to the cells whose value in a scalar `cell_data` array
@@ -1192,6 +1246,9 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} when `array` is not a scalar `cell_data` array covering
    *   every block, or the comparison is not one of `<`, `<=`, `>`, `>=`, `==`,
    *   `!=`.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
   cropPredicate(
     mesh: Mesh,
@@ -1199,7 +1256,16 @@ export interface MeshioPlusPlusModule {
     compare?: CropCompare,
     value?: number,
     recordIds?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  cropPredicate(
+    mesh: Mesh,
+    array: string,
+    compare?: CropCompare,
+    value?: number,
+    recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Planar cross-section of a mesh (marching tetrahedra on a simplexified
@@ -1705,8 +1771,12 @@ export interface MeshioPlusPlusModule {
     maxDisplacement: number;
   };
 
-  /** Partition a mesh into submeshes by type, connected component, or tag. */
-  split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
+  /** Partition a mesh into submeshes by type, connected component, or tag.
+   * With `returnMaps: true`, each piece also carries `pointMap`/`cellMaps`
+   * (see {@link PointCellMaps}). */
+  split(
+    mesh: Mesh, by: SplitBy, tagName?: string, returnMaps?: boolean,
+  ): ({ key: string; mesh: Mesh } & Partial<PointCellMaps>)[];
 
   /**
    * Convert the element representation: drop higher-order nodes
@@ -1714,8 +1784,16 @@ export interface MeshioPlusPlusModule {
    * or promote linear cells to serendipity quadratic (`"elevate"`).
    * @throws {Error} on a polyhedron block under `"simplexify"`, or a
    *   full-Lagrange target (quad9/hexahedron27) under `"elevate"`.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
-  convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
+  convertCells(
+    mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: false,
+  ): Mesh;
+  convertCells(
+    mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Polyhedrally refine a mesh: one polyhedral child per face of every
@@ -1727,8 +1805,11 @@ export interface MeshioPlusPlusModule {
    * `convertCells`, there is no point map -- subdivide never prunes or
    * renumbers an original point.
    * @throws {Error} when a cell's faces are not a closed orientable surface.
+   *
+   * With `returnMaps: true`, returns `{mesh, cellMaps}` instead of a bare mesh.
    */
-  subdivide(mesh: Mesh, recordParentIds?: boolean): Mesh;
+  subdivide(mesh: Mesh, recordParentIds?: boolean, returnMaps?: false): Mesh;
+  subdivide(mesh: Mesh, recordParentIds?: boolean, returnMaps?: true): { mesh: Mesh; cellMaps: Int32Array[] };
 
   /**
    * Polyhedrally coarsen a mesh: merge groups of cells into single larger
@@ -1741,8 +1822,13 @@ export interface MeshioPlusPlusModule {
    * for a minimal point set).
    * @throws {Error} when targetGroupSize is 0, or the mesh contains a face
    *   shared by three or more cells (non-manifold).
+   *
+   * With `returnMaps: true`, returns `{mesh, cellMap}` instead of a bare
+   * mesh -- a single FLAT array (global input cell index -> global output
+   * cell index), unlike the other ops' per-block `cellMaps`.
    */
-  agglomerate(mesh: Mesh, targetGroupSize?: number): Mesh;
+  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: false): Mesh;
+  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: true): { mesh: Mesh; cellMap: Int32Array };
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,
@@ -1757,13 +1843,24 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on a higher-order cell, a `pyramid`, or a ragged
    *   polygon/polyhedron block — none has a same-type subdivision — and on more
    *   than one selector, an unknown region, or an unusable predicate array.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
   refine(
     mesh: Mesh,
     levels?: number,
     recordParentIds?: boolean,
-    options?: RefineOptions
+    options?: RefineOptions,
+    returnMaps?: false,
   ): Mesh;
+  refine(
+    mesh: Mesh,
+    levels?: number,
+    recordParentIds?: boolean,
+    options?: RefineOptions,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Decimate a SURFACE mesh by quadric-error-metric (Garland-Heckbert) edge
@@ -1775,8 +1872,8 @@ export interface MeshioPlusPlusModule {
    * more than `featureAngle` degrees) are pinned by default, and the link
    * condition plus a normal-flip guard reject any collapse that would change
    * topology or fold the surface. `frozen` is an optional array of 0-based
-   * point ids to pin outright. The index maps are not carried across the JS
-   * boundary.
+   * point ids to pin outright. With `returnMaps: true`, the result also
+   * carries `pointMap`/`cellMaps`.
    * @throws {Error} on a 3D volume mesh (extract the surface first),
    *   higher-order or ragged blocks, `line`/`vertex` blocks, an unknown
    *   `placement`, a criterion count other than one, or a `frozen` id outside
@@ -1792,12 +1889,15 @@ export interface MeshioPlusPlusModule {
     preserveFeatures?: boolean,
     featureAngle?: number,
     frozen?: number[] | Int32Array | null,
+    returnMaps?: boolean,
   ): {
     mesh: Mesh;
     facesRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
   };
 
   /**
@@ -1809,7 +1909,8 @@ export interface MeshioPlusPlusModule {
    * mesh's outer surface is usually interior geometry a solver still wants
    * simplified, not a boundary to protect. `frozen` is an optional array of
    * 0-based point ids to pin outright, unioned with any boundary/feature
-   * pins. The index maps are not carried across the JS boundary.
+   * pins. With `returnMaps: true`, the result also carries
+   * `pointMap`/`cellMaps`.
    * @throws {Error} on a non-manifold boundary face, a non-tetra 3D cell,
    *   higher-order tets, ragged/polyhedron blocks, a non-3D block, an unknown
    *   `placement`, a criterion count other than one, or a `frozen` id outside
@@ -1825,24 +1926,28 @@ export interface MeshioPlusPlusModule {
     preserveFeatures?: boolean,
     featureAngle?: number,
     frozen?: number[] | Int32Array | null,
+    returnMaps?: boolean,
   ): {
     mesh: Mesh;
     tetsRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
   };
 
   /**
    * Decompose a mesh into exactly `nparts` balanced pieces for domain
    * decomposition (the count-driven complement to `split`). Pieces keep the
    * input's cell-block structure 1:1 (empty blocks included, unlike `split`),
-   * so concatenating them reproduces the input. The index maps are not
-   * carried across the JS boundary — use `recordIds` for the
+   * so concatenating them reproduces the input. Use `recordIds` for the
    * `partition:original_*_id` arrays, or `partitionLabels` for the raw
-   * assignment. `weightsKey` names a scalar `cell_data` array of per-cell
-   * weights. `ghostLayers > 0` grows each piece by that many shared-node BFS
-   * layers of other parts' cells (a halo), tagged `partition:ghost`.
+   * assignment; with `returnMaps: true`, each piece also carries
+   * `pointMap`/`cellMaps` (see {@link PointCellMaps}). `weightsKey` names a
+   * scalar `cell_data` array of per-cell weights. `ghostLayers > 0` grows
+   * each piece by that many shared-node BFS layers of other parts' cells (a
+   * halo), tagged `partition:ghost`.
    * @throws {Error} on `method: 'kahip'` (KaHIP is never part of the WASM
    *   build; the message names `MESHIOPLUSPLUS_WITH_KAHIP`), `nparts < 1`,
    *   `ghostLayers < 0`, or a bad weights array.
@@ -1857,7 +1962,8 @@ export interface MeshioPlusPlusModule {
     recordIds?: boolean,
     ghostLayers?: number,
     weightsKey?: string,
-  ): { partId: number; mesh: Mesh }[];
+    returnMaps?: boolean,
+  ): ({ partId: number; mesh: Mesh } & Partial<PointCellMaps>)[];
 
   /**
    * The per-cell part assignment only: one array per cell block

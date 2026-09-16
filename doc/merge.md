@@ -87,4 +87,4 @@ The operation is exposed across every binding surface:
 
 - **C API** — `mio_merge(meshes, count, weld, atol, source_tag, data_policy, drop_duplicate_cells)` takes an array of mesh handles and returns a new mesh handle (`data_policy` `0` = intersection, `1` = fill; free with `mio_mesh_free`). See the [C API reference](/c_api).
 - **Fortran** — `mio_merge(meshes, weld=..., atol=..., source_tag=..., data_policy=..., drop_duplicate_cells=...)` takes an array of `type(mio_mesh)` and returns a new `type(mio_mesh)`. See the [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `merge([meshA, meshB, ...], weld, atol, sourceTag, dataPolicy, dropDuplicateCells)` returns a new mesh object. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `merge([meshA, meshB, ...], weld, atol, sourceTag, dataPolicy, dropDuplicateCells, returnMaps)` returns a new mesh object, or `{mesh, pointMaps, cellMaps}` (one array per **input mesh**, not per input block) when `returnMaps` is set. See the [WebAssembly reference](/wasm).

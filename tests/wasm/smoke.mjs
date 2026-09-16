@@ -1008,6 +1008,104 @@ step('decimateVolume rejects a missing criterion', () => {
     assert.throws(() => m.decimateVolume(tets));
 });
 
+// --- returnMaps: index maps opted into across the ops that prune/renumber
+// (roadmap §1 "WASM parity") -- the default (omitted) stays exactly the
+// pre-A5 bare-mesh / no-maps shape; these steps check the opt-in adds
+// pointMap/cellMaps of the documented shape without changing anything else.
+step('returnMaps: clean maps an orphan point to -1, everything else to itself', () => {
+    // An extra, unreferenced point appended to the cube: clean(removeOrphans)
+    // drops exactly that one, so pointMap is the identity for points 0-7 and
+    // -1 for the appended orphan (point 8).
+    const withOrphan = {
+        ...cube,
+        points: Float64Array.from([...cube.points, 5, 5, 5]),
+    };
+    const out = m.clean(withOrphan, false, 1e-8, true, true, true, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7, -1]);
+    assert.equal(out.pointsRemovedOrphan, 1);
+    // Without returnMaps, no maps on the result (unchanged default).
+    const bare = m.clean(withOrphan);
+    assert.equal(bare.pointMap, undefined);
+});
+
+step('returnMaps: convertCells simplexify pointMap/cellMaps are the identity', () => {
+    // Simplexify never prunes points and gives every input cell 6 children
+    // starting at a contiguous run -- pointMap is the identity and cellMaps[0]
+    // is [0] (the sole input cell's first child index).
+    const out = m.convertCells(cube, 'simplexify', false, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(Array.from(out.cellMaps[0]), [0]);
+    // Without returnMaps, still a bare mesh (unchanged default behaviour).
+    const bare = m.convertCells(cube, 'simplexify');
+    assert.equal(bare.pointMap, undefined);
+    assert.ok(Array.isArray(bare.cells));
+});
+
+step('returnMaps: subdivide has cellMaps but no pointMap', () => {
+    const out = m.subdivide(cube, false, true);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.equal(out.pointMap, undefined, 'subdivide never prunes/renumbers a point');
+});
+
+step('returnMaps: agglomerate has one flat cellMap, not per-block cellMaps', () => {
+    const grid = m.refine(cube); // 8 hexahedra
+    const out = m.agglomerate(grid, 8, true);
+    assert.ok(out.cellMap instanceof Int32Array);
+    assert.equal(out.cellMap.length, 8, 'flat, one entry per input cell');
+    assert.equal(out.cellMaps, undefined);
+});
+
+step('returnMaps: refine pointMap is the identity, cellMaps map 1 -> 8 children', () => {
+    const out = m.refine(cube, 1, false, undefined, true);
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(Array.from(out.cellMaps[0]), [0]);
+    assert.equal(out.mesh.cells[0].data.length / 8, 8);
+});
+
+step('returnMaps: cropBbox pointMap/cellMaps reach only the kept half', () => {
+    const grid = m.refine(cube); // 8 hexahedra in a 2x2x2 arrangement
+    const out = m.cropBbox(grid, [0, 0, 0], [0.5, 1, 1], 'all', false, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    const kept = Array.from(out.pointMap).filter((v) => v >= 0).length;
+    assert.equal(kept, out.mesh.points.length / 3);
+});
+
+step('returnMaps: merge gives one pointMaps/cellMaps entry per input mesh', () => {
+    const a = { ...tet, points: Float64Array.from(tet.points) };
+    const b = { ...tet, points: Float64Array.from(tet.points.map((v) => v + 10)) };
+    const out = m.merge([a, b], false, 1e-12, true, 'intersection', false, true);
+    assert.equal(out.pointMaps.length, 2);
+    assert.equal(out.cellMaps.length, 2);
+    assert.deepEqual(Array.from(out.pointMaps[0]), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(out.pointMaps[1]), [4, 5, 6, 7]);
+});
+
+step('returnMaps: split pieces each carry their own pointMap/cellMaps', () => {
+    const out = m.split(m.refine(cube), 'component', '', true);
+    assert.ok(out.length >= 1);
+    for (const piece of out) {
+        assert.ok(piece.pointMap instanceof Int32Array);
+        assert.ok(Array.isArray(piece.cellMaps));
+    }
+    // Without returnMaps, no maps on the pieces (unchanged default).
+    const bare = m.split(m.refine(cube), 'component');
+    assert.equal(bare[0].pointMap, undefined);
+});
+
+step('returnMaps: partition pieces each carry their own pointMap/cellMaps', () => {
+    const out = m.partition(m.refine(cube), 2, 'sfc', 0.03, 'eco', 0, false, 0, '', true);
+    assert.equal(out.length, 2);
+    for (const piece of out) {
+        assert.ok(piece.pointMap instanceof Int32Array);
+        assert.ok(Array.isArray(piece.cellMaps));
+    }
+});
+
 step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     // The pipeline runs against the loaded mesh itself, so hand it a surface
     // mesh (decimate refuses volume input by design).

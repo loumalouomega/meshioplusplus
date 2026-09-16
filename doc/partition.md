@@ -122,7 +122,7 @@ The [pure-Python KaHIP route](#kahip-optional-the-quality-path) (the `kahip` PyP
 
 ## Other language surfaces
 
-The operation exists on every binding surface: C (`mio_partition`/`mio_partition_labels`, see [the C API](/c_api)), Fortran (`m%partition`/`m%partition_labels`, see [Fortran](/fortran)), WebAssembly (`partition`/`partitionLabels`, SFC only — KaHIP is never part of the WASM build, see [WASM](/wasm)), and the `partition` verb in both [CLIs](/cli).
+The operation exists on every binding surface: C (`mio_partition`/`mio_partition_labels`, see [the C API](/c_api)), Fortran (`m%partition`/`m%partition_labels`, see [Fortran](/fortran)), WebAssembly (`partition`/`partitionLabels`, SFC only — KaHIP is never part of the WASM build, see [WASM](/wasm); `partition`'s `returnMaps` option gives each piece a `pointMap`/`cellMaps`), and the `partition` verb in both [CLIs](/cli).
 
 ## meshio++ is serial
 

@@ -97,6 +97,6 @@ s$mesh; s$cell_maps
 const out = await m.subdivide(mesh, true);
 ```
 
-On the flat ABIs (C, Fortran, Julia, R, WASM), `SubdivideResult` carries no point map at all — a deliberate divergence from `convert_cells`'s shape, since subdivide never prunes or renumbers a point. Fortran/WASM additionally skip exposing the per-block cell maps (a documented flat-ABI gap, the same one `convert_cells`'s own Fortran/WASM bindings already have).
+On the flat ABIs (C, Fortran, Julia, R, WASM), `SubdivideResult` carries no point map at all — a deliberate divergence from `convert_cells`'s shape, since subdivide never prunes or renumbers a point. WASM's `subdivide(mesh, recordParentIds, returnMaps)` returns `{mesh, cellMaps}` when `returnMaps` is set; Fortran still skips exposing the per-block cell maps (a documented flat-ABI gap, the same one `convert_cells`'s own Fortran binding has).
 
 This operation is also reachable as a `Subdivide` step in the [settings pipeline](/pipeline) and in the browser viewer's `convertSurfaceOps` chain (`{op: 'subdivide', recordParentIds: true}`).

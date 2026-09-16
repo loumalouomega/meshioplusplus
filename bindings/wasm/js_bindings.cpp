@@ -252,6 +252,16 @@ val ndarray_to_typed_array(const NDArray& rA) {
     });
 }
 
+// Per-input-block index maps (`std::vector<NDArray>`, one entry per block,
+// each Int64 shape `(num_cells_in_block,)`) -> a JS array of Int32Array, for
+// the `returnMaps` option every op below that prunes/renumbers cells offers.
+val cell_maps_to_val(const std::vector<NDArray>& rMaps) {
+    val out = val::array();
+    for (const NDArray& m : rMaps)
+        out.call<void>("push", ndarray_to_int32_array(m));
+    return out;
+}
+
 /**
  * @brief Convert a C++ `Mesh` into a plain JS object of typed arrays.
  *
@@ -1694,11 +1704,14 @@ val reorder_js(const val& rMeshObj, const std::string& rMethod) {
 
 /**
  * @brief Merge a JS array of mesh objects into one (concatenate, optional
- * welding). `dataPolicy` is "intersection" (default) or "fill". Returns a plain
- * JS mesh object (point_sets/cell_sets are not carried, as elsewhere in JS).
+ * welding). `dataPolicy` is "intersection" (default) or "fill". Returns a
+ * plain JS mesh object (point_sets/cell_sets are not carried, as elsewhere in
+ * JS), or `{mesh, pointMaps, cellMaps}` when `returnMaps` is set -- one array
+ * per input mesh, in input order (`merge`'s maps are per-INPUT, unlike every
+ * other op's per-input-BLOCK `cellMaps`).
  */
 val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
-             const std::string& rDataPolicy, bool dropDuplicateCells) {
+             const std::string& rDataPolicy, bool dropDuplicateCells, bool returnMaps) {
     return with_js_errors([&]() -> val {
         const unsigned n = rMeshes["length"].as<unsigned>();
         std::vector<Mesh> owned;
@@ -1716,7 +1729,13 @@ val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
         opts.drop_duplicate_cells = dropDuplicateCells;
         opts.data_policy = (rDataPolicy == "fill") ? meshioplusplus::MergeDataPolicy::Fill
                                                    : meshioplusplus::MergeDataPolicy::Intersection;
-        return mesh_to_val(meshioplusplus::merge(ptrs, opts).mMesh);
+        meshioplusplus::MergeResult r = meshioplusplus::merge(ptrs, opts);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMaps", cell_maps_to_val(r.mPointMaps));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -1740,10 +1759,11 @@ val transform_js(const val& rMeshObj, const val& rMatrix, bool rotateVectorData)
 /**
  * @brief Clean a mesh (weld / prune / de-dup). Returns an object
  * `{mesh, pointsWelded, pointsRemovedOrphan, cellsDroppedDegenerate,
- * cellsDroppedDuplicate}` (sets/maps are not carried, as elsewhere in JS).
+ * cellsDroppedDuplicate}`, plus `pointMap`/`cellMaps` when `returnMaps` is
+ * set (named point/cell sets are still not carried, as elsewhere in JS).
  */
 val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bool dropDegenerate,
-             bool dropDuplicateCells) {
+             bool dropDuplicateCells, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::CleanOptions opts;
         opts.weld = weld;
@@ -1758,6 +1778,10 @@ val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bo
         out.set("pointsRemovedOrphan", static_cast<double>(r.mPointsRemovedOrphan));
         out.set("cellsDroppedDegenerate", static_cast<double>(r.mCellsDroppedDegenerate));
         out.set("cellsDroppedDuplicate", static_cast<double>(r.mCellsDroppedDuplicate));
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
         return out;
     });
 }
@@ -1821,12 +1845,24 @@ val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, d
     });
 }
 
+// Every crop_*_js below shares this result shape: the bare mesh, or
+// `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
+val crop_result_to_val(meshioplusplus::CropResult&& rResult, bool returnMaps) {
+    if (!returnMaps) return mesh_to_val(rResult.mMesh);
+    val out = val::object();
+    out.set("mesh", mesh_to_val(rResult.mMesh));
+    out.set("pointMap", ndarray_to_int32_array(rResult.mPointMap));
+    out.set("cellMaps", cell_maps_to_val(rResult.mCellMaps));
+    return out;
+}
+
 /**
  * @brief Crop a mesh to a bounding box (`lo`/`hi` are 3-element JS arrays).
- * `mode` is "all" (default) or "any". Returns the pruned mesh object.
+ * `mode` is "all" (default) or "any". Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
  */
 val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std::string& rMode,
-                 bool recordIds) {
+                 bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         double lo[3], hi[3];
         for (unsigned i = 0; i < 3; ++i) {
@@ -1835,34 +1871,37 @@ val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std:
         }
         meshioplusplus::CropMode m =
             (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
-        return mesh_to_val(
-            meshioplusplus::crop_bbox(val_to_mesh(rMeshObj), lo, hi, m, recordIds).mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_bbox(val_to_mesh(rMeshObj), lo, hi, m, recordIds), returnMaps);
     });
 }
 
-/**
- * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
- * `normal` are 3-element JS arrays). Returns the pruned mesh object.
- */
 /**
  * @brief Crop to the cells whose scalar `cell_data` value satisfies a comparison.
  *
  * There is deliberately no `mode`: `cropBbox`/`cropPlane` test points and then
  * need an all/any rule, whereas a `cell_data` predicate is already one value per
- * cell and has nothing to reduce.
+ * cell and has nothing to reduce. Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
  */
 val crop_predicate_js(const val& rMeshObj, const std::string& rArray, const std::string& rCompare,
-                      double value, bool recordIds) {
+                      double value, bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
-        return mesh_to_val(meshioplusplus::crop_predicate(
-                               val_to_mesh(rMeshObj), rArray,
-                               meshioplusplus::refine_compare_from_name(rCompare), value, recordIds)
-                               .mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_predicate(val_to_mesh(rMeshObj), rArray,
+                                           meshioplusplus::refine_compare_from_name(rCompare),
+                                           value, recordIds),
+            returnMaps);
     });
 }
 
+/**
+ * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
+ * `normal` are 3-element JS arrays). Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
+ */
 val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
-                  const std::string& rMode, bool recordIds) {
+                  const std::string& rMode, bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         double point[3], normal[3];
         for (unsigned i = 0; i < 3; ++i) {
@@ -1871,9 +1910,9 @@ val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
         }
         meshioplusplus::CropMode m =
             (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
-        return mesh_to_val(
-            meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds)
-                .mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds),
+            returnMaps);
     });
 }
 
@@ -2520,10 +2559,12 @@ val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate,
 
 /**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
- * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
- * cell_data for the tag criterion (empty = auto-detect).
+ * Returns a JS array of `{key, mesh}` objects, plus `pointMap`/`cellMaps` per
+ * piece when `returnMaps` is set. `tagName` selects the integer cell_data for
+ * the tag criterion (empty = auto-detect).
  */
-val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTagName) {
+val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTagName,
+            bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SplitResult r = meshioplusplus::split(
             val_to_mesh(rMeshObj), meshioplusplus::split_by_from_name(rBy), rTagName);
@@ -2532,6 +2573,10 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
             val piece = val::object();
             piece.set("key", p.mKey);
             piece.set("mesh", mesh_to_val(p.mMesh));
+            if (returnMaps) {
+                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
+                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
+            }
             out.call<void>("push", piece);
         }
         return out;
@@ -2544,12 +2589,20 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
  * are not carried across the JS boundary (use `recordParentIds` for the
  * `convert:parent_cell` cell_data instead).
  */
-val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds) {
+val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds,
+                     bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::ConvertCellsOptions options;
         options.mMode = meshioplusplus::convert_cells_mode_from_name(rMode);
         options.mRecordParentIds = recordParentIds;
-        return mesh_to_val(meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::ConvertCellsResult r =
+            meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2558,17 +2611,23 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
  * eligible 3D cell, connected to a new interior point. Needs no per-type
  * template table -- tabulated types (reduced to corners for a quadratic
  * variant) and existing polyhedron blocks are handled uniformly.
- * Automatically conforming, unlike `refine`. Returns the subdivided mesh; the
- * cell maps are not carried across the JS boundary (use `recordParentIds` for
- * the `subdivide:parent_cell` cell_data instead) -- and unlike
- * `convertCells`, there is no point map at all, since subdivide never prunes
- * or renumbers an original point.
+ * Automatically conforming, unlike `refine`. Returns the subdivided mesh (use
+ * `recordParentIds` for the `subdivide:parent_cell` cell_data instead), or
+ * `{mesh, cellMaps}` when `returnMaps` is set -- there is no point map at
+ * all, unlike `convertCells`, since subdivide never prunes or renumbers an
+ * original point.
  */
-val subdivide_js(const val& rMeshObj, bool recordParentIds) {
+val subdivide_js(const val& rMeshObj, bool recordParentIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SubdivideOptions options;
         options.mRecordParentIds = recordParentIds;
-        return mesh_to_val(meshioplusplus::subdivide(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::SubdivideResult r =
+            meshioplusplus::subdivide(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2577,22 +2636,32 @@ val subdivide_js(const val& rMeshObj, bool recordParentIds) {
  * larger polyhedral cells via greedy seed-and-grow over the shared-face
  * dual. Non-volume blocks pass through unchanged; points are never pruned or
  * renumbered (`clean(mesh, ..., true)` is the follow-up for a minimal point
- * set). Returns the coarsened mesh; the flat cell map is not carried across
- * the JS boundary.
+ * set). Returns the coarsened mesh, or `{mesh, cellMap}` when `returnMaps` is
+ * set -- `cellMap` is a single **flat** array (global input cell index ->
+ * global output cell index), unlike the other ops' per-block `cellMaps`,
+ * since an output cell's index depends on which group it joined, not which
+ * input block it came from.
  */
-val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
+val agglomerate_js(const val& rMeshObj, int targetGroupSize, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::AgglomerateOptions options;
         options.mTargetGroupSize = static_cast<std::size_t>(targetGroupSize);
-        return mesh_to_val(meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::AgglomerateResult r =
+            meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("cellMap", ndarray_to_int32_array(r.mCellMap));
+        return out;
     });
 }
 
 /**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
- * the refined mesh; the index maps are not carried across the JS boundary (use
- * `recordParentIds` for the `refine:parent_cell` cell_data instead).
+ * the refined mesh (use `recordParentIds` for the `refine:parent_cell`
+ * cell_data instead), or `{mesh, pointMap, cellMaps}` when `returnMaps` is
+ * set.
  *
  * `options` is an optional object selecting a SUBSET of the cells to refine —
  * `{cells, region, array/op/value, closure, recordLevels, recordHierarchy}`,
@@ -2607,7 +2676,8 @@ val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
  * node, since it already records the coarse corners each new fine node is
  * the mean of -- the multigrid prolongation weights.
  */
-val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions) {
+val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions,
+             bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RefineOptions options;
         options.mLevels = levels;
@@ -2641,7 +2711,13 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
             options.mRecordHierarchy = !hierarchy_flag.isUndefined() && !hierarchy_flag.isNull() &&
                                        hierarchy_flag.as<bool>();
         }
-        return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::RefineResult r = meshioplusplus::refine(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2651,11 +2727,11 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
  * faces to keep, in (0, 1]), `targetFaces` and `maxError` must be non-negative.
  * `frozen` is an optional array of 0-based point ids to pin outright. Returns
  * an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
- * maxErrorApplied}`; the index maps are not carried across the JS boundary.
+ * maxErrorApplied}`, plus `pointMap`/`cellMaps` when `returnMaps` is set.
  */
 val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
                 const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
-                double featureAngle, const val& rFrozen) {
+                double featureAngle, const val& rFrozen, bool returnMaps) {
     return with_js_errors([&]() -> val {
         Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateOptions options;
@@ -2675,6 +2751,10 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
         return out;
     });
 }
@@ -2684,12 +2764,13 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
  * collapse. Exactly one of `ratio`, `targetCells` and `maxError` must be
  * non-negative. `frozen` is an optional array of 0-based point ids to pin
  * outright. Returns an object `{mesh, tetsRemoved, pointsRemoved,
- * collapsesRejected, maxErrorApplied}`; the index maps are not carried across
- * the JS boundary.
+ * collapsesRejected, maxErrorApplied}`, plus `pointMap`/`cellMaps` when
+ * `returnMaps` is set.
  */
 val decimate_volume_js(const val& rMeshObj, double ratio, double targetCells, double maxError,
                        const std::string& rPlacement, bool preserveBoundary,
-                       bool preserveFeatures, double featureAngle, const val& rFrozen) {
+                       bool preserveFeatures, double featureAngle, const val& rFrozen,
+                       bool returnMaps) {
     return with_js_errors([&]() -> val {
         Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateVolumeOptions options;
@@ -2710,6 +2791,10 @@ val decimate_volume_js(const val& rMeshObj, double ratio, double targetCells, do
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
         return out;
     });
 }
@@ -2738,14 +2823,14 @@ meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::str
  * @brief Decompose a mesh into `nparts` balanced pieces (`"sfc"` / `"kahip"` /
  * `"auto"`). Returns a JS array of `{partId, mesh}` objects, exactly `nparts`
  * entries (pieces may be empty; blocks kept 1:1 with the input, unlike
- * `split`). The index maps are not carried across the JS boundary (use
+ * `split`), plus `pointMap`/`cellMaps` per piece when `returnMaps` is set (use
  * `recordIds` for the `partition:original_*_id` arrays, or `partitionLabels`
  * for the assignment). KaHIP is never compiled into the WASM build, so
  * `method: "kahip"` throws the error naming `MESHIOPLUSPLUS_WITH_KAHIP`.
  */
 val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, double imbalance,
                  const std::string& rMode, int seed, bool recordIds, int ghostLayers,
-                 const std::string& rWeightsKey) {
+                 const std::string& rWeightsKey, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::PartitionResult r = meshioplusplus::partition(
             val_to_mesh(rMeshObj), partition_options_js(nparts, rMethod, imbalance, rMode, seed,
@@ -2755,6 +2840,10 @@ val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, do
             val piece = val::object();
             piece.set("partId", p.mPartId);
             piece.set("mesh", mesh_to_val(p.mMesh));
+            if (returnMaps) {
+                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
+                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
+            }
             out.call<void>("push", piece);
         }
         return out;
