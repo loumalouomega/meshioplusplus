@@ -8,6 +8,21 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v11.2.0 (2026-09-17)
+
+**WASM parity, Tier A: the JS surface over C++ that already existed, plus two opaque-failure defects.** Closes the first tier of roadmap section 1 "WASM parity" — everything the `@meshioplusplus/wasm` build could reach with no `src/cpp` core change, measured against its main downstream consumer's own list of constraints. `MESHIOPLUSPLUS_ABI_VERSION` stays 12 (see `doc/abi_reviews.md`); the C header's new structs are additive, append-only-`reserved`-tail types under the separate C-ABI `SOVERSION 0` contract.
+
+- **Breaking: WASM integer arrays now cross the boundary as their own dtype, not `Float64Array`.** Every integer-kind data array (cell tags, `mdpa:id`, `record*` provenance arrays, …) now arrives as `BigInt64Array` (its elements are JS `bigint`, not `number`) instead of being silently widened to `Float64Array`; a narrower input dtype (`Int32Array`, `Uint8Array`, …) is accepted but still canonicalizes to `BigInt64Array` on the way back out, since the NATIVE mesh backend has only two canonical storage forms. The path-based `convert`/`convertSurfaceOps`/`runPipeline` calls never cross the boundary and are unaffected. See [WASM: Data array dtypes](doc/wasm.md#data-array-dtypes).
+- **Loader failures now name the variant and the file.** `loadMeshioPlusPlus()` used to surface a bare Emscripten `LinkError` on a mismatched `locateFile` or a missing `.wasm`; it now rejects with a `MeshioPlusPlusLoadError` naming the requested variant, the glue, the file Emscripten asked for and the URL `locateFile` returned.
+- **A parity guard** (`tests/python/test_wasm_parity.py`) cross-checks the embind function names, the JS wrapper, `index.d.ts` and the C header against each other, so the JS/TypeScript surface cannot silently drift from the C++ core again.
+- **Index maps** (`returnMaps: true`) on `clean`, `decimate`, `decimateVolume`, `convertCells`, `refine`, `crop*`, `subdivide`, `agglomerate`, `split`, `partition` and `merge`.
+- **Per-format side channels** (`readMeshSelective(path, {info: true})` / `writeMesh(path, mesh, format, {info})`) for OpenFOAM patch names/types, MED field units/step metadata, MDPA properties/entity names, Ansys/UNV named sets, Gmsh bounding entities and Exodus info records; property sets (`mesh.propertySets`) are carried for every format that has them, not only when `info` is requested.
+- **Per-format write options** (`encoding`, `codec`, `floatFormat`) mirroring the C API's `mio_write_ex`/`mio_write_opts`.
+- **`writeMesh`/`convert` report every path they wrote or changed**, computed as a MEMFS directory diff — the companion-file bookkeeping (`.xdmf` + its `.h5`, an OpenFOAM `constant/polyMesh/*` directory, …) a caller previously had to know per format.
+- **A `frozen` pin mask for `smooth` and `decimate`**, landed across every flat binding in one change: C (`mio_smooth_opts`/`mio_smooth_ex`, `mio_decimate_opts`/`mio_decimate_ex`, `mio_decimate_volume_opts`/`mio_decimate_volume_ex`), Fortran, Julia, R and WASM.
+- **`decimateVolume`** as a direct WASM binding (previously reachable only through `convertSurfaceOps`/`runPipeline`).
+- **A stateful sequence reader** (`openSequence(source, options)` → open / count / step / time / read / close), matching the C/Fortran/Julia/R surface.
+
 ## v11.1.0 (2026-09-16)
 
 **Docs and a regression test, no functional change.** Follow-up to [issue #76](https://github.com/loumalouomega/meshioplusplus/issues/76): `mesh.regions` already reproduces the exact global element ids the issue expects as of v10.36.0 (pinned by a new test, `test_reference_file_regions_are_gid_visible_ids`), but a downstream importer ported from meshio can still carry a FLAC3D-specific workaround written against meshio's un-rebased `cell_sets`. `doc/formats/flac3d.md` and `doc/regions.md` now spell out the divergence and the fix (read `mesh.regions`, or add the block's own offset) explicitly, with a runnable snippet. No format, operation, API, or ABI change; `MESHIOPLUSPLUS_ABI_VERSION` stays 12 (see `doc/abi_reviews.md`).

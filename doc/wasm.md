@@ -331,7 +331,7 @@ An option the target format cannot honour throws a catchable `Error` naming the 
 
 Both calls **return every virtual-FS path the write touched** (new or changed since the call started), sorted: `['/out.vtu']` for a single-file writer, `['/out.h5', '/out.xdmf']` for `xdmf`'s HDF companion, or the five `constant/polyMesh/*` files (plus the `case.foam` marker) for `openfoam`. This is computed by diffing the output's directory before and after the write (there is no core-level "list of paths written" yet — a documented roadmap remainder), so it is exact for any present or future writer with no binding change, at the cost of a directory walk per call.
 - **Named regions are carried** (since v8.1.0). They ride on the mesh object itself — `mesh.regions` is an array of `{ name, kind, dim, tag, entries }` — so `readMesh` / `writeMesh` / `convert` carry them with no extra call, and nothing new had to be forwarded by the wrapper. `kind` is `'point'`, `'cell'` (global block-major cell indices) or `'side'` (`(cell, facet)` pairs). The Phase-1 formats (gmsh, abaqus, and MED since v9.6.0 — one region per `FAS`/`GRO` group name) map onto them fully; Exodus reads but does not yet write them. See [Named regions](./regions.md).
-- **Remaining side-channel data isn't exposed.** `openfoam`'s cell-tag family names, and the `ansysInp`/`unv` set channels pending their Phase-2 region mapping (all carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`), are not yet surfaced to JS (tracked in [roadmap §1](/roadmap#_1-wasm-parity)).
+- **Side-channel data is exposed since v11.2.0.** `openfoam`'s patch names/types, MED field units/step metadata, MDPA properties/entity names, and the `ansysInp`/`unv` set channels all reach JS via `readMeshSelective(path, {info: true})` and `writeMesh(path, mesh, format, {info})` — see [Side channel (info)](#side-channel-info) above.
 - **Data arrays are `Float64` or `BigInt64`, not their exact source width.** Since v11.2.0 an integer material id no longer becomes a double crossing the boundary (see "Data array dtypes" above), but the mesh's own storage still canonicalizes *within kind* rather than preserving e.g. `Int32Array` vs. `Uint8Array` exactly — every integer dtype comes back as `BigInt64Array`, every float dtype as `Float64Array`. Multi-component (vector/tensor) arrays *are* supported since v9.9.0 via the `*_components` objects (see "The mesh object shape" above); before that they were flattened to N unrelated scalars in both directions. The path-based `convert`/`convertSurface` calls still avoid the boundary entirely, and so preserve exact dtypes as well as shapes.
 
 ## Building from source
@@ -387,8 +387,6 @@ m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1] -- always presen
 
 - `readMeshSelective(path, { lenient: true })` — see [`doc/selective_read.md`](selective_read.md).
 - XDMF series: `w.flush()`, `w.writeDataArrays(time, pointData, cellData, components)`, and `createXdmfTimeSeriesWriter(path, { mode: 'append', autoFlush: true })`. With `flush()` the `.xdmf` appears in MEMFS before `finalize()`, so a partially-written series can be copied out.
-
-`MdpaInfo` (MDPA properties bodies and entity names) is not exposed, as for every flat binding.
 
 ## Sequences (transient / multi-file datasets)
 

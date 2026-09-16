@@ -9121,7 +9121,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 11
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 2
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9131,7 +9131,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "11.2.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12869,10 +12869,11 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
  * verified against GiD's own geometry (pinned by `tests/cpp/test_gid.cpp`'s
  * `GidOrdering` suite, never by a round trip through a reader that does not
  * exist) are supported: `vertex`, `line`/`line3`, `triangle`/`triangle6`,
- * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`,
- * `wedge`, `pyramid`. Everything else — `hexahedron27`, `wedge15`,
- * `pyramid13` (orderings not yet verified), `polygon`/`polyhedron` (GiD has
- * no such type), every `VTK_LAGRANGE_*` and higher-degree Lagrange type —
+ * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`/
+ * `hexahedron27`, `wedge`/`wedge15`, `pyramid`/`pyramid13` (the last three
+ * cross-checked against Kratos's geometry classes since v10.19.0). Everything
+ * else — `polygon`/`polyhedron` (GiD has no such type), every
+ * `VTK_LAGRANGE_*` and higher-degree Lagrange type —
  * throws a `WriteError` naming the offending type, never a silent drop or a
  * guessed permutation.
  *
@@ -17062,7 +17063,7 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
  * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
  * the same plane into one larger polygon, rather than leaving the edge
  * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see the roadmap.
+ * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §6.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
