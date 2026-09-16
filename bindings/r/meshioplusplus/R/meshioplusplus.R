@@ -589,6 +589,10 @@ mio_add_region <- function(mesh, name, kind, entries, dim = -1L, tag = -1L) {
 #'   convention).
 #' @param guard_inversion Reject any move that would flip a cell's signed
 #'   measure.
+#' @param frozen For `mio_smooth()` and `mio_decimate()`, an optional vector of
+#'   1-based point ids to pin outright (unioned with the boundary/feature pins
+#'   for `mio_smooth()`). Shifted to 0-based across the C ABI, as every index
+#'   array in this binding; an out-of-range id raises by name.
 #' @param lo,hi Bounding-box corners (3 numbers each).
 #' @param point,normal,origin Plane definition (3 numbers each).
 #' @param mode `"all"` (every node inside) or `"any"` (at least one).
@@ -710,11 +714,12 @@ mio_clean <- function(mesh, weld = FALSE, atol = 1e-12, remove_orphans = TRUE,
 #' @export
 mio_smooth <- function(mesh, method = "taubin", iterations = 10L, lambda = -1,
                        mu = -0.34, fix_boundary = TRUE, preserve_features = TRUE,
-                       feature_angle = 30, guard_inversion = TRUE) {
+                       feature_angle = 30, guard_inversion = TRUE, frozen = NULL) {
   .Call(
     R_mio_smooth, mesh, as.character(method), as.integer(iterations),
     as.numeric(lambda), as.numeric(mu), isTRUE(fix_boundary),
-    isTRUE(preserve_features), as.numeric(feature_angle), isTRUE(guard_inversion)
+    isTRUE(preserve_features), as.numeric(feature_angle), isTRUE(guard_inversion),
+    frozen
   )
 }
 
@@ -1316,11 +1321,11 @@ mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
 #' @export
 mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,
                          placement = "optimal", preserve_boundary = TRUE,
-                         preserve_features = TRUE, feature_angle = 30) {
+                         preserve_features = TRUE, feature_angle = 30, frozen = NULL) {
   .Call(
     R_mio_decimate, mesh, as.numeric(ratio), as.numeric(target_faces),
     as.numeric(max_error), as.character(placement), isTRUE(preserve_boundary),
-    isTRUE(preserve_features), as.numeric(feature_angle)
+    isTRUE(preserve_features), as.numeric(feature_angle), frozen
   )
 }
 

@@ -60,7 +60,7 @@ extern SEXP R_mio_attach_quality(SEXP);
 extern SEXP R_mio_quality_counts(SEXP);
 extern SEXP R_mio_transform(SEXP, SEXP, SEXP);
 extern SEXP R_mio_clean(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_smooth(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_optimize_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -98,7 +98,7 @@ extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
 extern SEXP R_mio_subdivide(SEXP, SEXP);
 extern SEXP R_mio_agglomerate(SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_drop(SEXP, SEXP, SEXP, SEXP);
@@ -194,7 +194,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_quality_counts, 1),
     CALLDEF(R_mio_transform, 3),
     CALLDEF(R_mio_clean, 6),
-    CALLDEF(R_mio_smooth, 9),
+    CALLDEF(R_mio_smooth, 10),
     CALLDEF(R_mio_optimize_volume, 6),
     CALLDEF(R_mio_crop_bbox, 5),
     CALLDEF(R_mio_crop_plane, 5),
@@ -230,7 +230,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_subdivide, 2),
     CALLDEF(R_mio_agglomerate, 2),
     CALLDEF(R_mio_refine, 11),
-    CALLDEF(R_mio_decimate, 8),
+    CALLDEF(R_mio_decimate, 9),
     CALLDEF(R_mio_partition, 9),
     CALLDEF(R_mio_partition_labels, 8),
     CALLDEF(R_mio_data_drop, 4),

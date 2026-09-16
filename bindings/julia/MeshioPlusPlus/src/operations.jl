@@ -165,21 +165,31 @@ A **negative `lambda` means "this method's own default"**: 0.5 for
 needs `mu < -lambda < 0`; `mu` is silently ignored by `"laplacian"` and
 `"odt"`. See `doc/smooth.md`.
 
-The `frozen` pin mask of the C++ API is **not reachable across the C ABI** (a
-documented flat-ABI gap shared with Fortran).
+`frozen` is an optional vector of **1-based** point ids to pin outright,
+unioned with the boundary/feature pins; shifted to 0-based across the C ABI,
+as every index array in this binding. An out-of-range id raises by name.
 """
 function smooth(m::Mesh; method::AbstractString="taubin", iterations::Integer=10,
                 lambda::Real=-1.0, mu::Real=-0.34, fix_boundary::Bool=true,
                 preserve_features::Bool=true, feature_angle::Real=30.0,
-                guard_inversion::Bool=true)
+                guard_inversion::Bool=true, frozen=nothing)
     moved = Ref{Int64}(0); disp = Ref{Cdouble}(0.0); skipped = Ref{Int64}(0)
-    ptr = ccall(_sym(:mio_smooth), Ptr{Cvoid},
-                (Ptr{Cvoid}, Cstring, Cint, Cdouble, Cdouble, Cint, Cint, Cdouble, Cint,
-                 Ptr{Int64}, Ptr{Cdouble}, Ptr{Int64}),
-                _handle(m), method, Cint(iterations), Float64(lambda), Float64(mu),
-                fix_boundary ? Cint(1) : Cint(0), preserve_features ? Cint(1) : Cint(0),
-                Float64(feature_angle), guard_inversion ? Cint(1) : Cint(0),
-                moved, disp, skipped)
+    method_c = Vector{UInt8}(codeunits(String(method)))
+    push!(method_c, 0x00)
+    ids = frozen === nothing ? Int64[] : Vector{Int64}(vec(collect(frozen))) .- Int64(1)
+    ptr = GC.@preserve ids method_c begin
+        opts = _CSmoothOpts(Cstring(pointer(method_c)), Int32(iterations), Int32(0),
+                            Cdouble(lambda), Cdouble(mu),
+                            fix_boundary ? Int32(1) : Int32(0),
+                            preserve_features ? Int32(1) : Int32(0),
+                            Cdouble(feature_angle),
+                            guard_inversion ? Int32(1) : Int32(0), Int32(0),
+                            isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                            Int64(length(ids)), (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_smooth_ex), Ptr{Cvoid},
+             (Ptr{Cvoid}, Ref{_CSmoothOpts}, Ptr{Int64}, Ptr{Cdouble}, Ptr{Int64}),
+             _handle(m), Ref(opts), moved, disp, skipped)
+    end
     (mesh=Mesh(_check_ptr(ptr)), num_nodes_moved=Int(moved[]),
      max_displacement=Float64(disp[]), num_skipped_inversion=Int(skipped[]))
 end
@@ -1082,20 +1092,29 @@ faces to KEEP), `target_faces` and `max_error` must be set; a negative value
 means "unset".
 
 A 3-D volume mesh fails by name (extract the surface first), as do
-higher-order, ragged and line/vertex blocks. The caller `frozen` mask is not
-exposed across the C ABI. See `doc/decimate.md`.
+higher-order, ragged and line/vertex blocks. `frozen` is an optional vector
+of **1-based** point ids to pin outright; shifted to 0-based across the C
+ABI, as every index array in this binding. An out-of-range id raises by
+name. See `doc/decimate.md`.
 """
 function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
                   max_error::Real=-1.0, placement::AbstractString="optimal",
                   preserve_boundary::Bool=true, preserve_features::Bool=true,
-                  feature_angle::Real=30.0)
-    result = _check_ptr(ccall(_sym(:mio_decimate), Ptr{Cvoid},
-                              (Ptr{Cvoid}, Cdouble, Int64, Cdouble, Cstring, Cint, Cint,
-                               Cdouble),
-                              _handle(m), Float64(ratio), Int64(target_faces),
-                              Float64(max_error), placement,
-                              preserve_boundary ? Cint(1) : Cint(0),
-                              preserve_features ? Cint(1) : Cint(0), Float64(feature_angle)))
+                  feature_angle::Real=30.0, frozen=nothing)
+    placement_c = Vector{UInt8}(codeunits(String(placement)))
+    push!(placement_c, 0x00)
+    ids = frozen === nothing ? Int64[] : Vector{Int64}(vec(collect(frozen))) .- Int64(1)
+    result = GC.@preserve ids placement_c begin
+        opts = _CDecimateOpts(Cdouble(ratio), Int64(target_faces), Cdouble(max_error),
+                              Cstring(pointer(placement_c)),
+                              preserve_boundary ? Int32(1) : Int32(0),
+                              preserve_features ? Int32(1) : Int32(0),
+                              Cdouble(feature_angle),
+                              isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                              Int64(length(ids)), (Int64(0), Int64(0), Int64(0), Int64(0)))
+        _check_ptr(ccall(_sym(:mio_decimate_ex), Ptr{Cvoid},
+                         (Ptr{Cvoid}, Ref{_CDecimateOpts}), _handle(m), Ref(opts)))
+    end
     try
         pm = _result_map(result, :mio_decimate_result_point_map)
         cm = _result_cell_maps(result, :mio_decimate_result_num_cell_maps,
