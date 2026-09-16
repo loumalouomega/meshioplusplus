@@ -381,6 +381,48 @@ step('xdmf writes an HDF companion file when HDF5 is available', () => {
     assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
 });
 
+step('writeMesh returns every path a multi-file writer touched', () => {
+    const paths = m.writeMesh('/multi.xdmf', tet, 'xdmf');
+    assert.deepEqual(paths, ['/multi.h5', '/multi.xdmf']);
+});
+
+step('writeMesh reports a rewrite of the same path even with identical bytes', () => {
+    // Same mesh, same path, twice in a row -- the second write must still be
+    // reported (a naive (size, mtime) diff could miss it if both writes land
+    // in the same MEMFS millisecond tick; see ensure_new_write_tick).
+    const first = m.writeMesh('/rewrite.vtu', tet);
+    assert.deepEqual(first, ['/rewrite.vtu']);
+    const second = m.writeMesh('/rewrite.vtu', tet);
+    assert.deepEqual(second, ['/rewrite.vtu']);
+});
+
+step('writeMesh options: encoding/codec select ASCII and no compression', () => {
+    const paths = m.writeMesh('/opts.vtu', tet, '', { encoding: 'ascii', codec: 'none' });
+    assert.deepEqual(paths, ['/opts.vtu']);
+    const text = new TextDecoder().decode(m.FS.readFile('/opts.vtu'));
+    assert.match(text, /format="ascii"/);
+});
+
+step('writeMesh options: a codec the format cannot honour throws by name', () => {
+    const tri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+    };
+    assert.throws(
+        () => m.writeMesh('/opts.stl', tri, 'stl', { codec: 'zlib' }),
+        /codec/i,
+    );
+});
+
+step('convert returns the written paths and accepts write options', () => {
+    m.writeMesh('/conv-src.vtu', tet);
+    const paths = m.convert('/conv-src.vtu', '/conv-out.vtu', { encoding: 'ascii' });
+    assert.deepEqual(paths, ['/conv-out.vtu']);
+    const text = new TextDecoder().decode(m.FS.readFile('/conv-out.vtu'));
+    assert.match(text, /format="ascii"/);
+});
+
 step('malformed file raises a catchable Error, not a WASM abort', () => {
     m.FS.writeFile('/bad.vtu', '<?xml version="1.0"?><NotVTK></NotVTK>');
     assert.throws(
@@ -2228,9 +2270,20 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
         dim: 3,
         cells: [{ type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 }],
     };
-    m.writeMesh('/of/case.foam', hex, 'openfoam');
+    const written = m.writeMesh('/of/case.foam', hex, 'openfoam');
     for (const f of ['points', 'faces', 'owner', 'neighbour', 'boundary'])
         assert.ok(m.FS.readFile(`/of/constant/polyMesh/${f}`).length > 0, `missing ${f}`);
+    // Plus the empty `case.foam` marker file itself (the ParaView-reader
+    // convention this format's own writer follows).
+    assert.deepEqual(
+        written,
+        [
+            '/of/case.foam',
+            ...['points', 'faces', 'owner', 'neighbour', 'boundary'].map(
+                (f) => `/of/constant/polyMesh/${f}`,
+            ),
+        ].sort(),
+    );
 
     const back = m.readMesh('/of/case.foam', 'openfoam');
     assert.equal(back.points.length, 24);

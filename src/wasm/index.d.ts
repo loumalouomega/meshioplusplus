@@ -191,7 +191,23 @@ export interface RegionSummary {
   numEntries: number;
 }
 
-export interface ConvertOptions {
+/**
+ * Parameterized-write options for `writeMesh`/`convert`, all optional --
+ * unset/empty reproduces the exact write from before v11.2.0. There is
+ * deliberately no gzip level or VTK 4.2/5.1 selector: neither exists as a
+ * `WriteOptions` field on the C++ side (gzip level 4 is a fixed registry
+ * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
+ */
+export interface MeshWriteOptions {
+  /** ASCII vs binary. Errors for a format with only one variant. */
+  encoding?: "ascii" | "binary";
+  /** Block-compression codec, for the VTK-XML formats (vtu/vtp) only. */
+  codec?: "none" | "zlib" | "lz4" | "zstd";
+  /** `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default). */
+  floatFormat?: string;
+}
+
+export interface ConvertOptions extends MeshWriteOptions {
   /** Explicit input format key, or omit to infer from inPath's extension. */
   inFormat?: string;
   /** Explicit output format key, or omit to infer from outPath's extension. */
@@ -836,17 +852,22 @@ export interface MeshioPlusPlusModule {
 
   /**
    * Write a mesh to the virtual filesystem.
-   * @throws {Error} on an unknown/write-unsupported format or malformed input
-   *   (e.g. a points/connectivity array length not divisible by its
-   *   declared dim/nodesPerCell).
+   * @returns every virtual-FS path this write touched (new or changed),
+   *   sorted -- more than one for a multi-file writer (`.xdmf` + its `.h5`
+   *   companion, an OpenFOAM `polyMesh` directory's files, ...).
+   * @throws {Error} on an unknown/write-unsupported format, an `options`
+   *   field the format cannot honour, or malformed input (e.g. a
+   *   points/connectivity array length not divisible by its declared
+   *   dim/nodesPerCell).
    */
-  writeMesh(path: string, mesh: Mesh, format?: string): void;
+  writeMesh(path: string, mesh: Mesh, format?: string, options?: MeshWriteOptions): string[];
 
   /**
    * Read `inPath` and write it to `outPath` directly (no intermediate JS
    * mesh object). Mirrors the CLI's `convert` subcommand.
+   * @returns every virtual-FS path the write touched (new or changed), sorted.
    */
-  convert(inPath: string, outPath: string, options?: ConvertOptions): void;
+  convert(inPath: string, outPath: string, options?: ConvertOptions): string[];
 
   /**
    * Like {@link convert}, but writes a *renderable surface*: a mesh with

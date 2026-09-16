@@ -64,11 +64,15 @@
 // System includes
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -110,6 +114,7 @@
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -717,6 +722,35 @@ std::string compiled_out_hint(const std::string& rFormat) {
     return dep ? " (this build has no " + std::string(dep) + " support)" : "";
 }
 
+/// Strict key check for a settings/options object, mirroring the JSON
+/// front-end's rule: an unknown key is an error naming it, never silently
+/// ignored.
+void check_settings_keys(const val& rObject, const char* pWhere,
+                         std::initializer_list<const char*> rAllowed) {
+    val keys = val::global("Object").call<val>("keys", rObject);
+    const unsigned n = keys["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string key = keys[i].as<std::string>();
+        const bool known =
+            std::any_of(rAllowed.begin(), rAllowed.end(), [&](const char* k) { return key == k; });
+        if (!known)
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
+                                            pWhere);
+    }
+}
+
+std::string settings_string(const val& rObject, const char* pKey, const char* pWhere,
+                            bool required = false) {
+    val v = rObject[pKey];
+    if (v.isUndefined() || v.isNull()) {
+        if (required)
+            throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere + "." + pKey +
+                                            " is required");
+        return "";
+    }
+    return v.as<std::string>();
+}
+
 // Throw a genuine, message-carrying JS `Error` from C++. Emscripten's
 // -fwasm-exceptions support lets a C++ exception unwind out of an exported
 // function without aborting the module, but the resulting JS-side value is a
@@ -894,29 +928,151 @@ bool reader_supports_options_js(const std::string& rFormat) {
     return meshioplusplus::registry_reader_supports_options(rFormat);
 }
 
+// ---------------------------------------------------------------------
+// Write options (encoding/codec/floatFormat) and "written paths": a MEMFS
+// snapshot diff around a write, since registry_write_ex()/the per-format
+// writers have no core-level notion of "every path this touched" (a follow-up
+// core change returning that directly, reaching every flat binding, is a
+// roadmap remainder -- see doc/wasm.md). Exact for any present or future
+// sibling writer with zero core change, at the cost of a directory walk.
+// ---------------------------------------------------------------------
+
+namespace {
+
+using FileFingerprint = std::pair<std::uintmax_t, std::filesystem::file_time_type>;
+using DirSnapshot = std::map<std::string, FileFingerprint>;
+
+// The directory a virtual-FS path's writer(s) touch. Root-level paths (no
+// parent component) snapshot "." rather than "" (which std::filesystem
+// treats as non-existent).
+std::filesystem::path memfs_dir_of(const std::string& rPath) {
+    std::filesystem::path parent = std::filesystem::path(rPath).parent_path();
+    return parent.empty() ? std::filesystem::path(".") : parent;
+}
+
+DirSnapshot snapshot_dir(const std::filesystem::path& rDir) {
+    DirSnapshot out;
+    std::error_code ec;
+    if (!std::filesystem::exists(rDir, ec) || ec) return out;
+    std::filesystem::recursive_directory_iterator it(rDir, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const std::filesystem::directory_entry& entry = *it;
+        std::error_code type_ec;
+        if (!entry.is_regular_file(type_ec) || type_ec) continue;
+        std::error_code size_ec, time_ec;
+        const std::uintmax_t size = entry.file_size(size_ec);
+        const std::filesystem::file_time_type mtime = entry.last_write_time(time_ec);
+        if (size_ec || time_ec) continue;
+        out.emplace(entry.path().string(), FileFingerprint{size, mtime});
+    }
+    return out;
+}
+
+// MEMFS mtimes have millisecond resolution, so a file rewritten with
+// identical size within the same millisecond as its previous write is
+// indistinguishable from an untouched one by (size, mtime) alone. If any
+// entry already on disk sits in the current millisecond, spin (there is
+// nothing to yield to in this synchronous call path) until the clock visibly
+// advances -- capped at 2ms, comfortably above one MEMFS tick -- so every
+// write that happens after this point is guaranteed a fresh mtime. A no-op,
+// and therefore free, whenever nothing on disk is that recent.
+void ensure_new_write_tick(const DirSnapshot& rBefore) {
+    using Clock = std::filesystem::file_time_type::clock;
+    const auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    const bool tied = std::any_of(rBefore.begin(), rBefore.end(), [&](const auto& rEntry) {
+        return std::chrono::time_point_cast<std::chrono::milliseconds>(rEntry.second.second) ==
+               now_ms;
+    });
+    if (!tied) return;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(2);
+    while (std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now()) == now_ms) {
+        if (Clock::now() > deadline) break;
+    }
+}
+
+// Every path new or changed (by size or mtime) since `rBefore`, sorted.
+std::vector<std::string> written_paths_since(const std::filesystem::path& rDir,
+                                              const DirSnapshot& rBefore) {
+    DirSnapshot after = snapshot_dir(rDir);
+    std::vector<std::string> changed;
+    for (const auto& [path, fp] : after) {
+        auto found = rBefore.find(path);
+        if (found == rBefore.end() || found->second != fp)
+            changed.push_back(path);
+    }
+    std::sort(changed.begin(), changed.end());
+    return changed;
+}
+
+val string_array_from(const std::vector<std::string>& rPaths) {
+    val out = val::array();
+    for (const std::string& p : rPaths)
+        out.call<void>("push", p);
+    return out;
+}
+
+/**
+ * @brief Parses `{encoding, codec, floatFormat}` (write_mesh/convert's third
+ * options bag) into a `WriteOptions`. Unset/empty fields keep
+ * `registry_write_ex`'s all-defaults fast path (byte-identical to the plain
+ * registry writer). There is deliberately no gzip level or VTK 4.2/5.1
+ * selector -- `WriteOptions` has neither (gzip level 4 is a fixed registry
+ * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
+ * @throws meshioplusplus::ReadError on an unknown key, or an unknown
+ *         `encoding`/`codec` name.
+ */
+meshioplusplus::WriteOptions write_options_from_val(const val& rOptions) {
+    meshioplusplus::WriteOptions opts;
+    if (rOptions.isUndefined() || rOptions.isNull()) return opts;
+    check_settings_keys(rOptions, "the write options", {"encoding", "codec", "floatFormat"});
+    opts.mEncoding =
+        meshioplusplus::pipeline_encoding_from_name(settings_string(rOptions, "encoding", "options"));
+    const std::string codec = settings_string(rOptions, "codec", "options");
+    if (!codec.empty()) {
+        opts.mCodec = meshioplusplus::pipeline_codec_from_name(codec);
+        opts.mCodecSet = true;
+    }
+    opts.mFloatFormat = settings_string(rOptions, "floatFormat", "options");
+    return opts;
+}
+
+}  // namespace
+
 /**
  * @brief Write a mesh object to the Emscripten virtual filesystem.
  * @param rPath virtual FS path to write (read the bytes back out via
  *   `Module.FS` afterward).
  * @param rMeshObj a plain JS mesh object (see `mesh_to_val`'s shape).
  * @param rFormat explicit format key, or "" to infer from `rPath`'s extension.
- * @throws meshioplusplus::WriteError on an unknown/write-unsupported format
- *   or malformed input.
+ * @param rOptions optional `{encoding, codec, floatFormat}` (see
+ *   `write_options_from_val`); omitted/empty reproduces the pre-A6 write
+ *   exactly.
+ * @return every virtual-FS path this write touched (new or changed), sorted --
+ *   more than one for a multi-file writer (`.xdmf` + its `.h5` companion, an
+ *   OpenFOAM `polyMesh` directory's files, ...).
+ * @throws meshioplusplus::WriteError on an unknown/write-unsupported format,
+ *   an option the format cannot honour, or malformed input.
  */
-void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat) {
-    with_js_errors([&]() {
+val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat,
+               const val& rOptions) {
+    return with_js_errors([&]() -> val {
         std::string fmt = resolve_format(rPath, rFormat);
-        auto it = registry_writers().find(fmt);
-        if (it == registry_writers().end())
+        // Kept ahead of registry_write_ex() purely so the "unknown format"
+        // error text is unchanged from before A6 (registry_write_ex's own
+        // message for the same case differs slightly).
+        if (registry_writers().find(fmt) == registry_writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'" +
                 compiled_out_hint(fmt));
-        // Bound scope-less provenance notes to this write, mirroring Python's
-        // public write() -- otherwise a note left by an earlier scope-less
-        // operation would leak into this file. No-op inside a caller's own
-        // scope. See doc/provenance.md.
-        meshioplusplus::detail::provenance_begin_write();
-        it->second(rPath, val_to_mesh(rMeshObj));
+        const meshioplusplus::WriteOptions opts = write_options_from_val(rOptions);
+        const std::filesystem::path dir = memfs_dir_of(rPath);
+        const DirSnapshot before = snapshot_dir(dir);
+        ensure_new_write_tick(before);
+        // registry_write_ex() itself calls provenance_begin_write(), so there
+        // is no separate call here (unlike before A6, which called the
+        // registry writer directly).
+        meshioplusplus::registry_write_ex(rPath, val_to_mesh(rMeshObj), fmt, opts);
+        return string_array_from(written_paths_since(dir, before));
     });
 }
 
@@ -924,25 +1080,32 @@ void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string
  * @brief Read `inPath` and immediately write it to `outPath` (both on the
  * virtual FS), without round-tripping through a JS object. Mirrors the CLI's
  * `convert` subcommand.
+ * @param rOptions optional `{inFormat, outFormat, encoding, codec,
+ *   floatFormat}` is handled by the JS wrapper; this binding takes the two
+ *   resolved format strings plus the parsed write options directly.
+ * @return every virtual-FS path the write touched (new or changed), sorted.
  */
-void convert(const std::string& rInPath, const std::string& rInFormat, const std::string& rOutPath,
-             const std::string& rOutFormat) {
-    with_js_errors([&]() {
+val convert(const std::string& rInPath, const std::string& rInFormat, const std::string& rOutPath,
+           const std::string& rOutFormat, const val& rOptions) {
+    return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
-        auto wit = registry_writers().find(wfmt);
         if (rit == registry_readers().end())
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
-        if (wit == registry_writers().end())
+        if (registry_writers().find(wfmt) == registry_writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
                 compiled_out_hint(wfmt));
         Mesh mesh = rit->second(rInPath);
-        meshioplusplus::detail::provenance_begin_write();
-        wit->second(rOutPath, std::move(mesh));
+        const meshioplusplus::WriteOptions opts = write_options_from_val(rOptions);
+        const std::filesystem::path dir = memfs_dir_of(rOutPath);
+        const DirSnapshot before = snapshot_dir(dir);
+        ensure_new_write_tick(before);
+        meshioplusplus::registry_write_ex(rOutPath, std::move(mesh), wfmt, opts);
+        return string_array_from(written_paths_since(dir, before));
     });
 }
 
@@ -1201,34 +1364,6 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
 }
 
 namespace {
-
-/// Strict key check for the settings object, mirroring the JSON front-end's
-/// rule: an unknown key is an error naming it, never silently ignored.
-void check_settings_keys(const val& rObject, const char* pWhere,
-                         std::initializer_list<const char*> rAllowed) {
-    val keys = val::global("Object").call<val>("keys", rObject);
-    const unsigned n = keys["length"].as<unsigned>();
-    for (unsigned i = 0; i < n; ++i) {
-        const std::string key = keys[i].as<std::string>();
-        const bool known =
-            std::any_of(rAllowed.begin(), rAllowed.end(), [&](const char* k) { return key == k; });
-        if (!known)
-            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
-                                            pWhere);
-    }
-}
-
-std::string settings_string(const val& rObject, const char* pKey, const char* pWhere,
-                            bool required = false) {
-    val v = rObject[pKey];
-    if (v.isUndefined() || v.isNull()) {
-        if (required)
-            throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere + "." + pKey +
-                                            " is required");
-        return "";
-    }
-    return v.as<std::string>();
-}
 
 /// A list of strings from a JS array (or a single string), for the settings
 /// converter and the sequence entry points.

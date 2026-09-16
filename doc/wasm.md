@@ -272,7 +272,24 @@ If instantiation fails — a missing `.wasm` file, a `locateFile` that resolved 
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
-- **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera). Per-call overrides are tracked in [roadmap §1](/roadmap#_1-wasm-parity).
+- **Per-format write options are limited to encoding/codec/float format.** `writeMesh`/`convert` accept `{encoding, codec, floatFormat}` (see "Write options" below); there is no gzip *level* control or a VTK 4.2 vs 5.1 selector, since `WriteOptions` has neither on the C++ side (gzip level 4 is a fixed registry default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option). Omitting `options` entirely reproduces the exact pre-v11.2.0 default for every format (e.g. `vtu` binary+zlib, `stl` ASCII, `gmsh` the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera).
+
+### Write options
+
+`writeMesh(path, mesh, format, options)` and `convert(inPath, outPath, {..., encoding, codec, floatFormat})` take an options object honoured through the same core entry point (`registry_write_ex`) the C API and native CLI use:
+
+```js
+meshio.writeMesh('/out.vtu', mesh, '', { encoding: 'ascii', codec: 'none' });
+meshio.convert('/in.vtu', '/out.stl', { encoding: 'binary' });
+```
+
+- `encoding` — `'ascii'` or `'binary'`; throws for a format with only one variant.
+- `codec` — `'none'`, `'zlib'`, `'lz4'`, or `'zstd'`; a block-compression codec for the VTK-XML formats (`vtu`/`vtp`) only, throws for any other format.
+- `floatFormat` — a `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default).
+
+An option the target format cannot honour throws a catchable `Error` naming the format and the option, rather than silently ignoring it — the same rule the CLI's own `--encoding`/`--codec`/`--float-format` flags follow.
+
+Both calls **return every virtual-FS path the write touched** (new or changed since the call started), sorted: `['/out.vtu']` for a single-file writer, `['/out.h5', '/out.xdmf']` for `xdmf`'s HDF companion, or the five `constant/polyMesh/*` files (plus the `case.foam` marker) for `openfoam`. This is computed by diffing the output's directory before and after the write (there is no core-level "list of paths written" yet — a documented roadmap remainder), so it is exact for any present or future writer with no binding change, at the cost of a directory walk per call.
 - **Named regions are carried** (since v8.1.0). They ride on the mesh object itself — `mesh.regions` is an array of `{ name, kind, dim, tag, entries }` — so `readMesh` / `writeMesh` / `convert` carry them with no extra call, and nothing new had to be forwarded by the wrapper. `kind` is `'point'`, `'cell'` (global block-major cell indices) or `'side'` (`(cell, facet)` pairs). The Phase-1 formats (gmsh, abaqus, and MED since v9.6.0 — one region per `FAS`/`GRO` group name) map onto them fully; Exodus reads but does not yet write them. See [Named regions](./regions.md).
 - **Remaining side-channel data isn't exposed.** `openfoam`'s cell-tag family names, and the `ansysInp`/`unv` set channels pending their Phase-2 region mapping (all carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`), are not yet surfaced to JS (tracked in [roadmap §1](/roadmap#_1-wasm-parity)).
 - **Data arrays are `Float64` or `BigInt64`, not their exact source width.** Since v11.2.0 an integer material id no longer becomes a double crossing the boundary (see "Data array dtypes" above), but the mesh's own storage still canonicalizes *within kind* rather than preserving e.g. `Int32Array` vs. `Uint8Array` exactly — every integer dtype comes back as `BigInt64Array`, every float dtype as `Float64Array`. Multi-component (vector/tensor) arrays *are* supported since v9.9.0 via the `*_components` objects (see "The mesh object shape" above); before that they were flattened to N unrelated scalars in both directions. The path-based `convert`/`convertSurface` calls still avoid the boundary entirely, and so preserve exact dtypes as well as shapes.

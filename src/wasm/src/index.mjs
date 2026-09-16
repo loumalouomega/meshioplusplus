@@ -178,8 +178,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
- *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
- *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
+ *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string}) => string[],
+ *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string, encoding?: string, codec?: string, floatFormat?: string}) => string[],
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
  *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
@@ -349,9 +349,24 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),
         readerSupportsOptions: (format) => Module.readerSupportsOptions(format),
-        writeMesh: (path, mesh, format = '') => Module.writeMesh(path, mesh, format),
-        convert: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
-            Module.convert(inPath, inFormat, outPath, outFormat),
+        // `options`: `{encoding, codec, floatFormat}`, all optional --
+        // unset/empty reproduces the exact pre-v11.2.0 write. `encoding` is
+        // 'ascii'/'binary' (format-default otherwise); `codec` is a VTK-XML
+        // (vtu/vtp) block-compression codec, 'none'/'zlib'/'lz4'/'zstd'; an
+        // option a format cannot honour throws naming the format. Returns
+        // every virtual-FS path the write touched (new or changed), sorted --
+        // more than one for a multi-file writer (`.xdmf` + its `.h5`
+        // companion, an OpenFOAM `polyMesh` directory's files, ...).
+        writeMesh: (path, mesh, format = '', options = undefined) =>
+            Module.writeMesh(path, mesh, format, options),
+        // `options` adds `encoding`/`codec`/`floatFormat` to `inFormat`/
+        // `outFormat` (see `writeMesh`). Returns the written paths, as
+        // `writeMesh` does.
+        convert: (
+            inPath,
+            outPath,
+            { inFormat = '', outFormat = '', encoding, codec, floatFormat } = {},
+        ) => Module.convert(inPath, inFormat, outPath, outFormat, { encoding, codec, floatFormat }),
         // Like `convert`, but writes a renderable *surface*: a volume mesh
         // becomes its boundary, everything else passes through, and the result
         // is linearized. Prefer this over readMesh -> extractSkin -> writeMesh
