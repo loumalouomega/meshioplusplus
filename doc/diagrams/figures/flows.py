@@ -933,7 +933,7 @@ def abi_tiers():
 def roadmap_map():
     c = Canvas(
         960,
-        560,
+        810,
         "The roadmap at a glance: open items by theme, shaded by effort, with their dependencies",
     )
     columns = [
@@ -949,7 +949,6 @@ def roadmap_map():
         (
             "§2 ecosystem reach",
             [
-                ("WASM: extend unsupported features", "S"),
                 ("Rust bindings over the C API", "M"),
                 ("conda-forge · CRAN · Julia · ParaView", "M"),
             ],
@@ -989,6 +988,16 @@ def roadmap_map():
                 ("REPL verb over TOOL_REGISTRY", "M"),
                 ("v1 scope: stateless per-turn loop", "S"),
                 ("new `chat` extra + docs", "S"),
+            ],
+            [],
+        ),
+        (
+            "§7 WASM parity",
+            [
+                ("defects: loader · int dtypes", "M"),
+                ("parity guard · maps · side info", "M"),
+                ("in-file timelines · OpenFOAM", "L"),
+                ("gmsh groups · .vtm/.vts/.vtr", "M"),
             ],
             [],
         ),
@@ -1043,7 +1052,7 @@ def roadmap_map():
             c.arrow(ax, ay, ax, ay + 10, stroke=P.INK, sw=1.4)
     c.legend(
         24,
-        526,
+        776,
         [
             (P.EFFORT["S"], "S: days"),
             (P.EFFORT["M"], "M: a couple of weeks"),
@@ -1053,7 +1062,7 @@ def roadmap_map():
     )
     c.label(
         24,
-        546,
+        796,
         "dashed border: a design pass or research spike must precede the item; an arrow means the lower box depends on the one above it",
         anchor="start",
     )

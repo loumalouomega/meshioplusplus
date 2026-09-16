@@ -50,10 +50,11 @@ export interface PolygonCellBlock {
  * start index into the face list (length numCells + 1, so cell `c`'s faces
  * are `faceOffsets[cellOffsets[c]] .. faceOffsets[cellOffsets[c + 1]]`).
  *
- * No C++ format writer accepts a polyhedron block yet (a documented,
- * pre-existing gap) -- this shape crosses the JS boundary correctly (e.g.
- * through {@link MeshioPlusPlusModule.clean} or any other operation) but
- * `writeMesh` will throw naming the format when asked to write one.
+ * `writeMesh` accepts a polyhedron block for the formats that can hold one
+ * (`vtu`, `ensight` nfaced, `cgns` NFACE_n, `med` POE, `openfoam`); a format
+ * that cannot (legacy `vtk`, `vtp`, ...) throws naming the format. The shape
+ * also crosses the JS boundary unchanged through operations such as
+ * {@link MeshioPlusPlusModule.clean}.
  */
 export interface PolyhedronCellBlock {
   type: string;

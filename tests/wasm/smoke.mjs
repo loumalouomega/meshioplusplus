@@ -2600,9 +2600,8 @@ step('ragged (polygon) cell blocks cross the JS boundary as CSR arrays', () => {
 step('ragged (polyhedron) cell blocks cross the JS boundary as CSR arrays', () => {
     // 2-level ragged (cell -> faces -> node ids), as three flat CSR arrays:
     // `data`, `faceOffsets` (per-face start into `data`), `cellOffsets`
-    // (per-cell start into the face list). No C++ format writer accepts a
-    // polyhedron block yet (a documented, pre-existing gap, not new), so this
-    // exercises the boundary itself via an operation instead of a file:
+    // (per-cell start into the face list). The boundary itself is exercised
+    // first via an operation instead of a file, then a MED write/read below:
     // val_to_mesh -> clean() (a no-op with every flag off) -> mesh_to_val
     // must reproduce the exact input.
     const tetra = {

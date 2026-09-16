@@ -148,6 +148,9 @@ function resolveVariant(variant) {
  *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
  *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number},
  *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
+ *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
+ *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
+ *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean) => Mesh,
@@ -176,6 +179,8 @@ function resolveVariant(variant) {
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object) => Mesh,
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
+ *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string) => {partId: number, mesh: Mesh}[],
+ *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
  *   stats: (mesh: Mesh) => object,
  *   withProvenance: <T>(mode: number|null|undefined, fn: () => T) => T,
  *   provenanceBegin: (mode?: number) => void,
@@ -325,9 +330,10 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             dropDegenerate = true,
             dropDuplicateCells = true,
         ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
-        // A negative `lambda` means "this method's own default" (0.5 Laplacian,
-        // 0.33 Taubin) and is forwarded unchanged; the frozen-node mask is not
-        // exposed here, as on the other flat bindings.
+        // `method` is 'taubin', 'laplacian' or 'odt' (tet-only). A negative
+        // `lambda` means "this method's own default" (0.5 Laplacian, 0.33
+        // Taubin) and is forwarded unchanged; the frozen-node mask is not
+        // exposed here, as on the other flat bindings (doc/roadmap.md §7).
         smooth: (
             mesh,
             method = 'taubin',
