@@ -2749,6 +2749,46 @@ step('sequences fail by name rather than truncating', () => {
     assert.throws(() => m.sequenceEntries('/seq/out_*.vtu', { bogus: 1 }), /unknown key 'bogus'/);
 });
 
+step('openSequence: stateful reader over the /seq fixture', () => {
+    // Static geometry across all steps but WITH data this time (tet, not
+    // cube), so pointsOnly has something to prove it dropped.
+    m.FS.mkdir('/seq2');
+    for (let i = 0; i < 12; ++i) m.writeMesh(`/seq2/out_${i}.vtu`, tet);
+
+    const reader = m.openSequence('/seq2/out_*.vtu');
+    assert.equal(reader.count, 12);
+    assert.equal(reader.time(10), 10);
+    assert.equal(reader.timeSource(0), 'filename');
+    assert.equal(reader.path(3), '/seq2/out_3.vtu');
+    // Each /seq2 file is single-step, so its own step index is always 0 --
+    // unlike the XDMF series below, whose step is the position within it.
+    assert.equal(reader.step(3), 0);
+    assert.deepEqual(reader.entry(3), {
+        path: '/seq2/out_3.vtu', step: 0, time: 3, timeSource: 'filename',
+    });
+    assert.equal(reader.entries().length, 12);
+    assert.deepEqual(reader.entries()[3], reader.entry(3));
+
+    const full = reader.read(3);
+    assert.ok('temperature' in full.point_data);
+    const partial = reader.read(3, { pointsOnly: true });
+    assert.deepEqual(Object.keys(partial.point_data), []);
+
+    // Out-of-range throws naming the count, not a silent clamp.
+    assert.throws(() => reader.read(12), /sequence index 12 is out of range \(count 12\)/);
+
+    // The XDMF series' own steps come through the same reader, with the
+    // series' file-based times/timeSource (not the filename fallback).
+    const seriesReader = m.openSequence('/seq/series.xdmf');
+    assert.equal(seriesReader.step(3), 3);
+    assert.equal(seriesReader.timeSource(3), 'file');
+    seriesReader.close();
+
+    reader.close();
+    reader.close(); // idempotent, safe to call twice / from a `finally`
+    assert.throws(() => reader.read(0), /invalid or already-closed sequence handle/);
+});
+
 step('runPipeline runs a whole transient dataset per step', () => {
     // The composition that makes the pipeline a batch post-processor: a
     // Pattern input and a {step} output route the SAME document to the

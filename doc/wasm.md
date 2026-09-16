@@ -385,6 +385,21 @@ Three things that fail **by name** rather than doing something surprising: a fan
 
 **`Parallel` is accepted and ignored with a warning** in the report: it is a Python-driver feature (a process pool), and this build has no processes to pool. The steps run in order, which is what the streaming guarantee needs anyway.
 
+### Reading a sequence step by step
+
+`openSequence(source, options)` is `sequenceEntries`' **stateful** counterpart: it plans the sequence once (no heavy data read, same `source`/`options`), then lets you read one step's mesh at a time — at most one mesh alive, whatever the step count, the same streaming guarantee `sequenceToTimeseries`/`timeseriesToSequence` give you without a JS-side loop managing state of your own:
+
+```js
+const seq = m.openSequence('/seq/out_*.vtu');
+seq.count;                    // 12
+seq.entry(3);                 // {path, step, time, timeSource} -- entry(i) === entries()[i]
+seq.read(3);                  // the full Mesh at entry 3
+seq.read(3, { pointsOnly: true, arrays: ['temperature'], lenient: true });   // as readMeshSelective
+seq.close();                  // release the handle; safe to call twice / from a `finally`
+```
+
+`read`'s options are `readMeshSelective`'s (`pointsOnly`/`arrays`/`lenient`); the entry's own step index is always used, so there is no separate `timeStep` option. Every method after `close()` throws a catchable `Error` naming the handle, not a use-after-free. `sequenceEntries` (a single call, the whole plan at once) is still the right choice when you want every entry's metadata up front without reading any mesh at all — `openSequence` is for when you also intend to read some or all of the meshes, one at a time.
+
 ## Regular grids and signed distance (v9.24.0, `computeSdf` v9.25.0)
 
 `grid(dims, origin, spacing)`, `voxelize(mesh, resolution, ...)`, `surfaceWatertightCheck(mesh)`, `sampleDistance(surface, points)` and `distanceToSurface(query, surface)`. `grid` is the only binding in the package that takes no input mesh — it creates one. `sampleDistance` takes a **flat** `[x0,y0,z0, x1,y1,z1, …]` array and returns a `Float64Array`.

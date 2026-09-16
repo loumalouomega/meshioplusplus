@@ -3580,6 +3580,135 @@ void xdmf_series_free_js(int handle) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------
+// Stateful sequence reader -- the second (and only other) stateful binding
+// in this file, the same opaque-integer-handle-plus-free-functions shape as
+// the XDMF writer above, for the same three reasons (see that block's
+// comment). Mirrors the C API's mio_sequence_* handle exactly, except
+// sequenceRead takes its read options per call (pointsOnly/arrays/lenient)
+// rather than once at open time -- sequence_read_step() already takes a
+// ReadOptions per call, so nothing forces the C API's baked-in choice here.
+// ---------------------------------------------------------------------
+
+namespace {
+
+struct SequenceHandleState {
+    std::vector<meshioplusplus::SequenceEntry> mEntries;
+    std::string mFormat;
+};
+
+std::unordered_map<int, SequenceHandleState>& sequence_table() {
+    static std::unordered_map<int, SequenceHandleState> table;
+    return table;
+}
+
+/// Resolve a handle or throw. Never returns null.
+SequenceHandleState& sequence_lookup(int handle) {
+    auto it = sequence_table().find(handle);
+    if (it == sequence_table().end())
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): invalid or already-closed sequence handle " +
+            std::to_string(handle));
+    return it->second;
+}
+
+const meshioplusplus::SequenceEntry& sequence_entry_at(const SequenceHandleState& rState,
+                                                        int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= rState.mEntries.size())
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): sequence index " + std::to_string(index) +
+            " is out of range (count " + std::to_string(rState.mEntries.size()) + ")");
+    return rState.mEntries[static_cast<std::size_t>(index)];
+}
+
+/**
+ * @brief Plan a sequence and open a handle to it (no heavy data read yet).
+ * @param rSource glob pattern string or array of MEMFS paths (see
+ *   `val_to_sequence_input`).
+ * @param rOptions `{format, times, timeFrom, sort}`, as `sequenceEntries`.
+ * @return an opaque handle to pass to the other `sequence*` functions.
+ * @throws meshioplusplus::ReadError if the pattern matches nothing or a
+ *         listed path does not exist.
+ */
+int sequence_open_js(const val& rSource, const val& rOptions) {
+    return with_js_errors([&]() -> int {
+        static int next_handle = 1;
+        meshioplusplus::SequenceInput in = val_to_sequence_input(rSource, rOptions);
+        SequenceHandleState state;
+        state.mEntries = meshioplusplus::sequence_expand(in);
+        state.mFormat = in.mFormat;
+        const int handle = next_handle++;
+        sequence_table().emplace(handle, std::move(state));
+        return handle;
+    });
+}
+
+double sequence_count_js(int handle) {
+    return with_js_errors(
+        [&]() -> double { return static_cast<double>(sequence_lookup(handle).mEntries.size()); });
+}
+
+std::string sequence_path_js(int handle, int index) {
+    return with_js_errors([&]() -> std::string {
+        return sequence_entry_at(sequence_lookup(handle), index).mPath;
+    });
+}
+
+double sequence_step_js(int handle, int index) {
+    return with_js_errors([&]() -> double {
+        return static_cast<double>(sequence_entry_at(sequence_lookup(handle), index).mStep);
+    });
+}
+
+double sequence_time_js(int handle, int index) {
+    return with_js_errors(
+        [&]() -> double { return sequence_entry_at(sequence_lookup(handle), index).mTime; });
+}
+
+std::string sequence_time_source_js(int handle, int index) {
+    return with_js_errors([&]() -> std::string {
+        return std::string(meshioplusplus::sequence_time_source_name(
+            sequence_entry_at(sequence_lookup(handle), index).mTimeSource));
+    });
+}
+
+/**
+ * @brief Read one entry's mesh.
+ * @param rOptions optional `{pointsOnly, arrays, lenient}`, as
+ *   `readMeshSelective` -- the entry's own step index overrides any
+ *   `timeStep`, which is what makes fan-out work.
+ * @throws meshioplusplus::ReadError if `index` is out of range.
+ */
+val sequence_read_js(int handle, int index, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        SequenceHandleState& state = sequence_lookup(handle);
+        sequence_entry_at(state, index);  // bounds check with the shared message
+        meshioplusplus::ReadOptions opts;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the sequence read options",
+                                {"pointsOnly", "arrays", "lenient"});
+            val points_only = rOptions["pointsOnly"];
+            opts.mPointsOnly =
+                !points_only.isUndefined() && !points_only.isNull() && points_only.as<bool>();
+            val arrays = rOptions["arrays"];
+            if (!arrays.isUndefined() && !arrays.isNull())
+                opts.mDataArrays = emscripten::vecFromJSArray<std::string>(arrays);
+            val lenient = rOptions["lenient"];
+            opts.mLenient = !lenient.isUndefined() && !lenient.isNull() && lenient.as<bool>();
+        }
+        return mesh_to_val(meshioplusplus::sequence_read_step(
+            state.mEntries, static_cast<std::size_t>(index), state.mFormat, opts));
+    });
+}
+
+/// Deliberately tolerant of an unknown handle (double-close is a no-op), the
+/// same reasoning as `xdmf_series_free_js`.
+void sequence_free_js(int handle) {
+    sequence_table().erase(handle);
+}
+
+}  // namespace
+
 // --- Provenance (see doc/provenance.md) -----------------------------------
 //
 // Binds the C++ core directly (this package's pattern) rather than the flat C
@@ -3734,4 +3863,15 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("xdmfSeriesNumSteps", &xdmf_series_num_steps_js);
     emscripten::function("xdmfSeriesFinalized", &xdmf_series_finalized_js);
     emscripten::function("xdmfSeriesFree", &xdmf_series_free_js);
+    // Stateful sequence reader: an opaque handle plus these eight calls (see
+    // the block comment above their definitions for why it is not an
+    // embind class_).
+    emscripten::function("sequenceOpen", &sequence_open_js);
+    emscripten::function("sequenceCount", &sequence_count_js);
+    emscripten::function("sequencePath", &sequence_path_js);
+    emscripten::function("sequenceStep", &sequence_step_js);
+    emscripten::function("sequenceTime", &sequence_time_js);
+    emscripten::function("sequenceTimeSource", &sequence_time_source_js);
+    emscripten::function("sequenceRead", &sequence_read_js);
+    emscripten::function("sequenceFree", &sequence_free_js);
 }

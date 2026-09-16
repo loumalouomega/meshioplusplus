@@ -222,7 +222,7 @@ Two deliberate restrictions:
 | Julia | `Sequence`, `read_step`, `to_timeseries`, `timeseries_to_sequence`, `run_sequence_file`/`_json` |
 | R | `mio_sequence()`, `mio_sequence_read()`, `mio_sequence_to_timeseries()`, `mio_timeseries_to_sequence()`, … |
 | MCP | the `sequence` tool |
-| WASM | `sequenceEntries`, `sequenceToTimeseries`, `timeseriesToSequence`, and `runPipeline` (which routes) — over MEMFS paths |
+| WASM | `sequenceEntries`, `openSequence` (stateful, per-step reads), `sequenceToTimeseries`, `timeseriesToSequence`, and `runPipeline` (which routes) — over MEMFS paths |
 
 ### WASM
 
@@ -232,6 +232,11 @@ The browser surface has these too, over MEMFS paths — the same filesystem `con
 m.sequenceEntries('/seq/out_*.vtu');                      // the ordered plan
 m.sequenceToTimeseries('/seq/out_*.vtu', '/seq/s.xdmf');  // fan-in
 m.timeseriesToSequence('/seq/s.xdmf', '/seq/b_{step}.vtu');  // fan-out -> paths
+
+// Stateful, lazy per-step reads (mirrors the C API's mio_sequence_* handle):
+const seq = m.openSequence('/seq/out_*.vtu');
+seq.read(3, { pointsOnly: true });   // readMeshSelective's options, per step
+seq.close();
 ```
 
 `Parallel` is accepted and **ignored with a warning** there: it is a Python-driver process pool, and a wasm module has no processes to pool. See [the WASM docs](wasm.md#sequences-transient--multi-file-datasets).

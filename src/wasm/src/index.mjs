@@ -138,6 +138,28 @@ export class MeshioPlusPlusLoadError extends Error {
  */
 
 /**
+ * A single sequence entry: one step of one file. See {@link SequenceReader}.
+ * @typedef {Object} SequenceEntry
+ * @property {string} path
+ * @property {number} step
+ * @property {number} time
+ * @property {'explicit'|'file'|'filename'|'index'} timeSource
+ */
+
+/**
+ * @typedef {Object} SequenceReader
+ * @property {number} count
+ * @property {(i: number) => string} path
+ * @property {(i: number) => number} step
+ * @property {(i: number) => number} time
+ * @property {(i: number) => ('explicit'|'file'|'filename'|'index')} timeSource
+ * @property {(i: number) => SequenceEntry} entry
+ * @property {() => SequenceEntry[]} entries
+ * @property {(i: number, options?: {pointsOnly?: boolean, arrays?: string[]|null, lenient?: boolean}) => Mesh} read
+ * @property {() => void} close - release the handle; safe to call twice.
+ */
+
+/**
  * A point_data/cell_data/field_data array's JS type: it carries its source
  * dtype crossing the WASM boundary rather than always widening to
  * Float64Array (roadmap §1 "WASM parity": dtype carry).
@@ -256,6 +278,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataInfo: (mesh: Mesh) => object[],
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
+ *   openSequence: (source: string|string[], options?: object) => SequenceReader,
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
@@ -967,6 +990,42 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                     } finally {
                         Module.xdmfSeriesFree(handle);
                     }
+                },
+            };
+        },
+        // Stateful sequence reader (see doc/sequences.md) -- the other
+        // stateful thing in this API, the same opaque-handle-plus-free-
+        // functions shape as createXdmfTimeSeriesWriter above. `source`/
+        // `options` are exactly sequenceEntries'; this plans the sequence
+        // once (`entries()`) and lets a caller read one step at a time
+        // (`read()`) without holding more than one mesh alive, unlike
+        // sequenceEntries + readMesh in a loop, which still requires the
+        // caller to resolve the format/step itself.
+        openSequence: (source, options = undefined) => {
+            const handle = Module.sequenceOpen(source, options);
+            const count = Module.sequenceCount(handle);
+            const entry = (i) => ({
+                path: Module.sequencePath(handle, i),
+                step: Module.sequenceStep(handle, i),
+                time: Module.sequenceTime(handle, i),
+                timeSource: Module.sequenceTimeSource(handle, i),
+            });
+            let open = true;
+            return {
+                count,
+                path: (i) => Module.sequencePath(handle, i),
+                step: (i) => Module.sequenceStep(handle, i),
+                time: (i) => Module.sequenceTime(handle, i),
+                timeSource: (i) => Module.sequenceTimeSource(handle, i),
+                entry,
+                entries: () => Array.from({ length: count }, (_, i) => entry(i)),
+                read: (i, { pointsOnly = false, arrays = null, lenient = false } = {}) =>
+                    Module.sequenceRead(handle, i, { pointsOnly, arrays, lenient }),
+                // Safe to call twice; safe to call in a `finally`.
+                close: () => {
+                    if (!open) return;
+                    open = false;
+                    Module.sequenceFree(handle);
                 },
             };
         },

@@ -22,10 +22,11 @@ INDEX_MJS = REPO / "src" / "wasm" / "src" / "index.mjs"
 INDEX_DTS = REPO / "src" / "wasm" / "index.d.ts"
 C_HEADER = REPO / "bindings" / "c" / "include" / "meshioplusplus" / "meshioplusplus.h"
 
-# The stateful transient-XDMF handle: 9 free functions folded into
-# `createXdmfTimeSeriesWriter`'s returned object, embind-registered but
-# deliberately with no top-level wrapper key of their own name. (A future
-# stateful sequence reader follows the same shape and will extend this set.)
+# The two stateful handles: the transient-XDMF writer (9 free functions
+# folded into `createXdmfTimeSeriesWriter`'s returned object) and the
+# sequence reader (8 free functions folded into `openSequence`'s returned
+# object) -- both embind-registered but deliberately with no top-level
+# wrapper key of their own name.
 _RAW_ONLY = {
     "xdmfSeriesCreate",
     "xdmfSeriesWritePointsCells",
@@ -36,6 +37,14 @@ _RAW_ONLY = {
     "xdmfSeriesNumSteps",
     "xdmfSeriesFinalized",
     "xdmfSeriesFree",
+    "sequenceOpen",
+    "sequenceCount",
+    "sequencePath",
+    "sequenceStep",
+    "sequenceTime",
+    "sequenceTimeSource",
+    "sequenceRead",
+    "sequenceFree",
 }
 
 # Wrapper keys with no `mio_*` counterpart, and why.
@@ -52,6 +61,7 @@ _JS_ONLY = {
     "createXdmfTimeSeriesWriter": "composes mio_xdmf_series_* (see _RAW_ONLY)",
     "readProvenance": "shaped differently on C: mio_read_metadata_provenance_*",
     "sequenceEntries": "bulk listing convenience; C's sequence API is the stateful open/count/path/... handle",
+    "openSequence": "composes mio_sequence_* (see _RAW_ONLY)",
 }
 
 # camelCase wrapper key -> mio_<name> (without the mio_ prefix / _ex suffix,

@@ -779,6 +779,41 @@ export interface XdmfTimeSeriesWriter {
   close(): void;
 }
 
+/** One entry of a sequence plan: one step of one file. See {@link MeshioPlusPlusModule.sequenceEntries} and {@link SequenceReader}. */
+export interface SequenceEntry {
+  path: string;
+  step: number;
+  time: number;
+  timeSource: 'explicit' | 'file' | 'filename' | 'index';
+}
+
+/**
+ * A stateful sequence reader, opened by {@link MeshioPlusPlusModule.openSequence}.
+ * Plans the sequence once (no heavy data read) and reads one step's mesh at a
+ * time -- at most one mesh alive, whatever the step count. See
+ * `doc/sequences.md`.
+ */
+export interface SequenceReader {
+  /** How many entries this sequence has. */
+  count: number;
+  path(i: number): string;
+  step(i: number): number;
+  time(i: number): number;
+  timeSource(i: number): 'explicit' | 'file' | 'filename' | 'index';
+  entry(i: number): SequenceEntry;
+  entries(): SequenceEntry[];
+  /**
+   * Read entry `i`'s mesh. `pointsOnly`/`arrays`/`lenient` are `readMeshSelective`'s.
+   * @throws {Error} if `i` is out of `[0, count)`.
+   */
+  read(
+    i: number,
+    options?: { pointsOnly?: boolean; arrays?: string[] | null; lenient?: boolean },
+  ): Mesh;
+  /** Release the handle. Safe to call twice; after this every other method throws. */
+  close(): void;
+}
+
 /**
  * The instantiated module returned by `loadMeshioPlusPlus()`. `FS` is
  * Emscripten's virtual filesystem (MEMFS by default) -- write the bytes of a
@@ -963,12 +998,24 @@ export interface MeshioPlusPlusModule {
       timeFrom?: 'auto' | 'file' | 'filename' | 'index';
       sort?: boolean;
     },
-  ): Array<{
-    path: string;
-    step: number;
-    time: number;
-    timeSource: 'explicit' | 'file' | 'filename' | 'index';
-  }>;
+  ): SequenceEntry[];
+
+  /**
+   * Open a **stateful** sequence reader: plans the sequence once (`source`/
+   * `options` exactly as {@link sequenceEntries}), then lets you read one
+   * step's mesh at a time via {@link SequenceReader.read} without holding
+   * more than one mesh alive -- the lazy-read counterpart to
+   * `sequenceEntries` + `readMesh` in a loop.
+   */
+  openSequence(
+    source: string | string[],
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): SequenceReader;
 
   /**
    * **Fan-in**: write every step of `source` into one multi-step file.
