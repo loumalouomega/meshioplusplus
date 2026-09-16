@@ -115,6 +115,8 @@ const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
 const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
 m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1]
 const meta = m.readMetadata('big.vtu');
+const withInfo = m.readMeshSelective('case.mdpa', { format: 'mdpa', lenient: true, info: true });
+withInfo.info.skippedConstructs;  // what `lenient` skipped, see below
 ```
 
 ## `lenient`: skipping what a reader cannot represent
@@ -125,6 +127,6 @@ A reader that meets a construct it has no way to express throws `ReadError` nami
 
 It is deliberately **not** "ignore all errors". It applies only where a reader can skip a construct and still return a *correct* mesh; a malformed file, a truncated block, a bad node reference or an unknown element type still throw, because continuing past those would hand back a mesh that is quietly wrong rather than merely incomplete.
 
-**Currently honoured by `mdpa` only** — its `Table`, `Geometries`, `Mesh`, `Constraints` and non-empty `SubModelPart*` blocks. Every other reader ignores the flag. `MdpaInfo::mSkippedConstructs` records what was skipped, so "lenient" never means "silently lossy". See [`doc/formats/mdpa.md`](formats/mdpa.md).
+**Currently honoured by `mdpa` only** — its `Table`, `Geometries`, `Mesh`, `Constraints` and non-empty `SubModelPart*` blocks. Every other reader ignores the flag. `MdpaInfo::mSkippedConstructs` records what was skipped, so "lenient" never means "silently lossy" — on WASM, `readMeshSelective(path, {format: 'mdpa', lenient: true, info: true}).info.skippedConstructs` reads it back (see [doc/wasm.md](wasm.md)'s "Side channel (info)" section). See [`doc/formats/mdpa.md`](formats/mdpa.md).
 
 The Python `read()` deliberately does **not** take this parameter: mdpa's Python path is the pure-Python reference reader, which already accepts every construct the flag covers, so it would be a dead argument.

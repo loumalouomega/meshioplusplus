@@ -2290,6 +2290,146 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
     assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
+// --- Side channel (info): format metadata a generic Mesh cannot represent
+// (roadmap §1 "WASM parity"). readMeshSelective(path, {info: true}) attaches
+// it as mesh.info; writeMesh(path, mesh, format, {info}) (or a matching
+// mesh.info with no explicit options.info) writes it back.
+step('info: unsupported for a format silently has no effect, not an error', () => {
+    const withInfo = m.readMeshSelective('/of/case.foam', { format: 'openfoam', info: true });
+    assert.ok('info' in withInfo, 'openfoam has a side channel');
+    m.writeMesh('/plain.vtu', tet);
+    const noInfo = m.readMeshSelective('/plain.vtu', { info: true });
+    assert.equal(noInfo.info, undefined, 'vtu has no side channel');
+});
+
+step('info: writing it for a format with no Info-bearing writer throws naming it', () => {
+    assert.throws(
+        () => m.writeMesh('/x.vtu', tet, '', { info: { format: 'vtu' } }),
+        /'vtu' has no side-channel 'info' writer/,
+    );
+});
+
+step('info: openfoam patch names/types round-trip through a hand-written case', () => {
+    // A cube with two boundary patches, written by hand (the same fixture
+    // shape tests/python/test_openfoam.py's own patch-round-trip test uses),
+    // so the read side has real cell_tags/patch types to report -- an
+    // untagged write (as above) only ever produces a single defaultFaces.
+    const hdr = (cls, obj) =>
+        `FoamFile\n{\n format ascii;\n class ${cls};\n object ${obj};\n}\n`;
+    m.FS.mkdir('/of2');
+    m.FS.mkdir('/of2/constant');
+    m.FS.mkdir('/of2/constant/polyMesh');
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/points',
+        hdr('vectorField', 'points') +
+            '8\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n)\n',
+    );
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/faces',
+        hdr('faceList', 'faces') +
+            '6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(2 3 7 6)\n4(1 2 6 5)\n4(0 4 7 3)\n)\n',
+    );
+    m.FS.writeFile('/of2/constant/polyMesh/owner', hdr('labelList', 'owner') + '6\n(\n0\n0\n0\n0\n0\n0\n)\n');
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/boundary',
+        hdr('polyBoundaryMesh', 'boundary') +
+            '2\n(\nlower { type wall; nFaces 1; startFace 0; }\n' +
+            'rest { type symmetry; nFaces 5; startFace 1; }\n)\n',
+    );
+
+    const mesh = m.readMeshSelective('/of2/case.foam', { format: 'openfoam', info: true });
+    assert.equal(mesh.info.format, 'openfoam');
+    const byName = Object.fromEntries(mesh.info.patches.map((p) => [p.names[0], p.type]));
+    assert.deepEqual(byName, { lower: 'wall', rest: 'symmetry' });
+
+    m.writeMesh('/of2out/case.foam', mesh, 'openfoam', { info: mesh.info });
+    const back = m.readMeshSelective('/of2out/case.foam', { format: 'openfoam', info: true });
+    const namesBack = new Set(back.info.patches.flatMap((p) => p.names));
+    assert.deepEqual(namesBack, new Set(['lower', 'rest']));
+    const typesBack = new Set(back.info.patches.map((p) => p.type));
+    assert.deepEqual(typesBack, new Set(['wall', 'symmetry']));
+});
+
+step('info: mdpa entity names and property sets round-trip together', () => {
+    const withInfo = {
+        ...tet,
+        propertySets: [
+            { id: 1, values: [{ key: 'YOUNG_MODULUS', values: [2.1e11], text: '', isTable: false }] },
+        ],
+    };
+    m.writeMesh('/pi.mdpa', withInfo, 'mdpa', {
+        info: { format: 'mdpa', entityNames: [{ name: 'SmallDisplacementElement3D4N', isCondition: false }] },
+    });
+    const back = m.readMeshSelective('/pi.mdpa', { format: 'mdpa', info: true });
+    assert.equal(back.info.format, 'mdpa');
+    assert.deepEqual(back.info.entityNames, [
+        { name: 'SmallDisplacementElement3D4N', isCondition: false },
+    ]);
+    assert.equal(back.propertySets.length, 1);
+    assert.equal(back.propertySets[0].id, 1);
+    assert.equal(back.propertySets[0].values[0].key, 'YOUNG_MODULUS');
+    assert.equal(back.propertySets[0].values[0].values[0], 2.1e11);
+});
+
+step('info: gmsh bounding entities survive a real $Entities round trip', () => {
+    // A real gmsh 4.1 file: two tagged curves and a tagged surface.
+    const msh = [
+        '$MeshFormat', '4.1 0 8', '$EndMeshFormat',
+        '$PhysicalNames', '2', '1 8 "bottom"', '2 7 "plate"', '$EndPhysicalNames',
+        '$Entities', '4 2 1 0',
+        '1 0 0 0 0', '2 1 0 0 0', '3 1 1 0 0', '4 0 1 0 0',
+        '1 0 0 0 1 0 0 1 8 2 1 -2',
+        '2 1 0 0 1 1 0 0 2 2 -3',
+        '1 0 0 0 1 1 0 1 7 2 1 2',
+        '$EndEntities',
+        '$Nodes', '3 4 1 4',
+        '0 1 0 1', '1', '0 0 0',
+        '0 2 0 1', '2', '1 0 0',
+        '2 1 0 2', '3', '4', '1 1 0', '0 1 0',
+        '$EndNodes',
+        '$Elements', '3 4 1 5',
+        '1 1 1 1', '1 1 2',
+        '1 2 1 1', '2 2 3',
+        '2 1 2 2', '4 1 2 3', '5 1 3 4',
+        '$EndElements', '',
+    ].join('\n');
+    m.FS.writeFile('/gi.msh', msh);
+
+    const mesh = m.readMeshSelective('/gi.msh', { format: 'gmsh', info: true });
+    assert.equal(mesh.info.format, 'gmsh');
+    assert.equal(mesh.info.boundingEntities.length, mesh.cells.length);
+    assert.ok(mesh.info.boundingEntities.some((block) => block.length > 0));
+
+    m.writeMesh('/gi-rt.msh', mesh, 'gmsh', { info: mesh.info });
+    const backMesh = m.readMeshSelective('/gi-rt.msh', { format: 'gmsh', info: true });
+    assert.deepEqual(backMesh.regions.map((r) => r.name).sort(), ['bottom', 'plate']);
+    assert.ok(backMesh.info.boundingEntities.some((block) => block.length > 0));
+});
+
+step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
+    const info = {
+        pointSets: { MYNODES: [0, 1] },
+        cellSets: { MYCELLS: [[0]] },
+    };
+    for (const [format, ext] of [['ansysinp', 'cdb'], ['unv', 'unv']]) {
+        const path = `/pcs.${ext}`;
+        m.writeMesh(path, tet, format, { info: { format, ...info } });
+        const back = m.readMeshSelective(path, { format, info: true });
+        assert.equal(back.info.format, format);
+        assert.deepEqual(Array.from(back.info.pointSets.MYNODES), info.pointSets.MYNODES);
+        assert.equal(back.info.cellSets.MYCELLS.length, 1);
+        assert.deepEqual(Array.from(back.info.cellSets.MYCELLS[0]), info.cellSets.MYCELLS[0]);
+    }
+});
+
+step('info: med meshName/description round-trip', () => {
+    m.writeMesh('/mi.med', tet, 'med', { info: { format: 'med', meshName: 'MyMesh', description: 'hi' } });
+    const back = m.readMeshSelective('/mi.med', { format: 'med', info: true });
+    assert.equal(back.info.format, 'med');
+    assert.equal(back.info.meshName, 'MyMesh');
+    assert.equal(back.info.description, 'hi');
+});
+
 step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {
     const tagged = {
         ...tet,

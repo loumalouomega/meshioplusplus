@@ -146,6 +146,136 @@ export interface Mesh {
   field_data_components?: Record<string, number>;
   /** Named groups of points / cells / cell facets (see {@link Region}). */
   regions?: Region[];
+  /** `Begin Properties` blocks -- Kratos material data (currently MDPA only). See {@link PropertySet}. */
+  propertySets?: PropertySet[];
+  /**
+   * Format-specific side-channel metadata a generic `Mesh` cannot represent,
+   * attached by `readMeshSelective(path, {info: true})`. Present only for
+   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); absent
+   * otherwise, even when `info: true` was requested. Its own `format` field
+   * is what `writeMesh` checks before reusing it on a write with no explicit
+   * `options.info`. See doc/wasm.md's "Side channel (info)" section.
+   */
+  info?: MeshInfo;
+}
+
+/** The union of every format's side-channel `info` shape. Discriminate on `format`. */
+export type MeshInfo =
+  | OpenFoamInfo
+  | MedInfo
+  | MdpaInfo
+  | AnsysInfo
+  | UnvInfo
+  | GmshInfo
+  | ExodusInfo;
+
+/** OpenFOAM's side channel: `readMeshSelective`'s cell_tags/patch-type map, reshaped per patch. */
+export interface OpenFoamInfo {
+  format: 'openfoam';
+  patches: Array<{
+    /** The negative, MED-style family id `cell_tags` uses for this patch. */
+    familyId: number;
+    /** Names this family id is known by (usually one; more than one on a collision). */
+    names: string[];
+    /** The patch `type` (`patch`/`wall`/`symmetry`/...), when known. */
+    type?: string;
+  }>;
+}
+
+/** MED's side channel: family/group names, units, and per-field step/time metadata. */
+export interface MedInfo {
+  format: 'med';
+  /** Point family id -> subset name(s), as `point_tags`/`cell_tags` key them. */
+  pointTags: Record<string, string[]>;
+  cellTags: Record<string, string[]>;
+  meshName: string;
+  description: string;
+  unitTime: string;
+  unitCoords: string;
+  /** Family id -> its `FAM_<id>...` group link name. */
+  pointTagGroups: Record<string, string>;
+  cellTagGroups: Record<string, string>;
+  /** Lenient-mode only: constructs this read could not represent, verbatim. */
+  skippedConstructs: string[];
+  /** Lenient-mode only: field name -> `[UNI, UNT]` unit strings. */
+  fieldUnits: Record<string, [string, string]>;
+  /** Lenient-mode only: field name -> `{ndt, nor, pdt}` (MED's own step/order/time triple). */
+  stepMeta: Record<string, { ndt: number; nor: number; pdt: number }>;
+  /** Field name -> every step's time value (always filled, not lenient-only). */
+  fieldTimeValues: Record<string, number[]>;
+}
+
+/** MDPA's side channel: per-block entity names. Properties ride on `mesh.propertySets` instead (see {@link PropertySet}), not here. */
+export interface MdpaInfo {
+  format: 'mdpa';
+  /** One entry per cell block, mesh block order. */
+  entityNames: Array<{ name: string; isCondition: boolean }>;
+  /** Lenient-mode only: constructs this read could not represent, verbatim. */
+  skippedConstructs: string[];
+}
+
+/**
+ * The shared shape of Ansys (`.cdb`/`.inp`, MAPDL) and UNV's side channel:
+ * named point/cell sets the generic {@link Region} shape does not carry.
+ */
+export interface AnsysUnvInfoShape {
+  /** Set name -> 0-based point/node indices. */
+  pointSets: Record<string, number[]>;
+  /** Set name -> one array of 0-based local indices per cell block. */
+  cellSets: Record<string, number[][]>;
+}
+
+export interface AnsysInfo extends AnsysUnvInfoShape {
+  format: 'ansysinp';
+}
+
+export interface UnvInfo extends AnsysUnvInfoShape {
+  format: 'unv';
+}
+
+/** Gmsh's side channel: `$Entities` bounding-entity tags, one array per cell block. */
+export interface GmshInfo {
+  format: 'gmsh';
+  boundingEntities: number[][];
+}
+
+/** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */
+export interface ExodusInfo {
+  format: 'exodus';
+  infoRecords: string[];
+}
+
+/**
+ * One `Begin Properties <id>` block: an id plus its entries, in file order.
+ * Carried on the {@link Mesh} object itself (like {@link Region}), keyed by
+ * id rather than entity index, so operations that renumber cells/points
+ * cannot invalidate them. Shape-preserving operations (`clean`, `smooth`,
+ * `transform`, `attachQuality`, the `data*` ops) carry them through;
+ * restructuring and multi-input ones (`merge`, `cropBbox`/`cropPlane`/
+ * `cropPredicate`, `split`, `partition`, `diff`) do not.
+ */
+export interface PropertySet {
+  id: number;
+  values: PropertyValue[];
+}
+
+/**
+ * One `KEY value` entry of a properties block. Exactly one of `values` and
+ * `text` carries the value: a plain number is a one-element `values`; an
+ * inline `Begin Table` is an `(n, k)` `values` (flat, row-major -- `k` given
+ * by `components` when `k > 1`) with `isTable` set and `key` holding the
+ * table header's arguments verbatim; anything else (a constitutive-law name,
+ * a bracketed vector/matrix) is kept verbatim in `text`, which is what makes
+ * an unrecognized value lossless.
+ */
+export interface PropertyValue {
+  key: string;
+  values: Float64Array;
+  /** Per-entity width of `values` when `isTable` and `k > 1`. Absent means 1. */
+  components?: number;
+  /** The value verbatim, when it is not numeric (`values` is then empty). */
+  text: string;
+  isTable: boolean;
 }
 
 /**
@@ -205,6 +335,17 @@ export interface MeshWriteOptions {
   codec?: "none" | "zlib" | "lz4" | "zstd";
   /** `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default). */
   floatFormat?: string;
+}
+
+/**
+ * `writeMesh`'s own options: `MeshWriteOptions` plus `info`, a format's
+ * side-channel metadata to write (see {@link MeshInfo}) -- wins over a
+ * `mesh.info` whose own `format` matches this write's. Given for a format
+ * with no side-channel writer (openfoam/mdpa/ansysinp/unv/gmsh/med are the
+ * writable ones; exodus is read-only) throws naming it.
+ */
+export interface MeshWriteOptionsWithInfo extends MeshWriteOptions {
+  info?: MeshInfo;
 }
 
 export interface ConvertOptions extends MeshWriteOptions {
@@ -859,6 +1000,13 @@ export interface MeshioPlusPlusModule {
    * truncated block or a bad node reference still throws, because continuing
    * past those would return a mesh that is quietly wrong.
    *
+   * `info: true` attaches the format's side channel as the result's `.info`
+   * (see {@link MeshInfo}) for the formats that have one
+   * (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); silently has no effect for
+   * any other format, so a caller can always pass it and check `.info`
+   * itself. `pointsOnly`/`arrays` reach the read only for the formats whose
+   * info-bearing reader takes selective-read options (med/mdpa/gmsh/exodus).
+   *
    * @throws {Error} on an out-of-range `timeStep`.
    */
   readMeshSelective(
@@ -869,6 +1017,7 @@ export interface MeshioPlusPlusModule {
       arrays?: string[] | null;
       timeStep?: number;
       lenient?: boolean;
+      info?: boolean;
     }
   ): Mesh;
 
@@ -886,16 +1035,19 @@ export interface MeshioPlusPlusModule {
   readerSupportsOptions(format: string): boolean;
 
   /**
-   * Write a mesh to the virtual filesystem.
+   * Write a mesh to the virtual filesystem. See {@link MeshWriteOptionsWithInfo.info}
+   * for writing a format's side channel.
    * @returns every virtual-FS path this write touched (new or changed),
    *   sorted -- more than one for a multi-file writer (`.xdmf` + its `.h5`
    *   companion, an OpenFOAM `polyMesh` directory's files, ...).
    * @throws {Error} on an unknown/write-unsupported format, an `options`
-   *   field the format cannot honour, or malformed input (e.g. a
-   *   points/connectivity array length not divisible by its declared
-   *   dim/nodesPerCell).
+   *   field the format cannot honour, `info` given for a format with no
+   *   side-channel writer, or malformed input (e.g. a points/connectivity
+   *   array length not divisible by its declared dim/nodesPerCell).
    */
-  writeMesh(path: string, mesh: Mesh, format?: string, options?: MeshWriteOptions): string[];
+  writeMesh(
+    path: string, mesh: Mesh, format?: string, options?: MeshWriteOptionsWithInfo
+  ): string[];
 
   /**
    * Read `inPath` and write it to `outPath` directly (no intermediate JS

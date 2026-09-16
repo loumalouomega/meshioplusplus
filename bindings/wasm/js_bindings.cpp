@@ -71,6 +71,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -86,10 +87,18 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/properties.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -416,6 +425,35 @@ val mesh_to_val(const Mesh& rMesh) {
     }
     out.set("regions", regions);
 
+    // Property sets (`Begin Properties` blocks -- Kratos material data, and
+    // whatever other formats grow an equivalent): carried on the mesh, not a
+    // per-format side struct, since a side struct is unreachable through the
+    // registry (see mesh_api.hpp's "Property sets" section). Currently only
+    // MDPA populates them. `values[k].values` is always Float64 (the
+    // uniform API's own contract for PropertyValue), with a table's row
+    // count recovered from its declared `components` -- the same
+    // *_components device point_data/cell_data/field_data already use.
+    val property_sets = val::array();
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+        const meshioplusplus::PropertySet& ps = rMesh.GetPropertySet(i);
+        val jps = val::object();
+        jps.set("id", static_cast<double>(ps.mId));
+        val values = val::array();
+        for (const meshioplusplus::PropertyValue& v : ps.mValues) {
+            val jv = val::object();
+            jv.set("key", v.mKey);
+            jv.set("values", ndarray_to_float64_array(v.mValues));
+            jv.set("text", v.mText);
+            jv.set("isTable", v.mIsTable);
+            if (cols_of(v.mValues) > 1)
+                jv.set("components", static_cast<double>(cols_of(v.mValues)));
+            values.call<void>("push", jv);
+        }
+        jps.set("values", values);
+        property_sets.call<void>("push", jps);
+    }
+    out.set("propertySets", property_sets);
+
     return out;
 }
 
@@ -695,8 +733,461 @@ Mesh val_to_mesh(const val& rObj) {
             mesh.AddRegion(std::move(region));
         }
     }
+    // Property sets (see `mesh_to_val`). A value with no `values` array (or
+    // an empty one) is text-only (`PropertyValue::IsText()`), matching what
+    // `mesh_to_val` emits for one: an empty Float64Array plus `text` set.
+    if (rObj.hasOwnProperty("propertySets")) {
+        val property_sets = rObj["propertySets"];
+        const auto n_sets = property_sets["length"].as<unsigned>();
+        for (unsigned i = 0; i < n_sets; ++i) {
+            val jps = property_sets[i];
+            meshioplusplus::PropertySet ps;
+            ps.mId = static_cast<std::int64_t>(jps["id"].as<double>());
+            val values = jps["values"];
+            const auto n_values = values["length"].as<unsigned>();
+            for (unsigned k = 0; k < n_values; ++k) {
+                val jv = values[k];
+                meshioplusplus::PropertyValue pv;
+                pv.mKey = jv["key"].as<std::string>();
+                pv.mIsTable = jv.hasOwnProperty("isTable") && jv["isTable"].as<bool>();
+                pv.mText = jv.hasOwnProperty("text") ? jv["text"].as<std::string>() : std::string();
+                val arr = jv["values"];
+                const std::size_t len =
+                    (arr.isUndefined() || arr.isNull()) ? 0 : arr["length"].as<std::size_t>();
+                if (len > 0) {
+                    const std::size_t cols = js_components_of(
+                        jv.hasOwnProperty("components") ? jv["components"] : val::undefined(),
+                        pv.mKey);
+                    pv.mValues = float64_ndarray_from_val(arr, js_data_shape(len, cols, pv.mKey));
+                }
+                ps.mValues.push_back(std::move(pv));
+            }
+            mesh.AddPropertySet(std::move(ps));
+        }
+    }
     return mesh;
 }
+
+// " (this build has no HDF5 support)" for extensions like `.med` whose format
+// the registry knows but this build compiled out; "" otherwise.
+std::string compiled_out_hint(const std::string& rFormat) {
+    const char* dep = meshioplusplus::registry_compiled_out(rFormat);
+    return dep ? " (this build has no " + std::string(dep) + " support)" : "";
+}
+
+// ---------------------------------------------------------------------
+// Format-specific side-channel "info" -- metadata a generic Mesh cannot
+// represent (OpenFOAM patch names/types, MED field units, MDPA entity
+// names, Ansys/UNV point/cell sets, Gmsh bounding entities, Exodus info
+// records). None of this reaches `registry_readers()`/`registry_writers()`
+// (their stored lambdas are `Mesh(path)`/`void(path, mesh)`, with no room for
+// an Info out/in parameter), so this is a WASM-only dispatch table calling
+// each format's own Info-bearing reader/writer directly -- the same
+// per-format special-casing Python's `_core.cpp` already does (there is no
+// generic `registry_read_info` hook in the core; adding one, reaching every
+// flat binding, is a roadmap remainder, see doc/wasm.md). Property sets
+// (MDPA `Begin Properties`) are NOT part of this: they are Mesh-API-level
+// (`mesh.propertySets`, handled in `mesh_to_val`/`val_to_mesh` above), not a
+// per-format struct, precisely so they ARE reachable through the registry.
+// ---------------------------------------------------------------------
+
+namespace {
+
+/// The format keys with a side-channel `info` object, read or write.
+bool format_supports_info(const std::string& rFormat) {
+    return rFormat == "openfoam" || rFormat == "med" || rFormat == "mdpa" ||
+           rFormat == "ansysinp" || rFormat == "unv" || rFormat == "gmsh" || rFormat == "exodus";
+}
+
+val string_vec_to_val(const std::vector<std::string>& rStrings) {
+    val out = val::array();
+    for (const std::string& s : rStrings)
+        out.call<void>("push", s);
+    return out;
+}
+
+std::vector<std::string> val_to_string_vec(const val& rArr) {
+    if (rArr.isUndefined() || rArr.isNull()) return {};
+    return emscripten::vecFromJSArray<std::string>(rArr);
+}
+
+val string_vec_map_to_val(const std::map<std::int64_t, std::vector<std::string>>& rMap) {
+    val out = val::object();
+    for (const auto& [id, names] : rMap)
+        out.set(std::to_string(id), string_vec_to_val(names));
+    return out;
+}
+
+std::map<std::int64_t, std::vector<std::string>> val_to_string_vec_map(const val& rObj) {
+    std::map<std::int64_t, std::vector<std::string>> out;
+    if (rObj.isUndefined() || rObj.isNull()) return out;
+    for (const std::string& key : js_object_keys(rObj))
+        out.emplace(std::stoll(key), val_to_string_vec(rObj[key]));
+    return out;
+}
+
+val string_map_to_val(const std::map<std::int64_t, std::string>& rMap) {
+    val out = val::object();
+    for (const auto& [id, s] : rMap)
+        out.set(std::to_string(id), s);
+    return out;
+}
+
+std::map<std::int64_t, std::string> val_to_string_map(const val& rObj) {
+    std::map<std::int64_t, std::string> out;
+    if (rObj.isUndefined() || rObj.isNull()) return out;
+    for (const std::string& key : js_object_keys(rObj))
+        out.emplace(std::stoll(key), rObj[key].as<std::string>());
+    return out;
+}
+
+std::string js_optional_string(const val& rObj, const char* pKey, const std::string& rFallback) {
+    val v = rObj[pKey];
+    return (v.isUndefined() || v.isNull()) ? rFallback : v.as<std::string>();
+}
+
+// --- OpenFOAM ----------------------------------------------------------
+
+val openfoam_info_to_val(const meshioplusplus::OpenFoamInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("openfoam"));
+    std::set<std::int64_t> ids;
+    for (const auto& kv : rInfo.mCellTags) ids.insert(kv.first);
+    for (const auto& kv : rInfo.mPatchTypes) ids.insert(kv.first);
+    val patches = val::array();
+    for (std::int64_t id : ids) {
+        val jp = val::object();
+        jp.set("familyId", static_cast<double>(id));
+        auto cit = rInfo.mCellTags.find(id);
+        jp.set("names", string_vec_to_val(cit == rInfo.mCellTags.end() ? std::vector<std::string>{}
+                                                                        : cit->second));
+        auto tit = rInfo.mPatchTypes.find(id);
+        if (tit != rInfo.mPatchTypes.end())
+            jp.set("type", tit->second);
+        patches.call<void>("push", jp);
+    }
+    out.set("patches", patches);
+    return out;
+}
+
+meshioplusplus::OpenFoamInfo val_to_openfoam_info(const val& rInfo) {
+    meshioplusplus::OpenFoamInfo info;
+    val patches = rInfo["patches"];
+    if (!patches.isUndefined() && !patches.isNull()) {
+        const auto n = patches["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val jp = patches[i];
+            const auto id = static_cast<std::int64_t>(jp["familyId"].as<double>());
+            info.mCellTags[id] = val_to_string_vec(jp["names"]);
+            val type_v = jp["type"];
+            if (!type_v.isUndefined() && !type_v.isNull())
+                info.mPatchTypes[id] = type_v.as<std::string>();
+        }
+    }
+    return info;
+}
+
+// --- MED -----------------------------------------------------------------
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+
+val med_info_to_val(const meshioplusplus::MedInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("med"));
+    out.set("pointTags", string_vec_map_to_val(rInfo.mPointTags));
+    out.set("cellTags", string_vec_map_to_val(rInfo.mCellTags));
+    out.set("meshName", rInfo.mMeshName);
+    out.set("description", rInfo.mDescription);
+    out.set("unitTime", rInfo.mUnitTime);
+    out.set("unitCoords", rInfo.mUnitCoords);
+    out.set("pointTagGroups", string_map_to_val(rInfo.mPointTagGroups));
+    out.set("cellTagGroups", string_map_to_val(rInfo.mCellTagGroups));
+    out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
+    val field_units = val::object();
+    for (const auto& [field, unit_pair] : rInfo.mFieldUnits) {
+        val u = val::array();
+        u.call<void>("push", unit_pair.first);
+        u.call<void>("push", unit_pair.second);
+        field_units.set(field, u);
+    }
+    out.set("fieldUnits", field_units);
+    val step_meta = val::object();
+    for (const auto& [field, meta] : rInfo.mStepMeta) {
+        val m = val::object();
+        m.set("ndt", static_cast<double>(std::get<0>(meta)));
+        m.set("nor", static_cast<double>(std::get<1>(meta)));
+        m.set("pdt", std::get<2>(meta));
+        step_meta.set(field, m);
+    }
+    out.set("stepMeta", step_meta);
+    val field_time_values = val::object();
+    for (const auto& [field, times] : rInfo.mFieldTimeValues) {
+        val arr = val::array();
+        for (double t : times)
+            arr.call<void>("push", t);
+        field_time_values.set(field, arr);
+    }
+    out.set("fieldTimeValues", field_time_values);
+    return out;
+}
+
+meshioplusplus::MedInfo val_to_med_info(const val& rInfo) {
+    meshioplusplus::MedInfo info;
+    info.mPointTags = val_to_string_vec_map(rInfo["pointTags"]);
+    info.mCellTags = val_to_string_vec_map(rInfo["cellTags"]);
+    info.mMeshName = js_optional_string(rInfo, "meshName", info.mMeshName);
+    info.mDescription = js_optional_string(rInfo, "description", info.mDescription);
+    info.mUnitTime = js_optional_string(rInfo, "unitTime", info.mUnitTime);
+    info.mUnitCoords = js_optional_string(rInfo, "unitCoords", info.mUnitCoords);
+    info.mPointTagGroups = val_to_string_map(rInfo["pointTagGroups"]);
+    info.mCellTagGroups = val_to_string_map(rInfo["cellTagGroups"]);
+    // mMedNom/mSkippedConstructs/mFieldUnits/mStepMeta/mFieldTimeValues are
+    // read-side-only outputs (component names come from the mesh's own
+    // field_data["med:nom"]; the rest are diagnostics) -- not accepted back.
+    return info;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_HDF5
+
+// --- MDPA ------------------------------------------------------------------
+
+val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("mdpa"));
+    val entity_names = val::array();
+    for (const meshioplusplus::MdpaEntityName& en : rInfo.mEntityNames) {
+        val e = val::object();
+        e.set("name", en.mName);
+        e.set("isCondition", en.mIsCondition);
+        entity_names.call<void>("push", e);
+    }
+    out.set("entityNames", entity_names);
+    out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
+    return out;
+}
+
+meshioplusplus::MdpaInfo val_to_mdpa_info(const val& rInfo) {
+    meshioplusplus::MdpaInfo info;
+    val entity_names = rInfo["entityNames"];
+    if (!entity_names.isUndefined() && !entity_names.isNull()) {
+        const auto n = entity_names["length"].as<unsigned>();
+        info.mEntityNames.reserve(n);
+        for (unsigned i = 0; i < n; ++i) {
+            val je = entity_names[i];
+            meshioplusplus::MdpaEntityName en;
+            en.mName = js_optional_string(je, "name", "");
+            val cond_v = je["isCondition"];
+            en.mIsCondition = !cond_v.isUndefined() && !cond_v.isNull() && cond_v.as<bool>();
+            info.mEntityNames.push_back(std::move(en));
+        }
+    }
+    // mProperties deliberately left empty: write_mdpa() falls back to the
+    // mesh's own property sets (mesh.propertySets, via AddPropertySet) when
+    // this is empty, which is always what a WASM caller means -- properties
+    // ride on the mesh object itself here (see the section banner above).
+    return info;
+}
+
+// --- Ansys (.cdb/.inp) / UNV: identical {pointSets, cellSets} shape --------
+
+template <class InfoT>
+val point_cell_sets_info_to_val(const std::string& rFormat, const InfoT& rInfo) {
+    val out = val::object();
+    out.set("format", rFormat);
+    val point_sets = val::object();
+    for (const auto& [name, ids] : rInfo.mPointSets) {
+        val arr = val::array();
+        for (std::int64_t id : ids)
+            arr.call<void>("push", static_cast<double>(id));
+        point_sets.set(name, arr);
+    }
+    out.set("pointSets", point_sets);
+    val cell_sets = val::object();
+    for (const auto& [name, blocks] : rInfo.mCellSets) {
+        val block_arr = val::array();
+        for (const std::vector<std::int64_t>& block_ids : blocks) {
+            val arr = val::array();
+            for (std::int64_t id : block_ids)
+                arr.call<void>("push", static_cast<double>(id));
+            block_arr.call<void>("push", arr);
+        }
+        cell_sets.set(name, block_arr);
+    }
+    out.set("cellSets", cell_sets);
+    return out;
+}
+
+template <class InfoT>
+InfoT val_to_point_cell_sets_info(const val& rInfo) {
+    InfoT info;
+    val point_sets = rInfo["pointSets"];
+    if (!point_sets.isUndefined() && !point_sets.isNull()) {
+        for (const std::string& name : js_object_keys(point_sets))
+            info.mPointSets[name] = emscripten::vecFromJSArray<std::int64_t>(point_sets[name]);
+    }
+    val cell_sets = rInfo["cellSets"];
+    if (!cell_sets.isUndefined() && !cell_sets.isNull()) {
+        for (const std::string& name : js_object_keys(cell_sets)) {
+            val blocks = cell_sets[name];
+            const auto nb = blocks["length"].as<unsigned>();
+            std::vector<std::vector<std::int64_t>> per_block;
+            per_block.reserve(nb);
+            for (unsigned b = 0; b < nb; ++b)
+                per_block.push_back(emscripten::vecFromJSArray<std::int64_t>(blocks[b]));
+            info.mCellSets[name] = std::move(per_block);
+        }
+    }
+    return info;
+}
+
+// --- Gmsh ------------------------------------------------------------------
+
+val gmsh_info_to_val(const meshioplusplus::GmshInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("gmsh"));
+    val bounding = val::array();
+    for (const std::vector<std::int32_t>& block : rInfo.mBoundingEntities) {
+        val arr = val::array();
+        for (std::int32_t tag : block)
+            arr.call<void>("push", static_cast<double>(tag));
+        bounding.call<void>("push", arr);
+    }
+    out.set("boundingEntities", bounding);
+    return out;
+}
+
+meshioplusplus::GmshInfo val_to_gmsh_info(const val& rInfo) {
+    meshioplusplus::GmshInfo info;
+    val bounding = rInfo["boundingEntities"];
+    if (!bounding.isUndefined() && !bounding.isNull()) {
+        const auto n = bounding["length"].as<unsigned>();
+        info.mBoundingEntities.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            info.mBoundingEntities.push_back(emscripten::vecFromJSArray<std::int32_t>(bounding[i]));
+    }
+    return info;
+}
+
+// --- Exodus (read-only) ------------------------------------------------
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+
+val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("exodus"));
+    out.set("infoRecords", string_vec_to_val(rInfo.mInfoRecords));
+    return out;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_NETCDF
+
+/**
+ * @brief Read `rPath` as `rFormat` through that format's own Info-bearing
+ * reader, bypassing the generic registry. `rOptions` is honoured exactly by
+ * the formats whose reader takes a `ReadOptions` (med, mdpa, gmsh, exodus);
+ * openfoam/ansysinp/unv have no selective-read path with or without info.
+ * @param rFormat must satisfy `format_supports_info`.
+ * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
+ */
+Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
+                    const meshioplusplus::ReadOptions& rOptions, val& rInfoOut) {
+    if (rFormat == "openfoam") {
+        meshioplusplus::OpenFoamInfo info;
+        Mesh mesh = meshioplusplus::read_openfoam(rPath, info);
+        rInfoOut = openfoam_info_to_val(info);
+        return mesh;
+    }
+    if (rFormat == "mdpa") {
+        meshioplusplus::MdpaInfo info;
+        Mesh mesh = meshioplusplus::read_mdpa(rPath, info, rOptions);
+        rInfoOut = mdpa_info_to_val(info);
+        return mesh;
+    }
+    if (rFormat == "ansysinp") {
+        meshioplusplus::AnsysInfo info;
+        Mesh mesh = meshioplusplus::read_ansysinp(rPath, info);
+        rInfoOut = point_cell_sets_info_to_val("ansysinp", info);
+        return mesh;
+    }
+    if (rFormat == "unv") {
+        meshioplusplus::UnvInfo info;
+        Mesh mesh = meshioplusplus::read_unv(rPath, info);
+        rInfoOut = point_cell_sets_info_to_val("unv", info);
+        return mesh;
+    }
+    if (rFormat == "gmsh") {
+        meshioplusplus::GmshInfo info;
+        Mesh mesh = meshioplusplus::read_gmsh(rPath, info, rOptions);
+        rInfoOut = gmsh_info_to_val(info);
+        return mesh;
+    }
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "med") {
+        meshioplusplus::MedInfo info;
+        Mesh mesh = meshioplusplus::read_med(rPath, info, rOptions);
+        rInfoOut = med_info_to_val(info);
+        return mesh;
+    }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    if (rFormat == "exodus") {
+        meshioplusplus::ExodusInfo info;
+        Mesh mesh = meshioplusplus::read_exodus(rPath, info, rOptions);
+        rInfoOut = exodus_info_to_val(info);
+        return mesh;
+    }
+#endif
+    throw meshioplusplus::ReadError("meshio++ (wasm): '" + rFormat +
+                                    "' has no side-channel info in this build" +
+                                    compiled_out_hint(rFormat));
+}
+
+/**
+ * @brief Write `rMesh` to `rPath` as `rFormat`, honouring `rInfo` (a JS
+ * object matching `read_with_info`'s own shape) through that format's own
+ * Info-bearing writer. `exodus` has no Info-bearing writer (its info is
+ * read-only) and is therefore not in `format_supports_info`'s writable
+ * subset -- `write_mesh_js` never reaches this function for it.
+ * @param rEncoding write_mesh's own `{encoding}` option; only gmsh's binary
+ *   flag is Info-write-aware today (`write_gmsh41`'s `binary` parameter).
+ * @throws meshioplusplus::WriteError if `rFormat` has no Info-bearing writer.
+ */
+void write_with_info(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
+                     const val& rInfo, meshioplusplus::WriteEncoding rEncoding) {
+    if (rFormat == "openfoam") {
+        meshioplusplus::write_openfoam(rPath, rMesh, val_to_openfoam_info(rInfo));
+        return;
+    }
+    if (rFormat == "mdpa") {
+        meshioplusplus::write_mdpa(rPath, rMesh, val_to_mdpa_info(rInfo));
+        return;
+    }
+    if (rFormat == "ansysinp") {
+        meshioplusplus::write_ansysinp(
+            rPath, rMesh, val_to_point_cell_sets_info<meshioplusplus::AnsysInfo>(rInfo));
+        return;
+    }
+    if (rFormat == "unv") {
+        meshioplusplus::write_unv(rPath, rMesh,
+                                  val_to_point_cell_sets_info<meshioplusplus::UnvInfo>(rInfo));
+        return;
+    }
+    if (rFormat == "gmsh") {
+        meshioplusplus::write_gmsh41(rPath, rMesh, rEncoding == meshioplusplus::WriteEncoding::Binary,
+                                     val_to_gmsh_info(rInfo));
+        return;
+    }
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "med") {
+        meshioplusplus::write_med(rPath, rMesh, val_to_med_info(rInfo));
+        return;
+    }
+#endif
+    throw meshioplusplus::WriteError(
+        "meshio++ (wasm): '" + rFormat + "' has no side-channel info writer in this build" +
+        compiled_out_hint(rFormat) +
+        " (writable info formats: openfoam, mdpa, ansysinp, unv, gmsh, med)");
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------
 // Format dispatch goes through the shared registry (registry.hpp), the
@@ -714,13 +1205,6 @@ Mesh val_to_mesh(const val& rObj) {
 using meshioplusplus::registry_readers;
 using meshioplusplus::registry_writers;
 using meshioplusplus::resolve_format;
-
-// " (this build has no HDF5 support)" for extensions like `.med` whose format
-// the registry knows but this build compiled out; "" otherwise.
-std::string compiled_out_hint(const std::string& rFormat) {
-    const char* dep = meshioplusplus::registry_compiled_out(rFormat);
-    return dep ? " (this build has no " + std::string(dep) + " support)" : "";
-}
 
 /// Strict key check for a settings/options object, mirroring the JSON
 /// front-end's rule: an unknown key is an error naming it, never silently
@@ -841,12 +1325,20 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  * @param lenient downgrade "this reader cannot represent construct X" errors to
  *   a warning plus a skip (currently mdpa's Table/Geometries/Mesh/Constraints
  *   blocks). Not "ignore all errors": a malformed file still throws.
+ * @param info when true and the format has a side channel (`format_supports_info`:
+ *   openfoam/med/mdpa/ansysinp/unv/gmsh/exodus), attach it to the result as
+ *   `.info` (`{format, ...}`, shape per format -- see doc/wasm.md); ignored
+ *   for any other format, rather than throwing, so a caller can always pass
+ *   `info: true` and check `mesh.info` itself. `pointsOnly`/`arrays` are only
+ *   honoured for the formats whose Info-bearing reader takes a `ReadOptions`
+ *   (med, mdpa, gmsh, exodus); openfoam/ansysinp/unv have no selective-read
+ *   path with or without info, exactly as they have none without `info`.
  *
  * Formats without a native selective path are read whole and filtered, so the
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
-                        const val& rArrays, int time_step, bool lenient) {
+                        const val& rArrays, int time_step, bool lenient, bool info) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
@@ -855,6 +1347,13 @@ val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bo
         opts.mLenient = lenient;
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
+        if (info && format_supports_info(fmt)) {
+            val info_val;
+            Mesh mesh = read_with_info(rPath, fmt, opts, info_val);
+            val out = mesh_to_val(mesh);
+            out.set("info", info_val);
+            return out;
+        }
         return mesh_to_val(meshioplusplus::registry_read(rPath, fmt, opts));
     });
 }
@@ -1018,13 +1517,16 @@ val string_array_from(const std::vector<std::string>& rPaths) {
  * registry writer). There is deliberately no gzip level or VTK 4.2/5.1
  * selector -- `WriteOptions` has neither (gzip level 4 is a fixed registry
  * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
+ * `info` (see `write_mesh`) is accepted as a key here too, so a caller who
+ * passes it does not trip the "unknown key" check -- it is read separately
+ * by `write_mesh`, not part of `WriteOptions`.
  * @throws meshioplusplus::ReadError on an unknown key, or an unknown
  *         `encoding`/`codec` name.
  */
 meshioplusplus::WriteOptions write_options_from_val(const val& rOptions) {
     meshioplusplus::WriteOptions opts;
     if (rOptions.isUndefined() || rOptions.isNull()) return opts;
-    check_settings_keys(rOptions, "the write options", {"encoding", "codec", "floatFormat"});
+    check_settings_keys(rOptions, "the write options", {"encoding", "codec", "floatFormat", "info"});
     opts.mEncoding =
         meshioplusplus::pipeline_encoding_from_name(settings_string(rOptions, "encoding", "options"));
     const std::string codec = settings_string(rOptions, "codec", "options");
@@ -1036,6 +1538,27 @@ meshioplusplus::WriteOptions write_options_from_val(const val& rOptions) {
     return opts;
 }
 
+/**
+ * @brief The `info` object to write, if any: `rOptions.info` when given,
+ * else `rMeshObj.info` when its own `format` field matches `rFormat` (a read
+ * with `info: true` round-tripping transparently back through a write with
+ * no extra plumbing). `val::undefined()` when neither applies.
+ */
+val effective_write_info(const val& rMeshObj, const val& rOptions, const std::string& rFormat) {
+    if (!rOptions.isUndefined() && !rOptions.isNull()) {
+        val opt_info = rOptions["info"];
+        if (!opt_info.isUndefined() && !opt_info.isNull())
+            return opt_info;
+    }
+    val mesh_info = rMeshObj["info"];
+    if (mesh_info.isUndefined() || mesh_info.isNull())
+        return val::undefined();
+    val mesh_format = mesh_info["format"];
+    if (mesh_format.isUndefined() || mesh_format.isNull() || mesh_format.as<std::string>() != rFormat)
+        return val::undefined();
+    return mesh_info;
+}
+
 }  // namespace
 
 /**
@@ -1044,14 +1567,17 @@ meshioplusplus::WriteOptions write_options_from_val(const val& rOptions) {
  *   `Module.FS` afterward).
  * @param rMeshObj a plain JS mesh object (see `mesh_to_val`'s shape).
  * @param rFormat explicit format key, or "" to infer from `rPath`'s extension.
- * @param rOptions optional `{encoding, codec, floatFormat}` (see
+ * @param rOptions optional `{encoding, codec, floatFormat, info}` (see
  *   `write_options_from_val`); omitted/empty reproduces the pre-A6 write
- *   exactly.
+ *   exactly. `info` (or, failing that, a `mesh.info` whose own `format`
+ *   matches) routes the write through that format's side-channel writer
+ *   instead of the plain registry one -- see `write_with_info`.
  * @return every virtual-FS path this write touched (new or changed), sorted --
  *   more than one for a multi-file writer (`.xdmf` + its `.h5` companion, an
  *   OpenFOAM `polyMesh` directory's files, ...).
  * @throws meshioplusplus::WriteError on an unknown/write-unsupported format,
- *   an option the format cannot honour, or malformed input.
+ *   an option the format cannot honour, `info` given for a format with no
+ *   Info-bearing writer, or malformed input.
  */
 val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat,
                const val& rOptions) {
@@ -1064,14 +1590,24 @@ val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string&
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'" +
                 compiled_out_hint(fmt));
+        const val info = effective_write_info(rMeshObj, rOptions, fmt);
         const meshioplusplus::WriteOptions opts = write_options_from_val(rOptions);
         const std::filesystem::path dir = memfs_dir_of(rPath);
         const DirSnapshot before = snapshot_dir(dir);
         ensure_new_write_tick(before);
-        // registry_write_ex() itself calls provenance_begin_write(), so there
-        // is no separate call here (unlike before A6, which called the
-        // registry writer directly).
-        meshioplusplus::registry_write_ex(rPath, val_to_mesh(rMeshObj), fmt, opts);
+        if (info.isUndefined()) {
+            // registry_write_ex() itself calls provenance_begin_write(), so
+            // there is no separate call here (unlike before A6, which called
+            // the registry writer directly).
+            meshioplusplus::registry_write_ex(rPath, val_to_mesh(rMeshObj), fmt, opts);
+        } else {
+            if (!format_supports_info(fmt))
+                throw meshioplusplus::WriteError(
+                    "meshio++ (wasm): format '" + fmt +
+                    "' has no side-channel 'info' writer, but info was given for it");
+            meshioplusplus::detail::provenance_begin_write();  // write_with_info bypasses registry_write_ex
+            write_with_info(rPath, val_to_mesh(rMeshObj), fmt, info, opts.mEncoding);
+        }
         return string_array_from(written_paths_since(dir, before));
     });
 }

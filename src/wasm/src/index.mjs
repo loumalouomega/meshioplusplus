@@ -177,6 +177,8 @@ export class MeshioPlusPlusLoadError extends Error {
  * @property {Object<string, number>} [cell_data_components] - per-entity width of any non-scalar cell_data array (one value per array, not per block).
  * @property {Object<string, DataArray>} [field_data]
  * @property {Object<string, number>} [field_data_components] - per-entity width of any non-scalar field_data array.
+ * @property {Array<{name: string, kind: string, dim: number, tag: number, entries: Int32Array}>} [regions] - named point/cell/side groups, see doc/regions.md.
+ * @property {Array<{id: number, values: Array<{key: string, values: Float64Array, text: string, isTable: boolean, components?: number}>}>} [propertySets] - `Begin Properties` blocks (currently MDPA only), see doc/wasm.md.
  */
 
 /**
@@ -197,10 +199,10 @@ export class MeshioPlusPlusLoadError extends Error {
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, info?: boolean}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
- *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string}) => string[],
+ *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string, info?: object}) => string[],
  *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string, encoding?: string, codec?: string, floatFormat?: string}) => string[],
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
@@ -358,6 +360,11 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // first, negative counts from the end, out of range throws.
         // `lenient` downgrades "this reader cannot represent construct X" to a
         // warning plus a skip; a malformed file still throws.
+        // `info: true` attaches the format's side channel as `mesh.info`
+        // (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus; ignored, not thrown,
+        // for any other format) -- see doc/wasm.md's "Side channel (info)"
+        // section. `pointsOnly`/`arrays` reach it only for the formats whose
+        // info reader takes selective-read options (med/mdpa/gmsh/exodus).
         readMeshSelective: (
             path,
             {
@@ -366,20 +373,27 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 arrays = null,
                 timeStep = 0,
                 lenient = false,
+                info = false,
             } = {},
-        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient),
+        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient, info),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),
         readerSupportsOptions: (format) => Module.readerSupportsOptions(format),
-        // `options`: `{encoding, codec, floatFormat}`, all optional --
+        // `options`: `{encoding, codec, floatFormat, info}`, all optional --
         // unset/empty reproduces the exact pre-v11.2.0 write. `encoding` is
         // 'ascii'/'binary' (format-default otherwise); `codec` is a VTK-XML
         // (vtu/vtp) block-compression codec, 'none'/'zlib'/'lz4'/'zstd'; an
-        // option a format cannot honour throws naming the format. Returns
-        // every virtual-FS path the write touched (new or changed), sorted --
-        // more than one for a multi-file writer (`.xdmf` + its `.h5`
-        // companion, an OpenFOAM `polyMesh` directory's files, ...).
+        // option a format cannot honour throws naming the format. `info`
+        // writes that format's side channel (openfoam/mdpa/ansysinp/unv/gmsh/
+        // med); when omitted, `mesh.info` is used instead if its own
+        // `format` matches this write's -- a read(info:true) round-trips
+        // back through a write with no extra plumbing. `info` given for a
+        // format with no side-channel writer (e.g. exodus, read-only, or any
+        // format without one at all) throws naming it. Returns every
+        // virtual-FS path the write touched (new or changed), sorted -- more
+        // than one for a multi-file writer (`.xdmf` + its `.h5` companion,
+        // an OpenFOAM `polyMesh` directory's files, ...).
         writeMesh: (path, mesh, format = '', options = undefined) =>
             Module.writeMesh(path, mesh, format, options),
         // `options` adds `encoding`/`codec`/`floatFormat` to `inFormat`/
