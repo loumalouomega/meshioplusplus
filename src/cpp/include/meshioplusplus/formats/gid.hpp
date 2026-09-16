@@ -65,10 +65,11 @@
  * verified against GiD's own geometry (pinned by `tests/cpp/test_gid.cpp`'s
  * `GidOrdering` suite, never by a round trip through a reader that does not
  * exist) are supported: `vertex`, `line`/`line3`, `triangle`/`triangle6`,
- * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`,
- * `wedge`, `pyramid`. Everything else — `hexahedron27`, `wedge15`,
- * `pyramid13` (orderings not yet verified), `polygon`/`polyhedron` (GiD has
- * no such type), every `VTK_LAGRANGE_*` and higher-degree Lagrange type —
+ * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`/
+ * `hexahedron27`, `wedge`/`wedge15`, `pyramid`/`pyramid13` (the last three
+ * cross-checked against Kratos's geometry classes since v10.19.0). Everything
+ * else — `polygon`/`polyhedron` (GiD has no such type), every
+ * `VTK_LAGRANGE_*` and higher-degree Lagrange type —
  * throws a `WriteError` naming the offending type, never a silent drop or a
  * guessed permutation.
  *

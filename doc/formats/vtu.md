@@ -66,7 +66,7 @@ The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`
 
 - **Raw/appended binary without valid XML**: when appended binary data contains raw bytes that break XML parsing, the Python reader falls back to a regex-based manual split of the file into header/data/footer before continuing — **the C++ reader does not implement this path at all** and raises on any `<AppendedData>` section, forcing the Python fallback.
 - **lzma compression is Python-only** — the C++ reader/writer explicitly reject it.
-- **Polyhedron cells are entirely unsupported by C++** (both reading and writing) — always routed to Python. Polyhedron cells also cannot be mixed with other cell types in the same file (a `ValueError` in the Python writer if attempted).
+- **Polyhedron cells are read and written by both engines**, including meshes that mix polyhedra with other cell types in one file (the C++ reader and writer carry VTU's `faces`/`faceoffsets` streams, with `-1` marking a non-polyhedral cell; the Python writer has accepted mixing since v9.19.0), as an OpenFOAM-derived mesh always requires.
 - **Multi-`<Piece>` files**: the Python reader merges all pieces (concatenating points/cells/point_data across them); the C++ reader only supports a single `<Piece>` and throws otherwise.
 - A `header_type` other than the default (`None`, meaning `UInt32`) always forces the Python path.
 - 2D points are auto-padded to 3D on write (warning in Python; silent in C++).

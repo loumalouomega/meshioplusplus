@@ -2,7 +2,7 @@
 
 meshio++ uses its own canonical type names. Every format reader maps native element names to these; every writer maps them back.
 
-Node ordering follows the VTK convention where available. The figures below are generated from the code's own topology tables (`_convert_cells._ELEVATE` for mid-edge nodes, `_skin._CELL_FACES` and `_refine_templates.QUAD_FACES` for face and body centres), so they cannot drift from what the readers, writers and operations actually assume; corner nodes are drawn solid, mid-edge nodes blue, face centres orange and the body centre violet. One convention is worth stating: `pyramid14` is `pyramid13` plus a base-centre node 13, the order every consumer in the core (`detail/cell_faces.hpp`, the CGNS table) uses, while the gmsh reader applies no permutation to gmsh's own edge-lexicographic type 14, a gap recorded in the [roadmap](./roadmap.md#9-format-completeness).
+Node ordering follows the VTK convention where available. The figures below are generated from the code's own topology tables (`_convert_cells._ELEVATE` for mid-edge nodes, `_skin._CELL_FACES` and `_refine_templates.QUAD_FACES` for face and body centres), so they cannot drift from what the readers, writers and operations actually assume; corner nodes are drawn solid, mid-edge nodes blue, face centres orange and the body centre violet. One convention is worth stating: `pyramid14` is `pyramid13` plus a base-centre node 13, the order every consumer in the core (`detail/cell_faces.hpp`, the CGNS table) uses, while the gmsh reader applies no permutation to gmsh's own edge-lexicographic type 14, a gap recorded in the [roadmap](./roadmap.md#_2-correctness-debts).
 
 ## 0-D
 

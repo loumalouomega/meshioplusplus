@@ -1,6 +1,6 @@
 """Machine-learning data handling: graphs, feature matrices, datasets.
 
-The three features here close roadmap §1 together with the v9.26.0 frames and
+The three features here closed the roadmap's machine-learning section together with the v9.26.0 frames and
 the tensor handoff in :mod:`meshioplusplus._gpu`:
 
 * :func:`edge_index` — the mesh as a graph, in the ``(2, E)`` int64 layout

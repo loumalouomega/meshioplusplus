@@ -333,7 +333,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // `method` is 'taubin', 'laplacian' or 'odt' (tet-only). A negative
         // `lambda` means "this method's own default" (0.5 Laplacian, 0.33
         // Taubin) and is forwarded unchanged; the frozen-node mask is not
-        // exposed here, as on the other flat bindings (doc/roadmap.md §7).
+        // exposed here, as on the other flat bindings (doc/roadmap.md §1).
         smooth: (
             mesh,
             method = 'taubin',

@@ -10,7 +10,7 @@ def read(filename, points_only=False, arrays=None):
 
     Uses the C++ core for ascii and inline binary (uncompressed or zlib) files,
     falling back to the reference Python reader for anything it doesn't handle
-    (lzma, appended/raw binary, polyhedron, multi-piece).
+    (lzma, appended/raw binary, multi-piece).
     """
     # points_only/arrays reach the C++ reader, which skips the unwanted
     # <DataArray>/section bodies outright. The Python fallback below has no
@@ -28,8 +28,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     """Write a VTU file.
 
     Uses the C++ core for the cases it supports (ASCII and binary, the latter
-    uncompressed or zlib-compressed, for non-polyhedron meshes written to a real
-    file path) and otherwise falls back to the reference Python writer. The
+    uncompressed or zlib-compressed, polyhedra included, written to a real file
+    path) and otherwise falls back to the reference Python writer. The
     fallback also catches any limitation hit by the C++ path, so behaviour is
     identical to the pure-Python implementation.
     """

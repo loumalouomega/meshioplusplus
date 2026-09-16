@@ -934,65 +934,11 @@ def roadmap_map():
     c = Canvas(
         960,
         810,
-        "The roadmap at a glance: open items by theme, shaded by effort, with their dependencies",
+        "The roadmap at a glance: open items by section, in recommended order, shaded by effort",
     )
     columns = [
         (
-            "§1 scale",
-            [
-                ("10M+ cell benchmark tier", "S"),
-                ("streaming writes of one mesh", "L"),
-                ("out-of-core operations", "XL"),
-            ],
-            [(0, 1), (0, 2)],
-        ),
-        (
-            "§2 ecosystem reach",
-            [
-                ("Rust bindings over the C API", "M"),
-                ("conda-forge · CRAN · Julia · ParaView", "M"),
-            ],
-            [],
-        ),
-        (
-            "§3 quality",
-            [
-                ("fuzzing the 42 readers", "M"),
-                ("format conformance matrix", "M"),
-                ("property-based tests (Hypothesis)", "M"),
-            ],
-            [],
-        ),
-        (
-            "§4 NURBS — spike first",
-            [
-                ("spike: can the model stretch?", "M"),
-                ("read-only CAD ingestion", "L"),
-                ("a real IGA data model", "XL"),
-            ],
-            [(0, 1), (1, 2)],
-        ),
-        (
-            "§5 mesh generation",
-            [
-                ("box · sphere · cylinder · disk", "S"),
-                ("extrude", "M"),
-                ("revolve", "M"),
-                ("Delaunay / constrained 2-D", "L"),
-            ],
-            [(0, 1), (1, 2)],
-        ),
-        (
-            "§6 CLI chatbot (MCP-driven)",
-            [
-                ("REPL verb over TOOL_REGISTRY", "M"),
-                ("v1 scope: stateless per-turn loop", "S"),
-                ("new `chat` extra + docs", "S"),
-            ],
-            [],
-        ),
-        (
-            "§7 WASM parity",
+            "§1 WASM parity",
             [
                 ("defects: loader · int dtypes", "M"),
                 ("parity guard · maps · side info", "M"),
@@ -1000,6 +946,75 @@ def roadmap_map():
                 ("gmsh groups · .vtm/.vts/.vtr", "M"),
             ],
             [],
+        ),
+        (
+            "§2 correctness debts",
+            [
+                ("MED · gmsh node ordering", "M"),
+                ("vtk51 alias · silent drops", "S"),
+                ("DOLFIN blocks · MED bitmask", "S"),
+            ],
+            [],
+        ),
+        (
+            "§3 quality",
+            [
+                ("sanitizer CI leg", "S"),
+                ("fuzzing the 43 readers", "M"),
+                ("format conformance matrix", "M"),
+                ("Hypothesis · benchmark CI", "M"),
+            ],
+            [(0, 1)],
+        ),
+        (
+            "§4 core parity across surfaces",
+            [
+                ("MDPA tables · geometries", "M"),
+                ("gmsh periodic · VTK pieces", "M"),
+                ("Exodus sets · sets → regions", "M"),
+                ("side regions · ABI report", "M"),
+            ],
+            [],
+        ),
+        (
+            "§5 operations",
+            [
+                ("box · sphere · cylinder · disk", "S"),
+                ("extrude · revolve", "M"),
+                ("normals · edges · Hausdorff", "S"),
+                ("quality gate · check · --json", "M"),
+            ],
+            [(0, 1)],
+        ),
+        (
+            "§6 format reach",
+            [
+                ("VTKHDF", "M"),
+                (".pvd · .pvtu · .xyz · .pcd", "S"),
+                ("LS-DYNA .k · CalculiX .frd", "M"),
+                ("glTF export", "S"),
+            ],
+            [],
+        ),
+        (
+            "§7 ecosystem reach",
+            [
+                ("registries (calendar-bound)", "S"),
+                ("Rust bindings over the C API", "M"),
+                ("interop phase 2 (Open3D, GPU)", "S"),
+                ("CLI chatbot over MCP tools", "M"),
+            ],
+            [],
+        ),
+        (
+            "§8 long run (spike first)",
+            [
+                ("spike: can the model stretch?", "M"),
+                ("read-only CAD ingestion", "L"),
+                ("streaming writes of one mesh", "L"),
+                ("out-of-core operations", "XL"),
+            ],
+            [(0, 1)],
         ),
     ]
     per_row = 3

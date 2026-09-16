@@ -161,7 +161,7 @@ vcpkg install "meshioplusplus[cxx-api,cxx-api-kratos]" \
   --overlay-ports=packages/vcpkg
 ```
 
-See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg) for the caveats that apply to both (the `libaec` overlay, and neither package being on ConanCenter or the vcpkg registry yet).
+See the [C API's package-manager notes](/c_api#package-managers-conan-vcpkg-spack) for the caveats that apply to both (the `libaec` overlay, and neither package being on ConanCenter or the vcpkg registry yet).
 
 ## Limitations
 

@@ -61,7 +61,7 @@ The reverse map (meshio++ → Abaqus) is lossy: several Abaqus names collapse to
 - `translate_cell_names=False` bypasses the lookup table entirely and writes the meshio++ type string as-is; useful for pass-through of unsupported types, but has no C++ equivalent (the C++ writer always looks up the table and throws if the type isn't found).
 - `GENERATE` sets require exactly 3 numbers (`start,end,step`) or raise `ReadError`.
 - `*ELSET` can reference other set names transitively, including elsets implicitly created by an inline `ELEMENT ... ELSET=`.
-- The C++ reader explicitly refuses `NSET`/`ELSET`/`INCLUDE` keywords with a hard error, deferring the entire file to the Python reader whenever any of them appear.
+- The C++ reader handles `*NSET`/`*ELSET` (including `GENERATE`, references to other set names, and the implicit set of `*ELEMENT, ELSET=`) and `*INCLUDE` (resolved relative to the including file, nested at most 8 deep), so these files no longer fall back to the Python reader.
 - The C++ writer is only attempted when `float_fmt == ".16e"`, `translate_cell_names == True`, and the mesh has **no** `point_sets`/ `cell_sets`.
 - The C++ reader's Abaqus-type lookup tries the upper-cased type string first, then falls back to the as-written (case-sensitive) string — a leniency the Python reader (a plain case-sensitive dict lookup) doesn't have.
 
