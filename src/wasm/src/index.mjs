@@ -203,7 +203,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean) => Mesh,
  *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
  *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number},
- *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
+ *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean, frozen?: number[]|Int32Array|null) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
  *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
  *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
  *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
@@ -234,7 +234,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   agglomerate: (mesh: Mesh, targetGroupSize?: number) => Mesh,
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object) => Mesh,
- *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
+ *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
  *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string) => {partId: number, mesh: Mesh}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
  *   stats: (mesh: Mesh) => object,
@@ -445,8 +446,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
         // `method` is 'taubin', 'laplacian' or 'odt' (tet-only). A negative
         // `lambda` means "this method's own default" (0.5 Laplacian, 0.33
-        // Taubin) and is forwarded unchanged; the frozen-node mask is not
-        // exposed here, as on the other flat bindings (doc/roadmap.md §1).
+        // Taubin) and is forwarded unchanged. `frozen` is an optional array of
+        // 0-based point ids to pin outright, unioned with any boundary/feature
+        // pins; an out-of-range id throws by name.
         smooth: (
             mesh,
             method = 'taubin',
@@ -457,6 +459,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveFeatures = true,
             featureAngle = 30,
             guardInversion = true,
+            frozen = null,
         ) =>
             Module.smooth(
                 mesh,
@@ -468,6 +471,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveFeatures,
                 featureAngle,
                 guardInversion,
+                frozen,
             ),
         // Cross-mesh field transfer: source point_data sampled at the target's
         // points, source cell_data by nearest source-cell centroid regardless
@@ -724,8 +728,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         agglomerate: (mesh, targetGroupSize = 8) => Module.agglomerate(mesh, targetGroupSize),
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined) =>
             Module.refine(mesh, levels, recordParentIds, options),
-        // Exactly one of ratio / targetFaces / maxError must be non-negative;
-        // the frozen mask is not exposed here, as on the other flat bindings.
+        // Exactly one of ratio / targetFaces / maxError must be non-negative.
+        // `frozen` is an optional array of 0-based point ids to pin outright;
+        // an out-of-range id throws by name.
         decimate: (
             mesh,
             ratio = -1,
@@ -735,6 +740,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveBoundary = true,
             preserveFeatures = true,
             featureAngle = 30,
+            frozen = null,
         ) =>
             Module.decimate(
                 mesh,
@@ -745,6 +751,34 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveBoundary,
                 preserveFeatures,
                 featureAngle,
+                frozen,
+            ),
+        // Tetrahedral VOLUME decimation (decimate's tet-edge-collapse sibling).
+        // Exactly one of ratio / targetCells / maxError must be non-negative.
+        // `preserveBoundary` defaults to false here, matching the C++ default
+        // (decimate's own default is true) -- decimateVolume's boundary is
+        // usually interior geometry a solver still wants simplified.
+        decimateVolume: (
+            mesh,
+            ratio = -1,
+            targetCells = -1,
+            maxError = -1,
+            placement = 'optimal',
+            preserveBoundary = false,
+            preserveFeatures = true,
+            featureAngle = 30,
+            frozen = null,
+        ) =>
+            Module.decimateVolume(
+                mesh,
+                ratio,
+                targetCells,
+                maxError,
+                placement,
+                preserveBoundary,
+                preserveFeatures,
+                featureAngle,
+                frozen,
             ),
         partition: (
             mesh,

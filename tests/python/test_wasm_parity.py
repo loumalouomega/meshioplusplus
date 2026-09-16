@@ -72,9 +72,6 @@ _JS_TO_C = {
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no
 # WASM binding, and why.
 _C_WITHOUT_JS = {
-    # doc/roadmap.md WASM-parity item: `decimateVolume` binding lands with
-    # the `frozen`/index-map work; tracked, not yet wired up.
-    "decimate_volume",
     # Aggregate scalar counts with no dedicated JS need: `attachQuality`
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.

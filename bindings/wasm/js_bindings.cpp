@@ -104,6 +104,7 @@
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -1762,17 +1763,44 @@ val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bo
 }
 
 /**
+ * @brief Builds a per-point pin mask from a JS array of 0-based point ids, or
+ * an empty mask if `rIds` is null/undefined (the "no extra pins" case every
+ * `mFrozen`-accepting operation's options struct treats as unset).
+ * Mirrors bindings/python/_core.cpp's identical id-list -> mask conversion
+ * (e.g. its `decimate` binding, ~line 967).
+ * @throws meshioplusplus::WriteError naming `rOp` and the offending id if an
+ *         id is out of `[0, numPoints)`.
+ */
+std::vector<std::uint8_t> frozen_mask_from_val(const val& rIds, std::size_t numPoints,
+                                               const char* pOp) {
+    std::vector<std::uint8_t> mask;
+    if (rIds.isNull() || rIds.isUndefined())
+        return mask;
+    std::vector<std::int64_t> ids = emscripten::vecFromJSArray<std::int64_t>(rIds);
+    mask.assign(numPoints, 0);
+    for (std::int64_t id : ids) {
+        if (id < 0 || static_cast<std::size_t>(id) >= numPoints)
+            throw meshioplusplus::WriteError("meshio++ (wasm): " + std::string(pOp) +
+                                             ": frozen node id " + std::to_string(id) +
+                                             " is out of range");
+        mask[static_cast<std::size_t>(id)] = 1;
+    }
+    return mask;
+}
+
+/**
  * @brief Smooth a mesh's point coordinates (`"laplacian"` / `"taubin"`),
  * leaving connectivity and every data array untouched. A negative `lambda`
  * means "this method's own default" (0.5 Laplacian, 0.33 Taubin) and is passed
- * through unchanged. Returns an object `{mesh, numNodesMoved, maxDisplacement,
- * numSkippedInversion}`. The caller-supplied frozen-node mask is not exposed
- * here, as on the other flat bindings.
+ * through unchanged. `frozen` is an optional array of 0-based point ids to
+ * pin outright (unioned with any boundary/feature pins). Returns an object
+ * `{mesh, numNodesMoved, maxDisplacement, numSkippedInversion}`.
  */
 val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, double lambda,
               double mu, bool fixBoundary, bool preserveFeatures, double featureAngle,
-              bool guardInversion) {
+              bool guardInversion, const val& rFrozen) {
     return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::SmoothOptions options;
         options.mMethod = meshioplusplus::smooth_method_from_name(rMethod);
         options.mIterations = iterations;
@@ -1782,7 +1810,8 @@ val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, d
         options.mPreserveFeatures = preserveFeatures;
         options.mFeatureAngleDeg = featureAngle;
         options.mGuardInversion = guardInversion;
-        meshioplusplus::SmoothResult r = meshioplusplus::smooth(val_to_mesh(rMeshObj), options);
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "smooth");
+        meshioplusplus::SmoothResult r = meshioplusplus::smooth(std::move(mesh), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numNodesMoved", static_cast<double>(r.mNumNodesMoved));
@@ -2620,14 +2649,15 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
  * @brief Decimate a SURFACE mesh by quadric-error-metric edge collapse — the
  * resolution-reducing inverse of `refine`. Exactly one of `ratio` (fraction of
  * faces to keep, in (0, 1]), `targetFaces` and `maxError` must be non-negative.
- * Returns an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
- * maxErrorApplied}`; the index maps are not carried across the JS boundary and
- * the frozen mask is not exposed here, as on the other flat bindings.
+ * `frozen` is an optional array of 0-based point ids to pin outright. Returns
+ * an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
+ * maxErrorApplied}`; the index maps are not carried across the JS boundary.
  */
 val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
                 const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
-                double featureAngle) {
+                double featureAngle, const val& rFrozen) {
     return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateOptions options;
         options.mTargetRatio = ratio;
         options.mTargetFaces = targetFaces < 0.0 ? static_cast<std::int64_t>(-1)
@@ -2637,10 +2667,46 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
         options.mPreserveBoundary = preserveBoundary;
         options.mPreserveFeatures = preserveFeatures;
         options.mFeatureAngleDeg = featureAngle;
-        meshioplusplus::DecimateResult r = meshioplusplus::decimate(val_to_mesh(rMeshObj), options);
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "decimate");
+        meshioplusplus::DecimateResult r = meshioplusplus::decimate(std::move(mesh), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("facesRemoved", static_cast<double>(r.mFacesRemoved));
+        out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
+        out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
+        out.set("maxErrorApplied", r.mMaxErrorApplied);
+        return out;
+    });
+}
+
+/**
+ * @brief Decimate a tetrahedral VOLUME mesh by quadric-error-metric tet-edge
+ * collapse. Exactly one of `ratio`, `targetCells` and `maxError` must be
+ * non-negative. `frozen` is an optional array of 0-based point ids to pin
+ * outright. Returns an object `{mesh, tetsRemoved, pointsRemoved,
+ * collapsesRejected, maxErrorApplied}`; the index maps are not carried across
+ * the JS boundary.
+ */
+val decimate_volume_js(const val& rMeshObj, double ratio, double targetCells, double maxError,
+                       const std::string& rPlacement, bool preserveBoundary,
+                       bool preserveFeatures, double featureAngle, const val& rFrozen) {
+    return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::DecimateVolumeOptions options;
+        options.mTargetRatio = ratio;
+        options.mTargetCells = targetCells < 0.0 ? static_cast<std::int64_t>(-1)
+                                                  : static_cast<std::int64_t>(targetCells);
+        options.mMaxError = maxError;
+        options.mPlacement = meshioplusplus::decimate_placement_from_name(rPlacement);
+        options.mPreserveBoundary = preserveBoundary;
+        options.mPreserveFeatures = preserveFeatures;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "decimateVolume");
+        meshioplusplus::DecimateVolumeResult r =
+            meshioplusplus::decimate_volume(std::move(mesh), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("tetsRemoved", static_cast<double>(r.mTetsRemoved));
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
@@ -3413,6 +3479,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("agglomerate", &agglomerate_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
+    emscripten::function("decimateVolume", &decimate_volume_js);
     emscripten::function("partition", &partition_js);
     emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);

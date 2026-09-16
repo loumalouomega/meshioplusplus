@@ -137,4 +137,4 @@ Negative values need the `--mu=-0.45` form, as for [transform](/transform) and [
 - **Fortran** — `mesh%smooth(method, iterations [, lambda, mu, fix_boundary, preserve_features, feature_angle, guard_inversion, nodes_moved, max_displacement, skipped_inversion])`. See the [Fortran reference](/fortran).
 - **Julia** — `smooth(mesh; method="taubin", iterations=10, ...)`. See the [Julia reference](/julia).
 - **R** — `mio_smooth(mesh, method="taubin", iterations=10L, ...)`. See the [R reference](/r).
-- **WebAssembly / JavaScript** — `smooth(mesh, method, iterations, lambda, mu, fixBoundary, preserveFeatures, featureAngle, guardInversion)`, returning `{mesh, numNodesMoved, maxDisplacement, numSkippedInversion}`. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `smooth(mesh, method, iterations, lambda, mu, fixBoundary, preserveFeatures, featureAngle, guardInversion, frozen)`, returning `{mesh, numNodesMoved, maxDisplacement, numSkippedInversion}`. `frozen` is an optional array of 0-based point ids to pin outright, unioned with any boundary/feature pins; an out-of-range id throws naming it. See the [WebAssembly reference](/wasm).

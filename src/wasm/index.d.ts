@@ -1076,9 +1076,12 @@ export interface MeshioPlusPlusModule {
    * `"laplacian"` is stronger per pass but contracts the mesh. A **negative**
    * `lambda` means "this method's own default" (0.5 Laplacian, 0.33 Taubin).
    * Boundary and feature nodes are pinned by default, and `guardInversion`
-   * rejects any move that would flip an incident cell.
+   * rejects any move that would flip an incident cell. `frozen` is an
+   * optional array of 0-based point ids to pin outright, unioned with any
+   * boundary/feature pins.
    * @throws {Error} on an unknown `method`, a non-negative `lambda` outside
-   *   `(0, 1)`, or a `"taubin"` `mu` that does not satisfy `mu < -lambda < 0`.
+   *   `(0, 1)`, a `"taubin"` `mu` that does not satisfy `mu < -lambda < 0`, or
+   *   a `frozen` id outside `[0, numPoints)`.
    */
   smooth(
     mesh: Mesh,
@@ -1090,6 +1093,7 @@ export interface MeshioPlusPlusModule {
     preserveFeatures?: boolean,
     featureAngle?: number,
     guardInversion?: boolean,
+    frozen?: number[] | Int32Array | null,
   ): { mesh: Mesh; numNodesMoved: number; maxDisplacement: number; numSkippedInversion: number };
 
   /**
@@ -1770,11 +1774,13 @@ export interface MeshioPlusPlusModule {
    * (once-used-edge test) and feature vertices (face normals differing by
    * more than `featureAngle` degrees) are pinned by default, and the link
    * condition plus a normal-flip guard reject any collapse that would change
-   * topology or fold the surface. The index maps and the frozen mask are not
-   * carried across the JS boundary, as on the other flat bindings.
+   * topology or fold the surface. `frozen` is an optional array of 0-based
+   * point ids to pin outright. The index maps are not carried across the JS
+   * boundary.
    * @throws {Error} on a 3D volume mesh (extract the surface first),
    *   higher-order or ragged blocks, `line`/`vertex` blocks, an unknown
-   *   `placement`, or a criterion count other than one.
+   *   `placement`, a criterion count other than one, or a `frozen` id outside
+   *   `[0, numPoints)`.
    */
   decimate(
     mesh: Mesh,
@@ -1785,9 +1791,43 @@ export interface MeshioPlusPlusModule {
     preserveBoundary?: boolean,
     preserveFeatures?: boolean,
     featureAngle?: number,
+    frozen?: number[] | Int32Array | null,
   ): {
     mesh: Mesh;
     facesRemoved: number;
+    pointsRemoved: number;
+    collapsesRejected: number;
+    maxErrorApplied: number;
+  };
+
+  /**
+   * Decimate a tetrahedral VOLUME mesh by quadric-error-metric tet-edge
+   * collapse — `decimate`'s volume sibling. Exactly one of `ratio` (fraction
+   * of tets to KEEP, in (0, 1]), `targetCells` and `maxError` must be
+   * non-negative. The output is all-tetra with the block structure kept 1:1.
+   * `preserveBoundary` defaults to `false` here (unlike `decimate`): the
+   * mesh's outer surface is usually interior geometry a solver still wants
+   * simplified, not a boundary to protect. `frozen` is an optional array of
+   * 0-based point ids to pin outright, unioned with any boundary/feature
+   * pins. The index maps are not carried across the JS boundary.
+   * @throws {Error} on a non-manifold boundary face, a non-tetra 3D cell,
+   *   higher-order tets, ragged/polyhedron blocks, a non-3D block, an unknown
+   *   `placement`, a criterion count other than one, or a `frozen` id outside
+   *   `[0, numPoints)`.
+   */
+  decimateVolume(
+    mesh: Mesh,
+    ratio?: number,
+    targetCells?: number,
+    maxError?: number,
+    placement?: DecimatePlacement,
+    preserveBoundary?: boolean,
+    preserveFeatures?: boolean,
+    featureAngle?: number,
+    frozen?: number[] | Int32Array | null,
+  ): {
+    mesh: Mesh;
+    tetsRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;

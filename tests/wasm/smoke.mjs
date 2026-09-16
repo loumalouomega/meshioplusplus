@@ -986,6 +986,28 @@ step('decimate rejects a volume mesh and a missing criterion', () => {
     assert.throws(() => m.decimate(skin));
 });
 
+step('decimateVolume: collapses tets in a simplexified refined cube', () => {
+    const tets = m.convertCells(m.refine(cube), 'simplexify');
+    assert.equal(tets.cells[0].type, 'tetra');
+    const before = tets.cells[0].data.length / 4;
+    const out = m.decimateVolume(tets, 0.5);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.mesh.cells[0].data.length / 4 < before);
+    assert.ok(out.tetsRemoved > 0);
+    assert.ok(out.pointsRemoved >= 0);
+    assert.ok(out.collapsesRejected >= 0);
+    assert.ok(out.maxErrorApplied >= 0);
+
+    // An out-of-range frozen id throws naming the operation, not decimate's.
+    assert.throws(() => m.decimateVolume(tets, 0.5, -1, -1, 'optimal', false, true, 30, [999999]),
+        /decimateVolume.*frozen node id 999999/);
+});
+
+step('decimateVolume rejects a missing criterion', () => {
+    const tets = m.convertCells(m.refine(cube), 'simplexify');
+    assert.throws(() => m.decimateVolume(tets));
+});
+
 step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
     // The pipeline runs against the loaded mesh itself, so hand it a surface
     // mesh (decimate refuses volume input by design).
@@ -1346,6 +1368,36 @@ step('smooth: relaxes an interior node while pinning the boundary', () => {
     assert.equal(out.numNodesMoved, 1);
     assert.ok(out.maxDisplacement > 0);
     assert.equal(typeof out.numSkippedInversion, 'number');
+});
+
+step('smooth: frozen pins a node fixBoundary alone would not', () => {
+    // Same setup as above, but with fixBoundary off (so nothing is pinned by
+    // default) and the interior node itself passed in `frozen` -- it must
+    // stay put even though it would otherwise be the one node smoothing
+    // relaxes, proving `frozen` reaches the core independently of the
+    // boundary/feature pins.
+    const grid = m.refine(cube);
+    const points = Float64Array.from(grid.points);
+    const inside = (v) => v > 1e-9 && v < 1 - 1e-9;
+    let interior = -1;
+    for (let i = 0; i < points.length / 3; ++i) {
+        if (inside(points[3 * i]) && inside(points[3 * i + 1]) && inside(points[3 * i + 2])) {
+            interior = i;
+            break;
+        }
+    }
+    points[3 * interior] += 0.2;
+    const perturbed = { ...grid, points };
+
+    const out = m.smooth(perturbed, 'laplacian', 5, -1, -0.34, false, true, 30, true, [interior]);
+    for (let c = 0; c < 3; ++c)
+        assert.equal(out.mesh.points[3 * interior + c], perturbed.points[3 * interior + c]);
+
+    // An out-of-range id throws naming the operation, not a silent no-op.
+    assert.throws(
+        () => m.smooth(perturbed, 'laplacian', 1, -1, -0.34, false, true, 30, true, [999999]),
+        /smooth.*frozen node id 999999/,
+    );
 });
 
 step('smooth: taubin defaults leave a structured hex block alone', () => {
