@@ -348,6 +348,58 @@ def test_read_med_partial_cell_data(tmp_path):
     assert np.isclose(field_data[tetra_idx].flat[0], 42.0)
 
 
+def test_read_metadata_reports_both_steps_of_a_multi_step_field(tmp_path):
+    """roadmap §1 tier B1: read_med_metadata is a native path over ENS_MAA/MAI
+    attributes and CHA/<field>/<step> PDTs, never a full read -- and unlike
+    ``med.read`` it never throws on a multi-step field, since a metadata call
+    declining to report the very thing it exists to report would defeat its
+    purpose."""
+    from meshioplusplus._mesh import CellBlock
+
+    filename = tmp_path / "two_step.med"
+
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    cells = [CellBlock("triangle", np.array([[0, 1, 2]]))]
+    mesh = meshioplusplus.Mesh(points, cells)
+    meshioplusplus.med.write(filename, mesh)
+
+    def _write_step(field, ndt, pdt):
+        step = field.create_group(f"{ndt:020d}{-1:020d}")
+        step.attrs.create("NDT", ndt)
+        step.attrs.create("NOR", -1)
+        step.attrs.create("PDT", pdt)
+        step.attrs.create("RDT", -1)
+        step.attrs.create("ROR", -1)
+        profile = "MED_NO_PROFILE_INTERNAL"
+        noe = step.create_group("NOE")
+        noe.attrs.create("GAU", np.bytes_(""))
+        noe.attrs.create("PFL", np.bytes_(profile))
+        pfl = noe.create_group(profile)
+        pfl.attrs.create("NBR", 3)
+        pfl.attrs.create("NGA", 1)
+        pfl.attrs.create("GAU", np.bytes_(""))
+        pfl.create_dataset("CO", data=np.array([0.0, 1.0, 2.0]))
+
+    with h5py.File(filename, "a") as f:
+        cha = f.require_group("CHA")
+        field = cha.create_group("temperature")
+        field.attrs.create("MAI", np.bytes_("mesh"))
+        field.attrs.create("TYP", 6)
+        field.attrs.create("UNI", np.bytes_(""))
+        field.attrs.create("UNT", np.bytes_(""))
+        field.attrs.create("NCO", 1)
+        field.attrs.create("NOM", np.bytes_(f"{'':<16}"))
+        _write_step(field, 1, 0.0)
+        _write_step(field, 2, 2.5)
+
+    meta = meshioplusplus.read_metadata(filename, "med")
+    assert meta["fell_back_to_full_read"] is False
+    assert meta["format"] == "med"
+    assert meta["time_values"] == [0.0, 2.5]
+    assert meta["num_points"] == 3
+    assert "temperature" in meta["point_data_names"]
+
+
 @pytest.mark.parametrize(
     "dtype, expected_med_type",
     [

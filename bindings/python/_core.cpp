@@ -2796,30 +2796,37 @@ finalizes.
               info.mCellTagGroups = std::move(cell_tag_groups);
               meshioplusplus::write_med(path, cpp, info, med_version);
           });
-    m.def("med_read", [](const std::string& path) {
-        meshioplusplus::MedInfo info;
-        py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_med(path, info));
-        py::dict ptags, ctags, pgroups, cgroups;
-        for (const auto& kv : info.mPointTags)
-            ptags[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.mCellTags)
-            ctags[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.mPointTagGroups)
-            pgroups[py::int_(kv.first)] = kv.second;
-        for (const auto& kv : info.mCellTagGroups)
-            cgroups[py::int_(kv.first)] = kv.second;
-        pymesh.attr("point_tags") = ptags;
-        pymesh.attr("cell_tags") = ctags;
-        pymesh.attr("point_tag_groups") = pgroups;
-        pymesh.attr("cell_tag_groups") = cgroups;
-        pymesh.attr("mesh_name") = info.mMeshName;
-        pymesh.attr("description") = info.mDescription;
-        pymesh.attr("unit_time") = info.mUnitTime;
-        pymesh.attr("unit_coords") = info.mUnitCoords;
-        if (!info.mMedNom.empty())
-            pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
-        return pymesh;
-    });
+    m.def(
+        "med_read",
+        [](const std::string& path, int time_step, bool lenient) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = time_step;
+            opts.mLenient = lenient;
+            meshioplusplus::MedInfo info;
+            py::object pymesh =
+                meshioplusplus_py::mesh_to_py(meshioplusplus::read_med(path, info, opts));
+            py::dict ptags, ctags, pgroups, cgroups;
+            for (const auto& kv : info.mPointTags)
+                ptags[py::int_(kv.first)] = kv.second;
+            for (const auto& kv : info.mCellTags)
+                ctags[py::int_(kv.first)] = kv.second;
+            for (const auto& kv : info.mPointTagGroups)
+                pgroups[py::int_(kv.first)] = kv.second;
+            for (const auto& kv : info.mCellTagGroups)
+                cgroups[py::int_(kv.first)] = kv.second;
+            pymesh.attr("point_tags") = ptags;
+            pymesh.attr("cell_tags") = ctags;
+            pymesh.attr("point_tag_groups") = pgroups;
+            pymesh.attr("cell_tag_groups") = cgroups;
+            pymesh.attr("mesh_name") = info.mMeshName;
+            pymesh.attr("description") = info.mDescription;
+            pymesh.attr("unit_time") = info.mUnitTime;
+            pymesh.attr("unit_coords") = info.mUnitCoords;
+            if (!info.mMedNom.empty())
+                pymesh.attr("field_data")[py::str("med:nom")] = py::cast(info.mMedNom);
+            return pymesh;
+        },
+        py::arg("path"), py::arg("time_step") = 0, py::arg("lenient") = false);
 #endif
 
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF

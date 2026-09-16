@@ -14185,6 +14185,31 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo,
                                  const ReadOptions& rOptions);
 
 /**
+ * @brief Summarize a MED file's shape and available time steps without
+ *        decoding point coordinates or cell connectivity.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * only `ENS_MAA/<mesh>` and `MAI/<type>` attributes/dataset extents are read
+ * for `mNumPoints`/`mPointDim`/`mCellBlocks`, and `CHA/<field>/<step>`'s
+ * `PDT` attributes are scanned across every field for `mTimeValues` -- the
+ * sorted, deduplicated union of every field's own step times, since a
+ * `MeshMetadata` reports one timeline per file, not per field. `mDataArrays`
+ * are `CHA`'s field names, but no field's data itself is read.
+ *
+ * Unlike `read_med`, this never throws on a multi-step field: a metadata
+ * summary reporting a strict decline on the very thing it exists to report
+ * would defeat its purpose, so the strict/lenient `CHA` distinction `read_med`
+ * enforces does not apply here.
+ *
+ * @param rPath filesystem path to the .med file to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError on a structurally invalid file, as `read_med`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_med_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOptions);
+
+/**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
  *        mesh-representation subset described in the file-level docs.
  *
@@ -21859,6 +21884,21 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
 // --------------------------------------------------------------------------
 
 /**
+ * @brief Whether @p rFormat's reader can return more than one step at all.
+ *
+ * Consulted BEFORE `registry_read_metadata`, which for a format with no native
+ * metadata reader costs a full read -- so this is what keeps the step probe
+ * free for every format that cannot carry time. Same shape and same
+ * anti-drift discipline as `sequence_write_supports_time`: a small owned set,
+ * cross-checked by a gtest (`SequenceCapability.ReadSupportsTimeImpliesAMetadataReader`)
+ * asserting that every format this returns true for has an entry in
+ * `registry_metadata_readers()` -- a later format joining the `||` chain with
+ * no metadata reader behind it turns CI red naming itself, the read-side twin
+ * of `WriteSupportsTimeAgreesWithReality`.
+ */
+MESHIOPLUSPLUS_API bool seq_format_may_have_steps(const std::string& rFormat);
+
+/**
  * @brief How many time steps @p rPath carries.
  *
  * Derived from the registry rather than a hardcoded per-format table:
@@ -21867,11 +21907,8 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
  * metadata reader does not fill `mTimeValues` therefore reports 1, which is the
  * truthful answer for every format that cannot express time.
  *
- * Today that means XDMF and Exodus report real counts. MED honours
- * `ReadOptions::mTimeStep` but has no metadata reader, so a multi-step `.med`
- * reports 1; that is a recorded gap in MED's metadata support and not a special
- * case here -- the moment `read_med_metadata` fills `mTimeValues`, MED fan-out
- * starts working with no change to this file.
+ * Gated on `seq_format_may_have_steps` first, exactly as that function's own
+ * doc describes.
  *
  * Never throws for an unreadable file: an unreadable path reports 1 and the
  * failure surfaces from the actual read, with its own diagnostics.
@@ -62090,6 +62127,112 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOpti
     return med_read_impl(rPath, rInfo, rOptions);
 }
 
+MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(rPath);
+
+    MeshMetadata meta;
+    meta.mFormat = "med";
+
+    h5::Hid ens = h5::open_group(f, "ENS_MAA");
+    std::vector<std::string> meshes = h5::group_links(ens);
+    if (meshes.size() != 1)
+        throw ReadError(
+            detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
+    const std::string mesh_name = meshes[0];
+    h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
+
+    const std::int64_t dim = h5::read_attr_int(mesh_grp, "ESP");
+    meta.mPointDim = static_cast<std::size_t>(dim);
+
+    h5::Hid data_grp;
+    if (h5::exists(mesh_grp, "NOE")) {
+        data_grp = std::move(mesh_grp);
+    } else {
+        std::vector<std::string> steps = h5::group_links(mesh_grp);
+        if (steps.size() != 1)
+            throw ReadError(detail::format_compat(
+                "Must only contain exactly 1 time-step, found {}.", steps.size()));
+        data_grp = h5::open_group(mesh_grp, steps[0]);
+    }
+
+    // Points: only the declared count, never the coordinate dataset itself.
+    {
+        h5::Hid noe = h5::open_group(data_grp, "NOE");
+        h5::Hid coo_ds(H5Dopen2(noe, "COO", H5P_DEFAULT), H5Dclose);
+        if (!coo_ds.Valid())
+            throw ReadError("MED: missing NOE/COO");
+        meta.mNumPoints = static_cast<std::size_t>(h5::read_attr_int(coo_ds, "NBR"));
+    }
+
+    // Cells: one CellBlockInfo per MAI/<type> group, in the same creation
+    // order the full reader uses. Ragged (POE/POG*) blocks read only their
+    // small offset arrays (IND/INN), never the flat node connectivity.
+    if (h5::exists(data_grp, "MAI")) {
+        h5::Hid mai = h5::open_group(data_grp, "MAI");
+        const auto& node_counts = num_nodes_per_cell();
+        for (const std::string& med_type : h5::group_links_crt(mai)) {
+            auto it = med_to_meshio().find(med_type);
+            if (it == med_to_meshio().end())
+                throw ReadError(detail::format_compat("MED: unsupported cell type {}", med_type));
+            h5::Hid g = h5::open_group(mai, med_type);
+
+            CellBlockInfo block;
+            if (med_type == "POE") {
+                NDArray ind = h5::read_dataset(g, "IND");
+                block.mType = "polyhedron";
+                block.mNumCells = ind.Size() > 0 ? ind.Size() - 1 : 0;
+                block.mRagged = true;
+            } else if (med_type == "POG" || med_type == "POG2") {
+                NDArray inn = h5::read_dataset(g, "INN");
+                block.mType = it->second;
+                block.mNumCells = inn.Size() > 0 ? inn.Size() - 1 : 0;
+                block.mRagged = true;
+            } else {
+                h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
+                if (!nod_ds.Valid())
+                    throw ReadError(detail::format_compat("MED: missing NOD for {}", med_type));
+                block.mType = it->second;
+                block.mNumCells = static_cast<std::size_t>(h5::read_attr_int(nod_ds, "NBR"));
+                auto nit = node_counts.find(it->second);
+                block.mNodesPerCell = nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+        }
+    }
+
+    // Time values: the sorted, deduplicated union of every CHA field's own
+    // step PDTs -- a MeshMetadata reports one timeline per file, and
+    // `ReadOptions::mTimeStep` selects into it uniformly across fields.
+    if (h5::exists(f, "CHA")) {
+        h5::Hid cha = h5::open_group(f, "CHA");
+        std::set<double> times;
+        for (const std::string& field_name : h5::group_links(cha)) {
+            h5::Hid field = h5::open_group(cha, field_name);
+            std::vector<std::string> steps = h5::group_links(field);
+            bool is_nodal = false;
+            for (std::size_t i = 0; i < steps.size(); ++i) {
+                h5::Hid g = h5::open_group(field, steps[i]);
+                times.insert(read_attr_double(g, "PDT"));
+                if (i == 0) {
+                    std::vector<std::string> supports = h5::group_links(g);
+                    is_nodal =
+                        std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+                }
+            }
+            if (is_nodal)
+                meta.mPointDataNames.push_back(field_name);
+            else
+                meta.mCellDataNames.push_back(field_name);
+        }
+        std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
+        std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+        meta.mTimeValues.assign(times.begin(), times.end());
+    }
+
+    return meta;
+}
+
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
     h5::SilenceErrors silence;
@@ -92594,30 +92737,14 @@ std::string seq_resolve_read_format(const std::string& rPath, const std::string&
 
 }  // namespace
 
-namespace {
-
-/// Whether `rFormat`'s reader can return more than one step at all.
-///
-/// Consulted BEFORE `registry_read_metadata`, which for a format with no
-/// native metadata reader costs a full read -- so this is what keeps the step
-/// probe free for the 38 formats that cannot carry time. Same shape and same
-/// anti-drift discipline as `sequence_write_supports_time`: a small owned set,
-/// cross-checked by a gtest against which readers actually honour
-/// `ReadOptions::mTimeStep`.
-///
-/// **MED is deliberately absent.** It honours `ReadOptions::mTimeStep`, but has
-/// no entry in `registry_metadata_readers()`, so there is no count to read:
-/// probing it would cost a full read and still report one step. That is a
-/// recorded gap in MED's metadata support, and it closes here for free the
-/// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
-    // it reported one step and this predicate had nothing to gate on.
-    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
+    // it reported one step and this predicate had nothing to gate on. med
+    // joined in v11.3.0 (roadmap §1 tier B1): read_med_metadata is the first
+    // native metadata path to fill mTimeValues for it.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med";
 }
-
-}  // namespace
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
     // Registry-derived, never a per-format table: a format whose metadata
@@ -98240,6 +98367,9 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        {"med", meshioplusplus::read_med_metadata},
+#endif
         {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},

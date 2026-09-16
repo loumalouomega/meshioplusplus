@@ -367,6 +367,28 @@ step('med is an options-aware reader (lenient / timeStep reach it)', () => {
     );
 });
 
+step('med reports its time steps via a native metadata path (roadmap §1 tier B1)', () => {
+    // read_med_metadata (v11.3.0) is a native path over ENS_MAA/MAI attributes
+    // and CHA/<field>/<step> PDTs, never a metadata_from_mesh fallback over a
+    // full read -- fellBackToFullRead must be false. A genuinely multi-step
+    // fixture needs raw HDF5 group/attribute writes this JS layer has no
+    // library for, and a committed .med binary fixture would be Git-LFS (see
+    // the exodus step above for the same reasoning), so -- exactly like that
+    // step -- this proves the format is reachable and the new metadata
+    // plumbing is wired end to end; tests/cpp/test_hdf5_formats.cpp's
+    // Med.MetadataReportsBothStepsWithoutAFullRead and
+    // tests/python/test_med.py's
+    // test_read_metadata_reports_both_steps_of_a_multi_step_field hand-build a
+    // real two-step field and pin the length-2 case this file cannot.
+    m.writeMesh('/meta.med', tet, 'med');
+    const meta = m.readMetadata('/meta.med', 'med');
+    assert.equal(meta.format, 'med');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.equal(meta.timeValues.length, 1);
+    assert.equal(meta.timeValues[0], 0);
+    assert.equal(meta.numPoints, tet.points.length / 3);
+});
+
 step('xdmf writes an HDF companion file when HDF5 is available', () => {
     // The registry's xdmf writer default follows the build (registry.cpp): with
     // HDF5 linked in it emits Format="HDF" heavy data beside the XML, matching

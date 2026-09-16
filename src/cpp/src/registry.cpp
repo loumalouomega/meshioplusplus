@@ -482,6 +482,9 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        {"med", meshioplusplus::read_med_metadata},
+#endif
         {"vti", meshioplusplus::read_vti_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},

@@ -260,6 +260,31 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo,
                                  const ReadOptions& rOptions);
 
 /**
+ * @brief Summarize a MED file's shape and available time steps without
+ *        decoding point coordinates or cell connectivity.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * only `ENS_MAA/<mesh>` and `MAI/<type>` attributes/dataset extents are read
+ * for `mNumPoints`/`mPointDim`/`mCellBlocks`, and `CHA/<field>/<step>`'s
+ * `PDT` attributes are scanned across every field for `mTimeValues` -- the
+ * sorted, deduplicated union of every field's own step times, since a
+ * `MeshMetadata` reports one timeline per file, not per field. `mDataArrays`
+ * are `CHA`'s field names, but no field's data itself is read.
+ *
+ * Unlike `read_med`, this never throws on a multi-step field: a metadata
+ * summary reporting a strict decline on the very thing it exists to report
+ * would defeat its purpose, so the strict/lenient `CHA` distinction `read_med`
+ * enforces does not apply here.
+ *
+ * @param rPath filesystem path to the .med file to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError on a structurally invalid file, as `read_med`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_med_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOptions);
+
+/**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
  *        mesh-representation subset described in the file-level docs.
  *

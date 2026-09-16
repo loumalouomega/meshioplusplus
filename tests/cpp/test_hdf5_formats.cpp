@@ -22,6 +22,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
+#include <algorithm>
 #include <fstream>
 
 #include <hdf5.h>
@@ -32,6 +33,7 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
@@ -443,6 +445,66 @@ TEST(Med, TimeStepSelectsOneStepOfAMultiStepField) {
     too_far.mTimeStep = 99;
     meshioplusplus::MedInfo bad;
     EXPECT_THROW(meshioplusplus::read_med(p, bad, too_far), meshioplusplus::ReadError);
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
+TEST(Med, MetadataReportsBothStepsWithoutAFullRead) {
+    // roadmap §1 tier B1: read_med_metadata is a native path (never a
+    // metadata_from_mesh fallback over a full read), and -- unlike read_med
+    // itself -- never throws on a multi-step field: a metadata summary
+    // reporting a strict decline on the very thing it exists to report would
+    // defeat its purpose.
+    std::string p = med_field_fixture();
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(p.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid field = h5::open_group(f, "CHA/temperature");
+        char key[64];
+        std::snprintf(key, sizeof(key), "%020lld%020lld", 2LL, -1LL);
+        h5::Hid ts2 = h5::create_group(field, key);
+        h5::write_attr_int(ts2, "NDT", 2);
+        h5::write_attr_int(ts2, "NOR", -1);
+        {
+            h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+            h5::Hid a(H5Acreate2(ts2, "PDT", H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT),
+                      H5Aclose);
+            double v = 2.5;
+            H5Awrite(a, H5T_NATIVE_DOUBLE, &v);
+        }
+        h5::write_attr_int(ts2, "RDT", -1);
+        h5::write_attr_int(ts2, "ROR", -1);
+        h5::Hid supp = h5::create_group(ts2, "NOE");
+        h5::write_attr_string(supp, "GAU", "");
+        h5::write_attr_string(supp, "PFL", "MED_NO_PROFILE_INTERNAL");
+        h5::Hid prof = h5::create_group(supp, "MED_NO_PROFILE_INTERNAL");
+        const std::size_t np = mt::tri_mesh().NumPoints();
+        h5::write_attr_int(prof, "NBR", static_cast<std::int64_t>(np));
+        h5::write_attr_int(prof, "NGA", 1);
+        h5::write_attr_string(prof, "GAU", "");
+        meshioplusplus::NDArray vals(meshioplusplus::DType::Float64, {np});
+        for (std::size_t i = 0; i < np; ++i)
+            vals.As<double>()[i] = 100.0 + static_cast<double>(i);
+        h5::write_dataset(prof, "CO", vals);
+    }
+
+    meshioplusplus::ReadOptions opts;
+    meshioplusplus::MeshMetadata meta = meshioplusplus::read_med_metadata(p, opts);
+    EXPECT_FALSE(meta.mFellBackToFullRead);
+    EXPECT_EQ(meta.mFormat, "med");
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+    EXPECT_EQ(meta.mNumPoints, mt::tri_mesh().NumPoints());
+    ASSERT_FALSE(meta.mCellBlocks.empty());
+    EXPECT_TRUE(std::find(meta.mPointDataNames.begin(), meta.mPointDataNames.end(),
+                          "temperature") != meta.mPointDataNames.end());
+
+    // The registry-derived sequence layer sees the same two steps, and
+    // seq_format_may_have_steps() is what lets it ask without a full read.
+    EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("med"));
+    EXPECT_EQ(meshioplusplus::sequence_num_steps(p, "med"), 2u);
 
     std::error_code ec;
     std::filesystem::remove(p, ec);
