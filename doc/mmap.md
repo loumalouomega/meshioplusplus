@@ -28,7 +28,7 @@ A mapped buffer behaves as if NUL-terminated only because the kernel zero-fills 
 
 ## Coverage
 
-Every whole-file reader now goes through `FileSource`: **gmsh** (which additionally honours an explicit `ReadOptions::mMmap`), **vtk**, **ensight**, **ugrid**'s ASCII branch and **openfoam**.
+Six whole-file readers go through `FileSource`: **gmsh** (which additionally honours an explicit `ReadOptions::mMmap`), **vtk**, **ensight**, **ugrid**'s ASCII branch, **openfoam** and **gid**'s ASCII reader. Five still read the whole file into a string by hand — **ply**, **medit**, **ansys**, **wkt** and **stl** — and moving them over is a [roadmap](./roadmap.md#_4-performance) item.
 
 `openfoam` gained the most: it previously slurped via `ostringstream` + `.str()`, paying for **two** extra full-file copies on top of the read, both of which are now gone.
 

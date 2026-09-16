@@ -97,7 +97,7 @@
  * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
  * the same plane into one larger polygon, rather than leaving the edge
  * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §5.
+ * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §6.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is

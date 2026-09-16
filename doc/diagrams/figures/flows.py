@@ -967,7 +967,17 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§4 core parity across surfaces",
+            "§4 performance",
+            [
+                ("measured regressions", "S"),
+                ("text tokenizer · dtype switch", "M"),
+                ("VTU base64 · copy chain", "M"),
+                ("shared facet table · welds", "L"),
+            ],
+            [],
+        ),
+        (
+            "§5 core parity across surfaces",
             [
                 ("MDPA tables · geometries", "M"),
                 ("gmsh periodic · VTK pieces", "M"),
@@ -977,7 +987,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§5 operations",
+            "§6 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
@@ -987,7 +997,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§6 format reach",
+            "§7 format reach",
             [
                 ("VTKHDF", "M"),
                 (".pvd · .pvtu · .xyz · .pcd", "S"),
@@ -997,7 +1007,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§7 ecosystem reach",
+            "§8 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1007,7 +1017,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§8 long run (spike first)",
+            "§9 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),
