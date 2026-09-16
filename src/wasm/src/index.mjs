@@ -30,6 +30,24 @@
 // bundlers (Vite) emit both chunks. Callers can force a build with the
 // `{ variant }` option.
 
+// The raw xdmfSeriesWriteDataArrays embind call still converts every value
+// with emscripten::convertJSArrayToNumberVector<double>, which throws on a
+// BigInt64Array/BigUint64Array element (a JS `bigint` does not implicitly
+// convert to `double`). Since data arrays now carry their source dtype
+// (point_data/cell_data read off a mesh may be BigInt-backed), widen those to
+// plain Float64-representable arrays here rather than in every caller.
+function toDoubleConvertible(rArr) {
+    return rArr instanceof BigInt64Array || rArr instanceof BigUint64Array
+        ? Array.from(rArr, Number)
+        : rArr;
+}
+
+function widenBigIntArrays(rObj) {
+    const out = {};
+    for (const [name, arr] of Object.entries(rObj)) out[name] = toDoubleConvertible(arr);
+    return out;
+}
+
 /**
  * Decide which native artifact to load.
  * @param {'auto'|'mt'|'seq'} variant
@@ -120,15 +138,22 @@ export class MeshioPlusPlusLoadError extends Error {
  */
 
 /**
+ * A point_data/cell_data/field_data array's JS type: it carries its source
+ * dtype crossing the WASM boundary rather than always widening to
+ * Float64Array (roadmap §1 "WASM parity": dtype carry).
+ * @typedef {Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|BigInt64Array|Uint8Array|Uint16Array|Uint32Array|BigUint64Array} DataArray
+ */
+
+/**
  * @typedef {Object} Mesh
  * @property {Float64Array} points - flat, row-major (numPoints * dim).
  * @property {number} dim - 2 or 3.
  * @property {CellBlock[]} cells
- * @property {Object<string, Float64Array>} [point_data]
+ * @property {Object<string, DataArray>} [point_data]
  * @property {Object<string, number>} [point_data_components] - per-entity width of any non-scalar point_data array, since a flat typed array carries no shape; absent name = 1 component.
- * @property {Object<string, Float64Array[]>} [cell_data] - one array per cell block, same order as `cells`.
+ * @property {Object<string, DataArray[]>} [cell_data] - one array per cell block, same order as `cells`; every block of one named array shares the same DataArray class.
  * @property {Object<string, number>} [cell_data_components] - per-entity width of any non-scalar cell_data array (one value per array, not per block).
- * @property {Object<string, Float64Array>} [field_data]
+ * @property {Object<string, DataArray>} [field_data]
  * @property {Object<string, number>} [field_data_components] - per-entity width of any non-scalar field_data array.
  */
 
@@ -827,7 +852,13 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 // Raw solver arrays instead of a mesh; `components` gives the
                 // per-entity width of any array that is not a scalar.
                 writeDataArrays: (time, pointData, cellData = {}, components = {}) =>
-                    Module.xdmfSeriesWriteDataArrays(handle, time, pointData, cellData, components),
+                    Module.xdmfSeriesWriteDataArrays(
+                        handle,
+                        time,
+                        widenBigIntArrays(pointData),
+                        widenBigIntArrays(cellData),
+                        components,
+                    ),
                 // Make the `.xdmf` readable now, without finalizing.
                 flush: () => Module.xdmfSeriesFlush(handle),
                 finalize: () => Module.xdmfSeriesFinalize(handle),

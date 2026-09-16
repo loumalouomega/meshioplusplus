@@ -90,9 +90,9 @@ Unlike the Python bindings (which hand numpy a zero-copy view straight into the 
     { type: string, data: Int32Array, nodesPerCell: number }
     // one entry per cell block, data flat row-major: numCells * nodesPerCell
   ],
-  point_data?: { [name: string]: Float64Array },
-  cell_data?: { [name: string]: Float64Array[] },   // one array per cell block
-  field_data?: { [name: string]: Float64Array },
+  point_data?: { [name: string]: DataArray },
+  cell_data?: { [name: string]: DataArray[] },   // one array per cell block
+  field_data?: { [name: string]: DataArray },
 
   // Per-array component count, for any array that is not a scalar (v9.9.0).
   point_data_components?: { [name: string]: number },
@@ -101,7 +101,13 @@ Unlike the Python bindings (which hand numpy a zero-copy view straight into the 
 }
 ```
 
-This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell blocks, `cell_data` as one array per block). Cell connectivity is always `Int32Array` — the C++ core's connectivity dtype is Int64, but node/point counts for any mesh a browser can reasonably hold fit comfortably in 32 bits, and `Int32Array` is far more ergonomic in JS than `BigInt64Array`.
+This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell blocks, `cell_data` as one array per block). Cell connectivity is always `Int32Array` — the C++ core's connectivity dtype is Int64, but node/point counts for any mesh a browser can reasonably hold fit comfortably in 32 bits, and `Int32Array` is far more ergonomic in JS than `BigInt64Array`; a connectivity value that does not fit `Int32Array` throws a catchable `Error` naming it, instead of silently wrapping.
+
+### Data array dtypes
+
+`points` is always `Float64Array` and connectivity is always `Int32Array` (see above), but `point_data`/`cell_data`/`field_data` arrays carry their own dtype as `DataArray = Float32Array | Float64Array | Int8Array | Int16Array | Int32Array | BigInt64Array | Uint8Array | Uint16Array | Uint32Array | BigUint64Array`, instead of every array always widening to `Float64Array` (as it did before v11.2.0). `writeMesh`/`convert`-side callers may hand over any of those classes (or a plain `Array`, treated as `Float64`); every block of one named `cell_data` array must share the same class, or the call throws naming the array.
+
+What actually comes back out of `readMesh` is bounded by the mesh's own in-memory representation, which canonicalizes *within kind* — every floating-point dtype to `Float64Array`, every integer dtype to `BigInt64Array` — rather than preserving the exact input class. Concretely: a `Uint8Array` or `Int32Array` array you write is accepted, but a mesh you then read back has it as `BigInt64Array`, with every value exact (not the double it silently became before v11.2.0). `BigInt64Array` elements are JS `bigint`, not `number`; `Number(x)` or `Array.from(arr, Number)` converts them where you need ordinary numbers (see `XdmfTimeSeriesWriter.writeDataArrays`, which does this for you on the values it accepts).
 
 ### Multi-component (vector / tensor) data arrays
 
@@ -263,7 +269,7 @@ If instantiation fails — a missing `.wasm` file, a `locateFile` that resolved 
 - **No per-format write options.** Parameterized writers (binary vs ASCII, float format strings, gzip levels, VTK 4.2 vs 5.1) use a fixed default matching that format's own Python reference default (e.g. `vtu` writes binary+zlib, `stl` writes ASCII, `gmsh` writes the 4.1 binary format; `stl`/`ply` extract and write the boundary **skin** of a 3D volume mesh — the Python default, see [Skin extraction](./extract_skin.md) — and `svg`/`tikz` render 3D meshes with the default isometric camera). Per-call overrides are tracked in [roadmap §1](/roadmap#_1-wasm-parity).
 - **Named regions are carried** (since v8.1.0). They ride on the mesh object itself — `mesh.regions` is an array of `{ name, kind, dim, tag, entries }` — so `readMesh` / `writeMesh` / `convert` carry them with no extra call, and nothing new had to be forwarded by the wrapper. `kind` is `'point'`, `'cell'` (global block-major cell indices) or `'side'` (`(cell, facet)` pairs). The Phase-1 formats (gmsh, abaqus, and MED since v9.6.0 — one region per `FAS`/`GRO` group name) map onto them fully; Exodus reads but does not yet write them. See [Named regions](./regions.md).
 - **Remaining side-channel data isn't exposed.** `openfoam`'s cell-tag family names, and the `ansysInp`/`unv` set channels pending their Phase-2 region mapping (all carried through a C++ side-channel struct alongside the `Mesh`, mirroring the Python bindings' `AnsysInfo`/`OpenFoamInfo`), are not yet surfaced to JS (tracked in [roadmap §1](/roadmap#_1-wasm-parity)).
-- **Data arrays are always `Float64`.** `point_data`/`cell_data`/`field_data` cross the boundary widened to `Float64Array` whatever their dtype in the file, so an integer material id comes back as a double. Multi-component (vector/tensor) arrays *are* supported since v9.9.0 via the `*_components` objects (see "The mesh object shape" above); before that they were flattened to N unrelated scalars in both directions. The path-based `convert`/`convertSurface` calls still avoid the boundary entirely, and so preserve dtypes as well as shapes.
+- **Data arrays are `Float64` or `BigInt64`, not their exact source width.** Since v11.2.0 an integer material id no longer becomes a double crossing the boundary (see "Data array dtypes" above), but the mesh's own storage still canonicalizes *within kind* rather than preserving e.g. `Int32Array` vs. `Uint8Array` exactly — every integer dtype comes back as `BigInt64Array`, every float dtype as `Float64Array`. Multi-component (vector/tensor) arrays *are* supported since v9.9.0 via the `*_components` objects (see "The mesh object shape" above); before that they were flattened to N unrelated scalars in both directions. The path-based `convert`/`convertSurface` calls still avoid the boundary entirely, and so preserve exact dtypes as well as shapes.
 
 ## Building from source
 

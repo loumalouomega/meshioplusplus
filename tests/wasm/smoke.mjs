@@ -69,20 +69,27 @@ await asyncStep(
 );
 
 await asyncStep(
-    'locateFile resolving to the seq .wasm for the mt glue is caught, not silently mislabelled',
+    // Deliberately the seq glue asked to load the *mt* .wasm, not the other
+    // direction: the mt glue's PTHREAD_POOL_SIZE pre-spawns worker threads
+    // before instantiation resolves, and on a failed instantiation those
+    // workers are never handed back to us to clean up, so provoking the
+    // failure through the mt glue hangs the Node process on exit. The
+    // mismatched-binary detection logic (locateFile returned the wrong
+    // variant's .wasm) is the same either direction.
+    'locateFile resolving to the mt .wasm for the seq glue is caught, not silently mislabelled',
     async () => {
-        const seqWasmPath = fileURLToPath(
-            new URL('../../src/wasm/dist/meshioplusplus_wasm.wasm', import.meta.url),
+        const mtWasmPath = fileURLToPath(
+            new URL('../../src/wasm/dist/meshioplusplus_wasm_mt.wasm', import.meta.url),
         );
         await assert.rejects(
             () =>
                 loadMeshioPlusPlus(
-                    { locateFile: (path) => (path.endsWith('.wasm') ? seqWasmPath : path) },
-                    { variant: 'mt' },
+                    { locateFile: (path) => (path.endsWith('.wasm') ? mtWasmPath : path) },
+                    { variant: 'seq' },
                 ),
             (err) => {
                 assert.equal(err.name, 'MeshioPlusPlusLoadError');
-                assert.equal(err.variant, 'mt');
+                assert.equal(err.variant, 'seq');
                 return true;
             },
         );
@@ -130,6 +137,34 @@ step('VTU binary+zlib round-trip (object -> file -> object)', () => {
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
     assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
     assert.deepEqual(Array.from(back.cell_data.material[0]), [7]);
+});
+
+step('dtype carry: BigInt64Array survives VTU with full 64-bit precision', () => {
+    // 2**60 + 1 is far outside Float64's exact-integer range (2**53), so this
+    // only round-trips exactly if the array crosses as BigInt64Array end to
+    // end rather than ever passing through a double (roadmap §1 dtype carry).
+    // field_data has no VTU representation (this writer only emits Points/
+    // Cells/PointData/CellData -- see the plain VTU round-trip test above),
+    // so this uses point_data.
+    const big = 2n ** 60n + 1n;
+    const withBig = { ...tet, point_data: { big_id: new BigInt64Array([big, big, big, big]) } };
+    m.writeMesh('/big.vtu', withBig);
+    const back = m.readMesh('/big.vtu');
+    assert.ok(back.point_data.big_id instanceof BigInt64Array, 'dtype preserved through VTU');
+    assert.equal(back.point_data.big_id[0], big);
+});
+
+step('dtype carry: a narrower integer dtype survives the mesh as exact BigInt64Array', () => {
+    // The mesh's own in-memory representation only canonicalizes within kind
+    // (float -> Float64, integer -> Int64: see native_mesh.hpp's
+    // canonicalize_array) -- so a narrower integer input (here Uint8Array) is
+    // accepted, but what comes back out is the canonical Int64 form, exact
+    // and never silently widened through a double as it was before v11.2.0.
+    const withU8 = { ...tet, point_data: { flag: new Uint8Array([1, 0, 1, 255]) } };
+    m.writeMesh('/u8.vtu', withU8);
+    const back = m.readMesh('/u8.vtu');
+    assert.ok(back.point_data.flag instanceof BigInt64Array, 'integer data stays integer, not Float64');
+    assert.deepEqual(Array.from(back.point_data.flag, Number), [1, 0, 1, 255]);
 });
 
 step('STL binary round-trip', () => {
@@ -661,7 +696,12 @@ step('subdivide: one hexahedron -> 6 polyhedral children, one apex point', () =>
 step('subdivide: recordParentIds attaches subdivide:parent_cell', () => {
     const out = m.subdivide(cube, true);
     assert.ok('subdivide:parent_cell' in out.cell_data);
-    assert.deepEqual(Array.from(out.cell_data['subdivide:parent_cell'][0]), [0, 0, 0, 0, 0, 0]);
+    // Parent-id arrays are integer dtype (now BigInt64Array, see roadmap §1's
+    // dtype-carry item) -- Number() them before comparing to plain numbers.
+    assert.deepEqual(
+        Array.from(out.cell_data['subdivide:parent_cell'][0], Number),
+        [0, 0, 0, 0, 0, 0],
+    );
 });
 
 step('subdivide: non-3D blocks pass through unchanged', () => {
@@ -823,8 +863,10 @@ step('refine: recordHierarchy attaches the persistent parent/child ids', () => {
     const hier = m.refine(cube, 1, false, { recordHierarchy: true });
     assert.ok('refine:cell_id' in hier.cell_data);
     assert.ok('refine:parent_id' in hier.cell_data);
-    const ids = Array.from(hier.cell_data['refine:cell_id'][0]);
-    const parents = Array.from(hier.cell_data['refine:parent_id'][0]);
+    // Integer-id arrays are now BigInt64Array (roadmap §1 dtype carry);
+    // Number() them so the plain-number comparisons below still work.
+    const ids = Array.from(hier.cell_data['refine:cell_id'][0], Number);
+    const parents = Array.from(hier.cell_data['refine:parent_id'][0], Number);
     assert.equal(new Set(ids).size, ids.length, 'ids are unique');
     // The whole cube is one cell, uniformly refined into 8 -- every child
     // therefore shares parent 0, none can be self-parented (untouched).
@@ -910,6 +952,32 @@ step('decimate: collapses a refined cube skin, pinning its creases', () => {
     assert.ok(out.pointsRemoved > 0);
     assert.ok(out.collapsesRejected >= 0);
     assert.ok(out.maxErrorApplied >= 0);
+});
+
+step('dtype carry: decimate keeps an Int32Array cell tag and point id exact integers', () => {
+    // As on the VTU round trip above: the mesh's own storage canonicalizes an
+    // integer input to Int64 (native_mesh.hpp's canonicalize_array), so what
+    // comes back is BigInt64Array, not the original Int32Array -- but every
+    // value stays an exact integer rather than the pre-v11.2.0 double.
+    const skin = m.extractSkin(m.refine(cube), true);
+    const numPoints = skin.points.length / skin.dim;
+    const withTags = {
+        ...skin,
+        point_data: { point_id: new Int32Array(Array.from({ length: numPoints }, (_, i) => i)) },
+        cell_data: {
+            cell_tag: skin.cells.map((cb) =>
+                new Int32Array(new Array(cb.data.length / 3).fill(5)),
+            ),
+        },
+    };
+    const out = m.decimate(withTags, 0.5);
+    assert.ok(out.mesh.point_data.point_id instanceof BigInt64Array, 'point_id stays integer');
+    assert.ok(out.mesh.cell_data.cell_tag[0] instanceof BigInt64Array, 'cell_tag stays integer');
+    // Every surviving id/tag came from the input, not a decimate artefact
+    // (C++ keeps the surviving vertex/cell's own row -- decimate.cpp).
+    const inputIds = new Set(withTags.point_data.point_id);
+    assert.ok(Array.from(out.mesh.point_data.point_id).every((id) => inputIds.has(Number(id))));
+    assert.ok(Array.from(out.mesh.cell_data.cell_tag[0]).every((tag) => tag === 5n));
 });
 
 step('decimate rejects a volume mesh and a missing criterion', () => {
@@ -1597,7 +1665,8 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     assert.equal(e1.numSkipped, 0);
     assert.ok(e1.globalError > 0, 'a quadratic field must give a nonzero global error');
     assert.equal(e1.mesh.cell_data['error:marked'].length, 1, 'one marked block per cell block');
-    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => v === 0 || v === 1));
+    // Integer flag array, now BigInt64Array (roadmap §1 dtype carry).
+    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => Number(v) === 0 || Number(v) === 1));
 
     // A cell_data field has no derivative to recover; an out-of-range
     // marking_value for "fraction" is rejected.

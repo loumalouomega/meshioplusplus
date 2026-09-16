@@ -187,26 +187,84 @@ val ndarray_to_float64_array(const NDArray& rA) {
 // Integer-dtype NDArray (mesh connectivity, always Int64 in the C++ core) ->
 // Int32Array. Node/point counts for any mesh a browser can reasonably handle
 // fit comfortably in 32 bits; Int32Array is far more JS-ergonomic than
-// BigInt64Array for typical mesh-processing consumer code.
+// BigInt64Array for typical mesh-processing consumer code. Throws by value
+// (rather than silently wrapping) if a source element does not survive the
+// narrowing round-trip -- the round-trip check (cast down, cast back up,
+// compare) catches overflow for both signed and unsigned source dtypes
+// without a dtype-specific range comparison.
 val ndarray_to_int32_array(const NDArray& rA) {
     std::vector<std::int32_t> tmp(rA.Size());
     meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
-        for (std::size_t i = 0; i < rA.Size(); ++i)
+        for (std::size_t i = 0; i < rA.Size(); ++i) {
             tmp[i] = static_cast<std::int32_t>(src[i]);
+            if constexpr (sizeof(T) > sizeof(std::int32_t)) {
+                if (static_cast<T>(tmp[i]) != src[i])
+                    throw meshioplusplus::WriteError(
+                        "meshio++ (wasm): index value " + std::to_string(src[i]) +
+                        " does not fit in a 32-bit integer (Int32Array)");
+            }
+        }
     });
     return int32_array_from(tmp.data(), tmp.size());
+}
+
+// dtype -> the JS typed-array constructor name it round-trips through
+// unchanged. WASM_BIGINT (on by default since Emscripten's embind bridges
+// int64_t/uint64_t to/from JS `bigint` natively) is what makes the Int64/
+// UInt64 rows below possible; see doc/wasm.md's "Data arrays" section.
+const char* js_typed_array_ctor(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return "Float32Array";
+        case DType::Float64:
+            return "Float64Array";
+        case DType::Int8:
+            return "Int8Array";
+        case DType::Int16:
+            return "Int16Array";
+        case DType::Int32:
+            return "Int32Array";
+        case DType::Int64:
+            return "BigInt64Array";
+        case DType::UInt8:
+            return "Uint8Array";
+        case DType::UInt16:
+            return "Uint16Array";
+        case DType::UInt32:
+            return "Uint32Array";
+        case DType::UInt64:
+            return "BigUint64Array";
+    }
+    return "Float64Array";  // unreachable
+}
+
+// Any-dtype NDArray -> the JS typed-array class matching its dtype exactly
+// (see `js_typed_array_ctor`), used for point_data/cell_data/field_data:
+// unlike `ndarray_to_float64_array`, the dtype crosses the boundary as-is
+// rather than upcasting to double (roadmap §1 "WASM parity": dtype carry).
+val ndarray_to_typed_array(const NDArray& rA) {
+    return meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() -> val {
+        val arr = val::global(js_typed_array_ctor(rA.Dtype())).new_(rA.Size());
+        arr.call<void>("set", val(emscripten::typed_memory_view(rA.Size(), rA.As<T>())));
+        return arr;
+    });
 }
 
 /**
  * @brief Convert a C++ `Mesh` into a plain JS object of typed arrays.
  *
  * Shape: `{ points: Float64Array, dim: number, cells: [{type, data:
- * Int32Array, nodesPerCell}], point_data: {name: Float64Array}, cell_data:
- * {name: Float64Array[]} (one array per cell block, same order as `cells`),
- * field_data: {name: Float64Array} }` -- deliberately mirrors the Python
+ * Int32Array, nodesPerCell}], point_data: {name: DataArray}, cell_data:
+ * {name: DataArray[]} (one array per cell block, same order as `cells`),
+ * field_data: {name: DataArray} }` -- deliberately mirrors the Python
  * `Mesh`'s structure (points, a list of cell blocks, cell_data as one array
- * per block) for consistency with the rest of meshio++.
+ * per block) for consistency with the rest of meshio++. `DataArray` is
+ * whatever `ndarray_to_typed_array` returns for that array's dtype (see
+ * `js_typed_array_ctor`) -- points and connectivity are always Float64Array/
+ * Int32Array, but a data array's class follows its dtype, which the mesh's
+ * own storage canonicalizes to Float64 (float kinds) or Int64 (integer
+ * kinds): see doc/wasm.md's "Data array dtypes" section.
  *
  * Data arrays are flat, and a flat typed array carries no shape, so each of
  * the three data maps has a sibling `point_data_components` /
@@ -291,7 +349,7 @@ val mesh_to_val(const Mesh& rMesh) {
     val point_data_components = val::object();
     for (const auto& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
-        point_data.set(name, ndarray_to_float64_array(a));
+        point_data.set(name, ndarray_to_typed_array(a));
         if (cols_of(a) > 1)
             point_data_components.set(name, static_cast<double>(cols_of(a)));
     }
@@ -303,7 +361,7 @@ val mesh_to_val(const Mesh& rMesh) {
     for (const auto& name : rMesh.CellDataNames()) {
         val blocks = val::array();
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.call<void>("push", ndarray_to_float64_array(rMesh.CellData(name, b)));
+            blocks.call<void>("push", ndarray_to_typed_array(rMesh.CellData(name, b)));
         cell_data.set(name, blocks);
         // The component count is a property of the ARRAY, not of one block:
         // the uniform mesh API guarantees every block of a named cell_data
@@ -318,7 +376,7 @@ val mesh_to_val(const Mesh& rMesh) {
     val field_data_components = val::object();
     for (const auto& name : rMesh.FieldDataNames()) {
         const NDArray& a = rMesh.FieldData(name);
-        field_data.set(name, ndarray_to_float64_array(a));
+        field_data.set(name, ndarray_to_typed_array(a));
         if (cols_of(a) > 1)
             field_data_components.set(name, static_cast<double>(cols_of(a)));
     }
@@ -361,6 +419,39 @@ NDArray int64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape
     NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
     std::copy(tmp.begin(), tmp.end(), out.As<std::int64_t>());
     return out;
+}
+
+// The dtype a JS data array (point_data/cell_data/field_data) declares, from
+// its typed-array class name -- the inverse of `js_typed_array_ctor`. A plain
+// JS `Array` has no dtype of its own and is treated as Float64, matching the
+// behaviour every caller had before this array-class carried a dtype.
+DType dtype_of_js_array(const val& rArr, const std::string& rName) {
+    const std::string ctor = rArr["constructor"]["name"].as<std::string>();
+    if (ctor == "Array" || ctor == "Float64Array") return DType::Float64;
+    if (ctor == "Float32Array") return DType::Float32;
+    if (ctor == "Int8Array") return DType::Int8;
+    if (ctor == "Int16Array") return DType::Int16;
+    if (ctor == "Int32Array") return DType::Int32;
+    if (ctor == "BigInt64Array") return DType::Int64;
+    if (ctor == "Uint8Array" || ctor == "Uint8ClampedArray") return DType::UInt8;
+    if (ctor == "Uint16Array") return DType::UInt16;
+    if (ctor == "Uint32Array") return DType::UInt32;
+    if (ctor == "BigUint64Array") return DType::UInt64;
+    throw meshioplusplus::WriteError("meshio++ (wasm): data array '" + rName +
+                                     "' has unsupported JS type '" + ctor + "'");
+}
+
+// A JS typed array (or plain Array, treated as Float64) -> an owning NDArray
+// of `dtype`/`shape`. The dtype-generic sibling of `float64_ndarray_from_val`/
+// `int64_ndarray_from_val`, used for point_data/cell_data/field_data now that
+// those carry their source dtype instead of always widening to Float64.
+NDArray ndarray_from_js_array(const val& rJsArr, DType dtype, std::vector<std::size_t> shape) {
+    return meshioplusplus::detail::dispatch_dtype(dtype, [&]<class T>() -> NDArray {
+        std::vector<T> tmp = emscripten::vecFromJSArray<T>(rJsArr);
+        NDArray out = NDArray::Uninit(dtype, std::move(shape));
+        std::copy(tmp.begin(), tmp.end(), out.As<T>());
+        return out;
+    });
 }
 
 std::vector<std::string> js_object_keys(const val& rObj) {
@@ -516,9 +607,9 @@ Mesh val_to_mesh(const val& rObj) {
         for (const std::string& name : js_object_keys(pd)) {
             val arr = pd[name];
             const std::size_t len = arr["length"].as<std::size_t>();
-            mesh.AddPointData(name,
-                              float64_ndarray_from_val(
-                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
+            mesh.AddPointData(
+                name, ndarray_from_js_array(arr, dtype_of_js_array(arr, name),
+                                            js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     if (rObj.hasOwnProperty("cell_data")) {
@@ -534,10 +625,20 @@ Mesh val_to_mesh(const val& rObj) {
             const std::size_t k = js_components_of(comps, name);
             std::vector<NDArray> blocks;
             blocks.reserve(nb);
+            // Every block of one named cell_data array must share a dtype: a
+            // mix (e.g. block 0 an Int32Array, block 1 a Float64Array) has no
+            // single NDArray dtype to store it as, so fail by name rather than
+            // silently picking the first block's dtype for the rest.
+            DType dtype = nb > 0 ? dtype_of_js_array(blocks_val[0], name) : DType::Float64;
             for (unsigned b = 0; b < nb; ++b) {
                 val arr = blocks_val[b];
+                const DType block_dtype = dtype_of_js_array(arr, name);
+                if (block_dtype != dtype)
+                    throw meshioplusplus::WriteError(
+                        "meshio++ (wasm): cell_data array '" + name +
+                        "' has blocks of different JS typed-array classes");
                 const std::size_t len = arr["length"].as<std::size_t>();
-                blocks.push_back(float64_ndarray_from_val(arr, js_data_shape(len, k, name)));
+                blocks.push_back(ndarray_from_js_array(arr, dtype, js_data_shape(len, k, name)));
             }
             mesh.AddCellData(name, std::move(blocks));
         }
@@ -549,9 +650,9 @@ Mesh val_to_mesh(const val& rObj) {
         for (const std::string& name : js_object_keys(fd)) {
             val arr = fd[name];
             const std::size_t len = arr["length"].as<std::size_t>();
-            mesh.AddFieldData(name,
-                              float64_ndarray_from_val(
-                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
+            mesh.AddFieldData(
+                name, ndarray_from_js_array(arr, dtype_of_js_array(arr, name),
+                                            js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     // Named regions (see `mesh_to_val`). `dim`/`tag` default to -1, meaning

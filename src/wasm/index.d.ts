@@ -20,6 +20,26 @@ export interface SurfaceQualityInfo {
   watertight: boolean;
 }
 
+/**
+ * A `point_data`/`cell_data`/`field_data` array's JS type: it carries its
+ * source dtype crossing the WASM boundary instead of always widening to
+ * `Float64Array` (roadmap §1 "WASM parity": dtype carry). `BigInt64Array`/
+ * `BigUint64Array` elements are JS `bigint`, not `number` -- see
+ * {@link XdmfTimeSeriesWriter.writeDataArrays} if you need to feed one to an
+ * API that still expects `number`s.
+ */
+export type DataArray =
+  | Float32Array
+  | Float64Array
+  | Int8Array
+  | Int16Array
+  | Int32Array
+  | BigInt64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | BigUint64Array;
+
 export interface RectangularCellBlock {
   /** meshio++ cell type name, e.g. "triangle", "tetra10", "hexahedron". */
   type: string;
@@ -82,9 +102,10 @@ export interface Mesh {
   /**
    * name -> flat, row-major per-point data. A multi-component (vector/tensor)
    * array is stored interleaved, `numPoints * components` long, with its width
-   * declared in {@link Mesh.point_data_components}.
+   * declared in {@link Mesh.point_data_components}. Each array's JS type is
+   * its source dtype (see {@link DataArray}), not always `Float64Array`.
    */
-  point_data?: Record<string, Float64Array>;
+  point_data?: Record<string, DataArray>;
   /**
    * Per-entity width of any `point_data` array that is not a scalar, since a
    * flat typed array carries no shape. A name absent here has one component.
@@ -92,8 +113,13 @@ export interface Mesh {
    * scalar-only mesh gets an empty object.
    */
   point_data_components?: Record<string, number>;
-  /** name -> one flat array per cell block, same order as `cells`. */
-  cell_data?: Record<string, Float64Array[]>;
+  /**
+   * name -> one flat array per cell block, same order as `cells`. Every
+   * block of one named array shares the same {@link DataArray} class --
+   * `writeMesh`/`convert`-side callers that mix classes across blocks of the
+   * same name get a thrown Error naming the array.
+   */
+  cell_data?: Record<string, DataArray[]>;
   /**
    * Per-entity width of any `cell_data` array that is not a scalar. One value
    * per *array*, not per block: every block of a named cell_data array must
@@ -101,7 +127,7 @@ export interface Mesh {
    */
   cell_data_components?: Record<string, number>;
   /** name -> scalar/small metadata arrays (e.g. material ids). */
-  field_data?: Record<string, Float64Array>;
+  field_data?: Record<string, DataArray>;
   /** Per-entity width of any `field_data` array that is not a scalar. */
   field_data_components?: Record<string, number>;
   /** Named groups of points / cells / cell facets (see {@link Region}). */
@@ -681,13 +707,16 @@ export interface XdmfTimeSeriesWriter {
    * Append one step from raw arrays instead of a mesh -- the granularity a
    * solver has once `writePointsCells` has fixed the geometry. Arrays are
    * emitted in key order; `components` gives the per-entity width of any array
-   * that is not a scalar, since a flat typed array carries no shape.
+   * that is not a scalar, since a flat typed array carries no shape. A
+   * `BigInt64Array`/`BigUint64Array` value (e.g. taken from a mesh's
+   * `cell_data` unchanged) is widened to `number`s internally -- the XDMF
+   * data path is double-precision regardless of the source dtype.
    * @throws {Error} if an array's length does not match the static grid.
    */
   writeDataArrays(
     time: number,
-    pointData: Record<string, Float64Array | number[]>,
-    cellData?: Record<string, Float64Array | number[]>,
+    pointData: Record<string, DataArray | number[]>,
+    cellData?: Record<string, DataArray | number[]>,
     components?: Record<string, number>
   ): void;
 
