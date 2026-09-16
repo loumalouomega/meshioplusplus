@@ -1386,6 +1386,29 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
     add_test(NAME fortran_api
              COMMAND meshioplusplus_fortran_test ${CMAKE_CURRENT_BINARY_DIR}/fortran_test_out)
   endif()
+
+  if(MESHIOPLUSPLUS_BUILD_PYTHON)
+    # Fold `pytest tests/python/` into the same `ctest` run as the GoogleTest
+    # suite above, so one command exercises both. This CMake tree doesn't
+    # itself install the wheel, so it only wires the test up when the package
+    # (and pytest) are already importable by Python_EXECUTABLE -- i.e. the
+    # environment has been `pip install -e .`'d per the README's Testing
+    # section -- and otherwise leaves ctest to the C++ suite with a note here.
+    execute_process(
+      COMMAND ${Python_EXECUTABLE} -c "import pytest, meshioplusplus"
+      RESULT_VARIABLE MESHIOPLUSPLUS_PYTEST_IMPORT_RESULT
+      OUTPUT_QUIET ERROR_QUIET)
+    if(MESHIOPLUSPLUS_PYTEST_IMPORT_RESULT EQUAL 0)
+      add_test(NAME python_suite
+               COMMAND ${Python_EXECUTABLE} -m pytest tests/python
+               WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    else()
+      message(STATUS "meshio++: skipping ctest's python_suite test -- "
+                      "`import pytest, meshioplusplus` failed for "
+                      "${Python_EXECUTABLE} (run `pip install -e .` and "
+                      "`pip install pytest` first)")
+    endif()
+  endif()
 endif()
 
 # --------------------------------------------------------------------------

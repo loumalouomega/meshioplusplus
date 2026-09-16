@@ -1144,11 +1144,22 @@ All three also install side by side from a single prefix (`MESHIOPLUSPLUS_INSTAL
 
 ### Testing
 
-To run the meshio++ unit tests, check out this repository, install it with the test extras, and type
+To run just the Python suite, check out this repository, install it with the test extras, and type
 
 ```
 pytest tests/python/
 ```
+
+To run *everything* — the Python suite alongside the C++ [GoogleTest](https://github.com/google/googletest) suite (and, when configured, the Fortran API test) — with a single command, `pip install -e .` first so `meshioplusplus` and `pytest` are importable, then configure with `-DMESHIOPLUSPLUS_BUILD_TESTS=ON` and let CTest discover both:
+
+```
+pip install -e .
+cmake -S . -B build -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`ctest` picks up the GoogleTest cases (via `gtest_discover_tests`) plus a `python_suite` entry that runs `pytest tests/python/` — the latter is only added when `meshioplusplus`/`pytest` are importable by the Python CMake found, so a tree built without the editable install still runs the C++ suite alone.
 
 ### License
 
