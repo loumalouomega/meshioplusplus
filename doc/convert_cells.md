@@ -83,4 +83,4 @@ Note this is distinct from the format-conversion [`convert`](/cli) verb. See the
 
 - **C API** — `mio_convert_cells(mesh, mode, record_parent_ids)` returns an opaque `mio_convert_cells_result` (`_mesh` borrow, `_take_mesh`, zero-copy `_point_map` / `_cell_map`, `_free`). See the [C API reference](/c_api).
 - **Fortran** — `mesh%convert_cells(mode, record_parent_ids=..., point_map=...)`. See the [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `convertCells(mesh, mode, recordParentIds)`. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `convertCells(mesh, mode, recordParentIds, returnMaps)`, returning the bare mesh or `{mesh, pointMap, cellMaps}` when `returnMaps` is set. See the [WebAssembly reference](/wasm).

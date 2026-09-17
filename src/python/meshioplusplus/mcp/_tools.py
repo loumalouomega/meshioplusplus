@@ -498,10 +498,10 @@ def _variant_kwargs(out_fmt, mode, compression):
     if compression is None:
         return kwargs
     if compression in _BLOCK_CODECS:
-        if out_fmt not in ("vti", "vtu", "vtp"):
+        if out_fmt not in ("vti", "vts", "vtr", "vtm", "vtu", "vtp"):
             raise ValueError(
                 f"meshio++: mcp: compression '{compression}' selects the VTK XML "
-                "block codec and only vti/vtu/vtp have one"
+                "block codec and only vti/vts/vtr/vtm/vtu/vtp have one"
             )
         kwargs.update({"binary": True, "compression": compression})
     elif compression == "gzip":

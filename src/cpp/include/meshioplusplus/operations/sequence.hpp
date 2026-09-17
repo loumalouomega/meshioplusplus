@@ -287,6 +287,21 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
 // --------------------------------------------------------------------------
 
 /**
+ * @brief Whether @p rFormat's reader can return more than one step at all.
+ *
+ * Consulted BEFORE `registry_read_metadata`, which for a format with no native
+ * metadata reader costs a full read -- so this is what keeps the step probe
+ * free for every format that cannot carry time. Same shape and same
+ * anti-drift discipline as `sequence_write_supports_time`: a small owned set,
+ * cross-checked by a gtest (`SequenceCapability.ReadSupportsTimeImpliesAMetadataReader`)
+ * asserting that every format this returns true for has an entry in
+ * `registry_metadata_readers()` -- a later format joining the `||` chain with
+ * no metadata reader behind it turns CI red naming itself, the read-side twin
+ * of `WriteSupportsTimeAgreesWithReality`.
+ */
+MESHIOPLUSPLUS_API bool seq_format_may_have_steps(const std::string& rFormat);
+
+/**
  * @brief How many time steps @p rPath carries.
  *
  * Derived from the registry rather than a hardcoded per-format table:
@@ -295,11 +310,8 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
  * metadata reader does not fill `mTimeValues` therefore reports 1, which is the
  * truthful answer for every format that cannot express time.
  *
- * Today that means XDMF and Exodus report real counts. MED honours
- * `ReadOptions::mTimeStep` but has no metadata reader, so a multi-step `.med`
- * reports 1; that is a recorded gap in MED's metadata support and not a special
- * case here -- the moment `read_med_metadata` fills `mTimeValues`, MED fan-out
- * starts working with no change to this file.
+ * Gated on `seq_format_may_have_steps` first, exactly as that function's own
+ * doc describes.
  *
  * Never throws for an unreadable file: an unreadable path reports 1 and the
  * failure surfaces from the actual read, with its own diagnostics.

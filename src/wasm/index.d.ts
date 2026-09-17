@@ -20,6 +20,40 @@ export interface SurfaceQualityInfo {
   watertight: boolean;
 }
 
+/**
+ * A `point_data`/`cell_data`/`field_data` array's JS type: it carries its
+ * source dtype crossing the WASM boundary instead of always widening to
+ * `Float64Array` (roadmap §1 "WASM parity": dtype carry). `BigInt64Array`/
+ * `BigUint64Array` elements are JS `bigint`, not `number` -- see
+ * {@link XdmfTimeSeriesWriter.writeDataArrays} if you need to feed one to an
+ * API that still expects `number`s.
+ */
+export type DataArray =
+  | Float32Array
+  | Float64Array
+  | Int8Array
+  | Int16Array
+  | Int32Array
+  | BigInt64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | BigUint64Array;
+
+/**
+ * The index maps an op that prunes/renumbers points and cells returns when
+ * called with `returnMaps: true`, alongside its `mesh`: `pointMap` is input
+ * point index -> output point index (-1 if pruned), `cellMaps` is one array
+ * per **input** cell block, input cell -> output index within the
+ * corresponding output block (-1 if dropped). See doc/wasm.md's "Index maps"
+ * section for the per-op semantics (e.g. what a collapsed/welded point's
+ * -1-or-survivor value means).
+ */
+export interface PointCellMaps {
+  pointMap: Int32Array;
+  cellMaps: Int32Array[];
+}
+
 export interface RectangularCellBlock {
   /** meshio++ cell type name, e.g. "triangle", "tetra10", "hexahedron". */
   type: string;
@@ -82,9 +116,10 @@ export interface Mesh {
   /**
    * name -> flat, row-major per-point data. A multi-component (vector/tensor)
    * array is stored interleaved, `numPoints * components` long, with its width
-   * declared in {@link Mesh.point_data_components}.
+   * declared in {@link Mesh.point_data_components}. Each array's JS type is
+   * its source dtype (see {@link DataArray}), not always `Float64Array`.
    */
-  point_data?: Record<string, Float64Array>;
+  point_data?: Record<string, DataArray>;
   /**
    * Per-entity width of any `point_data` array that is not a scalar, since a
    * flat typed array carries no shape. A name absent here has one component.
@@ -92,8 +127,13 @@ export interface Mesh {
    * scalar-only mesh gets an empty object.
    */
   point_data_components?: Record<string, number>;
-  /** name -> one flat array per cell block, same order as `cells`. */
-  cell_data?: Record<string, Float64Array[]>;
+  /**
+   * name -> one flat array per cell block, same order as `cells`. Every
+   * block of one named array shares the same {@link DataArray} class --
+   * `writeMesh`/`convert`-side callers that mix classes across blocks of the
+   * same name get a thrown Error naming the array.
+   */
+  cell_data?: Record<string, DataArray[]>;
   /**
    * Per-entity width of any `cell_data` array that is not a scalar. One value
    * per *array*, not per block: every block of a named cell_data array must
@@ -101,11 +141,141 @@ export interface Mesh {
    */
   cell_data_components?: Record<string, number>;
   /** name -> scalar/small metadata arrays (e.g. material ids). */
-  field_data?: Record<string, Float64Array>;
+  field_data?: Record<string, DataArray>;
   /** Per-entity width of any `field_data` array that is not a scalar. */
   field_data_components?: Record<string, number>;
   /** Named groups of points / cells / cell facets (see {@link Region}). */
   regions?: Region[];
+  /** `Begin Properties` blocks -- Kratos material data (currently MDPA only). See {@link PropertySet}. */
+  propertySets?: PropertySet[];
+  /**
+   * Format-specific side-channel metadata a generic `Mesh` cannot represent,
+   * attached by `readMeshSelective(path, {info: true})`. Present only for
+   * formats with one (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); absent
+   * otherwise, even when `info: true` was requested. Its own `format` field
+   * is what `writeMesh` checks before reusing it on a write with no explicit
+   * `options.info`. See doc/wasm.md's "Side channel (info)" section.
+   */
+  info?: MeshInfo;
+}
+
+/** The union of every format's side-channel `info` shape. Discriminate on `format`. */
+export type MeshInfo =
+  | OpenFoamInfo
+  | MedInfo
+  | MdpaInfo
+  | AnsysInfo
+  | UnvInfo
+  | GmshInfo
+  | ExodusInfo;
+
+/** OpenFOAM's side channel: `readMeshSelective`'s cell_tags/patch-type map, reshaped per patch. */
+export interface OpenFoamInfo {
+  format: 'openfoam';
+  patches: Array<{
+    /** The negative, MED-style family id `cell_tags` uses for this patch. */
+    familyId: number;
+    /** Names this family id is known by (usually one; more than one on a collision). */
+    names: string[];
+    /** The patch `type` (`patch`/`wall`/`symmetry`/...), when known. */
+    type?: string;
+  }>;
+}
+
+/** MED's side channel: family/group names, units, and per-field step/time metadata. */
+export interface MedInfo {
+  format: 'med';
+  /** Point family id -> subset name(s), as `point_tags`/`cell_tags` key them. */
+  pointTags: Record<string, string[]>;
+  cellTags: Record<string, string[]>;
+  meshName: string;
+  description: string;
+  unitTime: string;
+  unitCoords: string;
+  /** Family id -> its `FAM_<id>...` group link name. */
+  pointTagGroups: Record<string, string>;
+  cellTagGroups: Record<string, string>;
+  /** Lenient-mode only: constructs this read could not represent, verbatim. */
+  skippedConstructs: string[];
+  /** Lenient-mode only: field name -> `[UNI, UNT]` unit strings. */
+  fieldUnits: Record<string, [string, string]>;
+  /** Lenient-mode only: field name -> `{ndt, nor, pdt}` (MED's own step/order/time triple). */
+  stepMeta: Record<string, { ndt: number; nor: number; pdt: number }>;
+  /** Field name -> every step's time value (always filled, not lenient-only). */
+  fieldTimeValues: Record<string, number[]>;
+}
+
+/** MDPA's side channel: per-block entity names. Properties ride on `mesh.propertySets` instead (see {@link PropertySet}), not here. */
+export interface MdpaInfo {
+  format: 'mdpa';
+  /** One entry per cell block, mesh block order. */
+  entityNames: Array<{ name: string; isCondition: boolean }>;
+  /** Lenient-mode only: constructs this read could not represent, verbatim. */
+  skippedConstructs: string[];
+}
+
+/**
+ * The shared shape of Ansys (`.cdb`/`.inp`, MAPDL) and UNV's side channel:
+ * named point/cell sets the generic {@link Region} shape does not carry.
+ */
+export interface AnsysUnvInfoShape {
+  /** Set name -> 0-based point/node indices. */
+  pointSets: Record<string, number[]>;
+  /** Set name -> one array of 0-based local indices per cell block. */
+  cellSets: Record<string, number[][]>;
+}
+
+export interface AnsysInfo extends AnsysUnvInfoShape {
+  format: 'ansysinp';
+}
+
+export interface UnvInfo extends AnsysUnvInfoShape {
+  format: 'unv';
+}
+
+/** Gmsh's side channel: `$Entities` bounding-entity tags, one array per cell block. */
+export interface GmshInfo {
+  format: 'gmsh';
+  boundingEntities: number[][];
+}
+
+/** Exodus's side channel: info/QA records. Read-only -- there is no Info-bearing Exodus writer. */
+export interface ExodusInfo {
+  format: 'exodus';
+  infoRecords: string[];
+}
+
+/**
+ * One `Begin Properties <id>` block: an id plus its entries, in file order.
+ * Carried on the {@link Mesh} object itself (like {@link Region}), keyed by
+ * id rather than entity index, so operations that renumber cells/points
+ * cannot invalidate them. Shape-preserving operations (`clean`, `smooth`,
+ * `transform`, `attachQuality`, the `data*` ops) carry them through;
+ * restructuring and multi-input ones (`merge`, `cropBbox`/`cropPlane`/
+ * `cropPredicate`, `split`, `partition`, `diff`) do not.
+ */
+export interface PropertySet {
+  id: number;
+  values: PropertyValue[];
+}
+
+/**
+ * One `KEY value` entry of a properties block. Exactly one of `values` and
+ * `text` carries the value: a plain number is a one-element `values`; an
+ * inline `Begin Table` is an `(n, k)` `values` (flat, row-major -- `k` given
+ * by `components` when `k > 1`) with `isTable` set and `key` holding the
+ * table header's arguments verbatim; anything else (a constitutive-law name,
+ * a bracketed vector/matrix) is kept verbatim in `text`, which is what makes
+ * an unrecognized value lossless.
+ */
+export interface PropertyValue {
+  key: string;
+  values: Float64Array;
+  /** Per-entity width of `values` when `isTable` and `k > 1`. Absent means 1. */
+  components?: number;
+  /** The value verbatim, when it is not numeric (`values` is then empty). */
+  text: string;
+  isTable: boolean;
 }
 
 /**
@@ -151,7 +321,34 @@ export interface RegionSummary {
   numEntries: number;
 }
 
-export interface ConvertOptions {
+/**
+ * Parameterized-write options for `writeMesh`/`convert`, all optional --
+ * unset/empty reproduces the exact write from before v11.2.0. There is
+ * deliberately no gzip level or VTK 4.2/5.1 selector: neither exists as a
+ * `WriteOptions` field on the C++ side (gzip level 4 is a fixed registry
+ * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
+ */
+export interface MeshWriteOptions {
+  /** ASCII vs binary. Errors for a format with only one variant. */
+  encoding?: "ascii" | "binary";
+  /** Block-compression codec, for the VTK-XML formats (vtu/vtp) only. */
+  codec?: "none" | "zlib" | "lz4" | "zstd";
+  /** `printf`-style float format for ASCII writers that take one (e.g. `".16e"`, the default). */
+  floatFormat?: string;
+}
+
+/**
+ * `writeMesh`'s own options: `MeshWriteOptions` plus `info`, a format's
+ * side-channel metadata to write (see {@link MeshInfo}) -- wins over a
+ * `mesh.info` whose own `format` matches this write's. Given for a format
+ * with no side-channel writer (openfoam/mdpa/ansysinp/unv/gmsh/med are the
+ * writable ones; exodus is read-only) throws naming it.
+ */
+export interface MeshWriteOptionsWithInfo extends MeshWriteOptions {
+  info?: MeshInfo;
+}
+
+export interface ConvertOptions extends MeshWriteOptions {
   /** Explicit input format key, or omit to infer from inPath's extension. */
   inFormat?: string;
   /** Explicit output format key, or omit to infer from outPath's extension. */
@@ -681,13 +878,16 @@ export interface XdmfTimeSeriesWriter {
    * Append one step from raw arrays instead of a mesh -- the granularity a
    * solver has once `writePointsCells` has fixed the geometry. Arrays are
    * emitted in key order; `components` gives the per-entity width of any array
-   * that is not a scalar, since a flat typed array carries no shape.
+   * that is not a scalar, since a flat typed array carries no shape. A
+   * `BigInt64Array`/`BigUint64Array` value (e.g. taken from a mesh's
+   * `cell_data` unchanged) is widened to `number`s internally -- the XDMF
+   * data path is double-precision regardless of the source dtype.
    * @throws {Error} if an array's length does not match the static grid.
    */
   writeDataArrays(
     time: number,
-    pointData: Record<string, Float64Array | number[]>,
-    cellData?: Record<string, Float64Array | number[]>,
+    pointData: Record<string, DataArray | number[]>,
+    cellData?: Record<string, DataArray | number[]>,
     components?: Record<string, number>
   ): void;
 
@@ -717,6 +917,41 @@ export interface XdmfTimeSeriesWriter {
    * safe to call from a `finally` block. After this the writer is unusable and
    * every other method throws.
    */
+  close(): void;
+}
+
+/** One entry of a sequence plan: one step of one file. See {@link MeshioPlusPlusModule.sequenceEntries} and {@link SequenceReader}. */
+export interface SequenceEntry {
+  path: string;
+  step: number;
+  time: number;
+  timeSource: 'explicit' | 'file' | 'filename' | 'index';
+}
+
+/**
+ * A stateful sequence reader, opened by {@link MeshioPlusPlusModule.openSequence}.
+ * Plans the sequence once (no heavy data read) and reads one step's mesh at a
+ * time -- at most one mesh alive, whatever the step count. See
+ * `doc/sequences.md`.
+ */
+export interface SequenceReader {
+  /** How many entries this sequence has. */
+  count: number;
+  path(i: number): string;
+  step(i: number): number;
+  time(i: number): number;
+  timeSource(i: number): 'explicit' | 'file' | 'filename' | 'index';
+  entry(i: number): SequenceEntry;
+  entries(): SequenceEntry[];
+  /**
+   * Read entry `i`'s mesh. `pointsOnly`/`arrays`/`lenient` are `readMeshSelective`'s.
+   * @throws {Error} if `i` is out of `[0, count)`.
+   */
+  read(
+    i: number,
+    options?: { pointsOnly?: boolean; arrays?: string[] | null; lenient?: boolean },
+  ): Mesh;
+  /** Release the handle. Safe to call twice; after this every other method throws. */
   close(): void;
 }
 
@@ -765,6 +1000,13 @@ export interface MeshioPlusPlusModule {
    * truncated block or a bad node reference still throws, because continuing
    * past those would return a mesh that is quietly wrong.
    *
+   * `info: true` attaches the format's side channel as the result's `.info`
+   * (see {@link MeshInfo}) for the formats that have one
+   * (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus); silently has no effect for
+   * any other format, so a caller can always pass it and check `.info`
+   * itself. `pointsOnly`/`arrays` reach the read only for the formats whose
+   * info-bearing reader takes selective-read options (med/mdpa/gmsh/exodus).
+   *
    * @throws {Error} on an out-of-range `timeStep`.
    */
   readMeshSelective(
@@ -775,6 +1017,7 @@ export interface MeshioPlusPlusModule {
       arrays?: string[] | null;
       timeStep?: number;
       lenient?: boolean;
+      info?: boolean;
     }
   ): Mesh;
 
@@ -792,18 +1035,26 @@ export interface MeshioPlusPlusModule {
   readerSupportsOptions(format: string): boolean;
 
   /**
-   * Write a mesh to the virtual filesystem.
-   * @throws {Error} on an unknown/write-unsupported format or malformed input
-   *   (e.g. a points/connectivity array length not divisible by its
-   *   declared dim/nodesPerCell).
+   * Write a mesh to the virtual filesystem. See {@link MeshWriteOptionsWithInfo.info}
+   * for writing a format's side channel.
+   * @returns every virtual-FS path this write touched (new or changed),
+   *   sorted -- more than one for a multi-file writer (`.xdmf` + its `.h5`
+   *   companion, an OpenFOAM `polyMesh` directory's files, ...).
+   * @throws {Error} on an unknown/write-unsupported format, an `options`
+   *   field the format cannot honour, `info` given for a format with no
+   *   side-channel writer, or malformed input (e.g. a points/connectivity
+   *   array length not divisible by its declared dim/nodesPerCell).
    */
-  writeMesh(path: string, mesh: Mesh, format?: string): void;
+  writeMesh(
+    path: string, mesh: Mesh, format?: string, options?: MeshWriteOptionsWithInfo
+  ): string[];
 
   /**
    * Read `inPath` and write it to `outPath` directly (no intermediate JS
    * mesh object). Mirrors the CLI's `convert` subcommand.
+   * @returns every virtual-FS path the write touched (new or changed), sorted.
    */
-  convert(inPath: string, outPath: string, options?: ConvertOptions): void;
+  convert(inPath: string, outPath: string, options?: ConvertOptions): string[];
 
   /**
    * Like {@link convert}, but writes a *renderable surface*: a mesh with
@@ -899,12 +1150,24 @@ export interface MeshioPlusPlusModule {
       timeFrom?: 'auto' | 'file' | 'filename' | 'index';
       sort?: boolean;
     },
-  ): Array<{
-    path: string;
-    step: number;
-    time: number;
-    timeSource: 'explicit' | 'file' | 'filename' | 'index';
-  }>;
+  ): SequenceEntry[];
+
+  /**
+   * Open a **stateful** sequence reader: plans the sequence once (`source`/
+   * `options` exactly as {@link sequenceEntries}), then lets you read one
+   * step's mesh at a time via {@link SequenceReader.read} without holding
+   * more than one mesh alive -- the lazy-read counterpart to
+   * `sequenceEntries` + `readMesh` in a loop.
+   */
+  openSequence(
+    source: string | string[],
+    options?: {
+      format?: string;
+      times?: number[];
+      timeFrom?: 'auto' | 'file' | 'filename' | 'index';
+      sort?: boolean;
+    },
+  ): SequenceReader;
 
   /**
    * **Fan-in**: write every step of `source` into one multi-step file.
@@ -1011,7 +1274,13 @@ export interface MeshioPlusPlusModule {
   /** Whether two meshes are equal within tolerance. */
   meshesEqual(a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean): boolean;
 
-  /** Combine several meshes into one, optionally welding coincident points. */
+  /**
+   * Combine several meshes into one, optionally welding coincident points.
+   * With `returnMaps: true`, also returns `pointMaps`/`cellMaps`: one array
+   * per INPUT MESH (not per input block, unlike every other op's maps), each
+   * input's local point/cell index -> the output index (cellMaps: -1 if
+   * dropped as a duplicate).
+   */
   merge(
     meshes: Mesh[],
     weld?: boolean,
@@ -1019,12 +1288,23 @@ export interface MeshioPlusPlusModule {
     sourceTag?: boolean,
     dataPolicy?: MergeDataPolicy,
     dropDuplicateCells?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  merge(
+    meshes: Mesh[],
+    weld?: boolean,
+    atol?: number,
+    sourceTag?: boolean,
+    dataPolicy?: MergeDataPolicy,
+    dropDuplicateCells?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh; pointMaps: Int32Array[]; cellMaps: Int32Array[] };
 
   /** Apply a row-major 4x4 affine transform to the point coordinates. */
   transform(mesh: Mesh, matrix: number[], rotateVectorData?: boolean): Mesh;
 
-  /** Weld / prune / de-duplicate in one pass. */
+  /** Weld / prune / de-duplicate in one pass. With `returnMaps: true`, the
+   * result also carries `pointMap`/`cellMaps` (see {@link PointCellMaps}). */
   clean(
     mesh: Mesh,
     weld?: boolean,
@@ -1032,12 +1312,15 @@ export interface MeshioPlusPlusModule {
     removeOrphans?: boolean,
     dropDegenerate?: boolean,
     dropDuplicateCells?: boolean,
+    returnMaps?: boolean,
   ): {
     mesh: Mesh;
     pointsWelded: number;
     pointsRemovedOrphan: number;
     cellsDroppedDegenerate: number;
     cellsDroppedDuplicate: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
   };
 
   /**
@@ -1047,9 +1330,12 @@ export interface MeshioPlusPlusModule {
    * `"laplacian"` is stronger per pass but contracts the mesh. A **negative**
    * `lambda` means "this method's own default" (0.5 Laplacian, 0.33 Taubin).
    * Boundary and feature nodes are pinned by default, and `guardInversion`
-   * rejects any move that would flip an incident cell.
+   * rejects any move that would flip an incident cell. `frozen` is an
+   * optional array of 0-based point ids to pin outright, unioned with any
+   * boundary/feature pins.
    * @throws {Error} on an unknown `method`, a non-negative `lambda` outside
-   *   `(0, 1)`, or a `"taubin"` `mu` that does not satisfy `mu < -lambda < 0`.
+   *   `(0, 1)`, a `"taubin"` `mu` that does not satisfy `mu < -lambda < 0`, or
+   *   a `frozen` id outside `[0, numPoints)`.
    */
   smooth(
     mesh: Mesh,
@@ -1061,6 +1347,7 @@ export interface MeshioPlusPlusModule {
     preserveFeatures?: boolean,
     featureAngle?: number,
     guardInversion?: boolean,
+    frozen?: number[] | Int32Array | null,
   ): { mesh: Mesh; numNodesMoved: number; maxDisplacement: number; numSkippedInversion: number };
 
   /**
@@ -1128,17 +1415,37 @@ export interface MeshioPlusPlusModule {
     fine: Mesh,
   ): { mesh: Mesh; numGroupsUndone: number; numCellsRemoved: number };
 
-  /** Subset a mesh to an axis-aligned bounding box. */
-  cropBbox(mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean): Mesh;
+  /** Subset a mesh to an axis-aligned bounding box. With `returnMaps: true`,
+   * returns `{mesh, pointMap, cellMaps}` (see {@link PointCellMaps}) instead
+   * of a bare mesh. */
+  cropBbox(
+    mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean,
+    returnMaps?: false,
+  ): Mesh;
+  cropBbox(
+    mesh: Mesh, lo: number[], hi: number[], mode?: CropMode, recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
-  /** Subset a mesh to the half-space `(p - point) . normal >= 0`. */
+  /** Subset a mesh to the half-space `(p - point) . normal >= 0`. With
+   * `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of a
+   * bare mesh. */
   cropPlane(
     mesh: Mesh,
     point: number[],
     normal: number[],
     mode?: CropMode,
     recordIds?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  cropPlane(
+    mesh: Mesh,
+    point: number[],
+    normal: number[],
+    mode?: CropMode,
+    recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Subset a mesh to the cells whose value in a scalar `cell_data` array
@@ -1159,6 +1466,9 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} when `array` is not a scalar `cell_data` array covering
    *   every block, or the comparison is not one of `<`, `<=`, `>`, `>=`, `==`,
    *   `!=`.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
   cropPredicate(
     mesh: Mesh,
@@ -1166,7 +1476,16 @@ export interface MeshioPlusPlusModule {
     compare?: CropCompare,
     value?: number,
     recordIds?: boolean,
+    returnMaps?: false,
   ): Mesh;
+  cropPredicate(
+    mesh: Mesh,
+    array: string,
+    compare?: CropCompare,
+    value?: number,
+    recordIds?: boolean,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Planar cross-section of a mesh (marching tetrahedra on a simplexified
@@ -1672,8 +1991,12 @@ export interface MeshioPlusPlusModule {
     maxDisplacement: number;
   };
 
-  /** Partition a mesh into submeshes by type, connected component, or tag. */
-  split(mesh: Mesh, by: SplitBy, tagName?: string): { key: string; mesh: Mesh }[];
+  /** Partition a mesh into submeshes by type, connected component, or tag.
+   * With `returnMaps: true`, each piece also carries `pointMap`/`cellMaps`
+   * (see {@link PointCellMaps}). */
+  split(
+    mesh: Mesh, by: SplitBy, tagName?: string, returnMaps?: boolean,
+  ): ({ key: string; mesh: Mesh } & Partial<PointCellMaps>)[];
 
   /**
    * Convert the element representation: drop higher-order nodes
@@ -1681,8 +2004,16 @@ export interface MeshioPlusPlusModule {
    * or promote linear cells to serendipity quadratic (`"elevate"`).
    * @throws {Error} on a polyhedron block under `"simplexify"`, or a
    *   full-Lagrange target (quad9/hexahedron27) under `"elevate"`.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
-  convertCells(mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean): Mesh;
+  convertCells(
+    mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: false,
+  ): Mesh;
+  convertCells(
+    mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Polyhedrally refine a mesh: one polyhedral child per face of every
@@ -1694,8 +2025,11 @@ export interface MeshioPlusPlusModule {
    * `convertCells`, there is no point map -- subdivide never prunes or
    * renumbers an original point.
    * @throws {Error} when a cell's faces are not a closed orientable surface.
+   *
+   * With `returnMaps: true`, returns `{mesh, cellMaps}` instead of a bare mesh.
    */
-  subdivide(mesh: Mesh, recordParentIds?: boolean): Mesh;
+  subdivide(mesh: Mesh, recordParentIds?: boolean, returnMaps?: false): Mesh;
+  subdivide(mesh: Mesh, recordParentIds?: boolean, returnMaps?: true): { mesh: Mesh; cellMaps: Int32Array[] };
 
   /**
    * Polyhedrally coarsen a mesh: merge groups of cells into single larger
@@ -1708,8 +2042,13 @@ export interface MeshioPlusPlusModule {
    * for a minimal point set).
    * @throws {Error} when targetGroupSize is 0, or the mesh contains a face
    *   shared by three or more cells (non-manifold).
+   *
+   * With `returnMaps: true`, returns `{mesh, cellMap}` instead of a bare
+   * mesh -- a single FLAT array (global input cell index -> global output
+   * cell index), unlike the other ops' per-block `cellMaps`.
    */
-  agglomerate(mesh: Mesh, targetGroupSize?: number): Mesh;
+  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: false): Mesh;
+  agglomerate(mesh: Mesh, targetGroupSize?: number, returnMaps?: true): { mesh: Mesh; cellMap: Int32Array };
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,
@@ -1724,13 +2063,24 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on a higher-order cell, a `pyramid`, or a ragged
    *   polygon/polyhedron block — none has a same-type subdivision — and on more
    *   than one selector, an unknown region, or an unusable predicate array.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` instead of
+   * a bare mesh.
    */
   refine(
     mesh: Mesh,
     levels?: number,
     recordParentIds?: boolean,
-    options?: RefineOptions
+    options?: RefineOptions,
+    returnMaps?: false,
   ): Mesh;
+  refine(
+    mesh: Mesh,
+    levels?: number,
+    recordParentIds?: boolean,
+    options?: RefineOptions,
+    returnMaps?: true,
+  ): { mesh: Mesh } & PointCellMaps;
 
   /**
    * Decimate a SURFACE mesh by quadric-error-metric (Garland-Heckbert) edge
@@ -1741,11 +2091,13 @@ export interface MeshioPlusPlusModule {
    * (once-used-edge test) and feature vertices (face normals differing by
    * more than `featureAngle` degrees) are pinned by default, and the link
    * condition plus a normal-flip guard reject any collapse that would change
-   * topology or fold the surface. The index maps and the frozen mask are not
-   * carried across the JS boundary, as on the other flat bindings.
+   * topology or fold the surface. `frozen` is an optional array of 0-based
+   * point ids to pin outright. With `returnMaps: true`, the result also
+   * carries `pointMap`/`cellMaps`.
    * @throws {Error} on a 3D volume mesh (extract the surface first),
    *   higher-order or ragged blocks, `line`/`vertex` blocks, an unknown
-   *   `placement`, or a criterion count other than one.
+   *   `placement`, a criterion count other than one, or a `frozen` id outside
+   *   `[0, numPoints)`.
    */
   decimate(
     mesh: Mesh,
@@ -1756,24 +2108,66 @@ export interface MeshioPlusPlusModule {
     preserveBoundary?: boolean,
     preserveFeatures?: boolean,
     featureAngle?: number,
+    frozen?: number[] | Int32Array | null,
+    returnMaps?: boolean,
   ): {
     mesh: Mesh;
     facesRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
+  };
+
+  /**
+   * Decimate a tetrahedral VOLUME mesh by quadric-error-metric tet-edge
+   * collapse — `decimate`'s volume sibling. Exactly one of `ratio` (fraction
+   * of tets to KEEP, in (0, 1]), `targetCells` and `maxError` must be
+   * non-negative. The output is all-tetra with the block structure kept 1:1.
+   * `preserveBoundary` defaults to `false` here (unlike `decimate`): the
+   * mesh's outer surface is usually interior geometry a solver still wants
+   * simplified, not a boundary to protect. `frozen` is an optional array of
+   * 0-based point ids to pin outright, unioned with any boundary/feature
+   * pins. With `returnMaps: true`, the result also carries
+   * `pointMap`/`cellMaps`.
+   * @throws {Error} on a non-manifold boundary face, a non-tetra 3D cell,
+   *   higher-order tets, ragged/polyhedron blocks, a non-3D block, an unknown
+   *   `placement`, a criterion count other than one, or a `frozen` id outside
+   *   `[0, numPoints)`.
+   */
+  decimateVolume(
+    mesh: Mesh,
+    ratio?: number,
+    targetCells?: number,
+    maxError?: number,
+    placement?: DecimatePlacement,
+    preserveBoundary?: boolean,
+    preserveFeatures?: boolean,
+    featureAngle?: number,
+    frozen?: number[] | Int32Array | null,
+    returnMaps?: boolean,
+  ): {
+    mesh: Mesh;
+    tetsRemoved: number;
+    pointsRemoved: number;
+    collapsesRejected: number;
+    maxErrorApplied: number;
+    pointMap?: Int32Array;
+    cellMaps?: Int32Array[];
   };
 
   /**
    * Decompose a mesh into exactly `nparts` balanced pieces for domain
    * decomposition (the count-driven complement to `split`). Pieces keep the
    * input's cell-block structure 1:1 (empty blocks included, unlike `split`),
-   * so concatenating them reproduces the input. The index maps are not
-   * carried across the JS boundary — use `recordIds` for the
+   * so concatenating them reproduces the input. Use `recordIds` for the
    * `partition:original_*_id` arrays, or `partitionLabels` for the raw
-   * assignment. `weightsKey` names a scalar `cell_data` array of per-cell
-   * weights. `ghostLayers > 0` grows each piece by that many shared-node BFS
-   * layers of other parts' cells (a halo), tagged `partition:ghost`.
+   * assignment; with `returnMaps: true`, each piece also carries
+   * `pointMap`/`cellMaps` (see {@link PointCellMaps}). `weightsKey` names a
+   * scalar `cell_data` array of per-cell weights. `ghostLayers > 0` grows
+   * each piece by that many shared-node BFS layers of other parts' cells (a
+   * halo), tagged `partition:ghost`.
    * @throws {Error} on `method: 'kahip'` (KaHIP is never part of the WASM
    *   build; the message names `MESHIOPLUSPLUS_WITH_KAHIP`), `nparts < 1`,
    *   `ghostLayers < 0`, or a bad weights array.
@@ -1788,7 +2182,8 @@ export interface MeshioPlusPlusModule {
     recordIds?: boolean,
     ghostLayers?: number,
     weightsKey?: string,
-  ): { partId: number; mesh: Mesh }[];
+    returnMaps?: boolean,
+  ): ({ partId: number; mesh: Mesh } & Partial<PointCellMaps>)[];
 
   /**
    * The per-cell part assignment only: one array per cell block
@@ -1937,16 +2332,54 @@ export interface MeshioPlusPlusModule {
  * instantiation otherwise. `variant: 'auto'` (default) picks the threaded build
  * under Node and in a cross-origin-isolated browser, else the sequential one.
  *
- * @param moduleOverrides forwarded as-is to the Emscripten module factory
- *   (e.g. `{ locateFile }` to relocate the `.wasm` binary for a bundler/CDN).
- *   `locateFile` receives the requested filename, so return the URL matching the
- *   loaded variant (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
+ * @param moduleOverrides forwarded to the Emscripten module factory, with
+ *   `locateFile`/`onAbort` wrapped for diagnostics (your own overrides still
+ *   run first) -- see {@link MeshioPlusPlusLoadError}. `locateFile` receives
+ *   the requested filename, so return the URL matching the loaded variant
+ *   (`meshioplusplus_wasm.wasm` or `meshioplusplus_wasm_mt.wasm`).
  * @param options.variant which native artifact to load: `'auto'` (default),
  *   `'mt'` (force threaded), or `'seq'` (force sequential).
+ * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
 export function loadMeshioPlusPlus(
-    moduleOverrides?: object,
+    moduleOverrides?: ModuleOverrides,
     options?: { variant?: 'auto' | 'mt' | 'seq' },
 ): Promise<MeshioPlusPlusModule>;
+
+/** Overrides forwarded to the underlying Emscripten module factory. */
+export interface ModuleOverrides {
+  /**
+   * Resolve the URL for a native artifact Emscripten wants to fetch (the
+   * `.wasm` binary, and under a threaded build its worker script). Receives
+   * the requested filename and Emscripten's own default prefix; return the
+   * URL to actually load. Must return the file matching the loaded variant
+   * (`meshioplusplus_wasm.wasm` vs `meshioplusplus_wasm_mt.wasm`) -- a
+   * mismatch either fails instantiation or, in the case of the sequential
+   * binary handed to the threaded glue, loads successfully but reports the
+   * wrong {@link MeshioPlusPlusModule.parallelBackend}, which
+   * `loadMeshioPlusPlus` detects and rejects with a {@link MeshioPlusPlusLoadError}.
+   */
+  locateFile?(path: string, prefix: string): string;
+  /** Called by Emscripten when the module aborts during instantiation. */
+  onAbort?(reason: unknown): void;
+  [key: string]: unknown;
+}
+
+/**
+ * Thrown by `loadMeshioPlusPlus()` when a WASM module fails to instantiate.
+ * `cause` is the underlying error (or abort reason) that triggered it.
+ */
+export interface MeshioPlusPlusLoadError extends Error {
+  name: 'MeshioPlusPlusLoadError';
+  /** Which native artifact was being loaded. */
+  variant: 'mt' | 'seq';
+  /** The glue module specifier (e.g. '../dist/meshioplusplus_wasm_mt.mjs'). */
+  glue: string;
+  /** The filename Emscripten asked `locateFile` to resolve, if it got that far. */
+  requestedFile?: string;
+  /** What `locateFile` returned for `requestedFile`. */
+  resolvedUrl?: string;
+  cause?: unknown;
+}
 
 export default loadMeshioPlusPlus;

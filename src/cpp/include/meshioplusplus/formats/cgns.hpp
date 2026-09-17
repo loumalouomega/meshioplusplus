@@ -66,6 +66,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -120,6 +121,45 @@ MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, 
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 
 /**
+ * @brief `read_cgns` with read options — the overload that resolves one step
+ *        of a transient (`BaseIterativeData_t`/`ZoneIterativeData_t`) file.
+ *
+ * A single-zone file whose zone carries a `ZoneIterativeData_t` with a
+ * `FlowSolutionPointers` array picks exactly the `FlowSolution_t` named by
+ * `rOptions.mTimeStep` (resolved via `ResolveTimeStep` against
+ * `BaseIterativeData_t`'s own `NumberOfSteps`) instead of reading every
+ * `FlowSolution_t` child. Without iterative data this is `read_cgns`'s own
+ * behaviour, unchanged, except that an array name written by more than one
+ * `FlowSolution_t` now `log::warn`s naming both instead of silently letting
+ * the later one win.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize a CGNS file's shape and available time steps without
+ *        decoding point coordinates or cell connectivity.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * `Zone_t`'s own `" data"` ( `[NVertex, NCell, NBoundVertex]`) gives point/cell
+ * counts with no section read, and `BaseIterativeData_t/TimeValues` (when
+ * present) fills `mTimeValues`. A file with no iterative data reports a
+ * single (empty) time value, same as a format with no time concept.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError on a structurally invalid file, as `read_cgns`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_cgns_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOptions);
+
+/**
  * @brief Whether this build carries the official CGNS library (cgnslib / the
  *        CGNS Mid-Level Library) backend.
  *
@@ -156,6 +196,35 @@ MESHIOPLUSPLUS_API bool cgns_has_cgnslib();
  *         when cgnslib cannot open or parse the file
  */
 MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath);
+
+/**
+ * @brief `read_cgns_mll` with read options — resolves one step of a
+ *        transient file the same way the `read_cgns` overload does, via
+ *        cgnslib's own `cg_biter_read`/`cg_ziter_read`/`cg_array_read` rather
+ *        than hand-parsed HDF5 groups.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief `read_cgns_metadata`'s cgnslib-backed path: `cg_biter_read`/
+ *        `cg_ziter_read`/`cg_array_read` for time values, `cg_zone_read` for
+ *        point/cell counts, `cg_nsections`/`cg_section_read` for cell-block
+ *        shapes -- no coordinate or connectivity array is read.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError when the build has no cgnslib, or cgnslib cannot open or
+ *         parse the file
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_cgns_mll_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 

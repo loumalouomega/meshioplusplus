@@ -54,4 +54,4 @@ The C++ core returns the pieces (the file-writing pattern is a caller concern). 
 
 - **C API** — `mio_split(mesh, by, tag_name)` returns a `mio_split_result` (`mio_split_result_count`, `..._key`, `..._mesh` / `..._take_mesh`, `..._free`). See the [C API reference](/c_api).
 - **Fortran** — `mesh%split(by, tag_name=..., keys=...)` returns an array of meshes. See the [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `split(mesh, by, tagName)` returns an array of `{key, mesh}`. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `split(mesh, by, tagName, returnMaps)` returns an array of `{key, mesh}`, each piece also carrying `pointMap`/`cellMaps` when `returnMaps` is set. See the [WebAssembly reference](/wasm).

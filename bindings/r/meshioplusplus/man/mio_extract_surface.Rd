@@ -61,7 +61,8 @@ mio_smooth(
   fix_boundary = TRUE,
   preserve_features = TRUE,
   feature_angle = 30,
-  guard_inversion = TRUE
+  guard_inversion = TRUE,
+  frozen = NULL
 )
 
 mio_crop_bbox(mesh, lo, hi, mode = "all", record_ids = FALSE)
@@ -157,7 +158,8 @@ mio_decimate(
   placement = "optimal",
   preserve_boundary = TRUE,
   preserve_features = TRUE,
-  feature_angle = 30
+  feature_angle = 30,
+  frozen = NULL
 )
 
 mio_partition(
@@ -227,6 +229,11 @@ convention).}
 
 \item{guard_inversion}{Reject any move that would flip a cell's signed
 measure.}
+
+\item{frozen}{For \code{mio_smooth()} and \code{mio_decimate()}, an optional vector of
+1-based point ids to pin outright (unioned with the boundary/feature pins
+for \code{mio_smooth()}). Shifted to 0-based across the C ABI, as every index
+array in this binding; an out-of-range id raises by name.}
 
 \item{lo, hi}{Bounding-box corners (3 numbers each).}
 
@@ -346,10 +353,6 @@ Index maps and permutations are \strong{1-based}, and the C API's \code{-1}
 "pruned / absent" sentinel becomes \code{0} -- never a valid 1-based index, so it
 stays unambiguous. \code{mio_partition_labels()} is the exception: those are part
 \emph{ids}, not indices, so they stay in \code{0:(nparts - 1)}.
-
-The \code{frozen} pin mask of \code{mio_smooth()} and \code{mio_decimate()} is not exposed
-across the C ABI, a documented gap shared with the Fortran and Julia
-bindings.
 }
 \examples{
 \dontrun{

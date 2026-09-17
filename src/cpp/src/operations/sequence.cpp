@@ -191,30 +191,20 @@ std::string seq_resolve_read_format(const std::string& rPath, const std::string&
 
 }  // namespace
 
-namespace {
-
-/// Whether `rFormat`'s reader can return more than one step at all.
-///
-/// Consulted BEFORE `registry_read_metadata`, which for a format with no
-/// native metadata reader costs a full read -- so this is what keeps the step
-/// probe free for the 38 formats that cannot carry time. Same shape and same
-/// anti-drift discipline as `sequence_write_supports_time`: a small owned set,
-/// cross-checked by a gtest against which readers actually honour
-/// `ReadOptions::mTimeStep`.
-///
-/// **MED is deliberately absent.** It honours `ReadOptions::mTimeStep`, but has
-/// no entry in `registry_metadata_readers()`, so there is no count to read:
-/// probing it would cost a full read and still report one step. That is a
-/// recorded gap in MED's metadata support, and it closes here for free the
-/// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
-    // it reported one step and this predicate had nothing to gate on.
-    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
+    // it reported one step and this predicate had nothing to gate on. med,
+    // cgns, tecplot, gmsh and ensight joined in v11.3.0 (roadmap §1 tier B1):
+    // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
+    // read either way) but never filled mTimeValues until now; for ensight,
+    // reading a VARIABLE file at all is new (previously geometry-only).
+    // openfoam joined in v11.4.0 (roadmap §1 tier B2): its time-directory
+    // fields are new; the polyMesh topology itself never had a time concept.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+          rFormat == "ensight" || rFormat == "openfoam";
 }
-
-}  // namespace
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
     // Registry-derived, never a per-format table: a format whose metadata

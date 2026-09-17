@@ -419,6 +419,44 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
+    !> Interop mirror of C `mio_smooth_opts`. Field order and types are ABI
+    !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved_pad0`/`reserved_pad1`/`reserved` are padding for
+    !> additive growth and must stay zero. `method`/`frozen` are a C string
+    !> and an array, so they need the same TARGET-buffer + c_loc idiom
+    !> `region`/`cells` use in mio_refine_opts_t -- see mesh_smooth below.
+    type, bind(c) :: mio_smooth_opts_t
+        type(c_ptr) :: method = c_null_ptr
+        integer(c_int32_t) :: iterations = 10
+        integer(c_int32_t) :: reserved_pad0 = 0
+        real(c_double) :: lambda = -1.0_c_double
+        real(c_double) :: mu = -0.34_c_double
+        integer(c_int32_t) :: fix_boundary = 1
+        integer(c_int32_t) :: preserve_features = 1
+        real(c_double) :: feature_angle = 30.0_c_double
+        integer(c_int32_t) :: guard_inversion = 1
+        integer(c_int32_t) :: reserved_pad1 = 0
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_decimate_opts`. Field order and types are ABI
+    !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved` is padding for additive growth and must stay zero.
+    type, bind(c) :: mio_decimate_opts_t
+        real(c_double) :: target_ratio = -1.0_c_double
+        integer(c_int64_t) :: target_faces = -1_c_int64_t
+        real(c_double) :: max_error = -1.0_c_double
+        type(c_ptr) :: placement = c_null_ptr
+        integer(c_int32_t) :: preserve_boundary = 1
+        integer(c_int32_t) :: preserve_features = 1
+        real(c_double) :: feature_angle = 30.0_c_double
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_remesh_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
     !> exactly; `reserved`/`reserved_d` are padding for additive growth and
@@ -1560,6 +1598,33 @@ module meshioplusplus
             import :: c_ptr, mio_refine_opts_t
             type(c_ptr), value :: h
             type(mio_refine_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_smooth_opts_init(opts) bind(c, name="mio_smooth_opts_init")
+            import :: mio_smooth_opts_t
+            type(mio_smooth_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_smooth_ex(h, opts, nodes_moved, max_displacement, skipped_inversion) &
+                bind(c, name="mio_smooth_ex") result(r)
+            import :: c_ptr, c_int64_t, c_double, mio_smooth_opts_t
+            type(c_ptr), value :: h
+            type(mio_smooth_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: nodes_moved, skipped_inversion
+            real(c_double), intent(out) :: max_displacement
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_decimate_opts_init(opts) bind(c, name="mio_decimate_opts_init")
+            import :: mio_decimate_opts_t
+            type(mio_decimate_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_decimate_ex(h, opts) bind(c, name="mio_decimate_ex") result(r)
+            import :: c_ptr, mio_decimate_opts_t
+            type(c_ptr), value :: h
+            type(mio_decimate_opts_t), intent(in) :: opts
             type(c_ptr) :: r
         end function
 
@@ -3157,15 +3222,29 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> One-time ABI layout guard for mio_smooth_opts_t, the same
+    !> check_refine_opts_layout precedent applied here. Runs once per
+    !> process (a SAVE'd flag), not on every smooth() call.
+    subroutine check_smooth_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_smooth_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 104_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_smooth_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
     !> Smooth the mesh's point coordinates, leaving topology and data intact.
     !> `method` is "laplacian" or "taubin"; `iterations` is the pass count (for
     !> taubin one iteration is two passes). A negative `lambda` — the default —
     !> means "this method's own default" (0.5 laplacian, 0.33 taubin). The
-    !> optional out-args receive the run summary. The caller pin mask (mFrozen)
-    !> is not exposed across the C ABI.
+    !> optional out-args receive the run summary.
     function mesh_smooth(self, method, iterations, lambda, mu, fix_boundary, preserve_features, &
                          feature_angle, guard_inversion, nodes_moved, max_displacement, &
-                         skipped_inversion, stat, errmsg) result(out)
+                         skipped_inversion, stat, errmsg, frozen) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in) :: method
         integer, intent(in) :: iterations
@@ -3175,36 +3254,53 @@ contains
         real(real64), intent(out), optional :: max_displacement
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> 1-based point ids to pin outright, unioned with the boundary/
+        !> feature pins. Shifted to the C API's 0-based numbering inside.
+        integer(int64), intent(in), optional :: frozen(:)
         type(mio_mesh) :: out
-        integer(c_int) :: cfixb, cfeat, cguard
-        real(c_double) :: clambda, cmu, cangle
+        type(c_ptr) :: res
         integer(c_int64_t) :: nmoved, nskip
         real(c_double) :: maxdisp
-        clambda = -1.0_c_double  ! negative = this method's own default
-        if (present(lambda)) clambda = real(lambda, c_double)
-        cmu = -0.34_c_double
-        if (present(mu)) cmu = real(mu, c_double)
-        cangle = 30.0_c_double
-        if (present(feature_angle)) cangle = real(feature_angle, c_double)
-        cfixb = 1
+        type(mio_smooth_opts_t) :: opts
+        ! NUL-terminated copy and the frozen-id buffer must outlive the call;
+        ! c_loc needs them contiguous and TARGET, the mesh_refine idiom.
+        character(kind=c_char, len=STRBUF_LEN), target :: method_buf
+        integer(c_int64_t), allocatable, target :: frozen_ids(:)
+
+        call check_smooth_opts_layout()
+        call c_mio_smooth_opts_init(opts)
+        method_buf = trim(method)//c_null_char
+        opts%method = c_loc(method_buf(1:1))
+        opts%iterations = int(iterations, c_int32_t)
+        if (present(lambda)) opts%lambda = real(lambda, c_double)
+        if (present(mu)) opts%mu = real(mu, c_double)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
         if (present(fix_boundary)) then
-            if (.not. fix_boundary) cfixb = 0
+            opts%fix_boundary = 0
+            if (fix_boundary) opts%fix_boundary = 1
         end if
-        cfeat = 1
         if (present(preserve_features)) then
-            if (.not. preserve_features) cfeat = 0
+            opts%preserve_features = 0
+            if (preserve_features) opts%preserve_features = 1
         end if
-        cguard = 1
         if (present(guard_inversion)) then
-            if (.not. guard_inversion) cguard = 0
+            opts%guard_inversion = 0
+            if (guard_inversion) opts%guard_inversion = 1
         end if
-        out%handle = c_mio_smooth(self%handle, c_str(method), int(iterations, c_int), &
-                                  clambda, cmu, cfixb, cfeat, cangle, cguard, &
-                                  nmoved, maxdisp, nskip)
-        if (.not. c_associated(out%handle)) then
+        if (present(frozen)) then
+            allocate (frozen_ids(max(size(frozen), 1)))
+            frozen_ids = 0_c_int64_t
+            if (size(frozen) > 0) frozen_ids(1:size(frozen)) = int(frozen, c_int64_t) - 1_c_int64_t
+            opts%frozen = c_loc(frozen_ids(1))
+            opts%num_frozen = int(size(frozen), c_int64_t)
+        end if
+
+        res = c_mio_smooth_ex(self%handle, opts, nmoved, maxdisp, nskip)
+        if (.not. c_associated(res)) then
             call handle_failure('smooth', mio_error_message(), stat, errmsg)
             return
         end if
+        out%handle = res
         if (present(nodes_moved)) nodes_moved = int(nmoved, int64)
         if (present(max_displacement)) max_displacement = real(maxdisp, real64)
         if (present(skipped_inversion)) skipped_inversion = int(nskip, int64)
@@ -4794,10 +4890,23 @@ contains
     !> boundary and feature vertices are pinned by default. The optional
     !> `point_map` receives, 1-based, each input point's surviving output index
     !> (0 when the survivor itself was pruned).
+    !> One-time ABI layout guard for mio_decimate_opts_t.
+    subroutine check_decimate_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_decimate_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 96_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_decimate_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
     function mesh_decimate(self, ratio, target_faces, max_error, placement, &
                            preserve_boundary, preserve_features, feature_angle, &
                            faces_removed, points_removed, collapses_rejected, &
-                           max_error_applied, point_map, stat, errmsg) result(out)
+                           max_error_applied, point_map, stat, errmsg, frozen) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in), optional :: ratio
         integer(int64), intent(in), optional :: target_faces
@@ -4813,33 +4922,45 @@ contains
         integer(int64), allocatable, intent(out), optional :: point_map(:)
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> 1-based point ids to pin outright. Shifted to the C API's 0-based
+        !> numbering inside.
+        integer(int64), intent(in), optional :: frozen(:)
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
-        real(c_double) :: cratio, cerror, cangle
-        integer(c_int64_t) :: cfaces, nlen
-        integer(c_int) :: cpb, cpf, s, dt
+        integer(c_int64_t) :: nlen
+        integer(c_int) :: s, dt
         integer(c_int64_t), pointer :: fp(:)
-        character(:), allocatable :: cplacement
-        cratio = -1.0_c_double
-        if (present(ratio)) cratio = real(ratio, c_double)
-        cfaces = -1_c_int64_t
-        if (present(target_faces)) cfaces = int(target_faces, c_int64_t)
-        cerror = -1.0_c_double
-        if (present(max_error)) cerror = real(max_error, c_double)
-        cplacement = 'optimal'
-        if (present(placement)) cplacement = placement
-        cpb = 1
+        type(mio_decimate_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: placement_buf
+        integer(c_int64_t), allocatable, target :: frozen_ids(:)
+
+        call check_decimate_opts_layout()
+        call c_mio_decimate_opts_init(opts)
+        if (present(ratio)) opts%target_ratio = real(ratio, c_double)
+        if (present(target_faces)) opts%target_faces = int(target_faces, c_int64_t)
+        if (present(max_error)) opts%max_error = real(max_error, c_double)
+        if (present(placement)) then
+            placement_buf = trim(placement)//c_null_char
+            opts%placement = c_loc(placement_buf(1:1))
+        end if
         if (present(preserve_boundary)) then
-            if (.not. preserve_boundary) cpb = 0
+            opts%preserve_boundary = 0
+            if (preserve_boundary) opts%preserve_boundary = 1
         end if
-        cpf = 1
         if (present(preserve_features)) then
-            if (.not. preserve_features) cpf = 0
+            opts%preserve_features = 0
+            if (preserve_features) opts%preserve_features = 1
         end if
-        cangle = 30.0_c_double
-        if (present(feature_angle)) cangle = real(feature_angle, c_double)
-        res = c_mio_decimate(self%handle, cratio, cfaces, cerror, c_str(cplacement), &
-                             cpb, cpf, cangle)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(frozen)) then
+            allocate (frozen_ids(max(size(frozen), 1)))
+            frozen_ids = 0_c_int64_t
+            if (size(frozen) > 0) frozen_ids(1:size(frozen)) = int(frozen, c_int64_t) - 1_c_int64_t
+            opts%frozen = c_loc(frozen_ids(1))
+            opts%num_frozen = int(size(frozen), c_int64_t)
+        end if
+
+        res = c_mio_decimate_ex(self%handle, opts)
         if (.not. c_associated(res)) then
             call handle_failure('decimate', mio_error_message(), stat, errmsg)
             return

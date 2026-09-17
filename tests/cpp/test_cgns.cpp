@@ -26,6 +26,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include <hdf5.h>
@@ -38,12 +39,49 @@
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
 #endif
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 
 using meshioplusplus::detail::read_double;  // NOLINT
 namespace h5 = meshioplusplus::h5;
 
 namespace {
+
+// A fixed-length, NULLTERM-padded string attribute -- cgnslib's own
+// ADFH_Get_Label/open_node read "name"/"label"/"type" as exactly this shape
+// (33/33/3 bytes) and, empirically, crash on a variable-length one (the
+// h5py-style attribute `h5::write_attr_string` writes), rather than erroring
+// gracefully. Mirrors cgns.cpp's own file-private cgns_write_attr_str, which
+// is why hand-built CGNS fixtures in this file use this instead of the
+// shared h5:: helper.
+void cgns_write_fixed_attr_str(hid_t loc, const std::string& rName, const std::string& rValue,
+                               std::size_t size) {
+    h5::Hid t(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(t, size);
+    H5Tset_strpad(t, H5T_STR_NULLTERM);
+    h5::Hid space(H5Screate(H5S_SCALAR), H5Sclose);
+    h5::Hid a(H5Acreate2(loc, rName.c_str(), t, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    std::string buf(size, '\0');
+    std::memcpy(buf.data(), rValue.data(), std::min(rValue.size(), size));
+    H5Awrite(a, t, buf.data());
+}
+
+void cgns_write_node_flags(hid_t loc) {
+    hsize_t dim = 1;
+    h5::Hid space(H5Screate_simple(1, &dim, nullptr), H5Sclose);
+    h5::Hid a(H5Acreate2(loc, "flags", H5T_STD_I32LE, space, H5P_DEFAULT, H5P_DEFAULT), H5Aclose);
+    std::int32_t v = 1;
+    H5Awrite(a, H5T_NATIVE_INT32, &v);
+}
+
+// The three CGNS node-identity attributes at once -- name/label/type.
+void cgns_write_test_node_attrs(hid_t loc, const std::string& rName, const std::string& rLabel,
+                                const std::string& rType) {
+    cgns_write_fixed_attr_str(loc, "name", rName, 33);
+    cgns_write_fixed_attr_str(loc, "label", rLabel, 33);
+    cgns_write_fixed_attr_str(loc, "type", rType, 3);
+    cgns_write_node_flags(loc);
+}
 
 using P3 = std::array<double, 3>;
 
@@ -354,6 +392,137 @@ TEST(Cgns, LegacyRead) {
 
     std::error_code ec;
     std::filesystem::remove(p, ec);
+}
+
+TEST(Cgns, TransientReadSelectsOneStepByFlowSolutionPointers) {
+    // roadmap §1 tier B1: the raw-HDF5 reader's own BaseIterativeData_t/
+    // ZoneIterativeData_t parsing, hand-built via h5:: calls rather than
+    // cgnslib (see CgnsMll's twin test for the MLL path against real cgnslib
+    // bytes, which this fixture -- close enough to satisfy this reader, not
+    // close enough to satisfy cgnslib's own stricter internal validation --
+    // does not reach). When cgnslib IS linked in, read_cgns/read_cgns_metadata
+    // try it FIRST, so this test -- which exists to pin the raw path
+    // specifically -- skips rather than asserting on the MLL's (already
+    // separately covered) behaviour on a fixture not built to its exact
+    // requirements.
+    if (meshioplusplus::cgns_has_cgnslib())
+        GTEST_SKIP() << "raw-HDF5-path-specific fixture; see CgnsMll's own transient test for "
+                        "the cgnslib path";
+
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
+    m.AddCellBlock("tetra", mt::conn_from({{0, 1, 2, 3}}));
+    {
+        meshioplusplus::NDArray press(meshioplusplus::DType::Float64, {4});
+        const double v[4] = {10, 20, 30, 40};
+        for (int i = 0; i < 4; ++i)
+            press.As<double>()[i] = v[i];
+        m.AddPointData("Pressure", std::move(press));
+    }
+    const std::string path = mt::temp_path("_transient.cgns");
+    meshioplusplus::write_cgns(path, m, -1);
+
+    {
+        h5::SilenceErrors silence;
+        h5::Hid f(H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
+        h5::Hid base = h5::open_group(f, "Base");
+        h5::Hid zone = h5::open_group(base, "Zone1");
+
+        // A second FlowSolution_t, matching "FlowSolution"'s own shape, with
+        // distinguishable values.
+        h5::Hid sol2 = h5::create_group(zone, "FlowSolution2");
+        cgns_write_test_node_attrs(sol2, "FlowSolution2", "FlowSolution_t", "MT");
+        h5::Hid gl = h5::create_group(sol2, "GridLocation");
+        cgns_write_test_node_attrs(gl, "GridLocation", "GridLocation_t", "C1");
+        {
+            meshioplusplus::NDArray loc(meshioplusplus::DType::Int8, {6});
+            const std::string s = "Vertex";
+            for (std::size_t i = 0; i < s.size(); ++i)
+                loc.As<std::int8_t>()[i] = static_cast<std::int8_t>(s[i]);
+            h5::write_dataset(gl, " data", loc);
+        }
+        h5::Hid press = h5::create_group(sol2, "Pressure");
+        cgns_write_test_node_attrs(press, "Pressure", "DataArray_t", "R8");
+        {
+            meshioplusplus::NDArray vals(meshioplusplus::DType::Float64, {4});
+            const double v[4] = {11, 21, 31, 41};
+            for (int i = 0; i < 4; ++i)
+                vals.As<double>()[i] = v[i];
+            h5::write_dataset(press, " data", vals);
+        }
+
+        // SimulationType_t: cgnslib's cg_biter_read requires this to
+        // recognize the base as carrying time-dependent data at all, even
+        // though this reader's own BaseIterativeData_t lookup does not.
+        h5::Hid simtype = h5::create_group(base, "SimulationType");
+        cgns_write_test_node_attrs(simtype, "SimulationType", "SimulationType_t", "C1");
+        {
+            const std::string s = "TimeAccurate";
+            meshioplusplus::NDArray sim(meshioplusplus::DType::Int8, {s.size()});
+            for (std::size_t i = 0; i < s.size(); ++i)
+                sim.As<std::int8_t>()[i] = static_cast<std::int8_t>(s[i]);
+            h5::write_dataset(simtype, " data", sim);
+        }
+
+        // BaseIterativeData_t/TimeValues.
+        h5::Hid biter = h5::create_group(base, "TimeIterValues");
+        cgns_write_test_node_attrs(biter, "TimeIterValues", "BaseIterativeData_t", "I4");
+        {
+            meshioplusplus::NDArray nsteps(meshioplusplus::DType::Int32, {1});
+            nsteps.As<std::int32_t>()[0] = 2;
+            h5::write_dataset(biter, " data", nsteps);
+        }
+        h5::Hid tv = h5::create_group(biter, "TimeValues");
+        cgns_write_test_node_attrs(tv, "TimeValues", "DataArray_t", "R8");
+        {
+            meshioplusplus::NDArray times(meshioplusplus::DType::Float64, {2});
+            times.As<double>()[0] = 0.0;
+            times.As<double>()[1] = 2.5;
+            h5::write_dataset(tv, " data", times);
+        }
+
+        // ZoneIterativeData_t/FlowSolutionPointers: (2, 32) Int8, one
+        // fixed-width space-padded name per row -- the HDF5-mapping row-major
+        // shape of the ADF/Fortran {32, N} dims (see cgns.cpp's own comment).
+        h5::Hid ziter = h5::create_group(zone, "ZoneIterativeData");
+        cgns_write_test_node_attrs(ziter, "ZoneIterativeData", "ZoneIterativeData_t", "MT");
+        h5::Hid fp = h5::create_group(ziter, "FlowSolutionPointers");
+        cgns_write_test_node_attrs(fp, "FlowSolutionPointers", "DataArray_t", "C1");
+        {
+            meshioplusplus::NDArray ptrs(meshioplusplus::DType::Int8, {2, 32});
+            std::int8_t* d = ptrs.As<std::int8_t>();
+            for (std::size_t i = 0; i < 64; ++i)
+                d[i] = ' ';
+            const std::string n1 = "FlowSolution", n2 = "FlowSolution2";
+            for (std::size_t i = 0; i < n1.size(); ++i)
+                d[i] = static_cast<std::int8_t>(n1[i]);
+            for (std::size_t i = 0; i < n2.size(); ++i)
+                d[32 + i] = static_cast<std::int8_t>(n2[i]);
+            h5::write_dataset(fp, " data", ptrs);
+        }
+    }
+
+    meshioplusplus::ReadOptions opts;
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_cgns_metadata(path, opts);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+
+    meshioplusplus::ReadOptions first;
+    first.mTimeStep = 0;
+    const mt::Mesh out0 = meshioplusplus::read_cgns(path, first);
+    EXPECT_DOUBLE_EQ(read_double(out0.PointData("Pressure"), 0), 10.0);
+
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    const mt::Mesh out1 = meshioplusplus::read_cgns(path, second);
+    EXPECT_DOUBLE_EQ(read_double(out1.PointData("Pressure"), 0), 11.0);
+
+    meshioplusplus::ReadOptions too_far;
+    too_far.mTimeStep = 5;
+    EXPECT_THROW(meshioplusplus::read_cgns(path, too_far), meshioplusplus::ReadError);
+
+    std::remove(path.c_str());
 }
 
 // A jagged polygon block used to be refused outright; since v9.21.0 it is an
@@ -738,6 +907,92 @@ TEST(CgnsMll, ReadsNgonNfacePolyhedralSections) {
     // The geometry must actually be the unit cube -- reading six faces of the
     // right arity proves nothing about whether the node ids landed correctly.
     EXPECT_NEAR(meshioplusplus::compute_stats(got).mUnsignedVolume, 1.0, 1e-12);
+
+    std::remove(path.c_str());
+}
+
+TEST(CgnsMll, TransientReadSelectsOneStepByFlowSolutionPointers) {
+    // roadmap §1 tier B1: BaseIterativeData_t/TimeValues + ZoneIterativeData_t/
+    // FlowSolutionPointers, written through cgnslib's own API so the bytes are
+    // the MLL's -- not this repo's idea of the encoding.
+    const std::string path = mt::temp_path("_mll_transient.cgns");
+    std::remove(path.c_str());
+
+    int fn = 0, B = 0, Z = 0, S = 0;
+    ASSERT_EQ(cg_open(path.c_str(), CG_MODE_WRITE, &fn), CG_OK) << cg_get_error();
+    ASSERT_EQ(cg_base_write(fn, "Base", 3, 3, &B), CG_OK);
+    cgsize_t zsize[3] = {4, 1, 0};
+    ASSERT_EQ(cg_zone_write(fn, B, "Zone", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+    const double x[4] = {0, 1, 0, 0}, y[4] = {0, 0, 1, 0}, z[4] = {0, 0, 0, 1};
+    int c = 0;
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+    ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+    const cgsize_t conn[4] = {1, 2, 3, 4};
+    ASSERT_EQ(cg_section_write(fn, B, Z, "Tet", CGNS_ENUMV(TETRA_4), 1, 1, 0, conn, &S), CG_OK);
+
+    int S1 = 0, S2 = 0, F = 0;
+    ASSERT_EQ(cg_sol_write(fn, B, Z, "FlowSolution1", CGNS_ENUMV(Vertex), &S1), CG_OK);
+    const double p1[4] = {10, 20, 30, 40};
+    ASSERT_EQ(cg_field_write(fn, B, Z, S1, CGNS_ENUMV(RealDouble), "Pressure", p1, &F), CG_OK);
+    ASSERT_EQ(cg_sol_write(fn, B, Z, "FlowSolution2", CGNS_ENUMV(Vertex), &S2), CG_OK);
+    const double p2[4] = {11, 21, 31, 41};
+    ASSERT_EQ(cg_field_write(fn, B, Z, S2, CGNS_ENUMV(RealDouble), "Pressure", p2, &F), CG_OK);
+
+    ASSERT_EQ(cg_biter_write(fn, B, "TimeIterValues", 2), CG_OK);
+    ASSERT_EQ(cg_goto(fn, B, "BaseIterativeData_t", 1, "end"), CG_OK);
+    const double times[2] = {0.0, 2.5};
+    cgsize_t dim1[1] = {2};
+    ASSERT_EQ(cg_array_write("TimeValues", CGNS_ENUMV(RealDouble), 1, dim1, times), CG_OK);
+
+    ASSERT_EQ(cg_ziter_write(fn, B, Z, "ZoneIterativeData"), CG_OK);
+    ASSERT_EQ(cg_goto(fn, B, "Zone_t", Z, "ZoneIterativeData_t", 1, "end"), CG_OK);
+    std::string ptrs(64, ' ');
+    ptrs.replace(0, 13, "FlowSolution1");
+    ptrs.replace(32, 13, "FlowSolution2");
+    cgsize_t dim2[2] = {32, 2};
+    ASSERT_EQ(cg_array_write("FlowSolutionPointers", CGNS_ENUMV(Character), 2, dim2, ptrs.data()),
+             CG_OK);
+    ASSERT_EQ(cg_close(fn), CG_OK);
+
+    // Metadata: two steps, native (no full read), no point/cell decode needed.
+    meshioplusplus::ReadOptions opts;
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_cgns_mll_metadata(path, opts);
+    EXPECT_FALSE(meta.mFellBackToFullRead);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+    EXPECT_EQ(meta.mNumPoints, 4u);
+
+    // Step 0 -> FlowSolution1; step 1 (and -1) -> FlowSolution2.
+    meshioplusplus::ReadOptions first;
+    first.mTimeStep = 0;
+    const mt::Mesh out0 = meshioplusplus::read_cgns_mll(path, first);
+    ASSERT_TRUE(out0.HasPointData("Pressure"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out0.PointData("Pressure"), 0), 10.0);
+
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    const mt::Mesh out1 = meshioplusplus::read_cgns_mll(path, second);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out1.PointData("Pressure"), 0), 11.0);
+
+    meshioplusplus::ReadOptions last;
+    last.mTimeStep = -1;
+    const mt::Mesh out_last = meshioplusplus::read_cgns_mll(path, last);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out_last.PointData("Pressure"), 0), 11.0);
+
+    // Out of range names the count, not a silent clamp.
+    meshioplusplus::ReadOptions too_far;
+    too_far.mTimeStep = 5;
+    EXPECT_THROW(meshioplusplus::read_cgns_mll(path, too_far), meshioplusplus::ReadError);
+
+    // The registry-driven read_cgns overload (and the sequence layer behind
+    // it) resolve identically through the MLL dispatch.
+    const mt::Mesh via_registry = meshioplusplus::read_cgns(path, second);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(via_registry.PointData("Pressure"), 0),
+                     11.0);
+    EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("cgns"));
+    EXPECT_EQ(meshioplusplus::sequence_num_steps(path, "cgns"), 2u);
 
     std::remove(path.c_str());
 }

@@ -64,11 +64,16 @@
 // System includes
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <system_error>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -82,10 +87,18 @@
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
+#include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/properties.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -104,11 +117,13 @@
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -187,26 +202,94 @@ val ndarray_to_float64_array(const NDArray& rA) {
 // Integer-dtype NDArray (mesh connectivity, always Int64 in the C++ core) ->
 // Int32Array. Node/point counts for any mesh a browser can reasonably handle
 // fit comfortably in 32 bits; Int32Array is far more JS-ergonomic than
-// BigInt64Array for typical mesh-processing consumer code.
+// BigInt64Array for typical mesh-processing consumer code. Throws by value
+// (rather than silently wrapping) if a source element does not survive the
+// narrowing round-trip -- the round-trip check (cast down, cast back up,
+// compare) catches overflow for both signed and unsigned source dtypes
+// without a dtype-specific range comparison.
 val ndarray_to_int32_array(const NDArray& rA) {
     std::vector<std::int32_t> tmp(rA.Size());
     meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
         const T* src = rA.As<T>();
-        for (std::size_t i = 0; i < rA.Size(); ++i)
+        for (std::size_t i = 0; i < rA.Size(); ++i) {
             tmp[i] = static_cast<std::int32_t>(src[i]);
+            if constexpr (sizeof(T) > sizeof(std::int32_t)) {
+                if (static_cast<T>(tmp[i]) != src[i])
+                    throw meshioplusplus::WriteError(
+                        "meshio++ (wasm): index value " + std::to_string(src[i]) +
+                        " does not fit in a 32-bit integer (Int32Array)");
+            }
+        }
     });
     return int32_array_from(tmp.data(), tmp.size());
+}
+
+// dtype -> the JS typed-array constructor name it round-trips through
+// unchanged. WASM_BIGINT (on by default since Emscripten's embind bridges
+// int64_t/uint64_t to/from JS `bigint` natively) is what makes the Int64/
+// UInt64 rows below possible; see doc/wasm.md's "Data arrays" section.
+const char* js_typed_array_ctor(DType dt) {
+    switch (dt) {
+        case DType::Float32:
+            return "Float32Array";
+        case DType::Float64:
+            return "Float64Array";
+        case DType::Int8:
+            return "Int8Array";
+        case DType::Int16:
+            return "Int16Array";
+        case DType::Int32:
+            return "Int32Array";
+        case DType::Int64:
+            return "BigInt64Array";
+        case DType::UInt8:
+            return "Uint8Array";
+        case DType::UInt16:
+            return "Uint16Array";
+        case DType::UInt32:
+            return "Uint32Array";
+        case DType::UInt64:
+            return "BigUint64Array";
+    }
+    return "Float64Array";  // unreachable
+}
+
+// Any-dtype NDArray -> the JS typed-array class matching its dtype exactly
+// (see `js_typed_array_ctor`), used for point_data/cell_data/field_data:
+// unlike `ndarray_to_float64_array`, the dtype crosses the boundary as-is
+// rather than upcasting to double (roadmap §1 "WASM parity": dtype carry).
+val ndarray_to_typed_array(const NDArray& rA) {
+    return meshioplusplus::detail::dispatch_dtype(rA.Dtype(), [&]<class T>() -> val {
+        val arr = val::global(js_typed_array_ctor(rA.Dtype())).new_(rA.Size());
+        arr.call<void>("set", val(emscripten::typed_memory_view(rA.Size(), rA.As<T>())));
+        return arr;
+    });
+}
+
+// Per-input-block index maps (`std::vector<NDArray>`, one entry per block,
+// each Int64 shape `(num_cells_in_block,)`) -> a JS array of Int32Array, for
+// the `returnMaps` option every op below that prunes/renumbers cells offers.
+val cell_maps_to_val(const std::vector<NDArray>& rMaps) {
+    val out = val::array();
+    for (const NDArray& m : rMaps)
+        out.call<void>("push", ndarray_to_int32_array(m));
+    return out;
 }
 
 /**
  * @brief Convert a C++ `Mesh` into a plain JS object of typed arrays.
  *
  * Shape: `{ points: Float64Array, dim: number, cells: [{type, data:
- * Int32Array, nodesPerCell}], point_data: {name: Float64Array}, cell_data:
- * {name: Float64Array[]} (one array per cell block, same order as `cells`),
- * field_data: {name: Float64Array} }` -- deliberately mirrors the Python
+ * Int32Array, nodesPerCell}], point_data: {name: DataArray}, cell_data:
+ * {name: DataArray[]} (one array per cell block, same order as `cells`),
+ * field_data: {name: DataArray} }` -- deliberately mirrors the Python
  * `Mesh`'s structure (points, a list of cell blocks, cell_data as one array
- * per block) for consistency with the rest of meshio++.
+ * per block) for consistency with the rest of meshio++. `DataArray` is
+ * whatever `ndarray_to_typed_array` returns for that array's dtype (see
+ * `js_typed_array_ctor`) -- points and connectivity are always Float64Array/
+ * Int32Array, but a data array's class follows its dtype, which the mesh's
+ * own storage canonicalizes to Float64 (float kinds) or Int64 (integer
+ * kinds): see doc/wasm.md's "Data array dtypes" section.
  *
  * Data arrays are flat, and a flat typed array carries no shape, so each of
  * the three data maps has a sibling `point_data_components` /
@@ -291,7 +374,7 @@ val mesh_to_val(const Mesh& rMesh) {
     val point_data_components = val::object();
     for (const auto& name : rMesh.PointDataNames()) {
         const NDArray& a = rMesh.PointData(name);
-        point_data.set(name, ndarray_to_float64_array(a));
+        point_data.set(name, ndarray_to_typed_array(a));
         if (cols_of(a) > 1)
             point_data_components.set(name, static_cast<double>(cols_of(a)));
     }
@@ -303,7 +386,7 @@ val mesh_to_val(const Mesh& rMesh) {
     for (const auto& name : rMesh.CellDataNames()) {
         val blocks = val::array();
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.call<void>("push", ndarray_to_float64_array(rMesh.CellData(name, b)));
+            blocks.call<void>("push", ndarray_to_typed_array(rMesh.CellData(name, b)));
         cell_data.set(name, blocks);
         // The component count is a property of the ARRAY, not of one block:
         // the uniform mesh API guarantees every block of a named cell_data
@@ -318,7 +401,7 @@ val mesh_to_val(const Mesh& rMesh) {
     val field_data_components = val::object();
     for (const auto& name : rMesh.FieldDataNames()) {
         const NDArray& a = rMesh.FieldData(name);
-        field_data.set(name, ndarray_to_float64_array(a));
+        field_data.set(name, ndarray_to_typed_array(a));
         if (cols_of(a) > 1)
             field_data_components.set(name, static_cast<double>(cols_of(a)));
     }
@@ -342,6 +425,35 @@ val mesh_to_val(const Mesh& rMesh) {
     }
     out.set("regions", regions);
 
+    // Property sets (`Begin Properties` blocks -- Kratos material data, and
+    // whatever other formats grow an equivalent): carried on the mesh, not a
+    // per-format side struct, since a side struct is unreachable through the
+    // registry (see mesh_api.hpp's "Property sets" section). Currently only
+    // MDPA populates them. `values[k].values` is always Float64 (the
+    // uniform API's own contract for PropertyValue), with a table's row
+    // count recovered from its declared `components` -- the same
+    // *_components device point_data/cell_data/field_data already use.
+    val property_sets = val::array();
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i) {
+        const meshioplusplus::PropertySet& ps = rMesh.GetPropertySet(i);
+        val jps = val::object();
+        jps.set("id", static_cast<double>(ps.mId));
+        val values = val::array();
+        for (const meshioplusplus::PropertyValue& v : ps.mValues) {
+            val jv = val::object();
+            jv.set("key", v.mKey);
+            jv.set("values", ndarray_to_float64_array(v.mValues));
+            jv.set("text", v.mText);
+            jv.set("isTable", v.mIsTable);
+            if (cols_of(v.mValues) > 1)
+                jv.set("components", static_cast<double>(cols_of(v.mValues)));
+            values.call<void>("push", jv);
+        }
+        jps.set("values", values);
+        property_sets.call<void>("push", jps);
+    }
+    out.set("propertySets", property_sets);
+
     return out;
 }
 
@@ -361,6 +473,39 @@ NDArray int64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape
     NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
     std::copy(tmp.begin(), tmp.end(), out.As<std::int64_t>());
     return out;
+}
+
+// The dtype a JS data array (point_data/cell_data/field_data) declares, from
+// its typed-array class name -- the inverse of `js_typed_array_ctor`. A plain
+// JS `Array` has no dtype of its own and is treated as Float64, matching the
+// behaviour every caller had before this array-class carried a dtype.
+DType dtype_of_js_array(const val& rArr, const std::string& rName) {
+    const std::string ctor = rArr["constructor"]["name"].as<std::string>();
+    if (ctor == "Array" || ctor == "Float64Array") return DType::Float64;
+    if (ctor == "Float32Array") return DType::Float32;
+    if (ctor == "Int8Array") return DType::Int8;
+    if (ctor == "Int16Array") return DType::Int16;
+    if (ctor == "Int32Array") return DType::Int32;
+    if (ctor == "BigInt64Array") return DType::Int64;
+    if (ctor == "Uint8Array" || ctor == "Uint8ClampedArray") return DType::UInt8;
+    if (ctor == "Uint16Array") return DType::UInt16;
+    if (ctor == "Uint32Array") return DType::UInt32;
+    if (ctor == "BigUint64Array") return DType::UInt64;
+    throw meshioplusplus::WriteError("meshio++ (wasm): data array '" + rName +
+                                     "' has unsupported JS type '" + ctor + "'");
+}
+
+// A JS typed array (or plain Array, treated as Float64) -> an owning NDArray
+// of `dtype`/`shape`. The dtype-generic sibling of `float64_ndarray_from_val`/
+// `int64_ndarray_from_val`, used for point_data/cell_data/field_data now that
+// those carry their source dtype instead of always widening to Float64.
+NDArray ndarray_from_js_array(const val& rJsArr, DType dtype, std::vector<std::size_t> shape) {
+    return meshioplusplus::detail::dispatch_dtype(dtype, [&]<class T>() -> NDArray {
+        std::vector<T> tmp = emscripten::vecFromJSArray<T>(rJsArr);
+        NDArray out = NDArray::Uninit(dtype, std::move(shape));
+        std::copy(tmp.begin(), tmp.end(), out.As<T>());
+        return out;
+    });
 }
 
 std::vector<std::string> js_object_keys(const val& rObj) {
@@ -516,9 +661,9 @@ Mesh val_to_mesh(const val& rObj) {
         for (const std::string& name : js_object_keys(pd)) {
             val arr = pd[name];
             const std::size_t len = arr["length"].as<std::size_t>();
-            mesh.AddPointData(name,
-                              float64_ndarray_from_val(
-                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
+            mesh.AddPointData(
+                name, ndarray_from_js_array(arr, dtype_of_js_array(arr, name),
+                                            js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     if (rObj.hasOwnProperty("cell_data")) {
@@ -534,10 +679,20 @@ Mesh val_to_mesh(const val& rObj) {
             const std::size_t k = js_components_of(comps, name);
             std::vector<NDArray> blocks;
             blocks.reserve(nb);
+            // Every block of one named cell_data array must share a dtype: a
+            // mix (e.g. block 0 an Int32Array, block 1 a Float64Array) has no
+            // single NDArray dtype to store it as, so fail by name rather than
+            // silently picking the first block's dtype for the rest.
+            DType dtype = nb > 0 ? dtype_of_js_array(blocks_val[0], name) : DType::Float64;
             for (unsigned b = 0; b < nb; ++b) {
                 val arr = blocks_val[b];
+                const DType block_dtype = dtype_of_js_array(arr, name);
+                if (block_dtype != dtype)
+                    throw meshioplusplus::WriteError(
+                        "meshio++ (wasm): cell_data array '" + name +
+                        "' has blocks of different JS typed-array classes");
                 const std::size_t len = arr["length"].as<std::size_t>();
-                blocks.push_back(float64_ndarray_from_val(arr, js_data_shape(len, k, name)));
+                blocks.push_back(ndarray_from_js_array(arr, dtype, js_data_shape(len, k, name)));
             }
             mesh.AddCellData(name, std::move(blocks));
         }
@@ -549,9 +704,9 @@ Mesh val_to_mesh(const val& rObj) {
         for (const std::string& name : js_object_keys(fd)) {
             val arr = fd[name];
             const std::size_t len = arr["length"].as<std::size_t>();
-            mesh.AddFieldData(name,
-                              float64_ndarray_from_val(
-                                  arr, js_data_shape(len, js_components_of(comps, name), name)));
+            mesh.AddFieldData(
+                name, ndarray_from_js_array(arr, dtype_of_js_array(arr, name),
+                                            js_data_shape(len, js_components_of(comps, name), name)));
         }
     }
     // Named regions (see `mesh_to_val`). `dim`/`tag` default to -1, meaning
@@ -578,8 +733,463 @@ Mesh val_to_mesh(const val& rObj) {
             mesh.AddRegion(std::move(region));
         }
     }
+    // Property sets (see `mesh_to_val`). A value with no `values` array (or
+    // an empty one) is text-only (`PropertyValue::IsText()`), matching what
+    // `mesh_to_val` emits for one: an empty Float64Array plus `text` set.
+    if (rObj.hasOwnProperty("propertySets")) {
+        val property_sets = rObj["propertySets"];
+        const auto n_sets = property_sets["length"].as<unsigned>();
+        for (unsigned i = 0; i < n_sets; ++i) {
+            val jps = property_sets[i];
+            meshioplusplus::PropertySet ps;
+            ps.mId = static_cast<std::int64_t>(jps["id"].as<double>());
+            val values = jps["values"];
+            const auto n_values = values["length"].as<unsigned>();
+            for (unsigned k = 0; k < n_values; ++k) {
+                val jv = values[k];
+                meshioplusplus::PropertyValue pv;
+                pv.mKey = jv["key"].as<std::string>();
+                pv.mIsTable = jv.hasOwnProperty("isTable") && jv["isTable"].as<bool>();
+                pv.mText = jv.hasOwnProperty("text") ? jv["text"].as<std::string>() : std::string();
+                val arr = jv["values"];
+                const std::size_t len =
+                    (arr.isUndefined() || arr.isNull()) ? 0 : arr["length"].as<std::size_t>();
+                if (len > 0) {
+                    const std::size_t cols = js_components_of(
+                        jv.hasOwnProperty("components") ? jv["components"] : val::undefined(),
+                        pv.mKey);
+                    pv.mValues = float64_ndarray_from_val(arr, js_data_shape(len, cols, pv.mKey));
+                }
+                ps.mValues.push_back(std::move(pv));
+            }
+            mesh.AddPropertySet(std::move(ps));
+        }
+    }
     return mesh;
 }
+
+// " (this build has no HDF5 support)" for extensions like `.med` whose format
+// the registry knows but this build compiled out; "" otherwise.
+std::string compiled_out_hint(const std::string& rFormat) {
+    const char* dep = meshioplusplus::registry_compiled_out(rFormat);
+    return dep ? " (this build has no " + std::string(dep) + " support)" : "";
+}
+
+// ---------------------------------------------------------------------
+// Format-specific side-channel "info" -- metadata a generic Mesh cannot
+// represent (OpenFOAM patch names/types, MED field units, MDPA entity
+// names, Ansys/UNV point/cell sets, Gmsh bounding entities, Exodus info
+// records). None of this reaches `registry_readers()`/`registry_writers()`
+// (their stored lambdas are `Mesh(path)`/`void(path, mesh)`, with no room for
+// an Info out/in parameter), so this is a WASM-only dispatch table calling
+// each format's own Info-bearing reader/writer directly -- the same
+// per-format special-casing Python's `_core.cpp` already does (there is no
+// generic `registry_read_info` hook in the core; adding one, reaching every
+// flat binding, is a roadmap remainder, see doc/wasm.md). Property sets
+// (MDPA `Begin Properties`) are NOT part of this: they are Mesh-API-level
+// (`mesh.propertySets`, handled in `mesh_to_val`/`val_to_mesh` above), not a
+// per-format struct, precisely so they ARE reachable through the registry.
+// ---------------------------------------------------------------------
+
+namespace {
+
+/// The format keys with a side-channel `info` object, read or write.
+bool format_supports_info(const std::string& rFormat) {
+    return rFormat == "openfoam" || rFormat == "med" || rFormat == "mdpa" ||
+           rFormat == "ansysinp" || rFormat == "unv" || rFormat == "gmsh" || rFormat == "exodus";
+}
+
+val string_vec_to_val(const std::vector<std::string>& rStrings) {
+    val out = val::array();
+    for (const std::string& s : rStrings)
+        out.call<void>("push", s);
+    return out;
+}
+
+std::vector<std::string> val_to_string_vec(const val& rArr) {
+    if (rArr.isUndefined() || rArr.isNull()) return {};
+    return emscripten::vecFromJSArray<std::string>(rArr);
+}
+
+val string_vec_map_to_val(const std::map<std::int64_t, std::vector<std::string>>& rMap) {
+    val out = val::object();
+    for (const auto& [id, names] : rMap)
+        out.set(std::to_string(id), string_vec_to_val(names));
+    return out;
+}
+
+std::map<std::int64_t, std::vector<std::string>> val_to_string_vec_map(const val& rObj) {
+    std::map<std::int64_t, std::vector<std::string>> out;
+    if (rObj.isUndefined() || rObj.isNull()) return out;
+    for (const std::string& key : js_object_keys(rObj))
+        out.emplace(std::stoll(key), val_to_string_vec(rObj[key]));
+    return out;
+}
+
+val string_map_to_val(const std::map<std::int64_t, std::string>& rMap) {
+    val out = val::object();
+    for (const auto& [id, s] : rMap)
+        out.set(std::to_string(id), s);
+    return out;
+}
+
+std::map<std::int64_t, std::string> val_to_string_map(const val& rObj) {
+    std::map<std::int64_t, std::string> out;
+    if (rObj.isUndefined() || rObj.isNull()) return out;
+    for (const std::string& key : js_object_keys(rObj))
+        out.emplace(std::stoll(key), rObj[key].as<std::string>());
+    return out;
+}
+
+std::string js_optional_string(const val& rObj, const char* pKey, const std::string& rFallback) {
+    val v = rObj[pKey];
+    return (v.isUndefined() || v.isNull()) ? rFallback : v.as<std::string>();
+}
+
+// --- OpenFOAM ----------------------------------------------------------
+
+val openfoam_info_to_val(const meshioplusplus::OpenFoamInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("openfoam"));
+    std::set<std::int64_t> ids;
+    for (const auto& kv : rInfo.mCellTags) ids.insert(kv.first);
+    for (const auto& kv : rInfo.mPatchTypes) ids.insert(kv.first);
+    val patches = val::array();
+    for (std::int64_t id : ids) {
+        val jp = val::object();
+        jp.set("familyId", static_cast<double>(id));
+        auto cit = rInfo.mCellTags.find(id);
+        jp.set("names", string_vec_to_val(cit == rInfo.mCellTags.end() ? std::vector<std::string>{}
+                                                                        : cit->second));
+        auto tit = rInfo.mPatchTypes.find(id);
+        if (tit != rInfo.mPatchTypes.end())
+            jp.set("type", tit->second);
+        patches.call<void>("push", jp);
+    }
+    out.set("patches", patches);
+    return out;
+}
+
+meshioplusplus::OpenFoamInfo val_to_openfoam_info(const val& rInfo) {
+    meshioplusplus::OpenFoamInfo info;
+    val patches = rInfo["patches"];
+    if (!patches.isUndefined() && !patches.isNull()) {
+        const auto n = patches["length"].as<unsigned>();
+        for (unsigned i = 0; i < n; ++i) {
+            val jp = patches[i];
+            const auto id = static_cast<std::int64_t>(jp["familyId"].as<double>());
+            info.mCellTags[id] = val_to_string_vec(jp["names"]);
+            val type_v = jp["type"];
+            if (!type_v.isUndefined() && !type_v.isNull())
+                info.mPatchTypes[id] = type_v.as<std::string>();
+        }
+    }
+    return info;
+}
+
+// --- MED -----------------------------------------------------------------
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+
+val med_info_to_val(const meshioplusplus::MedInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("med"));
+    out.set("pointTags", string_vec_map_to_val(rInfo.mPointTags));
+    out.set("cellTags", string_vec_map_to_val(rInfo.mCellTags));
+    out.set("meshName", rInfo.mMeshName);
+    out.set("description", rInfo.mDescription);
+    out.set("unitTime", rInfo.mUnitTime);
+    out.set("unitCoords", rInfo.mUnitCoords);
+    out.set("pointTagGroups", string_map_to_val(rInfo.mPointTagGroups));
+    out.set("cellTagGroups", string_map_to_val(rInfo.mCellTagGroups));
+    out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
+    val field_units = val::object();
+    for (const auto& [field, unit_pair] : rInfo.mFieldUnits) {
+        val u = val::array();
+        u.call<void>("push", unit_pair.first);
+        u.call<void>("push", unit_pair.second);
+        field_units.set(field, u);
+    }
+    out.set("fieldUnits", field_units);
+    val step_meta = val::object();
+    for (const auto& [field, meta] : rInfo.mStepMeta) {
+        val m = val::object();
+        m.set("ndt", static_cast<double>(std::get<0>(meta)));
+        m.set("nor", static_cast<double>(std::get<1>(meta)));
+        m.set("pdt", std::get<2>(meta));
+        step_meta.set(field, m);
+    }
+    out.set("stepMeta", step_meta);
+    val field_time_values = val::object();
+    for (const auto& [field, times] : rInfo.mFieldTimeValues) {
+        val arr = val::array();
+        for (double t : times)
+            arr.call<void>("push", t);
+        field_time_values.set(field, arr);
+    }
+    out.set("fieldTimeValues", field_time_values);
+    return out;
+}
+
+meshioplusplus::MedInfo val_to_med_info(const val& rInfo) {
+    meshioplusplus::MedInfo info;
+    info.mPointTags = val_to_string_vec_map(rInfo["pointTags"]);
+    info.mCellTags = val_to_string_vec_map(rInfo["cellTags"]);
+    info.mMeshName = js_optional_string(rInfo, "meshName", info.mMeshName);
+    info.mDescription = js_optional_string(rInfo, "description", info.mDescription);
+    info.mUnitTime = js_optional_string(rInfo, "unitTime", info.mUnitTime);
+    info.mUnitCoords = js_optional_string(rInfo, "unitCoords", info.mUnitCoords);
+    info.mPointTagGroups = val_to_string_map(rInfo["pointTagGroups"]);
+    info.mCellTagGroups = val_to_string_map(rInfo["cellTagGroups"]);
+    // mMedNom/mSkippedConstructs/mFieldUnits/mStepMeta/mFieldTimeValues are
+    // read-side-only outputs (component names come from the mesh's own
+    // field_data["med:nom"]; the rest are diagnostics) -- not accepted back.
+    return info;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_HDF5
+
+// --- MDPA ------------------------------------------------------------------
+
+val mdpa_info_to_val(const meshioplusplus::MdpaInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("mdpa"));
+    val entity_names = val::array();
+    for (const meshioplusplus::MdpaEntityName& en : rInfo.mEntityNames) {
+        val e = val::object();
+        e.set("name", en.mName);
+        e.set("isCondition", en.mIsCondition);
+        entity_names.call<void>("push", e);
+    }
+    out.set("entityNames", entity_names);
+    out.set("skippedConstructs", string_vec_to_val(rInfo.mSkippedConstructs));
+    return out;
+}
+
+meshioplusplus::MdpaInfo val_to_mdpa_info(const val& rInfo) {
+    meshioplusplus::MdpaInfo info;
+    val entity_names = rInfo["entityNames"];
+    if (!entity_names.isUndefined() && !entity_names.isNull()) {
+        const auto n = entity_names["length"].as<unsigned>();
+        info.mEntityNames.reserve(n);
+        for (unsigned i = 0; i < n; ++i) {
+            val je = entity_names[i];
+            meshioplusplus::MdpaEntityName en;
+            en.mName = js_optional_string(je, "name", "");
+            val cond_v = je["isCondition"];
+            en.mIsCondition = !cond_v.isUndefined() && !cond_v.isNull() && cond_v.as<bool>();
+            info.mEntityNames.push_back(std::move(en));
+        }
+    }
+    // mProperties deliberately left empty: write_mdpa() falls back to the
+    // mesh's own property sets (mesh.propertySets, via AddPropertySet) when
+    // this is empty, which is always what a WASM caller means -- properties
+    // ride on the mesh object itself here (see the section banner above).
+    return info;
+}
+
+// --- Ansys (.cdb/.inp) / UNV: identical {pointSets, cellSets} shape --------
+
+template <class InfoT>
+val point_cell_sets_info_to_val(const std::string& rFormat, const InfoT& rInfo) {
+    val out = val::object();
+    out.set("format", rFormat);
+    val point_sets = val::object();
+    for (const auto& [name, ids] : rInfo.mPointSets) {
+        val arr = val::array();
+        for (std::int64_t id : ids)
+            arr.call<void>("push", static_cast<double>(id));
+        point_sets.set(name, arr);
+    }
+    out.set("pointSets", point_sets);
+    val cell_sets = val::object();
+    for (const auto& [name, blocks] : rInfo.mCellSets) {
+        val block_arr = val::array();
+        for (const std::vector<std::int64_t>& block_ids : blocks) {
+            val arr = val::array();
+            for (std::int64_t id : block_ids)
+                arr.call<void>("push", static_cast<double>(id));
+            block_arr.call<void>("push", arr);
+        }
+        cell_sets.set(name, block_arr);
+    }
+    out.set("cellSets", cell_sets);
+    return out;
+}
+
+template <class InfoT>
+InfoT val_to_point_cell_sets_info(const val& rInfo) {
+    InfoT info;
+    val point_sets = rInfo["pointSets"];
+    if (!point_sets.isUndefined() && !point_sets.isNull()) {
+        for (const std::string& name : js_object_keys(point_sets))
+            info.mPointSets[name] = emscripten::vecFromJSArray<std::int64_t>(point_sets[name]);
+    }
+    val cell_sets = rInfo["cellSets"];
+    if (!cell_sets.isUndefined() && !cell_sets.isNull()) {
+        for (const std::string& name : js_object_keys(cell_sets)) {
+            val blocks = cell_sets[name];
+            const auto nb = blocks["length"].as<unsigned>();
+            std::vector<std::vector<std::int64_t>> per_block;
+            per_block.reserve(nb);
+            for (unsigned b = 0; b < nb; ++b)
+                per_block.push_back(emscripten::vecFromJSArray<std::int64_t>(blocks[b]));
+            info.mCellSets[name] = std::move(per_block);
+        }
+    }
+    return info;
+}
+
+// --- Gmsh ------------------------------------------------------------------
+
+val gmsh_info_to_val(const meshioplusplus::GmshInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("gmsh"));
+    val bounding = val::array();
+    for (const std::vector<std::int32_t>& block : rInfo.mBoundingEntities) {
+        val arr = val::array();
+        for (std::int32_t tag : block)
+            arr.call<void>("push", static_cast<double>(tag));
+        bounding.call<void>("push", arr);
+    }
+    out.set("boundingEntities", bounding);
+    return out;
+}
+
+meshioplusplus::GmshInfo val_to_gmsh_info(const val& rInfo) {
+    meshioplusplus::GmshInfo info;
+    val bounding = rInfo["boundingEntities"];
+    if (!bounding.isUndefined() && !bounding.isNull()) {
+        const auto n = bounding["length"].as<unsigned>();
+        info.mBoundingEntities.reserve(n);
+        for (unsigned i = 0; i < n; ++i)
+            info.mBoundingEntities.push_back(emscripten::vecFromJSArray<std::int32_t>(bounding[i]));
+    }
+    return info;
+}
+
+// --- Exodus (read-only) ------------------------------------------------
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+
+val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
+    val out = val::object();
+    out.set("format", std::string("exodus"));
+    out.set("infoRecords", string_vec_to_val(rInfo.mInfoRecords));
+    return out;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_NETCDF
+
+/**
+ * @brief Read `rPath` as `rFormat` through that format's own Info-bearing
+ * reader, bypassing the generic registry. `rOptions` is honoured exactly by
+ * the formats whose reader takes a `ReadOptions` (med, mdpa, gmsh, exodus,
+ * and openfoam since v11.4.0 -- roadmap §1 tier B2's `timeStep`/`arrays`
+ * time-directory fields); ansysinp/unv have no selective-read path with or
+ * without info.
+ * @param rFormat must satisfy `format_supports_info`.
+ * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
+ */
+Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
+                    const meshioplusplus::ReadOptions& rOptions, val& rInfoOut) {
+    if (rFormat == "openfoam") {
+        meshioplusplus::OpenFoamInfo info;
+        Mesh mesh = meshioplusplus::read_openfoam(rPath, rOptions, info);
+        rInfoOut = openfoam_info_to_val(info);
+        return mesh;
+    }
+    if (rFormat == "mdpa") {
+        meshioplusplus::MdpaInfo info;
+        Mesh mesh = meshioplusplus::read_mdpa(rPath, info, rOptions);
+        rInfoOut = mdpa_info_to_val(info);
+        return mesh;
+    }
+    if (rFormat == "ansysinp") {
+        meshioplusplus::AnsysInfo info;
+        Mesh mesh = meshioplusplus::read_ansysinp(rPath, info);
+        rInfoOut = point_cell_sets_info_to_val("ansysinp", info);
+        return mesh;
+    }
+    if (rFormat == "unv") {
+        meshioplusplus::UnvInfo info;
+        Mesh mesh = meshioplusplus::read_unv(rPath, info);
+        rInfoOut = point_cell_sets_info_to_val("unv", info);
+        return mesh;
+    }
+    if (rFormat == "gmsh") {
+        meshioplusplus::GmshInfo info;
+        Mesh mesh = meshioplusplus::read_gmsh(rPath, info, rOptions);
+        rInfoOut = gmsh_info_to_val(info);
+        return mesh;
+    }
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "med") {
+        meshioplusplus::MedInfo info;
+        Mesh mesh = meshioplusplus::read_med(rPath, info, rOptions);
+        rInfoOut = med_info_to_val(info);
+        return mesh;
+    }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_NETCDF
+    if (rFormat == "exodus") {
+        meshioplusplus::ExodusInfo info;
+        Mesh mesh = meshioplusplus::read_exodus(rPath, info, rOptions);
+        rInfoOut = exodus_info_to_val(info);
+        return mesh;
+    }
+#endif
+    throw meshioplusplus::ReadError("meshio++ (wasm): '" + rFormat +
+                                    "' has no side-channel info in this build" +
+                                    compiled_out_hint(rFormat));
+}
+
+/**
+ * @brief Write `rMesh` to `rPath` as `rFormat`, honouring `rInfo` (a JS
+ * object matching `read_with_info`'s own shape) through that format's own
+ * Info-bearing writer. `exodus` has no Info-bearing writer (its info is
+ * read-only) and is therefore not in `format_supports_info`'s writable
+ * subset -- `write_mesh_js` never reaches this function for it.
+ * @param rEncoding write_mesh's own `{encoding}` option; only gmsh's binary
+ *   flag is Info-write-aware today (`write_gmsh41`'s `binary` parameter).
+ * @throws meshioplusplus::WriteError if `rFormat` has no Info-bearing writer.
+ */
+void write_with_info(const std::string& rPath, const Mesh& rMesh, const std::string& rFormat,
+                     const val& rInfo, meshioplusplus::WriteEncoding rEncoding) {
+    if (rFormat == "openfoam") {
+        meshioplusplus::write_openfoam(rPath, rMesh, val_to_openfoam_info(rInfo));
+        return;
+    }
+    if (rFormat == "mdpa") {
+        meshioplusplus::write_mdpa(rPath, rMesh, val_to_mdpa_info(rInfo));
+        return;
+    }
+    if (rFormat == "ansysinp") {
+        meshioplusplus::write_ansysinp(
+            rPath, rMesh, val_to_point_cell_sets_info<meshioplusplus::AnsysInfo>(rInfo));
+        return;
+    }
+    if (rFormat == "unv") {
+        meshioplusplus::write_unv(rPath, rMesh,
+                                  val_to_point_cell_sets_info<meshioplusplus::UnvInfo>(rInfo));
+        return;
+    }
+    if (rFormat == "gmsh") {
+        meshioplusplus::write_gmsh41(rPath, rMesh, rEncoding == meshioplusplus::WriteEncoding::Binary,
+                                     val_to_gmsh_info(rInfo));
+        return;
+    }
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "med") {
+        meshioplusplus::write_med(rPath, rMesh, val_to_med_info(rInfo));
+        return;
+    }
+#endif
+    throw meshioplusplus::WriteError(
+        "meshio++ (wasm): '" + rFormat + "' has no side-channel info writer in this build" +
+        compiled_out_hint(rFormat) +
+        " (writable info formats: openfoam, mdpa, ansysinp, unv, gmsh, med)");
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------
 // Format dispatch goes through the shared registry (registry.hpp), the
@@ -598,11 +1208,33 @@ using meshioplusplus::registry_readers;
 using meshioplusplus::registry_writers;
 using meshioplusplus::resolve_format;
 
-// " (this build has no HDF5 support)" for extensions like `.med` whose format
-// the registry knows but this build compiled out; "" otherwise.
-std::string compiled_out_hint(const std::string& rFormat) {
-    const char* dep = meshioplusplus::registry_compiled_out(rFormat);
-    return dep ? " (this build has no " + std::string(dep) + " support)" : "";
+/// Strict key check for a settings/options object, mirroring the JSON
+/// front-end's rule: an unknown key is an error naming it, never silently
+/// ignored.
+void check_settings_keys(const val& rObject, const char* pWhere,
+                         std::initializer_list<const char*> rAllowed) {
+    val keys = val::global("Object").call<val>("keys", rObject);
+    const unsigned n = keys["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string key = keys[i].as<std::string>();
+        const bool known =
+            std::any_of(rAllowed.begin(), rAllowed.end(), [&](const char* k) { return key == k; });
+        if (!known)
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
+                                            pWhere);
+    }
+}
+
+std::string settings_string(const val& rObject, const char* pKey, const char* pWhere,
+                            bool required = false) {
+    val v = rObject[pKey];
+    if (v.isUndefined() || v.isNull()) {
+        if (required)
+            throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere + "." + pKey +
+                                            " is required");
+        return "";
+    }
+    return v.as<std::string>();
 }
 
 // Throw a genuine, message-carrying JS `Error` from C++. Emscripten's
@@ -695,12 +1327,20 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  * @param lenient downgrade "this reader cannot represent construct X" errors to
  *   a warning plus a skip (currently mdpa's Table/Geometries/Mesh/Constraints
  *   blocks). Not "ignore all errors": a malformed file still throws.
+ * @param info when true and the format has a side channel (`format_supports_info`:
+ *   openfoam/med/mdpa/ansysinp/unv/gmsh/exodus), attach it to the result as
+ *   `.info` (`{format, ...}`, shape per format -- see doc/wasm.md); ignored
+ *   for any other format, rather than throwing, so a caller can always pass
+ *   `info: true` and check `mesh.info` itself. `pointsOnly`/`arrays` are only
+ *   honoured for the formats whose Info-bearing reader takes a `ReadOptions`
+ *   (med, mdpa, gmsh, exodus); openfoam/ansysinp/unv have no selective-read
+ *   path with or without info, exactly as they have none without `info`.
  *
  * Formats without a native selective path are read whole and filtered, so the
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
-                        const val& rArrays, int time_step, bool lenient) {
+                        const val& rArrays, int time_step, bool lenient, bool info) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
@@ -709,6 +1349,13 @@ val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bo
         opts.mLenient = lenient;
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
+        if (info && format_supports_info(fmt)) {
+            val info_val;
+            Mesh mesh = read_with_info(rPath, fmt, opts, info_val);
+            val out = mesh_to_val(mesh);
+            out.set("info", info_val);
+            return out;
+        }
         return mesh_to_val(meshioplusplus::registry_read(rPath, fmt, opts));
     });
 }
@@ -782,29 +1429,188 @@ bool reader_supports_options_js(const std::string& rFormat) {
     return meshioplusplus::registry_reader_supports_options(rFormat);
 }
 
+// ---------------------------------------------------------------------
+// Write options (encoding/codec/floatFormat) and "written paths": a MEMFS
+// snapshot diff around a write, since registry_write_ex()/the per-format
+// writers have no core-level notion of "every path this touched" (a follow-up
+// core change returning that directly, reaching every flat binding, is a
+// roadmap remainder -- see doc/wasm.md). Exact for any present or future
+// sibling writer with zero core change, at the cost of a directory walk.
+// ---------------------------------------------------------------------
+
+namespace {
+
+using FileFingerprint = std::pair<std::uintmax_t, std::filesystem::file_time_type>;
+using DirSnapshot = std::map<std::string, FileFingerprint>;
+
+// The directory a virtual-FS path's writer(s) touch. Root-level paths (no
+// parent component) snapshot "." rather than "" (which std::filesystem
+// treats as non-existent).
+std::filesystem::path memfs_dir_of(const std::string& rPath) {
+    std::filesystem::path parent = std::filesystem::path(rPath).parent_path();
+    return parent.empty() ? std::filesystem::path(".") : parent;
+}
+
+DirSnapshot snapshot_dir(const std::filesystem::path& rDir) {
+    DirSnapshot out;
+    std::error_code ec;
+    if (!std::filesystem::exists(rDir, ec) || ec) return out;
+    std::filesystem::recursive_directory_iterator it(rDir, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const std::filesystem::directory_entry& entry = *it;
+        std::error_code type_ec;
+        if (!entry.is_regular_file(type_ec) || type_ec) continue;
+        std::error_code size_ec, time_ec;
+        const std::uintmax_t size = entry.file_size(size_ec);
+        const std::filesystem::file_time_type mtime = entry.last_write_time(time_ec);
+        if (size_ec || time_ec) continue;
+        out.emplace(entry.path().string(), FileFingerprint{size, mtime});
+    }
+    return out;
+}
+
+// MEMFS mtimes have millisecond resolution, so a file rewritten with
+// identical size within the same millisecond as its previous write is
+// indistinguishable from an untouched one by (size, mtime) alone. If any
+// entry already on disk sits in the current millisecond, spin (there is
+// nothing to yield to in this synchronous call path) until the clock visibly
+// advances -- capped at 2ms, comfortably above one MEMFS tick -- so every
+// write that happens after this point is guaranteed a fresh mtime. A no-op,
+// and therefore free, whenever nothing on disk is that recent.
+void ensure_new_write_tick(const DirSnapshot& rBefore) {
+    using Clock = std::filesystem::file_time_type::clock;
+    const auto now_ms = std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now());
+    const bool tied = std::any_of(rBefore.begin(), rBefore.end(), [&](const auto& rEntry) {
+        return std::chrono::time_point_cast<std::chrono::milliseconds>(rEntry.second.second) ==
+               now_ms;
+    });
+    if (!tied) return;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(2);
+    while (std::chrono::time_point_cast<std::chrono::milliseconds>(Clock::now()) == now_ms) {
+        if (Clock::now() > deadline) break;
+    }
+}
+
+// Every path new or changed (by size or mtime) since `rBefore`, sorted.
+std::vector<std::string> written_paths_since(const std::filesystem::path& rDir,
+                                              const DirSnapshot& rBefore) {
+    DirSnapshot after = snapshot_dir(rDir);
+    std::vector<std::string> changed;
+    for (const auto& [path, fp] : after) {
+        auto found = rBefore.find(path);
+        if (found == rBefore.end() || found->second != fp)
+            changed.push_back(path);
+    }
+    std::sort(changed.begin(), changed.end());
+    return changed;
+}
+
+val string_array_from(const std::vector<std::string>& rPaths) {
+    val out = val::array();
+    for (const std::string& p : rPaths)
+        out.call<void>("push", p);
+    return out;
+}
+
+/**
+ * @brief Parses `{encoding, codec, floatFormat}` (write_mesh/convert's third
+ * options bag) into a `WriteOptions`. Unset/empty fields keep
+ * `registry_write_ex`'s all-defaults fast path (byte-identical to the plain
+ * registry writer). There is deliberately no gzip level or VTK 4.2/5.1
+ * selector -- `WriteOptions` has neither (gzip level 4 is a fixed registry
+ * default; `vtk42`/`vtk51` are separate format keys, not a `vtk` option).
+ * `info` (see `write_mesh`) is accepted as a key here too, so a caller who
+ * passes it does not trip the "unknown key" check -- it is read separately
+ * by `write_mesh`, not part of `WriteOptions`.
+ * @throws meshioplusplus::ReadError on an unknown key, or an unknown
+ *         `encoding`/`codec` name.
+ */
+meshioplusplus::WriteOptions write_options_from_val(const val& rOptions) {
+    meshioplusplus::WriteOptions opts;
+    if (rOptions.isUndefined() || rOptions.isNull()) return opts;
+    check_settings_keys(rOptions, "the write options", {"encoding", "codec", "floatFormat", "info"});
+    opts.mEncoding =
+        meshioplusplus::pipeline_encoding_from_name(settings_string(rOptions, "encoding", "options"));
+    const std::string codec = settings_string(rOptions, "codec", "options");
+    if (!codec.empty()) {
+        opts.mCodec = meshioplusplus::pipeline_codec_from_name(codec);
+        opts.mCodecSet = true;
+    }
+    opts.mFloatFormat = settings_string(rOptions, "floatFormat", "options");
+    return opts;
+}
+
+/**
+ * @brief The `info` object to write, if any: `rOptions.info` when given,
+ * else `rMeshObj.info` when its own `format` field matches `rFormat` (a read
+ * with `info: true` round-tripping transparently back through a write with
+ * no extra plumbing). `val::undefined()` when neither applies.
+ */
+val effective_write_info(const val& rMeshObj, const val& rOptions, const std::string& rFormat) {
+    if (!rOptions.isUndefined() && !rOptions.isNull()) {
+        val opt_info = rOptions["info"];
+        if (!opt_info.isUndefined() && !opt_info.isNull())
+            return opt_info;
+    }
+    val mesh_info = rMeshObj["info"];
+    if (mesh_info.isUndefined() || mesh_info.isNull())
+        return val::undefined();
+    val mesh_format = mesh_info["format"];
+    if (mesh_format.isUndefined() || mesh_format.isNull() || mesh_format.as<std::string>() != rFormat)
+        return val::undefined();
+    return mesh_info;
+}
+
+}  // namespace
+
 /**
  * @brief Write a mesh object to the Emscripten virtual filesystem.
  * @param rPath virtual FS path to write (read the bytes back out via
  *   `Module.FS` afterward).
  * @param rMeshObj a plain JS mesh object (see `mesh_to_val`'s shape).
  * @param rFormat explicit format key, or "" to infer from `rPath`'s extension.
- * @throws meshioplusplus::WriteError on an unknown/write-unsupported format
- *   or malformed input.
+ * @param rOptions optional `{encoding, codec, floatFormat, info}` (see
+ *   `write_options_from_val`); omitted/empty reproduces the pre-A6 write
+ *   exactly. `info` (or, failing that, a `mesh.info` whose own `format`
+ *   matches) routes the write through that format's side-channel writer
+ *   instead of the plain registry one -- see `write_with_info`.
+ * @return every virtual-FS path this write touched (new or changed), sorted --
+ *   more than one for a multi-file writer (`.xdmf` + its `.h5` companion, an
+ *   OpenFOAM `polyMesh` directory's files, ...).
+ * @throws meshioplusplus::WriteError on an unknown/write-unsupported format,
+ *   an option the format cannot honour, `info` given for a format with no
+ *   Info-bearing writer, or malformed input.
  */
-void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat) {
-    with_js_errors([&]() {
+val write_mesh(const std::string& rPath, const val& rMeshObj, const std::string& rFormat,
+               const val& rOptions) {
+    return with_js_errors([&]() -> val {
         std::string fmt = resolve_format(rPath, rFormat);
-        auto it = registry_writers().find(fmt);
-        if (it == registry_writers().end())
+        // Kept ahead of registry_write_ex() purely so the "unknown format"
+        // error text is unchanged from before A6 (registry_write_ex's own
+        // message for the same case differs slightly).
+        if (registry_writers().find(fmt) == registry_writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported format '" + fmt + "'" +
                 compiled_out_hint(fmt));
-        // Bound scope-less provenance notes to this write, mirroring Python's
-        // public write() -- otherwise a note left by an earlier scope-less
-        // operation would leak into this file. No-op inside a caller's own
-        // scope. See doc/provenance.md.
-        meshioplusplus::detail::provenance_begin_write();
-        it->second(rPath, val_to_mesh(rMeshObj));
+        const val info = effective_write_info(rMeshObj, rOptions, fmt);
+        const meshioplusplus::WriteOptions opts = write_options_from_val(rOptions);
+        const std::filesystem::path dir = memfs_dir_of(rPath);
+        const DirSnapshot before = snapshot_dir(dir);
+        ensure_new_write_tick(before);
+        if (info.isUndefined()) {
+            // registry_write_ex() itself calls provenance_begin_write(), so
+            // there is no separate call here (unlike before A6, which called
+            // the registry writer directly).
+            meshioplusplus::registry_write_ex(rPath, val_to_mesh(rMeshObj), fmt, opts);
+        } else {
+            if (!format_supports_info(fmt))
+                throw meshioplusplus::WriteError(
+                    "meshio++ (wasm): format '" + fmt +
+                    "' has no side-channel 'info' writer, but info was given for it");
+            meshioplusplus::detail::provenance_begin_write();  // write_with_info bypasses registry_write_ex
+            write_with_info(rPath, val_to_mesh(rMeshObj), fmt, info, opts.mEncoding);
+        }
+        return string_array_from(written_paths_since(dir, before));
     });
 }
 
@@ -812,25 +1618,32 @@ void write_mesh(const std::string& rPath, const val& rMeshObj, const std::string
  * @brief Read `inPath` and immediately write it to `outPath` (both on the
  * virtual FS), without round-tripping through a JS object. Mirrors the CLI's
  * `convert` subcommand.
+ * @param rOptions optional `{inFormat, outFormat, encoding, codec,
+ *   floatFormat}` is handled by the JS wrapper; this binding takes the two
+ *   resolved format strings plus the parsed write options directly.
+ * @return every virtual-FS path the write touched (new or changed), sorted.
  */
-void convert(const std::string& rInPath, const std::string& rInFormat, const std::string& rOutPath,
-             const std::string& rOutFormat) {
-    with_js_errors([&]() {
+val convert(const std::string& rInPath, const std::string& rInFormat, const std::string& rOutPath,
+           const std::string& rOutFormat, const val& rOptions) {
+    return with_js_errors([&]() -> val {
         std::string rfmt = resolve_format(rInPath, rInFormat);
         std::string wfmt = resolve_format(rOutPath, rOutFormat);
         auto rit = registry_readers().find(rfmt);
-        auto wit = registry_writers().find(wfmt);
         if (rit == registry_readers().end())
             throw meshioplusplus::ReadError(
                 "meshio++ (wasm): unknown or unsupported input format '" + rfmt + "'" +
                 compiled_out_hint(rfmt));
-        if (wit == registry_writers().end())
+        if (registry_writers().find(wfmt) == registry_writers().end())
             throw meshioplusplus::WriteError(
                 "meshio++ (wasm): unknown, read-only, or unsupported output format '" + wfmt + "'" +
                 compiled_out_hint(wfmt));
         Mesh mesh = rit->second(rInPath);
-        meshioplusplus::detail::provenance_begin_write();
-        wit->second(rOutPath, std::move(mesh));
+        const meshioplusplus::WriteOptions opts = write_options_from_val(rOptions);
+        const std::filesystem::path dir = memfs_dir_of(rOutPath);
+        const DirSnapshot before = snapshot_dir(dir);
+        ensure_new_write_tick(before);
+        meshioplusplus::registry_write_ex(rOutPath, std::move(mesh), wfmt, opts);
+        return string_array_from(written_paths_since(dir, before));
     });
 }
 
@@ -1089,34 +1902,6 @@ val convert_surface_ops(const std::string& rInPath, const std::string& rInFormat
 }
 
 namespace {
-
-/// Strict key check for the settings object, mirroring the JSON front-end's
-/// rule: an unknown key is an error naming it, never silently ignored.
-void check_settings_keys(const val& rObject, const char* pWhere,
-                         std::initializer_list<const char*> rAllowed) {
-    val keys = val::global("Object").call<val>("keys", rObject);
-    const unsigned n = keys["length"].as<unsigned>();
-    for (unsigned i = 0; i < n; ++i) {
-        const std::string key = keys[i].as<std::string>();
-        const bool known =
-            std::any_of(rAllowed.begin(), rAllowed.end(), [&](const char* k) { return key == k; });
-        if (!known)
-            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
-                                            pWhere);
-    }
-}
-
-std::string settings_string(const val& rObject, const char* pKey, const char* pWhere,
-                            bool required = false) {
-    val v = rObject[pKey];
-    if (v.isUndefined() || v.isNull()) {
-        if (required)
-            throw meshioplusplus::ReadError(std::string("meshio++ (wasm): ") + pWhere + "." + pKey +
-                                            " is required");
-        return "";
-    }
-    return v.as<std::string>();
-}
 
 /// A list of strings from a JS array (or a single string), for the settings
 /// converter and the sequence entry points.
@@ -1592,11 +2377,14 @@ val reorder_js(const val& rMeshObj, const std::string& rMethod) {
 
 /**
  * @brief Merge a JS array of mesh objects into one (concatenate, optional
- * welding). `dataPolicy` is "intersection" (default) or "fill". Returns a plain
- * JS mesh object (point_sets/cell_sets are not carried, as elsewhere in JS).
+ * welding). `dataPolicy` is "intersection" (default) or "fill". Returns a
+ * plain JS mesh object (point_sets/cell_sets are not carried, as elsewhere in
+ * JS), or `{mesh, pointMaps, cellMaps}` when `returnMaps` is set -- one array
+ * per input mesh, in input order (`merge`'s maps are per-INPUT, unlike every
+ * other op's per-input-BLOCK `cellMaps`).
  */
 val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
-             const std::string& rDataPolicy, bool dropDuplicateCells) {
+             const std::string& rDataPolicy, bool dropDuplicateCells, bool returnMaps) {
     return with_js_errors([&]() -> val {
         const unsigned n = rMeshes["length"].as<unsigned>();
         std::vector<Mesh> owned;
@@ -1614,7 +2402,13 @@ val merge_js(const val& rMeshes, bool weld, double atol, bool sourceTag,
         opts.drop_duplicate_cells = dropDuplicateCells;
         opts.data_policy = (rDataPolicy == "fill") ? meshioplusplus::MergeDataPolicy::Fill
                                                    : meshioplusplus::MergeDataPolicy::Intersection;
-        return mesh_to_val(meshioplusplus::merge(ptrs, opts).mMesh);
+        meshioplusplus::MergeResult r = meshioplusplus::merge(ptrs, opts);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMaps", cell_maps_to_val(r.mPointMaps));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -1638,10 +2432,11 @@ val transform_js(const val& rMeshObj, const val& rMatrix, bool rotateVectorData)
 /**
  * @brief Clean a mesh (weld / prune / de-dup). Returns an object
  * `{mesh, pointsWelded, pointsRemovedOrphan, cellsDroppedDegenerate,
- * cellsDroppedDuplicate}` (sets/maps are not carried, as elsewhere in JS).
+ * cellsDroppedDuplicate}`, plus `pointMap`/`cellMaps` when `returnMaps` is
+ * set (named point/cell sets are still not carried, as elsewhere in JS).
  */
 val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bool dropDegenerate,
-             bool dropDuplicateCells) {
+             bool dropDuplicateCells, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::CleanOptions opts;
         opts.weld = weld;
@@ -1656,22 +2451,53 @@ val clean_js(const val& rMeshObj, bool weld, double atol, bool removeOrphans, bo
         out.set("pointsRemovedOrphan", static_cast<double>(r.mPointsRemovedOrphan));
         out.set("cellsDroppedDegenerate", static_cast<double>(r.mCellsDroppedDegenerate));
         out.set("cellsDroppedDuplicate", static_cast<double>(r.mCellsDroppedDuplicate));
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
         return out;
     });
+}
+
+/**
+ * @brief Builds a per-point pin mask from a JS array of 0-based point ids, or
+ * an empty mask if `rIds` is null/undefined (the "no extra pins" case every
+ * `mFrozen`-accepting operation's options struct treats as unset).
+ * Mirrors bindings/python/_core.cpp's identical id-list -> mask conversion
+ * (e.g. its `decimate` binding, ~line 967).
+ * @throws meshioplusplus::WriteError naming `rOp` and the offending id if an
+ *         id is out of `[0, numPoints)`.
+ */
+std::vector<std::uint8_t> frozen_mask_from_val(const val& rIds, std::size_t numPoints,
+                                               const char* pOp) {
+    std::vector<std::uint8_t> mask;
+    if (rIds.isNull() || rIds.isUndefined())
+        return mask;
+    std::vector<std::int64_t> ids = emscripten::vecFromJSArray<std::int64_t>(rIds);
+    mask.assign(numPoints, 0);
+    for (std::int64_t id : ids) {
+        if (id < 0 || static_cast<std::size_t>(id) >= numPoints)
+            throw meshioplusplus::WriteError("meshio++ (wasm): " + std::string(pOp) +
+                                             ": frozen node id " + std::to_string(id) +
+                                             " is out of range");
+        mask[static_cast<std::size_t>(id)] = 1;
+    }
+    return mask;
 }
 
 /**
  * @brief Smooth a mesh's point coordinates (`"laplacian"` / `"taubin"`),
  * leaving connectivity and every data array untouched. A negative `lambda`
  * means "this method's own default" (0.5 Laplacian, 0.33 Taubin) and is passed
- * through unchanged. Returns an object `{mesh, numNodesMoved, maxDisplacement,
- * numSkippedInversion}`. The caller-supplied frozen-node mask is not exposed
- * here, as on the other flat bindings.
+ * through unchanged. `frozen` is an optional array of 0-based point ids to
+ * pin outright (unioned with any boundary/feature pins). Returns an object
+ * `{mesh, numNodesMoved, maxDisplacement, numSkippedInversion}`.
  */
 val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, double lambda,
               double mu, bool fixBoundary, bool preserveFeatures, double featureAngle,
-              bool guardInversion) {
+              bool guardInversion, const val& rFrozen) {
     return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::SmoothOptions options;
         options.mMethod = meshioplusplus::smooth_method_from_name(rMethod);
         options.mIterations = iterations;
@@ -1681,7 +2507,8 @@ val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, d
         options.mPreserveFeatures = preserveFeatures;
         options.mFeatureAngleDeg = featureAngle;
         options.mGuardInversion = guardInversion;
-        meshioplusplus::SmoothResult r = meshioplusplus::smooth(val_to_mesh(rMeshObj), options);
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "smooth");
+        meshioplusplus::SmoothResult r = meshioplusplus::smooth(std::move(mesh), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numNodesMoved", static_cast<double>(r.mNumNodesMoved));
@@ -1691,12 +2518,24 @@ val smooth_js(const val& rMeshObj, const std::string& rMethod, int iterations, d
     });
 }
 
+// Every crop_*_js below shares this result shape: the bare mesh, or
+// `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
+val crop_result_to_val(meshioplusplus::CropResult&& rResult, bool returnMaps) {
+    if (!returnMaps) return mesh_to_val(rResult.mMesh);
+    val out = val::object();
+    out.set("mesh", mesh_to_val(rResult.mMesh));
+    out.set("pointMap", ndarray_to_int32_array(rResult.mPointMap));
+    out.set("cellMaps", cell_maps_to_val(rResult.mCellMaps));
+    return out;
+}
+
 /**
  * @brief Crop a mesh to a bounding box (`lo`/`hi` are 3-element JS arrays).
- * `mode` is "all" (default) or "any". Returns the pruned mesh object.
+ * `mode` is "all" (default) or "any". Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
  */
 val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std::string& rMode,
-                 bool recordIds) {
+                 bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         double lo[3], hi[3];
         for (unsigned i = 0; i < 3; ++i) {
@@ -1705,34 +2544,37 @@ val crop_bbox_js(const val& rMeshObj, const val& rLo, const val& rHi, const std:
         }
         meshioplusplus::CropMode m =
             (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
-        return mesh_to_val(
-            meshioplusplus::crop_bbox(val_to_mesh(rMeshObj), lo, hi, m, recordIds).mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_bbox(val_to_mesh(rMeshObj), lo, hi, m, recordIds), returnMaps);
     });
 }
 
-/**
- * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
- * `normal` are 3-element JS arrays). Returns the pruned mesh object.
- */
 /**
  * @brief Crop to the cells whose scalar `cell_data` value satisfies a comparison.
  *
  * There is deliberately no `mode`: `cropBbox`/`cropPlane` test points and then
  * need an all/any rule, whereas a `cell_data` predicate is already one value per
- * cell and has nothing to reduce.
+ * cell and has nothing to reduce. Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
  */
 val crop_predicate_js(const val& rMeshObj, const std::string& rArray, const std::string& rCompare,
-                      double value, bool recordIds) {
+                      double value, bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
-        return mesh_to_val(meshioplusplus::crop_predicate(
-                               val_to_mesh(rMeshObj), rArray,
-                               meshioplusplus::refine_compare_from_name(rCompare), value, recordIds)
-                               .mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_predicate(val_to_mesh(rMeshObj), rArray,
+                                           meshioplusplus::refine_compare_from_name(rCompare),
+                                           value, recordIds),
+            returnMaps);
     });
 }
 
+/**
+ * @brief Crop a mesh to the half-space (p - point) . normal >= 0 (`point`/
+ * `normal` are 3-element JS arrays). Returns the pruned mesh, or
+ * `{mesh, pointMap, cellMaps}` when `returnMaps` is set.
+ */
 val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
-                  const std::string& rMode, bool recordIds) {
+                  const std::string& rMode, bool recordIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         double point[3], normal[3];
         for (unsigned i = 0; i < 3; ++i) {
@@ -1741,9 +2583,9 @@ val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
         }
         meshioplusplus::CropMode m =
             (rMode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
-        return mesh_to_val(
-            meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds)
-                .mMesh);
+        return crop_result_to_val(
+            meshioplusplus::crop_halfspace(val_to_mesh(rMeshObj), point, normal, m, recordIds),
+            returnMaps);
     });
 }
 
@@ -2390,10 +3232,12 @@ val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate,
 
 /**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
- * Returns a JS array of `{key, mesh}` objects. `tagName` selects the integer
- * cell_data for the tag criterion (empty = auto-detect).
+ * Returns a JS array of `{key, mesh}` objects, plus `pointMap`/`cellMaps` per
+ * piece when `returnMaps` is set. `tagName` selects the integer cell_data for
+ * the tag criterion (empty = auto-detect).
  */
-val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTagName) {
+val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTagName,
+            bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SplitResult r = meshioplusplus::split(
             val_to_mesh(rMeshObj), meshioplusplus::split_by_from_name(rBy), rTagName);
@@ -2402,6 +3246,10 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
             val piece = val::object();
             piece.set("key", p.mKey);
             piece.set("mesh", mesh_to_val(p.mMesh));
+            if (returnMaps) {
+                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
+                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
+            }
             out.call<void>("push", piece);
         }
         return out;
@@ -2414,12 +3262,20 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
  * are not carried across the JS boundary (use `recordParentIds` for the
  * `convert:parent_cell` cell_data instead).
  */
-val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds) {
+val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds,
+                     bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::ConvertCellsOptions options;
         options.mMode = meshioplusplus::convert_cells_mode_from_name(rMode);
         options.mRecordParentIds = recordParentIds;
-        return mesh_to_val(meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::ConvertCellsResult r =
+            meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2428,17 +3284,23 @@ val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordP
  * eligible 3D cell, connected to a new interior point. Needs no per-type
  * template table -- tabulated types (reduced to corners for a quadratic
  * variant) and existing polyhedron blocks are handled uniformly.
- * Automatically conforming, unlike `refine`. Returns the subdivided mesh; the
- * cell maps are not carried across the JS boundary (use `recordParentIds` for
- * the `subdivide:parent_cell` cell_data instead) -- and unlike
- * `convertCells`, there is no point map at all, since subdivide never prunes
- * or renumbers an original point.
+ * Automatically conforming, unlike `refine`. Returns the subdivided mesh (use
+ * `recordParentIds` for the `subdivide:parent_cell` cell_data instead), or
+ * `{mesh, cellMaps}` when `returnMaps` is set -- there is no point map at
+ * all, unlike `convertCells`, since subdivide never prunes or renumbers an
+ * original point.
  */
-val subdivide_js(const val& rMeshObj, bool recordParentIds) {
+val subdivide_js(const val& rMeshObj, bool recordParentIds, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SubdivideOptions options;
         options.mRecordParentIds = recordParentIds;
-        return mesh_to_val(meshioplusplus::subdivide(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::SubdivideResult r =
+            meshioplusplus::subdivide(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2447,22 +3309,32 @@ val subdivide_js(const val& rMeshObj, bool recordParentIds) {
  * larger polyhedral cells via greedy seed-and-grow over the shared-face
  * dual. Non-volume blocks pass through unchanged; points are never pruned or
  * renumbered (`clean(mesh, ..., true)` is the follow-up for a minimal point
- * set). Returns the coarsened mesh; the flat cell map is not carried across
- * the JS boundary.
+ * set). Returns the coarsened mesh, or `{mesh, cellMap}` when `returnMaps` is
+ * set -- `cellMap` is a single **flat** array (global input cell index ->
+ * global output cell index), unlike the other ops' per-block `cellMaps`,
+ * since an output cell's index depends on which group it joined, not which
+ * input block it came from.
  */
-val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
+val agglomerate_js(const val& rMeshObj, int targetGroupSize, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::AgglomerateOptions options;
         options.mTargetGroupSize = static_cast<std::size_t>(targetGroupSize);
-        return mesh_to_val(meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::AgglomerateResult r =
+            meshioplusplus::agglomerate(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("cellMap", ndarray_to_int32_array(r.mCellMap));
+        return out;
     });
 }
 
 /**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
- * the refined mesh; the index maps are not carried across the JS boundary (use
- * `recordParentIds` for the `refine:parent_cell` cell_data instead).
+ * the refined mesh (use `recordParentIds` for the `refine:parent_cell`
+ * cell_data instead), or `{mesh, pointMap, cellMaps}` when `returnMaps` is
+ * set.
  *
  * `options` is an optional object selecting a SUBSET of the cells to refine —
  * `{cells, region, array/op/value, closure, recordLevels, recordHierarchy}`,
@@ -2477,7 +3349,8 @@ val agglomerate_js(const val& rMeshObj, int targetGroupSize) {
  * node, since it already records the coarse corners each new fine node is
  * the mean of -- the multigrid prolongation weights.
  */
-val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions) {
+val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& rOptions,
+             bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RefineOptions options;
         options.mLevels = levels;
@@ -2511,7 +3384,13 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
             options.mRecordHierarchy = !hierarchy_flag.isUndefined() && !hierarchy_flag.isNull() &&
                                        hierarchy_flag.as<bool>();
         }
-        return mesh_to_val(meshioplusplus::refine(val_to_mesh(rMeshObj), options).mMesh);
+        meshioplusplus::RefineResult r = meshioplusplus::refine(val_to_mesh(rMeshObj), options);
+        if (!returnMaps) return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
     });
 }
 
@@ -2519,14 +3398,15 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
  * @brief Decimate a SURFACE mesh by quadric-error-metric edge collapse — the
  * resolution-reducing inverse of `refine`. Exactly one of `ratio` (fraction of
  * faces to keep, in (0, 1]), `targetFaces` and `maxError` must be non-negative.
- * Returns an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
- * maxErrorApplied}`; the index maps are not carried across the JS boundary and
- * the frozen mask is not exposed here, as on the other flat bindings.
+ * `frozen` is an optional array of 0-based point ids to pin outright. Returns
+ * an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
+ * maxErrorApplied}`, plus `pointMap`/`cellMaps` when `returnMaps` is set.
  */
 val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
                 const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
-                double featureAngle) {
+                double featureAngle, const val& rFrozen, bool returnMaps) {
     return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateOptions options;
         options.mTargetRatio = ratio;
         options.mTargetFaces = targetFaces < 0.0 ? static_cast<std::int64_t>(-1)
@@ -2536,13 +3416,58 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
         options.mPreserveBoundary = preserveBoundary;
         options.mPreserveFeatures = preserveFeatures;
         options.mFeatureAngleDeg = featureAngle;
-        meshioplusplus::DecimateResult r = meshioplusplus::decimate(val_to_mesh(rMeshObj), options);
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "decimate");
+        meshioplusplus::DecimateResult r = meshioplusplus::decimate(std::move(mesh), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("facesRemoved", static_cast<double>(r.mFacesRemoved));
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
+        return out;
+    });
+}
+
+/**
+ * @brief Decimate a tetrahedral VOLUME mesh by quadric-error-metric tet-edge
+ * collapse. Exactly one of `ratio`, `targetCells` and `maxError` must be
+ * non-negative. `frozen` is an optional array of 0-based point ids to pin
+ * outright. Returns an object `{mesh, tetsRemoved, pointsRemoved,
+ * collapsesRejected, maxErrorApplied}`, plus `pointMap`/`cellMaps` when
+ * `returnMaps` is set.
+ */
+val decimate_volume_js(const val& rMeshObj, double ratio, double targetCells, double maxError,
+                       const std::string& rPlacement, bool preserveBoundary,
+                       bool preserveFeatures, double featureAngle, const val& rFrozen,
+                       bool returnMaps) {
+    return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::DecimateVolumeOptions options;
+        options.mTargetRatio = ratio;
+        options.mTargetCells = targetCells < 0.0 ? static_cast<std::int64_t>(-1)
+                                                  : static_cast<std::int64_t>(targetCells);
+        options.mMaxError = maxError;
+        options.mPlacement = meshioplusplus::decimate_placement_from_name(rPlacement);
+        options.mPreserveBoundary = preserveBoundary;
+        options.mPreserveFeatures = preserveFeatures;
+        options.mFeatureAngleDeg = featureAngle;
+        options.mFrozen = frozen_mask_from_val(rFrozen, mesh.NumPoints(), "decimateVolume");
+        meshioplusplus::DecimateVolumeResult r =
+            meshioplusplus::decimate_volume(std::move(mesh), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("tetsRemoved", static_cast<double>(r.mTetsRemoved));
+        out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
+        out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
+        out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (returnMaps) {
+            out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+            out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        }
         return out;
     });
 }
@@ -2571,14 +3496,14 @@ meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::str
  * @brief Decompose a mesh into `nparts` balanced pieces (`"sfc"` / `"kahip"` /
  * `"auto"`). Returns a JS array of `{partId, mesh}` objects, exactly `nparts`
  * entries (pieces may be empty; blocks kept 1:1 with the input, unlike
- * `split`). The index maps are not carried across the JS boundary (use
+ * `split`), plus `pointMap`/`cellMaps` per piece when `returnMaps` is set (use
  * `recordIds` for the `partition:original_*_id` arrays, or `partitionLabels`
  * for the assignment). KaHIP is never compiled into the WASM build, so
  * `method: "kahip"` throws the error naming `MESHIOPLUSPLUS_WITH_KAHIP`.
  */
 val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, double imbalance,
                  const std::string& rMode, int seed, bool recordIds, int ghostLayers,
-                 const std::string& rWeightsKey) {
+                 const std::string& rWeightsKey, bool returnMaps) {
     return with_js_errors([&]() -> val {
         meshioplusplus::PartitionResult r = meshioplusplus::partition(
             val_to_mesh(rMeshObj), partition_options_js(nparts, rMethod, imbalance, rMode, seed,
@@ -2588,6 +3513,10 @@ val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, do
             val piece = val::object();
             piece.set("partId", p.mPartId);
             piece.set("mesh", mesh_to_val(p.mMesh));
+            if (returnMaps) {
+                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
+                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
+            }
             out.call<void>("push", piece);
         }
         return out;
@@ -3189,6 +4118,135 @@ void xdmf_series_free_js(int handle) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------
+// Stateful sequence reader -- the second (and only other) stateful binding
+// in this file, the same opaque-integer-handle-plus-free-functions shape as
+// the XDMF writer above, for the same three reasons (see that block's
+// comment). Mirrors the C API's mio_sequence_* handle exactly, except
+// sequenceRead takes its read options per call (pointsOnly/arrays/lenient)
+// rather than once at open time -- sequence_read_step() already takes a
+// ReadOptions per call, so nothing forces the C API's baked-in choice here.
+// ---------------------------------------------------------------------
+
+namespace {
+
+struct SequenceHandleState {
+    std::vector<meshioplusplus::SequenceEntry> mEntries;
+    std::string mFormat;
+};
+
+std::unordered_map<int, SequenceHandleState>& sequence_table() {
+    static std::unordered_map<int, SequenceHandleState> table;
+    return table;
+}
+
+/// Resolve a handle or throw. Never returns null.
+SequenceHandleState& sequence_lookup(int handle) {
+    auto it = sequence_table().find(handle);
+    if (it == sequence_table().end())
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): invalid or already-closed sequence handle " +
+            std::to_string(handle));
+    return it->second;
+}
+
+const meshioplusplus::SequenceEntry& sequence_entry_at(const SequenceHandleState& rState,
+                                                        int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= rState.mEntries.size())
+        throw meshioplusplus::ReadError(
+            "meshio++ (wasm): sequence index " + std::to_string(index) +
+            " is out of range (count " + std::to_string(rState.mEntries.size()) + ")");
+    return rState.mEntries[static_cast<std::size_t>(index)];
+}
+
+/**
+ * @brief Plan a sequence and open a handle to it (no heavy data read yet).
+ * @param rSource glob pattern string or array of MEMFS paths (see
+ *   `val_to_sequence_input`).
+ * @param rOptions `{format, times, timeFrom, sort}`, as `sequenceEntries`.
+ * @return an opaque handle to pass to the other `sequence*` functions.
+ * @throws meshioplusplus::ReadError if the pattern matches nothing or a
+ *         listed path does not exist.
+ */
+int sequence_open_js(const val& rSource, const val& rOptions) {
+    return with_js_errors([&]() -> int {
+        static int next_handle = 1;
+        meshioplusplus::SequenceInput in = val_to_sequence_input(rSource, rOptions);
+        SequenceHandleState state;
+        state.mEntries = meshioplusplus::sequence_expand(in);
+        state.mFormat = in.mFormat;
+        const int handle = next_handle++;
+        sequence_table().emplace(handle, std::move(state));
+        return handle;
+    });
+}
+
+double sequence_count_js(int handle) {
+    return with_js_errors(
+        [&]() -> double { return static_cast<double>(sequence_lookup(handle).mEntries.size()); });
+}
+
+std::string sequence_path_js(int handle, int index) {
+    return with_js_errors([&]() -> std::string {
+        return sequence_entry_at(sequence_lookup(handle), index).mPath;
+    });
+}
+
+double sequence_step_js(int handle, int index) {
+    return with_js_errors([&]() -> double {
+        return static_cast<double>(sequence_entry_at(sequence_lookup(handle), index).mStep);
+    });
+}
+
+double sequence_time_js(int handle, int index) {
+    return with_js_errors(
+        [&]() -> double { return sequence_entry_at(sequence_lookup(handle), index).mTime; });
+}
+
+std::string sequence_time_source_js(int handle, int index) {
+    return with_js_errors([&]() -> std::string {
+        return std::string(meshioplusplus::sequence_time_source_name(
+            sequence_entry_at(sequence_lookup(handle), index).mTimeSource));
+    });
+}
+
+/**
+ * @brief Read one entry's mesh.
+ * @param rOptions optional `{pointsOnly, arrays, lenient}`, as
+ *   `readMeshSelective` -- the entry's own step index overrides any
+ *   `timeStep`, which is what makes fan-out work.
+ * @throws meshioplusplus::ReadError if `index` is out of range.
+ */
+val sequence_read_js(int handle, int index, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        SequenceHandleState& state = sequence_lookup(handle);
+        sequence_entry_at(state, index);  // bounds check with the shared message
+        meshioplusplus::ReadOptions opts;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the sequence read options",
+                                {"pointsOnly", "arrays", "lenient"});
+            val points_only = rOptions["pointsOnly"];
+            opts.mPointsOnly =
+                !points_only.isUndefined() && !points_only.isNull() && points_only.as<bool>();
+            val arrays = rOptions["arrays"];
+            if (!arrays.isUndefined() && !arrays.isNull())
+                opts.mDataArrays = emscripten::vecFromJSArray<std::string>(arrays);
+            val lenient = rOptions["lenient"];
+            opts.mLenient = !lenient.isUndefined() && !lenient.isNull() && lenient.as<bool>();
+        }
+        return mesh_to_val(meshioplusplus::sequence_read_step(
+            state.mEntries, static_cast<std::size_t>(index), state.mFormat, opts));
+    });
+}
+
+/// Deliberately tolerant of an unknown handle (double-close is a no-op), the
+/// same reasoning as `xdmf_series_free_js`.
+void sequence_free_js(int handle) {
+    sequence_table().erase(handle);
+}
+
+}  // namespace
+
 // --- Provenance (see doc/provenance.md) -----------------------------------
 //
 // Binds the C++ core directly (this package's pattern) rather than the flat C
@@ -3312,6 +4370,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("agglomerate", &agglomerate_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
+    emscripten::function("decimateVolume", &decimate_volume_js);
     emscripten::function("partition", &partition_js);
     emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);
@@ -3342,4 +4401,15 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("xdmfSeriesNumSteps", &xdmf_series_num_steps_js);
     emscripten::function("xdmfSeriesFinalized", &xdmf_series_finalized_js);
     emscripten::function("xdmfSeriesFree", &xdmf_series_free_js);
+    // Stateful sequence reader: an opaque handle plus these eight calls (see
+    // the block comment above their definitions for why it is not an
+    // embind class_).
+    emscripten::function("sequenceOpen", &sequence_open_js);
+    emscripten::function("sequenceCount", &sequence_count_js);
+    emscripten::function("sequencePath", &sequence_path_js);
+    emscripten::function("sequenceStep", &sequence_step_js);
+    emscripten::function("sequenceTime", &sequence_time_js);
+    emscripten::function("sequenceTimeSource", &sequence_time_source_js);
+    emscripten::function("sequenceRead", &sequence_read_js);
+    emscripten::function("sequenceFree", &sequence_free_js);
 }

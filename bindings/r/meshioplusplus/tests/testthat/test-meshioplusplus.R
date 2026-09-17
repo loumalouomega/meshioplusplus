@@ -515,6 +515,15 @@ test_that("clean, smooth and crop work", {
   expect_equal(mio_num_cells(b), 2) # the box holds everything
   mio_release(b)
 
+  # frozen: reaches the core independently of fix_boundary.
+  sf <- mio_smooth(m, iterations = 3L, fix_boundary = FALSE, frozen = c(1, 2))
+  expect_equal(mio_num_points(sf$mesh), 5)
+  mio_release(sf$mesh)
+
+  # An out-of-range frozen id fails by name (0-based internally, so
+  # 1-based id 999 is reported as 998).
+  expect_error(mio_smooth(m, frozen = c(999)), "frozen node id 998")
+
   b2 <- mio_crop_bbox(m, c(100, 100, 100), c(101, 101, 101))
   expect_equal(mio_num_cells(b2), 0)
   mio_release(b2)
@@ -522,6 +531,34 @@ test_that("clean, smooth and crop work", {
   p <- mio_crop_plane(m, c(0, 0, 0), c(1, 0, 0), mode = "any")
   expect_gte(mio_num_cells(p), 0)
   mio_release(p)
+})
+
+test_that("decimate collapses a fan and honours frozen", {
+  # A 4-triangle fan around a centre vertex (point 5), the same fixture
+  # tests/fortran/test_fortran_api.f90 and tests/cpp/test_c_api.cpp use.
+  fan <- mio_mesh()
+  mio_set_points(fan, matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 0
+  ), nrow = 3))
+  mio_add_cell_block(fan, "triangle", matrix(c(
+    1, 2, 5, 2, 3, 5, 3, 4, 5, 4, 1, 5
+  ), nrow = 3))
+  on.exit(mio_release(fan))
+
+  d <- mio_decimate(fan, target_faces = 1)
+  expect_equal(mio_num_cells(d$mesh), 2)
+  expect_equal(d$faces_removed, 2)
+  expect_equal(d$points_removed, 1) # the unfrozen centre collapses
+  mio_release(d$mesh)
+
+  # frozen: pinning the centre vertex (id 5) prevents its own removal.
+  df <- mio_decimate(fan, target_faces = 1, frozen = c(5))
+  expect_equal(df$points_removed, 0)
+  mio_release(df$mesh)
+
+  # An out-of-range frozen id fails by name (0-based internally).
+  expect_error(mio_decimate(fan, target_faces = 1, frozen = c(999)),
+              "frozen node id 998")
 })
 
 test_that("slice and isosurface work", {

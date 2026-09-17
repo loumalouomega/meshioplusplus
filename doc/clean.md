@@ -51,4 +51,4 @@ With no step flags the default set runs (remove-orphans + drop-degenerate + drop
 
 - **C API** — `mio_clean(mesh, weld, atol, remove_orphans, drop_degenerate, drop_duplicate_cells, &n_welded, &n_orphan, &n_degen, &n_dup)`. See the [C API reference](/c_api).
 - **Fortran** — `mesh%clean(weld=..., atol=..., points_welded=..., ...)`. See the [Fortran reference](/fortran).
-- **WebAssembly / JavaScript** — `clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells)` returns `{mesh, pointsWelded, ...}`. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells, returnMaps)` returns `{mesh, pointsWelded, ...}`, plus `pointMap`/`cellMaps` when `returnMaps` is set. See the [WebAssembly reference](/wasm).

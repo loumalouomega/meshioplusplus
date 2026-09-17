@@ -162,6 +162,27 @@ def case_dir(tmp_path, hex_cube_data):
     return tmp_path
 
 
+@pytest.fixture
+def multi_region_case_dir(tmp_path, hex_cube_data):
+    """A two-region case: `constant/fluid/polyMesh` and `constant/solid/polyMesh`.
+
+    Roadmap §1 tier B2 (v11.4.0): multi-region case selection.
+    """
+    points, faces, owner, neighbour, boundary = hex_cube_data
+    for region in ("fluid", "solid"):
+        poly = tmp_path / "constant" / region / "polyMesh"
+        poly.mkdir(parents=True)
+        _write_ascii_points(poly / "points", points)
+        _write_ascii_faces(poly / "faces", faces)
+        _write_ascii_labels(poly / "owner", owner, "owner")
+        _write_ascii_boundary(poly / "boundary", boundary)
+    (tmp_path / "constant" / "regionProperties").write_text(
+        "FoamFile\n{\n}\nregions\n(\n);\n"
+    )
+    (tmp_path / "case.foam").write_text("")
+    return tmp_path
+
+
 class TestStripComments:
     def test_block_comment(self):
         assert _strip_comments("a /* foo */ b") == "a  b"
@@ -1051,6 +1072,193 @@ class TestPublicAPI:
         import meshioplusplus
 
         assert hasattr(meshioplusplus.openfoam, "read")
+
+
+class TestMultiRegion:
+    """Roadmap §1 tier B2 (v11.4.0): multi-region case selection."""
+
+    def test_no_region_set_raises_naming_the_regions(self, multi_region_case_dir):
+        import meshioplusplus
+
+        with pytest.raises(Exception) as exc_info:
+            meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam")
+        assert "fluid" in str(exc_info.value)
+        assert "solid" in str(exc_info.value)
+
+    def test_region_selects_the_named_region(self, multi_region_case_dir):
+        import meshioplusplus
+
+        mesh = meshioplusplus.openfoam.read(
+            multi_region_case_dir / "case.foam", region="fluid"
+        )
+        assert len(mesh.points) == 8
+        assert any(cb.type == "hexahedron" for cb in mesh.cells)
+
+    def test_unknown_region_raises_naming_it(self, multi_region_case_dir):
+        import meshioplusplus
+
+        with pytest.raises(Exception):
+            meshioplusplus.openfoam.read(
+                multi_region_case_dir / "case.foam", region="nope"
+            )
+
+    def test_direct_polymesh_path_needs_no_region_kwarg(self, multi_region_case_dir):
+        import meshioplusplus
+
+        mesh = meshioplusplus.openfoam.read(
+            multi_region_case_dir / "constant" / "solid" / "polyMesh"
+        )
+        assert len(mesh.points) == 8
+
+
+def _write_processor_addressing(poly, point_addr, cell_addr, face_addr, boundary_addr):
+    """Write the four `*ProcAddressing` labelLists a decomposed case's polyMesh carries."""
+    for name, vals in (
+        ("pointProcAddressing", point_addr),
+        ("cellProcAddressing", cell_addr),
+        ("faceProcAddressing", face_addr),
+        ("boundaryProcAddressing", boundary_addr),
+    ):
+        _write_ascii_labels(poly / name, vals, name)
+
+
+class TestDecomposedCase:
+    """Roadmap §1 tier B2 (v11.4.0): reconstructing a `processor*/` case.
+
+    Reuses ``TestReadTwoCellMesh``'s two-hex-sharing-a-face geometry (cube A:
+    x in [0,1], points 0-7; cube B: x in [1,2], sharing points 1,2,5,6 at
+    x=1), split by hand into one cell per processor -- the shared face (id 0
+    below) is the only one referenced by both processors' `faceProcAddressing`,
+    with opposite signs; every other face gets its own unique id.
+    """
+
+    @pytest.fixture
+    def decomposed_case_dir(self, tmp_path):
+        g = [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [2, 0, 0],
+            [2, 1, 0],
+            [2, 0, 1],
+            [2, 1, 1],
+        ]
+        # Cube A (processor0): its own 8 points, in global order already.
+        pts_a = np.array([g[i] for i in range(8)], dtype=float)
+        conn_a = [0, 1, 2, 3, 4, 5, 6, 7]
+        # Cube B (processor1): shared face (global 1,2,6,5) + its own 4
+        # (global 8,9,11,10), local order chosen so the hex is valid.
+        b_global = [1, 2, 6, 5, 8, 9, 11, 10]
+        pts_b = np.array([g[i] for i in b_global], dtype=float)
+        conn_b = [0, 1, 2, 3, 4, 5, 6, 7]
+
+        for proc, pts, conn in ((0, pts_a, conn_a), (1, pts_b, conn_b)):
+            mesh = meshioplusplus.Mesh(pts, [("hexahedron", [conn])])
+            meshioplusplus.write(
+                tmp_path / f"processor{proc}" / "case.foam",
+                mesh,
+                file_format="openfoam",
+            )
+
+        poly_a = tmp_path / "processor0" / "constant" / "polyMesh"
+        poly_b = tmp_path / "processor1" / "constant" / "polyMesh"
+
+        # Each isolated cell has 6 boundary faces and no internal one; find
+        # the shared (x=1) face by its own written point coordinates.
+        def interface_face(poly):
+            faces = _read_faces(poly / "faces")
+            points = _read_points(poly / "points")
+            for i, face in enumerate(faces):
+                if all(abs(points[n][0] - 1.0) < 1e-9 for n in face):
+                    return i
+            raise AssertionError("no face at x=1 found")
+
+        iface_a, iface_b = interface_face(poly_a), interface_face(poly_b)
+        next_id = [1]  # global face id; 0 is reserved for the shared face
+
+        def face_addr(n, iface, flip):
+            # Values are the OpenFOAM 1-based signed encoding (global id + 1,
+            # negated when flipped), never the raw global id itself.
+            out = []
+            for f in range(n):
+                if f == iface:
+                    out.append(-1 if flip else 1)  # global id 0
+                else:
+                    out.append(next_id[0] + 1)
+                    next_id[0] += 1
+            return out
+
+        _write_processor_addressing(
+            poly_a, list(range(8)), [0], face_addr(6, iface_a, flip=False), [0]
+        )
+        _write_processor_addressing(
+            poly_b, b_global, [1], face_addr(6, iface_b, flip=True), [0]
+        )
+        return tmp_path
+
+    def test_reconstructs_one_mesh_with_the_shared_face_restored(
+        self, decomposed_case_dir
+    ):
+        mesh = meshioplusplus.openfoam.read(decomposed_case_dir)
+        assert len(mesh.points) == 12
+        n_hex = sum(len(cb.data) for cb in mesh.cells if cb.type == "hexahedron")
+        n_quad = sum(len(cb.data) for cb in mesh.cells if cb.type == "quad")
+        assert n_hex == 2
+        assert n_quad == 10  # 6 + 6 boundary faces minus the 2 that became internal
+
+
+class TestTimeDirectoryFields:
+    """Roadmap §1 tier B2 (v11.4.0): internalField point/cell data."""
+
+    @pytest.fixture
+    def case_with_fields(self, case_dir):
+        for time_dir, value in (("0", 1.0), ("1", 2.0)):
+            td = case_dir / time_dir
+            td.mkdir()
+            (td / "p").write_text(
+                "FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n"
+                f"internalField   uniform {value};\n"
+            )
+        return case_dir
+
+    def test_uniform_cell_field_is_read_from_time_zero(self, case_with_fields):
+        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam")
+        assert "p" in mesh.cell_data
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 1.0)
+
+    def test_time_step_selects_the_directory(self, case_with_fields):
+        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam", time_step=1)
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 2.0)
+
+    def test_reachable_through_the_generic_dispatcher(self, case_with_fields):
+        mesh = meshioplusplus.read(case_with_fields / "case.foam", time_step=1)
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 2.0)
+
+    def test_arrays_filter_excludes_an_unwanted_field(self, case_with_fields):
+        (case_with_fields / "0" / "U").write_text(
+            "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n"
+            "internalField   uniform (1 0 0);\n"
+        )
+        mesh = meshioplusplus.openfoam.read(
+            case_with_fields / "case.foam", arrays=["p"]
+        )
+        assert "p" in mesh.cell_data
+        assert "U" not in mesh.cell_data
+
+    def test_metadata_lists_the_time_values(self, case_with_fields):
+        meta = meshioplusplus.read_metadata(case_with_fields / "case.foam")
+        assert meta["time_values"] == [
+            0.0,
+            1.0,
+        ]  # directory names "0"/"1", not p's own values
 
 
 class TestReadTwoCellMesh:

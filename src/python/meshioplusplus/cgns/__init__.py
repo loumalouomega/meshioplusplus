@@ -27,17 +27,27 @@ def _is_hdf5(filename):
         return True  # not our problem to diagnose here; let the reader report
 
 
-def read(filename):
-    """Read a CGNS file (C++ core when built with HDF5, Python/h5py fallback)."""
+def read(filename, time_step: int = 0):
+    """Read a CGNS file (C++ core when built with HDF5, Python/h5py fallback).
+
+    ``time_step`` selects one step of a transient (`BaseIterativeData_t`/
+    `ZoneIterativeData_t`) file (0 = first, negative counts from the end),
+    resolved the same way the C API/Fortran/Julia/R/WASM surfaces do -- see
+    :func:`meshioplusplus.cgns.read`'s C++ counterpart, ``read_cgns``. A
+    non-default value forces the C++ path (the Python h5py reference has no
+    transient-step support) and re-raises rather than silently falling back.
+    """
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
-            return _core.cgns_read(str(filename))
+            return _core.cgns_read(str(filename), time_step)
         except Exception:
             # Falling back is only sound when the fallback answers the same
             # question. It cannot for an ADF-container file: the reference
             # reader is h5py-based and would report a confusing signature
             # error rather than the real one. (The xdmf `time_step` precedent.)
             if not is_buffer(filename, "r") and not _is_hdf5(filename):
+                raise
+            if time_step:
                 raise
     return _py_read(filename)
 

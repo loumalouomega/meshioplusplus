@@ -19,8 +19,16 @@ _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 # multi-mesh files. `read_med_multi` / `write_med_multi` stay on Python.
 
 
-def read(filename):
-    """Read a MED file (C++ core when built with HDF5, Python/h5py fallback)."""
+def read(filename, time_step: int = 0):
+    """Read a MED file (C++ core when built with HDF5, Python/h5py fallback).
+
+    ``time_step`` selects one step of a multi-step ``CHA`` field (0 = first,
+    negative counts from the end), resolved the same way the C API/Fortran/
+    Julia/R/WASM surfaces already do -- see :func:`meshioplusplus.med.read`'s
+    C++ counterpart, ``read_med``. A non-default value forces the C++ path
+    (it has no Python-fallback equivalent) and an out-of-range step raises
+    :class:`~meshioplusplus.ReadError` naming the field and its step count.
+    """
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
             # The C++ path already returns a mesh whose `.regions` (and so
@@ -32,9 +40,10 @@ def read(filename):
             # since the property setters *replace* all regions of their kind,
             # would silently discard the dim/tag `mesh_to_py` already
             # attached to each one.
-            return _core.med_read(str(filename))
+            return _core.med_read(str(filename), time_step)
         except Exception:
-            pass
+            if time_step:
+                raise
     return _py_read(filename)
 
 

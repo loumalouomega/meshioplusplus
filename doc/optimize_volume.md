@@ -54,7 +54,7 @@ meshioplusplus optimize-volume volume.vtu optimized.vtu
 
 :::
 
-Bindings mirror the operation on every surface: Python `optimize_volume`, C `mio_optimize_volume`, Fortran `m%optimize_volume`, Julia `optimize_volume`, R `mio_optimize_volume`, WASM `optimizeVolume`, the `optimize-volume` CLI verb in both CLIs, an `OptimizeVolume` settings-pipeline step, and an `optimize_volume` MCP tool. The relocation pin mask (`frozen`) is exposed on the Python and C++ APIs only — a documented flat-ABI gap shared with `smooth`.
+Bindings mirror the operation on every surface: Python `optimize_volume`, C `mio_optimize_volume`, Fortran `m%optimize_volume`, Julia `optimize_volume`, R `mio_optimize_volume`, WASM `optimizeVolume`, the `optimize-volume` CLI verb in both CLIs, an `OptimizeVolume` settings-pipeline step, and an `optimize_volume` MCP tool. The relocation pin mask (`frozen`) is exposed on the Python and C++ APIs only — a documented flat-ABI gap of its own, distinct from `smooth`'s (whose `frozen` reaches every flat binding: C `mio_smooth_ex`, Fortran, Julia, R, and WASM).
 
 ## Attribution
 

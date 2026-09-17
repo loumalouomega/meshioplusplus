@@ -406,6 +406,42 @@ TEST(CApi, Decimate) {
     mio_mesh_free(tet);
 }
 
+TEST(CApi, DecimateExFrozenMaskAndNullOpts) {
+    // Same 4-triangle fan as Decimate: without frozen, the centre collapses.
+    const std::array<double, 15> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0.5, 0.5, 0};
+    const std::array<std::int64_t, 12> conn = {0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 4, 3, MIO_INT64, conn.data()), MIO_OK);
+
+    // Unlike mio_smooth_ex, there is no "all defaults" criterion, so NULL
+    // opts is a clean error, not mio_decimate's own defaults.
+    EXPECT_EQ(mio_decimate_ex(m, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("opts is NULL"), std::string::npos);
+
+    // Freezing the centre vertex (id 4) must prevent its own collapse, even
+    // though it is exactly the vertex the unfrozen Decimate test above
+    // removes.
+    mio_decimate_opts opts;
+    mio_decimate_opts_init(&opts);
+    opts.target_faces = 1;
+    const std::int64_t frozen_id = 4;
+    opts.frozen = &frozen_id;
+    opts.num_frozen = 1;
+    mio_decimate_result* res = mio_decimate_ex(m, &opts);
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_decimate_result_points_removed(res), 0);
+    mio_decimate_result_free(res);
+
+    // An out-of-range frozen id fails the call by name.
+    const std::int64_t bad_id = 999;
+    opts.frozen = &bad_id;
+    EXPECT_EQ(mio_decimate_ex(m, &opts), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("frozen node id 999"), std::string::npos);
+
+    mio_mesh_free(m);
+}
+
 TEST(CApi, DecimateVolume) {
     // A unit cube split into 6 positively-oriented tets sharing the main
     // diagonal 0-6 (the same fixture as test_decimate_volume.cpp).
@@ -471,6 +507,44 @@ TEST(CApi, DecimateVolume) {
     EXPECT_EQ(mio_decimate_volume(hex, -1.0, 1, -1.0, nullptr, 0, 1, 30.0), nullptr);
     EXPECT_NE(std::string(mio_last_error()).find("tet-only"), std::string::npos);
     mio_mesh_free(hex);
+}
+
+TEST(CApi, DecimateVolumeExFrozenMaskAndNullOpts) {
+    // Same 6-tet cube as DecimateVolume, sharing the main diagonal 0-6.
+    const std::array<double, 24> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                        0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::array<std::int64_t, 24> conn = {0, 1, 2, 6, 0, 2, 3, 6, 0, 3, 7, 6,
+                                               0, 7, 4, 6, 0, 4, 5, 6, 0, 5, 1, 6};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 6, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // As mio_decimate_ex: no "all defaults" criterion, so NULL opts errors.
+    EXPECT_EQ(mio_decimate_volume_ex(m, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("opts is NULL"), std::string::npos);
+
+    // Freeze every vertex: no collapse can proceed, so nothing is removed
+    // rather than the call failing outright (the same "queue exhausted"
+    // shape a fully-pinned mesh already has without frozen).
+    mio_decimate_volume_opts opts;
+    mio_decimate_volume_opts_init(&opts);
+    opts.target_cells = 1;
+    const std::array<std::int64_t, 8> all_ids = {0, 1, 2, 3, 4, 5, 6, 7};
+    opts.frozen = all_ids.data();
+    opts.num_frozen = static_cast<std::int64_t>(all_ids.size());
+    mio_decimate_volume_result* res = mio_decimate_volume_ex(m, &opts);
+    ASSERT_NE(res, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_decimate_volume_result_tets_removed(res), 0);
+    mio_decimate_volume_result_free(res);
+
+    // An out-of-range frozen id fails the call by name.
+    const std::int64_t bad_id = 999;
+    opts.frozen = &bad_id;
+    opts.num_frozen = 1;
+    EXPECT_EQ(mio_decimate_volume_ex(m, &opts), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("frozen node id 999"), std::string::npos);
+
+    mio_mesh_free(m);
 }
 
 TEST(CApi, Merge) {
@@ -1773,6 +1847,75 @@ TEST(CApi, SmoothRejectsBadArguments) {
         mio_smooth(nullptr, "taubin", 1, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr),
         nullptr);
     EXPECT_NE(std::string(mio_last_error()), "");
+
+    mio_mesh_free(m);
+}
+
+TEST(CApi, SmoothExFrozenMaskAndNullOptsMatchesDefaults) {
+    // Same 3x3 grid as SmoothMovesInteriorAndPinsBoundary: only the centre
+    // node is interior, so it is the only one smoothing may move by default.
+    std::vector<double> pts;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            pts.insert(pts.end(), {static_cast<double>(i), static_cast<double>(j), 0.0});
+    pts[4 * 3 + 0] += 0.4;
+    pts[4 * 3 + 1] -= 0.3;
+    const std::vector<std::int64_t> conn = {0, 3, 4, 1, 1, 4, 5, 2, 3, 6, 7, 4, 4, 7, 8, 5};
+
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 9, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 4, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    // NULL opts is exactly mio_smooth_opts_init()'s defaults, i.e. plain
+    // mio_smooth's own defaults (method NULL -> taubin, 10 iterations) --
+    // compare against the plain call rather than a hardcoded convergence
+    // target, since taubin's shrink-free two-pass-per-iteration scheme
+    // converges at a different rate than laplacian's.
+    mio_mesh* plain =
+        mio_smooth(m, nullptr, 10, -1.0, -0.34, 1, 1, 30.0, 1, nullptr, nullptr, nullptr);
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    mio_mesh* dflt = mio_smooth_ex(m, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(dflt, nullptr) << mio_last_error();
+    const void* plain_data = nullptr;
+    const void* dflt_data = nullptr;
+    mio_dtype dtype = MIO_INT64;
+    ASSERT_EQ(mio_mesh_get_points(plain, &plain_data, &dtype), MIO_OK);
+    ASSERT_EQ(mio_mesh_get_points(dflt, &dflt_data, &dtype), MIO_OK);
+    const double* plain_p = static_cast<const double*>(plain_data);
+    const double* dflt_p = static_cast<const double*>(dflt_data);
+    for (int i = 0; i < 9 * 3; ++i)
+        EXPECT_EQ(plain_p[i], dflt_p[i]);
+    // And the interior node genuinely moved, so the comparison above is not
+    // vacuously true of two unchanged copies.
+    EXPECT_NE(dflt_p[4 * 3 + 0], pts[4 * 3 + 0]);
+    mio_mesh_free(plain);
+    mio_mesh_free(dflt);
+
+    // With fix_boundary off and the interior node explicitly frozen, it must
+    // stay exactly where it started -- proving frozen reaches the core
+    // independently of the boundary/feature pins.
+    mio_smooth_opts opts;
+    mio_smooth_opts_init(&opts);
+    opts.fix_boundary = 0;
+    const std::int64_t frozen_id = 4;
+    opts.frozen = &frozen_id;
+    opts.num_frozen = 1;
+    std::int64_t moved = -1;
+    mio_mesh* pinned = mio_smooth_ex(m, &opts, &moved, nullptr, nullptr);
+    ASSERT_NE(pinned, nullptr) << mio_last_error();
+    const void* pinned_data = nullptr;
+    mio_dtype pinned_dtype = MIO_INT64;
+    ASSERT_EQ(mio_mesh_get_points(pinned, &pinned_data, &pinned_dtype), MIO_OK);
+    const double* pp = static_cast<const double*>(pinned_data);
+    EXPECT_EQ(pp[4 * 3 + 0], pts[4 * 3 + 0]);
+    EXPECT_EQ(pp[4 * 3 + 1], pts[4 * 3 + 1]);
+    mio_mesh_free(pinned);
+
+    // An out-of-range frozen id fails the call by name.
+    const std::int64_t bad_id = 999;
+    opts.frozen = &bad_id;
+    EXPECT_EQ(mio_smooth_ex(m, &opts, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("frozen node id 999"), std::string::npos);
 
     mio_mesh_free(m);
 }

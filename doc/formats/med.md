@@ -151,6 +151,12 @@ Constructs that have no representation at all drop **that one field** with a `lo
 
 A non-default step is honoured **without** `mLenient`, deliberately: it is a request the Python shim never makes, so no Python behaviour depends on it. Step order comes from the `(NDT, NOR)` subgroup names, which MED zero-pads, so name order *is* step order.
 
+Since v11.3.0 `meshioplusplus.med.read(path, time_step=...)` reaches this too — the Python shim was the one surface that never plumbed `ReadOptions` through at all, unlike the C API/Fortran/Julia/R/WASM, which already honoured `mTimeStep`. A non-default `time_step` forces the C++ path (it has no Python-reference equivalent) and re-raises rather than silently falling back to the single-step Python reader on failure.
+
+### Reading time values without a full read
+
+`read_med_metadata` (v11.3.0, roadmap §1 tier B1) is MED's **native** `registry_metadata_readers()` entry: `MeshMetadata::mTimeValues` is filled by walking only `ENS_MAA`/`MAI` attributes and dataset extents (never point coordinates or cell connectivity) plus every `CHA/<field>/<step>`'s `PDT` attribute — the sorted, deduplicated union across every field, since a `MeshMetadata` reports one timeline per file rather than one per field. `mFellBackToFullRead` is `false`. Unlike `read_med` itself, this **never throws** on a multi-step field or a units-carrying one: a metadata call declining to report the very thing it exists to report would defeat its purpose, so the strict/lenient `CHA` distinction `read_med` enforces does not apply here. This is what lets [sequences](../sequences.md) treat a multi-step `.med` file as an ordered dataset with no extra plumbing.
+
 ## Quirks & limitations
 
 - **Two supports for cell data**: `ELEM` (one value per cell, exactly 1 Gauss point) and `ELNO` (one value per node-per-cell, "defined at every node"); which one is used is decided by shape (`ndim <= 2` → ELEM, `shape[1] == num_nodes_per_cell[type]` → ELNO, else `ELGA`). **`ELGA` (general Gauss-point data at unknown points) is silently skipped on write** — there's no representation for arbitrary Gauss-point layouts.

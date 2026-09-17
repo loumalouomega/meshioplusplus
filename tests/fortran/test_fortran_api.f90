@@ -414,6 +414,7 @@ program test_fortran_api
         integer(int64) :: moved, skipped, n0, nc0
         real(real64) :: max_disp
         integer :: st
+        character(:), allocatable :: errmsg
 
         n0 = m%num_points()
         nc0 = m%cell_block_num_cells(1)
@@ -447,6 +448,18 @@ program test_fortran_api
         call check(relaxed%num_points() == n0, 'odt smooth preserves the point count')
         call check(moved >= 0_int64, 'odt smooth reported a node-moved count')
         call relaxed%free()
+
+        ! frozen: an explicit pin-by-id list, independent of fix_boundary.
+        relaxed = m%smooth('laplacian', 5, fix_boundary=.false., frozen=[1_int64], stat=st)
+        call check(st == 0, 'smooth accepts a frozen id list')
+        call relaxed%free()
+
+        ! An out-of-range frozen id fails through stat, naming it. The
+        ! message reports the shifted 0-based id (998), since that is what
+        ! actually crossed the C ABI.
+        bad = m%smooth('laplacian', 1, frozen=[999_int64], stat=st, errmsg=errmsg)
+        call check(st /= 0, 'smooth rejects an out-of-range frozen id')
+        call check(index(errmsg, 'frozen node id 998') > 0, 'the error names the bad id')
     end block
 
     ! -- optimize_volume: ODT remeshing (relocate + flip connectivity) --
@@ -698,6 +711,24 @@ program test_fortran_api
         call check(st /= 0, 'decimate rejects a volume mesh')
 
         call coarse%free()
+
+        ! frozen: freezing the centre vertex (id 5) it would otherwise
+        ! collapse into the boundary prevents that removal.
+        block
+            character(:), allocatable :: errmsg
+            coarse = fan%decimate(target_faces=1_int64, frozen=[5_int64], &
+                                  points_removed=npts, stat=st)
+            call check(st == 0, 'decimate accepts a frozen id list')
+            call check(npts == 0_int64, 'the frozen centre vertex is not removed')
+            call coarse%free()
+
+            ! An out-of-range frozen id fails through stat, naming it (the
+            ! shifted 0-based id 998, since that is what crossed the C ABI).
+            bad = fan%decimate(target_faces=1_int64, frozen=[999_int64], stat=st, errmsg=errmsg)
+            call check(st /= 0, 'decimate rejects an out-of-range frozen id')
+            call check(index(errmsg, 'frozen node id 998') > 0, 'the error names the bad id')
+        end block
+
         call fan%free()
     end block
 

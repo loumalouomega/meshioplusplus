@@ -92,3 +92,41 @@ def test_tecplot_missing_x_variable_raises(tmp_path):
     p.write_text('VARIABLES = "A" "B"\nZONE N=1 E=1 F=FEPOINT ET=TRIANGLE\n')
     with pytest.raises(meshioplusplus.ReadError):
         _tecplot_py_read(str(p))
+
+
+def test_read_metadata_reports_both_zones_of_a_transient_file(tmp_path):
+    """roadmap §1 tier B1: read_tecplot_metadata scans every ZONE header
+    (SOLUTIONTIME/STRANDID) without decoding any data body, and
+    ``time_step`` picks the one zone that SOLUTIONTIME/STRANDID timeline
+    names -- two FEBLOCK zones sharing STRANDID=1, hand-written text since
+    Tecplot ASCII needs no external tool."""
+    p = tmp_path / "transient.dat"
+    p.write_text(
+        'VARIABLES = "X" "Y" "u"\n'
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=0.0 STRANDID=1\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "10.0 20.0 30.0\n"
+        "1 2 3\n"
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=2.5 STRANDID=1\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "11.0 21.0 31.0\n"
+        "1 2 3\n"
+    )
+
+    meta = meshioplusplus.read_metadata(p, "tecplot")
+    assert meta["fell_back_to_full_read"] is False
+    assert meta["format"] == "tecplot"
+    assert meta["time_values"] == [0.0, 2.5]
+    assert meta["num_points"] == 3
+
+    mesh0 = meshioplusplus.tecplot.read(p, time_step=0)
+    assert mesh0.point_data["u"][0] == 10.0
+    mesh1 = meshioplusplus.tecplot.read(p, time_step=1)
+    assert mesh1.point_data["u"][0] == 11.0
+    mesh_last = meshioplusplus.tecplot.read(p, time_step=-1)
+    assert mesh_last.point_data["u"][0] == 11.0
+
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.tecplot.read(p, time_step=5)

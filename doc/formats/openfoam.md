@@ -63,7 +63,64 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 - `cell_data["cell_tags"]` — per-cell-block tag array: `0` for every volume cell block, and a distinct negative "MED-style family id" `-(patch_index+1)` per boundary patch's face blocks (so a triangle patch and a quad patch on the *same* physical boundary would currently get *different* tag values — see Quirks).
 - `mesh.cell_tags` — mesh-level attribute (not `cell_data`), `{family_id: [patch_name]}`, letting a MED write bridge these patch names through the same mechanism used for Gmsh physical groups (see [`med.md`](med.md)).
 - `mesh.point_tags` — always set to `{}` (present for interface symmetry with the MED-derived tag convention; OpenFOAM has no point-tag concept).
-- No point_data or field_data (OpenFOAM field files like `U`, `p`, `T` in the case's time directories are not read by this module — only the mesh topology under `constant/polyMesh`).
+- No `field_data`. `point_data`/`cell_data` come from a selected time directory's field files (`U`, `p`, `T`, …) when requested via `time_step`/`arrays` — see "Time-directory fields" below; the plain `read()` (no `time_step`/`arrays`) still attaches time-zero's fields by default, matching every other format's "data on unless opted out" convention.
+
+## Zones as named regions
+
+`cellZones`/`faceZones`/`pointZones` (v11.4.0, tier B2) round-trip as `mesh.regions` — see [`doc/regions.md`](../regions.md) for the model.
+
+```python
+mesh = meshioplusplus.read("case.foam")
+for r in mesh.regions:
+    print(r.name, r.kind)  # e.g. "porousZone" "cell", "inlet" "side"
+```
+
+- `cellZones` → one `Region` of kind `"cell"` per zone, entries the zone's cells as global (block-major) indices.
+- `pointZones` → one `Region` of kind `"point"` per zone, entries the zone's point indices, unchanged (points are never reordered by this reader/writer).
+- `faceZones` → one `Region` of kind `"side"` per zone; a face id becomes `(global cell, local facet)` via its **owner** cell (the same cell OpenFOAM's own `owner` array names) — `flipMap` is never read or written, since a `Side` entry carries no orientation bit to hold it in. A zone member coinciding with a skipped (degenerate) cell is dropped, logged as a count.
+- **The facet half of a `faceZones` entry is not numerically stable across a round trip.** The reader rebuilds each named cell type (tetra/pyramid/wedge/hexahedron) from face topology alone, which is free to relabel local nodes — so the *same geometric face* can come back at a different local facet index. The cell half, and the geometric face itself (its corner point ids), are unaffected. `tests/cpp/test_openfoam.cpp`'s `ZonesRoundTripAsNamedRegions` asserts exactly this invariant; `tests/python/test_region_roundtrip.py`'s `openfoam` row documents it as the one exception to that table's usual exact-entries assertion.
+- Boundary **patches** (`cell_tags`/`mesh.openfoam_patch_types`, the `boundary` file) are a separate, older mechanism and are **not** regions — a patch is not a `faceZone`, and this tier does not change that.
+- The writer only produces `cellZones`/`faceZones`/`pointZones` once the mesh carries a `Region` of the matching kind; otherwise a stale file from a previous write is removed, the same "leave no stale companion behind" rule the writer already applies to `neighbour`/`boundary`.
+- **C++ core only**, like the writer itself: the pure-Python fallback reader (`_openfoam.py`) does not read zone files, matching the precedent that this module's more advanced pieces (the writer entirely) ship compiled-only rather than duplicating the per-cell winding/topology logic in a second implementation.
+
+## Multi-region cases
+
+A multi-region case has no single `constant/polyMesh`; each region has its own `constant/<region>/polyMesh`, listed in `constant/regionProperties`. Select one with `region=`:
+
+```python
+mesh = meshioplusplus.openfoam.read("case.foam", region="fluid")
+```
+
+Reading a multi-region case with no `region` raises, naming the regions found under `constant/` (v11.4.0, tier B2) — it does not silently try (and fail to find) a bare `constant/polyMesh`. Reading a region's `polyMesh` directory directly (`case/constant/fluid/polyMesh`) needs no `region` at all — the plain `polyMesh`-directory resolution rule already covers it. `region` is **C++-core only** (`OpenFoamInfo::mRegion`) and read-side only; a multi-region *write* is a documented follow-up, and the pure-Python fallback reader has no multi-region concept, so a `region` request — or a case the compiled core recognised as multi-region — re-raises rather than silently falling back to a worse error.
+
+## Decomposed cases
+
+A decomposed case has no `constant/polyMesh` at all, only `processor0/constant/polyMesh`, `processor1/constant/polyMesh`, … (`decomposePar`'s own layout). `read` detects this — no single-region `polyMesh` and no `region` selected, but `processorN` directories present — and reconstructs one mesh with the original global numbering, mirroring what OpenFOAM's own `reconstructParMesh` does on disk (v11.4.0, tier B2):
+
+```python
+mesh = meshioplusplus.openfoam.read("case.foam")  # transparent -- no extra argument
+```
+
+Each processor's own `pointProcAddressing`/`cellProcAddressing`/`faceProcAddressing` (plain `labelList`s) map its local ids back onto the global ones; `faceProcAddressing`'s sign says whether a processor's local copy of a face is stored reversed relative to the global orientation. A global face claimed by exactly one processor is either interior to it or a real exterior boundary face; claimed by two, it is a genuine internal face `decomposePar` split at a processor boundary — the positive-signed entry names the true owner side, the negative-signed one the neighbour side. A boundary face's global patch comes from its owning processor's `boundaryProcAddressing`; a `processor*` inter-rank patch (missing/negative addressing, or a `type` starting with `processor`) has no counterpart in the original case and is dropped.
+
+This is **read-side only and C++-core only**: a multi-region *write* (and by extension a decomposed one) is a documented follow-up, and the pure-Python fallback reader has no concept of `processor*/` directories at all.
+
+## Time-directory fields
+
+`<case>/<time>/<field>` dictionaries round-trip as `point_data`/`cell_data` (v11.4.0, tier B2), selected the same way every other transient format's `time_step`/`arrays` work:
+
+```python
+mesh = meshioplusplus.read("case.foam", time_step=-1, arrays=["p", "U"])  # last step, two fields
+meta = meshioplusplus.read_metadata("case.foam")
+meta["time_values"]  # sorted values of the numeric-named time directories that hold fields
+```
+
+- `volScalarField`/`volVectorField`/`volSymmTensorField`/`volTensorField` (1/3/6/9 components) become `cell_data`; `pointScalarField`/`pointVectorField` (1/3 components) become `point_data`. Any other class (`surfaceScalarField`, …) has no point/cell home and is skipped with a warning.
+- `internalField uniform <value>` expands to one row per cell/point; `nonuniform List<T>` is read row for row. Both ASCII and binary (the same `arch`-driven reader the polyMesh files use) are supported.
+- A cell field's `internalField` only ever covers **volume** cells, in OpenFOAM's own numbering — the matching `cell_data` blocks are the volume/polyhedron ones; the boundary-face blocks get `NaN` for that field. Attaching `boundaryField`'s per-patch values to those blocks is a documented follow-up, not read here.
+- Time directories are the case root's numeric-named subdirectories that hold at least one regular file; `0` is included only when it actually holds fields. `time_step` is an **index** into that sorted list (negative counts from the end), exactly like every other transient format — not the directory's own name.
+- `read_metadata(...)["time_values"]` is a real, cheap native path (a directory listing, no field parsing); everything else in that summary comes from a full read, same as Exodus/EnSight.
+- **C++ core only**: the pure-Python fallback reader (`_openfoam.py`) reads no fields at all, matching the zones/multi-region/decomposed-case precedent above.
 
 ## Quirks & limitations
 
@@ -76,7 +133,7 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 - Degenerate volume cells that match a named type's `(n_faces, n_points)` signature but whose topology doesn't resolve cleanly (`_match_top` finds more or less than one vertical neighbour per base node) are **silently skipped** and logged as a warning count, rather than falling back to a general polyhedron.
 - Boundary patches are tagged by **patch index**, not patch identity across face-size groups — if one named patch contributes both triangles and quads, its triangle `CellBlock` and quad `CellBlock` get the *same* `cell_tags` id (assigned once per patch, reused across whichever size-buckets that patch's faces fall into), but two *different* named patches always get distinct ids.
 - All binary reads assume little-endian (`LSB`) — the format's own `arch` string is trusted for label/scalar width but not for byte order.
-- Read goes through the C++ core (`meshioplusplus._core.openfoam_read`, using `std::filesystem` for the polyMesh directory), with the Python reference as an automatic fallback. General polyhedra cross the C++↔Python boundary via the ragged `polyhedron<N>` cell representation (a copied list of face arrays); boundary patch names travel through an `OpenFoamInfo` side-channel struct as `mesh.cell_tags`.
+- Read goes through the C++ core (`meshioplusplus._core.openfoam_read`, using `std::filesystem` for the polyMesh directory), with the Python reference as an automatic fallback. General polyhedra cross the C++↔Python boundary via the ragged `polyhedron<N>` cell representation (a copied list of face arrays); boundary patch names travel through an `OpenFoamInfo` side-channel struct as `mesh.cell_tags`. On WASM, `readMeshSelective(path, {format: 'openfoam', info: true}).info.patches` reshapes the same `OpenFoamInfo` as `[{familyId, names, type?}]`; `writeMesh(path, mesh, 'openfoam', {info})` writes it back. See [doc/wasm.md](../wasm.md)'s "Side channel (info)" section.
 
 ## The ordering contract (write)
 

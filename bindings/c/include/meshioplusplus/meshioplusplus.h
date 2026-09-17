@@ -234,8 +234,8 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 11
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MAJOR 12
+#define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -745,8 +745,8 @@ MIO_API mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int rem
  * Smooth a mesh's point coordinates, leaving topology and data untouched. Only
  * the points move: connectivity, cell_data, field_data and point_data values are
  * carried through unchanged. The run summary is returned through the (optional)
- * out-params. The SmoothOptions `mFrozen` caller pin mask is not exposed across
- * the C ABI (documented flat-ABI gap).
+ * out-params. This is `mio_smooth_ex` with `frozen`/`num_frozen` unset (and
+ * every other field at the same default); use that to pin specific nodes by id.
  * @param mesh              input mesh.
  * @param method            "laplacian" or "taubin"; NULL means "taubin".
  * @param iterations        number of iterations (for Taubin one iteration is two
@@ -774,6 +774,60 @@ MIO_API mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int itera
                              double lambda, double mu, int fix_boundary, int preserve_features,
                              double feature_angle, int guard_inversion, int64_t* nodes_moved,
                              double* max_displacement, int64_t* skipped_inversion);
+
+/**
+ * Options for mio_smooth_ex.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_smooth_opts_init() rather than by hand, so fields added later default
+ * sensibly in code compiled against an older header.
+ */
+typedef struct mio_smooth_opts {
+    /** "laplacian" or "taubin"; NULL means "taubin". */
+    const char* method;
+    /** Number of iterations; zero or less returns an unchanged copy. */
+    int32_t iterations;
+    int32_t reserved_pad0; /**< must be zero; keeps the double fields aligned */
+    /** Relaxation factor; negative means "this method's own default". */
+    double lambda;
+    /** Taubin only: the un-shrinking factor (mu < -lambda < 0). */
+    double mu;
+    /** Nonzero to pin every node on a boundary facet. */
+    int32_t fix_boundary;
+    /** Nonzero to additionally pin boundary nodes at a feature. */
+    int32_t preserve_features;
+    /** Feature angle in degrees, read only when preserve_features is set. */
+    double feature_angle;
+    /** Nonzero to reject any move that would flip an incident cell. */
+    int32_t guard_inversion;
+    int32_t reserved_pad1; /**< must be zero; keeps the pointer/int64 tail aligned */
+    /**
+     * 0-based point ids to pin outright, unioned with the boundary/feature
+     * pins; NULL for none. Range-checked against the mesh's own point count;
+     * an out-of-range id fails the call by name (see mio_last_error()).
+     */
+    const int64_t* frozen;
+    /** Length of `frozen`; ignored when `frozen` is NULL. */
+    int64_t num_frozen;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_smooth_opts;
+
+/** Zero-initialize smooth options (every field its mio_smooth default). */
+MIO_API void mio_smooth_opts_init(mio_smooth_opts* opts);
+
+/**
+ * Smooth a mesh's point coordinates, honouring `opts`. `opts == NULL` is
+ * exactly `mio_smooth_opts_init`'s defaults, i.e. `mio_smooth`'s own
+ * defaults. See `mio_smooth` for the run-summary out-params (unchanged here)
+ * and `mio_smooth_opts` for the added `frozen` pin-by-id list.
+ * @return the smoothed mesh (free with mio_mesh_free), or NULL on failure --
+ *         including an out-of-range `frozen` id, named in mio_last_error().
+ */
+MIO_API mio_mesh* mio_smooth_ex(const mio_mesh* mesh, const mio_smooth_opts* opts,
+                                int64_t* nodes_moved, double* max_displacement,
+                                int64_t* skipped_inversion);
 
 /**
  * Green-element undo: restore `fine`'s transitional (closure-only) cells back
@@ -1655,9 +1709,9 @@ MIO_API void mio_refine_result_free(mio_refine_result* result);
  * structure kept 1:1. Boundary vertices (once-used-edge test) and feature
  * vertices (incident face normals differing by more than feature_angle
  * degrees) are pinned by default; the link condition and a normal-flip guard
- * reject any collapse that would change topology or fold the surface. The
- * caller frozen mask is not exposed across the C ABI (a documented flat-ABI
- * gap, like mio_smooth's).
+ * reject any collapse that would change topology or fold the surface. This is
+ * `mio_decimate_ex` with `frozen`/`num_frozen` unset; use that to pin
+ * specific vertices by id.
  * @param target_ratio      fraction of the (triangulated) faces to KEEP, in
  *                          (0, 1]; negative = unset.
  * @param target_faces      absolute face count to stop at (the result lands
@@ -1682,6 +1736,55 @@ MIO_API mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ra
                                           int64_t target_faces, double max_error,
                                           const char* placement, int preserve_boundary,
                                           int preserve_features, double feature_angle);
+
+/**
+ * Options for mio_decimate_ex.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_decimate_opts_init() rather than by hand.
+ */
+typedef struct mio_decimate_opts {
+    /** Fraction of the (triangulated) faces to KEEP, in (0, 1]; negative = unset. */
+    double target_ratio;
+    /** Absolute face count to stop at; negative = unset. */
+    int64_t target_faces;
+    /** Collapse only while the cheapest candidate's error is at most this; negative = unset. */
+    double max_error;
+    /** "optimal", "midpoint" or "endpoint"; NULL = "optimal". */
+    const char* placement;
+    /** Nonzero to pin boundary vertices (default-on behaviour: pass 1). */
+    int32_t preserve_boundary;
+    /** Nonzero to pin feature vertices. */
+    int32_t preserve_features;
+    /** Feature angle in degrees (30 is the vtkFeatureEdges convention). */
+    double feature_angle;
+    /**
+     * 0-based point ids to pin outright, unioned with the boundary/feature
+     * pins; NULL for none. Range-checked; an out-of-range id fails the call
+     * by name (see mio_last_error()).
+     */
+    const int64_t* frozen;
+    /** Length of `frozen`; ignored when `frozen` is NULL. */
+    int64_t num_frozen;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_decimate_opts;
+
+/** Zero-initialize decimate options (every field its mio_decimate default). */
+MIO_API void mio_decimate_opts_init(mio_decimate_opts* opts);
+
+/**
+ * Decimate a SURFACE mesh, honouring `opts`. Exactly one of `target_ratio`,
+ * `target_faces` and `max_error` must be set (non-negative) -- there is no
+ * "all defaults" fast path here, unlike `mio_refine_ex`/`mio_smooth_ex`, so
+ * `opts == NULL` is an error rather than a criterion-less decimate. See
+ * `mio_decimate` for the result shape and `mio_decimate_opts` for the added
+ * `frozen` pin-by-id list.
+ * @return a result handle (free with mio_decimate_result_free), or NULL on
+ *         failure, including an out-of-range `frozen` id.
+ */
+MIO_API mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_opts* opts);
 
 /**
  * Borrow the decimated mesh. Owned by the result: valid until
@@ -1758,9 +1861,9 @@ MIO_API void mio_decimate_result_free(mio_decimate_result* result);
  * condition, a duplicate-tet guard and a tet-inversion guard reject any
  * collapse that would change topology or invert a tet; boundary-touching
  * collapses additionally run mio_decimate's own ring/shared-face link
- * condition and normal-flip check over the mesh's own skin. The caller
- * frozen mask is not exposed across the C ABI (a documented flat-ABI gap,
- * like mio_smooth's).
+ * condition and normal-flip check over the mesh's own skin. This is
+ * `mio_decimate_volume_ex` with `frozen`/`num_frozen` unset; use that to pin
+ * specific vertices by id.
  * @param target_ratio      fraction of the tets to KEEP, in (0, 1];
  *                          negative = unset.
  * @param target_cells      absolute tet count to stop at (the result lands
@@ -1788,6 +1891,55 @@ MIO_API mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, do
                                                          int preserve_boundary,
                                                          int preserve_features,
                                                          double feature_angle);
+
+/**
+ * Options for mio_decimate_volume_ex.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always zero-initialize through
+ * mio_decimate_volume_opts_init() rather than by hand.
+ */
+typedef struct mio_decimate_volume_opts {
+    /** Fraction of the tets to KEEP, in (0, 1]; negative = unset. */
+    double target_ratio;
+    /** Absolute tet count to stop at; negative = unset. */
+    int64_t target_cells;
+    /** Collapse only while the cheapest boundary-touching candidate's error is at most this; negative = unset. */
+    double max_error;
+    /** "optimal", "midpoint" or "endpoint"; NULL = "optimal". */
+    const char* placement;
+    /** Nonzero to pin every boundary vertex outright (mio_decimate's own default; here defaults off). */
+    int32_t preserve_boundary;
+    /** Nonzero to pin boundary feature vertices. */
+    int32_t preserve_features;
+    /** Feature angle in degrees (30 is the vtkFeatureEdges convention). */
+    double feature_angle;
+    /**
+     * 0-based point ids to pin outright, unioned with the boundary/feature
+     * pins; NULL for none. Range-checked; an out-of-range id fails the call
+     * by name (see mio_last_error()).
+     */
+    const int64_t* frozen;
+    /** Length of `frozen`; ignored when `frozen` is NULL. */
+    int64_t num_frozen;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_decimate_volume_opts;
+
+/** Zero-initialize decimate_volume options (every field its mio_decimate_volume default). */
+MIO_API void mio_decimate_volume_opts_init(mio_decimate_volume_opts* opts);
+
+/**
+ * Decimate a TET mesh, honouring `opts`. Exactly one of `target_ratio`,
+ * `target_cells` and `max_error` must be set (non-negative), so `opts ==
+ * NULL` is an error, as `mio_decimate_ex`. See `mio_decimate_volume` for the
+ * result shape and `mio_decimate_volume_opts` for the added `frozen`
+ * pin-by-id list.
+ * @return a result handle (free with mio_decimate_volume_result_free), or
+ *         NULL on failure, including an out-of-range `frozen` id.
+ */
+MIO_API mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
+                                                            const mio_decimate_volume_opts* opts);
 
 /**
  * Borrow the decimated mesh. Owned by the result: valid until

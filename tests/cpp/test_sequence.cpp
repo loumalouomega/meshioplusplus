@@ -425,6 +425,23 @@ TEST(SequenceCapability, WriteSupportsTimeAgreesWithReality) {
     }
 }
 
+TEST(SequenceCapability, ReadSupportsTimeImpliesAMetadataReader) {
+    // The read-side twin of WriteSupportsTimeAgreesWithReality: a later
+    // format joining seq_format_may_have_steps()'s || chain with no
+    // registry_metadata_readers() entry behind it could never actually fill
+    // mTimeValues, so the predicate's claim would be false by construction.
+    // Iterating every registered reader (not a hardcoded list) is what lets
+    // this catch a *future* drift, not just today's set.
+    for (const auto& [fmt, reader] : meshioplusplus::registry_readers()) {
+        (void)reader;
+        if (meshioplusplus::seq_format_may_have_steps(fmt))
+            EXPECT_GT(meshioplusplus::registry_metadata_readers().count(fmt), 0u)
+                << "format '" << fmt
+                << "': seq_format_may_have_steps() claims time capability with no "
+                << "registry_metadata_readers() entry to back it";
+    }
+}
+
 TEST(SequenceCapability, NonTimeCarryingTargetFailsByName) {
     SeqTempDir dir;
     const std::vector<std::string> files = seq_write_files(dir, "in_", 2);

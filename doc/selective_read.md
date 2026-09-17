@@ -38,7 +38,7 @@ meshioplusplus.read_metadata("run.exo")["time_values"]   # [0.0, 0.5, 1.0]
 - Unlike `points_only`/`arrays`, this is **not** a narrowing option: no caller-side filter can recover a step that was never read. So a format whose reader has no time concept **raises** rather than quietly returning the first step.
 - `read_metadata(...)["time_values"]` reports the recorded times, so a request is checkable before it is issued. It is always present — empty for a format with no time concept — so `len(meta["time_values"])` needs no key test.
 
-Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload) and, since v9.9.0, **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order; `read_metadata`'s `time_values` are the steps' `PDT` attributes). A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to. CGNS also has a time concept and is the natural next adopter; it still takes the first step today.
+Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload), **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order), **`cgns`** (`BaseIterativeData_t`/`ZoneIterativeData_t`: `mTimeStep` resolves against `NumberOfSteps` and picks the one `FlowSolution_t` its `FlowSolutionPointers` names for that step, instead of reading every one), **`tecplot`** (every `ZONE`'s `SOLUTIONTIME`/`STRANDID`, not just the first), **`gmsh`** (4.1 only; every `$NodeData`/`$ElementData` section's own real-tag time value, not just the first per name), **`ensight`** (`.case` `TIME`/`VARIABLE`: one file per step, templated by `mTimeStep` into `filename start number:` + step × `filename increment:`) and **`openfoam`** (`<case>/<time>/<field>` dictionaries: `mTimeStep` resolves against the case root's numeric-named time directories, sorted ascending; `arrays` selects which of that directory's field files to attach). `time_step` selection on MED dates to v9.9.0; on CGNS, Tecplot, Gmsh and EnSight, `time_step` selection and `read_metadata`'s `time_values` are both new in v11.3.0 (`read_cgns_metadata`/`read_tecplot_metadata`/`read_gmsh_metadata`/`read_ensight_metadata`, roadmap §1 tier B1) rather than a full-read fallback or "takes the first step/zone/section" default — for EnSight, *any* variable reading is new; the format was geometry-only before. On OpenFOAM, both are new in v11.4.0 (`read_openfoam_metadata`, roadmap §1 tier B2) — the plain `read()` (no `time_step`/`arrays` at all) now attaches time-zero's fields by default too, where the format previously never carried `point_data`/`cell_data` at all. A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to; a transient CGNS file used to silently concatenate every `FlowSolution_t`'s arrays under whichever one's array name won last; a transient Tecplot file always read only its first `ZONE`, with every later one silently discarded; a transient Gmsh file always kept the first `$NodeData`/`$ElementData` section per name, silently discarding every later step of the same field; a transient EnSight `.case` file's `VARIABLE` section was ignored outright; OpenFOAM's time-directory fields were never read at all.
 
 ## Summarizing without loading
 
@@ -58,13 +58,16 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 | --- | --- | --- | --- |
 | XDMF | native | native, and genuinely O(1) | ✗ (takes the first step) |
 | VTU / VTP | native | native | n/a |
-| Gmsh 4.1 | native | native | n/a |
+| Gmsh 4.1 | native | native | ✅ |
 | Gmsh 2.2 | native | falls back to a full read | n/a |
 | Exodus | read whole, then filtered | falls back to a full read, but reports `time_values` | ✅ |
-| MED | read whole, then filtered | falls back to a full read | ✅ |
+| MED | read whole, then filtered | native, and genuinely O(1) | ✅ |
+| CGNS | read whole, then filtered | native, and genuinely O(1) | ✅ |
+| Tecplot | read whole, then filtered | native, and genuinely O(1) | ✅ |
+| EnSight | read whole, then filtered | falls back to a full read, but reports `time_values` | ✅ |
 | everything else | read whole, then filtered | falls back to a full read | ✗ |
 
-`reader_supports_options(fmt)` reports whether a format has a native options-aware path at all. Note that "options-aware" is not one capability but several: Exodus is on that list for `time_step`, not because it narrows arrays natively, and MED is on it for `time_step` and `lenient` (see [MED](formats/med.md#lenient-reads)).
+`reader_supports_options(fmt)` reports whether a format has a native options-aware path at all. Note that "options-aware" is not one capability but several: Exodus is on that list for `time_step`, not because it narrows arrays natively, and MED/CGNS/Tecplot/Gmsh 4.1/EnSight are on it for `time_step` (MED also for `lenient`, see [MED](formats/med.md#lenient-reads); EnSight's `points_only`/`mDataArrays` narrow *which* `VARIABLE` entries are read, not a payload within one).
 
 **A fallback is correct, just not fast**, and it always says so via `fell_back_to_full_read`. A partial read that silently wasn't partial would be worse than no feature at all, so the flag is exposed on every binding surface.
 
@@ -72,7 +75,7 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 
 - **XDMF** is the best case: every `<DataItem>` declares its shape in a `Dimensions` attribute, so counts are exact without touching any payload — and on the HDF path without opening the sibling `.h5` at all.
 - **VTU/VTP**: the file is still read and XML-parsed, because pugixml always materializes PCDATA. What is skipped is base64 decoding (which is sequential, and often the larger half), decompression, allocation and byte-swapping. Expect a solid multiple, **not** an asymptotic change. Truly O(1) VTU metadata would need the *appended* data format with `offset=` attributes, which this reader does not accept — recorded as future work.
-- **Gmsh 4.1** groups elements into typed blocks whose headers carry the type and count, so the summary walks block headers and skips each payload — by exact byte arithmetic for binary, line counts for ascii. Measured ~4× (ascii) and ~8× (binary) against a full read. Unwanted `$NodeData`/`$ElementData` bodies are skipped wholesale.
+- **Gmsh 4.1** groups elements into typed blocks whose headers carry the type and count, so the summary walks block headers and skips each payload — by exact byte arithmetic for binary, line counts for ascii. Measured ~4× (ascii) and ~8× (binary) against a full read. Unwanted `$NodeData`/`$ElementData` bodies are skipped wholesale; since v11.3.0 the summary also reports every section's own time value (`time_values`, deduplicated names), and `time_step` on a real read picks the one section per name matching the resolved time instead of always the first.
 - **Gmsh 2.2** stores a type on *every element*, so there is no cheap summary to be had; it declines and falls back rather than pretending. That is the honest answer for the format, not an omission.
 
 ## Command line
@@ -115,6 +118,8 @@ const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
 const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
 m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1]
 const meta = m.readMetadata('big.vtu');
+const withInfo = m.readMeshSelective('case.mdpa', { format: 'mdpa', lenient: true, info: true });
+withInfo.info.skippedConstructs;  // what `lenient` skipped, see below
 ```
 
 ## `lenient`: skipping what a reader cannot represent
@@ -125,6 +130,6 @@ A reader that meets a construct it has no way to express throws `ReadError` nami
 
 It is deliberately **not** "ignore all errors". It applies only where a reader can skip a construct and still return a *correct* mesh; a malformed file, a truncated block, a bad node reference or an unknown element type still throw, because continuing past those would hand back a mesh that is quietly wrong rather than merely incomplete.
 
-**Currently honoured by `mdpa` only** — its `Table`, `Geometries`, `Mesh`, `Constraints` and non-empty `SubModelPart*` blocks. Every other reader ignores the flag. `MdpaInfo::mSkippedConstructs` records what was skipped, so "lenient" never means "silently lossy". See [`doc/formats/mdpa.md`](formats/mdpa.md).
+**Currently honoured by `mdpa` only** — its `Table`, `Geometries`, `Mesh`, `Constraints` and non-empty `SubModelPart*` blocks. Every other reader ignores the flag. `MdpaInfo::mSkippedConstructs` records what was skipped, so "lenient" never means "silently lossy" — on WASM, `readMeshSelective(path, {format: 'mdpa', lenient: true, info: true}).info.skippedConstructs` reads it back (see [doc/wasm.md](wasm.md)'s "Side channel (info)" section). See [`doc/formats/mdpa.md`](formats/mdpa.md).
 
 The Python `read()` deliberately does **not** take this parameter: mdpa's Python path is the pure-Python reference reader, which already accepts every construct the flag covers, so it would be a dead argument.

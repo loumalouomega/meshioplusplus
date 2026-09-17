@@ -1307,6 +1307,112 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOpti
     return med_read_impl(rPath, rInfo, rOptions);
 }
 
+MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(rPath);
+
+    MeshMetadata meta;
+    meta.mFormat = "med";
+
+    h5::Hid ens = h5::open_group(f, "ENS_MAA");
+    std::vector<std::string> meshes = h5::group_links(ens);
+    if (meshes.size() != 1)
+        throw ReadError(
+            detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
+    const std::string mesh_name = meshes[0];
+    h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
+
+    const std::int64_t dim = h5::read_attr_int(mesh_grp, "ESP");
+    meta.mPointDim = static_cast<std::size_t>(dim);
+
+    h5::Hid data_grp;
+    if (h5::exists(mesh_grp, "NOE")) {
+        data_grp = std::move(mesh_grp);
+    } else {
+        std::vector<std::string> steps = h5::group_links(mesh_grp);
+        if (steps.size() != 1)
+            throw ReadError(detail::format_compat(
+                "Must only contain exactly 1 time-step, found {}.", steps.size()));
+        data_grp = h5::open_group(mesh_grp, steps[0]);
+    }
+
+    // Points: only the declared count, never the coordinate dataset itself.
+    {
+        h5::Hid noe = h5::open_group(data_grp, "NOE");
+        h5::Hid coo_ds(H5Dopen2(noe, "COO", H5P_DEFAULT), H5Dclose);
+        if (!coo_ds.Valid())
+            throw ReadError("MED: missing NOE/COO");
+        meta.mNumPoints = static_cast<std::size_t>(h5::read_attr_int(coo_ds, "NBR"));
+    }
+
+    // Cells: one CellBlockInfo per MAI/<type> group, in the same creation
+    // order the full reader uses. Ragged (POE/POG*) blocks read only their
+    // small offset arrays (IND/INN), never the flat node connectivity.
+    if (h5::exists(data_grp, "MAI")) {
+        h5::Hid mai = h5::open_group(data_grp, "MAI");
+        const auto& node_counts = num_nodes_per_cell();
+        for (const std::string& med_type : h5::group_links_crt(mai)) {
+            auto it = med_to_meshio().find(med_type);
+            if (it == med_to_meshio().end())
+                throw ReadError(detail::format_compat("MED: unsupported cell type {}", med_type));
+            h5::Hid g = h5::open_group(mai, med_type);
+
+            CellBlockInfo block;
+            if (med_type == "POE") {
+                NDArray ind = h5::read_dataset(g, "IND");
+                block.mType = "polyhedron";
+                block.mNumCells = ind.Size() > 0 ? ind.Size() - 1 : 0;
+                block.mRagged = true;
+            } else if (med_type == "POG" || med_type == "POG2") {
+                NDArray inn = h5::read_dataset(g, "INN");
+                block.mType = it->second;
+                block.mNumCells = inn.Size() > 0 ? inn.Size() - 1 : 0;
+                block.mRagged = true;
+            } else {
+                h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
+                if (!nod_ds.Valid())
+                    throw ReadError(detail::format_compat("MED: missing NOD for {}", med_type));
+                block.mType = it->second;
+                block.mNumCells = static_cast<std::size_t>(h5::read_attr_int(nod_ds, "NBR"));
+                auto nit = node_counts.find(it->second);
+                block.mNodesPerCell = nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+        }
+    }
+
+    // Time values: the sorted, deduplicated union of every CHA field's own
+    // step PDTs -- a MeshMetadata reports one timeline per file, and
+    // `ReadOptions::mTimeStep` selects into it uniformly across fields.
+    if (h5::exists(f, "CHA")) {
+        h5::Hid cha = h5::open_group(f, "CHA");
+        std::set<double> times;
+        for (const std::string& field_name : h5::group_links(cha)) {
+            h5::Hid field = h5::open_group(cha, field_name);
+            std::vector<std::string> steps = h5::group_links(field);
+            bool is_nodal = false;
+            for (std::size_t i = 0; i < steps.size(); ++i) {
+                h5::Hid g = h5::open_group(field, steps[i]);
+                times.insert(read_attr_double(g, "PDT"));
+                if (i == 0) {
+                    std::vector<std::string> supports = h5::group_links(g);
+                    is_nodal =
+                        std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+                }
+            }
+            if (is_nodal)
+                meta.mPointDataNames.push_back(field_name);
+            else
+                meta.mCellDataNames.push_back(field_name);
+        }
+        std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
+        std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+        meta.mTimeValues.assign(times.begin(), times.end());
+    }
+
+    return meta;
+}
+
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
     h5::SilenceErrors silence;

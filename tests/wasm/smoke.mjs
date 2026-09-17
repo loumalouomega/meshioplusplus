@@ -17,6 +17,7 @@
 // has populated src/wasm/dist/meshioplusplus_wasm{,_mt}.{mjs,wasm})
 
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { loadMeshioPlusPlus } from '../../src/wasm/src/index.mjs';
 
 let failed = false;
@@ -30,6 +31,70 @@ function step(name, fn) {
         console.error(err);
     }
 }
+
+async function asyncStep(name, fn) {
+    try {
+        await fn();
+        console.log(`ok - ${name}`);
+    } catch (err) {
+        failed = true;
+        console.error(`NOT OK - ${name}`);
+        console.error(err);
+    }
+}
+
+// Loader diagnostics (see doc/wasm.md's "Loading" section): a bad locateFile
+// must surface as a catchable MeshioPlusPlusLoadError naming the variant and
+// the requested/resolved file, never a bare Emscripten abort escaping the
+// Promise chain (the risk that motivates wrapping onAbort in src/index.mjs).
+await asyncStep(
+    'locateFile resolving to a missing file rejects with MeshioPlusPlusLoadError',
+    async () => {
+        await assert.rejects(
+            () =>
+                loadMeshioPlusPlus(
+                    { locateFile: () => '/definitely/does/not/exist.wasm' },
+                    { variant: 'seq' },
+                ),
+            (err) => {
+                assert.equal(err.name, 'MeshioPlusPlusLoadError');
+                assert.equal(err.variant, 'seq');
+                assert.match(err.resolvedUrl, /does\/not\/exist\.wasm/);
+                assert.match(err.message, /'seq' variant/);
+                assert.match(err.message, /does\/not\/exist\.wasm/);
+                return true;
+            },
+        );
+    },
+);
+
+await asyncStep(
+    // Deliberately the seq glue asked to load the *mt* .wasm, not the other
+    // direction: the mt glue's PTHREAD_POOL_SIZE pre-spawns worker threads
+    // before instantiation resolves, and on a failed instantiation those
+    // workers are never handed back to us to clean up, so provoking the
+    // failure through the mt glue hangs the Node process on exit. The
+    // mismatched-binary detection logic (locateFile returned the wrong
+    // variant's .wasm) is the same either direction.
+    'locateFile resolving to the mt .wasm for the seq glue is caught, not silently mislabelled',
+    async () => {
+        const mtWasmPath = fileURLToPath(
+            new URL('../../src/wasm/dist/meshioplusplus_wasm_mt.wasm', import.meta.url),
+        );
+        await assert.rejects(
+            () =>
+                loadMeshioPlusPlus(
+                    { locateFile: (path) => (path.endsWith('.wasm') ? mtWasmPath : path) },
+                    { variant: 'seq' },
+                ),
+            (err) => {
+                assert.equal(err.name, 'MeshioPlusPlusLoadError');
+                assert.equal(err.variant, 'seq');
+                return true;
+            },
+        );
+    },
+);
 
 const m = await loadMeshioPlusPlus({}, { variant: 'mt' });
 step('threaded (mt) build reports the openmp parallel backend', () => {
@@ -72,6 +137,34 @@ step('VTU binary+zlib round-trip (object -> file -> object)', () => {
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
     assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
     assert.deepEqual(Array.from(back.cell_data.material[0]), [7]);
+});
+
+step('dtype carry: BigInt64Array survives VTU with full 64-bit precision', () => {
+    // 2**60 + 1 is far outside Float64's exact-integer range (2**53), so this
+    // only round-trips exactly if the array crosses as BigInt64Array end to
+    // end rather than ever passing through a double (roadmap §1 dtype carry).
+    // field_data has no VTU representation (this writer only emits Points/
+    // Cells/PointData/CellData -- see the plain VTU round-trip test above),
+    // so this uses point_data.
+    const big = 2n ** 60n + 1n;
+    const withBig = { ...tet, point_data: { big_id: new BigInt64Array([big, big, big, big]) } };
+    m.writeMesh('/big.vtu', withBig);
+    const back = m.readMesh('/big.vtu');
+    assert.ok(back.point_data.big_id instanceof BigInt64Array, 'dtype preserved through VTU');
+    assert.equal(back.point_data.big_id[0], big);
+});
+
+step('dtype carry: a narrower integer dtype survives the mesh as exact BigInt64Array', () => {
+    // The mesh's own in-memory representation only canonicalizes within kind
+    // (float -> Float64, integer -> Int64: see native_mesh.hpp's
+    // canonicalize_array) -- so a narrower integer input (here Uint8Array) is
+    // accepted, but what comes back out is the canonical Int64 form, exact
+    // and never silently widened through a double as it was before v11.2.0.
+    const withU8 = { ...tet, point_data: { flag: new Uint8Array([1, 0, 1, 255]) } };
+    m.writeMesh('/u8.vtu', withU8);
+    const back = m.readMesh('/u8.vtu');
+    assert.ok(back.point_data.flag instanceof BigInt64Array, 'integer data stays integer, not Float64');
+    assert.deepEqual(Array.from(back.point_data.flag, Number), [1, 0, 1, 255]);
 });
 
 step('STL binary round-trip', () => {
@@ -274,6 +367,28 @@ step('med is an options-aware reader (lenient / timeStep reach it)', () => {
     );
 });
 
+step('med reports its time steps via a native metadata path (roadmap §1 tier B1)', () => {
+    // read_med_metadata (v11.3.0) is a native path over ENS_MAA/MAI attributes
+    // and CHA/<field>/<step> PDTs, never a metadata_from_mesh fallback over a
+    // full read -- fellBackToFullRead must be false. A genuinely multi-step
+    // fixture needs raw HDF5 group/attribute writes this JS layer has no
+    // library for, and a committed .med binary fixture would be Git-LFS (see
+    // the exodus step above for the same reasoning), so -- exactly like that
+    // step -- this proves the format is reachable and the new metadata
+    // plumbing is wired end to end; tests/cpp/test_hdf5_formats.cpp's
+    // Med.MetadataReportsBothStepsWithoutAFullRead and
+    // tests/python/test_med.py's
+    // test_read_metadata_reports_both_steps_of_a_multi_step_field hand-build a
+    // real two-step field and pin the length-2 case this file cannot.
+    m.writeMesh('/meta.med', tet, 'med');
+    const meta = m.readMetadata('/meta.med', 'med');
+    assert.equal(meta.format, 'med');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.equal(meta.timeValues.length, 1);
+    assert.equal(meta.timeValues[0], 0);
+    assert.equal(meta.numPoints, tet.points.length / 3);
+});
+
 step('xdmf writes an HDF companion file when HDF5 is available', () => {
     // The registry's xdmf writer default follows the build (registry.cpp): with
     // HDF5 linked in it emits Format="HDF" heavy data beside the XML, matching
@@ -286,6 +401,48 @@ step('xdmf writes an HDF companion file when HDF5 is available', () => {
     const back = m.readMesh('/tet.xdmf', 'xdmf');
     assert.equal(back.cells[0].type, 'tetra');
     assert.deepEqual(Array.from(back.point_data.temperature), [1, 2, 3, 4]);
+});
+
+step('writeMesh returns every path a multi-file writer touched', () => {
+    const paths = m.writeMesh('/multi.xdmf', tet, 'xdmf');
+    assert.deepEqual(paths, ['/multi.h5', '/multi.xdmf']);
+});
+
+step('writeMesh reports a rewrite of the same path even with identical bytes', () => {
+    // Same mesh, same path, twice in a row -- the second write must still be
+    // reported (a naive (size, mtime) diff could miss it if both writes land
+    // in the same MEMFS millisecond tick; see ensure_new_write_tick).
+    const first = m.writeMesh('/rewrite.vtu', tet);
+    assert.deepEqual(first, ['/rewrite.vtu']);
+    const second = m.writeMesh('/rewrite.vtu', tet);
+    assert.deepEqual(second, ['/rewrite.vtu']);
+});
+
+step('writeMesh options: encoding/codec select ASCII and no compression', () => {
+    const paths = m.writeMesh('/opts.vtu', tet, '', { encoding: 'ascii', codec: 'none' });
+    assert.deepEqual(paths, ['/opts.vtu']);
+    const text = new TextDecoder().decode(m.FS.readFile('/opts.vtu'));
+    assert.match(text, /format="ascii"/);
+});
+
+step('writeMesh options: a codec the format cannot honour throws by name', () => {
+    const tri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 1, 2]), nodesPerCell: 3 }],
+    };
+    assert.throws(
+        () => m.writeMesh('/opts.stl', tri, 'stl', { codec: 'zlib' }),
+        /codec/i,
+    );
+});
+
+step('convert returns the written paths and accepts write options', () => {
+    m.writeMesh('/conv-src.vtu', tet);
+    const paths = m.convert('/conv-src.vtu', '/conv-out.vtu', { encoding: 'ascii' });
+    assert.deepEqual(paths, ['/conv-out.vtu']);
+    const text = new TextDecoder().decode(m.FS.readFile('/conv-out.vtu'));
+    assert.match(text, /format="ascii"/);
 });
 
 step('malformed file raises a catchable Error, not a WASM abort', () => {
@@ -603,7 +760,12 @@ step('subdivide: one hexahedron -> 6 polyhedral children, one apex point', () =>
 step('subdivide: recordParentIds attaches subdivide:parent_cell', () => {
     const out = m.subdivide(cube, true);
     assert.ok('subdivide:parent_cell' in out.cell_data);
-    assert.deepEqual(Array.from(out.cell_data['subdivide:parent_cell'][0]), [0, 0, 0, 0, 0, 0]);
+    // Parent-id arrays are integer dtype (now BigInt64Array, see roadmap §1's
+    // dtype-carry item) -- Number() them before comparing to plain numbers.
+    assert.deepEqual(
+        Array.from(out.cell_data['subdivide:parent_cell'][0], Number),
+        [0, 0, 0, 0, 0, 0],
+    );
 });
 
 step('subdivide: non-3D blocks pass through unchanged', () => {
@@ -765,8 +927,10 @@ step('refine: recordHierarchy attaches the persistent parent/child ids', () => {
     const hier = m.refine(cube, 1, false, { recordHierarchy: true });
     assert.ok('refine:cell_id' in hier.cell_data);
     assert.ok('refine:parent_id' in hier.cell_data);
-    const ids = Array.from(hier.cell_data['refine:cell_id'][0]);
-    const parents = Array.from(hier.cell_data['refine:parent_id'][0]);
+    // Integer-id arrays are now BigInt64Array (roadmap §1 dtype carry);
+    // Number() them so the plain-number comparisons below still work.
+    const ids = Array.from(hier.cell_data['refine:cell_id'][0], Number);
+    const parents = Array.from(hier.cell_data['refine:parent_id'][0], Number);
     assert.equal(new Set(ids).size, ids.length, 'ids are unique');
     // The whole cube is one cell, uniformly refined into 8 -- every child
     // therefore shares parent 0, none can be self-parented (untouched).
@@ -854,10 +1018,156 @@ step('decimate: collapses a refined cube skin, pinning its creases', () => {
     assert.ok(out.maxErrorApplied >= 0);
 });
 
+step('dtype carry: decimate keeps an Int32Array cell tag and point id exact integers', () => {
+    // As on the VTU round trip above: the mesh's own storage canonicalizes an
+    // integer input to Int64 (native_mesh.hpp's canonicalize_array), so what
+    // comes back is BigInt64Array, not the original Int32Array -- but every
+    // value stays an exact integer rather than the pre-v11.2.0 double.
+    const skin = m.extractSkin(m.refine(cube), true);
+    const numPoints = skin.points.length / skin.dim;
+    const withTags = {
+        ...skin,
+        point_data: { point_id: new Int32Array(Array.from({ length: numPoints }, (_, i) => i)) },
+        cell_data: {
+            cell_tag: skin.cells.map((cb) =>
+                new Int32Array(new Array(cb.data.length / 3).fill(5)),
+            ),
+        },
+    };
+    const out = m.decimate(withTags, 0.5);
+    assert.ok(out.mesh.point_data.point_id instanceof BigInt64Array, 'point_id stays integer');
+    assert.ok(out.mesh.cell_data.cell_tag[0] instanceof BigInt64Array, 'cell_tag stays integer');
+    // Every surviving id/tag came from the input, not a decimate artefact
+    // (C++ keeps the surviving vertex/cell's own row -- decimate.cpp).
+    const inputIds = new Set(withTags.point_data.point_id);
+    assert.ok(Array.from(out.mesh.point_data.point_id).every((id) => inputIds.has(Number(id))));
+    assert.ok(Array.from(out.mesh.cell_data.cell_tag[0]).every((tag) => tag === 5n));
+});
+
 step('decimate rejects a volume mesh and a missing criterion', () => {
     assert.throws(() => m.decimate(cube, 0.5), /extract_surface/);
     const skin = m.extractSkin(cube, true);
     assert.throws(() => m.decimate(skin));
+});
+
+step('decimateVolume: collapses tets in a simplexified refined cube', () => {
+    const tets = m.convertCells(m.refine(cube), 'simplexify');
+    assert.equal(tets.cells[0].type, 'tetra');
+    const before = tets.cells[0].data.length / 4;
+    const out = m.decimateVolume(tets, 0.5);
+    assert.equal(out.mesh.cells[0].type, 'tetra');
+    assert.ok(out.mesh.cells[0].data.length / 4 < before);
+    assert.ok(out.tetsRemoved > 0);
+    assert.ok(out.pointsRemoved >= 0);
+    assert.ok(out.collapsesRejected >= 0);
+    assert.ok(out.maxErrorApplied >= 0);
+
+    // An out-of-range frozen id throws naming the operation, not decimate's.
+    assert.throws(() => m.decimateVolume(tets, 0.5, -1, -1, 'optimal', false, true, 30, [999999]),
+        /decimateVolume.*frozen node id 999999/);
+});
+
+step('decimateVolume rejects a missing criterion', () => {
+    const tets = m.convertCells(m.refine(cube), 'simplexify');
+    assert.throws(() => m.decimateVolume(tets));
+});
+
+// --- returnMaps: index maps opted into across the ops that prune/renumber
+// (roadmap §1 "WASM parity") -- the default (omitted) stays exactly the
+// pre-A5 bare-mesh / no-maps shape; these steps check the opt-in adds
+// pointMap/cellMaps of the documented shape without changing anything else.
+step('returnMaps: clean maps an orphan point to -1, everything else to itself', () => {
+    // An extra, unreferenced point appended to the cube: clean(removeOrphans)
+    // drops exactly that one, so pointMap is the identity for points 0-7 and
+    // -1 for the appended orphan (point 8).
+    const withOrphan = {
+        ...cube,
+        points: Float64Array.from([...cube.points, 5, 5, 5]),
+    };
+    const out = m.clean(withOrphan, false, 1e-8, true, true, true, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7, -1]);
+    assert.equal(out.pointsRemovedOrphan, 1);
+    // Without returnMaps, no maps on the result (unchanged default).
+    const bare = m.clean(withOrphan);
+    assert.equal(bare.pointMap, undefined);
+});
+
+step('returnMaps: convertCells simplexify pointMap/cellMaps are the identity', () => {
+    // Simplexify never prunes points and gives every input cell 6 children
+    // starting at a contiguous run -- pointMap is the identity and cellMaps[0]
+    // is [0] (the sole input cell's first child index).
+    const out = m.convertCells(cube, 'simplexify', false, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(Array.from(out.cellMaps[0]), [0]);
+    // Without returnMaps, still a bare mesh (unchanged default behaviour).
+    const bare = m.convertCells(cube, 'simplexify');
+    assert.equal(bare.pointMap, undefined);
+    assert.ok(Array.isArray(bare.cells));
+});
+
+step('returnMaps: subdivide has cellMaps but no pointMap', () => {
+    const out = m.subdivide(cube, false, true);
+    assert.ok(Array.isArray(out.cellMaps));
+    assert.equal(out.pointMap, undefined, 'subdivide never prunes/renumbers a point');
+});
+
+step('returnMaps: agglomerate has one flat cellMap, not per-block cellMaps', () => {
+    const grid = m.refine(cube); // 8 hexahedra
+    const out = m.agglomerate(grid, 8, true);
+    assert.ok(out.cellMap instanceof Int32Array);
+    assert.equal(out.cellMap.length, 8, 'flat, one entry per input cell');
+    assert.equal(out.cellMaps, undefined);
+});
+
+step('returnMaps: refine pointMap is the identity, cellMaps map 1 -> 8 children', () => {
+    const out = m.refine(cube, 1, false, undefined, true);
+    assert.deepEqual(Array.from(out.pointMap), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(Array.from(out.cellMaps[0]), [0]);
+    assert.equal(out.mesh.cells[0].data.length / 8, 8);
+});
+
+step('returnMaps: cropBbox pointMap/cellMaps reach only the kept half', () => {
+    const grid = m.refine(cube); // 8 hexahedra in a 2x2x2 arrangement
+    const out = m.cropBbox(grid, [0, 0, 0], [0.5, 1, 1], 'all', false, true);
+    assert.ok(out.pointMap instanceof Int32Array);
+    assert.ok(Array.isArray(out.cellMaps));
+    const kept = Array.from(out.pointMap).filter((v) => v >= 0).length;
+    assert.equal(kept, out.mesh.points.length / 3);
+});
+
+step('returnMaps: merge gives one pointMaps/cellMaps entry per input mesh', () => {
+    const a = { ...tet, points: Float64Array.from(tet.points) };
+    const b = { ...tet, points: Float64Array.from(tet.points.map((v) => v + 10)) };
+    const out = m.merge([a, b], false, 1e-12, true, 'intersection', false, true);
+    assert.equal(out.pointMaps.length, 2);
+    assert.equal(out.cellMaps.length, 2);
+    assert.deepEqual(Array.from(out.pointMaps[0]), [0, 1, 2, 3]);
+    assert.deepEqual(Array.from(out.pointMaps[1]), [4, 5, 6, 7]);
+});
+
+step('returnMaps: split pieces each carry their own pointMap/cellMaps', () => {
+    const out = m.split(m.refine(cube), 'component', '', true);
+    assert.ok(out.length >= 1);
+    for (const piece of out) {
+        assert.ok(piece.pointMap instanceof Int32Array);
+        assert.ok(Array.isArray(piece.cellMaps));
+    }
+    // Without returnMaps, no maps on the pieces (unchanged default).
+    const bare = m.split(m.refine(cube), 'component');
+    assert.equal(bare[0].pointMap, undefined);
+});
+
+step('returnMaps: partition pieces each carry their own pointMap/cellMaps', () => {
+    const out = m.partition(m.refine(cube), 2, 'sfc', 0.03, 'eco', 0, false, 0, '', true);
+    assert.equal(out.length, 2);
+    for (const piece of out) {
+        assert.ok(piece.pointMap instanceof Int32Array);
+        assert.ok(Array.isArray(piece.cellMaps));
+    }
 });
 
 step('decimate is reachable as a convertSurfaceOps pipeline step', () => {
@@ -1222,6 +1532,36 @@ step('smooth: relaxes an interior node while pinning the boundary', () => {
     assert.equal(typeof out.numSkippedInversion, 'number');
 });
 
+step('smooth: frozen pins a node fixBoundary alone would not', () => {
+    // Same setup as above, but with fixBoundary off (so nothing is pinned by
+    // default) and the interior node itself passed in `frozen` -- it must
+    // stay put even though it would otherwise be the one node smoothing
+    // relaxes, proving `frozen` reaches the core independently of the
+    // boundary/feature pins.
+    const grid = m.refine(cube);
+    const points = Float64Array.from(grid.points);
+    const inside = (v) => v > 1e-9 && v < 1 - 1e-9;
+    let interior = -1;
+    for (let i = 0; i < points.length / 3; ++i) {
+        if (inside(points[3 * i]) && inside(points[3 * i + 1]) && inside(points[3 * i + 2])) {
+            interior = i;
+            break;
+        }
+    }
+    points[3 * interior] += 0.2;
+    const perturbed = { ...grid, points };
+
+    const out = m.smooth(perturbed, 'laplacian', 5, -1, -0.34, false, true, 30, true, [interior]);
+    for (let c = 0; c < 3; ++c)
+        assert.equal(out.mesh.points[3 * interior + c], perturbed.points[3 * interior + c]);
+
+    // An out-of-range id throws naming the operation, not a silent no-op.
+    assert.throws(
+        () => m.smooth(perturbed, 'laplacian', 1, -1, -0.34, false, true, 30, true, [999999]),
+        /smooth.*frozen node id 999999/,
+    );
+});
+
 step('smooth: taubin defaults leave a structured hex block alone', () => {
     // The negative default lambda means "the method's own default" and must
     // reach the core unchanged; an already-relaxed lattice is a fixed point.
@@ -1539,7 +1879,8 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     assert.equal(e1.numSkipped, 0);
     assert.ok(e1.globalError > 0, 'a quadratic field must give a nonzero global error');
     assert.equal(e1.mesh.cell_data['error:marked'].length, 1, 'one marked block per cell block');
-    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => v === 0 || v === 1));
+    // Integer flag array, now BigInt64Array (roadmap §1 dtype carry).
+    assert.ok(e1.mesh.cell_data['error:marked'][0].every((v) => Number(v) === 0 || Number(v) === 1));
 
     // A cell_data field has no derivative to recover; an out-of-range
     // marking_value for "fraction" is rejected.
@@ -1923,6 +2264,16 @@ step('availableFormats reports what this build can read and write', () => {
     // WholeExtent attributes ARE a generated grid's header, so it is the only
     // one that round-trips it. Both directions.
     assert.ok(readers.includes('vti') && writers.includes('vti'));
+    // .vts (VTK XML StructuredGrid), v11.6.0 (roadmap §1 tier B4): the
+    // explicit-points sibling of .vti -- same implicit connectivity, but a
+    // curved structured mesh reads correctly too. Both directions.
+    assert.ok(readers.includes('vts') && writers.includes('vts'));
+    // .vtr (VTK XML RectilinearGrid), same tier: per-axis coordinate arrays
+    // instead of a uniform Origin/Spacing pair. Both directions.
+    assert.ok(readers.includes('vtr') && writers.includes('vtr'));
+    // .vtm (VTK XML MultiBlock), same tier, part 3 of 3: an index plus one
+    // .vtu piece per cell block. Both directions.
+    assert.ok(readers.includes('vtm') && writers.includes('vtm'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -1940,6 +2291,60 @@ step('.vti round-trips a lattice through MEMFS', () => {
     assert.throws(() => m.writeMesh('/no.vti', cubeSurface));
 });
 
+step('.vts round-trips a lattice through MEMFS, no js_bindings.cpp code needed', () => {
+    // No per-format special-casing exists for .vts (or .vti) in js_bindings.cpp
+    // at all -- both reach WASM entirely through the generic registry maps,
+    // which is the probe this step actually is.
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vts', g);
+    const back = m.readMesh('/lattice.vts');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    assert.throws(() => m.writeMesh('/no.vts', cubeSurface));
+});
+
+step('.vtr round-trips a lattice through MEMFS', () => {
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vtr', g);
+    const back = m.readMesh('/lattice.vtr');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    assert.throws(() => m.writeMesh('/no.vtr', cubeSurface));
+});
+
+step('.vtm writes an index plus one .vtu piece per cell block, and reads two blocks back as two meshes', () => {
+    // The roadmap's own stated probe for tier B4's .vtm entry, and (like
+    // openfoam below) a directory-writing format: MEMFS must hold the index
+    // AND its sibling pieces directory for the read back to work at all.
+    const twoBlocks = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 0, 3, 0, 0, 2, 1, 0]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([4, 5, 6]), nodesPerCell: 3 },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    m.writeMesh('/blocks.vtm', twoBlocks);
+    const back = m.readMesh('/blocks.vtm');
+    assert.equal(back.points.length, 7 * 3);  // disjoint blocks, no point duplication
+    assert.deepEqual(back.cells.map((c) => c.type).sort(), ['tetra', 'triangle']);
+    assert.ok(Array.isArray(back.regions));
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['block_0', 'block_1']);
+    assert.ok(back.regions.every((r) => r.kind === 'cell'));
+
+    // Each piece is a standalone, independently readable .vtu.
+    const piece0 = m.readMesh('/blocks/blocks_0.vtu');
+    const piece1 = m.readMesh('/blocks/blocks_1.vtu');
+    assert.deepEqual([piece0.cells[0].type, piece1.cells[0].type], ['tetra', 'triangle']);
+});
+
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {
     // The only writer that creates a directory rather than a file, so it is
     // the only one whose MEMFS behaviour is not covered by every other step.
@@ -1951,16 +2356,196 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
         dim: 3,
         cells: [{ type: 'hexahedron', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7]), nodesPerCell: 8 }],
     };
-    m.writeMesh('/of/case.foam', hex, 'openfoam');
+    const written = m.writeMesh('/of/case.foam', hex, 'openfoam');
     for (const f of ['points', 'faces', 'owner', 'neighbour', 'boundary'])
         assert.ok(m.FS.readFile(`/of/constant/polyMesh/${f}`).length > 0, `missing ${f}`);
+    // Plus the empty `case.foam` marker file itself (the ParaView-reader
+    // convention this format's own writer follows).
+    assert.deepEqual(
+        written,
+        [
+            '/of/case.foam',
+            ...['points', 'faces', 'owner', 'neighbour', 'boundary'].map(
+                (f) => `/of/constant/polyMesh/${f}`,
+            ),
+        ].sort(),
+    );
 
     const back = m.readMesh('/of/case.foam', 'openfoam');
     assert.equal(back.points.length, 24);
     assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
-step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {
+step('openfoam reports and reads two time-directory fields (roadmap §1 tier B2)', () => {
+    // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture, not a
+    // wiring-only probe. Reuses the /of/case.foam single-hex polyMesh the
+    // previous step wrote.
+    m.FS.mkdir('/of/0');
+    m.FS.writeFile(
+        '/of/0/p',
+        'FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n' +
+            'internalField   uniform 1;\n',
+    );
+    m.FS.mkdir('/of/1');
+    m.FS.writeFile(
+        '/of/1/p',
+        'FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n' +
+            'internalField   uniform 2;\n',
+    );
+
+    const meta = m.readMetadata('/of/case.foam', 'openfoam');
+    assert.equal(meta.format, 'openfoam');
+    assert.equal(meta.fellBackToFullRead, true);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 1]);
+
+    const hexBlock = (mesh) => mesh.cells.findIndex((c) => c.type === 'hexahedron');
+    const first = m.readMeshSelective('/of/case.foam', { format: 'openfoam', timeStep: 0 });
+    assert.equal(first.cell_data.p[hexBlock(first)][0], 1);
+    const second = m.readMeshSelective('/of/case.foam', { format: 'openfoam', timeStep: 1 });
+    assert.equal(second.cell_data.p[hexBlock(second)][0], 2);
+});
+
+// --- Side channel (info): format metadata a generic Mesh cannot represent
+// (roadmap §1 "WASM parity"). readMeshSelective(path, {info: true}) attaches
+// it as mesh.info; writeMesh(path, mesh, format, {info}) (or a matching
+// mesh.info with no explicit options.info) writes it back.
+step('info: unsupported for a format silently has no effect, not an error', () => {
+    const withInfo = m.readMeshSelective('/of/case.foam', { format: 'openfoam', info: true });
+    assert.ok('info' in withInfo, 'openfoam has a side channel');
+    m.writeMesh('/plain.vtu', tet);
+    const noInfo = m.readMeshSelective('/plain.vtu', { info: true });
+    assert.equal(noInfo.info, undefined, 'vtu has no side channel');
+});
+
+step('info: writing it for a format with no Info-bearing writer throws naming it', () => {
+    assert.throws(
+        () => m.writeMesh('/x.vtu', tet, '', { info: { format: 'vtu' } }),
+        /'vtu' has no side-channel 'info' writer/,
+    );
+});
+
+step('info: openfoam patch names/types round-trip through a hand-written case', () => {
+    // A cube with two boundary patches, written by hand (the same fixture
+    // shape tests/python/test_openfoam.py's own patch-round-trip test uses),
+    // so the read side has real cell_tags/patch types to report -- an
+    // untagged write (as above) only ever produces a single defaultFaces.
+    const hdr = (cls, obj) =>
+        `FoamFile\n{\n format ascii;\n class ${cls};\n object ${obj};\n}\n`;
+    m.FS.mkdir('/of2');
+    m.FS.mkdir('/of2/constant');
+    m.FS.mkdir('/of2/constant/polyMesh');
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/points',
+        hdr('vectorField', 'points') +
+            '8\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 1)\n(0 1 1)\n)\n',
+    );
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/faces',
+        hdr('faceList', 'faces') +
+            '6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(2 3 7 6)\n4(1 2 6 5)\n4(0 4 7 3)\n)\n',
+    );
+    m.FS.writeFile('/of2/constant/polyMesh/owner', hdr('labelList', 'owner') + '6\n(\n0\n0\n0\n0\n0\n0\n)\n');
+    m.FS.writeFile(
+        '/of2/constant/polyMesh/boundary',
+        hdr('polyBoundaryMesh', 'boundary') +
+            '2\n(\nlower { type wall; nFaces 1; startFace 0; }\n' +
+            'rest { type symmetry; nFaces 5; startFace 1; }\n)\n',
+    );
+
+    const mesh = m.readMeshSelective('/of2/case.foam', { format: 'openfoam', info: true });
+    assert.equal(mesh.info.format, 'openfoam');
+    const byName = Object.fromEntries(mesh.info.patches.map((p) => [p.names[0], p.type]));
+    assert.deepEqual(byName, { lower: 'wall', rest: 'symmetry' });
+
+    m.writeMesh('/of2out/case.foam', mesh, 'openfoam', { info: mesh.info });
+    const back = m.readMeshSelective('/of2out/case.foam', { format: 'openfoam', info: true });
+    const namesBack = new Set(back.info.patches.flatMap((p) => p.names));
+    assert.deepEqual(namesBack, new Set(['lower', 'rest']));
+    const typesBack = new Set(back.info.patches.map((p) => p.type));
+    assert.deepEqual(typesBack, new Set(['wall', 'symmetry']));
+});
+
+step('info: mdpa entity names and property sets round-trip together', () => {
+    const withInfo = {
+        ...tet,
+        propertySets: [
+            { id: 1, values: [{ key: 'YOUNG_MODULUS', values: [2.1e11], text: '', isTable: false }] },
+        ],
+    };
+    m.writeMesh('/pi.mdpa', withInfo, 'mdpa', {
+        info: { format: 'mdpa', entityNames: [{ name: 'SmallDisplacementElement3D4N', isCondition: false }] },
+    });
+    const back = m.readMeshSelective('/pi.mdpa', { format: 'mdpa', info: true });
+    assert.equal(back.info.format, 'mdpa');
+    assert.deepEqual(back.info.entityNames, [
+        { name: 'SmallDisplacementElement3D4N', isCondition: false },
+    ]);
+    assert.equal(back.propertySets.length, 1);
+    assert.equal(back.propertySets[0].id, 1);
+    assert.equal(back.propertySets[0].values[0].key, 'YOUNG_MODULUS');
+    assert.equal(back.propertySets[0].values[0].values[0], 2.1e11);
+});
+
+step('info: gmsh bounding entities survive a real $Entities round trip', () => {
+    // A real gmsh 4.1 file: two tagged curves and a tagged surface.
+    const msh = [
+        '$MeshFormat', '4.1 0 8', '$EndMeshFormat',
+        '$PhysicalNames', '2', '1 8 "bottom"', '2 7 "plate"', '$EndPhysicalNames',
+        '$Entities', '4 2 1 0',
+        '1 0 0 0 0', '2 1 0 0 0', '3 1 1 0 0', '4 0 1 0 0',
+        '1 0 0 0 1 0 0 1 8 2 1 -2',
+        '2 1 0 0 1 1 0 0 2 2 -3',
+        '1 0 0 0 1 1 0 1 7 2 1 2',
+        '$EndEntities',
+        '$Nodes', '3 4 1 4',
+        '0 1 0 1', '1', '0 0 0',
+        '0 2 0 1', '2', '1 0 0',
+        '2 1 0 2', '3', '4', '1 1 0', '0 1 0',
+        '$EndNodes',
+        '$Elements', '3 4 1 5',
+        '1 1 1 1', '1 1 2',
+        '1 2 1 1', '2 2 3',
+        '2 1 2 2', '4 1 2 3', '5 1 3 4',
+        '$EndElements', '',
+    ].join('\n');
+    m.FS.writeFile('/gi.msh', msh);
+
+    const mesh = m.readMeshSelective('/gi.msh', { format: 'gmsh', info: true });
+    assert.equal(mesh.info.format, 'gmsh');
+    assert.equal(mesh.info.boundingEntities.length, mesh.cells.length);
+    assert.ok(mesh.info.boundingEntities.some((block) => block.length > 0));
+
+    m.writeMesh('/gi-rt.msh', mesh, 'gmsh', { info: mesh.info });
+    const backMesh = m.readMeshSelective('/gi-rt.msh', { format: 'gmsh', info: true });
+    assert.deepEqual(backMesh.regions.map((r) => r.name).sort(), ['bottom', 'plate']);
+    assert.ok(backMesh.info.boundingEntities.some((block) => block.length > 0));
+});
+
+step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
+    const info = {
+        pointSets: { MYNODES: [0, 1] },
+        cellSets: { MYCELLS: [[0]] },
+    };
+    for (const [format, ext] of [['ansysinp', 'cdb'], ['unv', 'unv']]) {
+        const path = `/pcs.${ext}`;
+        m.writeMesh(path, tet, format, { info: { format, ...info } });
+        const back = m.readMeshSelective(path, { format, info: true });
+        assert.equal(back.info.format, format);
+        assert.deepEqual(Array.from(back.info.pointSets.MYNODES), info.pointSets.MYNODES);
+        assert.equal(back.info.cellSets.MYCELLS.length, 1);
+        assert.deepEqual(Array.from(back.info.cellSets.MYCELLS[0]), info.cellSets.MYCELLS[0]);
+    }
+});
+
+step('info: med meshName/description round-trip', () => {
+    m.writeMesh('/mi.med', tet, 'med', { info: { format: 'med', meshName: 'MyMesh', description: 'hi' } });
+    const back = m.readMeshSelective('/mi.med', { format: 'med', info: true });
+    assert.equal(back.info.format, 'med');
+    assert.equal(back.info.meshName, 'MyMesh');
+    assert.equal(back.info.description, 'hi');
+});
+
+step('gmsh22 and gmsh (4.1) both round-trip a region-only, block-aligned mesh', () => {
     const tagged = {
         ...tet,
         regions: [{ name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) }],
@@ -1974,11 +2559,15 @@ step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure',
     // 4.1 records membership in $Entities, which describes the *geometry* --
     // so it can only be written for a mesh that says which entity each node
     // belongs to (gmsh:dim_tags). This mesh came from another format and has
-    // none, so no $Entities is emitted and only the name survives. A file that
-    // does carry the structure round-trips: see the next step.
+    // none of its own, but `tet` is a single cell, so the region covers its
+    // WHOLE (only) block: $Entities is synthesized from the region instead
+    // (roadmap §1 tier B3, v11.5.0), and it round-trips here too. A region
+    // covering only PART of a block cannot be represented this way -- see
+    // the write-side note in doc/formats/gmsh.md#named-regions.
     m.writeMesh('/regions41.msh', tagged, 'gmsh');
     const back41 = m.readMesh('/regions41.msh', 'gmsh');
-    assert.equal(back41.regions.length, 0);
+    assert.equal(back41.regions.length, 1);
+    assert.equal(back41.regions[0].name, 'solid');
 });
 
 step('gmsh 4.1 $Entities: physical groups read, and survive a 4.1 round-trip', () => {
@@ -2104,6 +2693,152 @@ step('CGNS round-trips a surface-only (triangle) mesh', () => {
     assert.equal(back.cells.length, 1);
     assert.equal(back.cells[0].type, 'triangle');
     assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 0, 2, 3]);
+});
+
+step('cgns reports its time steps via a native metadata path (roadmap §1 tier B1)', () => {
+    // read_cgns_metadata (v11.3.0) is a native path over Zone_t's own
+    // dimension triple and BaseIterativeData_t/TimeValues, never a full read
+    // -- fellBackToFullRead must be false. A genuinely transient fixture
+    // needs raw HDF5 group/attribute writes this JS layer has no library for
+    // (BaseIterativeData_t/ZoneIterativeData_t/FlowSolutionPointers), and a
+    // committed .cgns binary fixture would be Git-LFS (see the exodus/med
+    // steps above for the same reasoning), so -- exactly like those steps --
+    // this proves the format is reachable and the new metadata plumbing is
+    // wired end to end; tests/cpp/test_cgns.cpp's
+    // Cgns.TransientReadSelectsOneStepByFlowSolutionPointers and
+    // CgnsMll.TransientReadSelectsOneStepByFlowSolutionPointers hand-build a
+    // real two-step file (against real cgnslib bytes, for the MLL path) and
+    // pin the length-2 case this file cannot.
+    m.writeMesh('/meta.cgns', tet, 'cgns');
+    const meta = m.readMetadata('/meta.cgns', 'cgns');
+    assert.equal(meta.format, 'cgns');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.equal(meta.timeValues.length, 0);
+    assert.equal(meta.numPoints, tet.points.length / 3);
+});
+
+step('tecplot reports and reads both zones of a transient file (roadmap §1 tier B1)', () => {
+    // Unlike med/cgns (HDF5, needing a library this JS layer doesn't have),
+    // Tecplot ASCII is plain text, so this is a genuine two-step fixture,
+    // not a wiring-only probe -- two FEBLOCK zones sharing STRANDID=1.
+    const dat = [
+        'VARIABLES = "X" "Y" "u"',
+        'ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=0.0 STRANDID=1',
+        '0.0 1.0 0.0',
+        '0.0 0.0 1.0',
+        '10.0 20.0 30.0',
+        '1 2 3',
+        'ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=2.5 STRANDID=1',
+        '0.0 1.0 0.0',
+        '0.0 0.0 1.0',
+        '11.0 21.0 31.0',
+        '1 2 3',
+        '',
+    ].join('\n');
+    m.FS.writeFile('/transient.dat', dat);
+
+    const meta = m.readMetadata('/transient.dat', 'tecplot');
+    assert.equal(meta.format, 'tecplot');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+    assert.equal(meta.numPoints, 3);
+
+    const first = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 0 });
+    assert.equal(first.point_data.u[0], 10);
+    const second = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 1 });
+    assert.equal(second.point_data.u[0], 11);
+    const last = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: -1 });
+    assert.equal(last.point_data.u[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 5 }),
+        /step/i,
+    );
+});
+
+step('gmsh 4.1 reports and reads both steps of a $NodeData timeline (roadmap §1 tier B1)', () => {
+    // Plain text, like Tecplot -- a genuine two-step fixture: write a base
+    // mesh with one point_data array (its own $NodeData section, time=0),
+    // then append a second $NodeData section for the same name by hand.
+    m.writeMesh('/transient.msh', tet, 'gmsh', { encoding: 'ascii' });
+    const base = m.FS.readFile('/transient.msh', { encoding: 'utf8' });
+    const n = tet.points.length / 3;
+    const second = [
+        '$NodeData',
+        '1',
+        '"temperature"',
+        '1',
+        '2.5',
+        '3',
+        '1',
+        '1',
+        String(n),
+        ...Array.from({ length: n }, (_, i) => `${i + 1} ${11 + i * 10}`),
+        '$EndNodeData',
+        '',
+    ].join('\n');
+    m.FS.writeFile('/transient.msh', base + second);
+
+    const meta = m.readMetadata('/transient.msh', 'gmsh');
+    assert.equal(meta.format, 'gmsh');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+
+    const first = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 0 });
+    assert.equal(first.point_data.temperature[0], 1);
+    const step1 = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 1 });
+    assert.equal(step1.point_data.temperature[0], 11);
+    const last = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: -1 });
+    assert.equal(last.point_data.temperature[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 5 }),
+        /step/i,
+    );
+});
+
+step('ensight reports and reads a transient .case VARIABLE timeline (roadmap §1 tier B1)', () => {
+    // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture. EnSight's
+    // own convention is one file per step (unlike the others' one file with
+    // several sections), so this appends TIME/VARIABLE to the .case
+    // writeMesh already produces, then writes two per-node scalar files.
+    m.writeMesh('/transient.case', tri2, 'ensight');
+    const caseText = m.FS.readFile('/transient.case', { encoding: 'utf8' });
+    m.FS.writeFile(
+        '/transient.case',
+        caseText +
+            'TIME\n' +
+            'time set:              1\n' +
+            'number of steps:       2\n' +
+            'filename start number: 0\n' +
+            'filename increment:    1\n' +
+            'time values:\n' +
+            '0.0\n' +
+            '2.5\n' +
+            'VARIABLE\n' +
+            'scalar per node:    1  pressure  pressure.****.scl\n',
+    );
+    const n = tri2.points.length / 3;
+    for (const [step, base] of [[0, 10], [1, 11]]) {
+        const lines = ['pressure', 'part', '         1', 'coordinates'];
+        for (let i = 0; i < n; ++i)
+            lines.push(String(base + i * 10));
+        m.FS.writeFile(`/pressure.${String(step).padStart(4, '0')}.scl`, lines.join('\n') + '\n');
+    }
+
+    const meta = m.readMetadata('/transient.case', 'ensight');
+    assert.equal(meta.format, 'ensight');
+    assert.equal(meta.fellBackToFullRead, true);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+
+    const first = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 0 });
+    assert.equal(first.point_data.pressure[0], 10);
+    const second = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 1 });
+    assert.equal(second.point_data.pressure[0], 11);
+    const last = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: -1 });
+    assert.equal(last.point_data.pressure[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 5 }),
+        /step/i,
+    );
 });
 
 // --- multi-component (vector/tensor) data across the object boundary --------
@@ -2417,6 +3152,46 @@ step('sequences fail by name rather than truncating', () => {
     // A mistyped option is named.
     assert.throws(() => m.sequenceEntries('/seq/out_*.vtu', { timeFrom: 'vibes' }), /TimeFrom/);
     assert.throws(() => m.sequenceEntries('/seq/out_*.vtu', { bogus: 1 }), /unknown key 'bogus'/);
+});
+
+step('openSequence: stateful reader over the /seq fixture', () => {
+    // Static geometry across all steps but WITH data this time (tet, not
+    // cube), so pointsOnly has something to prove it dropped.
+    m.FS.mkdir('/seq2');
+    for (let i = 0; i < 12; ++i) m.writeMesh(`/seq2/out_${i}.vtu`, tet);
+
+    const reader = m.openSequence('/seq2/out_*.vtu');
+    assert.equal(reader.count, 12);
+    assert.equal(reader.time(10), 10);
+    assert.equal(reader.timeSource(0), 'filename');
+    assert.equal(reader.path(3), '/seq2/out_3.vtu');
+    // Each /seq2 file is single-step, so its own step index is always 0 --
+    // unlike the XDMF series below, whose step is the position within it.
+    assert.equal(reader.step(3), 0);
+    assert.deepEqual(reader.entry(3), {
+        path: '/seq2/out_3.vtu', step: 0, time: 3, timeSource: 'filename',
+    });
+    assert.equal(reader.entries().length, 12);
+    assert.deepEqual(reader.entries()[3], reader.entry(3));
+
+    const full = reader.read(3);
+    assert.ok('temperature' in full.point_data);
+    const partial = reader.read(3, { pointsOnly: true });
+    assert.deepEqual(Object.keys(partial.point_data), []);
+
+    // Out-of-range throws naming the count, not a silent clamp.
+    assert.throws(() => reader.read(12), /sequence index 12 is out of range \(count 12\)/);
+
+    // The XDMF series' own steps come through the same reader, with the
+    // series' file-based times/timeSource (not the filename fallback).
+    const seriesReader = m.openSequence('/seq/series.xdmf');
+    assert.equal(seriesReader.step(3), 3);
+    assert.equal(seriesReader.timeSource(3), 'file');
+    seriesReader.close();
+
+    reader.close();
+    reader.close(); // idempotent, safe to call twice / from a `finally`
+    assert.throws(() => reader.read(0), /invalid or already-closed sequence handle/);
 });
 
 step('runPipeline runs a whole transient dataset per step', () => {

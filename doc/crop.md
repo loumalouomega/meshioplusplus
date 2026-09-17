@@ -86,5 +86,5 @@ Values that begin with `-` (e.g. a negative bbox corner) need the `--bbox=-1,-1,
 - **Fortran** — `mesh%crop_bbox(lo, hi, mode=...)`, `mesh%crop_plane(point, normal, mode=...)` and `mesh%crop_predicate(array, compare=, value=)`. See the [Fortran reference](/fortran).
 - **Julia** — `crop_bbox`, `crop_plane` and `crop_predicate(m, array; compare, value)`. See the [Julia reference](/julia).
 - **R** — `mio_crop_bbox`, `mio_crop_plane` and `mio_crop_predicate(mesh, array, compare, value)`. See the [R reference](/r).
-- **WebAssembly / JavaScript** — `cropBbox(mesh, lo, hi, mode, recordIds)`, `cropPlane(mesh, point, normal, mode, recordIds)` and `cropPredicate(mesh, array, compare, value, recordIds)`. See the [WebAssembly reference](/wasm).
+- **WebAssembly / JavaScript** — `cropBbox(mesh, lo, hi, mode, recordIds, returnMaps)`, `cropPlane(mesh, point, normal, mode, recordIds, returnMaps)` and `cropPredicate(mesh, array, compare, value, recordIds, returnMaps)`, each returning the bare mesh or `{mesh, pointMap, cellMaps}` when `returnMaps` is set. See the [WebAssembly reference](/wasm).
 - **Pipeline** — the `Crop` step takes `Where`/`Compare`/`Value` alongside its existing `Bbox` and `Point`+`Normal`. See the [pipeline reference](/pipeline).

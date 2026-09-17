@@ -234,7 +234,7 @@ def mesh_backends():
     )
     # left: the callers
     callers = [
-        (["format readers / writers", "43 formats, src/cpp/src/formats/"], P.FORMATS),
+        (["format readers / writers", "46 formats, src/cpp/src/formats/"], P.FORMATS),
         (["operations", "34 mesh + 5 data, operations/"], P.CORE),
         (["bindings", "pybind11 · C API · embind"], P.PYTHON),
     ]

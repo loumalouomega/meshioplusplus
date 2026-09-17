@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -26,11 +27,13 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "mesh_fixtures.hpp"
@@ -498,6 +501,60 @@ TEST(SelectiveReadGmsh, DefaultOptionsStillReadEverything) {
     write_gmsh41(path, source, /*binary=*/false);
 
     EXPECT_EQ(read_gmsh(path, ReadOptions{}).PointDataNames(), read_gmsh(path).PointDataNames());
+
+    selread_remove(path);
+}
+
+TEST(SelectiveReadGmsh, TransientReadSelectsOneStepBySolutionTime) {
+    // roadmap §1 tier B1: two $NodeData sections for the same field name,
+    // distinct time values (write_gmsh41's own step is always time=0/step=0,
+    // so a second step is appended by hand -- ASCII text, no external tool).
+    Mesh source = mt::tri_mesh();
+    NDArray u(DType::Float64, {source.NumPoints()});
+    u.As<double>()[0] = 10.0;
+    u.As<double>()[1] = 20.0;
+    u.As<double>()[2] = 30.0;
+    u.As<double>()[3] = 40.0;
+    source.AddPointData("u", std::move(u));
+    const std::string path = mt::temp_path(".msh");
+    write_gmsh41(path, source, /*binary=*/false);
+
+    {
+        std::ofstream out(path, std::ios::app);
+        out << "$NodeData\n1\n\"u\"\n1\n2.5\n3\n1\n1\n" << source.NumPoints() << "\n";
+        for (std::size_t i = 0; i < source.NumPoints(); ++i)
+            out << (i + 1) << " " << (11.0 + static_cast<double>(i) * 10.0) << "\n";
+        out << "$EndNodeData\n";
+    }
+
+    const MeshMetadata meta = read_gmsh_metadata(path);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+    // The name is pushed once per step; the metadata dedups it.
+    EXPECT_EQ(std::count(meta.mPointDataNames.begin(), meta.mPointDataNames.end(), "u"), 1);
+
+    ReadOptions first;
+    first.mTimeStep = 0;
+    const Mesh out0 = read_gmsh(path, first);
+    EXPECT_DOUBLE_EQ(detail::read_double(out0.PointData("u"), 0), 10.0);
+
+    ReadOptions second;
+    second.mTimeStep = 1;
+    const Mesh out1 = read_gmsh(path, second);
+    EXPECT_DOUBLE_EQ(detail::read_double(out1.PointData("u"), 0), 11.0);
+
+    ReadOptions last;
+    last.mTimeStep = -1;
+    const Mesh out_last = read_gmsh(path, last);
+    EXPECT_DOUBLE_EQ(detail::read_double(out_last.PointData("u"), 0), 11.0);
+
+    ReadOptions too_far;
+    too_far.mTimeStep = 5;
+    EXPECT_THROW(read_gmsh(path, too_far), ReadError);
+
+    EXPECT_TRUE(seq_format_may_have_steps("gmsh"));
+    EXPECT_EQ(sequence_num_steps(path, "gmsh"), 2u);
 
     selread_remove(path);
 }

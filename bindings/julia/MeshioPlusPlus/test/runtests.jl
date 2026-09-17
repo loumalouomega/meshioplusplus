@@ -569,6 +569,40 @@ end
     close(m)
 end
 
+@testset "operations: frozen (smooth, decimate)" begin
+    m = fixture()
+
+    # frozen reaches the core independently of fix_boundary: with it off,
+    # nothing would move on its own, but an explicit frozen id must not
+    # raise and must round-trip cleanly.
+    s = smooth(m; iterations=3, fix_boundary=false, frozen=[1, 2])
+    @test num_points(s.mesh) == 5
+    close(s.mesh)
+
+    # An out-of-range frozen id raises by name (0-based internally, so
+    # 1-based id 999 is reported as 998).
+    @test_throws MeshioError smooth(m; frozen=[999])
+
+    close(m)
+
+    # A 4-triangle fan around a centre vertex (point 5): freezing it
+    # prevents its own collapse, the same fixture tests/fortran/
+    # test_fortran_api.f90 and tests/cpp/test_c_api.cpp use.
+    fan = Mesh()
+    set_points!(fan, Float64[0.0 1.0 1.0 0.0 0.5
+                             0.0 0.0 1.0 1.0 0.5
+                             0.0 0.0 0.0 0.0 0.0])
+    add_cell_block!(fan, "triangle", Int64[1 2 3 4
+                                           2 3 4 1
+                                           5 5 5 5])
+    d = decimate(fan; target_faces=1, frozen=[5])
+    @test d.points_removed == 0
+    close(d.mesh)
+
+    @test_throws MeshioError decimate(fan; target_faces=1, frozen=[999])
+    close(fan)
+end
+
 @testset "operations: slice and isosurface" begin
     m = fixture()
 

@@ -30,6 +30,24 @@
 // bundlers (Vite) emit both chunks. Callers can force a build with the
 // `{ variant }` option.
 
+// The raw xdmfSeriesWriteDataArrays embind call still converts every value
+// with emscripten::convertJSArrayToNumberVector<double>, which throws on a
+// BigInt64Array/BigUint64Array element (a JS `bigint` does not implicitly
+// convert to `double`). Since data arrays now carry their source dtype
+// (point_data/cell_data read off a mesh may be BigInt-backed), widen those to
+// plain Float64-representable arrays here rather than in every caller.
+function toDoubleConvertible(rArr) {
+    return rArr instanceof BigInt64Array || rArr instanceof BigUint64Array
+        ? Array.from(rArr, Number)
+        : rArr;
+}
+
+function widenBigIntArrays(rObj) {
+    const out = {};
+    for (const [name, arr] of Object.entries(rObj)) out[name] = toDoubleConvertible(arr);
+    return out;
+}
+
 /**
  * Decide which native artifact to load.
  * @param {'auto'|'mt'|'seq'} variant
@@ -41,6 +59,35 @@ function resolveVariant(variant) {
     // where Wasm threads (worker_threads + SharedArrayBuffer) always work.
     if (typeof crossOriginIsolated === 'undefined') return 'mt';
     return crossOriginIsolated ? 'mt' : 'seq';
+}
+
+/**
+ * Thrown by `loadMeshioPlusPlus()` when a WASM module fails to instantiate,
+ * so a caller can tell a wrong `.wasm` URL from an environment that cannot
+ * run Wasm threads from a plain network failure, instead of catching a bare
+ * Emscripten abort. See doc/wasm.md's "Loading" section.
+ */
+export class MeshioPlusPlusLoadError extends Error {
+    /**
+     * @param {string} message
+     * @param {object} details
+     * @param {'mt'|'seq'} details.variant - which artifact was being loaded.
+     * @param {string} details.glue - the glue module specifier (e.g.
+     *   '../dist/meshioplusplus_wasm_mt.mjs').
+     * @param {string} [details.requestedFile] - the filename Emscripten asked
+     *   `locateFile` to resolve, if it got that far.
+     * @param {string} [details.resolvedUrl] - what `locateFile` returned for it.
+     * @param {unknown} [details.cause] - the underlying error/abort reason.
+     */
+    constructor(message, { variant, glue, requestedFile, resolvedUrl, cause }) {
+        super(message, cause === undefined ? undefined : { cause });
+        this.name = 'MeshioPlusPlusLoadError';
+        this.variant = variant;
+        this.glue = glue;
+        this.requestedFile = requestedFile;
+        this.resolvedUrl = resolvedUrl;
+        this.cause = cause;
+    }
 }
 
 /**
@@ -91,26 +138,59 @@ function resolveVariant(variant) {
  */
 
 /**
+ * A single sequence entry: one step of one file. See {@link SequenceReader}.
+ * @typedef {Object} SequenceEntry
+ * @property {string} path
+ * @property {number} step
+ * @property {number} time
+ * @property {'explicit'|'file'|'filename'|'index'} timeSource
+ */
+
+/**
+ * @typedef {Object} SequenceReader
+ * @property {number} count
+ * @property {(i: number) => string} path
+ * @property {(i: number) => number} step
+ * @property {(i: number) => number} time
+ * @property {(i: number) => ('explicit'|'file'|'filename'|'index')} timeSource
+ * @property {(i: number) => SequenceEntry} entry
+ * @property {() => SequenceEntry[]} entries
+ * @property {(i: number, options?: {pointsOnly?: boolean, arrays?: string[]|null, lenient?: boolean}) => Mesh} read
+ * @property {() => void} close - release the handle; safe to call twice.
+ */
+
+/**
+ * A point_data/cell_data/field_data array's JS type: it carries its source
+ * dtype crossing the WASM boundary rather than always widening to
+ * Float64Array (dtype carry, v11.2.0).
+ * @typedef {Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|BigInt64Array|Uint8Array|Uint16Array|Uint32Array|BigUint64Array} DataArray
+ */
+
+/**
  * @typedef {Object} Mesh
  * @property {Float64Array} points - flat, row-major (numPoints * dim).
  * @property {number} dim - 2 or 3.
  * @property {CellBlock[]} cells
- * @property {Object<string, Float64Array>} [point_data]
+ * @property {Object<string, DataArray>} [point_data]
  * @property {Object<string, number>} [point_data_components] - per-entity width of any non-scalar point_data array, since a flat typed array carries no shape; absent name = 1 component.
- * @property {Object<string, Float64Array[]>} [cell_data] - one array per cell block, same order as `cells`.
+ * @property {Object<string, DataArray[]>} [cell_data] - one array per cell block, same order as `cells`; every block of one named array shares the same DataArray class.
  * @property {Object<string, number>} [cell_data_components] - per-entity width of any non-scalar cell_data array (one value per array, not per block).
- * @property {Object<string, Float64Array>} [field_data]
+ * @property {Object<string, DataArray>} [field_data]
  * @property {Object<string, number>} [field_data_components] - per-entity width of any non-scalar field_data array.
+ * @property {Array<{name: string, kind: string, dim: number, tag: number, entries: Int32Array}>} [regions] - named point/cell/side groups, see doc/regions.md.
+ * @property {Array<{id: number, values: Array<{key: string, values: Float64Array, text: string, isTable: boolean, components?: number}>}>} [propertySets] - `Begin Properties` blocks (currently MDPA only), see doc/wasm.md.
  */
 
 /**
  * Instantiate a fresh meshio++ WASM module.
  *
  * @param {object} [moduleOverrides] - forwarded to the Emscripten module
- *   factory as-is (e.g. `{ locateFile: (p) => new URL(p, import.meta.url) }`
- *   if you need to relocate the `.wasm` binary for a bundler/CDN setup).
- *   `locateFile` receives the requested filename, so return the URL matching
- *   the loaded variant (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
+ *   factory (with `locateFile`/`onAbort` wrapped for diagnostics -- see
+ *   {@link MeshioPlusPlusLoadError} -- your own overrides still run first).
+ *   `{ locateFile: (p) => new URL(p, import.meta.url) }` relocates the
+ *   `.wasm` binary for a bundler/CDN setup; `locateFile` receives the
+ *   requested filename, so return the URL matching the loaded variant
+ *   (`meshioplusplus_wasm.wasm` or `_wasm_mt.wasm`).
  * @param {object} [options]
  * @param {'auto'|'mt'|'seq'} [options.variant='auto'] - which native artifact to
  *   load. `auto` picks the threaded (`mt`) build under Node and in a
@@ -119,11 +199,11 @@ function resolveVariant(variant) {
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, info?: boolean}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
- *   writeMesh: (path: string, mesh: Mesh, format?: string) => void,
- *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
+ *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string, info?: object}) => string[],
+ *   convert: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string, encoding?: string, codec?: string, floatFormat?: string}) => string[],
  *   convertSurface: (inPath: string, outPath: string, options?: {inFormat?: string, outFormat?: string}) => void,
  *   convertSurfaceOps: (inPath: string, outPath: string, ops?: object[], options?: {inFormat?: string, outFormat?: string, keepProvenance?: boolean}) => {steps: object[], warnings: string[]},
  *   runPipeline: (settings: object|string) => {steps: object[], warnings: string[]},
@@ -144,16 +224,16 @@ function resolveVariant(variant) {
  *   computeBandwidth: (mesh: Mesh) => number,
  *   diff: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => object,
  *   meshesEqual: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => boolean,
- *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean) => Mesh,
+ *   merge: (meshes: Mesh[], weld?: boolean, atol?: number, sourceTag?: boolean, dataPolicy?: string, dropDuplicateCells?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMaps: Int32Array[], cellMaps: Int32Array[]},
  *   transform: (mesh: Mesh, matrix: number[], rotateVectorData?: boolean) => Mesh,
- *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number},
- *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
+ *   clean: (mesh: Mesh, weld?: boolean, atol?: number, removeOrphans?: boolean, dropDegenerate?: boolean, dropDuplicateCells?: boolean, returnMaps?: boolean) => {mesh: Mesh, pointsWelded: number, pointsRemovedOrphan: number, cellsDroppedDegenerate: number, cellsDroppedDuplicate: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   smooth: (mesh: Mesh, method?: string, iterations?: number, lambda?: number, mu?: number, fixBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, guardInversion?: boolean, frozen?: number[]|Int32Array|null) => {mesh: Mesh, numNodesMoved: number, maxDisplacement: number, numSkippedInversion: number},
  *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
  *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
  *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
- *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean) => Mesh,
- *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean) => Mesh,
- *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean) => Mesh,
+ *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
@@ -172,14 +252,15 @@ function resolveVariant(variant) {
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
- *   split: (mesh: Mesh, by: string, tagName?: string) => {key: string, mesh: Mesh}[],
- *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean) => Mesh,
- *   subdivide: (mesh: Mesh, recordParentIds?: boolean) => Mesh,
- *   agglomerate: (mesh: Mesh, targetGroupSize?: number) => Mesh,
+ *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
+ *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
+ *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMap: Int32Array},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
- *            options?: object) => Mesh,
- *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number},
- *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string) => {partId: number, mesh: Mesh}[],
+ *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
  *   stats: (mesh: Mesh) => object,
  *   withProvenance: <T>(mode: number|null|undefined, fn: () => T) => T,
@@ -199,17 +280,75 @@ function resolveVariant(variant) {
  *   dataInfo: (mesh: Mesh) => object[],
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
+ *   openSequence: (source: string|string[], options?: object) => SequenceReader,
  * }>}
+ * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
 export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto' } = {}) {
     const chosen = resolveVariant(variant);
+    const glue =
+        chosen === 'mt' ? '../dist/meshioplusplus_wasm_mt.mjs' : '../dist/meshioplusplus_wasm.mjs';
     // Literal specifiers so bundlers emit both chunks; the sequential one is
     // the fallback whenever threads are unavailable.
     const { default: createRawModule } =
         chosen === 'mt'
             ? await import('../dist/meshioplusplus_wasm_mt.mjs')
             : await import('../dist/meshioplusplus_wasm.mjs');
-    const Module = await createRawModule(moduleOverrides);
+
+    // Wrap locateFile/onAbort (rather than passing moduleOverrides through
+    // untouched) so a failed instantiation can be reported with which file
+    // Emscripten actually asked for and what locateFile resolved it to,
+    // instead of a bare Emscripten abort message. onAbort is overridden even
+    // though the try/catch below is the primary path, because an abort under
+    // Node does not always surface as a catchable rejection in every
+    // Emscripten build -- this guarantees the reason is captured regardless.
+    const userLocateFile = moduleOverrides.locateFile;
+    const userOnAbort = moduleOverrides.onAbort;
+    let requestedFile;
+    let resolvedUrl;
+    let abortReason;
+    const wrappedOverrides = {
+        ...moduleOverrides,
+        locateFile: (path, prefix) => {
+            requestedFile = path;
+            resolvedUrl = userLocateFile ? userLocateFile(path, prefix) : prefix + path;
+            return resolvedUrl;
+        },
+        onAbort: (reason) => {
+            abortReason = reason;
+            if (userOnAbort) userOnAbort(reason);
+        },
+    };
+
+    let Module;
+    try {
+        Module = await createRawModule(wrappedOverrides);
+    } catch (cause) {
+        throw new MeshioPlusPlusLoadError(
+            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+                `${abortReason ?? cause.message ?? cause}. Emscripten requested ` +
+                `'${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
+            { variant: chosen, glue, requestedFile, resolvedUrl, cause },
+        );
+    }
+
+    // A mismatched locateFile (e.g. the seq .wasm handed to the mt glue) does
+    // not always fail instantiation with a LinkError -- the two binaries share
+    // enough of an export surface that it can link and then silently behave
+    // like the wrong variant. parallelBackend() is the cheap, always-present
+    // tell: catch it here rather than let every caller re-discover it.
+    const expectedBackend = chosen === 'mt' ? 'openmp' : 'seq';
+    const actualBackend = Module.parallelBackend();
+    if (actualBackend !== expectedBackend) {
+        throw new MeshioPlusPlusLoadError(
+            `meshio++ (wasm): failed to instantiate the '${chosen}' variant (${glue}): ` +
+                `loaded, but reports parallel backend '${actualBackend}' (expected ` +
+                `'${expectedBackend}') -- locateFile likely returned the wrong .wasm binary. ` +
+                `Emscripten requested '${requestedFile}' and locateFile returned '${resolvedUrl}'.`,
+            { variant: chosen, glue, requestedFile, resolvedUrl },
+        );
+    }
+
     return {
         FS: Module.FS,
         readMesh: (path, format = '') => Module.readMesh(path, format),
@@ -221,6 +360,11 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // first, negative counts from the end, out of range throws.
         // `lenient` downgrades "this reader cannot represent construct X" to a
         // warning plus a skip; a malformed file still throws.
+        // `info: true` attaches the format's side channel as `mesh.info`
+        // (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus; ignored, not thrown,
+        // for any other format) -- see doc/wasm.md's "Side channel (info)"
+        // section. `pointsOnly`/`arrays` reach it only for the formats whose
+        // info reader takes selective-read options (med/mdpa/gmsh/exodus).
         readMeshSelective: (
             path,
             {
@@ -229,15 +373,37 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 arrays = null,
                 timeStep = 0,
                 lenient = false,
+                info = false,
             } = {},
-        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient),
+        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient, info),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),
         readerSupportsOptions: (format) => Module.readerSupportsOptions(format),
-        writeMesh: (path, mesh, format = '') => Module.writeMesh(path, mesh, format),
-        convert: (inPath, outPath, { inFormat = '', outFormat = '' } = {}) =>
-            Module.convert(inPath, inFormat, outPath, outFormat),
+        // `options`: `{encoding, codec, floatFormat, info}`, all optional --
+        // unset/empty reproduces the exact pre-v11.2.0 write. `encoding` is
+        // 'ascii'/'binary' (format-default otherwise); `codec` is a VTK-XML
+        // (vtu/vtp) block-compression codec, 'none'/'zlib'/'lz4'/'zstd'; an
+        // option a format cannot honour throws naming the format. `info`
+        // writes that format's side channel (openfoam/mdpa/ansysinp/unv/gmsh/
+        // med); when omitted, `mesh.info` is used instead if its own
+        // `format` matches this write's -- a read(info:true) round-trips
+        // back through a write with no extra plumbing. `info` given for a
+        // format with no side-channel writer (e.g. exodus, read-only, or any
+        // format without one at all) throws naming it. Returns every
+        // virtual-FS path the write touched (new or changed), sorted -- more
+        // than one for a multi-file writer (`.xdmf` + its `.h5` companion,
+        // an OpenFOAM `polyMesh` directory's files, ...).
+        writeMesh: (path, mesh, format = '', options = undefined) =>
+            Module.writeMesh(path, mesh, format, options),
+        // `options` adds `encoding`/`codec`/`floatFormat` to `inFormat`/
+        // `outFormat` (see `writeMesh`). Returns the written paths, as
+        // `writeMesh` does.
+        convert: (
+            inPath,
+            outPath,
+            { inFormat = '', outFormat = '', encoding, codec, floatFormat } = {},
+        ) => Module.convert(inPath, inFormat, outPath, outFormat, { encoding, codec, floatFormat }),
         // Like `convert`, but writes a renderable *surface*: a volume mesh
         // becomes its boundary, everything else passes through, and the result
         // is linearized. Prefer this over readMesh -> extractSkin -> writeMesh
@@ -312,6 +478,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             Module.diff(a, b, atol, rtol, unordered),
         meshesEqual: (a, b, atol = 0, rtol = 0, unordered = false) =>
             Module.meshesEqual(a, b, atol, rtol, unordered),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMaps, cellMaps}` instead of a bare mesh -- one array
+        // per input mesh, in input order.
         merge: (
             meshes,
             weld = false,
@@ -319,9 +488,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             sourceTag = true,
             dataPolicy = 'intersection',
             dropDuplicateCells = false,
-        ) => Module.merge(meshes, weld, atol, sourceTag, dataPolicy, dropDuplicateCells),
+            returnMaps = false,
+        ) =>
+            Module.merge(
+                meshes, weld, atol, sourceTag, dataPolicy, dropDuplicateCells, returnMaps,
+            ),
         transform: (mesh, matrix, rotateVectorData = false) =>
             Module.transform(mesh, matrix, rotateVectorData),
+        // `returnMaps` (default false): when true, the result also carries
+        // `pointMap`/`cellMaps` (input index -> output index, -1 if dropped).
         clean: (
             mesh,
             weld = false,
@@ -329,11 +504,16 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             removeOrphans = true,
             dropDegenerate = true,
             dropDuplicateCells = true,
-        ) => Module.clean(mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells),
+            returnMaps = false,
+        ) =>
+            Module.clean(
+                mesh, weld, atol, removeOrphans, dropDegenerate, dropDuplicateCells, returnMaps,
+            ),
         // `method` is 'taubin', 'laplacian' or 'odt' (tet-only). A negative
         // `lambda` means "this method's own default" (0.5 Laplacian, 0.33
-        // Taubin) and is forwarded unchanged; the frozen-node mask is not
-        // exposed here, as on the other flat bindings (doc/roadmap.md §1).
+        // Taubin) and is forwarded unchanged. `frozen` is an optional array of
+        // 0-based point ids to pin outright, unioned with any boundary/feature
+        // pins; an out-of-range id throws by name.
         smooth: (
             mesh,
             method = 'taubin',
@@ -344,6 +524,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveFeatures = true,
             featureAngle = 30,
             guardInversion = true,
+            frozen = null,
         ) =>
             Module.smooth(
                 mesh,
@@ -355,6 +536,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveFeatures,
                 featureAngle,
                 guardInversion,
+                frozen,
             ),
         // Cross-mesh field transfer: source point_data sampled at the target's
         // points, source cell_data by nearest source-cell centroid regardless
@@ -397,12 +579,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // Restore `fine`'s transitional (green) cells to their coarse parent,
         // read verbatim from `coarse` (a lookup, not a reconstruction).
         undoGreen: (coarse, fine) => Module.undoGreen(coarse, fine),
-        cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false) =>
-            Module.cropBbox(mesh, lo, hi, mode, recordIds),
-        cropPlane: (mesh, point, normal, mode = 'all', recordIds = false) =>
-            Module.cropPlane(mesh, point, normal, mode, recordIds),
-        cropPredicate: (mesh, array, compare = '<', value = 0, recordIds = false) =>
-            Module.cropPredicate(mesh, array, compare, value, recordIds),
+        // Each crop* returns a bare mesh, or `{mesh, pointMap, cellMaps}` when
+        // `returnMaps` (the trailing argument, default false) is set.
+        cropBbox: (mesh, lo, hi, mode = 'all', recordIds = false, returnMaps = false) =>
+            Module.cropBbox(mesh, lo, hi, mode, recordIds, returnMaps),
+        cropPlane: (mesh, point, normal, mode = 'all', recordIds = false, returnMaps = false) =>
+            Module.cropPlane(mesh, point, normal, mode, recordIds, returnMaps),
+        cropPredicate: (
+            mesh, array, compare = '<', value = 0, recordIds = false, returnMaps = false,
+        ) => Module.cropPredicate(mesh, array, compare, value, recordIds, returnMaps),
         slice: (mesh, origin, normal, recordParentIds = false) =>
             Module.slice(mesh, origin, normal, recordParentIds),
         grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
@@ -604,15 +789,33 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.sobolevDeform(mesh, array, lengthScale, fixedPointsArray, fixBoundary,
                 recordFiltered, maxIterations, tolerance),
-        split: (mesh, by, tagName = '') => Module.split(mesh, by, tagName),
-        convertCells: (mesh, mode = 'linearize', recordParentIds = false) =>
-            Module.convertCells(mesh, mode, recordParentIds),
-        subdivide: (mesh, recordParentIds = false) => Module.subdivide(mesh, recordParentIds),
-        agglomerate: (mesh, targetGroupSize = 8) => Module.agglomerate(mesh, targetGroupSize),
-        refine: (mesh, levels = 1, recordParentIds = false, options = undefined) =>
-            Module.refine(mesh, levels, recordParentIds, options),
-        // Exactly one of ratio / targetFaces / maxError must be non-negative;
-        // the frozen mask is not exposed here, as on the other flat bindings.
+        // `returnMaps` (default false): when true, each `{key, mesh}` piece
+        // also carries `pointMap`/`cellMaps`.
+        split: (mesh, by, tagName = '', returnMaps = false) =>
+            Module.split(mesh, by, tagName, returnMaps),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
+        convertCells: (mesh, mode = 'linearize', recordParentIds = false, returnMaps = false) =>
+            Module.convertCells(mesh, mode, recordParentIds, returnMaps),
+        // `returnMaps` (default false): when true, returns `{mesh, cellMaps}`
+        // instead of a bare mesh -- there is no point map (subdivide never
+        // prunes or renumbers a point).
+        subdivide: (mesh, recordParentIds = false, returnMaps = false) =>
+            Module.subdivide(mesh, recordParentIds, returnMaps),
+        // `returnMaps` (default false): when true, returns `{mesh, cellMap}`
+        // instead of a bare mesh -- a single FLAT array (global cell index ->
+        // global cell index), unlike the other ops' per-block `cellMaps`.
+        agglomerate: (mesh, targetGroupSize = 8, returnMaps = false) =>
+            Module.agglomerate(mesh, targetGroupSize, returnMaps),
+        // `returnMaps` (default false): when true, returns
+        // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
+        refine: (mesh, levels = 1, recordParentIds = false, options = undefined,
+            returnMaps = false) =>
+            Module.refine(mesh, levels, recordParentIds, options, returnMaps),
+        // Exactly one of ratio / targetFaces / maxError must be non-negative.
+        // `frozen` is an optional array of 0-based point ids to pin outright;
+        // an out-of-range id throws by name. `returnMaps` (default false):
+        // when true, the result also carries `pointMap`/`cellMaps`.
         decimate: (
             mesh,
             ratio = -1,
@@ -622,6 +825,8 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             preserveBoundary = true,
             preserveFeatures = true,
             featureAngle = 30,
+            frozen = null,
+            returnMaps = false,
         ) =>
             Module.decimate(
                 mesh,
@@ -632,7 +837,42 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 preserveBoundary,
                 preserveFeatures,
                 featureAngle,
+                frozen,
+                returnMaps,
             ),
+        // Tetrahedral VOLUME decimation (decimate's tet-edge-collapse sibling).
+        // Exactly one of ratio / targetCells / maxError must be non-negative.
+        // `preserveBoundary` defaults to false here, matching the C++ default
+        // (decimate's own default is true) -- decimateVolume's boundary is
+        // usually interior geometry a solver still wants simplified.
+        // `returnMaps` (default false): when true, the result also carries
+        // `pointMap`/`cellMaps`.
+        decimateVolume: (
+            mesh,
+            ratio = -1,
+            targetCells = -1,
+            maxError = -1,
+            placement = 'optimal',
+            preserveBoundary = false,
+            preserveFeatures = true,
+            featureAngle = 30,
+            frozen = null,
+            returnMaps = false,
+        ) =>
+            Module.decimateVolume(
+                mesh,
+                ratio,
+                targetCells,
+                maxError,
+                placement,
+                preserveBoundary,
+                preserveFeatures,
+                featureAngle,
+                frozen,
+                returnMaps,
+            ),
+        // `returnMaps` (default false): when true, each `{partId, mesh}`
+        // piece also carries `pointMap`/`cellMaps`.
         partition: (
             mesh,
             nparts,
@@ -643,6 +883,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             recordIds = false,
             ghostLayers = 0,
             weightsKey = '',
+            returnMaps = false,
         ) =>
             Module.partition(
                 mesh,
@@ -654,6 +895,7 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 recordIds,
                 ghostLayers,
                 weightsKey,
+                returnMaps,
             ),
         partitionLabels: (
             mesh,
@@ -739,7 +981,13 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 // Raw solver arrays instead of a mesh; `components` gives the
                 // per-entity width of any array that is not a scalar.
                 writeDataArrays: (time, pointData, cellData = {}, components = {}) =>
-                    Module.xdmfSeriesWriteDataArrays(handle, time, pointData, cellData, components),
+                    Module.xdmfSeriesWriteDataArrays(
+                        handle,
+                        time,
+                        widenBigIntArrays(pointData),
+                        widenBigIntArrays(cellData),
+                        components,
+                    ),
                 // Make the `.xdmf` readable now, without finalizing.
                 flush: () => Module.xdmfSeriesFlush(handle),
                 finalize: () => Module.xdmfSeriesFinalize(handle),
@@ -756,6 +1004,42 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                     } finally {
                         Module.xdmfSeriesFree(handle);
                     }
+                },
+            };
+        },
+        // Stateful sequence reader (see doc/sequences.md) -- the other
+        // stateful thing in this API, the same opaque-handle-plus-free-
+        // functions shape as createXdmfTimeSeriesWriter above. `source`/
+        // `options` are exactly sequenceEntries'; this plans the sequence
+        // once (`entries()`) and lets a caller read one step at a time
+        // (`read()`) without holding more than one mesh alive, unlike
+        // sequenceEntries + readMesh in a loop, which still requires the
+        // caller to resolve the format/step itself.
+        openSequence: (source, options = undefined) => {
+            const handle = Module.sequenceOpen(source, options);
+            const count = Module.sequenceCount(handle);
+            const entry = (i) => ({
+                path: Module.sequencePath(handle, i),
+                step: Module.sequenceStep(handle, i),
+                time: Module.sequenceTime(handle, i),
+                timeSource: Module.sequenceTimeSource(handle, i),
+            });
+            let open = true;
+            return {
+                count,
+                path: (i) => Module.sequencePath(handle, i),
+                step: (i) => Module.sequenceStep(handle, i),
+                time: (i) => Module.sequenceTime(handle, i),
+                timeSource: (i) => Module.sequenceTimeSource(handle, i),
+                entry,
+                entries: () => Array.from({ length: count }, (_, i) => entry(i)),
+                read: (i, { pointsOnly = false, arrays = null, lenient = false } = {}) =>
+                    Module.sequenceRead(handle, i, { pointsOnly, arrays, lenient }),
+                // Safe to call twice; safe to call in a `finally`.
+                close: () => {
+                    if (!open) return;
+                    open = false;
+                    Module.sequenceFree(handle);
                 },
             };
         },

@@ -85,9 +85,9 @@ Setup is parallel with a fixed floating-point order (each vertex sums its quadri
 
 ## Other language surfaces
 
-- **C API** — `mio_decimate(...)` returning an opaque `mio_decimate_result` (mesh borrow/take, zero-copy point/cell maps, counter getters). The `frozen` mask is not exposed across the C ABI (a documented flat-ABI gap, like `mio_smooth`'s).
-- **Fortran** — `coarse = m%decimate(ratio=0.25_real64, faces_removed=n, ...)` with optional counter out-args and a 1-based `point_map`.
-- **WASM** — `decimate(mesh, ratio, targetFaces, maxError, placement, ...)` → `{mesh, facesRemoved, pointsRemoved, collapsesRejected, maxErrorApplied}`, also available as a `convertSurfaceOps` pipeline op (`{op: "decimate"}`, defaulting to `ratio: 0.5`).
+- **C API** — `mio_decimate(...)` returning an opaque `mio_decimate_result` (mesh borrow/take, zero-copy point/cell maps, counter getters); `mio_decimate_opts`/`mio_decimate_ex` add `frozen`/`num_frozen` (0-based point ids, range-checked), the same `mio_refine_opts`/`_ex` pattern `mio_smooth_ex` uses. Unlike `mio_smooth_ex`, there is no "all defaults" fast path (a stopping criterion is always required), so `mio_decimate_ex(mesh, NULL)` is an error rather than `mio_decimate`'s own defaults.
+- **Fortran** — `coarse = m%decimate(ratio=0.25_real64, faces_removed=n, ..., frozen=ids)` with optional counter out-args, a 1-based `point_map`, and a 1-based `frozen` point-id array (shifted to 0-based across the ABI).
+- **WASM** — `decimate(mesh, ratio, targetFaces, maxError, placement, preserveBoundary, preserveFeatures, featureAngle, frozen, returnMaps)` → `{mesh, facesRemoved, pointsRemoved, collapsesRejected, maxErrorApplied}` (`frozen`: an optional array of 0-based point ids to pin outright; an out-of-range id throws naming it; `returnMaps`: also attaches `pointMap`/`cellMaps`), also available as a `convertSurfaceOps` pipeline op (`{op: "decimate"}`, defaulting to `ratio: 0.5`).
 - **CLI** — the `decimate` verb in both the Python and the native CLI (see [CLI](/cli)).
 
 The returned maps make the result composable: `point_map` sends every input point to its **survivor's** output index (collapsed points map to the survivor, not −1 — usable for remapping external per-point arrays), and the per-input-block `cell_maps` send each input cell to its first surviving triangle (−1 when none survived).

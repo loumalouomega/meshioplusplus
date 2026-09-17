@@ -29,6 +29,7 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace {
 void rt22(const mt::Mesh& mesh, bool binary) {
@@ -365,5 +366,93 @@ TEST(Gmsh, WritingWithoutDimTagsEmitsNoEntities) {
     std::ifstream is(path);
     const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
     EXPECT_EQ(text.find("$Entities"), std::string::npos);
+    std::remove(path.c_str());
+}
+
+// Roadmap §1 tier B3: an untagged Cell region (as Abaqus/MED/MDPA produce --
+// mTag == -1, mDim == -1) gets a freshly allocated tag rather than being
+// dropped from $PhysicalNames/gmsh:physical.
+TEST(Gmsh, UntaggedRegionGetsAnAllocatedTagOnWrite22) {
+    meshioplusplus::Mesh mesh = mt::hex_mesh();  // one block, one cell
+    meshioplusplus::NDArray entries = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 0;
+    mesh.AddRegion(meshioplusplus::Region("body", meshioplusplus::RegionKind::Cell, std::move(entries)));
+
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh22(path, mesh, false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+
+    ASSERT_EQ(back.NumRegions(), 1u);
+    EXPECT_EQ(back.Region(0).mName, "body");
+    EXPECT_GE(back.Region(0).mTag, 0) << "an allocated tag must not round-trip as -1";
+    EXPECT_EQ(back.Region(0).mDim, 3);
+    ASSERT_EQ(back.Region(0).NumEntries(), 1u);
+    EXPECT_EQ(back.Region(0).Entries()[0], 0);
+    std::remove(path.c_str());
+}
+
+// The 4.1 writer's $Elements model is one gmsh entity per meshio++ cell
+// block, so an untagged region survives there too when (as here) it covers
+// a WHOLE block -- unlike Registry.Gmsh22RoundTripsRegionMembershipThrough-
+// TheRegistryDispatch's partially-tagged fixture, which cannot be.
+TEST(Gmsh, UntaggedRegionSurvivesA41RoundTripWhenBlockAligned) {
+    meshioplusplus::Mesh mesh = mt::hex_mesh();
+    meshioplusplus::NDArray entries = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    entries.As<std::int64_t>()[0] = 0;
+    mesh.AddRegion(meshioplusplus::Region("body", meshioplusplus::RegionKind::Cell, std::move(entries)));
+
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh41(path, mesh, false);
+    std::ifstream is(path);
+    const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("$Entities"), std::string::npos);
+
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+    ASSERT_EQ(back.NumRegions(), 1u);
+    EXPECT_EQ(back.Region(0).mName, "body");
+    EXPECT_EQ(back.Region(0).mDim, 3);
+    std::remove(path.c_str());
+}
+
+TEST(Gmsh, TagAllocationIsPerDimensionAndDeterministic) {
+    meshioplusplus::Mesh mesh = mt::tet_mesh();  // 2 tetrahedra, 1 block
+    meshioplusplus::NDArray all = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {2});
+    all.As<std::int64_t>()[0] = 0;
+    all.As<std::int64_t>()[1] = 1;
+    // Both regions cover the WHOLE (only) block, so they collide on every
+    // cell -- exercised separately below. Here: a solo untagged region gets
+    // tag 1 in its own (inferred) dimension, since nothing else claims dim 3.
+    mesh.AddRegion(meshioplusplus::Region("solid", meshioplusplus::RegionKind::Cell, std::move(all)));
+
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh22(path, mesh, false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+    ASSERT_EQ(back.NumRegions(), 1u);
+    EXPECT_EQ(back.Region(0).mTag, 1);
+    std::remove(path.c_str());
+}
+
+TEST(Gmsh, TwoUntaggedRegionsSharingACellWarnsAndKeepsTheFirst) {
+    meshioplusplus::Mesh mesh = mt::tet_mesh();  // 2 tetrahedra
+    meshioplusplus::NDArray both = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {2});
+    both.As<std::int64_t>()[0] = 0;
+    both.As<std::int64_t>()[1] = 1;
+    meshioplusplus::NDArray one = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    one.As<std::int64_t>()[0] = 0;
+    // "first" is added before "second", so region ORDER (not name) decides.
+    mesh.AddRegion(meshioplusplus::Region("first", meshioplusplus::RegionKind::Cell, std::move(both)));
+    mesh.AddRegion(meshioplusplus::Region("second", meshioplusplus::RegionKind::Cell, std::move(one)));
+
+    const std::string path = mt::temp_path(".msh");
+    meshioplusplus::write_gmsh22(path, mesh, false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_gmsh(path);
+
+    // Cell 0 is claimed by "first" (added first); cell 1 belongs to "first"
+    // alone. "second" survives as a name (via $PhysicalNames/field_data) but
+    // its gmsh:physical membership lost the contested cell to "first".
+    ASSERT_NE(back.FindRegion("first", meshioplusplus::RegionKind::Cell), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& first =
+        back.Region(back.FindRegion("first", meshioplusplus::RegionKind::Cell));
+    EXPECT_EQ(first.NumEntries(), 2u);
     std::remove(path.c_str());
 }

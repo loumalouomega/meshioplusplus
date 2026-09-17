@@ -24,6 +24,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -33,6 +34,7 @@
 #include "meshioplusplus/formats/permas.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/ugrid.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 
 // Generic helper for `void write_X(path, mesh)` / `Mesh read_X(path)`.
 #define SIMPLE_RT(WRITER, READER, MESH, SUFFIX, ATOL)                            \
@@ -163,6 +165,88 @@ std::string write_temp(const std::string& suffix, const std::string& contents) {
 TEST(Medit, ReadRejectsMissingVertices) {
     std::string path = write_temp(".mesh", "MeshVersionFormatted 2\nDimension 3\n");
     EXPECT_THROW(meshioplusplus::read_medit_ascii(path), meshioplusplus::ReadError);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, TransientReadSelectsOneZoneBySolutionTime) {
+    // roadmap §1 tier B1: two FEBLOCK zones sharing STRANDID=1, distinct
+    // SOLUTIONTIME. Hand-written text -- Tecplot ASCII needs no external
+    // tool, unlike MED/CGNS/cgnslib.
+    const std::string contents =
+        "VARIABLES = \"X\" \"Y\" \"u\"\n"
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=0.0 STRANDID=1\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "10.0 20.0 30.0\n"
+        "1 2 3\n"
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=2.5 STRANDID=1\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "11.0 21.0 31.0\n"
+        "1 2 3\n";
+    std::string path = write_temp(".dat", contents);
+
+    meshioplusplus::ReadOptions opts;
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_tecplot_metadata(path, opts);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+    EXPECT_EQ(meta.mNumPoints, 3u);
+    ASSERT_EQ(meta.mCellBlocks.size(), 1u);
+    EXPECT_EQ(meta.mCellBlocks[0].mType, "triangle");
+    EXPECT_EQ(meta.mCellBlocks[0].mNumCells, 1u);
+
+    meshioplusplus::ReadOptions first;
+    first.mTimeStep = 0;
+    const mt::Mesh out0 = meshioplusplus::read_tecplot(path, first);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out0.PointData("u"), 0), 10.0);
+
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    const mt::Mesh out1 = meshioplusplus::read_tecplot(path, second);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out1.PointData("u"), 0), 11.0);
+
+    meshioplusplus::ReadOptions last;
+    last.mTimeStep = -1;
+    const mt::Mesh out_last = meshioplusplus::read_tecplot(path, last);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out_last.PointData("u"), 0), 11.0);
+
+    meshioplusplus::ReadOptions too_far;
+    too_far.mTimeStep = 5;
+    EXPECT_THROW(meshioplusplus::read_tecplot(path, too_far), meshioplusplus::ReadError);
+
+    EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("tecplot"));
+    EXPECT_EQ(meshioplusplus::sequence_num_steps(path, "tecplot"), 2u);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, NonTransientMultiZoneWarnsAndReadsTheFirst) {
+    // No SOLUTIONTIME anywhere: the "several static zones" case is not a
+    // timeline (roadmap §7 owns concatenating them); only the first zone is
+    // read, as before -- now with a warning rather than silent truncation.
+    const std::string contents =
+        "VARIABLES = \"X\" \"Y\"\n"
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "1 2 3\n"
+        "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE\n"
+        "2.0 3.0 2.0\n"
+        "2.0 2.0 3.0\n"
+        "1 2 3\n";
+    std::string path = write_temp(".dat", contents);
+
+    const mt::Mesh out = meshioplusplus::read_tecplot(path);
+    EXPECT_EQ(out.NumPoints(), 3u);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out.Points(), 0), 0.0);
+
+    meshioplusplus::ReadOptions opts;
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_tecplot_metadata(path, opts);
+    EXPECT_TRUE(meta.mTimeValues.empty());
+
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

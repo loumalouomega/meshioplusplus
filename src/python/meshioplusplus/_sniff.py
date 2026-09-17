@@ -26,9 +26,15 @@ def _sniff_format_py(path) -> str:
             return "vtu"
         if b"PolyData" in head:
             return "vtp"
-        # Checked last of the three, matching the C++ twin -- see sniff.cpp.
+        # Checked last of the four, matching the C++ twin -- see sniff.cpp.
         if b"ImageData" in head:
             return "vti"
+        if b"StructuredGrid" in head:  # v11.6.0, roadmap §1 tier B4
+            return "vts"
+        if b"RectilinearGrid" in head:
+            return "vtr"
+        if b"MultiBlockDataSet" in head:
+            return "vtm"
     if b"<Xdmf" in head:
         return "xdmf"
     if stripped.startswith(b"# vtk DataFile"):

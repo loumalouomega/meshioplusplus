@@ -80,6 +80,7 @@
  *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
  *  | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back |
  *  | 12  | v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 |
+ *  | 13  | v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 -> 128 bytes |
  *
  * ### This is the ONE place the number is written
  *
@@ -98,7 +99,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 12
+#define MESHIOPLUSPLUS_ABI_VERSION 13
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -9119,9 +9120,9 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 11
+#define MESHIOPLUSPLUS_VERSION_MAJOR 12
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9131,7 +9132,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "12.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12185,6 +12186,45 @@ MESHIOPLUSPLUS_API void write_cgns(const std::string& rPath, const Mesh& rMesh, 
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 
 /**
+ * @brief `read_cgns` with read options — the overload that resolves one step
+ *        of a transient (`BaseIterativeData_t`/`ZoneIterativeData_t`) file.
+ *
+ * A single-zone file whose zone carries a `ZoneIterativeData_t` with a
+ * `FlowSolutionPointers` array picks exactly the `FlowSolution_t` named by
+ * `rOptions.mTimeStep` (resolved via `ResolveTimeStep` against
+ * `BaseIterativeData_t`'s own `NumberOfSteps`) instead of reading every
+ * `FlowSolution_t` child. Without iterative data this is `read_cgns`'s own
+ * behaviour, unchanged, except that an array name written by more than one
+ * `FlowSolution_t` now `log::warn`s naming both instead of silently letting
+ * the later one win.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize a CGNS file's shape and available time steps without
+ *        decoding point coordinates or cell connectivity.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * `Zone_t`'s own `" data"` ( `[NVertex, NCell, NBoundVertex]`) gives point/cell
+ * counts with no section read, and `BaseIterativeData_t/TimeValues` (when
+ * present) fills `mTimeValues`. A file with no iterative data reports a
+ * single (empty) time value, same as a format with no time concept.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError on a structurally invalid file, as `read_cgns`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_cgns_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOptions);
+
+/**
  * @brief Whether this build carries the official CGNS library (cgnslib / the
  *        CGNS Mid-Level Library) backend.
  *
@@ -12221,6 +12261,35 @@ MESHIOPLUSPLUS_API bool cgns_has_cgnslib();
  *         when cgnslib cannot open or parse the file
  */
 MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath);
+
+/**
+ * @brief `read_cgns_mll` with read options — resolves one step of a
+ *        transient file the same way the `read_cgns` overload does, via
+ *        cgnslib's own `cg_biter_read`/`cg_ziter_read`/`cg_array_read` rather
+ *        than hand-parsed HDF5 groups.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief `read_cgns_metadata`'s cgnslib-backed path: `cg_biter_read`/
+ *        `cg_ziter_read`/`cg_array_read` for time values, `cg_zone_read` for
+ *        point/cell counts, `cg_nsections`/`cg_section_read` for cell-block
+ *        shapes -- no coordinate or connectivity array is read.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError when the build has no cgnslib, or cgnslib cannot open or
+ *         parse the file
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_cgns_mll_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 
@@ -12321,17 +12390,20 @@ MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
 // ===== begin src/cpp/include/meshioplusplus/formats/ensight.hpp =====
 /**
  * @file ensight.hpp
- * @brief EnSight Gold (.case/.geo) C++ reader/writer — geometry only.
+ * @brief EnSight Gold (.case/.geo) C++ reader/writer.
  *
  * EnSight Gold stores a dataset as a small `.case` index file plus a
- * geometry file (conventionally `.geo`). Only the mesh-geometry subset is
- * handled: the `.case` `FORMAT`/`GEOMETRY` sections (the file must declare
- * `type: ensight gold`; `VARIABLE`/`TIME` sections are ignored) and the Gold
- * geometry file in both ASCII and C-binary form (the leading `"C Binary"`
- * 80-char record selects binary; `"Fortran Binary"` is rejected). Binary
- * files use 32-bit ints/floats in the writing machine's byte order; the
- * reader auto-detects a foreign byte order from the plausibility of the
- * part-number/node-count records and byte-swaps accordingly.
+ * geometry file (conventionally `.geo`) and, optionally, one file per
+ * `VARIABLE` entry. The `.case` `FORMAT`/`GEOMETRY` sections (the file must
+ * declare `type: ensight gold`) and the Gold geometry file in both ASCII and
+ * C-binary form (the leading `"C Binary"` 80-char record selects binary;
+ * `"Fortran Binary"` is rejected) are read; since v11.3.0 (roadmap §1 tier
+ * B1) so are `TIME` (a transient file's step times) and `VARIABLE` (per-node/
+ * per-element scalar/vector `point_data`/`cell_data`) — see `read_ensight`'s
+ * own doc comment. Binary files use 32-bit ints/floats in the writing
+ * machine's byte order; the reader auto-detects a foreign byte order from
+ * the plausibility of the part-number/node-count records and byte-swaps
+ * accordingly.
  *
  * Element keywords `point`, `bar2/3`, `tria3/6`, `quad4/8`, `tetra4/10`,
  * `pyramid5/13`, `penta6/15`, `hexa8/20` map to the corresponding meshio
@@ -12348,7 +12420,8 @@ MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
  * element section becomes its own cell block, and when the file has two or
  * more parts the owning part number is recorded as the integer cell_data
  * field `"ensight:part"`. The writer emits a single part (`node id assign`,
- * `element id assign`) and drops point/cell/field data (mesh-only scope).
+ * `element id assign`) and drops point/cell/field data (mesh-only scope) --
+ * the roadmap's variable-*reading* item leaves variable-*writing* to §7.
  */
 
 // System includes
@@ -12396,6 +12469,61 @@ MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMes
  *         geometry, an unknown element keyword, or out-of-range connectivity
  */
 MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
+
+/**
+ * @brief `read_ensight` with read options — reads a `.case` file's
+ *        `VARIABLE` sections and selects one step of a transient one.
+ *
+ * A `scalar per node:`/`vector per node:`/`scalar per element:`/`vector per
+ * element:` entry becomes `point_data`/`cell_data` under its own name, read
+ * from the file its (possibly `mTimeStep`-templated) filename names. A
+ * variable file mirrors the geometry file's own `part`/section structure
+ * exactly (see the file doc comment), which is how a value lands on the
+ * right point or cell block with no name matching against the geometry at
+ * all -- and why a variable file whose part sequence does not match the
+ * geometry's own is a `ReadError`, not a best-effort guess. `mTimeStep`
+ * (0-based, negative counts from the end) resolves against the case file's
+ * `TIME` `time values:` (only the *first* `time set:` is honoured when a
+ * file has more than one) and templates every `*`-bearing filename with
+ * `filename start number:` + step × `filename increment:`, zero-padded to
+ * the `*` run's own width. A file with no `TIME` section has exactly one
+ * step; a non-default `mTimeStep` against it is refused rather than
+ * silently answering step 0. `mPointsOnly`/`mMetadataOnly`/`mDataArrays`
+ * narrow which variables are read, same as every other format.
+ *
+ * A bare geometry file (no `.case`) never reaches any of this: there is no
+ * `VARIABLE`/`TIME` section to read, so `rOptions`' data-selecting fields are
+ * silently inert on that path, exactly as before this overload existed.
+ *
+ * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
+ * @param rOptions read options
+ * @return the read Mesh, as the plain overload, plus point_data/cell_data
+ *         for every wanted `VARIABLE` entry
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range,
+ *         a `VARIABLE` kind other than the four listed above being silently
+ *         skipped (not an error), or a variable file whose structure does
+ *         not match the geometry's
+ */
+MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize an EnSight `.case` file's available time steps.
+ *
+ * Reads only the `.case` file's `TIME` section for `mTimeValues`; the mesh
+ * shape (`mNumPoints`/`mCellBlocks`) still needs a full geometry read (no
+ * native header-only shape scan, unlike CGNS/Gmsh 4.1), so
+ * `mFellBackToFullRead` is always `true` here -- the same shape Exodus's own
+ * metadata override has. A bare geometry file (no `.case`, hence no `TIME`
+ * section to read) throws, which lets `registry_read_metadata`'s fallback
+ * take over and answer from a plain full read instead.
+ *
+ * @param rPath filesystem path to a `.case` file
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's time values, with the geometry's shape from a full read
+ * @throws ReadError when `rPath` is not a `.case` file, or as `read_ensight`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ensight.hpp =====
@@ -12869,10 +12997,11 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
  * verified against GiD's own geometry (pinned by `tests/cpp/test_gid.cpp`'s
  * `GidOrdering` suite, never by a round trip through a reader that does not
  * exist) are supported: `vertex`, `line`/`line3`, `triangle`/`triangle6`,
- * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`,
- * `wedge`, `pyramid`. Everything else — `hexahedron27`, `wedge15`,
- * `pyramid13` (orderings not yet verified), `polygon`/`polyhedron` (GiD has
- * no such type), every `VTK_LAGRANGE_*` and higher-degree Lagrange type —
+ * `quad`/`quad8`/`quad9`, `tetra`/`tetra10`, `hexahedron`/`hexahedron20`/
+ * `hexahedron27`, `wedge`/`wedge15`, `pyramid`/`pyramid13` (the last three
+ * cross-checked against Kratos's geometry classes since v10.19.0). Everything
+ * else — `polygon`/`polyhedron` (GiD has no such type), every
+ * `VTK_LAGRANGE_*` and higher-degree Lagrange type —
  * throws a `WriteError` naming the offending type, never a silent drop or a
  * guessed permutation.
  *
@@ -14184,6 +14313,31 @@ MESHIOPLUSPLUS_API Mesh read_med(const std::string& rPath, MedInfo& rInfo,
                                  const ReadOptions& rOptions);
 
 /**
+ * @brief Summarize a MED file's shape and available time steps without
+ *        decoding point coordinates or cell connectivity.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * only `ENS_MAA/<mesh>` and `MAI/<type>` attributes/dataset extents are read
+ * for `mNumPoints`/`mPointDim`/`mCellBlocks`, and `CHA/<field>/<step>`'s
+ * `PDT` attributes are scanned across every field for `mTimeValues` -- the
+ * sorted, deduplicated union of every field's own step times, since a
+ * `MeshMetadata` reports one timeline per file, not per field. `mDataArrays`
+ * are `CHA`'s field names, but no field's data itself is read.
+ *
+ * Unlike `read_med`, this never throws on a multi-step field: a metadata
+ * summary reporting a strict decline on the very thing it exists to report
+ * would defeat its purpose, so the strict/lenient `CHA` distinction `read_med`
+ * enforces does not apply here.
+ *
+ * @param rPath filesystem path to the .med file to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError on a structurally invalid file, as `read_med`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_med_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOptions);
+
+/**
  * @brief Write a Mesh to a MED (.med) HDF5 file, handling the
  *        mesh-representation subset described in the file-level docs.
  *
@@ -14836,6 +14990,22 @@ struct OpenFoamInfo {
      * can see and fix.
      */
     std::map<std::int64_t, std::string> mPatchTypes;
+
+    /**
+     * @brief Multi-region case selector (v11.4.0, roadmap §1 tier B2).
+     *
+     * A multi-region case has no single `constant/polyMesh`; each region has
+     * its own `constant/<region>/polyMesh`. Set before calling `read_openfoam`
+     * to select one; the resolver also accepts a path that already *is*
+     * `constant/<region>/polyMesh` (the plain `polyMesh`-directory rule), in
+     * which case this field is unnecessary. Empty (the default) means
+     * "single-region case" -- if the case is multi-region instead,
+     * `read_openfoam` throws naming the regions `constant/regionProperties`
+     * lists, rather than silently trying (and failing to find) a bare
+     * `constant/polyMesh`. Ignored on write; a multi-region *write* is a
+     * documented follow-up.
+     */
+    std::string mRegion;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -14871,6 +15041,58 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Read an OpenFOAM polyMesh, optionally attaching one time
+ * directory's fields (v11.4.0, roadmap §1 tier B2).
+ *
+ * Identical to the two-argument overload for the mesh topology itself.
+ * Additionally: `rOptions.mTimeStep` (via `ResolveTimeStep`) selects a time
+ * directory out of `<case_root>/<numeric>/` (case root = the directory
+ * `read_openfoam_metadata` would report `mTimeValues` for), skipped
+ * entirely when no such directory exists (matching the two-argument
+ * overload's historical no-field behaviour exactly). Each of that
+ * directory's field files becomes one `point_data`/`cell_data` array named
+ * after the file, filtered by `rOptions.mDataArrays`
+ * (`ReadOptions::WantsArray`): `volScalarField`/`volVectorField`/
+ * `volSymmTensorField`/`volTensorField` -> cell data (1/3/6/9 components);
+ * `pointScalarField`/`pointVectorField` -> point data (1/3); anything else
+ * (`surfaceScalarField`, …) is skipped with a warning, once per field.
+ * `uniform` expands to one row per cell/point. A cell field's `internalField`
+ * only ever covers volume cells (OpenFOAM's own numbering): the matching
+ * `cell_data` blocks are the volume/polyhedron ones; the boundary-face
+ * blocks get `NaN` for that field, since attaching `boundaryField`'s
+ * per-patch values is a documented follow-up, not read here. Binary field
+ * files use the same `arch`-driven reader as the polyMesh binary path.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions `mTimeStep` selects the time directory; `mDataArrays`
+ *        selects fields; `mRegion` (via @p rInfo, not here) is unrelated
+ * @param rInfo output side-channel struct (see #OpenFoamInfo)
+ * @return the read Mesh, as the two-argument overload, plus the selected
+ *         time directory's fields
+ * @throws ReadError as the two-argument overload; also if `mTimeStep`
+ *         selects an out-of-range step among the case's time directories
+ */
+MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, const ReadOptions& rOptions,
+                                      OpenFoamInfo& rInfo);
+
+/**
+ * @brief Cheaply summarize an OpenFOAM case's time directories.
+ *
+ * `mTimeValues` is a real, cheap (directory-listing only) native path: the
+ * numeric-named subdirectories of the case root that hold at least one
+ * regular file, sorted ascending. Everything else in the returned
+ * `MeshMetadata` comes from a full read (`mFellBackToFullRead = true`),
+ * since a cheap point/cell count would otherwise re-derive the whole
+ * cell-reconstruction pipeline redundantly.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions forwarded to the full read backing the non-time fields
+ * @return metadata with a native `mTimeValues` and a full-read-derived rest
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions);
 
 /**
  * @brief Write a Mesh as an OpenFOAM polyMesh case.
@@ -15331,10 +15553,15 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
  *
  * A Tecplot FE file is a `VARIABLES = "X" "Y" "Z" ...` list followed by one
  * or more `ZONE T="..." N=<nodes> E=<elements> F=FEPOINT|FEBLOCK
- * ET=TRIANGLE|FEQUADRILATERAL|FETETRAHEDRON|FEBRICK [VARLOCATION=(...)]`
- * blocks. meshio++ only reads/writes a **single** FE zone: on read, only the
- * first zone is parsed and any subsequent zones are silently ignored (not
- * merged or errored on). `VARLOCATION=([a-b]=CELLCENTERED)` (1-based,
+ * ET=TRIANGLE|FEQUADRILATERAL|FETETRAHEDRON|FEBRICK [SOLUTIONTIME=<t>]
+ * [STRANDID=<id>] [VARLOCATION=(...)]` blocks. meshio++ writes a **single**
+ * FE zone; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one zone
+ * of a transient file's timeline -- every zone sharing the first zone's
+ * `STRANDID` (or, absent one, every zone with a `SOLUTIONTIME` at all),
+ * sorted by `SOLUTIONTIME`. With no `SOLUTIONTIME` anywhere, only the first
+ * zone is read, as before (several static, non-transient zones are a
+ * documented roadmap remainder, not concatenated or errored on).
+ * `VARLOCATION=([a-b]=CELLCENTERED)` (1-based,
  * inclusive ranges) marks cell-centered variables, otherwise cell-centered-
  * ness is inferred from `NV=`. `FEBLOCK` packing reads one variable's full
  * array before the next; `FEPOINT` reads one full-variable-tuple row per
@@ -15381,22 +15608,54 @@ MESHIOPLUSPLUS_API void write_tecplot(const std::string& rPath, const Mesh& rMes
 /**
  * @brief Read a Tecplot ASCII file's first FE zone.
  *
- * Parses the `VARIABLES` list and the first `ZONE` header (tolerating
- * multi-line continuation and a quoted `T="..."` title), then its FEBLOCK or
- * FEPOINT data body and 1-based connectivity. Any zones after the first are
- * silently ignored.
+ * Parses the `VARIABLES` list and every `ZONE` header (tolerating multi-line
+ * continuation and a quoted `T="..."` title), then the selected zone's
+ * FEBLOCK or FEPOINT data body and 1-based connectivity.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `X`/`x` is missing, the zone header uses an
- *         unsupported `F=`/`ZONETYPE=` combination, or the header/data
- *         otherwise doesn't parse (e.g. an adversarial zone title that is
- *         literally the string `"VARLOCATION"`) — the shim then falls back
- *         to the more tolerant Python reader.
+ * @throws ReadError if `X`/`x` is missing, a zone header uses an unsupported
+ *         `F=`/`ZONETYPE=` combination, or the header/data otherwise doesn't
+ *         parse (e.g. an adversarial zone title that is literally the string
+ *         `"VARLOCATION"`) — the shim then falls back to the more tolerant
+ *         Python reader.
  * @note point_data/cell_data keys are the raw Tecplot variable names (no
  *       prefix); `X`/`Y`/`Z` are reserved for coordinates.
  */
 MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath);
+
+/**
+ * @brief `read_tecplot` with read options — selects one zone of a transient
+ *        file's timeline instead of always the first.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize a Tecplot file's shape and available time steps without
+ *        decoding any zone's data body.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * every `ZONE` header is scanned for its `N=`/`E=`/`SOLUTIONTIME=`/
+ * `STRANDID=`, using the same token-budget walk `read_tecplot` uses to skip
+ * from one zone's header to the next, but without decoding the tokens
+ * themselves. `mCellBlocks`/`mNumPoints` describe the timeline's first zone
+ * (transient zones typically share topology); `mTimeValues` is the resolved
+ * timeline's `SOLUTIONTIME`s in the same sorted order `mTimeStep` indexes
+ * into -- empty when no zone carries one.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError as `read_tecplot`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_tecplot_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/tecplot.hpp =====
@@ -16040,6 +16299,109 @@ MESHIOPLUSPLUS_API Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/vtk.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtm.hpp =====
+/**
+ * @file formats/vtm.hpp
+ * @brief VTK XML MultiBlock (`.vtm`): an index file plus one `.vtu` piece per
+ * cell block (v11.6.0, roadmap §1 tier B4, part 3 of 3).
+ *
+ * A `.vtm` file is `<VTKFile type="vtkMultiBlockDataSet"><vtkMultiBlockDataSet>
+ * <Block index="0"><DataSet index="i" name="..." file="stem/stem_i.vtu"/>...
+ * </Block></vtkMultiBlockDataSet></VTKFile>` -- the index never carries
+ * geometry itself, only a list of piece files, one per meshio++ CellBlock.
+ *
+ * ### Write
+ *
+ * `write_vtm` creates a directory next to the index (named after the index's
+ * own stem) and writes one `.vtu` piece per `CellBlock`: the piece carries
+ * that block's cells and cell_data, and the mesh's full point_data, then is
+ * pruned with `clean(remove_orphans=true)` so each piece is self-contained
+ * (only the points that block actually references). Points are therefore
+ * duplicated across pieces sharing a boundary -- documented, not a bug: a
+ * `.vtm` piece is a standalone `.vtu` by design, readable on its own.  Each
+ * piece is named `"block_<i>"` in the index's `name=` attribute.
+ *
+ * ### Read
+ *
+ * `read_vtm` parses the index, reads every `DataSet` piece with `read_vtu`,
+ * and combines them with `operations/merge.hpp`'s `merge()` (no welding, so
+ * no piece's own points move or fuse with another's -- multiblock pieces are
+ * pre-separated by construction, not a set of coincident-point fragments to
+ * weld back together). Each piece's cells become one `RegionKind::Cell`
+ * region in the merged mesh, named from the index's `name=` attribute (via
+ * `merge()`'s own per-input cell index map, so the region is correct
+ * regardless of whether same-typed blocks from different pieces ended up
+ * consolidated into one output CellBlock).
+ *
+ * ### Deliberately not supported
+ *
+ * Nested `<Block>` elements are read structurally (every `DataSet` anywhere
+ * under `<vtkMultiBlockDataSet>` is collected, in document order) but nesting
+ * itself is not reproduced in the meshio++ mesh -- there is nothing in the
+ * uniform API to hold a block hierarchy, only a flat list of named regions.
+ * `vtkPolyData` pieces (as opposed to `vtkUnstructuredGrid`) are read via the
+ * extension of their own `file=` attribute, so a hand-written `.vtm` mixing
+ * `.vtu` and `.vtp` pieces round-trips on read even though this writer always
+ * emits `.vtu`.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML MultiBlock: an index plus one `.vtu` piece
+ *        per cell block.
+ * @param rPath the output `.vtm` path; pieces land in a sibling directory
+ *        named after its stem (`<stem>/`).
+ * @param rMesh the mesh; each `CellBlock` becomes one piece.
+ * @param binary base64-encode each piece's arrays instead of writing text.
+ * @param zlib compress each piece's binary blocks. Ignored when @p binary is
+ *        false.
+ * @throws WriteError if the index or a piece file cannot be opened.
+ */
+MESHIOPLUSPLUS_API void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a VTK XML MultiBlock with an explicit per-piece block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh.
+ * @param binary base64-encode each piece's arrays instead of writing text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vtm`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML MultiBlock file.
+ * @param rPath the input `.vtm` path.
+ * @param rOpts selective-read options, forwarded to each piece's `read_vtu`;
+ *        `mPointsOnly` and `mDataArrays` apply.
+ * @return the pieces merged into one mesh (no welding), with one
+ *         `RegionKind::Cell` region per piece.
+ * @throws ReadError if the index cannot be parsed, or a piece cannot be read
+ *         (a non-`.vtu`/`.vtp` piece, in particular).
+ */
+MESHIOPLUSPLUS_API Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML MultiBlock file: the sum of its pieces' own
+ *        metadata, read without materializing any piece's arrays.
+ *
+ * `mCellBlocks` reflects the same first-seen, same-type-consolidation order
+ * `read_vtm`'s own `merge()` call would produce, so a caller can rely on it
+ * agreeing with a real read.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vtm_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vtm.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/vtp.hpp =====
 /**
  * @file vtp.hpp
@@ -16133,6 +16495,196 @@ MESHIOPLUSPLUS_API MeshMetadata read_vtp_metadata(const std::string& rPath, cons
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/vtp.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtr.hpp =====
+/**
+ * @file formats/vtr.hpp
+ * @brief VTK XML RectilinearGrid (`.vtr`): a lattice whose per-axis point
+ * coordinates are three 1-D arrays rather than a uniform `Origin`/`Spacing`
+ * pair (v11.6.0, roadmap §1 tier B4).
+ *
+ * A RectilinearGrid states the same `nx * ny * nz` hexahedron topology
+ * `.vti`/`.vts` do -- points ordered x-fastest, `detail/grid_lattice.hpp`'s
+ * own numbering -- but its `<Coordinates>` are three independent, only
+ * *monotonic* 1-D arrays (`x_coordinates`/`y_coordinates`/`z_coordinates`),
+ * evaluated as a tensor product: point `(i, j, k)` sits at
+ * `(xs[i], ys[j], zs[k])`. That is genuinely more general than `.vti`'s
+ * uniform spacing -- a graded mesh (finer near a wall, coarser far from it)
+ * is a RectilinearGrid, never an ImageData.
+ *
+ * ### The mesh side of the deal
+ *
+ * - **`read_vtr` is fully general**: it builds points from the tensor
+ *   product of the file's own three coordinate arrays, with no uniformity
+ *   check at all -- a genuinely graded grid reads correctly.
+ * - **`write_vtr` requires a *uniform* lattice**, exactly as `.vti`'s writer
+ *   does (via `detail::lattice_from_mesh`): recovering three arbitrary
+ *   per-axis coordinate arrays from an unstructured point set, rather than
+ *   one `Origin`/`Spacing` pair, needs the same lattice detection this
+ *   writer does not re-derive. **A genuinely non-uniform (graded) mesh
+ *   cannot be written as `.vtr` today** -- a documented follow-up, not a
+ *   silent gap: `lattice_from_mesh` is the single owner of "is this mesh a
+ *   dense lattice" and extending it to recover ungraded per-axis arrays is
+ *   future work, tracked in `doc/roadmap.md`.
+ *
+ * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
+ * codec machinery `.vti`/`.vts`/`.vtu` already use.
+ *
+ * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ *
+ * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
+ * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
+ * build lacks. `header_type="UInt64"` is honoured on read; the writer always
+ * emits the default `UInt32`.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML RectilinearGrid.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense, UNIFORM lattice (see the file docs
+ *        -- a graded mesh cannot be written today).
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param zlib compress the binary blocks. Ignored when @p binary is false.
+ * @throws WriteError when @p rMesh is not a dense uniform lattice, or when
+ *         zlib was requested and this build has none.
+ */
+MESHIOPLUSPLUS_API void write_vtr(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a mesh as VTK XML RectilinearGrid with an explicit block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense, uniform lattice.
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vtr`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML RectilinearGrid file.
+ * @param rPath the input path.
+ * @param rOpts selective-read options; `mPointsOnly` and `mDataArrays` apply.
+ * @return a mesh with one `hexahedron` block in `detail/grid_lattice.hpp`'s
+ *         index-formula numbering, or a point-only mesh when the extent has
+ *         no cells. Points are the tensor product of the file's own
+ *         per-axis coordinate arrays -- no uniformity is assumed or checked.
+ * @throws ReadError on a construct the C++ reader declines (see the file docs).
+ */
+MESHIOPLUSPLUS_API Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML RectilinearGrid file without decoding its arrays.
+ *
+ * `WholeExtent` gives both the point and the cell count without decoding
+ * `<Coordinates>` or any data array.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vtr_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vtr.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vts.hpp =====
+/**
+ * @file formats/vts.hpp
+ * @brief VTK XML StructuredGrid (`.vts`): a lattice with explicit points but
+ * implicit (index-formula) connectivity (v11.6.0, roadmap §1 tier B4).
+ *
+ * `.vti` (ImageData) states a lattice's geometry as three attributes
+ * (`Origin`/`Spacing`/`WholeExtent`); `.vts` states the SAME topology --
+ * `nx * ny * nz` hexahedra over a `WholeExtent` corner grid, points ordered
+ * x-fastest (`detail/grid_lattice.hpp`'s own numbering) -- but with an
+ * explicit `<Points>` array instead, exactly as `.vtu` writes one. That is
+ * the entire difference: connectivity is still implicit (the index formula,
+ * never written), so a StructuredGrid is a lattice whose points are allowed
+ * to be curved or non-uniformly spaced while ImageData's cannot.
+ *
+ * ### The mesh side of the deal
+ *
+ * - **`read_vts` expands** `WholeExtent` into hexahedron connectivity via the
+ *   same index formula `detail/grid_lattice.hpp` uses, but reads the point
+ *   *positions* verbatim from the file's own `<Points>` array rather than
+ *   recomputing them -- unlike `.vti`, a `.vts` file's points are not
+ *   required to be an even grid at all (VTK itself allows a curved
+ *   structured mesh; this reader accepts that geometry, it just never
+ *   needs to verify it, since implicit connectivity does not depend on it).
+ * - **`write_vts` requires a lattice**, exactly as `.vti` does (via
+ *   `detail::lattice_from_mesh`): the writer has no way to recover which
+ *   `(nx, ny, nz)` a mesh's points were meant to tile without one. Once
+ *   confirmed, the mesh's own points are written unchanged -- there is
+ *   nothing to recompute, unlike `.vti`'s Origin/Spacing attributes.
+ *
+ * Data arrays reuse the same `detail/vtk_xml.hpp`/`detail/vtu_binary.hpp`
+ * codec machinery `.vti`/`.vtu` already use.
+ *
+ * ### Deliberately not supported (both raise, so a shim falls back to Python)
+ *
+ * Identical to `.vti`'s list: `<AppendedData>`, more than one `<Piece>` or a
+ * piece whose `Extent` is not the `WholeExtent`, lzma and any codec this
+ * build lacks. `header_type="UInt64"` is honoured on read; the writer always
+ * emits the default `UInt32`.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML StructuredGrid.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice (see the file docs).
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param zlib compress the binary blocks. Ignored when @p binary is false.
+ * @throws WriteError when @p rMesh is not a dense lattice, or when zlib was
+ *         requested and this build has none.
+ */
+MESHIOPLUSPLUS_API void write_vts(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a mesh as VTK XML StructuredGrid with an explicit block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh; must be a dense lattice.
+ * @param binary base64-encode the arrays instead of writing them as text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vts`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML StructuredGrid file.
+ * @param rPath the input path.
+ * @param rOpts selective-read options; `mPointsOnly` and `mDataArrays` apply.
+ * @return a mesh with one `hexahedron` block in `detail/grid_lattice.hpp`'s
+ *         index-formula numbering, or a point-only mesh when the extent has
+ *         no cells.
+ * @throws ReadError on a construct the C++ reader declines (see the file docs).
+ */
+MESHIOPLUSPLUS_API Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML StructuredGrid file without decoding its arrays.
+ *
+ * `WholeExtent` gives both the point and the cell count without decoding
+ * `<Points>` or any data array; unlike `.vti`, the bounding box is NOT free
+ * (points are explicit and would have to be decoded), so it is not reported.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vts_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vts.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/vtu.hpp =====
 /**
  * @file vtu.hpp
@@ -17062,7 +17614,7 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
  * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
  * the same plane into one larger polygon, rather than leaving the edge
  * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see the roadmap.
+ * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §5.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
@@ -21858,6 +22410,21 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
 // --------------------------------------------------------------------------
 
 /**
+ * @brief Whether @p rFormat's reader can return more than one step at all.
+ *
+ * Consulted BEFORE `registry_read_metadata`, which for a format with no native
+ * metadata reader costs a full read -- so this is what keeps the step probe
+ * free for every format that cannot carry time. Same shape and same
+ * anti-drift discipline as `sequence_write_supports_time`: a small owned set,
+ * cross-checked by a gtest (`SequenceCapability.ReadSupportsTimeImpliesAMetadataReader`)
+ * asserting that every format this returns true for has an entry in
+ * `registry_metadata_readers()` -- a later format joining the `||` chain with
+ * no metadata reader behind it turns CI red naming itself, the read-side twin
+ * of `WriteSupportsTimeAgreesWithReality`.
+ */
+MESHIOPLUSPLUS_API bool seq_format_may_have_steps(const std::string& rFormat);
+
+/**
  * @brief How many time steps @p rPath carries.
  *
  * Derived from the registry rather than a hardcoded per-format table:
@@ -21866,11 +22433,8 @@ MESHIOPLUSPLUS_API bool sequence_pattern_has_token(const std::string& rPath);
  * metadata reader does not fill `mTimeValues` therefore reports 1, which is the
  * truthful answer for every format that cannot express time.
  *
- * Today that means XDMF and Exodus report real counts. MED honours
- * `ReadOptions::mTimeStep` but has no metadata reader, so a multi-step `.med`
- * reports 1; that is a recorded gap in MED's metadata support and not a special
- * case here -- the moment `read_med_metadata` fills `mTimeValues`, MED fan-out
- * starts working with no change to this file.
+ * Gated on `seq_format_may_have_steps` first, exactly as that function's own
+ * doc describes.
  *
  * Never throws for an unreadable file: an unreadable path reports 1 and the
  * failure surfaces from the actual read, with its own diagnostics.
@@ -49351,24 +49915,82 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
     }
 }
 
-Mesh read_cgns(const std::string& rPath) {
-#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
-    // With cgnslib built, IT is the reader: the input is not ours, and the MLL
-    // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
-    // container, links, multiple bases, and NGON_n/NFACE_n polyhedral sections.
-    //
-    // The pre-v9.8.0 legacy layout has no ADF node attributes at all, so the
-    // MLL rejects it; that ONE case falls through to the hand-rolled path
-    // below. This is a narrow, specific fallback and not a blanket catch: a
-    // genuine MLL error still surfaces, or a corrupt file would be silently
-    // re-read by a reader that cannot diagnose it either.
-    try {
-        return read_cgns_mll(rPath);
-    } catch (const ReadError&) {
-        // fall through to the structural probe, which either reads the legacy
-        // layout or reports its own (more specific) error
+namespace {
+
+/// The name of `loc`'s first child whose `label` attribute is `rLabel`, or
+/// `false` if none has it -- the same "found by label, never by name"
+/// discipline every other structural lookup in this file uses (a
+/// `BaseIterativeData_t`/`ZoneIterativeData_t` node's own name is arbitrary;
+/// cgnslib itself writes `TimeIterValues`/`ZoneIterativeData` by convention,
+/// not by requirement).
+bool cgns_find_child_by_label(hid_t loc, const std::string& rLabel, std::string& rName) {
+    for (const std::string& child : h5::group_links(loc)) {
+        if (cgns_is_reserved_name(child))
+            continue;
+        h5::Hid g = h5::open_group(loc, child);
+        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == rLabel) {
+            rName = child;
+            return true;
+        }
     }
-#endif
+    return false;
+}
+
+/// A zone's transient step data, read from its base's `BaseIterativeData_t`
+/// and its own `ZoneIterativeData_t` -- both optional, and empty when absent.
+struct CgnsIterativeData {
+    std::vector<double> mTimeValues;               ///< BaseIterativeData_t/TimeValues.
+    std::vector<std::string> mFlowSolutionPointers;  ///< ZoneIterativeData_t/FlowSolutionPointers,
+                                                     ///< one FlowSolution_t name per step.
+};
+
+CgnsIterativeData cgns_read_iterative_data(hid_t base, hid_t zone) {
+    CgnsIterativeData out;
+
+    std::string biter_name;
+    if (cgns_find_child_by_label(base, "BaseIterativeData_t", biter_name)) {
+        h5::Hid biter = h5::open_group(base, biter_name);
+        if (h5::exists(biter, "TimeValues")) {
+            h5::Hid tv = h5::open_group(biter, "TimeValues");
+            if (h5::exists(tv, " data")) {
+                NDArray raw = h5::read_dataset(tv, " data");
+                out.mTimeValues.reserve(raw.Size());
+                for (std::size_t i = 0; i < raw.Size(); ++i)
+                    out.mTimeValues.push_back(detail::read_double(raw, i));
+            }
+        }
+    }
+
+    std::string ziter_name;
+    if (cgns_find_child_by_label(zone, "ZoneIterativeData_t", ziter_name)) {
+        h5::Hid ziter = h5::open_group(zone, ziter_name);
+        if (h5::exists(ziter, "FlowSolutionPointers")) {
+            h5::Hid fp = h5::open_group(ziter, "FlowSolutionPointers");
+            if (h5::exists(fp, " data")) {
+                // A CGNS `Character` DataArray_t of ADF/Fortran dims {32, N}
+                // -- the HDF5 mapping stores it row-major as (N, 32), one
+                // fixed-width, space-padded name per row (see cg_array_write's
+                // own ADFH.c: dims are reversed crossing into HDF5).
+                NDArray raw = h5::read_dataset(fp, " data");
+                constexpr std::size_t kWidth = 32;
+                const std::size_t count = raw.Size() / kWidth;
+                out.mFlowSolutionPointers.reserve(count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    std::string s(kWidth, '\0');
+                    for (std::size_t c = 0; c < kWidth; ++c)
+                        s[c] = static_cast<char>(detail::read_int(raw, i * kWidth + c));
+                    while (!s.empty() && (s.back() == '\0' || s.back() == ' '))
+                        s.pop_back();
+                    out.mFlowSolutionPointers.push_back(std::move(s));
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -49684,13 +50306,43 @@ Mesh read_cgns(const std::string& rPath) {
             for (std::size_t c : zone_block_cells)
                 zone_total_cells += c;
 
-            for (const std::string& child : h5::group_links(zone)) {
-                if (cgns_is_reserved_name(child))
-                    continue;
+            const CgnsIterativeData iter = cgns_read_iterative_data(base, zone);
+
+            // With iterative data, exactly one FlowSolution_t is read -- the
+            // one BaseIterativeData_t/ZoneIterativeData_t name for the
+            // resolved step, not every FlowSolution_t child. Without it, every
+            // FlowSolution_t child is read (today's behaviour), tracking which
+            // one last wrote each array name so a collision is a warning
+            // rather than a silent overwrite.
+            std::vector<std::string> targets;
+            if (!iter.mFlowSolutionPointers.empty()) {
+                const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
+                const std::string& target = iter.mFlowSolutionPointers[step];
+                if (!h5::exists(zone, target))
+                    throw ReadError(detail::format_compat(
+                        "CGNS: ZoneIterativeData_t/FlowSolutionPointers names '{}' for step {}, "
+                        "which zone '{}' has no child with",
+                        target, step, zname));
+                targets.push_back(target);
+            } else {
+                for (const std::string& child : h5::group_links(zone)) {
+                    if (cgns_is_reserved_name(child))
+                        continue;
+                    h5::Hid sol = h5::open_group(zone, child);
+                    if (h5::has_attr(sol, "label") &&
+                        h5::read_attr_string(sol, "label") == "FlowSolution_t")
+                        targets.push_back(child);
+                }
+            }
+
+            std::unordered_map<std::string, std::string> point_array_origin, cell_array_origin;
+            for (const std::string& child : targets) {
                 h5::Hid sol = h5::open_group(zone, child);
                 if (!(h5::has_attr(sol, "label") &&
                       h5::read_attr_string(sol, "label") == "FlowSolution_t"))
-                    continue;
+                    throw ReadError(detail::format_compat(
+                        "CGNS: '{}' named by FlowSolutionPointers is not a FlowSolution_t node",
+                        child));
 
                 std::string location = "Vertex";
                 if (h5::exists(sol, "GridLocation")) {
@@ -49707,10 +50359,25 @@ Mesh read_cgns(const std::string& rPath) {
                 }
 
                 if (location == "Vertex") {
-                    for (auto& [name, arr] : cgns_read_solution(sol, child, n_zone_points))
+                    for (auto& [name, arr] : cgns_read_solution(sol, child, n_zone_points)) {
+                        auto [it, inserted] = point_array_origin.emplace(name, child);
+                        if (!inserted && it->second != child)
+                            log::warn(
+                                "CGNS: point array '{}' is written by both FlowSolution '{}' and "
+                                "'{}'; the later one wins.",
+                                name, it->second, child);
+                        it->second = child;
                         mesh.AddPointData(name, std::move(arr));
+                    }
                 } else if (location == "CellCenter") {
                     for (auto& [name, arr] : cgns_read_solution(sol, child, zone_total_cells)) {
+                        auto [it, inserted] = cell_array_origin.emplace(name, child);
+                        if (!inserted && it->second != child)
+                            log::warn(
+                                "CGNS: cell array '{}' is written by both FlowSolution '{}' and "
+                                "'{}'; the later one wins.",
+                                name, it->second, child);
+                        it->second = child;
                         // Split the zone-wide array back across the blocks.
                         const std::size_t k = detail::cols(arr);
                         std::vector<NDArray> blocks;
@@ -49777,6 +50444,160 @@ Mesh read_cgns(const std::string& rPath) {
     return mesh;
 }
 
+MeshMetadata cgns_read_metadata_impl(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(rPath);
+
+    if (!cgns_is_spec_layout(f))
+        throw ReadError(
+            detail::format_compat("CGNS: '{}' has no CGNSBase_t node (legacy layout)", rPath));
+
+    std::string base_name;
+    for (const std::string& name : h5::group_links(f)) {
+        if (cgns_is_reserved_name(name))
+            continue;
+        h5::Hid g = h5::open_group(f, name);
+        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "CGNSBase_t") {
+            base_name = name;
+            break;
+        }
+    }
+    h5::Hid base = h5::open_group(f, base_name);
+
+    MeshMetadata meta;
+    meta.mFormat = "cgns";
+
+    bool any_zone = false;
+    for (const std::string& zname : h5::group_links(base)) {
+        if (cgns_is_reserved_name(zname))
+            continue;
+        h5::Hid zone = h5::open_group(base, zname);
+        if (!(h5::has_attr(zone, "label") && h5::read_attr_string(zone, "label") == "Zone_t"))
+            continue;
+        if (!h5::exists(zone, " data"))
+            continue;
+        // Zone_t's own payload is [NVertex, NCell, NBoundVertex] -- the SIDS
+        // dimension triple, cheap to read with no GridCoordinates/Elements_t
+        // decode at all.
+        NDArray dims = h5::read_dataset(zone, " data");
+        if (dims.Size() < 2)
+            continue;
+        any_zone = true;
+        meta.mNumPoints += static_cast<std::size_t>(detail::read_int(dims, 0));
+        const std::size_t zone_cells = static_cast<std::size_t>(detail::read_int(dims, 1));
+
+        // One CellBlockInfo per Elements_t section, from ElementRange alone
+        // (never ElementConnectivity). NGON_n/NFACE_n report a single ragged
+        // entry each -- the exact per-node-count polygon/polyhedron grouping
+        // the full reader computes needs the face data this path never reads.
+        std::size_t counted_cells = 0;
+        for (const std::string& sname : h5::group_links(zone)) {
+            if (cgns_is_reserved_name(sname))
+                continue;
+            h5::Hid s = h5::open_group(zone, sname);
+            if (!(h5::has_attr(s, "label") && h5::read_attr_string(s, "label") == "Elements_t"))
+                continue;
+            if (!h5::exists(s, " data") || !h5::exists(s, "ElementRange"))
+                continue;
+            NDArray sdata = h5::read_dataset(s, " data");
+            if (sdata.Size() < 1)
+                continue;
+            const int code = static_cast<int>(detail::read_int(sdata, 0));
+            h5::Hid rng = h5::open_group(s, "ElementRange");
+            NDArray range = h5::read_dataset(rng, " data");
+            if (range.Size() < 2)
+                continue;
+            const std::int64_t first = detail::read_int(range, 0);
+            const std::int64_t last = detail::read_int(range, 1);
+            if (last < first)
+                continue;
+            const std::size_t nc = static_cast<std::size_t>(last - first + 1);
+
+            CellBlockInfo block;
+            block.mNumCells = nc;
+            if (code == kCgnsNgon) {
+                block.mType = "polygon";
+                block.mRagged = true;
+            } else if (code == kCgnsNface) {
+                block.mType = "polyhedron";
+                block.mRagged = true;
+            } else {
+                const auto& code_map = cgns_code_to_meshio();
+                auto tit = code_map.find(code);
+                block.mType = tit != code_map.end() ? tit->second : "unknown";
+                if (tit != code_map.end())
+                    block.mNodesPerCell = static_cast<std::size_t>(
+                        cell_type_num_nodes(cell_type_from_name(tit->second)));
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+            counted_cells += nc;
+        }
+        // A face-based file's NGON_n is the shared face pool, not cells in
+        // their own right when an NFACE_n references it -- exactly which ones
+        // are shared needs the face data this path does not read, so the
+        // block-derived total can legitimately exceed `zone_cells`; that is
+        // not an error here, only a looser bound than the full reader's.
+        (void)zone_cells;
+        (void)counted_cells;
+    }
+    if (!any_zone)
+        throw ReadError(
+            detail::format_compat("CGNS: base '{}' has no Unstructured zones", base_name));
+
+    std::string biter_name;
+    if (cgns_find_child_by_label(base, "BaseIterativeData_t", biter_name)) {
+        h5::Hid biter = h5::open_group(base, biter_name);
+        if (h5::exists(biter, "TimeValues")) {
+            h5::Hid tv = h5::open_group(biter, "TimeValues");
+            if (h5::exists(tv, " data")) {
+                NDArray raw = h5::read_dataset(tv, " data");
+                meta.mTimeValues.reserve(raw.Size());
+                for (std::size_t i = 0; i < raw.Size(); ++i)
+                    meta.mTimeValues.push_back(detail::read_double(raw, i));
+            }
+        }
+    }
+
+    return meta;
+}
+
+}  // namespace
+
+Mesh read_cgns(const std::string& rPath) { return read_cgns(rPath, ReadOptions{}); }
+
+Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    // With cgnslib built, IT is the reader: the input is not ours, and the MLL
+    // reaches things this raw-HDF5 path fundamentally cannot -- the ADF
+    // container, links, multiple bases, and NGON_n/NFACE_n polyhedral sections.
+    //
+    // The pre-v9.8.0 legacy layout has no ADF node attributes at all, so the
+    // MLL rejects it; that ONE case falls through to the hand-rolled path
+    // below. This is a narrow, specific fallback and not a blanket catch: a
+    // genuine MLL error still surfaces, or a corrupt file would be silently
+    // re-read by a reader that cannot diagnose it either.
+    try {
+        return read_cgns_mll(rPath, rOptions);
+    } catch (const ReadError&) {
+        // fall through to the structural probe, which either reads the legacy
+        // layout or reports its own (more specific) error
+    }
+#endif
+    return cgns_read_impl(rPath, rOptions);
+}
+
+MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+    try {
+        return read_cgns_mll_metadata(rPath, rOptions);
+    } catch (const ReadError&) {
+        // as read_cgns: fall through to the structural probe for the legacy
+        // layout, or the raw path's own (more specific) error.
+    }
+#endif
+    return cgns_read_metadata_impl(rPath, rOptions);
+}
+
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
@@ -49790,6 +50611,7 @@ Mesh read_cgns(const std::string& rPath) {
 #include <cstring>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -49810,11 +50632,20 @@ bool cgns_has_cgnslib() {
 
 #ifndef MESHIOPLUSPLUS_HAS_CGNSLIB
 
-Mesh read_cgns_mll(const std::string& rPath) {
+Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     // Always present and throwing by name -- the partition_kahip_parts
     // contract. A link error would break the Python-fallback contract, and a
     // silent downgrade to the raw-HDF5 reader would answer a question the
     // caller did not ask (that reader cannot open an ADF file at all).
+    throw ReadError(detail::format_compat(
+        "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
+        "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
+        rPath));
+}
+
+MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     throw ReadError(detail::format_compat(
         "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
         "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
@@ -50038,9 +50869,94 @@ void cgns_mll_group_components(const std::vector<std::string>& rNames,
     }
 }
 
-/// Read every FlowSolution_t into point_data / cell_data.
+/// The Base's transient step data: `BaseIterativeData_t/TimeValues` and
+/// `ZoneIterativeData_t/FlowSolutionPointers` (one FlowSolution_t name per
+/// step), both empty when the file carries neither.
+struct CgnsMllIterativeData {
+    std::vector<double> mTimeValues;
+    std::vector<std::string> mFlowSolutionPointers;
+};
+
+/// Read one named `DataArray_t` under whatever node `cg_goto` last selected,
+/// as `RealDouble` -- used for `TimeValues`, whose file dtype is always real.
+bool cgns_mll_read_double_array(const std::string& rWantedName, std::vector<double>& rOut) {
+    int narrays = 0;
+    if (cg_narrays(&narrays) != CG_OK)
+        return false;
+    for (int A = 1; A <= narrays; ++A) {
+        char name[33] = {0};
+        CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+        int ndim = 0;
+        cgsize_t dims[12] = {0};
+        if (cg_array_info(A, name, &dt, &ndim, dims) != CG_OK)
+            continue;
+        if (rWantedName != name)
+            continue;
+        cgsize_t total = 1;
+        for (int d = 0; d < ndim; ++d)
+            total *= dims[d];
+        rOut.assign(static_cast<std::size_t>(total), 0.0);
+        return cg_array_read_as(A, CGNS_ENUMV(RealDouble), rOut.data()) == CG_OK;
+    }
+    return false;
+}
+
+CgnsMllIterativeData cgns_mll_read_iterative_data(int fn, int B, int Z) {
+    CgnsMllIterativeData out;
+
+    char bitername[33] = {0};
+    int nsteps = 0;
+    if (cg_biter_read(fn, B, bitername, &nsteps) == CG_OK && nsteps > 0 &&
+        cg_goto(fn, B, "BaseIterativeData_t", 1, "end") == CG_OK) {
+        cgns_mll_read_double_array("TimeValues", out.mTimeValues);
+    }
+
+    char zitername[33] = {0};
+    if (cg_ziter_read(fn, B, Z, zitername) == CG_OK &&
+        cg_goto(fn, B, "Zone_t", Z, "ZoneIterativeData_t", 1, "end") == CG_OK) {
+        int narrays = 0;
+        if (cg_narrays(&narrays) == CG_OK) {
+            for (int A = 1; A <= narrays; ++A) {
+                char name[33] = {0};
+                CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+                int ndim = 0;
+                cgsize_t dims[12] = {0};
+                if (cg_array_info(A, name, &dt, &ndim, dims) != CG_OK)
+                    continue;
+                if (std::string(name) != "FlowSolutionPointers")
+                    continue;
+                // ADF/Fortran dims {32, N} -- 32-char names, N steps; the MLL
+                // fills the buffer in that same order (name-width fastest),
+                // so N fixed-width, space-padded strings back to back.
+                constexpr std::size_t kWidth = 32;
+                cgsize_t total = 1;
+                for (int d = 0; d < ndim; ++d)
+                    total *= dims[d];
+                std::vector<char> buf(static_cast<std::size_t>(total), ' ');
+                if (cg_array_read_as(A, CGNS_ENUMV(Character), buf.data()) != CG_OK)
+                    continue;
+                const std::size_t count = buf.size() / kWidth;
+                out.mFlowSolutionPointers.reserve(count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    std::string s(buf.data() + i * kWidth, kWidth);
+                    while (!s.empty() && (s.back() == ' ' || s.back() == '\0'))
+                        s.pop_back();
+                    out.mFlowSolutionPointers.push_back(std::move(s));
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+/// Read FlowSolution_t node(s) into point_data / cell_data. With `pTarget`
+/// non-null, only the ONE solution named by it is read (the transient-step
+/// case); otherwise every FlowSolution_t is read (today's behaviour),
+/// warning when two of them write the same array name instead of silently
+/// letting the later one win.
 void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& rMesh,
-                             const std::string& rPath) {
+                             const std::string& rPath, const std::string* pTarget) {
     int nsols = 0;
     if (cg_nsols(fn, B, Z, &nsols) != CG_OK || nsols < 1)
         return;
@@ -50056,11 +50972,18 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
     for (std::size_t n : block_cells)
         total_cells += n;
 
+    std::unordered_map<std::string, std::string> point_array_origin, cell_array_origin;
+    bool found_target = pTarget == nullptr;
     for (int S = 1; S <= nsols; ++S) {
         char sol_name[33] = {0};
         CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
         if (cg_sol_info(fn, B, Z, S, sol_name, &loc) != CG_OK)
             cgns_mll_fail("cg_sol_info failed", rPath);
+        if (pTarget != nullptr) {
+            if (*pTarget != sol_name)
+                continue;
+            found_target = true;
+        }
         if (loc != CGNS_ENUMV(Vertex) && loc != CGNS_ENUMV(CellCenter)) {
             log::warn(
                 "CGNS (cgnslib): FlowSolution '{}' has GridLocation {} (only Vertex and "
@@ -50105,8 +51028,22 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                     dst[r * ncomp + k] = buf[r];
             }
             if (vertex) {
+                auto [it, inserted] = point_array_origin.emplace(bases[g], sol_name);
+                if (!inserted && it->second != sol_name)
+                    log::warn(
+                        "CGNS (cgnslib): point array '{}' is written by both FlowSolution '{}' "
+                        "and '{}'; the later one wins.",
+                        bases[g], it->second, sol_name);
+                it->second = sol_name;
                 rMesh.AddPointData(bases[g], std::move(arr));
             } else {
+                auto [it, inserted] = cell_array_origin.emplace(bases[g], sol_name);
+                if (!inserted && it->second != sol_name)
+                    log::warn(
+                        "CGNS (cgnslib): cell array '{}' is written by both FlowSolution '{}' "
+                        "and '{}'; the later one wins.",
+                        bases[g], it->second, sol_name);
+                it->second = sol_name;
                 std::vector<NDArray> blocks;
                 std::size_t at = 0;
                 for (std::size_t n : block_cells) {
@@ -50120,12 +51057,21 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                 rMesh.AddCellData(bases[g], std::move(blocks));
             }
         }
+        if (pTarget != nullptr)
+            break;
     }
+    if (pTarget != nullptr && !found_target)
+        cgns_mll_fail(
+            "ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
+                "', which no FlowSolution_t in this zone has",
+            rPath);
 }
 
 }  // namespace
 
-Mesh read_cgns_mll(const std::string& rPath) {
+Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     CgnsFile file(rPath);
     const int fn = file.Fn();
 
@@ -50327,9 +51273,84 @@ Mesh read_cgns_mll(const std::string& rPath) {
     // run starting at 0 -- exactly the convention cgns.cpp writes and
     // documents. Anything else (a lone `foo_7`, a gap) stays a scalar under its
     // literal name; guessing would invent components.
-    cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath);
+    //
+    // With BaseIterativeData_t/ZoneIterativeData_t present, only the ONE
+    // FlowSolution_t the resolved step's FlowSolutionPointers names is read;
+    // without it, every FlowSolution_t is read, as before.
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    if (!iter.mFlowSolutionPointers.empty()) {
+        const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
+        const std::string target = iter.mFlowSolutionPointers[step];
+        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
+    } else {
+        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+    }
 
     return mesh;
+}
+
+MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    CgnsFile file(rPath);
+    const int fn = file.Fn();
+
+    int nbases = 0;
+    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
+        cgns_mll_fail("no CGNSBase_t found", rPath);
+    const int B = 1;
+
+    int nzones = 0;
+    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
+        cgns_mll_fail("no Zone_t found", rPath);
+    const int Z = 1;
+
+    char zone_name[33] = {0};
+    cgsize_t zsize[9] = {0};
+    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+        cgns_mll_fail("cg_zone_read failed", rPath);
+
+    MeshMetadata meta;
+    meta.mFormat = "cgns";
+    meta.mNumPoints = static_cast<std::size_t>(zsize[0]);
+
+    int nsections = 0;
+    if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
+        for (int S = 1; S <= nsections; ++S) {
+            char name[33] = {0};
+            CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
+            cgsize_t start = 0, end = 0;
+            int nbndry = 0, parent_flag = 0;
+            if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry, &parent_flag) !=
+                CG_OK)
+                continue;
+            if (end < start)
+                continue;
+            CellBlockInfo block;
+            block.mNumCells = static_cast<std::size_t>(end - start + 1);
+            if (type == CGNS_ENUMV(NGON_n)) {
+                block.mType = "polygon";
+                block.mRagged = true;
+            } else if (type == CGNS_ENUMV(NFACE_n)) {
+                block.mType = "polyhedron";
+                block.mRagged = true;
+            } else if (type == CGNS_ENUMV(MIXED)) {
+                continue;  // structurally unsupported; the full reader names it
+            } else {
+                const std::string meshio = cgns_mll_meshio_name(type);
+                if (meshio.empty())
+                    continue;
+                block.mType = meshio;
+                int npc = 0;
+                cg_npe(type, &npc);
+                block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+        }
+    }
+
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    meta.mTimeValues = iter.mTimeValues;
+
+    return meta;
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_CGNSLIB
@@ -50770,6 +51791,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -51101,40 +52123,36 @@ private:
 // .case parsing
 // ---------------------------------------------------------------------------
 
-// Parse the .case file and return the resolved geometry file path.
-std::string ensight_parse_case(const std::string& rCasePath) {
-    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
-    const std::string data(source.View());  // small text file; parsed via istringstream
+/// One `VARIABLE` section entry -- `scalar per node:`/`vector per node:`/
+/// `scalar per element:`/`vector per element:` are the four kinds this
+/// reader understands; anything else (complex/tensor variables, `per
+/// measured node`, constants) is recorded but never read, matching the
+/// roadmap's variable-reading scope.
+struct EnsightVariableEntry {
+    std::string mKind;
+    std::string mName;
+    std::string mFilePattern;  // relative to the case file's directory; may contain '*'
+};
 
-    std::string section;
-    std::string format_type;
-    std::string model_value;
-    std::istringstream stream(data);
-    std::string raw;
-    while (std::getline(stream, raw)) {
-        std::string line = ensight_trim(raw);
-        if (line.empty() || line[0] == '#')
-            continue;
-        if (line == "FORMAT" || line == "GEOMETRY" || line == "VARIABLE" || line == "TIME" ||
-            line == "FILE" || line == "MATERIAL" || line == "SCRIPTS") {
-            section = line;
-            continue;
-        }
-        if (section == "FORMAT" && ensight_starts_with(line, "type:"))
-            format_type = ensight_trim(line.substr(5));
-        else if (section == "GEOMETRY" && ensight_starts_with(line, "model:"))
-            model_value = ensight_trim(line.substr(6));
-    }
+/// A `.case` file's GEOMETRY/TIME/VARIABLE sections, resolved against
+/// `rCasePath`'s directory. `mTimeValues` is the *first* `time set:` found
+/// (real-world Gold case files overwhelmingly have exactly one); a file with
+/// several is read against that one, which is a documented narrowing, not a
+/// silent wrong answer -- every variable's `[ts]` is otherwise ignored.
+struct EnsightCaseInfo {
+    std::string mGeoPath;
+    bool mGeoIsWildcard = false;
+    std::vector<double> mTimeValues;
+    long mFileNameStart = 0;
+    long mFileNameIncrement = 1;
+    std::vector<EnsightVariableEntry> mVariables;
+};
 
-    if (format_type.find("ensight gold") == std::string::npos)
-        throw ReadError("EnSight: case file is not 'type: ensight gold' (got '" + format_type +
-                        "')");
-    if (model_value.empty())
-        throw ReadError("EnSight: case file has no GEOMETRY 'model:' entry");
-
-    // model: [ts] [fs] filename [change_coords_only] — drop leading integer
-    // timeset/fileset tokens, take the first remaining token as the filename.
-    std::istringstream toks(model_value);
+/// Splits a whitespace-separated record and drops its leading run of pure
+/// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
+/// lines both use to make the leading timeset/fileset optional.
+std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
+    std::istringstream toks(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -51144,16 +52162,138 @@ std::string ensight_parse_case(const std::string& rCasePath) {
         char* end = nullptr;
         (void)std::strtoll(tokens[first].c_str(), &end, 10);
         if (end == tokens[first].c_str() || *end != '\0')
-            break;  // not a pure integer
+            break;
         ++first;
     }
-    if (first >= tokens.size())
-        throw ReadError("EnSight: malformed 'model:' line in case file");
-    const std::string& filename = tokens[first];
-    if (filename.find('*') != std::string::npos)
-        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+    tokens.erase(tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(first));
+    return tokens;
+}
 
-    return ensight_dirname(rCasePath) + filename;
+/// Parse the .case file: FORMAT/GEOMETRY (as before), plus TIME and
+/// VARIABLE, needed for `ReadOptions::mTimeStep` and variable-file reading.
+EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
+    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
+    const std::string data(source.View());  // small text file; parsed via istringstream
+
+    std::string section;
+    std::string format_type;
+    std::string model_value;
+    EnsightCaseInfo info;
+    bool in_time_values = false;
+    bool have_time_set = false;
+    long num_steps = -1;
+    std::istringstream stream(data);
+    std::string raw;
+    while (std::getline(stream, raw)) {
+        std::string line = ensight_trim(raw);
+        if (line.empty() || line[0] == '#') {
+            in_time_values = false;
+            continue;
+        }
+        if (line == "FORMAT" || line == "GEOMETRY" || line == "VARIABLE" || line == "TIME" ||
+            line == "FILE" || line == "MATERIAL" || line == "SCRIPTS") {
+            section = line;
+            in_time_values = false;
+            continue;
+        }
+        if (section == "FORMAT" && ensight_starts_with(line, "type:")) {
+            format_type = ensight_trim(line.substr(5));
+        } else if (section == "GEOMETRY" && ensight_starts_with(line, "model:")) {
+            model_value = ensight_trim(line.substr(6));
+        } else if (section == "VARIABLE") {
+            static const char* kKinds[] = {"scalar per node:", "vector per node:",
+                                           "scalar per element:", "vector per element:"};
+            for (const char* kind : kKinds) {
+                if (!ensight_starts_with(line, kind))
+                    continue;
+                const std::string kind_str(kind, std::strlen(kind) - 1);  // drop trailing ':'
+                const std::vector<std::string> toks =
+                    ensight_tokens_after_leading_ints(line.substr(std::strlen(kind)));
+                if (toks.size() < 2)
+                    throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
+                EnsightVariableEntry entry;
+                entry.mFilePattern = toks.back();
+                std::string joined;
+                for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                    joined += (i ? " " : "") + toks[i];
+                entry.mName = joined;
+                entry.mKind = kind_str;
+                info.mVariables.push_back(std::move(entry));
+                break;
+            }
+        } else if (section == "TIME") {
+            if (ensight_starts_with(line, "time set:")) {
+                // A second time set: only the first is honoured (see
+                // EnsightCaseInfo's own doc comment) -- clearing `section`
+                // stops every TIME branch below from matching until the next
+                // recognized section keyword resets it.
+                if (have_time_set) {
+                    section.clear();
+                    continue;
+                }
+                have_time_set = true;
+            } else if (ensight_starts_with(line, "number of steps:")) {
+                num_steps =
+                    std::strtol(line.c_str() + std::strlen("number of steps:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "filename start number:")) {
+                info.mFileNameStart = std::strtol(
+                    line.c_str() + std::strlen("filename start number:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "filename increment:")) {
+                info.mFileNameIncrement =
+                    std::strtol(line.c_str() + std::strlen("filename increment:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "time values:")) {
+                in_time_values = true;
+                const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
+                std::istringstream iss(rest);
+                double v;
+                while (iss >> v)
+                    info.mTimeValues.push_back(v);
+            } else if (in_time_values) {
+                std::istringstream iss(line);
+                double v;
+                while (iss >> v)
+                    info.mTimeValues.push_back(v);
+                if (num_steps >= 0 &&
+                    info.mTimeValues.size() >= static_cast<std::size_t>(num_steps))
+                    in_time_values = false;
+            }
+        }
+    }
+
+    if (format_type.find("ensight gold") == std::string::npos)
+        throw ReadError("EnSight: case file is not 'type: ensight gold' (got '" + format_type +
+                        "')");
+    if (model_value.empty())
+        throw ReadError("EnSight: case file has no GEOMETRY 'model:' entry");
+
+    const std::vector<std::string> tokens = ensight_tokens_after_leading_ints(model_value);
+    if (tokens.empty())
+        throw ReadError("EnSight: malformed 'model:' line in case file");
+    const std::string& filename = tokens.front();
+    info.mGeoIsWildcard = filename.find('*') != std::string::npos;
+    if (info.mGeoIsWildcard)
+        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+    info.mGeoPath = ensight_dirname(rCasePath) + filename;
+
+    return info;
+}
+
+/// Replaces `filename`'s run of `*` characters with `Number`, zero-padded to
+/// the run's own width -- the EnSight Gold filename-templating convention
+/// TIME's `filename start number:`/`filename increment:` resolve into.
+std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
+    const std::size_t star = rPattern.find('*');
+    if (star == std::string::npos)
+        return rPattern;
+    std::size_t width = 0;
+    while (star + width < rPattern.size() && rPattern[star + width] == '*')
+        ++width;
+    std::ostringstream num;
+    num << std::setfill('0') << std::setw(static_cast<int>(width)) << Number;
+    std::string digits = num.str();
+    if (digits.size() > width)
+        digits = digits.substr(digits.size() - width);  // Number overflowed the field width
+    return rPattern.substr(0, star) + digits + rPattern.substr(star + width);
 }
 
 // ---------------------------------------------------------------------------
@@ -51171,6 +52311,20 @@ struct EnsightBlock {
     std::size_t mNumCells = 0;
 };
 
+// One part's node range (for per-node variables) and its blocks' cell ranges
+// (for per-element variables, which are per-BLOCK in meshio++ but per-PART
+// per-element-type in EnSight). A variable file's own "part"/id sections and
+// "coordinates"/<element type> sections are structured identically to the
+// geometry file's, in the same part/type order, which is what lets a
+// variable file be read against this layout with no name matching at all.
+struct EnsightPartLayout {
+    std::int64_t mPartId = 0;
+    std::size_t mPointOffset = 0, mNumPoints = 0;
+    // One entry per element-type section this part had, in file order; each
+    // names the Mesh cell-block index it landed in and how many cells.
+    std::vector<std::pair<std::size_t, std::size_t>> mBlocks;  // (block index, num cells)
+};
+
 // "given" and "ignore" both put id arrays in the file; only the presence
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
@@ -51186,7 +52340,7 @@ bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
 }
 
-Mesh ensight_parse_geo(EnsightCursor& rCur) {
+Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLayout = nullptr) {
     constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
 
     rCur.NextRecord();  // description line 1
@@ -51209,6 +52363,9 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
     std::vector<double> coords;  // xyz-interleaved, all parts concatenated
     std::vector<EnsightBlock> blocks;
     std::int64_t num_parts = 0;
+    // Point range per part, for a variable file's per-node sections; filled
+    // regardless of pLayout (cheap) and only exposed through it.
+    std::vector<std::pair<std::int64_t, std::pair<std::size_t, std::size_t>>> part_point_ranges;
 
     while (!rCur.AtEnd()) {
         std::string rec = rCur.NextRecord();
@@ -51227,6 +52384,9 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
         if (nn < 0)
             throw ReadError("EnSight: negative node count");
         const std::int64_t point_offset = static_cast<std::int64_t>(coords.size() / 3);
+        part_point_ranges.emplace_back(
+            part_id,
+            std::make_pair(static_cast<std::size_t>(point_offset), static_cast<std::size_t>(nn)));
 
         if (node_ids_in_file)
             rCur.SkipInts(static_cast<std::size_t>(nn));
@@ -51395,6 +52555,20 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
             mesh.AddPolyhedronBlock(b.mType, std::move(b.mPolyhedronCells));
     }
 
+    if (pLayout != nullptr) {
+        // Part order: first-seen, matching part_point_ranges/the file itself.
+        for (const auto& [pid, range] : part_point_ranges) {
+            EnsightPartLayout pl;
+            pl.mPartId = pid;
+            pl.mPointOffset = range.first;
+            pl.mNumPoints = range.second;
+            for (std::size_t i = 0; i < blocks.size(); ++i)
+                if (blocks[i].mPartId == pid)
+                    pl.mBlocks.emplace_back(i, blocks[i].mNumCells);
+            pLayout->push_back(std::move(pl));
+        }
+    }
+
     if (num_parts >= 2) {
         std::vector<NDArray> tags;
         tags.reserve(blocks.size());
@@ -51411,24 +52585,208 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
     return mesh;
 }
 
+// ---------------------------------------------------------------------------
+// Variable (point_data/cell_data) reading
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Reads one EnSight Gold variable file against the geometry's own
+ *        part/block layout.
+ *
+ * A variable file mirrors the geometry file's structure exactly -- the same
+ * `part`/id sequence, the same per-part `coordinates` (per-node) or
+ * element-type-keyword (per-element) sections in the same order -- but
+ * carries no counts of its own (a part's point/cell counts are only ever
+ * given once, in the geometry file) and no `node id`/`element id` header.
+ * Multi-component (vector) data is component-major (every X, then every Y,
+ * then every Z), the same convention geometry coordinates use.
+ *
+ * @param rCur cursor over the variable file (ascii or binary; the caller
+ *        selects the concrete cursor type, as `read_ensight` does for the
+ *        geometry file)
+ * @param PerNode point (`coordinates`) sections when true, element-type
+ *        sections when false
+ * @param NumComponents 1 for a scalar variable, 3 for a vector
+ * @param rLayout the geometry's own per-part layout, in file order
+ * @param TotalPoints total point count (only used when `PerNode`)
+ * @param pPointOut filled when `PerNode`; otherwise untouched
+ * @param pCellOut filled (one entry per Mesh cell block that has one) when
+ *        `!PerNode`; otherwise untouched. Must already have as many entries
+ *        as the mesh has cell blocks.
+ * @throws ReadError if the file's part/type sequence does not match the
+ *         geometry's own.
+ */
+void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t NumComponents,
+                                const std::vector<EnsightPartLayout>& rLayout,
+                                std::size_t TotalPoints, NDArray* pPointOut,
+                                std::vector<NDArray>* pCellOut) {
+    constexpr std::int64_t plausible_max = 100000000;
+    rCur.NextRecord();  // description line
+
+    NDArray point_out;
+    if (PerNode)
+        point_out = NDArray::Uninit(DType::Float64, NumComponents == 1
+                                                         ? std::vector<std::size_t>{TotalPoints}
+                                                         : std::vector<std::size_t>{TotalPoints,
+                                                                                    NumComponents});
+    double* pp = PerNode ? point_out.As<double>() : nullptr;
+
+    for (const EnsightPartLayout& part : rLayout) {
+        std::string rec = rCur.NextRecord();
+        if (!ensight_starts_with(rec, "part"))
+            throw ReadError("EnSight: expected 'part' record in variable file, got: " + rec);
+        rCur.CheckSwap(plausible_max, /*PreferSmaller=*/true);
+        const std::int64_t pid = rCur.NextInt();
+        if (pid != part.mPartId)
+            throw ReadError(
+                "EnSight: variable file's part sequence does not match the geometry's");
+
+        if (PerNode) {
+            rec = rCur.NextRecord();
+            if (!ensight_starts_with(rec, "coordinates"))
+                throw ReadError("EnSight: expected 'coordinates' record in variable file, got: " +
+                                rec);
+            std::vector<double> comp(part.mNumPoints);
+            for (std::size_t c = 0; c < NumComponents; ++c) {
+                rCur.ReadFloats(part.mNumPoints, comp.data());
+                for (std::size_t i = 0; i < part.mNumPoints; ++i)
+                    pp[(part.mPointOffset + i) * NumComponents + c] = comp[i];
+            }
+            continue;
+        }
+
+        for (const auto& [block_index, num_cells] : part.mBlocks) {
+            std::string kw = rCur.NextRecord();  // element type; not re-validated by name
+            (void)kw;
+            NDArray block(DType::Float64, NumComponents == 1
+                                              ? std::vector<std::size_t>{num_cells}
+                                              : std::vector<std::size_t>{num_cells,
+                                                                         NumComponents});
+            double* bp = block.As<double>();
+            std::vector<double> comp(num_cells);
+            for (std::size_t c = 0; c < NumComponents; ++c) {
+                rCur.ReadFloats(num_cells, comp.data());
+                for (std::size_t i = 0; i < num_cells; ++i)
+                    bp[i * NumComponents + c] = comp[i];
+            }
+            (*pCellOut)[block_index] = std::move(block);
+        }
+    }
+
+    if (PerNode)
+        *pPointOut = std::move(point_out);
+}
+
+/// Dispatches to the ascii/binary cursor, mirroring read_ensight's own
+/// geometry-file dispatch.
+void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
+                                     std::size_t NumComponents,
+                                     const std::vector<EnsightPartLayout>& rLayout,
+                                     std::size_t TotalPoints, NDArray* pPointOut,
+                                     std::vector<NDArray>* pCellOut) {
+    const detail::FileSource source = ensight_read_whole_file(rPath, "variable file");
+    const std::string_view data = source.View();
+    if (ensight_starts_with(data, "Fortran Binary"))
+        throw ReadError("EnSight: Fortran-binary variable files are not supported");
+    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+        EnsightBinaryCursor cur(data);
+        ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                                   pCellOut);
+        return;
+    }
+    EnsightAsciiCursor cur(data);
+    ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                               pCellOut);
+}
+
 }  // namespace
 
-Mesh read_ensight(const std::string& rPath) {
+Mesh read_ensight(const std::string& rPath) { return read_ensight(rPath, ReadOptions{}); }
+
+Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
+    const bool have_case = ensight_has_suffix(rPath, ".case");
+    EnsightCaseInfo case_info;
     std::string geo_path = rPath;
-    if (ensight_has_suffix(rPath, ".case"))
-        geo_path = ensight_parse_case(rPath);
+    if (have_case) {
+        case_info = ensight_parse_case(rPath);
+        geo_path = case_info.mGeoPath;
+    }
 
     // The source outlives both cursors below, which only hold views into it.
     const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
     const std::string_view data = source.View();
     if (ensight_starts_with(data, "Fortran Binary"))
         throw ReadError("EnSight: Fortran-binary geometry files are not supported");
+
+    std::vector<EnsightPartLayout> layout;
+    Mesh mesh;
     if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
         EnsightBinaryCursor cur(data);
-        return ensight_parse_geo(cur);
+        mesh = ensight_parse_geo(cur, &layout);
+    } else {
+        EnsightAsciiCursor cur(data);
+        mesh = ensight_parse_geo(cur, &layout);
     }
-    EnsightAsciiCursor cur(data);
-    return ensight_parse_geo(cur);
+
+    if (!have_case || case_info.mVariables.empty() || !rOptions.WantsAnyData())
+        return mesh;
+
+    // Which step's variable files to read. A file with no TIME section (the
+    // static-geometry-plus-static-variables case) has exactly one step; a
+    // non-default mTimeStep against it is a real request this reader cannot
+    // honour, so it is refused rather than silently answering step 0.
+    std::size_t step = 0;
+    if (!case_info.mTimeValues.empty()) {
+        step = rOptions.ResolveTimeStep(case_info.mTimeValues.size());
+    } else if (rOptions.mTimeStep != 0) {
+        throw ReadError(
+            "EnSight: mTimeStep requested but the case file has no TIME section to resolve it "
+            "against");
+    }
+    const long file_number =
+        case_info.mFileNameStart + static_cast<long>(step) * case_info.mFileNameIncrement;
+
+    const std::string dir = ensight_dirname(rPath);
+    for (const EnsightVariableEntry& var : case_info.mVariables) {
+        if (!rOptions.WantsArray(var.mName))
+            continue;
+        const bool per_node = var.mKind.find("per node") != std::string::npos;
+        const bool per_element = var.mKind.find("per element") != std::string::npos;
+        if (!per_node && !per_element)
+            continue;  // a kind this reader does not (yet) understand
+        const std::size_t ncomp = ensight_starts_with(var.mKind, "vector") ? 3 : 1;
+        const std::string resolved = var.mFilePattern.find('*') != std::string::npos
+                                         ? ensight_resolve_wildcard(var.mFilePattern, file_number)
+                                         : var.mFilePattern;
+        const std::string var_path = dir + resolved;
+
+        if (per_node) {
+            NDArray arr;
+            ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
+                                            nullptr);
+            mesh.AddPointData(var.mName, std::move(arr));
+        } else {
+            std::vector<NDArray> blocks(mesh.NumCellBlocks());
+            ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            mesh.AddCellData(var.mName, std::move(blocks));
+        }
+    }
+
+    return mesh;
+}
+
+MeshMetadata read_ensight_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    if (!ensight_has_suffix(rPath, ".case"))
+        throw ReadError("EnSight: metadata needs a .case file (a bare geometry file has no TIME)");
+    const EnsightCaseInfo info = ensight_parse_case(rPath);
+
+    // No native header-only shape scan (unlike CGNS/Gmsh 4.1): the same
+    // full-read-plus-override shape Exodus's own metadata has.
+    MeshMetadata meta = metadata_from_mesh(read_ensight(rPath, ReadOptions{}));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "ensight";
+    meta.mTimeValues = info.mTimeValues;
+    return meta;
 }
 
 namespace {
@@ -57207,7 +58565,103 @@ void gmsh_attach_regions(Mesh& rMesh) {
  * another format.
  * @return `(dim, tag, name)` rows, sorted — the order the writer emits.
  */
-std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(const Mesh& rMesh) {
+/**
+ * @brief A `Cell` region's topological dimension, inferred from its member
+ * cells when the region itself does not say (`mDim == -1` -- true of every
+ * `Cell` region Abaqus/MED/MDPA produce, none of which have a gmsh-style
+ * per-dimension physical-group concept). Looks at the region's first entry
+ * only: a region is overwhelmingly homogeneous in practice (one element
+ * family per named group), and gmsh itself has no mixed-dimension group.
+ * @return the inferred dimension, or -1 if it cannot be determined.
+ */
+int gmsh_infer_region_dim(const Mesh& rMesh, const Region& r) {
+    if (r.mDim >= 0)
+        return r.mDim;
+    if (r.mKind != RegionKind::Cell || r.NumEntries() == 0)
+        return -1;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const auto [block, row] = detail::global_to_block_row(bases, r.Entries()[0]);
+    (void)row;
+    if (block == static_cast<std::size_t>(-1))
+        return -1;
+    const std::string type(rMesh.Cells(block).Type());
+    int dim = cell_type_dimension(cell_type_from_name(type));
+    if (dim < 0) {
+        auto it = topological_dimension().find(type);
+        dim = it != topological_dimension().end() ? it->second : -1;
+    }
+    return dim;
+}
+
+/// One `Cell` region's resolved (dim, tag) pair for gmsh output -- its own
+/// when it has one, else a freshly allocated tag. `mDim`/`mTag` are -1 for a
+/// non-`Cell` region or one gmsh cannot place (dimension unresolvable).
+struct GmshRegionTag {
+    int mDim = -1;
+    std::int64_t mTag = -1;
+};
+
+/**
+ * @brief Resolve every region's gmsh (dim, tag) pair, allocating fresh tags
+ * for `Cell` regions that have none (v11.5.0, roadmap §1 tier B3).
+ *
+ * A tag already on the region (from gmsh itself, `mTag >= 0`) or already
+ * claimed by `field_data` is kept; every *other* `Cell` region is assigned
+ * `max(existing tags of that dimension) + 1`, counting upward, one counter
+ * per dimension so a surface group and a volume group can both start small
+ * — gmsh disambiguates by the `(dim, tag)` pair, never `tag` alone.
+ * Allocation is deterministic in region order, so two engines (this one and
+ * the pure-Python writer) applying the same rule to the same mesh agree.
+ * @return one entry per `rMesh.NumRegions()`, `{-1, -1}` for anything not a
+ *         `Cell` region or with no resolvable dimension.
+ */
+std::vector<GmshRegionTag> gmsh_resolve_region_tags(const Mesh& rMesh) {
+    std::vector<GmshRegionTag> out(rMesh.NumRegions());
+    std::map<int, std::int64_t> max_tag_by_dim;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& d = rMesh.FieldData(name);
+        if (d.Size() < 2)
+            continue;
+        const std::int64_t tag = detail::read_int(d, 0);
+        const int dim = static_cast<int>(detail::read_int(d, 1));
+        auto& m = max_tag_by_dim[dim];
+        m = std::max(m, tag);
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag < 0)
+            continue;
+        const int dim = gmsh_infer_region_dim(rMesh, r);
+        out[i] = {dim, r.mTag};
+        auto& m = max_tag_by_dim[dim];
+        m = std::max(m, r.mTag);
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag >= 0)
+            continue;
+        const int dim = gmsh_infer_region_dim(rMesh, r);
+        if (dim < 0)
+            continue;
+        std::int64_t& counter = max_tag_by_dim[dim];
+        ++counter;
+        out[i] = {dim, counter};
+    }
+    return out;
+}
+
+/**
+ * @brief The `$PhysicalNames` rows to write: `field_data` first, then any
+ * region that describes a group `field_data` does not.
+ *
+ * `field_data` winning is what keeps output byte-identical for every mesh that
+ * already carried gmsh's own metadata; regions only add groups that came from
+ * another format. A `Cell` region with no gmsh tag of its own gets one from
+ * @p rTags (v11.5.0, roadmap §1 tier B3) instead of being dropped.
+ * @return `(dim, tag, name)` rows, sorted — the order the writer emits.
+ */
+std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(
+    const Mesh& rMesh, const std::vector<GmshRegionTag>& rTags) {
     std::vector<std::tuple<long long, long long, std::string>> rows;
     std::set<std::string> seen;
     for (const auto& name : rMesh.FieldDataNames()) {
@@ -57219,9 +58673,9 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(co
     }
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
         const Region& r = rMesh.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mTag < 0 || seen.count(r.mName))
+        if (r.mKind != RegionKind::Cell || rTags[i].mTag < 0 || seen.count(r.mName))
             continue;
-        rows.emplace_back(r.mDim, r.mTag, r.mName);
+        rows.emplace_back(rTags[i].mDim, rTags[i].mTag, r.mName);
         seen.insert(r.mName);
     }
     std::sort(rows.begin(), rows.end());
@@ -57229,36 +58683,64 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(co
 }
 
 /**
- * @brief Per-block `gmsh:physical` tag arrays synthesized from `Cell` regions.
+ * @brief Per-cell gmsh physical tag, block-major, synthesized from `Cell`
+ * regions and their resolved (dim, tag) pairs (see #gmsh_resolve_region_tags).
  *
  * Only used when the mesh carries no `gmsh:physical` cell_data of its own — a
  * mesh read from another format. Cells in no tagged region get tag 0, which is
- * gmsh's "no physical group".
- * @return one Int64 array per cell block, or an empty vector when there is
- *         nothing to synthesize.
+ * gmsh's "no physical group". A cell claimed by two regions keeps the first
+ * (region order) and warns naming both, since gmsh allows only one physical
+ * tag per element.
+ * @return one flat Int64 entry per cell, block-major (`detail::block_bases`
+ *         order), or empty when there is nothing to synthesize.
  */
-std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh) {
-    std::vector<NDArray> blocks;
+std::vector<std::int64_t> gmsh_flat_tags_from_regions(const Mesh& rMesh,
+                                                       const std::vector<GmshRegionTag>& rTags) {
     bool any = false;
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
-        const Region& r = rMesh.Region(i);
-        if (r.mKind == RegionKind::Cell && r.mTag >= 0 && r.NumEntries() > 0)
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Cell && rTags[i].mTag >= 0 &&
+            rMesh.Region(i).NumEntries() > 0)
             any = true;
-    }
     if (!any)
-        return blocks;
+        return {};
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     std::vector<std::int64_t> flat(static_cast<std::size_t>(detail::total_cells(bases)), 0);
+    std::vector<std::int64_t> claimed_by(flat.size(), -1);
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
         const Region& r = rMesh.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mTag < 0)
+        if (r.mKind != RegionKind::Cell || rTags[i].mTag < 0)
             continue;
         const std::int64_t* e = r.Entries();
-        for (std::size_t k = 0; k < r.NumEntries(); ++k)
-            if (e[k] >= 0 && e[k] < static_cast<std::int64_t>(flat.size()))
-                flat[static_cast<std::size_t>(e[k])] = r.mTag;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            if (e[k] < 0 || e[k] >= static_cast<std::int64_t>(flat.size()))
+                continue;
+            const std::size_t c = static_cast<std::size_t>(e[k]);
+            if (claimed_by[c] >= 0) {
+                log::warn("Gmsh writer: cell {} is in both region '{}' and '{}'; keeping '{}'", c,
+                          rMesh.Region(static_cast<std::size_t>(claimed_by[c])).mName, r.mName,
+                          rMesh.Region(static_cast<std::size_t>(claimed_by[c])).mName);
+                continue;
+            }
+            claimed_by[c] = static_cast<std::int64_t>(i);
+            flat[c] = rTags[i].mTag;
+        }
     }
+    return flat;
+}
+
+/**
+ * @brief Split a flat, block-major tag array (see #gmsh_flat_tags_from_regions)
+ * back into one `NDArray` per cell block, the shape `gmsh:physical` cell_data
+ * needs.
+ */
+std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh,
+                                            const std::vector<GmshRegionTag>& rTags) {
+    std::vector<NDArray> blocks;
+    const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMesh, rTags);
+    if (flat.empty())
+        return blocks;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     blocks.reserve(rMesh.NumCellBlocks());
     for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
         const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
@@ -57366,8 +58848,17 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
  *        the `nitems * ncomp` values. The name sits at the top of the section,
  *        before the values, so this costs nothing to decide.
  */
+/**
+ * @param pTargetTime when non-null, a section whose first real tag (time
+ *        value) does not exactly equal `*pTargetTime` is skipped wholesale
+ *        (like an unwanted name) instead of the legacy "first section per
+ *        name wins" rule -- how `read_gmsh`/`read_gmsh41_body` select one
+ *        step of a transient file. `nullptr` reproduces the pre-v11.3.0
+ *        default: every field's first section, in file order, wins.
+ */
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
-               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts) {
+               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts,
+               const double* pTargetTime = nullptr) {
     std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
@@ -57379,8 +58870,12 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
         }
     }
     std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
-    for (std::int64_t i = 0; i < num_real; ++i)
-        rCur.read_line();
+    double time = 0.0;
+    for (std::int64_t i = 0; i < num_real; ++i) {
+        std::string s = gmsh_trim(rCur.read_line());
+        if (i == 0)
+            time = std::stod(s);
+    }
     std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
     std::vector<std::int64_t> itags(num_int);
     for (std::int64_t i = 0; i < num_int; ++i)
@@ -57388,7 +58883,8 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
 
-    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)) {
+    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name) ||
+        (pTargetTime != nullptr && time != *pTargetTime)) {
         rCur.skip_to_end(rTag);  // never touch the nitems * ncomp values
         return;
     }
@@ -57411,7 +58907,10 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     rCur.skip_to_end(rTag);
     if (ncomp == 1)
         data.Reshape({nitems});
-    rOut.emplace(name, std::move(data));
+    if (pTargetTime != nullptr)
+        rOut.insert_or_assign(name, std::move(data));  // exactly one section per name matches
+    else
+        rOut.emplace(name, std::move(data));  // legacy: first section per name wins
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
@@ -57659,7 +59158,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
 }
 
 Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts,
-                      GmshInfo* pInfo) {
+                      GmshInfo* pInfo, const double* pTargetTime) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
@@ -57688,9 +59187,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(rCur, "NodeData", is_ascii, point_data, rOpts);
+            read_data(rCur, "NodeData", is_ascii, point_data, rOpts, pTargetTime);
         else if (env == "ElementData")
-            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts);
+            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts, pTargetTime);
         else
             rCur.skip_to_end(env);
     }
@@ -57932,19 +59431,75 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
     rCur.skip_to_end("Elements");
 }
 
-/// Read a `$NodeData`/`$ElementData` section's name, then skip its values.
-std::string gmsh_scan_data_name(GmshCursor& rCur, const std::string& rTag) {
+/// A `$NodeData`/`$ElementData` section's name and its first real tag (the
+/// SOLUTIONTIME-equivalent time value gmsh calls `time-value`).
+struct GmshDataHeader {
+    std::string mName;
+    double mTime = 0.0;
+};
+
+/// Read a `$NodeData`/`$ElementData` section's name and time, then skip its
+/// values -- shared by read_gmsh_metadata (which reports both) and the
+/// pre-scan `gmsh_scan_time_values` (which reports only the time, across
+/// every section in the file, for `read_data`'s step selection).
+GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) {
+    GmshDataHeader out;
     const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
-    std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
             const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
-            name = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
+            out.mName = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1)
+                                                              : line;
         }
     }
+    const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    for (std::int64_t i = 0; i < num_real; ++i) {
+        const std::string line = gmsh_trim(rCur.read_line());
+        if (i == 0)
+            out.mTime = std::stod(line);
+    }
     rCur.skip_to_end(rTag);
-    return name;
+    return out;
+}
+
+/// Every distinct time value across every `$NodeData`/`$ElementData` section
+/// in the file, sorted -- the timeline `ReadOptions::mTimeStep` indexes into.
+/// A cheap second pass over the same in-memory buffer `read_gmsh` already
+/// mapped/loaded (see `FileSource`): $MeshFormat is re-parsed for `is_ascii`,
+/// then every top-level section is skipped except $NodeData/$ElementData,
+/// whose values are never touched either (`gmsh_scan_data_header` stops at
+/// the header). Empty when the file carries no time-tagged data at all.
+std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
+    GmshCursor cur(rBuf);
+    if (gmsh_trim(cur.read_line()) != "$MeshFormat")
+        return {};
+    std::istringstream fss(cur.read_line());
+    std::string version;
+    int file_type = 0, data_size = 8;
+    fss >> version >> file_type >> data_size;
+    const bool is_ascii = (file_type == 0);
+    if (!is_ascii) {
+        cur.read_i32();
+        if (cur.mPos < rBuf.size() && rBuf[cur.mPos] == '\n')
+            ++cur.mPos;
+    }
+    cur.skip_to_end("MeshFormat");
+
+    std::set<double> times;
+    while (!cur.eof()) {
+        const std::string line = cur.next_nonblank();
+        if (line.empty())
+            break;
+        if (line[0] != '$')
+            break;  // malformed; let the real read report the real error
+        const std::string env = gmsh_trim(line.substr(1));
+        if (env == "NodeData" || env == "ElementData")
+            times.insert(gmsh_scan_data_header(cur, env).mTime);
+        else
+            cur.skip_to_end(env);
+    }
+    return std::vector<double>(times.begin(), times.end());
 }
 }  // namespace
 
@@ -57978,8 +59533,25 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     }
     cur.skip_to_end("MeshFormat");
 
+    // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
+    // against the sorted union of every $NodeData/$ElementData section's time
+    // value (a cheap second pass over the buffer already mapped/loaded
+    // above), and read_data below then keeps exactly the sections matching
+    // that one time instead of the legacy "first section per name wins"
+    // rule. The default step (0) is untouched: no pre-scan, no behaviour
+    // change, `pTargetTime` stays null.
+    double target_time = 0.0;
+    const double* target_time_ptr = nullptr;
+    if (rOpts.mTimeStep != 0) {
+        const std::vector<double> times = gmsh_scan_time_values(buf);
+        if (!times.empty()) {
+            target_time = times[rOpts.ResolveTimeStep(times.size())];
+            target_time_ptr = &target_time;
+        }
+    }
+
     if (version == "4.1" || version == "4")
-        return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo);
+        return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo, target_time_ptr);
     if (version.rfind("2", 0) != 0)
         throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
@@ -58004,9 +59576,9 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(cur, "NodeData", is_ascii, point_data, rOpts);
+            read_data(cur, "NodeData", is_ascii, point_data, rOpts, target_time_ptr);
         else if (env == "ElementData")
-            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts);
+            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts, target_time_ptr);
         else
             cur.skip_to_end(env);
     }
@@ -58090,12 +59662,13 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
 namespace {
 
-void write_physical_names(std::ostream& rOs, const Mesh& rMesh) {
+void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
+                          const std::vector<GmshRegionTag>& rTags) {
     // field_data first, then any named region describing a group field_data
     // does not — so a mesh carrying gmsh's own metadata writes byte-identical
     // bytes, and one whose groups came from another format still gets them.
     std::vector<std::tuple<long long, long long, std::string>> sortable =
-        gmsh_physical_rows(rMesh);  // dim, num, name
+        gmsh_physical_rows(rMesh, rTags);  // dim, num, name
     if (sortable.empty())
         return;
     rOs << "$PhysicalNames\n" << sortable.size() << "\n";
@@ -58255,6 +59828,107 @@ std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
     return out;
 }
 
+/// `gmsh:dim_tags`/`gmsh:geometrical`/`gmsh:physical`, synthesized so they
+/// can be spliced onto a mesh clone (see #gmsh_synthesize_tags_41).
+/// `mGeometrical`/`mPhysical` are identical here -- nothing else
+/// distinguishes a synthesized entity from its physical group.
+struct GmshSynthesizedTags {
+    NDArray mDimTags;
+    std::vector<NDArray> mGeometrical;
+    std::vector<NDArray> mPhysical;
+};
+
+/**
+ * @brief Synthesize 4.1 entity tag data from `Cell` regions, for a mesh that
+ * carries no `gmsh:dim_tags` of its own (v11.5.0, roadmap §1 tier B3).
+ *
+ * Format 4.1 records physical-group membership only through `$Entities`, so
+ * a tag alone (as 2.2's per-element column carries) is not enough here. One
+ * entity per cell block: this writer's `$Elements` model is one gmsh element
+ * block per meshio++ cell block, so a block whose cells do not all agree on
+ * the same resolved tag cannot be split further here -- it keeps entity 0
+ * (no physical group), and a warning names it, a documented scope limit
+ * rather than a silent drop. A point's entity is the highest-dimension block
+ * touching it, ties broken by block order -- gmsh's own convention (a
+ * lower-dimension region's nodes inside a volume belong to the volume).
+ * @param rFlatTags per-cell resolved tag, block-major, from
+ *        #gmsh_flat_tags_from_regions (must be non-empty).
+ */
+GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
+                                            const std::vector<std::int64_t>& rFlatTags,
+                                            const std::function<int(const std::string&)>& rCellDim) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::int64_t> block_tag(nblocks, 0);
+    std::vector<int> block_dim(nblocks, 0);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        block_dim[b] = rCellDim(std::string(cb.Type()));
+        const std::size_t start = static_cast<std::size_t>(bases[b]);
+        const std::size_t end = static_cast<std::size_t>(bases[b + 1]);
+        std::int64_t tag = end > start ? rFlatTags[start] : 0;
+        bool uniform = true;
+        for (std::size_t c = start; c < end; ++c) {
+            if (rFlatTags[c] != tag) {
+                uniform = false;
+                break;
+            }
+        }
+        if (!uniform) {
+            log::warn(
+                "Gmsh writer: cell block {} ('{}') spans more than one region; no single "
+                "physical tag can be written for it in format 4.1",
+                b, cb.Type());
+            tag = 0;
+        }
+        block_tag[b] = tag;
+    }
+
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<int> point_dim(npts, -1);
+    std::vector<std::int64_t> point_tag(npts, 0);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const int dim = block_dim[b];
+        const std::size_t nc = cb.NumCells();
+        const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        for (std::size_t i = 0; i < nc; ++i) {
+            const std::size_t rowsize = cb.IsRagged() ? cb.RowSize(i) : npc;
+            const std::int64_t* row = cb.IsRagged() ? cb.Row(i) : nullptr;
+            for (std::size_t k = 0; k < rowsize; ++k) {
+                const std::int64_t p =
+                    row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
+                if (p < 0 || static_cast<std::size_t>(p) >= npts)
+                    continue;
+                if (dim > point_dim[static_cast<std::size_t>(p)]) {
+                    point_dim[static_cast<std::size_t>(p)] = dim;
+                    point_tag[static_cast<std::size_t>(p)] = block_tag[b];
+                }
+            }
+        }
+    }
+
+    GmshSynthesizedTags out;
+    out.mDimTags = NDArray::Uninit(DType::Int64, {npts, std::size_t{2}});
+    std::int64_t* dt = out.mDimTags.As<std::int64_t>();
+    for (std::size_t p = 0; p < npts; ++p) {
+        dt[p * 2 + 0] = point_dim[p] < 0 ? 0 : point_dim[p];
+        dt[p * 2 + 1] = point_tag[p];
+    }
+    out.mGeometrical.reserve(nblocks);
+    out.mPhysical.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+        NDArray g = NDArray::Uninit(DType::Int64, {n});
+        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, block_tag[b]);
+        NDArray p = NDArray::Uninit(DType::Int64, {n});
+        std::fill(p.As<std::int64_t>(), p.As<std::int64_t>() + n, block_tag[b]);
+        out.mGeometrical.push_back(std::move(g));
+        out.mPhysical.push_back(std::move(p));
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -58269,15 +59943,19 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     // Tag cell data ("gmsh:physical"/"gmsh:geometrical") is written inline with
     // the elements; per-block zeros stand in when a tag column is absent.
+    // Region tags are resolved once and shared with $PhysicalNames below, so a
+    // freshly allocated tag (v11.5.0, roadmap §1 tier B3) agrees everywhere.
+    const std::vector<GmshRegionTag> region_tags = gmsh_resolve_region_tags(rMesh);
     const bool has_physical = rMesh.HasCellData("gmsh:physical");
     const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
     std::vector<NDArray> zeros_phys, zeros_geom;
     if (!has_physical) {
         // No gmsh:physical column of its own: synthesize one from any tagged
-        // Cell regions, so a mesh whose groups came from another format still
-        // writes real physical groups. With no such regions this yields the
-        // per-block zeros it always did, and the output is byte-identical.
-        zeros_phys = gmsh_tags_from_regions(rMesh);
+        // Cell regions (native tag or freshly allocated), so a mesh whose
+        // groups came from another format still writes real physical groups.
+        // With no such regions this yields the per-block zeros it always
+        // did, and the output is byte-identical.
+        zeros_phys = gmsh_tags_from_regions(rMesh, region_tags);
         if (zeros_phys.empty())
             for (const auto cb : rMesh.CellRange())
                 zeros_phys.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
@@ -58294,7 +59972,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh);
+    write_physical_names(os, rMesh, region_tags);
 
     // Nodes.
     os << "$Nodes\n" << num_points << "\n";
@@ -58418,29 +60096,55 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
     write_gmsh41(rPath, rMesh, binary, GmshInfo{});
 }
 
-void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary, const GmshInfo& rInfo) {
+void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
+                  const GmshInfo& rInfo) {
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_points = rMesh.NumPoints();
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
     const int data_size = 8;
 
     auto put_u64 = [&](std::uint64_t v) { os.write(reinterpret_cast<const char*>(&v), 8); };
     auto put_i32 = [&](std::int32_t v) { os.write(reinterpret_cast<const char*>(&v), 4); };
     auto put_f64 = [&](double v) { os.write(reinterpret_cast<const char*>(&v), 8); };
 
-    // "gmsh:geometrical" supplies the per-block entity tag below; the other
-    // tag names are excluded from the $NodeData/$ElementData sections.
-    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
-
     const auto& topo = topological_dimension();
     auto cell_dim = [&](const std::string& t) -> int {
         auto it = topo.find(t);
         return it == topo.end() ? 0 : it->second;
     };
+
+    // Region tags, resolved once and shared with $PhysicalNames below, so a
+    // freshly allocated tag agrees everywhere (v11.5.0, roadmap §1 tier B3).
+    // Format 4.1 records physical-group membership only through $Entities --
+    // unlike 2.2's per-element tag column, a mesh with no gmsh:dim_tags of
+    // its own needs synthesized point/cell tag data before anything below
+    // can see it. Working on a clone carrying that data reuses every
+    // existing gmsh:dim_tags-aware code path (entity building, $Entities,
+    // $Elements) rather than three parallel fallback branches.
+    const std::vector<GmshRegionTag> region_tags = gmsh_resolve_region_tags(rMeshIn);
+    Mesh gmsh41_synth;
+    bool synthesized = false;
+    if (!rMeshIn.HasPointData("gmsh:dim_tags")) {
+        const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
+        if (!flat.empty()) {
+            const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(rMeshIn, flat, cell_dim);
+            gmsh41_synth = detail::clone_mesh(rMeshIn);
+            gmsh41_synth.AddPointData("gmsh:dim_tags", synth.mDimTags);
+            gmsh41_synth.AddCellData("gmsh:geometrical", synth.mGeometrical);
+            gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
+            synthesized = true;
+        }
+    }
+    const Mesh& rMesh = synthesized ? gmsh41_synth : rMeshIn;
+
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
+
+    // "gmsh:geometrical" supplies the per-block entity tag below; the other
+    // tag names are excluded from the $NodeData/$ElementData sections.
+    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
 
     os << "$MeshFormat\n4.1 " << (binary ? 1 : 0) << " " << data_size << "\n";
     if (binary) {
@@ -58449,7 +60153,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh);
+    write_physical_names(os, rMeshIn, region_tags);
 
     // The 3-padded coordinates of one point, formatted the one way both the
     // single-block and per-entity paths use.
@@ -58769,6 +60473,9 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
     // so a summary can report gmsh:physical and the named regions without ever
     // touching a coordinate or a connectivity row.
     std::unordered_map<std::string, NDArray> field_data;
+    // The sorted union of every $NodeData/$ElementData section's time value --
+    // the same timeline ReadOptions::mTimeStep indexes into on a real read.
+    std::set<double> time_values;
     while (!cur.eof()) {
         const std::string line = cur.next_nonblank();
         if (line.empty())
@@ -58784,11 +60491,15 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
             read_physical_names(cur, field_data);
         else if (env == "Entities")
             entities = read_entities_41(cur, is_ascii, data_size);
-        else if (env == "NodeData")
-            meta.mPointDataNames.push_back(gmsh_scan_data_name(cur, "NodeData"));
-        else if (env == "ElementData")
-            meta.mCellDataNames.push_back(gmsh_scan_data_name(cur, "ElementData"));
-        else if (env == "Periodic")
+        else if (env == "NodeData") {
+            const GmshDataHeader h = gmsh_scan_data_header(cur, "NodeData");
+            meta.mPointDataNames.push_back(h.mName);
+            time_values.insert(h.mTime);
+        } else if (env == "ElementData") {
+            const GmshDataHeader h = gmsh_scan_data_header(cur, "ElementData");
+            meta.mCellDataNames.push_back(h.mName);
+            time_values.insert(h.mTime);
+        } else if (env == "Periodic")
             throw ReadError("Gmsh $" + env + " not supported by the C++ reader");
         else
             cur.skip_to_end(env);
@@ -58809,8 +60520,17 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
         if (entities.mAnyPhysical)
             out.mCellDataNames.push_back("gmsh:physical");
     }
+    // A multi-step field's name is pushed once per $NodeData/$ElementData
+    // section (one per step), so dedup after sorting -- a summary listing
+    // "u" three times for a three-step field would be a wrong answer, not
+    // merely a noisy one.
     std::sort(out.mPointDataNames.begin(), out.mPointDataNames.end());
+    out.mPointDataNames.erase(std::unique(out.mPointDataNames.begin(), out.mPointDataNames.end()),
+                              out.mPointDataNames.end());
     std::sort(out.mCellDataNames.begin(), out.mCellDataNames.end());
+    out.mCellDataNames.erase(std::unique(out.mCellDataNames.begin(), out.mCellDataNames.end()),
+                             out.mCellDataNames.end());
+    out.mTimeValues.assign(time_values.begin(), time_values.end());
 
     // Named regions, counted from the block headers alone. gmsh_attach_regions
     // groups by (physical tag, block topological dimension), so this does too --
@@ -62089,6 +63809,112 @@ Mesh read_med(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOpti
     return med_read_impl(rPath, rInfo, rOptions);
 }
 
+MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_read(rPath);
+
+    MeshMetadata meta;
+    meta.mFormat = "med";
+
+    h5::Hid ens = h5::open_group(f, "ENS_MAA");
+    std::vector<std::string> meshes = h5::group_links(ens);
+    if (meshes.size() != 1)
+        throw ReadError(
+            detail::format_compat("Must only contain exactly 1 mesh, found {}.", meshes.size()));
+    const std::string mesh_name = meshes[0];
+    h5::Hid mesh_grp = h5::open_group(ens, mesh_name);
+
+    const std::int64_t dim = h5::read_attr_int(mesh_grp, "ESP");
+    meta.mPointDim = static_cast<std::size_t>(dim);
+
+    h5::Hid data_grp;
+    if (h5::exists(mesh_grp, "NOE")) {
+        data_grp = std::move(mesh_grp);
+    } else {
+        std::vector<std::string> steps = h5::group_links(mesh_grp);
+        if (steps.size() != 1)
+            throw ReadError(detail::format_compat(
+                "Must only contain exactly 1 time-step, found {}.", steps.size()));
+        data_grp = h5::open_group(mesh_grp, steps[0]);
+    }
+
+    // Points: only the declared count, never the coordinate dataset itself.
+    {
+        h5::Hid noe = h5::open_group(data_grp, "NOE");
+        h5::Hid coo_ds(H5Dopen2(noe, "COO", H5P_DEFAULT), H5Dclose);
+        if (!coo_ds.Valid())
+            throw ReadError("MED: missing NOE/COO");
+        meta.mNumPoints = static_cast<std::size_t>(h5::read_attr_int(coo_ds, "NBR"));
+    }
+
+    // Cells: one CellBlockInfo per MAI/<type> group, in the same creation
+    // order the full reader uses. Ragged (POE/POG*) blocks read only their
+    // small offset arrays (IND/INN), never the flat node connectivity.
+    if (h5::exists(data_grp, "MAI")) {
+        h5::Hid mai = h5::open_group(data_grp, "MAI");
+        const auto& node_counts = num_nodes_per_cell();
+        for (const std::string& med_type : h5::group_links_crt(mai)) {
+            auto it = med_to_meshio().find(med_type);
+            if (it == med_to_meshio().end())
+                throw ReadError(detail::format_compat("MED: unsupported cell type {}", med_type));
+            h5::Hid g = h5::open_group(mai, med_type);
+
+            CellBlockInfo block;
+            if (med_type == "POE") {
+                NDArray ind = h5::read_dataset(g, "IND");
+                block.mType = "polyhedron";
+                block.mNumCells = ind.Size() > 0 ? ind.Size() - 1 : 0;
+                block.mRagged = true;
+            } else if (med_type == "POG" || med_type == "POG2") {
+                NDArray inn = h5::read_dataset(g, "INN");
+                block.mType = it->second;
+                block.mNumCells = inn.Size() > 0 ? inn.Size() - 1 : 0;
+                block.mRagged = true;
+            } else {
+                h5::Hid nod_ds(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
+                if (!nod_ds.Valid())
+                    throw ReadError(detail::format_compat("MED: missing NOD for {}", med_type));
+                block.mType = it->second;
+                block.mNumCells = static_cast<std::size_t>(h5::read_attr_int(nod_ds, "NBR"));
+                auto nit = node_counts.find(it->second);
+                block.mNodesPerCell = nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+        }
+    }
+
+    // Time values: the sorted, deduplicated union of every CHA field's own
+    // step PDTs -- a MeshMetadata reports one timeline per file, and
+    // `ReadOptions::mTimeStep` selects into it uniformly across fields.
+    if (h5::exists(f, "CHA")) {
+        h5::Hid cha = h5::open_group(f, "CHA");
+        std::set<double> times;
+        for (const std::string& field_name : h5::group_links(cha)) {
+            h5::Hid field = h5::open_group(cha, field_name);
+            std::vector<std::string> steps = h5::group_links(field);
+            bool is_nodal = false;
+            for (std::size_t i = 0; i < steps.size(); ++i) {
+                h5::Hid g = h5::open_group(field, steps[i]);
+                times.insert(read_attr_double(g, "PDT"));
+                if (i == 0) {
+                    std::vector<std::string> supports = h5::group_links(g);
+                    is_nodal =
+                        std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+                }
+            }
+            if (is_nodal)
+                meta.mPointDataNames.push_back(field_name);
+            else
+                meta.mCellDataNames.push_back(field_name);
+        }
+        std::sort(meta.mPointDataNames.begin(), meta.mPointDataNames.end());
+        std::sort(meta.mCellDataNames.begin(), meta.mCellDataNames.end());
+        meta.mTimeValues.assign(times.begin(), times.end());
+    }
+
+    return meta;
+}
+
 void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                const std::string& rMedVersion) {
     h5::SilenceErrors silence;
@@ -64418,6 +66244,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -64698,9 +66525,18 @@ std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
     return "";
 }
 
-std::vector<Patch> parse_boundary(const std::string& rBody) {
-    // Find `name { ... }` blocks with nFaces/startFace.
-    std::vector<Patch> patches;
+/**
+ * @brief Scan top-level `name { ... }` blocks, matching braces by DEPTH.
+ *
+ * Shared by `parse_boundary` and the zone-file parsers below: both formats
+ * are a flat `N ( name { ... } name { ... } ... )` list of named
+ * sub-dictionaries. Depth matching (not "the first `}`") matters here too --
+ * a patch's `transform`/`sample` sub-block would otherwise truncate it.
+ *
+ * @return `(name, block body)` pairs, in file order.
+ */
+std::vector<std::pair<std::string, std::string>> foam_named_blocks(const std::string& rBody) {
+    std::vector<std::pair<std::string, std::string>> blocks;
     std::size_t i = 0, n = rBody.size();
     auto skip_ws = [&](std::size_t& p) {
         while (p < n && std::isspace(static_cast<unsigned char>(rBody[p])))
@@ -64708,7 +66544,6 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
     };
     while (i < n) {
         skip_ws(i);
-        // read a token (patch name)
         std::size_t start = i;
         while (i < n && !std::isspace(static_cast<unsigned char>(rBody[i])) && rBody[i] != '{' &&
                rBody[i] != '(' && rBody[i] != ')')
@@ -64716,10 +66551,6 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
         std::string name = rBody.substr(start, i - start);
         skip_ws(i);
         if (i < n && rBody[i] == '{') {
-            // Match the brace by DEPTH, not by the first '}': real patches nest
-            // (a `cyclicAMI` carries `transform { ... }`, a `mappedWall` carries
-            // `sample { ... }`), and taking the first close truncates the block
-            // and then resumes scanning from inside it, inventing patches.
             std::size_t close = std::string::npos;
             int depth = 0;
             for (std::size_t p = i; p < n; ++p) {
@@ -64734,23 +66565,8 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
             }
             if (close == std::string::npos)
                 break;
-            std::string block = rBody.substr(i + 1, close - i - 1);
-            Patch pt;
-            pt.mName = name;
-            pt.mType = openfoam_dict_word(block, "type");
-            bool has_n = false, has_s = false;
-            std::size_t np = block.find("nFaces");
-            if (np != std::string::npos) {
-                pt.mNFaces = std::atoll(block.c_str() + np + 6);
-                has_n = true;
-            }
-            std::size_t sp = block.find("startFace");
-            if (sp != std::string::npos) {
-                pt.mStartFace = std::atoll(block.c_str() + sp + 9);
-                has_s = true;
-            }
-            if (has_n && has_s && !name.empty())
-                patches.push_back(pt);
+            if (!name.empty())
+                blocks.emplace_back(name, rBody.substr(i + 1, close - i - 1));
             i = close + 1;
         } else if (i < n && (rBody[i] == '(' || rBody[i] == ')')) {
             ++i;  // skip list delimiters
@@ -64758,7 +66574,81 @@ std::vector<Patch> parse_boundary(const std::string& rBody) {
             ++i;
         }
     }
+    return blocks;
+}
+
+std::vector<Patch> parse_boundary(const std::string& rBody) {
+    std::vector<Patch> patches;
+    for (const auto& [name, block] : foam_named_blocks(rBody)) {
+        Patch pt;
+        pt.mName = name;
+        pt.mType = openfoam_dict_word(block, "type");
+        bool has_n = false, has_s = false;
+        std::size_t np = block.find("nFaces");
+        if (np != std::string::npos) {
+            pt.mNFaces = std::atoll(block.c_str() + np + 6);
+            has_n = true;
+        }
+        std::size_t sp = block.find("startFace");
+        if (sp != std::string::npos) {
+            pt.mStartFace = std::atoll(block.c_str() + sp + 9);
+            has_s = true;
+        }
+        if (has_n && has_s)
+            patches.push_back(pt);
+    }
     return patches;
+}
+
+/// One named `cellZone`/`faceZone`/`pointZone` entry: a name plus its member
+/// ids (cell/face/point ids, in the file's own numbering).
+struct Zone {
+    std::string mName;
+    std::vector<std::int64_t> mIds;
+};
+
+/**
+ * @brief Read the `List<label>` value of key @p pKey out of a zone block.
+ *
+ * Zone blocks look like `type cellZone; cellLabels List<label> 3(0 5 9);` --
+ * `flipMap` (a `faceZone`-only `List<bool>`) is deliberately never read: a
+ * flip only matters for a zone consumer that walks faces directionally
+ * (cyclic AMI construction, e.g.), and `Region`'s `Side` entries carry no
+ * orientation bit to hold it in. See doc/formats/openfoam.md.
+ */
+std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const char* pKey) {
+    std::size_t p = rBlock.find(pKey);
+    if (p == std::string::npos)
+        return {};
+    std::size_t lp = rBlock.find('(', p);
+    if (lp == std::string::npos)
+        return {};
+    std::size_t rp = lp + 1;
+    int depth = 1;
+    while (rp < rBlock.size() && depth > 0) {
+        if (rBlock[rp] == '(')
+            ++depth;
+        else if (rBlock[rp] == ')')
+            --depth;
+        ++rp;
+    }
+    const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
+    std::istringstream ss(inside);
+    std::vector<std::int64_t> out;
+    std::int64_t v;
+    while (ss >> v)
+        out.push_back(v);
+    return out;
+}
+
+/// Parse a `cellZones`/`faceZones`/`pointZones` file body (ASCII only -- a
+/// binary zone file is a documented follow-up, matching the writer's own
+/// ASCII-only scope).
+std::vector<Zone> parse_zone_file(const std::string& rBody, const char* pLabelKey) {
+    std::vector<Zone> zones;
+    for (const auto& [name, block] : foam_named_blocks(rBody))
+        zones.push_back({name, foam_zone_label_list(block, pLabelKey)});
+    return zones;
 }
 
 // ---- binary parsers ----
@@ -65017,9 +66907,472 @@ std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented
     return {"polyhedron", {}};
 }
 
+// ---- decomposed (processorN) cases (v11.4.0, roadmap §1 tier B2) ----
+
+/// A single `polyMesh`'s raw, un-reconstructed file contents -- what
+/// `read_openfoam` used to read inline before it could also come from
+/// `reconstruct_decomposed`.
+struct RawPolyMesh {
+    P3 mPoints;
+    std::vector<Face> mFaces;
+    std::vector<std::int64_t> mOwner;
+    std::vector<std::int64_t> mNeighbour;  ///< only the internal faces
+    std::vector<Patch> mBoundary;
+};
+
+RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
+    RawPolyMesh raw;
+    raw.mPoints = read_points(rPoly / "points");
+    raw.mFaces = read_faces(rPoly / "faces");
+    raw.mOwner = read_int_list(rPoly / "owner");
+    if (fs::exists(rPoly / "neighbour"))
+        raw.mNeighbour = read_int_list(rPoly / "neighbour");
+    if (fs::exists(rPoly / "boundary"))
+        raw.mBoundary = parse_boundary(
+            strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
+    return raw;
+}
+
+/// One processor's `polyMesh` plus the addressing lists that map its local
+/// ids back onto the undecomposed case's global ones.
+struct ProcMesh {
+    RawPolyMesh mRaw;
+    std::vector<std::int64_t> mPointAddr;     ///< local point -> global point id
+    std::vector<std::int64_t> mCellAddr;      ///< local cell -> global cell id
+    std::vector<std::int64_t> mFaceAddr;      ///< local face -> signed (global face id + 1)
+    std::vector<std::int64_t> mBoundaryAddr;  ///< local patch -> global patch id, -1 if none
+};
+
+/// The processor-local face (and its orientation) claiming a given global
+/// face id -- one entry for a face interior to one processor or an original
+/// external boundary face, two for a face split by decomposition.
+struct DecompFaceClaim {
+    std::int64_t mProc = -1;
+    std::int64_t mLocalFace = -1;
+    bool mFlipped = false;
+};
+
+/// The local patch containing local face @p LocalFace, or `npos`.
+std::size_t foam_patch_of_local_face(const std::vector<Patch>& rBoundary, std::int64_t LocalFace) {
+    for (std::size_t p = 0; p < rBoundary.size(); ++p)
+        if (LocalFace >= rBoundary[p].mStartFace &&
+            LocalFace < rBoundary[p].mStartFace + rBoundary[p].mNFaces)
+            return p;
+    return static_cast<std::size_t>(-1);
+}
+
+/// The sorted processor indices of a decomposed case's `<root>/processorN/`
+/// directories that carry a `constant/polyMesh` -- not assumed contiguous.
+std::vector<std::size_t> foam_processor_ids(const fs::path& rCaseRoot) {
+    std::vector<std::size_t> ids;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rCaseRoot, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("processor", 0) != 0)
+            continue;
+        const std::string digits = name.substr(std::strlen("processor"));
+        if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        if (fs::exists(entry.path() / "constant" / "polyMesh"))
+            ids.push_back(static_cast<std::size_t>(std::atoll(digits.c_str())));
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+/**
+ * @brief Reassemble a decomposed case's `processorN` directories into one
+ * global `RawPolyMesh`, mirroring what `reconstructParMesh` does on disk.
+ *
+ * Points/cells/faces are placed at the global ids their processor's own
+ * `*ProcAddressing` files (plain `labelList`s, read like `owner`) name.
+ * A global face claimed by exactly one processor is either an original
+ * external boundary face or one interior to that processor alone; claimed by
+ * two, it is an internal face `decomposePar` split at a processor boundary --
+ * the positive-signed `faceProcAddressing` entry names the true owner side,
+ * the negative-signed one the neighbour side (the sign meaning "this local
+ * copy is stored reversed relative to the global orientation"). A boundary
+ * face's global patch comes from its owning processor's `boundaryProcAddressing`
+ * (missing/negative marks a `processor*` inter-rank patch, dropped -- it has no
+ * counterpart in the original case).
+ */
+RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
+                                   const std::vector<std::size_t>& rProcIds) {
+    std::vector<ProcMesh> procs(rProcIds.size());
+    std::int64_t max_point = -1, max_cell = -1, max_face = -1;
+    for (std::size_t k = 0; k < rProcIds.size(); ++k) {
+        const fs::path poly =
+            rCaseRoot / ("processor" + std::to_string(rProcIds[k])) / "constant" / "polyMesh";
+        ProcMesh& pm = procs[k];
+        pm.mRaw = read_raw_polymesh(poly);
+        pm.mPointAddr = read_int_list(poly / "pointProcAddressing");
+        pm.mCellAddr = read_int_list(poly / "cellProcAddressing");
+        pm.mFaceAddr = read_int_list(poly / "faceProcAddressing");
+        if (fs::exists(poly / "boundaryProcAddressing"))
+            pm.mBoundaryAddr = read_int_list(poly / "boundaryProcAddressing");
+        for (std::int64_t v : pm.mPointAddr)
+            max_point = std::max(max_point, v);
+        for (std::int64_t v : pm.mCellAddr)
+            max_cell = std::max(max_cell, v);
+        for (std::int64_t v : pm.mFaceAddr)
+            max_face = std::max(max_face, std::abs(v) - 1);
+    }
+    const std::size_t n_points = static_cast<std::size_t>(max_point + 1);
+    const std::size_t n_faces = static_cast<std::size_t>(max_face + 1);
+
+    P3 points(n_points);
+    for (const ProcMesh& pm : procs)
+        for (std::size_t i = 0; i < pm.mPointAddr.size(); ++i)
+            points[static_cast<std::size_t>(pm.mPointAddr[i])] = pm.mRaw.mPoints[i];
+
+    // Every processor-local face that claims a given global id.
+    std::vector<std::array<DecompFaceClaim, 2>> claims(n_faces);
+    std::vector<std::uint8_t> n_claims(n_faces, 0);
+    for (std::size_t k = 0; k < procs.size(); ++k) {
+        const auto& fa = procs[k].mFaceAddr;
+        for (std::size_t i = 0; i < fa.size(); ++i) {
+            const std::size_t g = static_cast<std::size_t>(std::abs(fa[i]) - 1);
+            const std::uint8_t slot = n_claims[g]++;
+            if (slot < 2)
+                claims[g][slot] = {static_cast<std::int64_t>(k), static_cast<std::int64_t>(i),
+                                   fa[i] < 0};
+        }
+    }
+
+    std::vector<Face> internal_faces;
+    std::vector<std::int64_t> internal_owner, internal_neighbour;
+    // Global patch id -> its (name, type) plus the member faces' node rings
+    // and owner cells, in the order they are found.
+    std::map<std::int64_t, Patch> patch_table;
+    std::map<std::int64_t, std::vector<Face>> patch_faces;
+    std::map<std::int64_t, std::vector<std::int64_t>> patch_owners;
+    std::size_t n_dropped_processor_faces = 0, n_dropped_unclaimed = 0;
+
+    for (std::size_t g = 0; g < n_faces; ++g) {
+        if (n_claims[g] == 0) {
+            ++n_dropped_unclaimed;  // an id `faceProcAddressing` never actually used
+            continue;
+        }
+        const DecompFaceClaim* owner_claim = nullptr;
+        const DecompFaceClaim* neigh_claim = nullptr;
+        for (std::uint8_t k = 0; k < std::min<std::uint8_t>(n_claims[g], 2); ++k) {
+            const DecompFaceClaim& c = claims[g][k];
+            (c.mFlipped ? neigh_claim : owner_claim) = &c;
+        }
+        if (!owner_claim)
+            owner_claim = &claims[g][0];  // defensive: both flipped should not happen
+
+        const ProcMesh& op = procs[static_cast<std::size_t>(owner_claim->mProc)];
+        const Face& lf = op.mRaw.mFaces[static_cast<std::size_t>(owner_claim->mLocalFace)];
+        Face gf(lf.size());
+        for (std::size_t k = 0; k < lf.size(); ++k)
+            gf[k] = op.mPointAddr[static_cast<std::size_t>(lf[k])];
+        const std::int64_t owner_cell = op.mCellAddr[static_cast<std::size_t>(
+            op.mRaw.mOwner[static_cast<std::size_t>(owner_claim->mLocalFace)])];
+
+        if (neigh_claim) {
+            const ProcMesh& np = procs[static_cast<std::size_t>(neigh_claim->mProc)];
+            const std::int64_t neigh_cell = np.mCellAddr[static_cast<std::size_t>(
+                np.mRaw.mOwner[static_cast<std::size_t>(neigh_claim->mLocalFace)])];
+            internal_faces.push_back(std::move(gf));
+            internal_owner.push_back(owner_cell);
+            internal_neighbour.push_back(neigh_cell);
+            continue;
+        }
+
+        // A genuine boundary face: resolve its global patch via the owning
+        // processor's own local patch + `boundaryProcAddressing`.
+        const std::size_t local_patch =
+            foam_patch_of_local_face(op.mRaw.mBoundary, owner_claim->mLocalFace);
+        std::int64_t global_patch = -1;
+        if (local_patch != static_cast<std::size_t>(-1) &&
+            local_patch < op.mBoundaryAddr.size())
+            global_patch = op.mBoundaryAddr[local_patch];
+        const bool is_processor_patch =
+            global_patch < 0 || (local_patch != static_cast<std::size_t>(-1) &&
+                                 op.mRaw.mBoundary[local_patch].mType.rfind("processor", 0) == 0);
+        if (is_processor_patch) {
+            ++n_dropped_processor_faces;
+            continue;
+        }
+        if (!patch_table.count(global_patch)) {
+            Patch p = op.mRaw.mBoundary[local_patch];  // name/type only; counts recomputed below
+            p.mNFaces = 0;
+            p.mStartFace = 0;
+            patch_table[global_patch] = p;
+        }
+        patch_faces[global_patch].push_back(std::move(gf));
+        patch_owners[global_patch].push_back(owner_cell);
+    }
+    if (n_dropped_processor_faces > 0)
+        log::info("OpenFOAM: reconstructed case drops {} inter-processor patch face(s)",
+                  n_dropped_processor_faces);
+    if (n_dropped_unclaimed > 0)
+        log::warn("OpenFOAM: {} face id(s) in *ProcAddressing were never claimed",
+                  n_dropped_unclaimed);
+
+    RawPolyMesh out;
+    out.mPoints = std::move(points);
+    out.mFaces = std::move(internal_faces);
+    out.mOwner = internal_owner;
+    out.mNeighbour = std::move(internal_neighbour);
+    for (auto& kv : patch_table) {
+        kv.second.mStartFace = static_cast<std::int64_t>(out.mFaces.size());
+        for (Face& f : patch_faces[kv.first])
+            out.mFaces.push_back(std::move(f));
+        for (std::int64_t c : patch_owners[kv.first])
+            out.mOwner.push_back(c);
+        kv.second.mNFaces = static_cast<std::int64_t>(out.mFaces.size()) - kv.second.mStartFace;
+        out.mBoundary.push_back(kv.second);
+    }
+    return out;
+}
+
+// ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
+
+/// One field's shape: number of components, and whether it belongs on
+/// points (`pointScalarField`/`pointVectorField`) rather than cells.
+struct FoamFieldClass {
+    int mComponents = 0;
+    bool mIsPoint = false;
+    bool mSupported = true;
+};
+
+FoamFieldClass foam_field_class(const std::string& rClass) {
+    if (rClass == "volScalarField")
+        return {1, false, true};
+    if (rClass == "volVectorField")
+        return {3, false, true};
+    if (rClass == "volSymmTensorField")
+        return {6, false, true};
+    if (rClass == "volTensorField")
+        return {9, false, true};
+    if (rClass == "pointScalarField")
+        return {1, true, true};
+    if (rClass == "pointVectorField")
+        return {3, true, true};
+    return {0, false, false};  // e.g. surfaceScalarField: no cell/point home
+}
+
+/// A field value list: `mFlat` holds `mComponents` entries (uniform) or
+/// `mCount * mComponents` (nonuniform), read by `foam_read_internal_field`.
+struct FoamField {
+    bool mUniform = false;
+    std::int64_t mCount = 0;
+    std::vector<double> mFlat;
+};
+
+/// Parse `uniform <value>` (`rText` starting AT the `uniform` keyword).
+std::vector<double> foam_scan_uniform_value(std::string_view rText, int components) {
+    std::size_t p = std::strlen("uniform");
+    while (p < rText.size() && std::isspace(static_cast<unsigned char>(rText[p])))
+        ++p;
+    std::vector<double> out;
+    if (components == 1) {
+        out.push_back(std::atof(std::string(rText.substr(p)).c_str()));
+        return out;
+    }
+    const std::size_t lp = rText.find('(', p);
+    const std::size_t rp = rText.find(')', lp);
+    if (lp == std::string::npos || rp == std::string::npos)
+        return out;
+    std::istringstream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    double v;
+    while (ss >> v)
+        out.push_back(v);
+    return out;
+}
+
+/// Parse `nonuniform List<T>\n<N>\n(\n<entries>\n)` (`rText` starting AT the
+/// `nonuniform` keyword) -- ASCII only; the binary variant is read directly
+/// via `data_start` in `foam_read_internal_field`, which needs the whole raw
+/// buffer rather than a text view.
+FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
+    FoamField out;
+    const std::string text_owned(rText);
+    std::istringstream ss(text_owned);
+    std::string line;
+    bool have_n = false;
+    std::int64_t n = 0;
+    while (std::getline(ss, line)) {
+        std::string s = openfoam_strip(line);
+        if (s.empty())
+            continue;
+        if (!have_n) {
+            if (s.find_first_not_of("0123456789") == std::string::npos) {
+                n = std::atoll(s.c_str());
+                have_n = true;
+            }
+            continue;
+        }
+        if (s == "(")
+            break;
+    }
+    out.mCount = n;
+    out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
+    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+        std::string s = openfoam_strip(line);
+        if (s.empty())
+            continue;
+        if (components == 1) {
+            out.mFlat.push_back(std::atof(s.c_str()));
+        } else {
+            for (char& c : s)
+                if (c == '(' || c == ')')
+                    c = ' ';
+            std::istringstream ls(s);
+            double v;
+            while (ls >> v)
+                out.mFlat.push_back(v);
+        }
+        ++i;
+    }
+    return out;
+}
+
+/**
+ * @brief Read a field file's `internalField`.
+ *
+ * `uniform` is always plain text, in both ASCII and binary field files (a
+ * single small value is never worth binary-encoding), so it is scanned the
+ * same way regardless of `FoamFormat`. `nonuniform` follows `points`/`faces`/
+ * `owner`'s own dispatch: ASCII is line-scanned, binary reuses `data_start` --
+ * safe here because nothing between the FoamFile header and `internalField`'s
+ * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
+ */
+FoamField foam_read_internal_field(const fs::path& rPath, int components) {
+    const FoamFormat fmt = detect_format(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
+    const std::size_t kp = raw.find("internalField");
+    if (kp == std::string::npos)
+        throw ReadError("OpenFOAM: field file has no internalField: " + rPath.string());
+    std::size_t p = kp + std::strlen("internalField");
+    while (p < raw.size() && std::isspace(static_cast<unsigned char>(raw[p])))
+        ++p;
+    if (raw.compare(p, 7, "uniform") == 0) {
+        FoamField out;
+        out.mUniform = true;
+        out.mFlat = foam_scan_uniform_value(raw.substr(p), components);
+        return out;
+    }
+    if (raw.compare(p, 10, "nonuniform") != 0)
+        throw ReadError("OpenFOAM: internalField is neither uniform nor nonuniform: " +
+                        rPath.string());
+    if (!fmt.mBinary)
+        return foam_scan_nonuniform_list(raw.substr(p), components);
+
+    auto [n, start] = data_start(raw);
+    FoamField out;
+    out.mCount = n;
+    out.mFlat.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
+    const char* base = raw.data() + start;
+    for (std::int64_t i = 0; i < n; ++i)
+        for (int c = 0; c < components; ++c) {
+            const std::size_t off = (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                                     static_cast<std::size_t>(c)) *
+                                    static_cast<std::size_t>(fmt.mScalarBytes);
+            out.mFlat[static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                     static_cast<std::size_t>(c)] =
+                fmt.mScalarBytes == 4 ? static_cast<double>(read_le<float>(base + off))
+                                     : read_le<double>(base + off);
+        }
+    return out;
+}
+
+/// Parse a time directory's name as an OpenFOAM time value, requiring the
+/// WHOLE name to be consumed (so `"0.1_backup"` is correctly not a time dir).
+bool foam_parse_time_dir_name(const std::string& rName, double& rValue) {
+    if (rName.empty())
+        return false;
+    char* end = nullptr;
+    const double v = std::strtod(rName.c_str(), &end);
+    if (end != rName.c_str() + rName.size())
+        return false;
+    rValue = v;
+    return true;
+}
+
+/// One `<case_root>/<numeric>/` time directory: its parsed value and its
+/// own (exact, on-disk) name -- kept together because a value re-formatted
+/// back to text ("0.1" vs "0.100000") is not reliably the same string.
+struct FoamTimeDir {
+    double mValue = 0.0;
+    std::string mName;
+};
+
+/// Time directories holding at least one regular file (a field), sorted
+/// ascending by value. `0` is included only when it holds fields -- the
+/// historical (field-free) `read_openfoam` never depended on a `0/`
+/// directory existing at all.
+std::vector<FoamTimeDir> foam_time_dirs(const fs::path& rCaseRoot) {
+    std::vector<FoamTimeDir> dirs;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rCaseRoot, ec)) {
+        if (!entry.is_directory())
+            continue;
+        const std::string name = entry.path().filename().string();
+        double t = 0.0;
+        if (!foam_parse_time_dir_name(name, t))
+            continue;
+        std::error_code ec2;
+        bool has_field = false;
+        for (const auto& f : fs::directory_iterator(entry.path(), ec2)) {
+            if (f.is_regular_file()) {
+                has_field = true;
+                break;
+            }
+        }
+        if (has_field)
+            dirs.push_back({t, name});
+    }
+    std::sort(dirs.begin(), dirs.end(),
+             [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
+    return dirs;
+}
+
+/// Field file names directly inside a time directory (regular files only,
+/// non-recursive -- `uniform/`, `polyMesh/` and other sub-directories a
+/// moving-mesh case may carry there are not field files).
+std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rTimeDir, ec))
+        if (entry.is_regular_file())
+            names.push_back(entry.path().filename().string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+/// The `class` entry of a field file's `FoamFile` header (`volScalarField`,
+/// …), read the same cheap line-scan way `detect_format` reads `format`/
+/// `arch` -- no full parse needed just to classify the field.
+std::string foam_field_file_class(const fs::path& rPath) {
+    std::ifstream f(rPath, std::ios::binary);
+    if (!f)
+        return {};
+    std::string line;
+    while (std::getline(f, line)) {
+        const std::string s = openfoam_strip(line);
+        if (s.rfind("class", 0) == 0) {
+            std::string rest = openfoam_strip(s.substr(std::strlen("class")));
+            if (!rest.empty() && rest.back() == ';')
+                rest.pop_back();
+            return openfoam_strip(rest);
+        }
+        if (s == "}")
+            break;
+    }
+    return {};
+}
+
 }  // namespace
 
 Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
+    return read_openfoam(rPathIn, ReadOptions{}, rInfo);
+}
+
+Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, OpenFoamInfo& rInfo) {
     // resolve polyMesh directory
     fs::path path(rPathIn);
     fs::path poly;
@@ -65038,21 +67391,64 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
             }
         }
     }
+    // Multi-region case (v11.4.0, roadmap §1 tier B2): no single
+    // `constant/polyMesh`, but `<case>/constant/<region>/polyMesh` per
+    // region. `case_root` is the case directory regardless of which of the
+    // three `rPathIn` forms was given.
+    const fs::path case_root = path.extension() == ".foam" ? path.parent_path() : path;
+    if (poly.empty() && !rInfo.mRegion.empty()) {
+        const fs::path c = case_root / "constant" / rInfo.mRegion / "polyMesh";
+        if (fs::exists(c))
+            poly = c;
+        else
+            throw ReadError(detail::format_compat(
+                "OpenFOAM: region '{}' has no {}", rInfo.mRegion, c.string()));
+    }
+    if (poly.empty() && fs::exists(case_root / "constant" / "regionProperties")) {
+        std::vector<std::string> regions;
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(case_root / "constant", ec)) {
+            if (entry.is_directory() && fs::exists(entry.path() / "polyMesh"))
+                regions.push_back(entry.path().filename().string());
+        }
+        std::sort(regions.begin(), regions.end());
+        std::string joined;
+        for (std::size_t i = 0; i < regions.size(); ++i)
+            joined += (i ? ", " : "") + regions[i];
+        throw ReadError(detail::format_compat(
+            "'{}' is a multi-region case; set OpenFoamInfo::mRegion to one of: {}", rPathIn,
+            joined));
+    }
+
+    // Decomposed case (v11.4.0, roadmap §1 tier B2): no single
+    // `constant/polyMesh` and no `<region>` selected, but `processorN`
+    // directories each carrying their own `constant/polyMesh`.
+    bool decomposed = false;
+    std::vector<std::size_t> proc_ids;
+    if (poly.empty()) {
+        proc_ids = foam_processor_ids(case_root);
+        decomposed = !proc_ids.empty();
+        if (decomposed)
+            poly = case_root;  // for the "Reading polyMesh from" log line below only
+    }
     if (poly.empty())
         throw ReadError(detail::format_compat(
             "Could not locate polyMesh from '{}'. Expected <case>/constant/polyMesh/.", rPathIn));
     log::info("Reading polyMesh from {}", poly.string());
 
-    P3 points = read_points(poly / "points");
-    std::vector<Face> faces = read_faces(poly / "faces");
-    std::vector<std::int64_t> owner = read_int_list(poly / "owner");
-    std::vector<std::int64_t> neighbour;
-    if (fs::exists(poly / "neighbour"))
-        neighbour = read_int_list(poly / "neighbour");
-    std::vector<Patch> boundary;
-    if (fs::exists(poly / "boundary"))
-        boundary = parse_boundary(
-            strip_comments_and_header(read_whole((poly / "boundary").string()).View()));
+    RawPolyMesh raw;
+    if (decomposed) {
+        log::info("OpenFOAM: reconstructing {} from {} processor director{}", case_root.string(),
+                  proc_ids.size(), proc_ids.size() == 1 ? "y" : "ies");
+        raw = reconstruct_decomposed(case_root, proc_ids);
+    } else {
+        raw = read_raw_polymesh(poly);
+    }
+    P3 points = std::move(raw.mPoints);
+    std::vector<Face> faces = std::move(raw.mFaces);
+    std::vector<std::int64_t> owner = std::move(raw.mOwner);
+    std::vector<std::int64_t> neighbour = std::move(raw.mNeighbour);
+    std::vector<Patch> boundary = std::move(raw.mBoundary);
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)
@@ -65108,14 +67504,25 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         }
     });
 
+    // Original OpenFOAM cell id -> (is_poly, bucket key, row within that
+    // bucket), captured as cells are bucketed so zone regions can later
+    // recover each cell's position in the final Mesh (see `orig_cell_to_global`
+    // below). `row == npos` marks a skipped (degenerate) cell.
+    constexpr std::size_t npos = static_cast<std::size_t>(-1);
+    std::vector<std::tuple<bool, std::string, std::size_t>> placement(
+        static_cast<std::size_t>(n_cells), std::tuple<bool, std::string, std::size_t>{false, "",
+                                                                                       npos});
+
     std::size_t n_skipped = 0;
     std::size_t n_polyhedra = 0;
-    for (auto& res : results) {
+    for (std::size_t cid = 0; cid < results.size(); ++cid) {
+        auto& res = results[cid];
         if (res.mType == "polyhedron") {
             std::size_t nn = unique_node_count(res.mFaces);
             std::string key = "polyhedron" + std::to_string(nn);
             if (!poly_buckets.count(key))
                 poly_order.push_back(key);
+            placement[cid] = {true, key, poly_buckets[key].size()};
             poly_buckets[key].push_back(std::move(res.mFaces));
             ++n_polyhedra;
         } else if (res.mType.empty()) {
@@ -65123,6 +67530,7 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         } else {
             if (!vol_buckets.count(res.mType))
                 vol_order.push_back(res.mType);
+            placement[cid] = {false, res.mType, vol_buckets[res.mType].size()};
             vol_buckets[res.mType].push_back(std::move(res.mConn));
         }
     }
@@ -65130,6 +67538,17 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         log::warn("{} cell(s) skipped (degenerate topology).", n_skipped);
     if (n_polyhedra > 0)
         log::info("{} general polyhedron cell(s) found.", n_polyhedra);
+
+    // Block index of each bucket in the order blocks are about to be added
+    // (volume types first, in `vol_order`, then polyhedron buckets in
+    // `poly_order`) -- the boundary 2D blocks added further down come after
+    // both, so this table stays valid for `detail::block_bases` once those
+    // volume/polyhedron blocks are on the mesh.
+    std::unordered_map<std::string, std::size_t> vol_block_index, poly_block_index;
+    for (std::size_t k = 0; k < vol_order.size(); ++k)
+        vol_block_index[vol_order[k]] = k;
+    for (std::size_t k = 0; k < poly_order.size(); ++k)
+        poly_block_index[poly_order[k]] = vol_order.size() + k;
 
     Mesh mesh;
     std::size_t npts = points.size();
@@ -65171,6 +67590,128 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         std::size_t nc = cells.size();
         mesh.AddPolyhedronBlock(key, std::move(cells));
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
+    }
+
+    // Original OpenFOAM cell id -> global (block-major) cell index, used by
+    // both the zones-as-regions block below and time-directory field
+    // attachment further down. `detail::block_bases(mesh)` only needs to be
+    // right for the blocks added so far (volume + polyhedron); boundary (2D)
+    // blocks are always appended after, so their prefix sums never change
+    // what is computed here.
+    std::vector<std::int64_t> orig_cell_to_global(static_cast<std::size_t>(n_cells), -1);
+    {
+        const std::vector<std::int64_t> bases = detail::block_bases(mesh);
+        for (std::size_t cid = 0; cid < placement.size(); ++cid) {
+            const auto& [is_poly, key, row] = placement[cid];
+            if (row == npos)
+                continue;
+            const std::size_t block = is_poly ? poly_block_index.at(key) : vol_block_index.at(key);
+            orig_cell_to_global[cid] =
+                detail::block_row_to_global(bases, block, static_cast<std::int64_t>(row));
+        }
+    }
+
+    // ---- zones as named regions (cellZones/faceZones/pointZones) ----
+    {
+        // Local facet index of face `fid` within its owner cell `cid`,
+        // matching the order `AddPolyhedronBlock`/`AddCellBlock` end up
+        // storing: for a polyhedron, that is simply `fid`'s position in
+        // `cell_faces[cid]` (the same order the per-cell reconstruction loop
+        // above walked to build `oriented`, and that `AddPolyhedronBlock`
+        // preserves verbatim); a named type's reconstruction instead rewinds
+        // into `cell_faces.hpp`'s canonical per-type order, so the position
+        // is recovered by matching each canonical face's corner *set*
+        // against `fid`'s -- orientation- and start-point-independent.
+        auto local_facet = [&](std::size_t cid, std::int64_t fid) -> int {
+            const auto& [is_poly, key, row] = placement[cid];
+            if (row == npos)
+                return -1;
+            if (is_poly) {
+                const auto& cf = cell_faces[cid];
+                for (std::size_t k = 0; k < cf.size(); ++k)
+                    if (cf[k] == fid)
+                        return static_cast<int>(k);
+                return -1;
+            }
+            const Face& conn = vol_buckets.at(key)[row];
+            const auto& facedefs = detail::cell_faces(cell_type_from_name(key));
+            const Face& fnodes = faces[static_cast<std::size_t>(fid)];
+            const std::unordered_set<std::int64_t> target(fnodes.begin(), fnodes.end());
+            for (std::size_t k = 0; k < facedefs.size(); ++k) {
+                std::unordered_set<std::int64_t> cand;
+                for (int c = 0; c < facedefs[k].mNumCorners; ++c)
+                    cand.insert(conn[facedefs[k].mNodes[c]]);
+                if (cand == target)
+                    return static_cast<int>(k);
+            }
+            return -1;
+        };
+
+        auto read_zone_file = [&](const char* pFile, const char* pKey) {
+            std::vector<Zone> zones;
+            if (fs::exists(poly / pFile))
+                zones = parse_zone_file(
+                    strip_comments_and_header(read_whole((poly / pFile).string()).View()), pKey);
+            return zones;
+        };
+
+        for (const Zone& z : read_zone_file("cellZones", "cellLabels")) {
+            std::size_t n_dropped = 0;
+            std::vector<std::int64_t> entries;
+            entries.reserve(z.mIds.size());
+            for (std::int64_t cid : z.mIds) {
+                if (cid < 0 || cid >= n_cells ||
+                    orig_cell_to_global[static_cast<std::size_t>(cid)] < 0) {
+                    ++n_dropped;
+                    continue;
+                }
+                entries.push_back(orig_cell_to_global[static_cast<std::size_t>(cid)]);
+            }
+            if (n_dropped > 0)
+                log::warn("OpenFOAM: cellZone '{}' drops {} entr{} (degenerate cell)", z.mName,
+                          n_dropped, n_dropped == 1 ? "y" : "ies");
+            NDArray arr = NDArray::Uninit(DType::Int64, {entries.size()});
+            std::copy(entries.begin(), entries.end(), arr.As<std::int64_t>());
+            mesh.AddRegion(Region(z.mName, RegionKind::Cell, std::move(arr)));
+        }
+
+        for (const Zone& z : read_zone_file("pointZones", "pointLabels")) {
+            std::vector<std::int64_t> entries;
+            entries.reserve(z.mIds.size());
+            for (std::int64_t pid : z.mIds)
+                if (pid >= 0 && static_cast<std::size_t>(pid) < npts)
+                    entries.push_back(pid);
+            NDArray arr = NDArray::Uninit(DType::Int64, {entries.size()});
+            std::copy(entries.begin(), entries.end(), arr.As<std::int64_t>());
+            mesh.AddRegion(Region(z.mName, RegionKind::Point, std::move(arr)));
+        }
+
+        for (const Zone& z : read_zone_file("faceZones", "faceLabels")) {
+            std::size_t n_dropped = 0;
+            std::vector<std::int64_t> pairs;
+            pairs.reserve(z.mIds.size() * 2);
+            for (std::int64_t fid : z.mIds) {
+                if (fid < 0 || static_cast<std::size_t>(fid) >= faces.size()) {
+                    ++n_dropped;
+                    continue;
+                }
+                const std::int64_t cid = owner[static_cast<std::size_t>(fid)];
+                const std::int64_t global = orig_cell_to_global[static_cast<std::size_t>(cid)];
+                const int facet = local_facet(static_cast<std::size_t>(cid), fid);
+                if (global < 0 || facet < 0) {
+                    ++n_dropped;
+                    continue;
+                }
+                pairs.push_back(global);
+                pairs.push_back(facet);
+            }
+            if (n_dropped > 0)
+                log::warn("OpenFOAM: faceZone '{}' drops {} entr{} (degenerate owner cell)",
+                          z.mName, n_dropped, n_dropped == 1 ? "y" : "ies");
+            NDArray arr = NDArray::Uninit(DType::Int64, {pairs.size() / 2, 2});
+            std::copy(pairs.begin(), pairs.end(), arr.As<std::int64_t>());
+            mesh.AddRegion(Region(z.mName, RegionKind::Side, std::move(arr)));
+        }
     }
 
     // boundary cells grouped by size, with patch family tags
@@ -65234,7 +67775,97 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
 
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
+
+    // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
+    if (rOptions.WantsAnyData()) {
+        const std::vector<FoamTimeDir> time_dirs = foam_time_dirs(case_root);
+        if (!time_dirs.empty()) {
+            const std::size_t step = rOptions.ResolveTimeStep(time_dirs.size());
+            const fs::path time_dir = case_root / time_dirs[step].mName;
+            for (const std::string& field_name : foam_field_files(time_dir)) {
+                if (!rOptions.WantsArray(field_name))
+                    continue;
+                const fs::path field_path = time_dir / field_name;
+                const std::string cls = foam_field_file_class(field_path);
+                const FoamFieldClass fc = foam_field_class(cls);
+                if (!fc.mSupported) {
+                    log::warn(
+                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; skipped",
+                        field_name, cls.empty() ? "?" : cls);
+                    continue;
+                }
+                const FoamField values = foam_read_internal_field(field_path, fc.mComponents);
+
+                if (fc.mIsPoint) {
+                    if (!values.mUniform && static_cast<std::size_t>(values.mCount) != npts) {
+                        log::warn(
+                            "OpenFOAM: field '{}' has {} value(s), expected {} point(s); skipped",
+                            field_name, values.mCount, npts);
+                        continue;
+                    }
+                    NDArray arr = NDArray::Uninit(
+                        DType::Float64, {npts, static_cast<std::size_t>(fc.mComponents)});
+                    double* dst = arr.As<double>();
+                    if (values.mUniform) {
+                        for (std::size_t i = 0; i < npts; ++i)
+                            for (int c = 0; c < fc.mComponents; ++c)
+                                dst[i * static_cast<std::size_t>(fc.mComponents) +
+                                    static_cast<std::size_t>(c)] = values.mFlat[static_cast<std::size_t>(c)];
+                    } else {
+                        std::copy(values.mFlat.begin(), values.mFlat.end(), dst);
+                    }
+                    mesh.AddPointData(field_name, std::move(arr));
+                    continue;
+                }
+
+                if (!values.mUniform && values.mCount != n_cells) {
+                    log::warn("OpenFOAM: field '{}' has {} value(s), expected {} cell(s); skipped",
+                              field_name, values.mCount, n_cells);
+                    continue;
+                }
+                std::vector<NDArray> blocks(mesh.NumCellBlocks());
+                for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+                    NDArray arr = NDArray::Uninit(
+                        DType::Float64,
+                        {mesh.Cells(b).NumCells(), static_cast<std::size_t>(fc.mComponents)});
+                    double* dst = arr.As<double>();
+                    std::fill(dst, dst + arr.Size(), std::numeric_limits<double>::quiet_NaN());
+                    blocks[b] = std::move(arr);
+                }
+                for (std::size_t cid = 0; cid < placement.size(); ++cid) {
+                    const auto& [is_poly, key, row] = placement[cid];
+                    if (row == npos)
+                        continue;
+                    const std::size_t block =
+                        is_poly ? poly_block_index.at(key) : vol_block_index.at(key);
+                    double* dst = blocks[block].As<double>();
+                    for (int c = 0; c < fc.mComponents; ++c)
+                        dst[row * static_cast<std::size_t>(fc.mComponents) + static_cast<std::size_t>(c)] =
+                            values.mUniform ? values.mFlat[static_cast<std::size_t>(c)]
+                                            : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
+                                                            static_cast<std::size_t>(c)];
+                }
+                mesh.AddCellData(field_name, std::move(blocks));
+            }
+        }
+    }
+
     return mesh;
+}
+
+MeshMetadata read_openfoam_metadata(const std::string& rPathIn, const ReadOptions& rOptions) {
+    const fs::path path(rPathIn);
+    const fs::path case_root = path.extension() == ".foam" ? path.parent_path() : path;
+
+    std::vector<double> times;
+    for (const FoamTimeDir& t : foam_time_dirs(case_root))
+        times.push_back(t.mValue);
+
+    OpenFoamInfo info;
+    MeshMetadata meta = metadata_from_mesh(read_openfoam(rPathIn, rOptions, info));
+    meta.mTimeValues = std::move(times);
+    meta.mFellBackToFullRead = true;
+    return meta;
 }
 
 // ==========================================================================
@@ -65646,6 +68277,114 @@ std::ofstream foam_open(const fs::path& rPath) {
     return f;
 }
 
+/// One zone as it will be written: a name plus its member ids, already
+/// converted to the OpenFOAM numbering (compact cell id / point id / written
+/// face id -- see the three `foam_collect_*_zones` callers).
+using FoamZoneOut = std::pair<std::string, std::vector<std::int64_t>>;
+
+void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char* pObject,
+                          const char* pZoneType, const char* pLabelKey,
+                          const std::vector<FoamZoneOut>& rZones) {
+    std::ofstream f = foam_open(rPath);
+    foam_write_header(f, pClass, pObject);
+    f << rZones.size() << "\n(\n";
+    for (const auto& [name, ids] : rZones) {
+        f << name << "\n{\n";
+        f << "    type " << pZoneType << ";\n";
+        f << "    " << pLabelKey << " List<label>\n    " << ids.size() << "\n    (\n";
+        for (std::int64_t id : ids)
+            f << "    " << id << "\n";
+        f << "    );\n";
+        f << "}\n";
+    }
+    f << ")\n";
+}
+
+/// `Region`s of kind `Cell` -> `cellZones` entries: a global cell index maps
+/// 1:1 onto a written OpenFOAM cell id via `rG2C` (`GlobalFaces::mCellToGlobal`
+/// inverted) -- cells are never reordered on write, unlike faces.
+std::vector<FoamZoneOut> foam_collect_cell_zones(
+    const Mesh& rMesh, const std::unordered_map<std::int64_t, std::int64_t>& rG2C) {
+    std::vector<FoamZoneOut> zones;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        std::vector<std::int64_t> ids;
+        const std::int64_t* e = r.Entries();
+        std::size_t n_dropped = 0;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            const auto it = rG2C.find(e[k]);
+            if (it == rG2C.end()) {
+                ++n_dropped;
+                continue;
+            }
+            ids.push_back(it->second);
+        }
+        if (n_dropped > 0)
+            log::warn("OpenFOAM: cellZone '{}' drops {} entr{} outside the volume mesh", r.mName,
+                      n_dropped, n_dropped == 1 ? "y" : "ies");
+        zones.emplace_back(r.mName, std::move(ids));
+    }
+    return zones;
+}
+
+/// `Region`s of kind `Point` -> `pointZones` entries: a point index needs no
+/// conversion, since points are never reordered on write either.
+std::vector<FoamZoneOut> foam_collect_point_zones(const Mesh& rMesh) {
+    std::vector<FoamZoneOut> zones;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Point)
+            continue;
+        const std::int64_t* e = r.Entries();
+        zones.emplace_back(r.mName, std::vector<std::int64_t>(e, e + r.NumEntries()));
+    }
+    return zones;
+}
+
+/// `Region`s of kind `Side` -> `faceZones` entries. A `(global cell, local
+/// facet)` pair becomes a written face id via `rG2C` (global -> compact cell),
+/// `GlobalFaces::CellFaces` (compact cell + local facet -> signed GlobalFaces
+/// face id) and `rOldToNew` (`FoamFaceOrder::mNewToOld` inverted). `flipMap` is
+/// never written -- see `foam_zone_label_list`'s doc comment on the read side.
+std::vector<FoamZoneOut> foam_collect_face_zones(
+    const Mesh& rMesh, const detail::GlobalFaces& rFaces,
+    const std::unordered_map<std::int64_t, std::int64_t>& rG2C,
+    const std::vector<std::int64_t>& rOldToNew) {
+    std::vector<FoamZoneOut> zones;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const meshioplusplus::Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Side)
+            continue;
+        std::vector<std::int64_t> ids;
+        const std::int64_t* e = r.Entries();
+        std::size_t n_dropped = 0;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            const std::int64_t global_cell = e[2 * k];
+            const std::int64_t facet = e[2 * k + 1];
+            const auto it = rG2C.find(global_cell);
+            if (it == rG2C.end()) {
+                ++n_dropped;
+                continue;
+            }
+            const std::size_t compact = static_cast<std::size_t>(it->second);
+            if (facet < 0 || static_cast<std::size_t>(facet) >= rFaces.NumCellFaces(compact)) {
+                ++n_dropped;
+                continue;
+            }
+            const std::int64_t signed_face = rFaces.CellFaces(compact)[facet];
+            const std::size_t old_face = static_cast<std::size_t>(std::abs(signed_face) - 1);
+            ids.push_back(rOldToNew[old_face]);
+        }
+        if (n_dropped > 0)
+            log::warn("OpenFOAM: faceZone '{}' drops {} entr{} outside the volume mesh", r.mName,
+                      n_dropped, n_dropped == 1 ? "y" : "ies");
+        zones.emplace_back(r.mName, std::move(ids));
+    }
+    return zones;
+}
+
 }  // namespace
 
 void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
@@ -65719,10 +68458,14 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     // Companion files this writer does not produce but OpenFOAM would read.
     // Leaving a stale one behind corrupts the case, so remove exactly these --
     // never the whole directory, which may hold a user's own files.
+    // `cellZones`/`faceZones`/`pointZones` are handled separately below: this
+    // writer produces them once the mesh carries the matching `Region` kind,
+    // and only deletes a stale one when it no longer does (so an old zone
+    // file is not left behind once its region is removed from the mesh).
     for (const char* name :
-         {"cellZones", "faceZones", "pointZones", "meshModifiers", "boundaryProcAddressing",
-          "cellProcAddressing", "faceProcAddressing", "pointProcAddressing", "cellLevel",
-          "pointLevel", "level0Edge", "refinementHistory", "surfaceIndex"}) {
+         {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing", "faceProcAddressing",
+          "pointProcAddressing", "cellLevel", "pointLevel", "level0Edge", "refinementHistory",
+          "surfaceIndex"}) {
         std::error_code rc;
         if (fs::remove(poly / name, rc))
             log::info("OpenFOAM: removed stale {}", name);
@@ -65794,6 +68537,36 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
             f << "    }\n";
         }
         f << ")\n";
+    }
+
+    // ---- zones from named regions (cellZones/faceZones/pointZones) ----
+    {
+        std::unordered_map<std::int64_t, std::int64_t> global_to_compact;
+        for (std::size_t c = 0; c < faces.mCellToGlobal.size(); ++c)
+            global_to_compact[faces.mCellToGlobal[c]] = static_cast<std::int64_t>(c);
+        std::vector<std::int64_t> old_to_new(faces.NumFaces());
+        for (std::size_t i = 0; i < order.mNewToOld.size(); ++i)
+            old_to_new[static_cast<std::size_t>(order.mNewToOld[i])] = static_cast<std::int64_t>(i);
+
+        auto write_or_remove = [&](const char* pFile, const std::vector<FoamZoneOut>& rZones,
+                                   const char* pClass, const char* pZoneType,
+                                   const char* pLabelKey) {
+            if (rZones.empty()) {
+                std::error_code rc;
+                if (fs::remove(poly / pFile, rc))
+                    log::info("OpenFOAM: removed stale {}", pFile);
+                return;
+            }
+            foam_write_zone_file(poly / pFile, pClass, pFile, pZoneType, pLabelKey, rZones);
+        };
+
+        write_or_remove("cellZones", foam_collect_cell_zones(rMesh, global_to_compact),
+                        "cellZoneList", "cellZone", "cellLabels");
+        write_or_remove("pointZones", foam_collect_point_zones(rMesh), "pointZoneList",
+                        "pointZone", "pointLabels");
+        write_or_remove("faceZones",
+                        foam_collect_face_zones(rMesh, faces, global_to_compact, old_to_new),
+                        "faceZoneList", "faceZone", "faceLabels");
     }
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
@@ -67676,7 +70449,234 @@ const std::vector<int>& tecplot_order(const std::string& rM) {
 
 }  // namespace
 
-Mesh read_tecplot(const std::string& rPath) {
+namespace {
+
+// One ZONE header's parsed fields, its data section's line range, and its
+// transient identity (SOLUTIONTIME/STRANDID). Shared by read_tecplot (which
+// decodes exactly one zone's data) and read_tecplot_metadata (which decodes
+// none): both start from the same tecplot_scan_zones pass, so which zone the
+// data-decoding step picks and which zones the metadata's timeline lists can
+// never drift against each other.
+struct TecplotZoneHeader {
+    std::map<std::string, std::string> mFields;  // NODES/N/ELEMENTS/E/DATAPACKING/ZONETYPE/F/ET/NV
+    std::string mVarloc;
+    bool mHasSolutionTime = false;
+    double mSolutionTime = 0.0;
+    bool mHasStrandId = false;
+    int mStrandId = 0;
+    std::size_t mDataStart = 0;
+    std::size_t mNumNodes = 0;
+    std::size_t mNumCells = 0;
+};
+
+std::string tecplot_zone_field(const TecplotZoneHeader& rZ, const char* pA, const char* pB) {
+    auto it = rZ.mFields.find(pA);
+    if (it != rZ.mFields.end())
+        return it->second;
+    it = rZ.mFields.find(pB);
+    return it != rZ.mFields.end() ? it->second : std::string();
+}
+
+// The zone's element type and, for FEBLOCK data, which variables are
+// cell-centered -- the same derivation whether or not this zone's data is
+// ever decoded.
+void tecplot_zone_format(const TecplotZoneHeader& rZ, std::size_t NumVariables, bool& rFeblock,
+                         std::string& rZtype, std::vector<int>& rCellCentered) {
+    std::string fmt;
+    if (rZ.mFields.count("F")) {
+        fmt = tecplot_upper(rZ.mFields.at("F"));
+        rZtype = rZ.mFields.count("ET") ? rZ.mFields.at("ET") : "";
+    } else {
+        fmt = "FE" + tecplot_upper(tecplot_zone_field(rZ, "DATAPACKING", ""));
+        rZtype = tecplot_zone_field(rZ, "ZONETYPE", "");
+    }
+    rFeblock = (fmt == "FEBLOCK");
+
+    rCellCentered.assign(NumVariables, 0);
+    if (!rFeblock)
+        return;
+    if (rZ.mFields.count("NV")) {
+        int nv = std::stoi(rZ.mFields.at("NV"));
+        for (std::size_t k = static_cast<std::size_t>(nv); k < NumVariables; ++k)
+            rCellCentered[k] = 1;
+    } else if (!rZ.mVarloc.empty()) {
+        std::string vc = rZ.mVarloc.substr(1, rZ.mVarloc.size() - 2);  // strip ()
+        std::vector<std::string> entries;
+        std::string cur;
+        for (char c : vc) {
+            if (c == ',') {
+                entries.push_back(cur);
+                cur.clear();
+            } else {
+                cur += c;
+            }
+        }
+        if (!cur.empty())
+            entries.push_back(cur);
+        for (const auto& entry : entries) {
+            std::size_t eq = entry.find('=');
+            if (eq == std::string::npos)
+                continue;
+            std::string rng = entry.substr(0, eq), loc = tecplot_upper(entry.substr(eq + 1));
+            if (loc != "CELLCENTERED")
+                continue;
+            rng = rng.substr(1, rng.size() - 2);  // strip []
+            std::size_t dash = rng.find('-');
+            if (dash == std::string::npos) {
+                rCellCentered[static_cast<std::size_t>(std::stoi(rng) - 1)] = 1;
+            } else {
+                int a = std::stoi(rng.substr(0, dash)), b = std::stoi(rng.substr(dash + 1));
+                for (int k = a; k <= b; ++k)
+                    rCellCentered[static_cast<std::size_t>(k - 1)] = 1;
+            }
+        }
+    }
+}
+
+// How many numeric tokens this zone's data block holds, in file order --
+// FEBLOCK is one run per variable (cell-centered ones NumCells long, the
+// rest NumNodes long); POINT/FEPOINT is NumNodes rows of NumVariables each.
+std::size_t tecplot_zone_data_token_count(const TecplotZoneHeader& rZ, std::size_t NumVariables,
+                                          bool Feblock, const std::vector<int>& rCellCentered) {
+    if (!Feblock)
+        return rZ.mNumNodes * NumVariables;
+    std::size_t total = 0;
+    for (std::size_t k = 0; k < NumVariables; ++k)
+        total += rCellCentered[k] ? rZ.mNumCells : rZ.mNumNodes;
+    return total;
+}
+
+// One pass over every line, splitting VARIABLES from every ZONE header (not
+// just the first) and locating each zone's data section by actually counting
+// off its own token budget plus its connectivity lines -- Tecplot ASCII has
+// no fixed tokens-per-line convention, so this is the only reliable way to
+// find where one zone's data ends and the next one's header begins.
+std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>& rLines,
+                                                  std::vector<std::string>& rVariables) {
+    std::vector<TecplotZoneHeader> zones;
+    std::size_t i = 0;
+    for (; i < rLines.size(); ++i) {
+        std::string u = tecplot_upper(rLines[i]);
+        if (u.rfind("VARIABLES", 0) == 0) {
+            std::string joined = rLines[i];
+            while (i + 1 < rLines.size() && tecplot_strip(rLines[i + 1])[0] == '"')
+                joined += " " + rLines[++i];
+            std::string rhs = joined.substr(joined.find('=') + 1);
+            std::size_t p = 0;
+            while (p < rhs.size()) {
+                if (rhs[p] == '"') {
+                    std::size_t q = rhs.find('"', p + 1);
+                    rVariables.push_back(rhs.substr(p + 1, q - p - 1));
+                    p = q + 1;
+                } else if (std::isspace((unsigned char)rhs[p]) || rhs[p] == ',') {
+                    ++p;
+                } else {
+                    std::size_t q = p;
+                    while (q < rhs.size() && !std::isspace((unsigned char)rhs[q]) && rhs[q] != ',')
+                        ++q;
+                    rVariables.push_back(rhs.substr(p, q - p));
+                    p = q;
+                }
+            }
+            continue;
+        }
+        if (u.rfind("ZONE", 0) != 0)
+            continue;
+
+        TecplotZoneHeader z;
+        std::string joined = rLines[i];
+        while (i + 1 < rLines.size() && !is_float_token(tecplot_tokens(rLines[i + 1])[0]))
+            joined += " " + rLines[++i];
+        z.mDataStart = i + 1;
+
+        std::string ju = joined;
+        std::size_t vp = tecplot_upper(ju).find("VARLOCATION");
+        if (vp != std::string::npos) {
+            std::size_t p1 = ju.find('(', vp), p2 = ju.find(')', p1);
+            z.mVarloc = ju.substr(p1, p2 - p1 + 1);
+            z.mVarloc.erase(std::remove(z.mVarloc.begin(), z.mVarloc.end(), ' '), z.mVarloc.end());
+            ju = ju.substr(0, vp) + ju.substr(p2 + 1);
+        }
+        std::string body = ju.substr(4);
+        for (auto& c : body)
+            if (c == ',' || c == '=')
+                c = ' ';
+        auto tk = tecplot_tokens(body);
+        for (std::size_t k = 0; k + 1 < tk.size(); ++k) {
+            std::string key = tecplot_upper(tk[k]);
+            if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
+                key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
+                key == "NV") {
+                z.mFields[key] = tk[k + 1];
+            } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
+                if (key == "SOLUTIONTIME") {
+                    z.mSolutionTime = std::strtod(tk[k + 1].c_str(), nullptr);
+                    z.mHasSolutionTime = true;
+                } else {
+                    z.mStrandId = std::stoi(tk[k + 1]);
+                    z.mHasStrandId = true;
+                }
+            }
+        }
+        z.mNumNodes = std::stoull(tecplot_zone_field(z, "NODES", "N"));
+        z.mNumCells = std::stoull(tecplot_zone_field(z, "ELEMENTS", "E"));
+
+        bool feblock = false;
+        std::string ztype;
+        std::vector<int> cell_centered;
+        tecplot_zone_format(z, rVariables.size(), feblock, ztype, cell_centered);
+        const std::size_t want =
+            tecplot_zone_data_token_count(z, rVariables.size(), feblock, cell_centered);
+
+        std::size_t li = z.mDataStart, got = 0;
+        while (got < want && li < rLines.size()) {
+            got += tecplot_tokens(rLines[li]).size();
+            ++li;
+        }
+        li += z.mNumCells;  // one connectivity line per cell
+        zones.push_back(z);
+        i = li - 1;  // the for-loop's ++i resumes scanning right after
+    }
+    if (rVariables.empty())
+        throw ReadError("Tecplot: no VARIABLES");
+    if (zones.empty())
+        throw ReadError("Tecplot: no ZONE");
+    return zones;
+}
+
+// The zones read_tecplot/read_tecplot_metadata treat as one timeline: those
+// sharing rZones[0]'s STRANDID when any zone carries one (SOLUTIONTIME with
+// no STRANDID at all groups every zone together), sorted by SOLUTIONTIME.
+// Zones with no SOLUTIONTIME at all are not a timeline -- multiple such
+// zones is the "several static zones" case roadmap §7 owns, not this one;
+// only the first is read here, with a warning if there is more than one.
+std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& rZones) {
+    if (!rZones[0].mHasSolutionTime) {
+        if (rZones.size() > 1)
+            log::warn(
+                "Tecplot: {} zones with no SOLUTIONTIME; reading the first only (multiple "
+                "non-transient zones are not yet concatenated)",
+                rZones.size());
+        return {0};
+    }
+    std::vector<std::size_t> idx;
+    for (std::size_t k = 0; k < rZones.size(); ++k) {
+        if (!rZones[k].mHasSolutionTime)
+            continue;
+        if (rZones[0].mHasStrandId && rZones[k].mHasStrandId &&
+            rZones[k].mStrandId != rZones[0].mStrandId)
+            continue;
+        idx.push_back(k);
+    }
+    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
+        return rZones[a].mSolutionTime < rZones[b].mSolutionTime;
+    });
+    return idx;
+}
+
+}  // namespace
+
+MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     std::ifstream in(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -67690,125 +70690,54 @@ Mesh read_tecplot(const std::string& rPath) {
     }
 
     std::vector<std::string> variables;
-    std::map<std::string, std::string> zone;
-    std::string varloc;
-    std::size_t i = 0, data_start = lines.size();
-    for (; i < lines.size(); ++i) {
-        std::string u = tecplot_upper(lines[i]);
-        if (u.rfind("VARIABLES", 0) == 0) {
-            std::string joined = lines[i];
-            while (i + 1 < lines.size() && tecplot_strip(lines[i + 1])[0] == '"')
-                joined += " " + lines[++i];
-            std::string rhs = joined.substr(joined.find('=') + 1);
-            // collect quoted names (or bare tokens)
-            std::size_t p = 0;
-            while (p < rhs.size()) {
-                if (rhs[p] == '"') {
-                    std::size_t q = rhs.find('"', p + 1);
-                    variables.push_back(rhs.substr(p + 1, q - p - 1));
-                    p = q + 1;
-                } else if (std::isspace((unsigned char)rhs[p]) || rhs[p] == ',') {
-                    ++p;
-                } else {
-                    std::size_t q = p;
-                    while (q < rhs.size() && !std::isspace((unsigned char)rhs[q]) && rhs[q] != ',')
-                        ++q;
-                    variables.push_back(rhs.substr(p, q - p));
-                    p = q;
-                }
-            }
-        } else if (u.rfind("ZONE", 0) == 0) {
-            std::string joined = lines[i];
-            while (i + 1 < lines.size() && !is_float_token(tecplot_tokens(lines[i + 1])[0]))
-                joined += " " + lines[++i];
-            data_start = i + 1;
-            // Extract VARLOCATION(...)
-            std::string ju = joined;
-            std::size_t vp = tecplot_upper(ju).find("VARLOCATION");
-            if (vp != std::string::npos) {
-                std::size_t p1 = ju.find('(', vp), p2 = ju.find(')', p1);
-                varloc = ju.substr(p1, p2 - p1 + 1);
-                varloc.erase(std::remove(varloc.begin(), varloc.end(), ' '), varloc.end());
-                ju = ju.substr(0, vp) + ju.substr(p2 + 1);
-            }
-            // tokenize key/values (drop ZONE, replace ,/= with space)
-            std::string body = ju.substr(4);
-            for (auto& c : body)
-                if (c == ',' || c == '=')
-                    c = ' ';
-            auto tk = tecplot_tokens(body);
-            for (std::size_t k = 0; k + 1 < tk.size(); ++k) {
-                std::string key = tecplot_upper(tk[k]);
-                if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
-                    key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
-                    key == "NV")
-                    zone[key] = tk[k + 1];
-            }
-            break;
-        }
-    }
-    if (variables.empty())
-        throw ReadError("Tecplot: no VARIABLES");
+    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
+    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
 
-    auto getz = [&](const char* a, const char* b) -> std::string {
-        if (zone.count(a))
-            return zone[a];
-        if (zone.count(b))
-            return zone[b];
-        return "";
-    };
-    std::size_t num_nodes = std::stoull(getz("NODES", "N"));
-    std::size_t num_cells = std::stoull(getz("ELEMENTS", "E"));
-    std::string fmt, ztype;
-    if (zone.count("F")) {
-        fmt = tecplot_upper(zone["F"]);
-        ztype = zone.count("ET") ? zone["ET"] : "";
-    } else {
-        fmt = "FE" + tecplot_upper(getz("DATAPACKING", ""));
-        ztype = getz("ZONETYPE", "");
-    }
-    bool feblock = (fmt == "FEBLOCK");
+    MeshMetadata meta;
+    meta.mFormat = "tecplot";
+    const TecplotZoneHeader& first = zones[timeline[0]];
+    meta.mNumPoints = first.mNumNodes;
+    meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
+    CellBlockInfo block;
+    bool feblock = false;
+    std::string ztype;
+    std::vector<int> cell_centered;
+    tecplot_zone_format(first, variables.size(), feblock, ztype, cell_centered);
+    block.mType = tecplot_to_meshio(ztype);
+    block.mNumCells = first.mNumCells;
+    meta.mCellBlocks.push_back(std::move(block));
+    if (first.mHasSolutionTime)
+        for (std::size_t idx : timeline)
+            meta.mTimeValues.push_back(zones[idx].mSolutionTime);
+    return meta;
+}
 
-    std::vector<int> cell_centered(variables.size(), 0);
-    if (feblock) {
-        if (zone.count("NV")) {
-            int nv = std::stoi(zone["NV"]);
-            for (std::size_t k = nv; k < variables.size(); ++k)
-                cell_centered[k] = 1;
-        } else if (!varloc.empty()) {
-            std::string vc = varloc.substr(1, varloc.size() - 2);  // strip ()
-            for (const auto& entry : [&] {
-                     std::vector<std::string> es;
-                     std::string cur;
-                     for (char c : vc) {
-                         if (c == ',') {
-                             es.push_back(cur);
-                             cur.clear();
-                         } else
-                             cur += c;
-                     }
-                     if (!cur.empty())
-                         es.push_back(cur);
-                     return es;
-                 }()) {
-                std::size_t eq = entry.find('=');
-                if (eq == std::string::npos)
-                    continue;
-                std::string rng = entry.substr(0, eq), loc = tecplot_upper(entry.substr(eq + 1));
-                if (loc != "CELLCENTERED")
-                    continue;
-                rng = rng.substr(1, rng.size() - 2);  // strip []
-                std::size_t dash = rng.find('-');
-                if (dash == std::string::npos) {
-                    cell_centered[std::stoi(rng) - 1] = 1;
-                } else {
-                    int a = std::stoi(rng.substr(0, dash)), b = std::stoi(rng.substr(dash + 1));
-                    for (int k = a; k <= b; ++k)
-                        cell_centered[k - 1] = 1;
-                }
-            }
-        }
+Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
+    std::ifstream in(rPath);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    std::vector<std::string> lines;
+    std::string l;
+    while (std::getline(in, l)) {
+        std::string s = tecplot_strip(l);
+        if (s.empty() || s[0] == '#')
+            continue;
+        lines.push_back(s);
     }
+
+    std::vector<std::string> variables;
+    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
+    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
+    const std::size_t step = rOptions.ResolveTimeStep(timeline.size());
+    const TecplotZoneHeader& zone_hdr = zones[timeline[step]];
+    const std::size_t data_start = zone_hdr.mDataStart;
+    const std::size_t num_nodes = zone_hdr.mNumNodes;
+    const std::size_t num_cells = zone_hdr.mNumCells;
+
+    bool feblock = false;
+    std::string ztype;
+    std::vector<int> cell_centered;
+    tecplot_zone_format(zone_hdr, variables.size(), feblock, ztype, cell_centered);
 
     // Read data values.
     std::vector<std::size_t> ndata(variables.size());
@@ -67904,6 +70833,8 @@ Mesh read_tecplot(const std::string& rPath) {
     mesh.AddCellBlock(mtype, std::move(celldata));
     return mesh;
 }
+
+Mesh read_tecplot(const std::string& rPath) { return read_tecplot(rPath, ReadOptions{}); }
 
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
@@ -71540,6 +74471,272 @@ Mesh read_vtk(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtk_read.cpp =====
+// ===== begin src/cpp/src/formats/vtm.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// Build a standalone single-block mesh: block `Idx`'s own cells (whichever
+// representation -- rectangular, polygon, or polyhedron), the mesh's full
+// point array (pruned below), and that block's slice of every cell_data key.
+// field_data is not carried onto pieces: it describes the whole mesh, not one
+// block, and .vtm has no per-block place to put it (see vtm.md).
+Mesh vtm_extract_piece(const Mesh& rMesh, std::size_t Idx) {
+    Mesh piece;
+    piece.AssignPoints(detail::data_owned_copy(rMesh.Points()));
+
+    const auto cb = rMesh.Cells(Idx);
+    if (cb.IsPolyhedron()) {
+        std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            cells[r].resize(cb.NumFaces(r));
+            for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                const auto face = cb.Face(r, f);
+                cells[r][f].assign(face.first, face.first + face.second);
+            }
+        }
+        piece.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+    } else if (cb.IsRagged()) {
+        std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+        for (std::size_t r = 0; r < cb.NumCells(); ++r)
+            rows[r].assign(cb.Row(r), cb.Row(r) + cb.RowSize(r));
+        piece.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+    } else {
+        piece.AddCellBlock(std::string(cb.Type()), detail::data_owned_copy(cb.Conn()));
+    }
+
+    for (const std::string& name : rMesh.PointDataNames())
+        piece.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.CellDataNames())
+        if (rMesh.CellDataNumBlocks(name) > Idx)
+            piece.AddCellData(name, {detail::data_owned_copy(rMesh.CellData(name, Idx))});
+
+    return piece;
+}
+
+// Every `<DataSet>` under `pNode`, in document order, regardless of how many
+// `<Block>` levels separate them from it (xpath is not linked in, so this is
+// a plain recursive walk rather than a `"//DataSet"` select).
+void vtm_collect_datasets(const pugi::xml_node& rNode, std::vector<pugi::xml_node>& rOut) {
+    for (pugi::xml_node child : rNode.children()) {
+        if (std::string(child.name()) == "DataSet")
+            rOut.push_back(child);
+        else
+            vtm_collect_datasets(child, rOut);
+    }
+}
+
+// One piece, resolved from its `<DataSet>` element: the path to read (relative
+// to the index file's own directory) and the name to give it.
+struct vtm_piece_ref {
+    fs::path mPath;
+    std::string mName;
+};
+
+std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc) {
+    const pugi::xml_parse_result parsed = rDoc.load_file(rPath.c_str());
+    if (!parsed)
+        throw ReadError("Could not parse .vtm XML: " + rPath + ": " + parsed.description());
+
+    const pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile': " + rPath);
+    if (std::string(root.attribute("type").as_string()) != "vtkMultiBlockDataSet")
+        throw ReadError("Expected type vtkMultiBlockDataSet: " + rPath);
+    const pugi::xml_node mb = root.child("vtkMultiBlockDataSet");
+    if (!mb)
+        throw ReadError("Expected tag 'vtkMultiBlockDataSet': " + rPath);
+
+    std::vector<pugi::xml_node> datasets;
+    vtm_collect_datasets(mb, datasets);
+
+    const fs::path base = fs::path(rPath).parent_path();
+    std::vector<vtm_piece_ref> pieces;
+    pieces.reserve(datasets.size());
+    for (const pugi::xml_node& ds : datasets) {
+        const std::string file = ds.attribute("file").as_string("");
+        if (file.empty())
+            throw ReadError("<DataSet> is missing its 'file' attribute: " + rPath);
+        vtm_piece_ref ref;
+        ref.mPath = base.empty() ? fs::path(file) : base / file;
+        ref.mName = ds.attribute("name").as_string("");
+        if (ref.mName.empty())
+            ref.mName = "block_" + std::to_string(pieces.size());
+        pieces.push_back(std::move(ref));
+    }
+    return pieces;
+}
+
+}  // namespace
+
+void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, detail::VtkCodec codec) {
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    const fs::path index_path(rPath);
+    const std::string stem = index_path.stem().string();
+    const fs::path dir = index_path.parent_path().empty() ? fs::path(stem)
+                                                            : index_path.parent_path() / stem;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        throw WriteError("Could not create directory for .vtm pieces: " + dir.string() + ": " +
+                          ec.message());
+
+    std::vector<std::string> piece_files;
+    std::vector<std::string> piece_names;
+    piece_files.reserve(rMesh.NumCellBlocks());
+    piece_names.reserve(rMesh.NumCellBlocks());
+
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        const Mesh piece = vtm_extract_piece(rMesh, i);
+        CleanOptions copts;
+        copts.weld = false;
+        copts.remove_orphans = true;
+        copts.drop_degenerate = false;
+        copts.drop_duplicate_cells = false;
+        const CleanResult cleaned = clean(piece, copts);
+
+        const std::string piece_file_name = stem + "_" + std::to_string(i) + ".vtu";
+        const fs::path piece_path = dir / piece_file_name;
+        write_vtu_codec(piece_path.string(), cleaned.mMesh, binary, binary ? codec : detail::VtkCodec::None);
+
+        piece_files.push_back((fs::path(stem) / piece_file_name).generic_string());
+        piece_names.push_back("block_" + std::to_string(i));
+    }
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    os << "<vtkMultiBlockDataSet>\n";
+    os << "<Block index=\"0\">\n";
+    for (std::size_t i = 0; i < piece_files.size(); ++i)
+        os << "<DataSet index=\"" << i << "\" name=\"" << piece_names[i] << "\" file=\""
+           << piece_files[i] << "\"/>\n";
+    os << "</Block>\n";
+    os << "</vtkMultiBlockDataSet>\n";
+    os << "</VTKFile>\n";
+    if (!os)
+        throw WriteError("Failed while writing: " + rPath);
+}
+
+void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vtm_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+    if (refs.empty()) {
+        Mesh empty;
+        empty.AssignPoints(NDArray::Uninit(DType::Float64, {0, 3}));
+        return empty;
+    }
+
+    std::vector<Mesh> pieces;
+    pieces.reserve(refs.size());
+    for (const vtm_piece_ref& ref : refs) {
+        const std::string ext = ref.mPath.extension().string();
+        if (ext == ".vtu")
+            pieces.push_back(read_vtu(ref.mPath.string(), rOpts));
+        else if (ext == ".vtp")
+            pieces.push_back(read_vtp(ref.mPath.string(), rOpts));
+        else
+            throw ReadError("Unsupported .vtm piece '" + ref.mPath.string() +
+                             "': only .vtu/.vtp pieces are read");
+    }
+
+    std::vector<const Mesh*> ptrs;
+    ptrs.reserve(pieces.size());
+    for (const Mesh& m : pieces)
+        ptrs.push_back(&m);
+
+    MergeOptions mopts;
+    mopts.weld = false;
+    mopts.source_tag = true;
+    mopts.data_policy = MergeDataPolicy::Fill;
+    MergeResult result = merge(ptrs, mopts);
+
+    for (std::size_t i = 0; i < refs.size(); ++i)
+        result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));
+
+    return std::move(result.mMesh);
+}
+
+MeshMetadata read_vtm_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+
+    MeshMetadata meta;
+    meta.mFormat = "vtm";
+    if (refs.empty())
+        return meta;
+
+    std::vector<CellBlockInfo> blocks;
+    std::unordered_map<std::string, std::size_t> type_to_idx;
+    std::vector<std::string> point_names, cell_names, field_names;
+    auto merge_names = [](std::vector<std::string>& rInto, const std::vector<std::string>& rFrom) {
+        for (const std::string& n : rFrom)
+            if (std::find(rInto.begin(), rInto.end(), n) == rInto.end())
+                rInto.push_back(n);
+    };
+
+    for (const vtm_piece_ref& ref : refs) {
+        const std::string ext = ref.mPath.extension().string();
+        const MeshMetadata pm = (ext == ".vtp") ? read_vtp_metadata(ref.mPath.string(), rOpts)
+                                                 : read_vtu_metadata(ref.mPath.string(), rOpts);
+        meta.mNumPoints += pm.mNumPoints;
+        meta.mPointDim = std::max(meta.mPointDim, pm.mPointDim);
+        meta.mFellBackToFullRead = meta.mFellBackToFullRead || pm.mFellBackToFullRead;
+        merge_names(point_names, pm.mPointDataNames);
+        merge_names(cell_names, pm.mCellDataNames);
+        merge_names(field_names, pm.mFieldDataNames);
+
+        for (const CellBlockInfo& cb : pm.mCellBlocks) {
+            auto it = type_to_idx.find(cb.mType);
+            if (it == type_to_idx.end()) {
+                type_to_idx[cb.mType] = blocks.size();
+                blocks.push_back(cb);
+            } else {
+                CellBlockInfo& dst = blocks[it->second];
+                dst.mNumCells += cb.mNumCells;
+                dst.mRagged = dst.mRagged || cb.mRagged;
+                if (dst.mNodesPerCell != cb.mNodesPerCell)
+                    dst.mNodesPerCell = 0;
+            }
+        }
+    }
+
+    meta.mCellBlocks = std::move(blocks);
+    std::sort(point_names.begin(), point_names.end());
+    std::sort(cell_names.begin(), cell_names.end());
+    std::sort(field_names.begin(), field_names.end());
+    meta.mPointDataNames = std::move(point_names);
+    meta.mCellDataNames = std::move(cell_names);
+    meta.mFieldDataNames = std::move(field_names);
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vtm.cpp =====
 // ===== begin src/cpp/src/formats/vtp.cpp =====
 #include <cstdint>
 #include <cstring>
@@ -72045,6 +75242,749 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtp_read.cpp =====
+// ===== begin src/cpp/src/formats/vtr.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::cols;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
+
+template <class T>
+bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
+    if (pText == nullptr)
+        return false;
+    std::istringstream is(pText);
+    for (std::size_t i = 0; i < Count; ++i)
+        if (!(is >> pOut[i]))
+            return false;
+    return true;
+}
+
+struct vtr_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+vtr_header vtr_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    if (std::string(root.attribute("type").as_string()) != "RectilinearGrid")
+        throw ReadError("Expected type RectilinearGrid");
+
+    vtr_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
+        throw ReadError("lzma-compressed VTR not supported by the C++ reader");
+    else
+        throw ReadError("Unknown VTR compressor '" + compressor + "'");
+    detail::vtk_codec_require_read(h.mCodec);
+
+    const std::string header_type = root.attribute("header_type").as_string("UInt32");
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+
+    if (root.child("AppendedData"))
+        throw ReadError("appended VTR data not supported by the C++ reader");
+
+    pugi::xml_node grid = root.child("RectilinearGrid");
+    if (!grid)
+        throw ReadError("No RectilinearGrid found");
+
+    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
+    if (!vtr_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
+        throw ReadError("RectilinearGrid has no readable WholeExtent");
+
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
+        throw ReadError("No Piece found");
+    if (h.mPiece.next_sibling("Piece"))
+        throw ReadError("multi-piece VTR not supported by the C++ reader");
+    if (h.mPiece.attribute("Extent")) {
+        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
+        if (vtr_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
+            for (std::size_t i = 0; i < 6; ++i)
+                if (piece[i] != whole[i])
+                    throw ReadError(
+                        "VTR Piece Extent differs from WholeExtent; a partial piece "
+                        "is not supported by the C++ reader");
+    }
+
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
+        if (n < 0)
+            throw ReadError("VTR WholeExtent is inverted on axis " + std::to_string(k));
+        h.mDims[k] = n;
+    }
+    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
+    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
+    return h;
+}
+
+NDArray vtr_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+                            int& rNumComponents) {
+    const std::string fmt = rDa.attribute("format").as_string("ascii");
+    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
+    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (fmt == "ascii")
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
+    if (fmt == "binary")
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+    throw ReadError("VTR '" + fmt + "' data is not supported by the C++ reader");
+}
+
+std::vector<std::string> vtr_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// One axis's coordinate array, read as Float64 regardless of its on-disk
+// dtype -- the tensor product below needs doubles to combine with the other
+// two axes, and VTK's own coordinate arrays are conventionally Float32/64.
+std::vector<double> vtr_read_axis(const pugi::xml_node& rCoordinates, const char* pName,
+                                  std::int64_t ExpectedCount, detail::VtkCodec codec,
+                                  std::size_t hsz) {
+    for (pugi::xml_node da : rCoordinates.children("DataArray")) {
+        if (std::string(da.attribute("Name").as_string()) != pName)
+            continue;
+        int nc = 0;
+        NDArray arr = vtr_read_data_array(da, codec, hsz, nc);
+        if (static_cast<std::int64_t>(arr.Size()) != ExpectedCount)
+            throw ReadError(std::string("VTR ") + pName + " has " + std::to_string(arr.Size()) +
+                            " entries, but WholeExtent needs " + std::to_string(ExpectedCount));
+        std::vector<double> out(arr.Size());
+        for (std::size_t i = 0; i < arr.Size(); ++i)
+            out[i] = detail::read_double(arr, i);
+        return out;
+    }
+    throw ReadError(std::string("VTR Coordinates has no '") + pName + "' DataArray");
+}
+
+void vtr_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
+                  std::int64_t py, std::int64_t* pOut) {
+    const std::int64_t base = (k * py + j) * px + i;
+    const std::int64_t top = base + px * py;
+    pOut[0] = base;
+    pOut[1] = base + 1;
+    pOut[2] = base + px + 1;
+    pOut[3] = base + px;
+    pOut[4] = top;
+    pOut[5] = top + 1;
+    pOut[6] = top + px + 1;
+    pOut[7] = top + px;
+}
+
+}  // namespace
+
+void write_vtr(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vtr_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    detail::LatticeSpec spec;
+    if (!detail::lattice_from_mesh(rMesh, spec))
+        throw WriteError(
+            "RectilinearGrid needs a UNIFORM dense lattice today: exactly one hexahedron "
+            "block whose points tile an axis-aligned box with uniform per-axis spacing. A "
+            "genuinely graded (non-uniform) mesh cannot be written as .vtr yet -- a "
+            "documented follow-up, see doc/roadmap.md -- and a partial grid (voxelize's "
+            "'surface'/'inside' fill, or an octree) cannot be written as .vtr either -- "
+            "write it as .vtu, which stores the cells explicitly.");
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const char* fmt = binary ? "binary" : "ascii";
+    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
+        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
+        if (ncomp > 0)
+            os << " NumberOfComponents=\"" << ncomp << "\"";
+        os << " format=\"" << fmt << "\">\n";
+    };
+    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+    };
+
+    std::ostringstream ext;
+    ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"RectilinearGrid\" version=\"0.1\" byte_order=\"LittleEndian\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    os << ">\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    os << "<RectilinearGrid WholeExtent=\"" << ext.str() << "\">\n";
+    os << "<Piece Extent=\"" << ext.str() << "\">\n";
+
+    os << "<Coordinates>\n";
+    const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = spec.mDims[k] + 1;
+        std::vector<double> axis(static_cast<std::size_t>(n));
+        for (std::int64_t i = 0; i < n; ++i)
+            axis[static_cast<std::size_t>(i)] = spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
+        da_header(vtu_type_str(DType::Float64), axis_names[k], 0);
+        if (binary)
+            emit_bin(reinterpret_cast<const unsigned char*>(axis.data()), axis.size() * sizeof(double));
+        else
+            for (double v : axis)
+                os << v << "\n";
+        os << "</DataArray>\n";
+    }
+    os << "</Coordinates>\n";
+
+    if (rMesh.NumPointData() != 0) {
+        os << "<PointData>\n";
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
+            const int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
+            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            if (binary)
+                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+            else
+                vtu_ascii_ndarray(os, d);
+            os << "</DataArray>\n";
+        }
+        os << "</PointData>\n";
+    }
+
+    if (rMesh.NumCellData() != 0) {
+        os << "<CellData>\n";
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
+                continue;
+            const NDArray& first = rMesh.CellData(name, 0);
+            const int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
+            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            if (binary) {
+                std::vector<unsigned char> buf;
+                for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const auto* p = reinterpret_cast<const unsigned char*>(blk.Data());
+                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                }
+                emit_bin(buf.data(), buf.size());
+            } else {
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+            }
+            os << "</DataArray>\n";
+        }
+        os << "</CellData>\n";
+    }
+
+    os << "</Piece>\n</RectilinearGrid>\n</VTKFile>\n";
+}
+
+Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTR XML parse failed: ") + res.description());
+
+    const vtr_header h = vtr_parse_header(doc);
+
+    pugi::xml_node coords = h.mPiece.child("Coordinates");
+    if (!coords)
+        throw ReadError("VTR Piece has no Coordinates");
+    const std::vector<double> xs =
+        vtr_read_axis(coords, "x_coordinates", h.mDims[0] + 1, h.mCodec, h.mHeaderSize);
+    const std::vector<double> ys =
+        vtr_read_axis(coords, "y_coordinates", h.mDims[1] + 1, h.mCodec, h.mHeaderSize);
+    const std::vector<double> zs =
+        vtr_read_axis(coords, "z_coordinates", h.mDims[2] + 1, h.mCodec, h.mHeaderSize);
+
+    Mesh mesh;
+    {
+        NDArray pts = NDArray::Uninit(DType::Float64, {h.mNumPoints, std::size_t{3}});
+        double* dst = pts.As<double>();
+        const std::int64_t px = h.mDims[0] + 1, py = h.mDims[1] + 1, pz = h.mDims[2] + 1;
+        std::size_t p = 0;
+        for (std::int64_t k = 0; k < pz; ++k)
+            for (std::int64_t j = 0; j < py; ++j)
+                for (std::int64_t i = 0; i < px; ++i, ++p) {
+                    dst[p * 3 + 0] = xs[static_cast<std::size_t>(i)];
+                    dst[p * 3 + 1] = ys[static_cast<std::size_t>(j)];
+                    dst[p * 3 + 2] = zs[static_cast<std::size_t>(k)];
+                }
+        mesh.AssignPoints(std::move(pts));
+    }
+
+    if (h.mNumCells != 0) {
+        const std::int64_t px = h.mDims[0] + 1;
+        const std::int64_t py = h.mDims[1] + 1;
+        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        std::size_t c = 0;
+        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
+            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
+                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
+                    vtr_hex_conn(i, j, k, px, py, dst + c * 8);
+        mesh.AddCellBlock("hexahedron", std::move(conn));
+    }
+
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vtr_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
+            throw ReadError("VTR point array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumPoints) + " points");
+        mesh.AddPointData(name, std::move(arr));
+    }
+    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vtr_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
+            throw ReadError("VTR cell array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumCells) + " cells");
+        if (h.mNumCells == 0)
+            continue;
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(arr));
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+MeshMetadata read_vtr_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTR XML parse failed: ") + res.description());
+
+    const vtr_header h = vtr_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;
+    meta.mPointDim = 3;
+    if (h.mNumCells != 0) {
+        CellBlockInfo info;
+        info.mType = "hexahedron";
+        info.mNumCells = h.mNumCells;
+        info.mNodesPerCell = 8;
+        info.mRagged = false;
+        meta.mCellBlocks.push_back(std::move(info));
+    }
+    meta.mPointDataNames = vtr_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vtr_array_names(h.mPiece, "CellData");
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vtr.cpp =====
+// ===== begin src/cpp/src/formats/vts.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::cols;
+using detail::vtu_ascii_ndarray;
+using detail::vtu_type_str;
+
+// Parse a whitespace-separated run of N numbers from an XML attribute.
+template <class T>
+bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
+    if (pText == nullptr)
+        return false;
+    std::istringstream is(pText);
+    for (std::size_t i = 0; i < Count; ++i)
+        if (!(is >> pOut[i]))
+            return false;
+    return true;
+}
+
+// The framing every StructuredGrid path needs, resolved once so the mesh
+// reader and the metadata reader cannot disagree about which files they
+// accept. `mDims` are CELL counts per axis (as `LatticeSpec` uses them);
+// `mOrigin`/`mSpacing` are unused here (points are explicit) but the type is
+// shared with `.vti` for the writer's `lattice_from_mesh` call.
+struct vts_header {
+    pugi::xml_node mPiece;
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    std::array<std::int64_t, 3> mDims{{0, 0, 0}};
+    std::size_t mNumPoints = 0;
+    std::size_t mNumCells = 0;
+};
+
+vts_header vts_parse_header(const pugi::xml_document& rDoc) {
+    pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile'");
+    if (std::string(root.attribute("type").as_string()) != "StructuredGrid")
+        throw ReadError("Expected type StructuredGrid");
+
+    vts_header h;
+    const std::string compressor = root.attribute("compressor").as_string("");
+    if (compressor.empty())
+        h.mCodec = detail::VtkCodec::None;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
+        h.mCodec = detail::VtkCodec::Zlib;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
+        h.mCodec = detail::VtkCodec::LZ4;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
+        h.mCodec = detail::VtkCodec::ZSTD;
+    else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
+        throw ReadError("lzma-compressed VTS not supported by the C++ reader");
+    else
+        throw ReadError("Unknown VTS compressor '" + compressor + "'");
+    detail::vtk_codec_require_read(h.mCodec);
+
+    const std::string header_type = root.attribute("header_type").as_string("UInt32");
+    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+
+    if (root.child("AppendedData"))
+        throw ReadError("appended VTS data not supported by the C++ reader");
+
+    pugi::xml_node grid = root.child("StructuredGrid");
+    if (!grid)
+        throw ReadError("No StructuredGrid found");
+
+    std::int64_t whole[6] = {0, 0, 0, 0, 0, 0};
+    if (!vts_parse_n(grid.attribute("WholeExtent").as_string(nullptr), whole, 6))
+        throw ReadError("StructuredGrid has no readable WholeExtent");
+
+    h.mPiece = grid.child("Piece");
+    if (!h.mPiece)
+        throw ReadError("No Piece found");
+    if (h.mPiece.next_sibling("Piece"))
+        throw ReadError("multi-piece VTS not supported by the C++ reader");
+    if (h.mPiece.attribute("Extent")) {
+        std::int64_t piece[6] = {0, 0, 0, 0, 0, 0};
+        if (vts_parse_n(h.mPiece.attribute("Extent").as_string(), piece, 6))
+            for (std::size_t i = 0; i < 6; ++i)
+                if (piece[i] != whole[i])
+                    throw ReadError(
+                        "VTS Piece Extent differs from WholeExtent; a partial piece "
+                        "is not supported by the C++ reader");
+    }
+
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::int64_t n = whole[2 * k + 1] - whole[2 * k];
+        if (n < 0)
+            throw ReadError("VTS WholeExtent is inverted on axis " + std::to_string(k));
+        h.mDims[k] = n;
+    }
+    h.mNumPoints = static_cast<std::size_t>((h.mDims[0] + 1) * (h.mDims[1] + 1) * (h.mDims[2] + 1));
+    h.mNumCells = static_cast<std::size_t>(h.mDims[0] * h.mDims[1] * h.mDims[2]);
+    return h;
+}
+
+NDArray vts_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+                            int& rNumComponents) {
+    const std::string fmt = rDa.attribute("format").as_string("ascii");
+    const DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
+    rNumComponents = rDa.attribute("NumberOfComponents").as_int(0);
+    if (fmt == "ascii")
+        return detail::vtu_parse_ascii(rDa.text().get(), dt);
+    if (fmt == "binary")
+        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+    throw ReadError("VTS '" + fmt + "' data is not supported by the C++ reader");
+}
+
+std::vector<std::string> vts_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+    std::vector<std::string> names;
+    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
+        names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// hexahedron connectivity for cell (i, j, k), the same index formula
+// `detail/grid_lattice.hpp` uses -- points come from the file, not from a
+// recomputed origin/spacing, but the CONNECTIVITY formula is identical
+// regardless of where the points came from.
+void vts_hex_conn(std::int64_t i, std::int64_t j, std::int64_t k, std::int64_t px,
+                  std::int64_t py, std::int64_t* pOut) {
+    const std::int64_t base = (k * py + j) * px + i;
+    const std::int64_t top = base + px * py;
+    pOut[0] = base;
+    pOut[1] = base + 1;
+    pOut[2] = base + px + 1;
+    pOut[3] = base + px;
+    pOut[4] = top;
+    pOut[5] = top + 1;
+    pOut[6] = top + px + 1;
+    pOut[7] = top + px;
+}
+
+}  // namespace
+
+void write_vts(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vts_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    detail::LatticeSpec spec;
+    if (!detail::lattice_from_mesh(rMesh, spec))
+        throw WriteError(
+            "StructuredGrid is a lattice, and this mesh is not one: it needs exactly one "
+            "hexahedron block whose points tile an axis-aligned box with uniform spacing "
+            "(the writer recovers WholeExtent from it, then writes the mesh's own points "
+            "unchanged). A partial grid (voxelize's 'surface'/'inside' fill, or an octree) "
+            "cannot be written as .vts either -- write it as .vtu, which stores the cells "
+            "explicitly.");
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    const char* fmt = binary ? "binary" : "ascii";
+    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
+        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
+        if (ncomp > 0)
+            os << " NumberOfComponents=\"" << ncomp << "\"";
+        os << " format=\"" << fmt << "\">\n";
+    };
+    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
+        os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
+    };
+
+    std::ostringstream ext;
+    ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"StructuredGrid\" version=\"0.1\" byte_order=\"LittleEndian\"";
+    if (binary && codec != detail::VtkCodec::None)
+        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
+    os << ">\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    os << "<StructuredGrid WholeExtent=\"" << ext.str() << "\">\n";
+    os << "<Piece Extent=\"" << ext.str() << "\">\n";
+
+    const NDArray& pts = rMesh.Points();
+    const std::size_t np = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    os << "<Points>\n";
+    da_header(vtu_type_str(DType::Float64), "Points", 3);
+    if (binary) {
+        std::vector<double> buf(np * 3, 0.0);
+        detail::dispatch_dtype(pts.Dtype(), [&]<class T>() {
+            const T* src = pts.As<T>();
+            parallel_for_bw(np, [&](std::size_t r) {
+                for (std::size_t c = 0; c < pdim && c < 3; ++c)
+                    buf[r * 3 + c] = static_cast<double>(src[r * pdim + c]);
+            });
+        });
+        emit_bin(reinterpret_cast<const unsigned char*>(buf.data()), buf.size() * sizeof(double));
+    } else {
+        for (std::size_t r = 0; r < np; ++r) {
+            for (std::size_t c = 0; c < 3; ++c)
+                os << (c ? " " : "") << (c < pdim ? detail::read_double(pts, r * pdim + c) : 0.0);
+            os << "\n";
+        }
+    }
+    os << "</DataArray>\n</Points>\n";
+
+    if (rMesh.NumPointData() != 0) {
+        os << "<PointData>\n";
+        for (const auto& name : rMesh.PointDataNames()) {
+            const NDArray& d = rMesh.PointData(name);
+            const int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
+            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            if (binary)
+                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+            else
+                vtu_ascii_ndarray(os, d);
+            os << "</DataArray>\n";
+        }
+        os << "</PointData>\n";
+    }
+
+    if (rMesh.NumCellData() != 0) {
+        os << "<CellData>\n";
+        for (const auto& name : rMesh.CellDataNames()) {
+            const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
+            if (nblocks == 0)
+                continue;
+            const NDArray& first = rMesh.CellData(name, 0);
+            const int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
+            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            if (binary) {
+                std::vector<unsigned char> buf;
+                for (std::size_t bi = 0; bi < nblocks; ++bi) {
+                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const auto* p = reinterpret_cast<const unsigned char*>(blk.Data());
+                    buf.insert(buf.end(), p, p + blk.Nbytes());
+                }
+                emit_bin(buf.data(), buf.size());
+            } else {
+                for (std::size_t bi = 0; bi < nblocks; ++bi)
+                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+            }
+            os << "</DataArray>\n";
+        }
+        os << "</CellData>\n";
+    }
+
+    os << "</Piece>\n</StructuredGrid>\n</VTKFile>\n";
+}
+
+Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str());
+    if (!res)
+        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
+
+    const vts_header h = vts_parse_header(doc);
+
+    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
+    if (!points_da)
+        throw ReadError("VTS Piece has no Points/DataArray");
+    int pnc = 0;
+    NDArray pts = vts_read_data_array(points_da, h.mCodec, h.mHeaderSize, pnc);
+    if (pnc > 1)
+        pts.Reshape({pts.Size() / static_cast<std::size_t>(pnc), static_cast<std::size_t>(pnc)});
+    if (detail::rows(pts) != h.mNumPoints)
+        throw ReadError("VTS Points has " + std::to_string(detail::rows(pts)) +
+                        " rows, but WholeExtent has " + std::to_string(h.mNumPoints) + " points");
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+
+    if (h.mNumCells != 0) {
+        const std::int64_t px = h.mDims[0] + 1;
+        const std::int64_t py = h.mDims[1] + 1;
+        NDArray conn = NDArray::Uninit(DType::Int64, {h.mNumCells, std::size_t{8}});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        std::size_t c = 0;
+        for (std::int64_t k = 0; k < h.mDims[2]; ++k)
+            for (std::int64_t j = 0; j < h.mDims[1]; ++j)
+                for (std::int64_t i = 0; i < h.mDims[0]; ++i, ++c)
+                    vts_hex_conn(i, j, k, px, py, dst + c * 8);
+        mesh.AddCellBlock("hexahedron", std::move(conn));
+    }
+
+    if (!rOpts.WantsAnyData())
+        return mesh;
+
+    for (pugi::xml_node da : h.mPiece.child("PointData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumPoints)
+            throw ReadError("VTS point array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumPoints) + " points");
+        mesh.AddPointData(name, std::move(arr));
+    }
+    for (pugi::xml_node da : h.mPiece.child("CellData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        int nc = 0;
+        NDArray arr = vts_read_data_array(da, h.mCodec, h.mHeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / static_cast<std::size_t>(nc), static_cast<std::size_t>(nc)});
+        if (arr.Size() != 0 && detail::rows(arr) != h.mNumCells)
+            throw ReadError("VTS cell array '" + name + "' has " +
+                            std::to_string(detail::rows(arr)) + " rows, but the extent has " +
+                            std::to_string(h.mNumCells) + " cells");
+        if (h.mNumCells == 0)
+            continue;
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(arr));
+        mesh.AddCellData(name, std::move(blocks));
+    }
+    return mesh;
+}
+
+MeshMetadata read_vts_metadata(const std::string& rPath, const ReadOptions&) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
+    if (!res)
+        throw ReadError(std::string("VTS XML parse failed: ") + res.description());
+
+    const vts_header h = vts_parse_header(doc);
+
+    MeshMetadata meta;
+    meta.mNumPoints = h.mNumPoints;
+    meta.mPointDim = 3;
+    if (h.mNumCells != 0) {
+        CellBlockInfo info;
+        info.mType = "hexahedron";
+        info.mNumCells = h.mNumCells;
+        info.mNodesPerCell = 8;
+        info.mRagged = false;
+        meta.mCellBlocks.push_back(std::move(info));
+    }
+    meta.mPointDataNames = vts_array_names(h.mPiece, "PointData");
+    meta.mCellDataNames = vts_array_names(h.mPiece, "CellData");
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vts.cpp =====
 // ===== begin src/cpp/src/formats/vtu.cpp =====
 #include <cstdint>
 #include <cstdio>
@@ -92593,30 +96533,20 @@ std::string seq_resolve_read_format(const std::string& rPath, const std::string&
 
 }  // namespace
 
-namespace {
-
-/// Whether `rFormat`'s reader can return more than one step at all.
-///
-/// Consulted BEFORE `registry_read_metadata`, which for a format with no
-/// native metadata reader costs a full read -- so this is what keeps the step
-/// probe free for the 38 formats that cannot carry time. Same shape and same
-/// anti-drift discipline as `sequence_write_supports_time`: a small owned set,
-/// cross-checked by a gtest against which readers actually honour
-/// `ReadOptions::mTimeStep`.
-///
-/// **MED is deliberately absent.** It honours `ReadOptions::mTimeStep`, but has
-/// no entry in `registry_metadata_readers()`, so there is no count to read:
-/// probing it would cost a full read and still report one step. That is a
-/// recorded gap in MED's metadata support, and it closes here for free the
-/// moment `read_med_metadata` fills `mTimeValues`.
 bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
-    // it reported one step and this predicate had nothing to gate on.
-    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid";
+    // it reported one step and this predicate had nothing to gate on. med,
+    // cgns, tecplot, gmsh and ensight joined in v11.3.0 (roadmap §1 tier B1):
+    // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
+    // read either way) but never filled mTimeValues until now; for ensight,
+    // reading a VARIABLE file at all is new (previously geometry-only).
+    // openfoam joined in v11.4.0 (roadmap §1 tier B2): its time-directory
+    // fields are new; the polyMesh topology itself never had a time concept.
+    return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+          rFormat == "ensight" || rFormat == "openfoam";
 }
-
-}  // namespace
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
     // Registry-derived, never a per-format table: a format whose metadata
@@ -94638,12 +98568,19 @@ std::string sniff_format(const std::string& rPath) {
             return "vtu";
         if (sniff_contains(head, "PolyData"))
             return "vtp";
-        // Checked last of the three: the grid-type strings are disjoint, but a
+        // Checked last of the four: the grid-type strings are disjoint, but a
         // future dataset type could contain another as a substring, and the
         // cheapest defence is to keep the most recently added one from
         // shadowing anything.
         if (sniff_contains(head, "ImageData"))
             return "vti";
+        // v11.6.0, roadmap §1 tier B4.
+        if (sniff_contains(head, "StructuredGrid"))
+            return "vts";
+        if (sniff_contains(head, "RectilinearGrid"))
+            return "vtr";
+        if (sniff_contains(head, "MultiBlockDataSet"))
+            return "vtm";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";
@@ -97839,7 +101776,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
-        {"ensight", meshioplusplus::read_ensight},
+        // A lambda, not `&read_ensight`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
+        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
         {"flac3d", meshioplusplus::read_flac3d},
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
@@ -97871,13 +101810,19 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
-        {"tecplot", meshioplusplus::read_tecplot},
+        // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns story again).
+        {"tecplot",
+         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
         {"tetgen", meshioplusplus::read_tetgen},
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
         {"vtk", meshioplusplus::read_vtk},
+        {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
+        {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
+        {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
@@ -97898,7 +101843,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
              return meshioplusplus::read_openfoam(path, info);
          }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"cgns", meshioplusplus::read_cgns},
+        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
+        // name ambiguous (the exodus/mdpa/med story again).
+        {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
         {"h5m", meshioplusplus::read_h5m},
         {"hmf", meshioplusplus::read_hmf},
         {"med",
@@ -97938,8 +101885,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
-        // Write-only (gidpost has no read functions at all -- the reader is a
-        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // gidpost itself has no read functions at all -- meshio++'s own
+        // read_gid (registry_readers() above) is a hand-rolled reader that
+        // does not depend on it, which is why gid is readable in strictly
+        // more build configurations than it is writable. GidMode::Auto
         // infers the flavour (ascii/binary/hdf5) from the path's extension.
         {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,
@@ -97993,6 +101942,30 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
 #else
              meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vts",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vtr",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vtm",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
 #endif
          }},
         {"vtk",
@@ -98136,6 +102109,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".unv", "unv"},
         {".vti", "vti"},
         {".vtk", "vtk"},
+        {".vts", "vts"},
+        {".vtr", "vtr"},
+        {".vtm", "vtm"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
         {".wkt", "wkt"},
@@ -98207,6 +102183,16 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        // Tecplot honours mTimeStep -- selects one zone of a transient
+        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+        // first. IWYU pragma: keep
+        {"tecplot", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        // EnSight honours mTimeStep AND the narrowing options -- a .case
+        // file's VARIABLE entries are only ever read here, never by the
+        // plain overload. IWYU pragma: keep
+        {"ensight", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -98222,9 +102208,25 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              meshioplusplus::MedInfo info;
              return meshioplusplus::read_med(path, info, opts);
          }},
+        // CGNS honours mTimeStep the same way exodus/med do -- selects one
+        // FlowSolution_t of a transient (BaseIterativeData_t/
+        // ZoneIterativeData_t) file. IWYU pragma: keep
+        {"cgns", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
 #endif
+        // OpenFOAM honours mTimeStep (selects a time-directory) AND
+        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+        // here exactly as the plain reader entry drops it. IWYU pragma: keep
+        {"openfoam",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::OpenFoamInfo info;
+             return meshioplusplus::read_openfoam(path, opts, info);
+         }},
         {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
+        {"vts", meshioplusplus::read_vts},
+        {"vtr", meshioplusplus::read_vtr},
+        {"vtm", meshioplusplus::read_vtm},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -98239,7 +102241,17 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+        {"tecplot", meshioplusplus::read_tecplot_metadata},
+        {"ensight", meshioplusplus::read_ensight_metadata},
+        {"openfoam", meshioplusplus::read_openfoam_metadata},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        {"med", meshioplusplus::read_med_metadata},
+        {"cgns", meshioplusplus::read_cgns_metadata},
+#endif
         {"vti", meshioplusplus::read_vti_metadata},
+        {"vts", meshioplusplus::read_vts_metadata},
+        {"vtr", meshioplusplus::read_vtr_metadata},
+        {"vtm", meshioplusplus::read_vtm_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},

@@ -95,18 +95,44 @@ SEXP R_mio_clean(SEXP mesh, SEXP weld, SEXP atol, SEXP remove_orphans, SEXP drop
     return res;
 }
 
+/* An R id vector (integer or double, 1-based, NULL for none) -> a freshly
+ * R_alloc'd 0-based int64_t array; *n_ids receives its length (0 if `ids`
+ * is R_NilValue or empty). R_alloc's lifetime is tied to this .Call, so no
+ * explicit free is needed -- the mio_refine_opts precedent this mirrors. */
+static int64_t *r_ids_0based(SEXP ids, R_xlen_t *n_ids) {
+    *n_ids = 0;
+    if (ids == R_NilValue || Rf_length(ids) == 0) return NULL;
+    R_xlen_t n = Rf_length(ids);
+    int64_t *out = (int64_t *)R_alloc((size_t)n, sizeof(int64_t));
+    for (R_xlen_t i = 0; i < n; ++i) {
+        double v = (TYPEOF(ids) == REALSXP) ? REAL(ids)[i] : (double)INTEGER(ids)[i];
+        out[i] = (int64_t)v - 1;
+    }
+    *n_ids = n;
+    return out;
+}
+
 SEXP R_mio_smooth(SEXP mesh, SEXP method, SEXP iterations, SEXP lambda, SEXP mu,
                   SEXP fix_boundary, SEXP preserve_features, SEXP feature_angle,
-                  SEXP guard_inversion) {
+                  SEXP guard_inversion, SEXP frozen) {
+    mio_smooth_opts opts;
     int64_t moved = 0, skipped = 0;
     double disp = 0.0;
-    mio_mesh *out =
-        mio_smooth(mio_r_mesh(mesh), mio_r_opt_string(method),
-                   mio_r_int(iterations, "iterations"), mio_r_double(lambda, "lambda"),
-                   mio_r_double(mu, "mu"), mio_r_bool(fix_boundary, "fix_boundary"),
-                   mio_r_bool(preserve_features, "preserve_features"),
-                   mio_r_double(feature_angle, "feature_angle"),
-                   mio_r_bool(guard_inversion, "guard_inversion"), &moved, &disp, &skipped);
+    R_xlen_t n_frozen = 0;
+
+    mio_smooth_opts_init(&opts);
+    opts.method = mio_r_opt_string(method);
+    opts.iterations = (int32_t)mio_r_int(iterations, "iterations");
+    opts.lambda = mio_r_double(lambda, "lambda");
+    opts.mu = mio_r_double(mu, "mu");
+    opts.fix_boundary = mio_r_bool(fix_boundary, "fix_boundary");
+    opts.preserve_features = mio_r_bool(preserve_features, "preserve_features");
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.guard_inversion = mio_r_bool(guard_inversion, "guard_inversion");
+    opts.frozen = r_ids_0based(frozen, &n_frozen);
+    opts.num_frozen = (int64_t)n_frozen;
+
+    mio_mesh *out = mio_smooth_ex(mio_r_mesh(mesh), &opts, &moved, &disp, &skipped);
     if (out == NULL) mio_r_fail("smooth");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP a = PROTECT(Rf_ScalarReal((double)moved));
@@ -963,14 +989,22 @@ SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SE
 
 SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_error,
                     SEXP placement, SEXP preserve_boundary, SEXP preserve_features,
-                    SEXP feature_angle) {
-    mio_decimate_result *r =
-        mio_decimate(mio_r_mesh(mesh), mio_r_double(target_ratio, "target_ratio"),
-                     mio_r_int64(target_faces, "target_faces"),
-                     mio_r_double(max_error, "max_error"), mio_r_opt_string(placement),
-                     mio_r_bool(preserve_boundary, "preserve_boundary"),
-                     mio_r_bool(preserve_features, "preserve_features"),
-                     mio_r_double(feature_angle, "feature_angle"));
+                    SEXP feature_angle, SEXP frozen) {
+    mio_decimate_opts opts;
+    R_xlen_t n_frozen = 0;
+
+    mio_decimate_opts_init(&opts);
+    opts.target_ratio = mio_r_double(target_ratio, "target_ratio");
+    opts.target_faces = mio_r_int64(target_faces, "target_faces");
+    opts.max_error = mio_r_double(max_error, "max_error");
+    opts.placement = mio_r_opt_string(placement);
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary");
+    opts.preserve_features = mio_r_bool(preserve_features, "preserve_features");
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.frozen = r_ids_0based(frozen, &n_frozen);
+    opts.num_frozen = (int64_t)n_frozen;
+
+    mio_decimate_result *r = mio_decimate_ex(mio_r_mesh(mesh), &opts);
     if (r == NULL) mio_r_fail("decimate");
     SEXP pm = R_NilValue, cm = R_NilValue;
     if (result_maps(r, 2, &pm, &cm) == NULL) {

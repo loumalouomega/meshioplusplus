@@ -1107,6 +1107,46 @@ mio_mesh* mio_clean(const mio_mesh* mesh, int weld, double atol, int remove_orph
     });
 }
 
+namespace {
+
+/// 0-based id list -> a per-point pin mask, range-checked against `pMesh`'s
+/// own point count. `pFrozen == nullptr` (or `numFrozen <= 0`) means "no
+/// extra pins", the empty-mask case every `mFrozen`-accepting options struct
+/// treats as unset. Mirrors bindings/python/_core.cpp's identical id-list ->
+/// mask conversion.
+std::vector<std::uint8_t> capi_frozen_mask(const mio_mesh* pMesh, const int64_t* pFrozen,
+                                           int64_t numFrozen, const char* pOp) {
+    std::vector<std::uint8_t> mask;
+    if (pFrozen == nullptr || numFrozen <= 0)
+        return mask;
+    const std::size_t num_points = pMesh->mMesh.NumPoints();
+    mask.assign(num_points, 0);
+    for (int64_t i = 0; i < numFrozen; ++i) {
+        const int64_t id = pFrozen[i];
+        if (id < 0 || static_cast<std::size_t>(id) >= num_points)
+            throw meshioplusplus::ReadError(std::string("meshio++: ") + pOp + ": frozen node id " +
+                                            std::to_string(id) + " is out of range");
+        mask[static_cast<std::size_t>(id)] = 1;
+    }
+    return mask;
+}
+
+mio_mesh* capi_smooth(const mio_mesh* pMesh, const meshioplusplus::SmoothOptions& rOptions,
+                      int64_t* pNodesMoved, double* pMaxDisplacement, int64_t* pSkippedInversion) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::SmoothResult r = meshioplusplus::smooth(pMesh->mMesh, rOptions);
+    if (pNodesMoved)
+        *pNodesMoved = r.mNumNodesMoved;
+    if (pMaxDisplacement)
+        *pMaxDisplacement = r.mMaxDisplacement;
+    if (pSkippedInversion)
+        *pSkippedInversion = r.mNumSkippedInversion;
+    return new mio_mesh{std::move(r.mMesh)};
+}
+
+}  // namespace
+
 mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, double lambda,
                      double mu, int fix_boundary, int preserve_features, double feature_angle,
                      int guard_inversion, int64_t* nodes_moved, double* max_displacement,
@@ -1116,7 +1156,7 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         meshioplusplus::SmoothOptions opts;
         // A negative lambda is the "this method's own default" sentinel and is
-        // passed through unchanged; mFrozen is deliberately not exposed here.
+        // passed through unchanged.
         opts.mMethod = meshioplusplus::smooth_method_from_name(method ? method : "taubin");
         opts.mIterations = iterations;
         opts.mLambda = lambda;
@@ -1125,16 +1165,47 @@ mio_mesh* mio_smooth(const mio_mesh* mesh, const char* method, int iterations, d
         opts.mPreserveFeatures = preserve_features != 0;
         opts.mFeatureAngleDeg = feature_angle;
         opts.mGuardInversion = guard_inversion != 0;
-        meshioplusplus::SmoothResult r = meshioplusplus::smooth(mesh->mMesh, opts);
-        if (nodes_moved)
-            *nodes_moved = r.mNumNodesMoved;
-        if (max_displacement)
-            *max_displacement = r.mMaxDisplacement;
-        if (skipped_inversion)
-            *skipped_inversion = r.mNumSkippedInversion;
-        return new mio_mesh{std::move(r.mMesh)};
+        return capi_smooth(mesh, opts, nodes_moved, max_displacement, skipped_inversion);
     });
 }
+
+void mio_smooth_opts_init(mio_smooth_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_smooth_opts{};
+    opts->method = nullptr;  // "taubin"
+    opts->iterations = 10;
+    opts->lambda = -1.0;
+    opts->mu = -0.34;
+    opts->fix_boundary = 1;
+    opts->preserve_features = 1;
+    opts->feature_angle = 30.0;
+    opts->guard_inversion = 1;
+}
+
+mio_mesh* mio_smooth_ex(const mio_mesh* mesh, const mio_smooth_opts* opts, int64_t* nodes_moved,
+                        double* max_displacement, int64_t* skipped_inversion) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_smooth_opts defaults;
+        mio_smooth_opts_init(&defaults);
+        const mio_smooth_opts& o = opts ? *opts : defaults;
+        meshioplusplus::SmoothOptions options;
+        options.mMethod = meshioplusplus::smooth_method_from_name(o.method ? o.method : "taubin");
+        options.mIterations = o.iterations;
+        options.mLambda = o.lambda;
+        options.mMu = o.mu;
+        options.mFixBoundary = o.fix_boundary != 0;
+        options.mPreserveFeatures = o.preserve_features != 0;
+        options.mFeatureAngleDeg = o.feature_angle;
+        options.mGuardInversion = o.guard_inversion != 0;
+        options.mFrozen = capi_frozen_mask(mesh, o.frozen, o.num_frozen, "smooth");
+        return capi_smooth(mesh, options, nodes_moved, max_displacement, skipped_inversion);
+    });
+}
+
+static_assert(sizeof(mio_smooth_opts) == 104, "mio_smooth_opts grew outside its reserved tail");
 
 mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relocate, int flip,
                               int preserve_boundary, double min_improvement, int64_t* num_flips,
@@ -1897,12 +1968,30 @@ void mio_refine_result_free(mio_refine_result* result) {
     delete result;
 }
 
+namespace {
+
+mio_decimate_result* capi_decimate(const mio_mesh* pMesh,
+                                   const meshioplusplus::DecimateOptions& rOptions) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::DecimateResult r = meshioplusplus::decimate(pMesh->mMesh, rOptions);
+    auto* out = new mio_decimate_result{};
+    out->mMesh = mio_mesh{std::move(r.mMesh)};
+    out->mPointMap = std::move(r.mPointMap);
+    out->mCellMaps = std::move(r.mCellMaps);
+    out->mFacesRemoved = r.mFacesRemoved;
+    out->mPointsRemoved = r.mPointsRemoved;
+    out->mCollapsesRejected = r.mCollapsesRejected;
+    out->mMaxErrorApplied = r.mMaxErrorApplied;
+    return out;
+}
+
+}  // namespace
+
 mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ratio, int64_t target_faces,
                                   double max_error, const char* placement, int preserve_boundary,
                                   int preserve_features, double feature_angle) {
     return guarded_ptr(static_cast<mio_decimate_result*>(nullptr), [&]() -> mio_decimate_result* {
-        if (!mesh)
-            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
         meshioplusplus::DecimateOptions options;
         options.mTargetRatio = target_ratio;
         options.mTargetFaces = target_faces;
@@ -1912,18 +2001,44 @@ mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ratio, int
         options.mPreserveBoundary = preserve_boundary != 0;
         options.mPreserveFeatures = preserve_features != 0;
         options.mFeatureAngleDeg = feature_angle;
-        meshioplusplus::DecimateResult r = meshioplusplus::decimate(mesh->mMesh, options);
-        auto* out = new mio_decimate_result{};
-        out->mMesh = mio_mesh{std::move(r.mMesh)};
-        out->mPointMap = std::move(r.mPointMap);
-        out->mCellMaps = std::move(r.mCellMaps);
-        out->mFacesRemoved = r.mFacesRemoved;
-        out->mPointsRemoved = r.mPointsRemoved;
-        out->mCollapsesRejected = r.mCollapsesRejected;
-        out->mMaxErrorApplied = r.mMaxErrorApplied;
-        return out;
+        return capi_decimate(mesh, options);
     });
 }
+
+void mio_decimate_opts_init(mio_decimate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_decimate_opts{};
+    opts->target_ratio = -1.0;
+    opts->target_faces = -1;
+    opts->max_error = -1.0;
+    opts->placement = nullptr;  // "optimal"
+    opts->preserve_boundary = 1;
+    opts->preserve_features = 1;
+    opts->feature_angle = 30.0;
+}
+
+mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_opts* opts) {
+    return guarded_ptr(static_cast<mio_decimate_result*>(nullptr), [&]() -> mio_decimate_result* {
+        if (!opts)
+            throw meshioplusplus::ReadError("meshio++: opts is NULL");
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::DecimateOptions options;
+        options.mTargetRatio = opts->target_ratio;
+        options.mTargetFaces = opts->target_faces;
+        options.mMaxError = opts->max_error;
+        options.mPlacement =
+            meshioplusplus::decimate_placement_from_name(opts->placement ? opts->placement : "optimal");
+        options.mPreserveBoundary = opts->preserve_boundary != 0;
+        options.mPreserveFeatures = opts->preserve_features != 0;
+        options.mFeatureAngleDeg = opts->feature_angle;
+        options.mFrozen = capi_frozen_mask(mesh, opts->frozen, opts->num_frozen, "decimate");
+        return capi_decimate(mesh, options);
+    });
+}
+
+static_assert(sizeof(mio_decimate_opts) == 96, "mio_decimate_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_result_mesh(const mio_decimate_result* result) {
     return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
@@ -2019,14 +2134,32 @@ void mio_decimate_result_free(mio_decimate_result* result) {
     delete result;
 }
 
+namespace {
+
+mio_decimate_volume_result* capi_decimate_volume(
+    const mio_mesh* pMesh, const meshioplusplus::DecimateVolumeOptions& rOptions) {
+    if (!pMesh)
+        throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+    meshioplusplus::DecimateVolumeResult r = meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
+    auto* out = new mio_decimate_volume_result{};
+    out->mMesh = mio_mesh{std::move(r.mMesh)};
+    out->mPointMap = std::move(r.mPointMap);
+    out->mCellMaps = std::move(r.mCellMaps);
+    out->mTetsRemoved = r.mTetsRemoved;
+    out->mPointsRemoved = r.mPointsRemoved;
+    out->mCollapsesRejected = r.mCollapsesRejected;
+    out->mMaxErrorApplied = r.mMaxErrorApplied;
+    return out;
+}
+
+}  // namespace
+
 mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double target_ratio,
                                                 int64_t target_cells, double max_error,
                                                 const char* placement, int preserve_boundary,
                                                 int preserve_features, double feature_angle) {
     return guarded_ptr(
         static_cast<mio_decimate_volume_result*>(nullptr), [&]() -> mio_decimate_volume_result* {
-            if (!mesh)
-                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
             meshioplusplus::DecimateVolumeOptions options;
             options.mTargetRatio = target_ratio;
             options.mTargetCells = target_cells;
@@ -2036,19 +2169,48 @@ mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double tar
             options.mPreserveBoundary = preserve_boundary != 0;
             options.mPreserveFeatures = preserve_features != 0;
             options.mFeatureAngleDeg = feature_angle;
-            meshioplusplus::DecimateVolumeResult r =
-                meshioplusplus::decimate_volume(mesh->mMesh, options);
-            auto* out = new mio_decimate_volume_result{};
-            out->mMesh = mio_mesh{std::move(r.mMesh)};
-            out->mPointMap = std::move(r.mPointMap);
-            out->mCellMaps = std::move(r.mCellMaps);
-            out->mTetsRemoved = r.mTetsRemoved;
-            out->mPointsRemoved = r.mPointsRemoved;
-            out->mCollapsesRejected = r.mCollapsesRejected;
-            out->mMaxErrorApplied = r.mMaxErrorApplied;
-            return out;
+            return capi_decimate_volume(mesh, options);
         });
 }
+
+void mio_decimate_volume_opts_init(mio_decimate_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_decimate_volume_opts{};
+    opts->target_ratio = -1.0;
+    opts->target_cells = -1;
+    opts->max_error = -1.0;
+    opts->placement = nullptr;  // "optimal"
+    opts->preserve_boundary = 0;
+    opts->preserve_features = 1;
+    opts->feature_angle = 30.0;
+}
+
+mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
+                                                    const mio_decimate_volume_opts* opts) {
+    return guarded_ptr(
+        static_cast<mio_decimate_volume_result*>(nullptr), [&]() -> mio_decimate_volume_result* {
+            if (!opts)
+                throw meshioplusplus::ReadError("meshio++: opts is NULL");
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            meshioplusplus::DecimateVolumeOptions options;
+            options.mTargetRatio = opts->target_ratio;
+            options.mTargetCells = opts->target_cells;
+            options.mMaxError = opts->max_error;
+            options.mPlacement = meshioplusplus::decimate_placement_from_name(
+                opts->placement ? opts->placement : "optimal");
+            options.mPreserveBoundary = opts->preserve_boundary != 0;
+            options.mPreserveFeatures = opts->preserve_features != 0;
+            options.mFeatureAngleDeg = opts->feature_angle;
+            options.mFrozen =
+                capi_frozen_mask(mesh, opts->frozen, opts->num_frozen, "decimate_volume");
+            return capi_decimate_volume(mesh, options);
+        });
+}
+
+static_assert(sizeof(mio_decimate_volume_opts) == 96,
+             "mio_decimate_volume_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result) {
     return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {

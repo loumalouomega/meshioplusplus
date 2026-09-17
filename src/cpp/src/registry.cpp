@@ -69,6 +69,9 @@
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/vti.hpp"
+#include "meshioplusplus/formats/vts.hpp"
+#include "meshioplusplus/formats/vtr.hpp"
+#include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
@@ -82,7 +85,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
-        {"ensight", meshioplusplus::read_ensight},
+        // A lambda, not `&read_ensight`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
+        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
         {"flac3d", meshioplusplus::read_flac3d},
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
@@ -114,13 +119,19 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
-        {"tecplot", meshioplusplus::read_tecplot},
+        // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns story again).
+        {"tecplot",
+         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
         {"tetgen", meshioplusplus::read_tetgen},
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
         {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
         {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
         {"vtk", meshioplusplus::read_vtk},
+        {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
+        {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
+        {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
@@ -141,7 +152,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
              return meshioplusplus::read_openfoam(path, info);
          }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"cgns", meshioplusplus::read_cgns},
+        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
+        // name ambiguous (the exodus/mdpa/med story again).
+        {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
         {"h5m", meshioplusplus::read_h5m},
         {"hmf", meshioplusplus::read_hmf},
         {"med",
@@ -181,8 +194,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
-        // Write-only (gidpost has no read functions at all -- the reader is a
-        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // gidpost itself has no read functions at all -- meshio++'s own
+        // read_gid (registry_readers() above) is a hand-rolled reader that
+        // does not depend on it, which is why gid is readable in strictly
+        // more build configurations than it is writable. GidMode::Auto
         // infers the flavour (ascii/binary/hdf5) from the path's extension.
         {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,
@@ -236,6 +251,30 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
 #else
              meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vts",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vtr",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vtm",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
 #endif
          }},
         {"vtk",
@@ -379,6 +418,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".unv", "unv"},
         {".vti", "vti"},
         {".vtk", "vtk"},
+        {".vts", "vts"},
+        {".vtr", "vtr"},
+        {".vtm", "vtm"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
         {".wkt", "wkt"},
@@ -450,6 +492,16 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        // Tecplot honours mTimeStep -- selects one zone of a transient
+        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+        // first. IWYU pragma: keep
+        {"tecplot", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        // EnSight honours mTimeStep AND the narrowing options -- a .case
+        // file's VARIABLE entries are only ever read here, never by the
+        // plain overload. IWYU pragma: keep
+        {"ensight", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -465,9 +517,25 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
              meshioplusplus::MedInfo info;
              return meshioplusplus::read_med(path, info, opts);
          }},
+        // CGNS honours mTimeStep the same way exodus/med do -- selects one
+        // FlowSolution_t of a transient (BaseIterativeData_t/
+        // ZoneIterativeData_t) file. IWYU pragma: keep
+        {"cgns", [](const std::string& path,
+                    const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
 #endif
+        // OpenFOAM honours mTimeStep (selects a time-directory) AND
+        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+        // here exactly as the plain reader entry drops it. IWYU pragma: keep
+        {"openfoam",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::OpenFoamInfo info;
+             return meshioplusplus::read_openfoam(path, opts, info);
+         }},
         {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
+        {"vts", meshioplusplus::read_vts},
+        {"vtr", meshioplusplus::read_vtr},
+        {"vtm", meshioplusplus::read_vtm},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -482,7 +550,17 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+        {"tecplot", meshioplusplus::read_tecplot_metadata},
+        {"ensight", meshioplusplus::read_ensight_metadata},
+        {"openfoam", meshioplusplus::read_openfoam_metadata},
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        {"med", meshioplusplus::read_med_metadata},
+        {"cgns", meshioplusplus::read_cgns_metadata},
+#endif
         {"vti", meshioplusplus::read_vti_metadata},
+        {"vts", meshioplusplus::read_vts_metadata},
+        {"vtr", meshioplusplus::read_vtr_metadata},
+        {"vtm", meshioplusplus::read_vtm_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},

@@ -33,6 +33,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -56,11 +57,20 @@ bool cgns_has_cgnslib() {
 
 #ifndef MESHIOPLUSPLUS_HAS_CGNSLIB
 
-Mesh read_cgns_mll(const std::string& rPath) {
+Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     // Always present and throwing by name -- the partition_kahip_parts
     // contract. A link error would break the Python-fallback contract, and a
     // silent downgrade to the raw-HDF5 reader would answer a question the
     // caller did not ask (that reader cannot open an ADF file at all).
+    throw ReadError(detail::format_compat(
+        "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
+        "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
+        rPath));
+}
+
+MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     throw ReadError(detail::format_compat(
         "meshio++: cannot read '{}' through cgnslib: this build has no cgnslib support "
         "(rebuild with -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON and CGNS_ROOT pointing at an install)",
@@ -284,9 +294,94 @@ void cgns_mll_group_components(const std::vector<std::string>& rNames,
     }
 }
 
-/// Read every FlowSolution_t into point_data / cell_data.
+/// The Base's transient step data: `BaseIterativeData_t/TimeValues` and
+/// `ZoneIterativeData_t/FlowSolutionPointers` (one FlowSolution_t name per
+/// step), both empty when the file carries neither.
+struct CgnsMllIterativeData {
+    std::vector<double> mTimeValues;
+    std::vector<std::string> mFlowSolutionPointers;
+};
+
+/// Read one named `DataArray_t` under whatever node `cg_goto` last selected,
+/// as `RealDouble` -- used for `TimeValues`, whose file dtype is always real.
+bool cgns_mll_read_double_array(const std::string& rWantedName, std::vector<double>& rOut) {
+    int narrays = 0;
+    if (cg_narrays(&narrays) != CG_OK)
+        return false;
+    for (int A = 1; A <= narrays; ++A) {
+        char name[33] = {0};
+        CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+        int ndim = 0;
+        cgsize_t dims[12] = {0};
+        if (cg_array_info(A, name, &dt, &ndim, dims) != CG_OK)
+            continue;
+        if (rWantedName != name)
+            continue;
+        cgsize_t total = 1;
+        for (int d = 0; d < ndim; ++d)
+            total *= dims[d];
+        rOut.assign(static_cast<std::size_t>(total), 0.0);
+        return cg_array_read_as(A, CGNS_ENUMV(RealDouble), rOut.data()) == CG_OK;
+    }
+    return false;
+}
+
+CgnsMllIterativeData cgns_mll_read_iterative_data(int fn, int B, int Z) {
+    CgnsMllIterativeData out;
+
+    char bitername[33] = {0};
+    int nsteps = 0;
+    if (cg_biter_read(fn, B, bitername, &nsteps) == CG_OK && nsteps > 0 &&
+        cg_goto(fn, B, "BaseIterativeData_t", 1, "end") == CG_OK) {
+        cgns_mll_read_double_array("TimeValues", out.mTimeValues);
+    }
+
+    char zitername[33] = {0};
+    if (cg_ziter_read(fn, B, Z, zitername) == CG_OK &&
+        cg_goto(fn, B, "Zone_t", Z, "ZoneIterativeData_t", 1, "end") == CG_OK) {
+        int narrays = 0;
+        if (cg_narrays(&narrays) == CG_OK) {
+            for (int A = 1; A <= narrays; ++A) {
+                char name[33] = {0};
+                CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+                int ndim = 0;
+                cgsize_t dims[12] = {0};
+                if (cg_array_info(A, name, &dt, &ndim, dims) != CG_OK)
+                    continue;
+                if (std::string(name) != "FlowSolutionPointers")
+                    continue;
+                // ADF/Fortran dims {32, N} -- 32-char names, N steps; the MLL
+                // fills the buffer in that same order (name-width fastest),
+                // so N fixed-width, space-padded strings back to back.
+                constexpr std::size_t kWidth = 32;
+                cgsize_t total = 1;
+                for (int d = 0; d < ndim; ++d)
+                    total *= dims[d];
+                std::vector<char> buf(static_cast<std::size_t>(total), ' ');
+                if (cg_array_read_as(A, CGNS_ENUMV(Character), buf.data()) != CG_OK)
+                    continue;
+                const std::size_t count = buf.size() / kWidth;
+                out.mFlowSolutionPointers.reserve(count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    std::string s(buf.data() + i * kWidth, kWidth);
+                    while (!s.empty() && (s.back() == ' ' || s.back() == '\0'))
+                        s.pop_back();
+                    out.mFlowSolutionPointers.push_back(std::move(s));
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+/// Read FlowSolution_t node(s) into point_data / cell_data. With `pTarget`
+/// non-null, only the ONE solution named by it is read (the transient-step
+/// case); otherwise every FlowSolution_t is read (today's behaviour),
+/// warning when two of them write the same array name instead of silently
+/// letting the later one win.
 void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& rMesh,
-                             const std::string& rPath) {
+                             const std::string& rPath, const std::string* pTarget) {
     int nsols = 0;
     if (cg_nsols(fn, B, Z, &nsols) != CG_OK || nsols < 1)
         return;
@@ -302,11 +397,18 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
     for (std::size_t n : block_cells)
         total_cells += n;
 
+    std::unordered_map<std::string, std::string> point_array_origin, cell_array_origin;
+    bool found_target = pTarget == nullptr;
     for (int S = 1; S <= nsols; ++S) {
         char sol_name[33] = {0};
         CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
         if (cg_sol_info(fn, B, Z, S, sol_name, &loc) != CG_OK)
             cgns_mll_fail("cg_sol_info failed", rPath);
+        if (pTarget != nullptr) {
+            if (*pTarget != sol_name)
+                continue;
+            found_target = true;
+        }
         if (loc != CGNS_ENUMV(Vertex) && loc != CGNS_ENUMV(CellCenter)) {
             log::warn(
                 "CGNS (cgnslib): FlowSolution '{}' has GridLocation {} (only Vertex and "
@@ -351,8 +453,22 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                     dst[r * ncomp + k] = buf[r];
             }
             if (vertex) {
+                auto [it, inserted] = point_array_origin.emplace(bases[g], sol_name);
+                if (!inserted && it->second != sol_name)
+                    log::warn(
+                        "CGNS (cgnslib): point array '{}' is written by both FlowSolution '{}' "
+                        "and '{}'; the later one wins.",
+                        bases[g], it->second, sol_name);
+                it->second = sol_name;
                 rMesh.AddPointData(bases[g], std::move(arr));
             } else {
+                auto [it, inserted] = cell_array_origin.emplace(bases[g], sol_name);
+                if (!inserted && it->second != sol_name)
+                    log::warn(
+                        "CGNS (cgnslib): cell array '{}' is written by both FlowSolution '{}' "
+                        "and '{}'; the later one wins.",
+                        bases[g], it->second, sol_name);
+                it->second = sol_name;
                 std::vector<NDArray> blocks;
                 std::size_t at = 0;
                 for (std::size_t n : block_cells) {
@@ -366,12 +482,21 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                 rMesh.AddCellData(bases[g], std::move(blocks));
             }
         }
+        if (pTarget != nullptr)
+            break;
     }
+    if (pTarget != nullptr && !found_target)
+        cgns_mll_fail(
+            "ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
+                "', which no FlowSolution_t in this zone has",
+            rPath);
 }
 
 }  // namespace
 
-Mesh read_cgns_mll(const std::string& rPath) {
+Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     CgnsFile file(rPath);
     const int fn = file.Fn();
 
@@ -573,9 +698,84 @@ Mesh read_cgns_mll(const std::string& rPath) {
     // run starting at 0 -- exactly the convention cgns.cpp writes and
     // documents. Anything else (a lone `foo_7`, a gap) stays a scalar under its
     // literal name; guessing would invent components.
-    cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath);
+    //
+    // With BaseIterativeData_t/ZoneIterativeData_t present, only the ONE
+    // FlowSolution_t the resolved step's FlowSolutionPointers names is read;
+    // without it, every FlowSolution_t is read, as before.
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    if (!iter.mFlowSolutionPointers.empty()) {
+        const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
+        const std::string target = iter.mFlowSolutionPointers[step];
+        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
+    } else {
+        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+    }
 
     return mesh;
+}
+
+MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    CgnsFile file(rPath);
+    const int fn = file.Fn();
+
+    int nbases = 0;
+    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
+        cgns_mll_fail("no CGNSBase_t found", rPath);
+    const int B = 1;
+
+    int nzones = 0;
+    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
+        cgns_mll_fail("no Zone_t found", rPath);
+    const int Z = 1;
+
+    char zone_name[33] = {0};
+    cgsize_t zsize[9] = {0};
+    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+        cgns_mll_fail("cg_zone_read failed", rPath);
+
+    MeshMetadata meta;
+    meta.mFormat = "cgns";
+    meta.mNumPoints = static_cast<std::size_t>(zsize[0]);
+
+    int nsections = 0;
+    if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
+        for (int S = 1; S <= nsections; ++S) {
+            char name[33] = {0};
+            CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
+            cgsize_t start = 0, end = 0;
+            int nbndry = 0, parent_flag = 0;
+            if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry, &parent_flag) !=
+                CG_OK)
+                continue;
+            if (end < start)
+                continue;
+            CellBlockInfo block;
+            block.mNumCells = static_cast<std::size_t>(end - start + 1);
+            if (type == CGNS_ENUMV(NGON_n)) {
+                block.mType = "polygon";
+                block.mRagged = true;
+            } else if (type == CGNS_ENUMV(NFACE_n)) {
+                block.mType = "polyhedron";
+                block.mRagged = true;
+            } else if (type == CGNS_ENUMV(MIXED)) {
+                continue;  // structurally unsupported; the full reader names it
+            } else {
+                const std::string meshio = cgns_mll_meshio_name(type);
+                if (meshio.empty())
+                    continue;
+                block.mType = meshio;
+                int npc = 0;
+                cg_npe(type, &npc);
+                block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+            }
+            meta.mCellBlocks.push_back(std::move(block));
+        }
+    }
+
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    meta.mTimeValues = iter.mTimeValues;
+
+    return meta;
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_CGNSLIB

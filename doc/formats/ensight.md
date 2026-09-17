@@ -24,7 +24,7 @@ Either path (`.case` or `.geo`) selects the sibling pair on write; both files ar
 
 ## File structure
 
-**`.case`**: only the `FORMAT` (must declare `type: ensight gold`) and `GEOMETRY` (`model: [ts] [fs] <file>.geo`) sections are consumed; `VARIABLE`/`TIME` sections are ignored (mesh-only scope). Transient wildcard geometry names (`model: name.****.geo`) are rejected.
+**`.case`**: `FORMAT` (must declare `type: ensight gold`) and `GEOMETRY` (`model: [ts] [fs] <file>.geo`) are always consumed; transient wildcard geometry names (`model: name.****.geo`) are rejected. Since v11.3.0 (roadmap §1 tier B1) `TIME` and `VARIABLE` are consumed too — see [Reading transient variables](#reading-transient-variables).
 
 **`.geo`** (Gold): 2 description records, `node id <off|given|assign|ignore>`, `element id <...>`, an optional `extents` block, then per part: `part`, part number, description, `coordinates`, node count, optional node-id array, and the X, Y, Z coordinate arrays (blocked), followed by element sections (`tria3`, `tetra4`, ..., each with a count, an optional element-id array, and connectivity). Binary files start with an 80-char `"C Binary"` record; all strings are 80-char records and all numbers 32-bit ints/floats in the writer's native byte order. `"Fortran Binary"` files are rejected.
 
@@ -53,7 +53,17 @@ Node ordering matches meshio for every type except `penta15`, which differs from
 
 - Multi-part files are concatenated into one point array; every per-part element section becomes its own cell block.
 - `cell_data["ensight:part"]` — the owning part number per cell (Int64), emitted only when the file has **two or more** parts, so single-part round-trips stay clean. The writer ignores it (always one part).
-- The writer drops `point_data`/`cell_data`/`field_data` with a warning — EnSight variables live in separate per-variable files, which are out of scope (v1).
+- Since v11.3.0, a `.case` file's `VARIABLE` entries become `point_data`/`cell_data` on read — see [Reading transient variables](#reading-transient-variables). The writer still drops `point_data`/`cell_data`/`field_data` with a warning: EnSight variables live in separate per-variable files, and *writing* them is a roadmap §7 remainder, not attempted here.
+
+## Reading transient variables
+
+A `.case` file's `VARIABLE` section lists `scalar per node:`/`vector per node:`/`scalar per element:`/`vector per element:` entries, each `[ts] [fs] <name> <file>`, where `<file>` may contain a `*` run standing in for the step number. Since v11.3.0 (roadmap §1 tier B1) these are read into `point_data`/`cell_data` under `<name>`; any other `VARIABLE` kind (complex/tensor variables, `per measured node`, constants) is recorded but never read. Unlike the other formats this tier touches, EnSight's own convention is **one file per step** (not several sections packed into one file), so no in-file scan is needed to find a step's data — only the filename needs resolving.
+
+`ReadOptions::mTimeStep` (0-based, negative counts from the end — the `ResolveTimeStep` contract, see [selective reads](../selective_read.md#reading-one-time-step)) resolves against the `TIME` section's `time values:` (only the file's *first* `time set:` is honoured when there is more than one) and templates every `*`-bearing filename with `filename start number:` + step × `filename increment:`, zero-padded to the `*` run's own width — e.g. `pressure.****.scl` with `start=0`, `increment=1`, step 3 becomes `pressure.0003.scl`. A file with no `TIME` section has exactly one (untemplated) step; a non-default `mTimeStep` against it is refused rather than silently answering step 0.
+
+A variable file mirrors the geometry file's own `part`/section structure exactly — the same `part`/id sequence, then either `coordinates` (per-node) or one element-type-keyword section per cell block (per-element), in the same order, but with **no counts of its own** (a part's point/cell counts are only ever given once, in the geometry file) and no `node id`/`element id` header. This structural mirroring is what lets a value land on the right point or cell block with no name matching against the geometry at all — and why a variable file whose part sequence does not match the geometry's own is a `ReadError`, not a best-effort guess. Multi-component (vector) data is component-major (every X, then every Y, then every Z), the same convention geometry coordinates use.
+
+`read_ensight_metadata` reads only the `.case` file's `TIME` section for `time_values`; the mesh shape still needs a full geometry read (no native header-only shape scan, unlike CGNS/Gmsh 4.1), so `fell_back_to_full_read` is always `true` here — the same shape Exodus's own metadata override has.
 
 ## Quirks & limitations
 
