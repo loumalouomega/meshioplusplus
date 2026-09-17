@@ -289,6 +289,7 @@ export default defineConfig({
           { text: "usd", link: "/formats/usd" },
           { text: "vti", link: "/formats/vti" },
           { text: "vtk", link: "/formats/vtk" },
+          { text: "vtm", link: "/formats/vtm" },
           { text: "vtr", link: "/formats/vtr" },
           { text: "vts", link: "/formats/vts" },
           { text: "vtp", link: "/formats/vtp" },

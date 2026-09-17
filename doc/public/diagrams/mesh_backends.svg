@@ -5,7 +5,7 @@
 <rect x="0.75" y="0.75" width="898.5" height="458.5" rx="8" fill="#fcfcfb" stroke="#dededa" stroke-width="1.5"/>
 <rect x="24" y="70" width="214" height="70" rx="6" fill="#1baf7a" fill-opacity="0.12" stroke="#1baf7a" stroke-width="1.5"/>
 <text x="131" y="101.42" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#0b0b0b">format readers / writers</text>
-<text x="131" y="117.67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#0b0b0b">43 formats, src/cpp/src/formats/</text>
+<text x="131" y="117.67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#0b0b0b">46 formats, src/cpp/src/formats/</text>
 <line x1="238" y1="105" x2="284" y2="105" stroke="#1baf7a" stroke-width="1.6" marker-end="url(#arrow-1baf7a)"/>
 <rect x="24" y="170" width="214" height="70" rx="6" fill="#2a78d6" fill-opacity="0.12" stroke="#2a78d6" stroke-width="1.5"/>
 <text x="131" y="201.43" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="#0b0b0b">operations</text>

@@ -82,6 +82,8 @@ std::string sniff_format(const std::string& rPath) {
             return "vts";
         if (sniff_contains(head, "RectilinearGrid"))
             return "vtr";
+        if (sniff_contains(head, "MultiBlockDataSet"))
+            return "vtm";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";

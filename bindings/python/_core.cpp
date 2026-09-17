@@ -75,6 +75,7 @@
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vts.hpp"
 #include "meshioplusplus/formats/vtr.hpp"
+#include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -444,6 +445,37 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, bool points_only, py::object arrays) {
             return meshioplusplus_py::mesh_to_py(
                 meshioplusplus::read_vtr(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+
+    // VTM (MultiBlock) writer / reader (v11.6.0, roadmap §1 tier B4, part 3 of
+    // 3). Each CellBlock becomes its own .vtu piece, so allow_ragged=true like
+    // VTP -- a jagged/polyhedron block is legal in a piece, and the C++ writer
+    // (via write_vtu_codec) is the one that actually validates it.
+    m.def(
+        "vtm_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::write_vtm_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def("vtm_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                 /*lenient_field_data=*/false,
+                                                                 /*allow_ragged=*/true);
+        meshioplusplus::write_vtm(path, cpp, binary, zlib);
+    });
+
+    m.def(
+        "vtm_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_vtm(path, core_read_options(points_only, arrays)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 

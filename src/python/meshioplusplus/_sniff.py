@@ -33,6 +33,8 @@ def _sniff_format_py(path) -> str:
             return "vts"
         if b"RectilinearGrid" in head:
             return "vtr"
+        if b"MultiBlockDataSet" in head:
+            return "vtm"
     if b"<Xdmf" in head:
         return "xdmf"
     if stripped.startswith(b"# vtk DataFile"):

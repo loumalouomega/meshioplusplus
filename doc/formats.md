@@ -53,6 +53,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
 | [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — |
 | [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — |
+| [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
@@ -80,6 +81,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `vts`** (v11.6.0): VTK XML StructuredGrid is the same `nx*ny*nz` hexahedron topology as `vti`, except with an explicit `<Points>` array instead of `Origin`/`Spacing` — so, unlike `vti`, **reading never requires a lattice** (a genuinely curved structured mesh reads correctly); writing still does, for the same reason `vti`'s writer does. Degenerate (2-D/1-D) extents are not expanded to quad/line/vertex cells, a documented remainder.
 
 **Note on `vtr`** (v11.6.0): VTK XML RectilinearGrid states the same topology via three independent per-axis coordinate arrays (a tensor product) instead of explicit points. **Reading is fully general** — a genuinely graded (non-uniformly spaced) grid reads correctly, with no uniformity check at all. **Writing still requires a *uniform* lattice**, since recovering three arbitrary per-axis arrays needs a detector that does not exist yet; a graded mesh raises `WriteError` — a documented follow-up.
+
+**Note on `vtm`** (v11.6.0): VTK XML MultiBlock is an index file plus one `.vtu` piece per cell block, so unlike `vti`/`vts`/`vtr` it has **no lattice restriction at all** — any mesh with one or more cell blocks round-trips. Writing carves the mesh into pieces (points pruned per piece via `clean`); reading combines the pieces with [`merge()`](./merge.md) (no welding), attaching one named "cell" region per piece. See [its own page](./formats/vtm.md) for the directory layout and the region-naming asymmetry between read and write.
 
 **Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
@@ -158,6 +161,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtk` / `vtk42` / `vtk51` | The legacy format's title line (line 2, ≤256 chars) is the format's own free-text slot | Fixed line 2 | Yes |
 | `vts` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtr` | XML `<!-- -->` | Anywhere in the document | Yes |
+| `vtm` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
@@ -234,6 +238,16 @@ meshioplusplus.vts.write(filename, mesh,   # mesh must be a dense lattice (write
 
 ```python
 meshioplusplus.vtr.write(filename, mesh,   # mesh must be a UNIFORM dense lattice (write only -- read accepts any monotonic per-axis spacing)
+    binary=True,
+    compression="zlib",   # "zlib", "lz4", "zstd", or None
+    header_type=None,     # "UInt32" or "UInt64"
+)
+```
+
+### VTM (`.vtm`)
+
+```python
+meshioplusplus.vtm.write(filename, mesh,   # any mesh with one or more cell blocks -- no lattice restriction
     binary=True,
     compression="zlib",   # "zlib", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"

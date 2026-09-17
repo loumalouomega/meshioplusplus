@@ -2271,6 +2271,9 @@ step('availableFormats reports what this build can read and write', () => {
     // .vtr (VTK XML RectilinearGrid), same tier: per-axis coordinate arrays
     // instead of a uniform Origin/Spacing pair. Both directions.
     assert.ok(readers.includes('vtr') && writers.includes('vtr'));
+    // .vtm (VTK XML MultiBlock), same tier, part 3 of 3: an index plus one
+    // .vtu piece per cell block. Both directions.
+    assert.ok(readers.includes('vtm') && writers.includes('vtm'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2311,6 +2314,35 @@ step('.vtr round-trips a lattice through MEMFS', () => {
     for (let i = 0; i < g.points.length; ++i)
         assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
     assert.throws(() => m.writeMesh('/no.vtr', cubeSurface));
+});
+
+step('.vtm writes an index plus one .vtu piece per cell block, and reads two blocks back as two meshes', () => {
+    // The roadmap's own stated probe for tier B4's .vtm entry, and (like
+    // openfoam below) a directory-writing format: MEMFS must hold the index
+    // AND its sibling pieces directory for the read back to work at all.
+    const twoBlocks = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 0, 3, 0, 0, 2, 1, 0]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([4, 5, 6]), nodesPerCell: 3 },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    m.writeMesh('/blocks.vtm', twoBlocks);
+    const back = m.readMesh('/blocks.vtm');
+    assert.equal(back.points.length, 7 * 3);  // disjoint blocks, no point duplication
+    assert.deepEqual(back.cells.map((c) => c.type).sort(), ['tetra', 'triangle']);
+    assert.ok(Array.isArray(back.regions));
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['block_0', 'block_1']);
+    assert.ok(back.regions.every((r) => r.kind === 'cell'));
+
+    // Each piece is a standalone, independently readable .vtu.
+    const piece0 = m.readMesh('/blocks/blocks_0.vtu');
+    const piece1 = m.readMesh('/blocks/blocks_1.vtu');
+    assert.deepEqual([piece0.cells[0].type, piece1.cells[0].type], ['tetra', 'triangle']);
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {

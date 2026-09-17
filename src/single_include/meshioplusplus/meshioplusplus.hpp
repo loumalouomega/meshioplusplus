@@ -9122,7 +9122,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 11
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 5
+#define MESHIOPLUSPLUS_VERSION_MINOR 6
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9132,7 +9132,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.5.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "11.6.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -16299,6 +16299,109 @@ MESHIOPLUSPLUS_API Mesh read_vtk(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/vtk.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/vtm.hpp =====
+/**
+ * @file formats/vtm.hpp
+ * @brief VTK XML MultiBlock (`.vtm`): an index file plus one `.vtu` piece per
+ * cell block (v11.6.0, roadmap §1 tier B4, part 3 of 3).
+ *
+ * A `.vtm` file is `<VTKFile type="vtkMultiBlockDataSet"><vtkMultiBlockDataSet>
+ * <Block index="0"><DataSet index="i" name="..." file="stem/stem_i.vtu"/>...
+ * </Block></vtkMultiBlockDataSet></VTKFile>` -- the index never carries
+ * geometry itself, only a list of piece files, one per meshio++ CellBlock.
+ *
+ * ### Write
+ *
+ * `write_vtm` creates a directory next to the index (named after the index's
+ * own stem) and writes one `.vtu` piece per `CellBlock`: the piece carries
+ * that block's cells and cell_data, and the mesh's full point_data, then is
+ * pruned with `clean(remove_orphans=true)` so each piece is self-contained
+ * (only the points that block actually references). Points are therefore
+ * duplicated across pieces sharing a boundary -- documented, not a bug: a
+ * `.vtm` piece is a standalone `.vtu` by design, readable on its own.  Each
+ * piece is named `"block_<i>"` in the index's `name=` attribute.
+ *
+ * ### Read
+ *
+ * `read_vtm` parses the index, reads every `DataSet` piece with `read_vtu`,
+ * and combines them with `operations/merge.hpp`'s `merge()` (no welding, so
+ * no piece's own points move or fuse with another's -- multiblock pieces are
+ * pre-separated by construction, not a set of coincident-point fragments to
+ * weld back together). Each piece's cells become one `RegionKind::Cell`
+ * region in the merged mesh, named from the index's `name=` attribute (via
+ * `merge()`'s own per-input cell index map, so the region is correct
+ * regardless of whether same-typed blocks from different pieces ended up
+ * consolidated into one output CellBlock).
+ *
+ * ### Deliberately not supported
+ *
+ * Nested `<Block>` elements are read structurally (every `DataSet` anywhere
+ * under `<vtkMultiBlockDataSet>` is collected, in document order) but nesting
+ * itself is not reproduced in the meshio++ mesh -- there is nothing in the
+ * uniform API to hold a block hierarchy, only a flat list of named regions.
+ * `vtkPolyData` pieces (as opposed to `vtkUnstructuredGrid`) are read via the
+ * extension of their own `file=` attribute, so a hand-written `.vtm` mixing
+ * `.vtu` and `.vtp` pieces round-trips on read even though this writer always
+ * emits `.vtu`.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Write a mesh as VTK XML MultiBlock: an index plus one `.vtu` piece
+ *        per cell block.
+ * @param rPath the output `.vtm` path; pieces land in a sibling directory
+ *        named after its stem (`<stem>/`).
+ * @param rMesh the mesh; each `CellBlock` becomes one piece.
+ * @param binary base64-encode each piece's arrays instead of writing text.
+ * @param zlib compress each piece's binary blocks. Ignored when @p binary is
+ *        false.
+ * @throws WriteError if the index or a piece file cannot be opened.
+ */
+MESHIOPLUSPLUS_API void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/**
+ * @brief Write a VTK XML MultiBlock with an explicit per-piece block codec.
+ * @param rPath the output path.
+ * @param rMesh the mesh.
+ * @param binary base64-encode each piece's arrays instead of writing text.
+ * @param codec the block compressor; `None` writes uncompressed base64.
+ * @throws WriteError as `write_vtm`, and when @p codec is not in this build.
+ */
+MESHIOPLUSPLUS_API void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read a VTK XML MultiBlock file.
+ * @param rPath the input `.vtm` path.
+ * @param rOpts selective-read options, forwarded to each piece's `read_vtu`;
+ *        `mPointsOnly` and `mDataArrays` apply.
+ * @return the pieces merged into one mesh (no welding), with one
+ *         `RegionKind::Cell` region per piece.
+ * @throws ReadError if the index cannot be parsed, or a piece cannot be read
+ *         (a non-`.vtu`/`.vtp` piece, in particular).
+ */
+MESHIOPLUSPLUS_API Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/**
+ * @brief Summarize a VTK XML MultiBlock file: the sum of its pieces' own
+ *        metadata, read without materializing any piece's arrays.
+ *
+ * `mCellBlocks` reflects the same first-seen, same-type-consolidation order
+ * `read_vtm`'s own `merge()` call would produce, so a caller can rely on it
+ * agreeing with a real read.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_vtm_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/vtm.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/vtp.hpp =====
 /**
  * @file vtp.hpp
@@ -74368,6 +74471,272 @@ Mesh read_vtk(const std::string& rPath) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtk_read.cpp =====
+// ===== begin src/cpp/src/formats/vtm.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// Build a standalone single-block mesh: block `Idx`'s own cells (whichever
+// representation -- rectangular, polygon, or polyhedron), the mesh's full
+// point array (pruned below), and that block's slice of every cell_data key.
+// field_data is not carried onto pieces: it describes the whole mesh, not one
+// block, and .vtm has no per-block place to put it (see vtm.md).
+Mesh vtm_extract_piece(const Mesh& rMesh, std::size_t Idx) {
+    Mesh piece;
+    piece.AssignPoints(detail::data_owned_copy(rMesh.Points()));
+
+    const auto cb = rMesh.Cells(Idx);
+    if (cb.IsPolyhedron()) {
+        std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            cells[r].resize(cb.NumFaces(r));
+            for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                const auto face = cb.Face(r, f);
+                cells[r][f].assign(face.first, face.first + face.second);
+            }
+        }
+        piece.AddPolyhedronBlock(std::string(cb.Type()), std::move(cells));
+    } else if (cb.IsRagged()) {
+        std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+        for (std::size_t r = 0; r < cb.NumCells(); ++r)
+            rows[r].assign(cb.Row(r), cb.Row(r) + cb.RowSize(r));
+        piece.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+    } else {
+        piece.AddCellBlock(std::string(cb.Type()), detail::data_owned_copy(cb.Conn()));
+    }
+
+    for (const std::string& name : rMesh.PointDataNames())
+        piece.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.CellDataNames())
+        if (rMesh.CellDataNumBlocks(name) > Idx)
+            piece.AddCellData(name, {detail::data_owned_copy(rMesh.CellData(name, Idx))});
+
+    return piece;
+}
+
+// Every `<DataSet>` under `pNode`, in document order, regardless of how many
+// `<Block>` levels separate them from it (xpath is not linked in, so this is
+// a plain recursive walk rather than a `"//DataSet"` select).
+void vtm_collect_datasets(const pugi::xml_node& rNode, std::vector<pugi::xml_node>& rOut) {
+    for (pugi::xml_node child : rNode.children()) {
+        if (std::string(child.name()) == "DataSet")
+            rOut.push_back(child);
+        else
+            vtm_collect_datasets(child, rOut);
+    }
+}
+
+// One piece, resolved from its `<DataSet>` element: the path to read (relative
+// to the index file's own directory) and the name to give it.
+struct vtm_piece_ref {
+    fs::path mPath;
+    std::string mName;
+};
+
+std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc) {
+    const pugi::xml_parse_result parsed = rDoc.load_file(rPath.c_str());
+    if (!parsed)
+        throw ReadError("Could not parse .vtm XML: " + rPath + ": " + parsed.description());
+
+    const pugi::xml_node root = rDoc.child("VTKFile");
+    if (!root)
+        throw ReadError("Expected tag 'VTKFile': " + rPath);
+    if (std::string(root.attribute("type").as_string()) != "vtkMultiBlockDataSet")
+        throw ReadError("Expected type vtkMultiBlockDataSet: " + rPath);
+    const pugi::xml_node mb = root.child("vtkMultiBlockDataSet");
+    if (!mb)
+        throw ReadError("Expected tag 'vtkMultiBlockDataSet': " + rPath);
+
+    std::vector<pugi::xml_node> datasets;
+    vtm_collect_datasets(mb, datasets);
+
+    const fs::path base = fs::path(rPath).parent_path();
+    std::vector<vtm_piece_ref> pieces;
+    pieces.reserve(datasets.size());
+    for (const pugi::xml_node& ds : datasets) {
+        const std::string file = ds.attribute("file").as_string("");
+        if (file.empty())
+            throw ReadError("<DataSet> is missing its 'file' attribute: " + rPath);
+        vtm_piece_ref ref;
+        ref.mPath = base.empty() ? fs::path(file) : base / file;
+        ref.mName = ds.attribute("name").as_string("");
+        if (ref.mName.empty())
+            ref.mName = "block_" + std::to_string(pieces.size());
+        pieces.push_back(std::move(ref));
+    }
+    return pieces;
+}
+
+}  // namespace
+
+void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, detail::VtkCodec codec) {
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+
+    const fs::path index_path(rPath);
+    const std::string stem = index_path.stem().string();
+    const fs::path dir = index_path.parent_path().empty() ? fs::path(stem)
+                                                            : index_path.parent_path() / stem;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        throw WriteError("Could not create directory for .vtm pieces: " + dir.string() + ": " +
+                          ec.message());
+
+    std::vector<std::string> piece_files;
+    std::vector<std::string> piece_names;
+    piece_files.reserve(rMesh.NumCellBlocks());
+    piece_names.reserve(rMesh.NumCellBlocks());
+
+    for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
+        const Mesh piece = vtm_extract_piece(rMesh, i);
+        CleanOptions copts;
+        copts.weld = false;
+        copts.remove_orphans = true;
+        copts.drop_degenerate = false;
+        copts.drop_duplicate_cells = false;
+        const CleanResult cleaned = clean(piece, copts);
+
+        const std::string piece_file_name = stem + "_" + std::to_string(i) + ".vtu";
+        const fs::path piece_path = dir / piece_file_name;
+        write_vtu_codec(piece_path.string(), cleaned.mMesh, binary, binary ? codec : detail::VtkCodec::None);
+
+        piece_files.push_back((fs::path(stem) / piece_file_name).generic_string());
+        piece_names.push_back("block_" + std::to_string(i));
+    }
+
+    std::ofstream os(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    os << "<vtkMultiBlockDataSet>\n";
+    os << "<Block index=\"0\">\n";
+    for (std::size_t i = 0; i < piece_files.size(); ++i)
+        os << "<DataSet index=\"" << i << "\" name=\"" << piece_names[i] << "\" file=\""
+           << piece_files[i] << "\"/>\n";
+    os << "</Block>\n";
+    os << "</vtkMultiBlockDataSet>\n";
+    os << "</VTKFile>\n";
+    if (!os)
+        throw WriteError("Failed while writing: " + rPath);
+}
+
+void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_vtm_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+    if (refs.empty()) {
+        Mesh empty;
+        empty.AssignPoints(NDArray::Uninit(DType::Float64, {0, 3}));
+        return empty;
+    }
+
+    std::vector<Mesh> pieces;
+    pieces.reserve(refs.size());
+    for (const vtm_piece_ref& ref : refs) {
+        const std::string ext = ref.mPath.extension().string();
+        if (ext == ".vtu")
+            pieces.push_back(read_vtu(ref.mPath.string(), rOpts));
+        else if (ext == ".vtp")
+            pieces.push_back(read_vtp(ref.mPath.string(), rOpts));
+        else
+            throw ReadError("Unsupported .vtm piece '" + ref.mPath.string() +
+                             "': only .vtu/.vtp pieces are read");
+    }
+
+    std::vector<const Mesh*> ptrs;
+    ptrs.reserve(pieces.size());
+    for (const Mesh& m : pieces)
+        ptrs.push_back(&m);
+
+    MergeOptions mopts;
+    mopts.weld = false;
+    mopts.source_tag = true;
+    mopts.data_policy = MergeDataPolicy::Fill;
+    MergeResult result = merge(ptrs, mopts);
+
+    for (std::size_t i = 0; i < refs.size(); ++i)
+        result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));
+
+    return std::move(result.mMesh);
+}
+
+MeshMetadata read_vtm_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    pugi::xml_document doc;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+
+    MeshMetadata meta;
+    meta.mFormat = "vtm";
+    if (refs.empty())
+        return meta;
+
+    std::vector<CellBlockInfo> blocks;
+    std::unordered_map<std::string, std::size_t> type_to_idx;
+    std::vector<std::string> point_names, cell_names, field_names;
+    auto merge_names = [](std::vector<std::string>& rInto, const std::vector<std::string>& rFrom) {
+        for (const std::string& n : rFrom)
+            if (std::find(rInto.begin(), rInto.end(), n) == rInto.end())
+                rInto.push_back(n);
+    };
+
+    for (const vtm_piece_ref& ref : refs) {
+        const std::string ext = ref.mPath.extension().string();
+        const MeshMetadata pm = (ext == ".vtp") ? read_vtp_metadata(ref.mPath.string(), rOpts)
+                                                 : read_vtu_metadata(ref.mPath.string(), rOpts);
+        meta.mNumPoints += pm.mNumPoints;
+        meta.mPointDim = std::max(meta.mPointDim, pm.mPointDim);
+        meta.mFellBackToFullRead = meta.mFellBackToFullRead || pm.mFellBackToFullRead;
+        merge_names(point_names, pm.mPointDataNames);
+        merge_names(cell_names, pm.mCellDataNames);
+        merge_names(field_names, pm.mFieldDataNames);
+
+        for (const CellBlockInfo& cb : pm.mCellBlocks) {
+            auto it = type_to_idx.find(cb.mType);
+            if (it == type_to_idx.end()) {
+                type_to_idx[cb.mType] = blocks.size();
+                blocks.push_back(cb);
+            } else {
+                CellBlockInfo& dst = blocks[it->second];
+                dst.mNumCells += cb.mNumCells;
+                dst.mRagged = dst.mRagged || cb.mRagged;
+                if (dst.mNodesPerCell != cb.mNodesPerCell)
+                    dst.mNodesPerCell = 0;
+            }
+        }
+    }
+
+    meta.mCellBlocks = std::move(blocks);
+    std::sort(point_names.begin(), point_names.end());
+    std::sort(cell_names.begin(), cell_names.end());
+    std::sort(field_names.begin(), field_names.end());
+    meta.mPointDataNames = std::move(point_names);
+    meta.mCellDataNames = std::move(cell_names);
+    meta.mFieldDataNames = std::move(field_names);
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/vtm.cpp =====
 // ===== begin src/cpp/src/formats/vtp.cpp =====
 #include <cstdint>
 #include <cstring>
@@ -98210,6 +98579,8 @@ std::string sniff_format(const std::string& rPath) {
             return "vts";
         if (sniff_contains(head, "RectilinearGrid"))
             return "vtr";
+        if (sniff_contains(head, "MultiBlockDataSet"))
+            return "vtm";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";
@@ -101451,6 +101822,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vtk", meshioplusplus::read_vtk},
         {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
         {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
+        {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
@@ -101584,6 +101956,14 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/true);
 #else
              meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"vtm",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
 #endif
          }},
         {"vtk",
@@ -101729,6 +102109,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".vtk", "vtk"},
         {".vts", "vts"},
         {".vtr", "vtr"},
+        {".vtm", "vtm"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
         {".wkt", "wkt"},
@@ -101843,6 +102224,7 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"vti", meshioplusplus::read_vti},
         {"vts", meshioplusplus::read_vts},
         {"vtr", meshioplusplus::read_vtr},
+        {"vtm", meshioplusplus::read_vtm},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -101867,6 +102249,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"vti", meshioplusplus::read_vti_metadata},
         {"vts", meshioplusplus::read_vts_metadata},
         {"vtr", meshioplusplus::read_vtr_metadata},
+        {"vtm", meshioplusplus::read_vtm_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},
