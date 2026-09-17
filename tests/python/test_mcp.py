@@ -216,7 +216,7 @@ def test_convert_ascii_variant(mesh_file, tmp_path):
 def test_convert_variant_errors(mesh_file, tmp_path):
     with pytest.raises(ValueError, match="has no ascii variant"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.obj"), mode="ascii")
-    with pytest.raises(ValueError, match="only vti/vts/vtu/vtp"):
+    with pytest.raises(ValueError, match="only vti/vts/vtr/vtu/vtp"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtk"), compression="zstd")
     with pytest.raises(ValueError, match="unknown mode"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")

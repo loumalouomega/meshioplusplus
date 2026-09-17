@@ -74,6 +74,7 @@
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vts.hpp"
+#include "meshioplusplus/formats/vtr.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -415,6 +416,34 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, bool points_only, py::object arrays) {
             return meshioplusplus_py::mesh_to_py(
                 meshioplusplus::read_vts(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+
+    // VTR (RectilinearGrid) writer / reader (v11.6.0, roadmap §1 tier B4). The
+    // writer needs a UNIFORM dense lattice (same requirement as VTI/VTS); the
+    // reader is fully general (any monotonic per-axis coordinates).
+    m.def(
+        "vtr_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/false);
+            meshioplusplus::write_vtr_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def("vtr_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_vtr(path, cpp, binary, zlib);
+    });
+
+    m.def(
+        "vtr_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_vtr(path, core_read_options(points_only, arrays)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 

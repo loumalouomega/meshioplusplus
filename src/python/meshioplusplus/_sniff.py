@@ -31,6 +31,8 @@ def _sniff_format_py(path) -> str:
             return "vti"
         if b"StructuredGrid" in head:  # v11.6.0, roadmap §1 tier B4
             return "vts"
+        if b"RectilinearGrid" in head:
+            return "vtr"
     if b"<Xdmf" in head:
         return "xdmf"
     if stripped.startswith(b"# vtk DataFile"):

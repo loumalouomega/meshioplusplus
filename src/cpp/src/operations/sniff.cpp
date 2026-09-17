@@ -80,6 +80,8 @@ std::string sniff_format(const std::string& rPath) {
         // v11.6.0, roadmap §1 tier B4.
         if (sniff_contains(head, "StructuredGrid"))
             return "vts";
+        if (sniff_contains(head, "RectilinearGrid"))
+            return "vtr";
     }
     if (sniff_starts_with(stripped, "<Xdmf") || sniff_contains(head, "<Xdmf"))
         return "xdmf";

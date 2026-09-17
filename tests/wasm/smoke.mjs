@@ -2268,6 +2268,9 @@ step('availableFormats reports what this build can read and write', () => {
     // explicit-points sibling of .vti -- same implicit connectivity, but a
     // curved structured mesh reads correctly too. Both directions.
     assert.ok(readers.includes('vts') && writers.includes('vts'));
+    // .vtr (VTK XML RectilinearGrid), same tier: per-axis coordinate arrays
+    // instead of a uniform Origin/Spacing pair. Both directions.
+    assert.ok(readers.includes('vtr') && writers.includes('vtr'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2297,6 +2300,17 @@ step('.vts round-trips a lattice through MEMFS, no js_bindings.cpp code needed',
     for (let i = 0; i < g.points.length; ++i)
         assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
     assert.throws(() => m.writeMesh('/no.vts', cubeSurface));
+});
+
+step('.vtr round-trips a lattice through MEMFS', () => {
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vtr', g);
+    const back = m.readMesh('/lattice.vtr');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    assert.throws(() => m.writeMesh('/no.vtr', cubeSurface));
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {
