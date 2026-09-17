@@ -852,6 +852,125 @@ TEST(OpenFoamWrite, ZonesRoundTripAsNamedRegions) {
     fs::remove_all(base, ec);
 }
 
+// Roadmap §1 tier B2: reconstructing a decomposed (`processor*/`) case.
+//
+// Two unit hexahedra sharing one face (cube A: x in [0,1], cube B: x in
+// [1,2]), decomposed by hand into `processor0`/`processor1` -- one cell each
+// -- with correctly-derived `*ProcAddressing` files. `write_openfoam` writes
+// each processor's own isolated-cell polyMesh (6 boundary faces, no internal
+// ones -- a single cell has no neighbour of its own); this test's job is
+// purely the *ProcAddressing bookkeeping and the reconstruction that reads
+// it back into ONE mesh with the shared face restored as a genuine internal
+// face. The point/cell addressing is chosen so processor0's local ids ARE
+// the global ids (an identity map is still a real exercise of the address
+// lookup, just not a permutation of it); processor1's is a real offset/shift,
+// so both addressing shapes are covered.
+TEST(OpenFoamDecompose, ReconstructsTwoProcessorsSharingOneFace) {
+    const fs::path base = temp_case_dir();
+
+    // 12 global points: cube A's own 4 (x=0), the shared 4 (x=1), cube B's
+    // own 4 (x=2).
+    const std::vector<std::vector<double>> g = {
+        {0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {0, 0, 1},  // 0-3: A only
+        {1, 0, 0}, {1, 1, 0}, {1, 1, 1}, {1, 0, 1},  // 4-7: shared (x=1)
+        {2, 0, 0}, {2, 1, 0}, {2, 1, 1}, {2, 0, 1},  // 8-11: B only
+    };
+
+    auto write_processor = [&](int proc, const std::vector<std::vector<double>>& pts,
+                               const std::vector<std::int64_t>& conn) {
+        meshioplusplus::Mesh m;
+        m.AssignPoints(mt::points_from(pts));
+        m.AddCellBlock("hexahedron", mt::conn_from({conn}));
+        const fs::path marker =
+            base / ("processor" + std::to_string(proc)) / "case.foam";
+        meshioplusplus::write_openfoam(marker.string(), m, {});
+        return base / ("processor" + std::to_string(proc)) / "constant" / "polyMesh";
+    };
+
+    const fs::path poly0 = write_processor(0, {g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]},
+                                           {0, 1, 2, 3, 4, 5, 6, 7});
+    const fs::path poly1 = write_processor(1, {g[4], g[5], g[6], g[7], g[8], g[9], g[10], g[11]},
+                                           {0, 1, 2, 3, 4, 5, 6, 7});
+
+    const PolyMeshRead p0 = read_polymesh(poly0), p1 = read_polymesh(poly1);
+    ASSERT_EQ(p0.mFaces.size(), 6u);
+    ASSERT_EQ(p1.mFaces.size(), 6u);
+    ASSERT_TRUE(p0.mNeighbour.empty());  // a lone cell has no internal face of its own
+    ASSERT_TRUE(p1.mNeighbour.empty());
+
+    // The shared face is the one whose every corner sits at x=1, in EACH
+    // processor's own written point coordinates.
+    auto find_interface_face = [](const PolyMeshRead& p) -> std::int64_t {
+        for (std::size_t f = 0; f < p.mFaces.size(); ++f) {
+            bool all_x1 = true;
+            for (std::int64_t nid : p.mFaces[f])
+                if (std::abs(p.mPoints[static_cast<std::size_t>(nid)][0] - 1.0) > 1e-9)
+                    all_x1 = false;
+            if (all_x1)
+                return static_cast<std::int64_t>(f);
+        }
+        return -1;
+    };
+    const std::int64_t iface0 = find_interface_face(p0);
+    const std::int64_t iface1 = find_interface_face(p1);
+    ASSERT_GE(iface0, 0);
+    ASSERT_GE(iface1, 0);
+
+    constexpr std::int64_t kInterfaceGlobalFace = 0;
+    auto write_face_addr = [&](const fs::path& poly, std::size_t n, std::int64_t iface,
+                               bool flip, std::int64_t& next_id) {
+        std::vector<std::int64_t> addr(n);
+        for (std::size_t f = 0; f < n; ++f)
+            addr[f] = static_cast<std::int64_t>(f) == iface
+                          ? (flip ? -(kInterfaceGlobalFace + 1) : (kInterfaceGlobalFace + 1))
+                          : (next_id++) + 1;
+        std::ofstream f(poly / "faceProcAddressing");
+        f << "FoamFile\n{\n format ascii;\n class labelList;\n object "
+             "faceProcAddressing;\n}\n"
+          << addr.size() << "\n(\n";
+        for (std::int64_t v : addr)
+            f << v << "\n";
+        f << ")\n";
+    };
+    std::int64_t next_id = 1;  // 0 is reserved for the interface face
+    write_face_addr(poly0, p0.mFaces.size(), iface0, /*flip=*/false, next_id);
+    write_face_addr(poly1, p1.mFaces.size(), iface1, /*flip=*/true, next_id);
+
+    auto write_label_list = [](const fs::path& file, const std::vector<std::int64_t>& vals) {
+        std::ofstream f(file);
+        f << "FoamFile\n{\n format ascii;\n class labelList;\n object "
+          << file.filename().string() << ";\n}\n"
+          << vals.size() << "\n(\n";
+        for (std::int64_t v : vals)
+            f << v << "\n";
+        f << ")\n";
+    };
+    write_label_list(poly0 / "pointProcAddressing", {0, 1, 2, 3, 4, 5, 6, 7});
+    write_label_list(poly1 / "pointProcAddressing", {4, 5, 6, 7, 8, 9, 10, 11});
+    write_label_list(poly0 / "cellProcAddressing", {0});
+    write_label_list(poly1 / "cellProcAddressing", {1});
+    write_label_list(poly0 / "boundaryProcAddressing", {0});  // defaultFaces -> global patch 0
+    write_label_list(poly1 / "boundaryProcAddressing", {0});
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back = meshioplusplus::read_openfoam(base.string(), info);
+
+    EXPECT_EQ(back.NumPoints(), 12u);
+    std::size_t nhex = 0, nquad = 0;
+    for (const auto cb : back.CellRange()) {
+        if (cb.Type() == "hexahedron")
+            nhex += cb.NumCells();
+        else if (cb.Type() == "quad")
+            nquad += cb.NumCells();
+    }
+    EXPECT_EQ(nhex, 2u) << "the shared face must have become one internal face, not two "
+                           "boundary ones, leaving both cells intact";
+    EXPECT_EQ(nquad, 10u) << "6 + 6 boundary faces minus the 2 that became internal";
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
 // checkMesh is the ONLY oracle that catches a convention error -- a globally
 // inverted winding passes every internally-consistent check above. It is
 // virtually never installed, so this skips loudly rather than silently.

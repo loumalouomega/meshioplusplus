@@ -93,6 +93,18 @@ mesh = meshioplusplus.openfoam.read("case.foam", region="fluid")
 
 Reading a multi-region case with no `region` raises, naming the regions found under `constant/` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2) — it does not silently try (and fail to find) a bare `constant/polyMesh`. Reading a region's `polyMesh` directory directly (`case/constant/fluid/polyMesh`) needs no `region` at all — the plain `polyMesh`-directory resolution rule already covers it. `region` is **C++-core only** (`OpenFoamInfo::mRegion`) and read-side only; a multi-region *write* is a documented follow-up, and the pure-Python fallback reader has no multi-region concept, so a `region` request — or a case the compiled core recognised as multi-region — re-raises rather than silently falling back to a worse error.
 
+## Decomposed cases
+
+A decomposed case has no `constant/polyMesh` at all, only `processor0/constant/polyMesh`, `processor1/constant/polyMesh`, … (`decomposePar`'s own layout). `read` detects this — no single-region `polyMesh` and no `region` selected, but `processorN` directories present — and reconstructs one mesh with the original global numbering, mirroring what OpenFOAM's own `reconstructParMesh` does on disk (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2):
+
+```python
+mesh = meshioplusplus.openfoam.read("case.foam")  # transparent -- no extra argument
+```
+
+Each processor's own `pointProcAddressing`/`cellProcAddressing`/`faceProcAddressing` (plain `labelList`s) map its local ids back onto the global ones; `faceProcAddressing`'s sign says whether a processor's local copy of a face is stored reversed relative to the global orientation. A global face claimed by exactly one processor is either interior to it or a real exterior boundary face; claimed by two, it is a genuine internal face `decomposePar` split at a processor boundary — the positive-signed entry names the true owner side, the negative-signed one the neighbour side. A boundary face's global patch comes from its owning processor's `boundaryProcAddressing`; a `processor*` inter-rank patch (missing/negative addressing, or a `type` starting with `processor`) has no counterpart in the original case and is dropped.
+
+This is **read-side only and C++-core only**: a multi-region *write* (and by extension a decomposed one) is a documented follow-up, and the pure-Python fallback reader has no concept of `processor*/` directories at all.
+
 ## Quirks & limitations
 
 - **The only meshio++ writer that creates a directory.** `write` resolves its path exactly as `read` does and creates `<case>/constant/polyMesh/` as needed; a `.foam` target also gets its (empty) marker file written, which is what makes the case openable by ParaView. Because a case *directory* has no extension, that form needs an explicit `file_format="openfoam"` — `resolve_format` is a pure string function and deliberately does not stat the filesystem.

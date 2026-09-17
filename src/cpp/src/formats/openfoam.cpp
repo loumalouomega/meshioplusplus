@@ -698,6 +698,227 @@ std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented
     return {"polyhedron", {}};
 }
 
+// ---- decomposed (processorN) cases (v11.4.0, roadmap §1 tier B2) ----
+
+/// A single `polyMesh`'s raw, un-reconstructed file contents -- what
+/// `read_openfoam` used to read inline before it could also come from
+/// `reconstruct_decomposed`.
+struct RawPolyMesh {
+    P3 mPoints;
+    std::vector<Face> mFaces;
+    std::vector<std::int64_t> mOwner;
+    std::vector<std::int64_t> mNeighbour;  ///< only the internal faces
+    std::vector<Patch> mBoundary;
+};
+
+RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
+    RawPolyMesh raw;
+    raw.mPoints = read_points(rPoly / "points");
+    raw.mFaces = read_faces(rPoly / "faces");
+    raw.mOwner = read_int_list(rPoly / "owner");
+    if (fs::exists(rPoly / "neighbour"))
+        raw.mNeighbour = read_int_list(rPoly / "neighbour");
+    if (fs::exists(rPoly / "boundary"))
+        raw.mBoundary = parse_boundary(
+            strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
+    return raw;
+}
+
+/// One processor's `polyMesh` plus the addressing lists that map its local
+/// ids back onto the undecomposed case's global ones.
+struct ProcMesh {
+    RawPolyMesh mRaw;
+    std::vector<std::int64_t> mPointAddr;     ///< local point -> global point id
+    std::vector<std::int64_t> mCellAddr;      ///< local cell -> global cell id
+    std::vector<std::int64_t> mFaceAddr;      ///< local face -> signed (global face id + 1)
+    std::vector<std::int64_t> mBoundaryAddr;  ///< local patch -> global patch id, -1 if none
+};
+
+/// The processor-local face (and its orientation) claiming a given global
+/// face id -- one entry for a face interior to one processor or an original
+/// external boundary face, two for a face split by decomposition.
+struct DecompFaceClaim {
+    std::int64_t mProc = -1;
+    std::int64_t mLocalFace = -1;
+    bool mFlipped = false;
+};
+
+/// The local patch containing local face @p LocalFace, or `npos`.
+std::size_t foam_patch_of_local_face(const std::vector<Patch>& rBoundary, std::int64_t LocalFace) {
+    for (std::size_t p = 0; p < rBoundary.size(); ++p)
+        if (LocalFace >= rBoundary[p].mStartFace &&
+            LocalFace < rBoundary[p].mStartFace + rBoundary[p].mNFaces)
+            return p;
+    return static_cast<std::size_t>(-1);
+}
+
+/// The sorted processor indices of a decomposed case's `<root>/processorN/`
+/// directories that carry a `constant/polyMesh` -- not assumed contiguous.
+std::vector<std::size_t> foam_processor_ids(const fs::path& rCaseRoot) {
+    std::vector<std::size_t> ids;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rCaseRoot, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("processor", 0) != 0)
+            continue;
+        const std::string digits = name.substr(std::strlen("processor"));
+        if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        if (fs::exists(entry.path() / "constant" / "polyMesh"))
+            ids.push_back(static_cast<std::size_t>(std::atoll(digits.c_str())));
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+/**
+ * @brief Reassemble a decomposed case's `processorN` directories into one
+ * global `RawPolyMesh`, mirroring what `reconstructParMesh` does on disk.
+ *
+ * Points/cells/faces are placed at the global ids their processor's own
+ * `*ProcAddressing` files (plain `labelList`s, read like `owner`) name.
+ * A global face claimed by exactly one processor is either an original
+ * external boundary face or one interior to that processor alone; claimed by
+ * two, it is an internal face `decomposePar` split at a processor boundary --
+ * the positive-signed `faceProcAddressing` entry names the true owner side,
+ * the negative-signed one the neighbour side (the sign meaning "this local
+ * copy is stored reversed relative to the global orientation"). A boundary
+ * face's global patch comes from its owning processor's `boundaryProcAddressing`
+ * (missing/negative marks a `processor*` inter-rank patch, dropped -- it has no
+ * counterpart in the original case).
+ */
+RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
+                                   const std::vector<std::size_t>& rProcIds) {
+    std::vector<ProcMesh> procs(rProcIds.size());
+    std::int64_t max_point = -1, max_cell = -1, max_face = -1;
+    for (std::size_t k = 0; k < rProcIds.size(); ++k) {
+        const fs::path poly =
+            rCaseRoot / ("processor" + std::to_string(rProcIds[k])) / "constant" / "polyMesh";
+        ProcMesh& pm = procs[k];
+        pm.mRaw = read_raw_polymesh(poly);
+        pm.mPointAddr = read_int_list(poly / "pointProcAddressing");
+        pm.mCellAddr = read_int_list(poly / "cellProcAddressing");
+        pm.mFaceAddr = read_int_list(poly / "faceProcAddressing");
+        if (fs::exists(poly / "boundaryProcAddressing"))
+            pm.mBoundaryAddr = read_int_list(poly / "boundaryProcAddressing");
+        for (std::int64_t v : pm.mPointAddr)
+            max_point = std::max(max_point, v);
+        for (std::int64_t v : pm.mCellAddr)
+            max_cell = std::max(max_cell, v);
+        for (std::int64_t v : pm.mFaceAddr)
+            max_face = std::max(max_face, std::abs(v) - 1);
+    }
+    const std::size_t n_points = static_cast<std::size_t>(max_point + 1);
+    const std::size_t n_faces = static_cast<std::size_t>(max_face + 1);
+
+    P3 points(n_points);
+    for (const ProcMesh& pm : procs)
+        for (std::size_t i = 0; i < pm.mPointAddr.size(); ++i)
+            points[static_cast<std::size_t>(pm.mPointAddr[i])] = pm.mRaw.mPoints[i];
+
+    // Every processor-local face that claims a given global id.
+    std::vector<std::array<DecompFaceClaim, 2>> claims(n_faces);
+    std::vector<std::uint8_t> n_claims(n_faces, 0);
+    for (std::size_t k = 0; k < procs.size(); ++k) {
+        const auto& fa = procs[k].mFaceAddr;
+        for (std::size_t i = 0; i < fa.size(); ++i) {
+            const std::size_t g = static_cast<std::size_t>(std::abs(fa[i]) - 1);
+            const std::uint8_t slot = n_claims[g]++;
+            if (slot < 2)
+                claims[g][slot] = {static_cast<std::int64_t>(k), static_cast<std::int64_t>(i),
+                                   fa[i] < 0};
+        }
+    }
+
+    std::vector<Face> internal_faces;
+    std::vector<std::int64_t> internal_owner, internal_neighbour;
+    // Global patch id -> its (name, type) plus the member faces' node rings
+    // and owner cells, in the order they are found.
+    std::map<std::int64_t, Patch> patch_table;
+    std::map<std::int64_t, std::vector<Face>> patch_faces;
+    std::map<std::int64_t, std::vector<std::int64_t>> patch_owners;
+    std::size_t n_dropped_processor_faces = 0, n_dropped_unclaimed = 0;
+
+    for (std::size_t g = 0; g < n_faces; ++g) {
+        if (n_claims[g] == 0) {
+            ++n_dropped_unclaimed;  // an id `faceProcAddressing` never actually used
+            continue;
+        }
+        const DecompFaceClaim* owner_claim = nullptr;
+        const DecompFaceClaim* neigh_claim = nullptr;
+        for (std::uint8_t k = 0; k < std::min<std::uint8_t>(n_claims[g], 2); ++k) {
+            const DecompFaceClaim& c = claims[g][k];
+            (c.mFlipped ? neigh_claim : owner_claim) = &c;
+        }
+        if (!owner_claim)
+            owner_claim = &claims[g][0];  // defensive: both flipped should not happen
+
+        const ProcMesh& op = procs[static_cast<std::size_t>(owner_claim->mProc)];
+        const Face& lf = op.mRaw.mFaces[static_cast<std::size_t>(owner_claim->mLocalFace)];
+        Face gf(lf.size());
+        for (std::size_t k = 0; k < lf.size(); ++k)
+            gf[k] = op.mPointAddr[static_cast<std::size_t>(lf[k])];
+        const std::int64_t owner_cell = op.mCellAddr[static_cast<std::size_t>(
+            op.mRaw.mOwner[static_cast<std::size_t>(owner_claim->mLocalFace)])];
+
+        if (neigh_claim) {
+            const ProcMesh& np = procs[static_cast<std::size_t>(neigh_claim->mProc)];
+            const std::int64_t neigh_cell = np.mCellAddr[static_cast<std::size_t>(
+                np.mRaw.mOwner[static_cast<std::size_t>(neigh_claim->mLocalFace)])];
+            internal_faces.push_back(std::move(gf));
+            internal_owner.push_back(owner_cell);
+            internal_neighbour.push_back(neigh_cell);
+            continue;
+        }
+
+        // A genuine boundary face: resolve its global patch via the owning
+        // processor's own local patch + `boundaryProcAddressing`.
+        const std::size_t local_patch =
+            foam_patch_of_local_face(op.mRaw.mBoundary, owner_claim->mLocalFace);
+        std::int64_t global_patch = -1;
+        if (local_patch != static_cast<std::size_t>(-1) &&
+            local_patch < op.mBoundaryAddr.size())
+            global_patch = op.mBoundaryAddr[local_patch];
+        const bool is_processor_patch =
+            global_patch < 0 || (local_patch != static_cast<std::size_t>(-1) &&
+                                 op.mRaw.mBoundary[local_patch].mType.rfind("processor", 0) == 0);
+        if (is_processor_patch) {
+            ++n_dropped_processor_faces;
+            continue;
+        }
+        if (!patch_table.count(global_patch)) {
+            Patch p = op.mRaw.mBoundary[local_patch];  // name/type only; counts recomputed below
+            p.mNFaces = 0;
+            p.mStartFace = 0;
+            patch_table[global_patch] = p;
+        }
+        patch_faces[global_patch].push_back(std::move(gf));
+        patch_owners[global_patch].push_back(owner_cell);
+    }
+    if (n_dropped_processor_faces > 0)
+        log::info("OpenFOAM: reconstructed case drops {} inter-processor patch face(s)",
+                  n_dropped_processor_faces);
+    if (n_dropped_unclaimed > 0)
+        log::warn("OpenFOAM: {} face id(s) in *ProcAddressing were never claimed",
+                  n_dropped_unclaimed);
+
+    RawPolyMesh out;
+    out.mPoints = std::move(points);
+    out.mFaces = std::move(internal_faces);
+    out.mOwner = internal_owner;
+    out.mNeighbour = std::move(internal_neighbour);
+    for (auto& kv : patch_table) {
+        kv.second.mStartFace = static_cast<std::int64_t>(out.mFaces.size());
+        for (Face& f : patch_faces[kv.first])
+            out.mFaces.push_back(std::move(f));
+        for (std::int64_t c : patch_owners[kv.first])
+            out.mOwner.push_back(c);
+        kv.second.mNFaces = static_cast<std::int64_t>(out.mFaces.size()) - kv.second.mStartFace;
+        out.mBoundary.push_back(kv.second);
+    }
+    return out;
+}
+
 }  // namespace
 
 Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
@@ -747,21 +968,36 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
             "'{}' is a multi-region case; set OpenFoamInfo::mRegion to one of: {}", rPathIn,
             joined));
     }
+
+    // Decomposed case (v11.4.0, roadmap §1 tier B2): no single
+    // `constant/polyMesh` and no `<region>` selected, but `processorN`
+    // directories each carrying their own `constant/polyMesh`.
+    bool decomposed = false;
+    std::vector<std::size_t> proc_ids;
+    if (poly.empty()) {
+        proc_ids = foam_processor_ids(case_root);
+        decomposed = !proc_ids.empty();
+        if (decomposed)
+            poly = case_root;  // for the "Reading polyMesh from" log line below only
+    }
     if (poly.empty())
         throw ReadError(detail::format_compat(
             "Could not locate polyMesh from '{}'. Expected <case>/constant/polyMesh/.", rPathIn));
     log::info("Reading polyMesh from {}", poly.string());
 
-    P3 points = read_points(poly / "points");
-    std::vector<Face> faces = read_faces(poly / "faces");
-    std::vector<std::int64_t> owner = read_int_list(poly / "owner");
-    std::vector<std::int64_t> neighbour;
-    if (fs::exists(poly / "neighbour"))
-        neighbour = read_int_list(poly / "neighbour");
-    std::vector<Patch> boundary;
-    if (fs::exists(poly / "boundary"))
-        boundary = parse_boundary(
-            strip_comments_and_header(read_whole((poly / "boundary").string()).View()));
+    RawPolyMesh raw;
+    if (decomposed) {
+        log::info("OpenFOAM: reconstructing {} from {} processor director{}", case_root.string(),
+                  proc_ids.size(), proc_ids.size() == 1 ? "y" : "ies");
+        raw = reconstruct_decomposed(case_root, proc_ids);
+    } else {
+        raw = read_raw_polymesh(poly);
+    }
+    P3 points = std::move(raw.mPoints);
+    std::vector<Face> faces = std::move(raw.mFaces);
+    std::vector<std::int64_t> owner = std::move(raw.mOwner);
+    std::vector<std::int64_t> neighbour = std::move(raw.mNeighbour);
+    std::vector<Patch> boundary = std::move(raw.mBoundary);
 
     std::int64_t owner_max = -1, neigh_max = -1;
     for (std::int64_t v : owner)
