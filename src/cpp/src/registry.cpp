@@ -194,8 +194,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
-        // Write-only (gidpost has no read functions at all -- the reader is a
-        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // gidpost itself has no read functions at all -- meshio++'s own
+        // read_gid (registry_readers() above) is a hand-rolled reader that
+        // does not depend on it, which is why gid is readable in strictly
+        // more build configurations than it is writable. GidMode::Auto
         // infers the flavour (ascii/binary/hdf5) from the path's extension.
         {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,

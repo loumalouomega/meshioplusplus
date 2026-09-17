@@ -67,7 +67,7 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 
 ## Zones as named regions
 
-`cellZones`/`faceZones`/`pointZones` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2) round-trip as `mesh.regions` — see [`doc/regions.md`](../regions.md) for the model.
+`cellZones`/`faceZones`/`pointZones` (v11.4.0, tier B2) round-trip as `mesh.regions` — see [`doc/regions.md`](../regions.md) for the model.
 
 ```python
 mesh = meshioplusplus.read("case.foam")
@@ -91,11 +91,11 @@ A multi-region case has no single `constant/polyMesh`; each region has its own `
 mesh = meshioplusplus.openfoam.read("case.foam", region="fluid")
 ```
 
-Reading a multi-region case with no `region` raises, naming the regions found under `constant/` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2) — it does not silently try (and fail to find) a bare `constant/polyMesh`. Reading a region's `polyMesh` directory directly (`case/constant/fluid/polyMesh`) needs no `region` at all — the plain `polyMesh`-directory resolution rule already covers it. `region` is **C++-core only** (`OpenFoamInfo::mRegion`) and read-side only; a multi-region *write* is a documented follow-up, and the pure-Python fallback reader has no multi-region concept, so a `region` request — or a case the compiled core recognised as multi-region — re-raises rather than silently falling back to a worse error.
+Reading a multi-region case with no `region` raises, naming the regions found under `constant/` (v11.4.0, tier B2) — it does not silently try (and fail to find) a bare `constant/polyMesh`. Reading a region's `polyMesh` directory directly (`case/constant/fluid/polyMesh`) needs no `region` at all — the plain `polyMesh`-directory resolution rule already covers it. `region` is **C++-core only** (`OpenFoamInfo::mRegion`) and read-side only; a multi-region *write* is a documented follow-up, and the pure-Python fallback reader has no multi-region concept, so a `region` request — or a case the compiled core recognised as multi-region — re-raises rather than silently falling back to a worse error.
 
 ## Decomposed cases
 
-A decomposed case has no `constant/polyMesh` at all, only `processor0/constant/polyMesh`, `processor1/constant/polyMesh`, … (`decomposePar`'s own layout). `read` detects this — no single-region `polyMesh` and no `region` selected, but `processorN` directories present — and reconstructs one mesh with the original global numbering, mirroring what OpenFOAM's own `reconstructParMesh` does on disk (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2):
+A decomposed case has no `constant/polyMesh` at all, only `processor0/constant/polyMesh`, `processor1/constant/polyMesh`, … (`decomposePar`'s own layout). `read` detects this — no single-region `polyMesh` and no `region` selected, but `processorN` directories present — and reconstructs one mesh with the original global numbering, mirroring what OpenFOAM's own `reconstructParMesh` does on disk (v11.4.0, tier B2):
 
 ```python
 mesh = meshioplusplus.openfoam.read("case.foam")  # transparent -- no extra argument
@@ -107,7 +107,7 @@ This is **read-side only and C++-core only**: a multi-region *write* (and by ext
 
 ## Time-directory fields
 
-`<case>/<time>/<field>` dictionaries round-trip as `point_data`/`cell_data` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2), selected the same way every other transient format's `time_step`/`arrays` work:
+`<case>/<time>/<field>` dictionaries round-trip as `point_data`/`cell_data` (v11.4.0, tier B2), selected the same way every other transient format's `time_step`/`arrays` work:
 
 ```python
 mesh = meshioplusplus.read("case.foam", time_step=-1, arrays=["p", "U"])  # last step, two fields

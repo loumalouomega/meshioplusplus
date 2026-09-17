@@ -162,7 +162,7 @@ export class MeshioPlusPlusLoadError extends Error {
 /**
  * A point_data/cell_data/field_data array's JS type: it carries its source
  * dtype crossing the WASM boundary rather than always widening to
- * Float64Array (roadmap §1 "WASM parity": dtype carry).
+ * Float64Array (dtype carry, v11.2.0).
  * @typedef {Float32Array|Float64Array|Int8Array|Int16Array|Int32Array|BigInt64Array|Uint8Array|Uint16Array|Uint32Array|BigUint64Array} DataArray
  */
 

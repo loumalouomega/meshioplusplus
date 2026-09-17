@@ -938,17 +938,7 @@ def roadmap_map():
     )
     columns = [
         (
-            "§1 WASM parity",
-            [
-                ("defects: loader · int dtypes", "M"),
-                ("parity guard · maps · side info", "M"),
-                ("in-file timelines · OpenFOAM", "L"),
-                ("gmsh groups · .vtm/.vts/.vtr", "M"),
-            ],
-            [],
-        ),
-        (
-            "§2 correctness debts",
+            "§1 correctness debts",
             [
                 ("MED · gmsh node ordering", "M"),
                 ("vtk51 alias · silent drops", "S"),
@@ -957,7 +947,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 quality",
+            "§2 quality",
             [
                 ("sanitizer CI leg", "S"),
                 ("fuzzing the 43 readers", "M"),
@@ -967,7 +957,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§4 performance",
+            "§3 performance",
             [
                 ("measured regressions", "S"),
                 ("text tokenizer · dtype switch", "M"),
@@ -977,7 +967,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§5 core parity across surfaces",
+            "§4 core parity across surfaces",
             [
                 ("MDPA tables · geometries", "M"),
                 ("gmsh periodic · VTK pieces", "M"),
@@ -987,7 +977,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§6 operations",
+            "§5 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
@@ -997,7 +987,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§7 format reach",
+            "§6 format reach",
             [
                 ("VTKHDF", "M"),
                 (".pvd · .pvtu · .xyz · .pcd", "S"),
@@ -1007,7 +997,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§8 ecosystem reach",
+            "§7 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1017,7 +1007,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§9 long run (spike first)",
+            "§8 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),

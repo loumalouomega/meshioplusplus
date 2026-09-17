@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v12.0.0 (2026-09-17)
+
+**Version-only: closes roadmap section 1 "WASM parity" in full.** No code change — `doc/roadmap.md`'s §1 is removed (its five tiers, v11.2.0 through v11.6.0, are recorded here and in each tier's own CHANGELOG entry rather than as an open item any more) and the remaining sections renumber §2–§9 → §1–§8, with every cross-reference (in-repo docs, doc comments, the roadmap diagram) updated to match. The WASM-specific "Deliberately not" decisions (KaHIP, zstd/lz4/Kokkos under Emscripten, single-file output, polyhedron blocks) move into the top-level Non-goals section, since there is no longer a WASM-parity section to host them. Major version bump because this is the close of a top-level roadmap section, not because anything in the public API changed: `MESHIOPLUSPLUS_ABI_VERSION` stays 13, and no installed header changed.
+
 ## v11.6.0 (2026-09-17)
 
 **WASM parity, Tier B4: VTK XML structured and multiblock files.** Closes the fifth tier of roadmap section 1 "WASM parity" — `.vti` used to be the only structured XML format, with no `.vts`/`.vtr` reader or writer and no `.vtm` at all. `MESHIOPLUSPLUS_ABI_VERSION` stays 13 (see `doc/abi_reviews.md`); `formats/vts.hpp`, `formats/vtr.hpp` and `formats/vtm.hpp` are brand-new headers, touching nothing pre-existing. None of the three needs a `js_bindings.cpp` change to reach WASM — all three flow entirely through the generic registry maps, so the WASM build gained them for free (46 readable / 49 writable format keys, up from 43 / 46).

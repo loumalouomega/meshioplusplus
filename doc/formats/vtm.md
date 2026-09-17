@@ -1,6 +1,6 @@
 # VTM — VTK XML MultiBlock (`.vtm`)
 
-An index file plus one `.vtu` piece per cell block: unlike `.vti`/`.vts`/`.vtr`, `.vtm` carries no geometry of its own at all, and there is no lattice restriction — any mesh with one or more cell blocks round-trips (v11.6.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B4, part 3 of 3). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
+An index file plus one `.vtu` piece per cell block: unlike `.vti`/`.vts`/`.vtr`, `.vtm` carries no geometry of its own at all, and there is no lattice restriction — any mesh with one or more cell blocks round-trips (v11.6.0, tier B4, part 3 of 3). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
 
 | | |
 |---|---|

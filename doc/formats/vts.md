@@ -1,6 +1,6 @@
 # VTS — VTK XML StructuredGrid (`.vts`)
 
-A lattice with explicit points but *implicit* connectivity: `nx * ny * nz` hexahedra over a `WholeExtent` corner grid, the same topology `.vti` states as three attributes — except `.vts` writes the points out, exactly as `.vtu` does, so a structured mesh's points need not sit on an even grid at all (v11.6.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B4). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
+A lattice with explicit points but *implicit* connectivity: `nx * ny * nz` hexahedra over a `WholeExtent` corner grid, the same topology `.vti` states as three attributes — except `.vts` writes the points out, exactly as `.vtu` does, so a structured mesh's points need not sit on an even grid at all (v11.6.0, tier B4). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
 
 | | |
 |---|---|

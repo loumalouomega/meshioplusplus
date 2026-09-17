@@ -1,6 +1,6 @@
 # VTR — VTK XML RectilinearGrid (`.vtr`)
 
-A lattice whose per-axis point coordinates are three independent, only *monotonic* 1-D arrays — the genuinely more general sibling of `.vti`'s uniform `Origin`/`Spacing`: a graded grid, finer near a wall and coarser far from it, is a RectilinearGrid, never an ImageData (v11.6.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B4). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
+A lattice whose per-axis point coordinates are three independent, only *monotonic* 1-D arrays — the genuinely more general sibling of `.vti`'s uniform `Origin`/`Spacing`: a graded grid, finer near a wall and coarser far from it, is a RectilinearGrid, never an ImageData (v11.6.0, tier B4). See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/design_documents/VTKFileFormats.html).
 
 | | |
 |---|---|

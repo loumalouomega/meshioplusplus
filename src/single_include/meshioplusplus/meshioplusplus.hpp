@@ -9120,9 +9120,9 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 11
+#define MESHIOPLUSPLUS_VERSION_MAJOR 12
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 6
+#define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9132,7 +9132,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.6.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "12.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -17614,7 +17614,7 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
  * Coplanar boundary-face merging (fusing two adjacent group-boundary faces on
  * the same plane into one larger polygon, rather than leaving the edge
  * between them) and a shape-quality (e.g. sphericity) absorption gate are
- * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §6.
+ * both deferred follow-ups, not shipped here — see `doc/roadmap.md` §5.
  *
  * Everything is standard C++ and the uniform mesh API only, so it compiles
  * under every mesh backend. This is an operation, not a file format — it is
@@ -101885,8 +101885,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"dex", meshioplusplus::write_dex},
         {"flux", meshioplusplus::write_flux},
         {"freefem", meshioplusplus::write_freefem},
-        // Write-only (gidpost has no read functions at all -- the reader is a
-        // documented follow-up, doc/roadmap.md section 1). GidMode::Auto
+        // gidpost itself has no read functions at all -- meshio++'s own
+        // read_gid (registry_readers() above) is a hand-rolled reader that
+        // does not depend on it, which is why gid is readable in strictly
+        // more build configurations than it is writable. GidMode::Auto
         // infers the flavour (ascii/binary/hdf5) from the path's extension.
         {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
         {"gmsh", [](const std::string& p,
