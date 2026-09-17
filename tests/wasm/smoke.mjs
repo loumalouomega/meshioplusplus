@@ -2658,6 +2658,46 @@ step('tecplot reports and reads both zones of a transient file (roadmap §1 tier
     );
 });
 
+step('gmsh 4.1 reports and reads both steps of a $NodeData timeline (roadmap §1 tier B1)', () => {
+    // Plain text, like Tecplot -- a genuine two-step fixture: write a base
+    // mesh with one point_data array (its own $NodeData section, time=0),
+    // then append a second $NodeData section for the same name by hand.
+    m.writeMesh('/transient.msh', tet, 'gmsh', { encoding: 'ascii' });
+    const base = m.FS.readFile('/transient.msh', { encoding: 'utf8' });
+    const n = tet.points.length / 3;
+    const second = [
+        '$NodeData',
+        '1',
+        '"temperature"',
+        '1',
+        '2.5',
+        '3',
+        '1',
+        '1',
+        String(n),
+        ...Array.from({ length: n }, (_, i) => `${i + 1} ${11 + i * 10}`),
+        '$EndNodeData',
+        '',
+    ].join('\n');
+    m.FS.writeFile('/transient.msh', base + second);
+
+    const meta = m.readMetadata('/transient.msh', 'gmsh');
+    assert.equal(meta.format, 'gmsh');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+
+    const first = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 0 });
+    assert.equal(first.point_data.temperature[0], 1);
+    const step1 = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 1 });
+    assert.equal(step1.point_data.temperature[0], 11);
+    const last = m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: -1 });
+    assert.equal(last.point_data.temperature[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.msh', { format: 'gmsh', timeStep: 5 }),
+        /step/i,
+    );
+});
+
 // --- multi-component (vector/tensor) data across the object boundary --------
 //
 // Before v9.9.0 point_data/cell_data/field_data crossed as flat, SHAPELESS

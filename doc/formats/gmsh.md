@@ -38,7 +38,7 @@ Via the generic dispatch, `file_format="gmsh"` writes v4.1 and `file_format="gms
 
 **Version 4.1** (the default write target) restructures the block headers: `$Entities` starts with `numPoints numCurves numSurfaces numVolumes` (4 `size_t`s); each entity also records its `numBoundingXxx` BREP-boundary count (populating `cell_sets["gmsh:bounding_entities"]`). `$Nodes` header: `numEntityBlocks numNodes minNodeTag maxNodeTag`; per block `entityDim entityTag parametric numNodesInBlock`, then a **node-tag list**, then a matching **coordinate list** — tags may be sparse or out of order (handled via `np.unique(..., return_inverse=True)`). `$Elements` header: `numEntityBlocks numElements minElementTag maxElementTag`; per block `entityDim entityTag elementType numElementsInBlock`, then rows of `elementTag node1..nodeK`.
 
-`$NodeData`/`$ElementData` (used across versions): a block of string tags (the first is the data name), real tags (only "time" is meaningfully used), integer tags `[timestep, num_components, num_items]`, then `num_items × (1+num_components)` values — the leading column is the 1-based node/element index, discarded after use.
+`$NodeData`/`$ElementData` (used across versions): a block of string tags (the first is the data name), real tags (the first is the time value), integer tags `[timestep, num_components, num_items]`, then `num_items × (1+num_components)` values — the leading column is the 1-based node/element index, discarded after use. See [Selecting a time step](#selecting-a-time-step) for how the reader picks between several sections sharing one name.
 
 ## Cell types & node ordering
 
@@ -62,6 +62,14 @@ Five element types need a node-order permutation between Gmsh and meshio++ (ever
 - `field_data[name] = [phys_num, phys_dim]` — from `$PhysicalNames`.
 - Arbitrary `point_data`/`cell_data` from `$NodeData`/`$ElementData`.
 - `mesh.gmsh_periodic` — a mesh-level attribute (not a data-dict key) holding `[dim, (slave_tag, master_tag), affine_or_None, node_pairs]` per periodic relation, from `$Periodic`.
+
+## Selecting a time step
+
+A transient Gmsh file carries several `$NodeData`/`$ElementData` sections under one name, each with its own real tag (time value). Since v11.3.0 (roadmap §1 tier B1) `ReadOptions::mTimeStep` (0-based, negative counts from the end — the `ResolveTimeStep` contract, see [selective reads](../selective_read.md#reading-one-time-step)) resolves against the sorted, deduplicated union of every section's time value across the whole file, and the reader keeps **only** the sections whose time matches the resolved one — for every name, not just one.
+
+**With the default step (0)**, behaviour is unchanged from every prior release: no pre-scan runs at all, and the legacy rule applies verbatim — the first section per name, in file order, wins. Only a non-default `mTimeStep` triggers the (cheap, second-pass, header-only) time scan.
+
+`read_gmsh_metadata` (4.1 only, native — 2.2 has no header-only metadata path at all and falls back to a full read regardless of time) reports the same union in `time_values`; a name pushed once per step is deduplicated in the summary, matching the single-array-per-name a real read always returns.
 
 ## Quirks & limitations
 

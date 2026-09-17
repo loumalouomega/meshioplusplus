@@ -2399,10 +2399,10 @@ PYBIND11_MODULE(_core, m) {
         py::arg("bounding_entities") = py::none());
     m.def(
         "gmsh_read",
-        [](const std::string& path, bool points_only, py::object arrays) {
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
             meshioplusplus::GmshInfo info;
-            py::object pymesh = meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_gmsh(path, info, core_read_options(points_only, arrays)));
+            py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_gmsh(
+                path, info, core_read_options(points_only, arrays, time_step)));
             // The 4.1 $Entities bounding entities are signed entity tags, not
             // cell indices, so they ride the GmshInfo side channel and land in
             // cell_sets here -- where the Mesh's own predicate routes them to
@@ -2416,7 +2416,8 @@ PYBIND11_MODULE(_core, m) {
             }
             return pymesh;
         },
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
 
     // PLY writer / reader (ascii or binary).
     m.def(

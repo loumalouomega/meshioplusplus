@@ -286,3 +286,49 @@ def test_a_41_file_with_no_physical_groups_has_no_physical_cell_data():
     assert "gmsh:physical" not in mesh.cell_data
     assert mesh.regions == []
     assert "gmsh:geometrical" in mesh.cell_data
+
+
+def test_read_metadata_reports_both_steps_of_a_transient_file(tmp_path):
+    """roadmap §1 tier B1: read_gmsh_metadata (4.1) reports the sorted union
+    of every $NodeData/$ElementData section's time value, and ``time_step``
+    on a real read picks exactly the one matching that resolved time --
+    replacing the pre-v11.3.0 "first section per name wins" rule. A second
+    step is appended by hand (ASCII text, no external tool)."""
+    from meshioplusplus import _core
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["u"] = np.array([10.0, 20.0, 30.0, 40.0])
+    path = tmp_path / "transient.msh"
+    _core.gmsh41_write(str(path), mesh, False)
+
+    n = len(mesh.points)
+    lines = [
+        "$NodeData",
+        "1",
+        '"u"',
+        "1",
+        "2.5",
+        "3",
+        "1",
+        "1",
+        str(n),
+    ]
+    lines += [f"{i + 1} {11.0 + i * 10.0}" for i in range(n)]
+    lines.append("$EndNodeData")
+    with open(path, "a") as f:
+        f.write("\n".join(lines) + "\n")
+
+    meta = meshioplusplus.read_metadata(path, "gmsh")
+    assert meta["fell_back_to_full_read"] is False
+    assert meta["time_values"] == [0.0, 2.5]
+    assert meta["point_data_names"].count("u") == 1
+
+    mesh0 = meshioplusplus.gmsh.read(path, time_step=0)
+    assert mesh0.point_data["u"][0] == 10.0
+    mesh1 = meshioplusplus.gmsh.read(path, time_step=1)
+    assert mesh1.point_data["u"][0] == 11.0
+    mesh_last = meshioplusplus.gmsh.read(path, time_step=-1)
+    assert mesh_last.point_data["u"][0] == 11.0
+
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.gmsh.read(path, time_step=5)

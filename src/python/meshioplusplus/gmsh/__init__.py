@@ -7,12 +7,19 @@ from .main import read as _py_read
 from .main import write as _py_write
 
 
-def read(filename, points_only=False, arrays=None):
+def read(filename, points_only=False, arrays=None, time_step: int = 0):
     """Read a Gmsh .msh file.
 
     Uses the C++ core for format version 2.2 (ascii or binary), falling back to
     the reference Python reader for versions 4.0/4.1, periodic meshes, and
     anything else the C++ reader doesn't handle.
+
+    ``time_step`` selects one step of a `$NodeData`/`$ElementData` timeline
+    (0 = first, negative counts from the end), resolved the same way the C
+    API/Fortran/Julia/R/WASM surfaces do -- see
+    :func:`meshioplusplus.gmsh.read`'s C++ counterpart, ``read_gmsh``. A
+    non-default value forces the C++ path (the Python reference has no
+    transient-step support) and re-raises rather than silently falling back.
     """
     # points_only/arrays reach the C++ reader, which skips the unwanted
     # <DataArray>/section bodies outright. The Python fallback below has no
@@ -21,10 +28,14 @@ def read(filename, points_only=False, arrays=None):
     if not is_buffer(filename, "r"):
         try:
             return _core.gmsh_read(
-                str(filename), points_only=points_only, arrays=arrays
+                str(filename),
+                points_only=points_only,
+                arrays=arrays,
+                time_step=time_step,
             )
         except Exception:
-            pass
+            if time_step:
+                raise
     return _py_read(filename)
 
 

@@ -57966,8 +57966,17 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
  *        the `nitems * ncomp` values. The name sits at the top of the section,
  *        before the values, so this costs nothing to decide.
  */
+/**
+ * @param pTargetTime when non-null, a section whose first real tag (time
+ *        value) does not exactly equal `*pTargetTime` is skipped wholesale
+ *        (like an unwanted name) instead of the legacy "first section per
+ *        name wins" rule -- how `read_gmsh`/`read_gmsh41_body` select one
+ *        step of a transient file. `nullptr` reproduces the pre-v11.3.0
+ *        default: every field's first section, in file order, wins.
+ */
 void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
-               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts) {
+               std::unordered_map<std::string, NDArray>& rOut, const ReadOptions& rOpts,
+               const double* pTargetTime = nullptr) {
     std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
     std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
@@ -57979,8 +57988,12 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
         }
     }
     std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
-    for (std::int64_t i = 0; i < num_real; ++i)
-        rCur.read_line();
+    double time = 0.0;
+    for (std::int64_t i = 0; i < num_real; ++i) {
+        std::string s = gmsh_trim(rCur.read_line());
+        if (i == 0)
+            time = std::stod(s);
+    }
     std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
     std::vector<std::int64_t> itags(num_int);
     for (std::int64_t i = 0; i < num_int; ++i)
@@ -57988,7 +58001,8 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     std::size_t ncomp = static_cast<std::size_t>(itags[1]);
     std::size_t nitems = static_cast<std::size_t>(itags[2]);
 
-    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name)) {
+    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(name) ||
+        (pTargetTime != nullptr && time != *pTargetTime)) {
         rCur.skip_to_end(rTag);  // never touch the nitems * ncomp values
         return;
     }
@@ -58011,7 +58025,10 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     rCur.skip_to_end(rTag);
     if (ncomp == 1)
         data.Reshape({nitems});
-    rOut.emplace(name, std::move(data));
+    if (pTargetTime != nullptr)
+        rOut.insert_or_assign(name, std::move(data));  // exactly one section per name matches
+    else
+        rOut.emplace(name, std::move(data));  // legacy: first section per name wins
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
@@ -58259,7 +58276,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
 }
 
 Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const ReadOptions& rOpts,
-                      GmshInfo* pInfo) {
+                      GmshInfo* pInfo, const double* pTargetTime) {
     NDArray points(DType::Float64, {0, 3});
     std::vector<std::int64_t> point_tags;
     std::vector<std::array<std::int64_t, 2>> dim_tags;
@@ -58288,9 +58305,9 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(rCur, "NodeData", is_ascii, point_data, rOpts);
+            read_data(rCur, "NodeData", is_ascii, point_data, rOpts, pTargetTime);
         else if (env == "ElementData")
-            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts);
+            read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts, pTargetTime);
         else
             rCur.skip_to_end(env);
     }
@@ -58532,19 +58549,75 @@ void gmsh_scan_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, GmshM
     rCur.skip_to_end("Elements");
 }
 
-/// Read a `$NodeData`/`$ElementData` section's name, then skip its values.
-std::string gmsh_scan_data_name(GmshCursor& rCur, const std::string& rTag) {
+/// A `$NodeData`/`$ElementData` section's name and its first real tag (the
+/// SOLUTIONTIME-equivalent time value gmsh calls `time-value`).
+struct GmshDataHeader {
+    std::string mName;
+    double mTime = 0.0;
+};
+
+/// Read a `$NodeData`/`$ElementData` section's name and time, then skip its
+/// values -- shared by read_gmsh_metadata (which reports both) and the
+/// pre-scan `gmsh_scan_time_values` (which reports only the time, across
+/// every section in the file, for `read_data`'s step selection).
+GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) {
+    GmshDataHeader out;
     const std::int64_t num_str = std::stoll(gmsh_trim(rCur.read_line()));
-    std::string name;
     for (std::int64_t i = 0; i < num_str; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
             const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
-            name = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
+            out.mName = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1)
+                                                              : line;
         }
     }
+    const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
+    for (std::int64_t i = 0; i < num_real; ++i) {
+        const std::string line = gmsh_trim(rCur.read_line());
+        if (i == 0)
+            out.mTime = std::stod(line);
+    }
     rCur.skip_to_end(rTag);
-    return name;
+    return out;
+}
+
+/// Every distinct time value across every `$NodeData`/`$ElementData` section
+/// in the file, sorted -- the timeline `ReadOptions::mTimeStep` indexes into.
+/// A cheap second pass over the same in-memory buffer `read_gmsh` already
+/// mapped/loaded (see `FileSource`): $MeshFormat is re-parsed for `is_ascii`,
+/// then every top-level section is skipped except $NodeData/$ElementData,
+/// whose values are never touched either (`gmsh_scan_data_header` stops at
+/// the header). Empty when the file carries no time-tagged data at all.
+std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
+    GmshCursor cur(rBuf);
+    if (gmsh_trim(cur.read_line()) != "$MeshFormat")
+        return {};
+    std::istringstream fss(cur.read_line());
+    std::string version;
+    int file_type = 0, data_size = 8;
+    fss >> version >> file_type >> data_size;
+    const bool is_ascii = (file_type == 0);
+    if (!is_ascii) {
+        cur.read_i32();
+        if (cur.mPos < rBuf.size() && rBuf[cur.mPos] == '\n')
+            ++cur.mPos;
+    }
+    cur.skip_to_end("MeshFormat");
+
+    std::set<double> times;
+    while (!cur.eof()) {
+        const std::string line = cur.next_nonblank();
+        if (line.empty())
+            break;
+        if (line[0] != '$')
+            break;  // malformed; let the real read report the real error
+        const std::string env = gmsh_trim(line.substr(1));
+        if (env == "NodeData" || env == "ElementData")
+            times.insert(gmsh_scan_data_header(cur, env).mTime);
+        else
+            cur.skip_to_end(env);
+    }
+    return std::vector<double>(times.begin(), times.end());
 }
 }  // namespace
 
@@ -58578,8 +58651,25 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     }
     cur.skip_to_end("MeshFormat");
 
+    // ReadOptions::mTimeStep (since v11.3.0): a non-default step resolves
+    // against the sorted union of every $NodeData/$ElementData section's time
+    // value (a cheap second pass over the buffer already mapped/loaded
+    // above), and read_data below then keeps exactly the sections matching
+    // that one time instead of the legacy "first section per name wins"
+    // rule. The default step (0) is untouched: no pre-scan, no behaviour
+    // change, `pTargetTime` stays null.
+    double target_time = 0.0;
+    const double* target_time_ptr = nullptr;
+    if (rOpts.mTimeStep != 0) {
+        const std::vector<double> times = gmsh_scan_time_values(buf);
+        if (!times.empty()) {
+            target_time = times[rOpts.ResolveTimeStep(times.size())];
+            target_time_ptr = &target_time;
+        }
+    }
+
     if (version == "4.1" || version == "4")
-        return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo);
+        return read_gmsh41_body(cur, is_ascii, data_size, rOpts, &rInfo, target_time_ptr);
     if (version.rfind("2", 0) != 0)
         throw ReadError("C++ Gmsh reader handles versions 2.2 and 4.1 only");
 
@@ -58604,9 +58694,9 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
         else if (env == "Periodic")
             throw ReadError("Gmsh $Periodic not supported by the C++ reader");
         else if (env == "NodeData")
-            read_data(cur, "NodeData", is_ascii, point_data, rOpts);
+            read_data(cur, "NodeData", is_ascii, point_data, rOpts, target_time_ptr);
         else if (env == "ElementData")
-            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts);
+            read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts, target_time_ptr);
         else
             cur.skip_to_end(env);
     }
@@ -59369,6 +59459,9 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
     // so a summary can report gmsh:physical and the named regions without ever
     // touching a coordinate or a connectivity row.
     std::unordered_map<std::string, NDArray> field_data;
+    // The sorted union of every $NodeData/$ElementData section's time value --
+    // the same timeline ReadOptions::mTimeStep indexes into on a real read.
+    std::set<double> time_values;
     while (!cur.eof()) {
         const std::string line = cur.next_nonblank();
         if (line.empty())
@@ -59384,11 +59477,15 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
             read_physical_names(cur, field_data);
         else if (env == "Entities")
             entities = read_entities_41(cur, is_ascii, data_size);
-        else if (env == "NodeData")
-            meta.mPointDataNames.push_back(gmsh_scan_data_name(cur, "NodeData"));
-        else if (env == "ElementData")
-            meta.mCellDataNames.push_back(gmsh_scan_data_name(cur, "ElementData"));
-        else if (env == "Periodic")
+        else if (env == "NodeData") {
+            const GmshDataHeader h = gmsh_scan_data_header(cur, "NodeData");
+            meta.mPointDataNames.push_back(h.mName);
+            time_values.insert(h.mTime);
+        } else if (env == "ElementData") {
+            const GmshDataHeader h = gmsh_scan_data_header(cur, "ElementData");
+            meta.mCellDataNames.push_back(h.mName);
+            time_values.insert(h.mTime);
+        } else if (env == "Periodic")
             throw ReadError("Gmsh $" + env + " not supported by the C++ reader");
         else
             cur.skip_to_end(env);
@@ -59409,8 +59506,17 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
         if (entities.mAnyPhysical)
             out.mCellDataNames.push_back("gmsh:physical");
     }
+    // A multi-step field's name is pushed once per $NodeData/$ElementData
+    // section (one per step), so dedup after sorting -- a summary listing
+    // "u" three times for a three-step field would be a wrong answer, not
+    // merely a noisy one.
     std::sort(out.mPointDataNames.begin(), out.mPointDataNames.end());
+    out.mPointDataNames.erase(std::unique(out.mPointDataNames.begin(), out.mPointDataNames.end()),
+                              out.mPointDataNames.end());
     std::sort(out.mCellDataNames.begin(), out.mCellDataNames.end());
+    out.mCellDataNames.erase(std::unique(out.mCellDataNames.begin(), out.mCellDataNames.end()),
+                             out.mCellDataNames.end());
+    out.mTimeValues.assign(time_values.begin(), time_values.end());
 
     // Named regions, counted from the block headers alone. gmsh_attach_regions
     // groups by (physical tag, block topological dimension), so this does too --
@@ -93461,11 +93567,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
     // it reported one step and this predicate had nothing to gate on. med,
-    // cgns and tecplot joined in v11.3.0 (roadmap §1 tier B1):
-    // read_med_metadata/read_cgns_metadata/read_tecplot_metadata are their
-    // first native metadata paths to fill mTimeValues.
+    // cgns, tecplot and gmsh joined in v11.3.0 (roadmap §1 tier B1):
+    // read_med_metadata/read_cgns_metadata/read_tecplot_metadata already
+    // existed for gmsh (4.1 only; 2.2 falls back to a full read either way)
+    // but never filled mTimeValues until now.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot";
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
