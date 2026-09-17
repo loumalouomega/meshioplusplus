@@ -107,9 +107,13 @@ TEST(Registry, Gmsh22RoundTripsRegionMembershipThroughTheRegistryDispatch) {
     EXPECT_EQ(back.Region(0).mName, "solid");
     EXPECT_EQ(back.Region(0).mTag, 7);
 
-    // The default "gmsh" (4.1) writer keeps only the NAME, not membership --
-    // the documented gap that made a distinct, selectable "gmsh22" entry
-    // necessary rather than merely a nicer default.
+    // The 4.1 writer records membership through $Entities, one entity per
+    // CELL BLOCK (v11.5.0, roadmap §1 tier B3): a region covering only PART
+    // of a block (as here -- "solid" tags cell 0 of the mesh's two
+    // tetrahedra) cannot be represented that way and is dropped with a
+    // warning, keeping only the $PhysicalNames row (see
+    // Gmsh.RegionTagAllocation* in test_gmsh.cpp for the block-aligned case,
+    // where 4.1 now does keep membership).
     const std::string path41 = mt::temp_path(".msh");
     registry_writers().at("gmsh")(path41, mesh);
     Mesh back41 = registry_readers().at("gmsh")(path41);

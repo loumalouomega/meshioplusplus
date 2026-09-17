@@ -8,6 +8,15 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v11.5.0 (2026-09-17)
+
+**WASM parity, Tier B3: named groups surviving a Gmsh export.** Closes the fourth tier of roadmap section 1 "WASM parity" — a `Cell` region with no gmsh tag of its own (every one Abaqus `*ELSET`, MED family or MDPA SubModelPart produces) used to vanish entirely from a `.msh` export; it now gets a freshly allocated tag instead. `MESHIOPLUSPLUS_ABI_VERSION` stays 13 (see `doc/abi_reviews.md`); `formats/gmsh.hpp` is untouched — every change lives in `gmsh.cpp`'s internal helpers.
+
+- **Tag allocation.** Each untagged `Cell` region gets `max(existing tags of that dimension) + 1`, one counter per dimension, counting upward deterministically in region order — so two engines applying the same rule to the same mesh agree. A region's dimension is its own `mDim` if set, else inferred from its first member cell's type. Two untagged regions sharing a cell: gmsh allows one physical tag per element, so the first (region order) keeps it and a warning names both.
+- **`gmsh22`** round-trips membership exactly regardless of block alignment — its per-element tag column has no such restriction.
+- **`gmsh41`** synthesizes `$Entities` from `Cell` regions when the mesh carries no `gmsh:dim_tags` of its own: one entity per resolved `(dim, tag)`, its nodes the highest-dimension cell block touching each one. This writer's `$Elements` model is one gmsh entity per meshio++ cell block, so a region that covers a *whole* block round-trips fully; one that covers only *part* of a block cannot be split further here — that block keeps entity 0 (no physical group) and a warning names it, with the region's name still surviving via `$PhysicalNames`. Prefer `gmsh22` for a region that does not align with cell-type blocks.
+- **C++ core only.** The pure-Python fallback writer does not consult `mesh.regions` for `$PhysicalNames`/tag allocation — a documented gap, matching the OpenFOAM writer precedent, not a silent divergence (the C++/Python byte-identity test only ever exercises a genuinely gmsh-native file).
+
 ## v11.4.0 (2026-09-17)
 
 **WASM parity, Tier B2: OpenFOAM beyond one polyMesh.** Closes the third tier of roadmap section 1 "WASM parity" — everything this format's reader/writer could not express beyond a single-region, non-decomposed `constant/polyMesh` with no time-directory fields. **`MESHIOPLUSPLUS_ABI_VERSION` bumps 12 → 13** (see `doc/abi_reviews.md`): `OpenFoamInfo` gains a `std::string mRegion` field (96 → 128 bytes), a genuine layout break rather than a purely additive change.

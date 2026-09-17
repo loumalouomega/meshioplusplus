@@ -9122,7 +9122,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 11
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 4
+#define MESHIOPLUSPLUS_VERSION_MINOR 5
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9132,7 +9132,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.4.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "11.5.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -58272,7 +58272,103 @@ void gmsh_attach_regions(Mesh& rMesh) {
  * another format.
  * @return `(dim, tag, name)` rows, sorted — the order the writer emits.
  */
-std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(const Mesh& rMesh) {
+/**
+ * @brief A `Cell` region's topological dimension, inferred from its member
+ * cells when the region itself does not say (`mDim == -1` -- true of every
+ * `Cell` region Abaqus/MED/MDPA produce, none of which have a gmsh-style
+ * per-dimension physical-group concept). Looks at the region's first entry
+ * only: a region is overwhelmingly homogeneous in practice (one element
+ * family per named group), and gmsh itself has no mixed-dimension group.
+ * @return the inferred dimension, or -1 if it cannot be determined.
+ */
+int gmsh_infer_region_dim(const Mesh& rMesh, const Region& r) {
+    if (r.mDim >= 0)
+        return r.mDim;
+    if (r.mKind != RegionKind::Cell || r.NumEntries() == 0)
+        return -1;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const auto [block, row] = detail::global_to_block_row(bases, r.Entries()[0]);
+    (void)row;
+    if (block == static_cast<std::size_t>(-1))
+        return -1;
+    const std::string type(rMesh.Cells(block).Type());
+    int dim = cell_type_dimension(cell_type_from_name(type));
+    if (dim < 0) {
+        auto it = topological_dimension().find(type);
+        dim = it != topological_dimension().end() ? it->second : -1;
+    }
+    return dim;
+}
+
+/// One `Cell` region's resolved (dim, tag) pair for gmsh output -- its own
+/// when it has one, else a freshly allocated tag. `mDim`/`mTag` are -1 for a
+/// non-`Cell` region or one gmsh cannot place (dimension unresolvable).
+struct GmshRegionTag {
+    int mDim = -1;
+    std::int64_t mTag = -1;
+};
+
+/**
+ * @brief Resolve every region's gmsh (dim, tag) pair, allocating fresh tags
+ * for `Cell` regions that have none (v11.5.0, roadmap §1 tier B3).
+ *
+ * A tag already on the region (from gmsh itself, `mTag >= 0`) or already
+ * claimed by `field_data` is kept; every *other* `Cell` region is assigned
+ * `max(existing tags of that dimension) + 1`, counting upward, one counter
+ * per dimension so a surface group and a volume group can both start small
+ * — gmsh disambiguates by the `(dim, tag)` pair, never `tag` alone.
+ * Allocation is deterministic in region order, so two engines (this one and
+ * the pure-Python writer) applying the same rule to the same mesh agree.
+ * @return one entry per `rMesh.NumRegions()`, `{-1, -1}` for anything not a
+ *         `Cell` region or with no resolvable dimension.
+ */
+std::vector<GmshRegionTag> gmsh_resolve_region_tags(const Mesh& rMesh) {
+    std::vector<GmshRegionTag> out(rMesh.NumRegions());
+    std::map<int, std::int64_t> max_tag_by_dim;
+    for (const auto& name : rMesh.FieldDataNames()) {
+        const NDArray& d = rMesh.FieldData(name);
+        if (d.Size() < 2)
+            continue;
+        const std::int64_t tag = detail::read_int(d, 0);
+        const int dim = static_cast<int>(detail::read_int(d, 1));
+        auto& m = max_tag_by_dim[dim];
+        m = std::max(m, tag);
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag < 0)
+            continue;
+        const int dim = gmsh_infer_region_dim(rMesh, r);
+        out[i] = {dim, r.mTag};
+        auto& m = max_tag_by_dim[dim];
+        m = std::max(m, r.mTag);
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell || r.mTag >= 0)
+            continue;
+        const int dim = gmsh_infer_region_dim(rMesh, r);
+        if (dim < 0)
+            continue;
+        std::int64_t& counter = max_tag_by_dim[dim];
+        ++counter;
+        out[i] = {dim, counter};
+    }
+    return out;
+}
+
+/**
+ * @brief The `$PhysicalNames` rows to write: `field_data` first, then any
+ * region that describes a group `field_data` does not.
+ *
+ * `field_data` winning is what keeps output byte-identical for every mesh that
+ * already carried gmsh's own metadata; regions only add groups that came from
+ * another format. A `Cell` region with no gmsh tag of its own gets one from
+ * @p rTags (v11.5.0, roadmap §1 tier B3) instead of being dropped.
+ * @return `(dim, tag, name)` rows, sorted — the order the writer emits.
+ */
+std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(
+    const Mesh& rMesh, const std::vector<GmshRegionTag>& rTags) {
     std::vector<std::tuple<long long, long long, std::string>> rows;
     std::set<std::string> seen;
     for (const auto& name : rMesh.FieldDataNames()) {
@@ -58284,9 +58380,9 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(co
     }
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
         const Region& r = rMesh.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mTag < 0 || seen.count(r.mName))
+        if (r.mKind != RegionKind::Cell || rTags[i].mTag < 0 || seen.count(r.mName))
             continue;
-        rows.emplace_back(r.mDim, r.mTag, r.mName);
+        rows.emplace_back(rTags[i].mDim, rTags[i].mTag, r.mName);
         seen.insert(r.mName);
     }
     std::sort(rows.begin(), rows.end());
@@ -58294,36 +58390,64 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(co
 }
 
 /**
- * @brief Per-block `gmsh:physical` tag arrays synthesized from `Cell` regions.
+ * @brief Per-cell gmsh physical tag, block-major, synthesized from `Cell`
+ * regions and their resolved (dim, tag) pairs (see #gmsh_resolve_region_tags).
  *
  * Only used when the mesh carries no `gmsh:physical` cell_data of its own — a
  * mesh read from another format. Cells in no tagged region get tag 0, which is
- * gmsh's "no physical group".
- * @return one Int64 array per cell block, or an empty vector when there is
- *         nothing to synthesize.
+ * gmsh's "no physical group". A cell claimed by two regions keeps the first
+ * (region order) and warns naming both, since gmsh allows only one physical
+ * tag per element.
+ * @return one flat Int64 entry per cell, block-major (`detail::block_bases`
+ *         order), or empty when there is nothing to synthesize.
  */
-std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh) {
-    std::vector<NDArray> blocks;
+std::vector<std::int64_t> gmsh_flat_tags_from_regions(const Mesh& rMesh,
+                                                       const std::vector<GmshRegionTag>& rTags) {
     bool any = false;
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
-        const Region& r = rMesh.Region(i);
-        if (r.mKind == RegionKind::Cell && r.mTag >= 0 && r.NumEntries() > 0)
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Cell && rTags[i].mTag >= 0 &&
+            rMesh.Region(i).NumEntries() > 0)
             any = true;
-    }
     if (!any)
-        return blocks;
+        return {};
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     std::vector<std::int64_t> flat(static_cast<std::size_t>(detail::total_cells(bases)), 0);
+    std::vector<std::int64_t> claimed_by(flat.size(), -1);
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
         const Region& r = rMesh.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mTag < 0)
+        if (r.mKind != RegionKind::Cell || rTags[i].mTag < 0)
             continue;
         const std::int64_t* e = r.Entries();
-        for (std::size_t k = 0; k < r.NumEntries(); ++k)
-            if (e[k] >= 0 && e[k] < static_cast<std::int64_t>(flat.size()))
-                flat[static_cast<std::size_t>(e[k])] = r.mTag;
+        for (std::size_t k = 0; k < r.NumEntries(); ++k) {
+            if (e[k] < 0 || e[k] >= static_cast<std::int64_t>(flat.size()))
+                continue;
+            const std::size_t c = static_cast<std::size_t>(e[k]);
+            if (claimed_by[c] >= 0) {
+                log::warn("Gmsh writer: cell {} is in both region '{}' and '{}'; keeping '{}'", c,
+                          rMesh.Region(static_cast<std::size_t>(claimed_by[c])).mName, r.mName,
+                          rMesh.Region(static_cast<std::size_t>(claimed_by[c])).mName);
+                continue;
+            }
+            claimed_by[c] = static_cast<std::int64_t>(i);
+            flat[c] = rTags[i].mTag;
+        }
     }
+    return flat;
+}
+
+/**
+ * @brief Split a flat, block-major tag array (see #gmsh_flat_tags_from_regions)
+ * back into one `NDArray` per cell block, the shape `gmsh:physical` cell_data
+ * needs.
+ */
+std::vector<NDArray> gmsh_tags_from_regions(const Mesh& rMesh,
+                                            const std::vector<GmshRegionTag>& rTags) {
+    std::vector<NDArray> blocks;
+    const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMesh, rTags);
+    if (flat.empty())
+        return blocks;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     blocks.reserve(rMesh.NumCellBlocks());
     for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
         const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
@@ -59245,12 +59369,13 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
 
 namespace {
 
-void write_physical_names(std::ostream& rOs, const Mesh& rMesh) {
+void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
+                          const std::vector<GmshRegionTag>& rTags) {
     // field_data first, then any named region describing a group field_data
     // does not — so a mesh carrying gmsh's own metadata writes byte-identical
     // bytes, and one whose groups came from another format still gets them.
     std::vector<std::tuple<long long, long long, std::string>> sortable =
-        gmsh_physical_rows(rMesh);  // dim, num, name
+        gmsh_physical_rows(rMesh, rTags);  // dim, num, name
     if (sortable.empty())
         return;
     rOs << "$PhysicalNames\n" << sortable.size() << "\n";
@@ -59410,6 +59535,107 @@ std::vector<GmshWriteEntity41> gmsh_entity_blocks_41(
     return out;
 }
 
+/// `gmsh:dim_tags`/`gmsh:geometrical`/`gmsh:physical`, synthesized so they
+/// can be spliced onto a mesh clone (see #gmsh_synthesize_tags_41).
+/// `mGeometrical`/`mPhysical` are identical here -- nothing else
+/// distinguishes a synthesized entity from its physical group.
+struct GmshSynthesizedTags {
+    NDArray mDimTags;
+    std::vector<NDArray> mGeometrical;
+    std::vector<NDArray> mPhysical;
+};
+
+/**
+ * @brief Synthesize 4.1 entity tag data from `Cell` regions, for a mesh that
+ * carries no `gmsh:dim_tags` of its own (v11.5.0, roadmap §1 tier B3).
+ *
+ * Format 4.1 records physical-group membership only through `$Entities`, so
+ * a tag alone (as 2.2's per-element column carries) is not enough here. One
+ * entity per cell block: this writer's `$Elements` model is one gmsh element
+ * block per meshio++ cell block, so a block whose cells do not all agree on
+ * the same resolved tag cannot be split further here -- it keeps entity 0
+ * (no physical group), and a warning names it, a documented scope limit
+ * rather than a silent drop. A point's entity is the highest-dimension block
+ * touching it, ties broken by block order -- gmsh's own convention (a
+ * lower-dimension region's nodes inside a volume belong to the volume).
+ * @param rFlatTags per-cell resolved tag, block-major, from
+ *        #gmsh_flat_tags_from_regions (must be non-empty).
+ */
+GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
+                                            const std::vector<std::int64_t>& rFlatTags,
+                                            const std::function<int(const std::string&)>& rCellDim) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::int64_t> block_tag(nblocks, 0);
+    std::vector<int> block_dim(nblocks, 0);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        block_dim[b] = rCellDim(std::string(cb.Type()));
+        const std::size_t start = static_cast<std::size_t>(bases[b]);
+        const std::size_t end = static_cast<std::size_t>(bases[b + 1]);
+        std::int64_t tag = end > start ? rFlatTags[start] : 0;
+        bool uniform = true;
+        for (std::size_t c = start; c < end; ++c) {
+            if (rFlatTags[c] != tag) {
+                uniform = false;
+                break;
+            }
+        }
+        if (!uniform) {
+            log::warn(
+                "Gmsh writer: cell block {} ('{}') spans more than one region; no single "
+                "physical tag can be written for it in format 4.1",
+                b, cb.Type());
+            tag = 0;
+        }
+        block_tag[b] = tag;
+    }
+
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<int> point_dim(npts, -1);
+    std::vector<std::int64_t> point_tag(npts, 0);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const int dim = block_dim[b];
+        const std::size_t nc = cb.NumCells();
+        const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        for (std::size_t i = 0; i < nc; ++i) {
+            const std::size_t rowsize = cb.IsRagged() ? cb.RowSize(i) : npc;
+            const std::int64_t* row = cb.IsRagged() ? cb.Row(i) : nullptr;
+            for (std::size_t k = 0; k < rowsize; ++k) {
+                const std::int64_t p =
+                    row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
+                if (p < 0 || static_cast<std::size_t>(p) >= npts)
+                    continue;
+                if (dim > point_dim[static_cast<std::size_t>(p)]) {
+                    point_dim[static_cast<std::size_t>(p)] = dim;
+                    point_tag[static_cast<std::size_t>(p)] = block_tag[b];
+                }
+            }
+        }
+    }
+
+    GmshSynthesizedTags out;
+    out.mDimTags = NDArray::Uninit(DType::Int64, {npts, std::size_t{2}});
+    std::int64_t* dt = out.mDimTags.As<std::int64_t>();
+    for (std::size_t p = 0; p < npts; ++p) {
+        dt[p * 2 + 0] = point_dim[p] < 0 ? 0 : point_dim[p];
+        dt[p * 2 + 1] = point_tag[p];
+    }
+    out.mGeometrical.reserve(nblocks);
+    out.mPhysical.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+        NDArray g = NDArray::Uninit(DType::Int64, {n});
+        std::fill(g.As<std::int64_t>(), g.As<std::int64_t>() + n, block_tag[b]);
+        NDArray p = NDArray::Uninit(DType::Int64, {n});
+        std::fill(p.As<std::int64_t>(), p.As<std::int64_t>() + n, block_tag[b]);
+        out.mGeometrical.push_back(std::move(g));
+        out.mPhysical.push_back(std::move(p));
+    }
+    return out;
+}
+
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -59424,15 +59650,19 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
     // Tag cell data ("gmsh:physical"/"gmsh:geometrical") is written inline with
     // the elements; per-block zeros stand in when a tag column is absent.
+    // Region tags are resolved once and shared with $PhysicalNames below, so a
+    // freshly allocated tag (v11.5.0, roadmap §1 tier B3) agrees everywhere.
+    const std::vector<GmshRegionTag> region_tags = gmsh_resolve_region_tags(rMesh);
     const bool has_physical = rMesh.HasCellData("gmsh:physical");
     const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
     std::vector<NDArray> zeros_phys, zeros_geom;
     if (!has_physical) {
         // No gmsh:physical column of its own: synthesize one from any tagged
-        // Cell regions, so a mesh whose groups came from another format still
-        // writes real physical groups. With no such regions this yields the
-        // per-block zeros it always did, and the output is byte-identical.
-        zeros_phys = gmsh_tags_from_regions(rMesh);
+        // Cell regions (native tag or freshly allocated), so a mesh whose
+        // groups came from another format still writes real physical groups.
+        // With no such regions this yields the per-block zeros it always
+        // did, and the output is byte-identical.
+        zeros_phys = gmsh_tags_from_regions(rMesh, region_tags);
         if (zeros_phys.empty())
             for (const auto cb : rMesh.CellRange())
                 zeros_phys.emplace_back(DType::Int32, std::vector<std::size_t>{cb.NumCells()});
@@ -59449,7 +59679,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh);
+    write_physical_names(os, rMesh, region_tags);
 
     // Nodes.
     os << "$Nodes\n" << num_points << "\n";
@@ -59573,29 +59803,55 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
     write_gmsh41(rPath, rMesh, binary, GmshInfo{});
 }
 
-void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary, const GmshInfo& rInfo) {
+void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
+                  const GmshInfo& rInfo) {
     std::ofstream os(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t num_points = rMesh.NumPoints();
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
     const int data_size = 8;
 
     auto put_u64 = [&](std::uint64_t v) { os.write(reinterpret_cast<const char*>(&v), 8); };
     auto put_i32 = [&](std::int32_t v) { os.write(reinterpret_cast<const char*>(&v), 4); };
     auto put_f64 = [&](double v) { os.write(reinterpret_cast<const char*>(&v), 8); };
 
-    // "gmsh:geometrical" supplies the per-block entity tag below; the other
-    // tag names are excluded from the $NodeData/$ElementData sections.
-    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
-
     const auto& topo = topological_dimension();
     auto cell_dim = [&](const std::string& t) -> int {
         auto it = topo.find(t);
         return it == topo.end() ? 0 : it->second;
     };
+
+    // Region tags, resolved once and shared with $PhysicalNames below, so a
+    // freshly allocated tag agrees everywhere (v11.5.0, roadmap §1 tier B3).
+    // Format 4.1 records physical-group membership only through $Entities --
+    // unlike 2.2's per-element tag column, a mesh with no gmsh:dim_tags of
+    // its own needs synthesized point/cell tag data before anything below
+    // can see it. Working on a clone carrying that data reuses every
+    // existing gmsh:dim_tags-aware code path (entity building, $Entities,
+    // $Elements) rather than three parallel fallback branches.
+    const std::vector<GmshRegionTag> region_tags = gmsh_resolve_region_tags(rMeshIn);
+    Mesh gmsh41_synth;
+    bool synthesized = false;
+    if (!rMeshIn.HasPointData("gmsh:dim_tags")) {
+        const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
+        if (!flat.empty()) {
+            const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(rMeshIn, flat, cell_dim);
+            gmsh41_synth = detail::clone_mesh(rMeshIn);
+            gmsh41_synth.AddPointData("gmsh:dim_tags", synth.mDimTags);
+            gmsh41_synth.AddCellData("gmsh:geometrical", synth.mGeometrical);
+            gmsh41_synth.AddCellData("gmsh:physical", synth.mPhysical);
+            synthesized = true;
+        }
+    }
+    const Mesh& rMesh = synthesized ? gmsh41_synth : rMeshIn;
+
+    const std::size_t num_points = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
+
+    // "gmsh:geometrical" supplies the per-block entity tag below; the other
+    // tag names are excluded from the $NodeData/$ElementData sections.
+    const bool has_geometrical = rMesh.HasCellData("gmsh:geometrical");
 
     os << "$MeshFormat\n4.1 " << (binary ? 1 : 0) << " " << data_size << "\n";
     if (binary) {
@@ -59604,7 +59860,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     }
     os << "$EndMeshFormat\n";
 
-    write_physical_names(os, rMesh);
+    write_physical_names(os, rMeshIn, region_tags);
 
     // The 3-padded coordinates of one point, formatted the one way both the
     // single-block and per-entity paths use.

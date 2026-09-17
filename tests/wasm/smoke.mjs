@@ -2481,7 +2481,7 @@ step('info: med meshName/description round-trip', () => {
     assert.equal(back.info.description, 'hi');
 });
 
-step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure', () => {
+step('gmsh22 and gmsh (4.1) both round-trip a region-only, block-aligned mesh', () => {
     const tagged = {
         ...tet,
         regions: [{ name: 'solid', kind: 'cell', dim: 3, tag: 7, entries: Int32Array.from([0]) }],
@@ -2495,11 +2495,15 @@ step('gmsh22 round-trips a region-only mesh; gmsh (4.1) needs entity structure',
     // 4.1 records membership in $Entities, which describes the *geometry* --
     // so it can only be written for a mesh that says which entity each node
     // belongs to (gmsh:dim_tags). This mesh came from another format and has
-    // none, so no $Entities is emitted and only the name survives. A file that
-    // does carry the structure round-trips: see the next step.
+    // none of its own, but `tet` is a single cell, so the region covers its
+    // WHOLE (only) block: $Entities is synthesized from the region instead
+    // (roadmap §1 tier B3, v11.5.0), and it round-trips here too. A region
+    // covering only PART of a block cannot be represented this way -- see
+    // the write-side note in doc/formats/gmsh.md#named-regions.
     m.writeMesh('/regions41.msh', tagged, 'gmsh');
     const back41 = m.readMesh('/regions41.msh', 'gmsh');
-    assert.equal(back41.regions.length, 0);
+    assert.equal(back41.regions.length, 1);
+    assert.equal(back41.regions[0].name, 'solid');
 });
 
 step('gmsh 4.1 $Entities: physical groups read, and survive a 4.1 round-trip', () => {

@@ -332,3 +332,32 @@ def test_read_metadata_reports_both_steps_of_a_transient_file(tmp_path):
 
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.gmsh.read(path, time_step=5)
+
+
+def test_untagged_region_gets_an_allocated_tag_on_write(tmp_path):
+    """Roadmap §1 tier B3 (v11.5.0): a Cell region with no gmsh tag of its
+    own (as Abaqus/MED/MDPA produce) gets a freshly allocated one instead of
+    being dropped from $PhysicalNames/gmsh:physical. C++-core only -- the
+    pure-Python fallback writer keeps its existing field_data-only behaviour.
+    """
+    mesh = meshioplusplus.Mesh(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ],
+        [("hexahedron", [[0, 1, 2, 3, 4, 5, 6, 7]])],
+        regions=[meshioplusplus.Region("body", "cell", [0])],
+    )
+    path = tmp_path / "body.msh"
+    meshioplusplus.write(path, mesh, file_format="gmsh22")
+    back = meshioplusplus.read(path)
+    cell_regions = {r.name: r for r in back.regions if r.kind == "cell"}
+    assert "body" in cell_regions
+    assert cell_regions["body"].tag >= 0, "an allocated tag must not round-trip as -1"
+    assert list(cell_regions["body"].entries) == [0]
