@@ -65,6 +65,34 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 - `mesh.point_tags` — always set to `{}` (present for interface symmetry with the MED-derived tag convention; OpenFOAM has no point-tag concept).
 - No point_data or field_data (OpenFOAM field files like `U`, `p`, `T` in the case's time directories are not read by this module — only the mesh topology under `constant/polyMesh`).
 
+## Zones as named regions
+
+`cellZones`/`faceZones`/`pointZones` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2) round-trip as `mesh.regions` — see [`doc/regions.md`](../regions.md) for the model.
+
+```python
+mesh = meshioplusplus.read("case.foam")
+for r in mesh.regions:
+    print(r.name, r.kind)  # e.g. "porousZone" "cell", "inlet" "side"
+```
+
+- `cellZones` → one `Region` of kind `"cell"` per zone, entries the zone's cells as global (block-major) indices.
+- `pointZones` → one `Region` of kind `"point"` per zone, entries the zone's point indices, unchanged (points are never reordered by this reader/writer).
+- `faceZones` → one `Region` of kind `"side"` per zone; a face id becomes `(global cell, local facet)` via its **owner** cell (the same cell OpenFOAM's own `owner` array names) — `flipMap` is never read or written, since a `Side` entry carries no orientation bit to hold it in. A zone member coinciding with a skipped (degenerate) cell is dropped, logged as a count.
+- **The facet half of a `faceZones` entry is not numerically stable across a round trip.** The reader rebuilds each named cell type (tetra/pyramid/wedge/hexahedron) from face topology alone, which is free to relabel local nodes — so the *same geometric face* can come back at a different local facet index. The cell half, and the geometric face itself (its corner point ids), are unaffected. `tests/cpp/test_openfoam.cpp`'s `ZonesRoundTripAsNamedRegions` asserts exactly this invariant; `tests/python/test_region_roundtrip.py`'s `openfoam` row documents it as the one exception to that table's usual exact-entries assertion.
+- Boundary **patches** (`cell_tags`/`mesh.openfoam_patch_types`, the `boundary` file) are a separate, older mechanism and are **not** regions — a patch is not a `faceZone`, and this tier does not change that.
+- The writer only produces `cellZones`/`faceZones`/`pointZones` once the mesh carries a `Region` of the matching kind; otherwise a stale file from a previous write is removed, the same "leave no stale companion behind" rule the writer already applies to `neighbour`/`boundary`.
+- **C++ core only**, like the writer itself: the pure-Python fallback reader (`_openfoam.py`) does not read zone files, matching the precedent that this module's more advanced pieces (the writer entirely) ship compiled-only rather than duplicating the per-cell winding/topology logic in a second implementation.
+
+## Multi-region cases
+
+A multi-region case has no single `constant/polyMesh`; each region has its own `constant/<region>/polyMesh`, listed in `constant/regionProperties`. Select one with `region=`:
+
+```python
+mesh = meshioplusplus.openfoam.read("case.foam", region="fluid")
+```
+
+Reading a multi-region case with no `region` raises, naming the regions found under `constant/` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2) — it does not silently try (and fail to find) a bare `constant/polyMesh`. Reading a region's `polyMesh` directory directly (`case/constant/fluid/polyMesh`) needs no `region` at all — the plain `polyMesh`-directory resolution rule already covers it. `region` is **C++-core only** (`OpenFoamInfo::mRegion`) and read-side only; a multi-region *write* is a documented follow-up, and the pure-Python fallback reader has no multi-region concept, so a `region` request — or a case the compiled core recognised as multi-region — re-raises rather than silently falling back to a worse error.
+
 ## Quirks & limitations
 
 - **The only meshio++ writer that creates a directory.** `write` resolves its path exactly as `read` does and creates `<case>/constant/polyMesh/` as needed; a `.foam` target also gets its (empty) marker file written, which is what makes the case openable by ParaView. Because a case *directory* has no extension, that form needs an explicit `file_format="openfoam"` — `resolve_format` is a pure string function and deliberately does not stat the filesystem.

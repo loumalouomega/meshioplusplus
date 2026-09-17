@@ -2923,21 +2923,27 @@ finalizes.
 
     // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
-    m.def("openfoam_read", [](const std::string& path) {
-        meshioplusplus::OpenFoamInfo info;
-        py::object pymesh =
-            meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, info));
-        py::dict ctags;
-        for (const auto& kv : info.mCellTags)
-            ctags[py::int_(kv.first)] = kv.second;
-        pymesh.attr("cell_tags") = ctags;
-        pymesh.attr("point_tags") = py::dict();
-        py::dict ptypes;
-        for (const auto& kv : info.mPatchTypes)
-            ptypes[py::int_(kv.first)] = kv.second;
-        pymesh.attr("openfoam_patch_types") = ptypes;
-        return pymesh;
-    });
+    // `region` selects one region of a multi-region case (v11.4.0, roadmap §1
+    // tier B2): `<case>/constant/<region>/polyMesh`.
+    m.def(
+        "openfoam_read",
+        [](const std::string& path, const std::string& region) {
+            meshioplusplus::OpenFoamInfo info;
+            info.mRegion = region;
+            py::object pymesh =
+                meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, info));
+            py::dict ctags;
+            for (const auto& kv : info.mCellTags)
+                ctags[py::int_(kv.first)] = kv.second;
+            pymesh.attr("cell_tags") = ctags;
+            pymesh.attr("point_tags") = py::dict();
+            py::dict ptypes;
+            for (const auto& kv : info.mPatchTypes)
+                ptypes[py::int_(kv.first)] = kv.second;
+            pymesh.attr("openfoam_patch_types") = ptypes;
+            return pymesh;
+        },
+        py::arg("path"), py::arg("region") = std::string());
 
     // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
     // is this format's native cell shape, and the reader emits them, so a

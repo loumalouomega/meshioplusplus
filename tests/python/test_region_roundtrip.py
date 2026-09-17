@@ -6,14 +6,15 @@ declares what each format keeps and what it loses. The table is the point: it
 makes the lossiness executable documentation rather than prose that drifts, and
 a format that silently starts or stops carrying a kind fails here.
 
-Phase 1 maps Gmsh, Abaqus and MED. Exodus reads regions (element blocks, node
-sets and side sets) but does not yet write them, so it is a **read-only** entry
-recorded below rather than a row here -- this matrix is a round-trip table, and
-a format that cannot write cannot round-trip. FLAC3D round-trips a cell
-region's *membership* but rewrites its *name* into the file's own
-``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own bucket too rather
-than weakening this table's exact-name assertion. UNV, Ansys, OpenFOAM and XDMF
-are deferred entirely. See ``doc/regions.md``.
+Phase 1 maps Gmsh, Abaqus and MED. OpenFOAM joined in v11.4.0 (roadmap §1 tier
+B2), mapping ``pointZones``/``cellZones``/``faceZones``. Exodus reads regions
+(element blocks, node sets and side sets) but does not yet write them, so it
+is a **read-only** entry recorded below rather than a row here -- this matrix
+is a round-trip table, and a format that cannot write cannot round-trip.
+FLAC3D round-trips a cell region's *membership* but rewrites its *name* into
+the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
+bucket too rather than weakening this table's exact-name assertion. UNV,
+Ansys and XDMF are deferred entirely. See ``doc/regions.md``.
 """
 
 import numpy as np
@@ -97,6 +98,25 @@ MATRIX = [
         marks=pytest.mark.skipif(not _HAS_H5PY, reason="h5py not installed"),
         id="med",
     ),
+    pytest.param(
+        "openfoam",
+        ".foam",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "pointZones and cellZones map directly -- point and cell numbering is "
+        "never reordered on write, so ids round-trip exactly, and so does a "
+        "Side entry's *cell* half. Its *facet* half is exempted from this "
+        "table's usual exact-entries assertion (see test_region_round_trip's "
+        "openfoam special case below): the reader rebuilds each named cell "
+        "type (tetra/pyramid/wedge/hexahedron) from face topology alone and "
+        "is free to relabel local nodes, so the same geometric facet can come "
+        "back at a different local index. tests/cpp/test_openfoam.cpp's "
+        "ZonesRoundTripAsNamedRegions asserts the geometric invariant that "
+        "actually holds: the returned facet's corner point ids are unchanged. "
+        "OpenFOAM has no format-native integer id for a zone, so `tag` is "
+        "not carried.",
+        id="openfoam",
+    ),
 ]
 
 
@@ -118,6 +138,18 @@ def test_region_round_trip(fmt, suffix, survives, carries, why, tmp_path):
             f"{'vanished' if expected else 'unexpectedly survived'} — {why}"
         )
         if not got:
+            continue
+        if fmt == "openfoam" and kind == "side":
+            # The facet half is not exact (see MATRIX's `why`) -- only the
+            # cell half and the entry count are asserted here; the geometric
+            # invariant that actually holds is asserted by
+            # tests/cpp/test_openfoam.cpp's ZonesRoundTripAsNamedRegions.
+            assert after[(name, kind)].entries.shape == before[(name, kind)].entries.shape
+            assert_array_equal(
+                after[(name, kind)].entries[:, 0],
+                before[(name, kind)].entries[:, 0],
+                err_msg=f"{fmt}: region '{name}' (side) changed which cell it names",
+            )
             continue
         # Membership must survive exactly. Entries are canonical on both sides
         # (sorted, de-duplicated), so this is an equality, not a set compare.
@@ -142,6 +174,23 @@ def test_geometry_is_unaffected_by_regions(
     meshioplusplus.write(path, mesh, file_format=fmt)
     back = meshioplusplus.read(path)
 
+    if fmt == "openfoam":
+        # OpenFOAM reconstructs cells from face topology on every read --
+        # extra boundary-face blocks, per-cell node order not preserved --
+        # regardless of whether the mesh carries regions at all. Comparing
+        # against a REGION-FREE round trip through the same reconstruction
+        # isolates "did regions perturb it" from "does OpenFOAM preserve raw
+        # connectivity" (it never does, by design; see doc/formats/openfoam.md).
+        plain = meshioplusplus.Mesh(mesh.points, [("tetra", np.asarray(mesh.cells[0].data))])
+        plain_path = tmp_path / ("plain" + suffix)
+        meshioplusplus.write(plain_path, plain, file_format=fmt)
+        plain_back = meshioplusplus.read(plain_path)
+        assert np.allclose(back.points, plain_back.points)
+        assert len(back.cells) == len(plain_back.cells)
+        for a, b in zip(back.cells, plain_back.cells):
+            assert_array_equal(np.asarray(a.data), np.asarray(b.data))
+        return
+
     assert np.allclose(back.points, mesh.points)
     assert len(back.cells) == len(mesh.cells)
     assert_array_equal(np.asarray(back.cells[0].data), np.asarray(mesh.cells[0].data))
@@ -157,25 +206,39 @@ def test_no_regions_writes_the_same_bytes(
     plain = meshioplusplus.Mesh(
         mesh.points, [("tetra", np.asarray(mesh.cells[0].data))]
     )
+    stripped = fixture_mesh()
+    stripped.regions.clear()
+
+    if fmt == "openfoam":
+        # A directory format: the `.foam` marker file is always empty, so the
+        # real comparison is the polyMesh directory's own files. Separate
+        # subdirectories, since two `.foam` markers sharing a parent would
+        # write -- and the second overwrite -- the very same polyMesh dir.
+        a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+        meshioplusplus.write(a_dir / "case.foam", plain, file_format=fmt)
+        meshioplusplus.write(b_dir / "case.foam", stripped, file_format=fmt)
+        poly_a = a_dir / "constant" / "polyMesh"
+        poly_b = b_dir / "constant" / "polyMesh"
+        for name in ("points", "faces", "owner", "neighbour", "boundary"):
+            assert (poly_a / name).read_bytes() == (poly_b / name).read_bytes()
+        return
 
     a = tmp_path / ("a" + suffix)
     b = tmp_path / ("b" + suffix)
     meshioplusplus.write(a, plain, file_format=fmt)
-    stripped = fixture_mesh()
-    stripped.regions.clear()
     meshioplusplus.write(b, stripped, file_format=fmt)
 
     assert a.read_bytes() == b.read_bytes()
 
 
 def test_side_regions_are_the_new_capability():
-    """No format could express a side set before; Abaqus now can.
+    """No format could express a side set before; Abaqus and OpenFOAM now can.
 
     Spelled out separately because it is the one kind with no `point_sets` /
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus"]
+    assert side_capable == ["abaqus", "openfoam"]
 
 
 # --------------------------------------------------------------------------- #
@@ -184,7 +247,6 @@ def test_side_regions_are_the_new_capability():
 PHASE_2 = {
     "unv": "groups (absorbing UnvInfo)",
     "ansysInp": "components (absorbing AnsysInfo)",
-    "openfoam": "boundary patches, which are face groups (side regions)",
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",
 }

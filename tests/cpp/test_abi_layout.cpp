@@ -142,7 +142,12 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 // only in an HDF5 / netCDF build, so pinning them would make this snapshot say
 // different things in different configurations -- which is the one property a
 // layout snapshot must not have.
-MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 96, 8);
+//
+// `OpenFoamInfo` gained `mRegion` (a `std::string`) in v11.4.0 (roadmap §1
+// tier B2, multi-region case selection), 96 -> 128 bytes -- a real Tier A
+// layout break, unlike v10.35.0's ABI 12, so this bumped
+// `MESHIOPLUSPLUS_ABI_VERSION` 12 -> 13 (see abi_version.hpp).
+MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
 

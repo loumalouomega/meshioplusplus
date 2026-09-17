@@ -106,6 +106,22 @@ struct OpenFoamInfo {
      * can see and fix.
      */
     std::map<std::int64_t, std::string> mPatchTypes;
+
+    /**
+     * @brief Multi-region case selector (v11.4.0, roadmap §1 tier B2).
+     *
+     * A multi-region case has no single `constant/polyMesh`; each region has
+     * its own `constant/<region>/polyMesh`. Set before calling `read_openfoam`
+     * to select one; the resolver also accepts a path that already *is*
+     * `constant/<region>/polyMesh` (the plain `polyMesh`-directory rule), in
+     * which case this field is unnecessary. Empty (the default) means
+     * "single-region case" -- if the case is multi-region instead,
+     * `read_openfoam` throws naming the regions `constant/regionProperties`
+     * lists, rather than silently trying (and failing to find) a bare
+     * `constant/polyMesh`. Ignored on write; a multi-region *write* is a
+     * documented follow-up.
+     */
+    std::string mRegion;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh

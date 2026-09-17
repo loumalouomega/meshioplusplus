@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,7 +32,10 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace fs = std::filesystem;
 
@@ -311,6 +315,89 @@ TEST(OpenFoam, ResolveViaCaseDir) {
     fs::remove_all(base, ec);
 }
 
+// Roadmap §1 tier B2: multi-region case selection.
+namespace {
+
+// A single-hex polyMesh written directly under `<base>/constant/<region>/`,
+// mirroring `make_hex_case` but for a named region rather than the plain
+// single-region layout.
+void write_hex_region(const fs::path& base, const std::string& region) {
+    fs::path poly = base / "constant" / region / "polyMesh";
+    fs::create_directories(poly);
+    auto hdr = [](const std::string& cls, const std::string& obj) {
+        return "FoamFile\n{\n format ascii;\n class " + cls + ";\n object " + obj + ";\n}\n";
+    };
+    std::ofstream(poly / "points")
+        << hdr("vectorField", "points")
+        << "8\n(\n(0 0 0)\n(1 0 0)\n(1 1 0)\n(0 1 0)\n(0 0 1)\n(1 0 1)\n(1 1 "
+           "1)\n(0 1 1)\n)\n";
+    std::ofstream(poly / "faces")
+        << hdr("faceList", "faces")
+        << "6\n(\n4(0 3 2 1)\n4(4 5 6 7)\n4(0 1 5 4)\n4(2 3 7 6)\n4(1 2 6 "
+           "5)\n4(0 4 7 3)\n)\n";
+    std::ofstream(poly / "owner") << hdr("labelList", "owner") << "6\n(\n0\n0\n0\n0\n0\n0\n)\n";
+    std::ofstream(poly / "boundary")
+        << hdr("polyBoundaryMesh", "boundary")
+        << "1\n(\nallB { type wall; nFaces 6; startFace 0; }\n)\n";
+}
+
+fs::path make_multi_region_case() {
+    static std::atomic<unsigned> counter{0};
+    fs::path base = fs::temp_directory_path() / ("meshio_of_mr_" + std::to_string(counter++));
+    write_hex_region(base, "fluid");
+    write_hex_region(base, "solid");
+    std::ofstream(base / "constant" / "regionProperties") << "FoamFile\n{\n}\nregions\n(\n);\n";
+    return base;
+}
+
+}  // namespace
+
+TEST(OpenFoam, MultiRegionWithNoRegionSetThrowsNamingTheRegions) {
+    const fs::path base = make_multi_region_case();
+    meshioplusplus::OpenFoamInfo info;
+    bool threw = false;
+    try {
+        meshioplusplus::read_openfoam(base.string(), info);
+    } catch (const meshioplusplus::ReadError& e) {
+        threw = true;
+        EXPECT_NE(std::string(e.what()).find("fluid"), std::string::npos);
+        EXPECT_NE(std::string(e.what()).find("solid"), std::string::npos);
+    }
+    EXPECT_TRUE(threw);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoam, MultiRegionSelectsTheNamedRegion) {
+    const fs::path base = make_multi_region_case();
+    meshioplusplus::OpenFoamInfo info;
+    info.mRegion = "fluid";
+    const meshioplusplus::Mesh mesh = meshioplusplus::read_openfoam(base.string(), info);
+    EXPECT_EQ(mesh.NumPoints(), 8u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoam, MultiRegionAnUnknownRegionThrowsNamingIt) {
+    const fs::path base = make_multi_region_case();
+    meshioplusplus::OpenFoamInfo info;
+    info.mRegion = "nope";
+    EXPECT_THROW(meshioplusplus::read_openfoam(base.string(), info), meshioplusplus::ReadError);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+// The `polyMesh`-directory rule already covers this without `mRegion` at all.
+TEST(OpenFoam, MultiRegionDirectPolyMeshPathNeedsNoRegionField) {
+    const fs::path base = make_multi_region_case();
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh mesh =
+        meshioplusplus::read_openfoam((base / "constant" / "solid" / "polyMesh").string(), info);
+    EXPECT_EQ(mesh.NumPoints(), 8u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
 // ==========================================================================
 //                              WRITER
 // ==========================================================================
@@ -344,6 +431,22 @@ fs::path write_case(const meshioplusplus::Mesh& rMesh,
     const fs::path base = temp_case_dir();
     meshioplusplus::write_openfoam((base / "case.foam").string(), rMesh, rInfo);
     return base;
+}
+
+meshioplusplus::NDArray i64(const std::vector<std::int64_t>& rVals) {
+    meshioplusplus::NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64,
+                                                                 {rVals.size()});
+    for (std::size_t i = 0; i < rVals.size(); ++i)
+        a.As<std::int64_t>()[i] = rVals[i];
+    return a;
+}
+
+meshioplusplus::NDArray i64_pairs(const std::vector<std::int64_t>& rFlat) {
+    meshioplusplus::NDArray a =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {rFlat.size() / 2, 2});
+    for (std::size_t i = 0; i < rFlat.size(); ++i)
+        a.As<std::int64_t>()[i] = rFlat[i];
+    return a;
 }
 
 }  // namespace
@@ -684,6 +787,67 @@ TEST(OpenFoamWrite, RoundTripsThroughOurOwnReader) {
         if (cb.Type() == "hexahedron")
             nhex += cb.NumCells();
     EXPECT_EQ(nhex, 8u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+// Roadmap §1 tier B2: cellZones/faceZones/pointZones as named Regions.
+TEST(OpenFoamWrite, ZonesRoundTripAsNamedRegions) {
+    meshioplusplus::Mesh m = hex_grid(2);  // 8 hex cells, 27 points
+    m.AddRegion(meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({0, 5})));
+    m.AddRegion(meshioplusplus::Region("corners", meshioplusplus::RegionKind::Point, i64({0, 26})));
+    // Cell 0's facet 0 (`cell_faces(Hexahedron)[0]` = local corners 0,4,7,3) is
+    // its x=0 face -- a genuine boundary face for cell (0,0,0), so its owner is
+    // unambiguous. Point ids 0,1,3,4 are that face's corners in hex_grid's own
+    // numbering (`id(i,j,k) = (i*P+j)*P+k`, P=3): (0,0,0)=0, (0,0,1)=1,
+    // (0,1,0)=3, (0,1,1)=4.
+    m.AddRegion(
+        meshioplusplus::Region("inlet", meshioplusplus::RegionKind::Side, i64_pairs({0, 0})));
+
+    const fs::path base = write_case(m);
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "cellZones"));
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "pointZones"));
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "faceZones"));
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), info);
+
+    ASSERT_NE(back.FindRegion("core", meshioplusplus::RegionKind::Cell), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& core =
+        back.Region(back.FindRegion("core", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(core.NumEntries(), 2u);
+    EXPECT_EQ(core.Entries()[0], 0);
+    EXPECT_EQ(core.Entries()[1], 5);
+
+    ASSERT_NE(back.FindRegion("corners", meshioplusplus::RegionKind::Point),
+             meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& corners =
+        back.Region(back.FindRegion("corners", meshioplusplus::RegionKind::Point));
+    ASSERT_EQ(corners.NumEntries(), 2u);
+    EXPECT_EQ(corners.Entries()[0], 0);
+    EXPECT_EQ(corners.Entries()[1], 26);
+
+    ASSERT_NE(back.FindRegion("inlet", meshioplusplus::RegionKind::Side), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& inlet =
+        back.Region(back.FindRegion("inlet", meshioplusplus::RegionKind::Side));
+    ASSERT_EQ(inlet.NumEntries(), 1u);
+    EXPECT_EQ(inlet.Entries()[0], 0);  // global cell (single block, unambiguous)
+    // The facet index itself need not survive numerically -- the reader's
+    // hexahedron reconstruction is free to renumber local nodes -- but it must
+    // still name the SAME geometric face: point ids {0, 1, 3, 4}.
+    const std::int64_t facet = inlet.Entries()[1];
+    ASSERT_GE(facet, 0);
+    const auto back_hex = back.Cells(0);
+    ASSERT_EQ(std::string(back_hex.Type()), "hexahedron");
+    const auto& facedefs = meshioplusplus::detail::cell_faces(meshioplusplus::CellType::Hexahedron);
+    ASSERT_LT(static_cast<std::size_t>(facet), facedefs.size());
+    std::set<std::int64_t> face_pts;
+    for (int c = 0; c < facedefs[static_cast<std::size_t>(facet)].mNumCorners; ++c)
+        face_pts.insert(
+            back_hex.Conn().As<std::int64_t>()[facedefs[static_cast<std::size_t>(facet)].mNodes[c]]);
+    EXPECT_EQ(face_pts, (std::set<std::int64_t>{0, 1, 3, 4}));
+
     std::error_code ec;
     fs::remove_all(base, ec);
 }

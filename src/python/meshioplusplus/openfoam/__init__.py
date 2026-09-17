@@ -14,12 +14,21 @@ from ._openfoam import read as _py_read
 _HAS_WRITE = hasattr(_core, "openfoam_write")
 
 
-def read(filename):
-    """Read an OpenFOAM polyMesh case (C++ core, Python fallback)."""
+def read(filename, region=""):
+    """Read an OpenFOAM polyMesh case (C++ core, Python fallback).
+
+    ``region`` selects one region of a multi-region case (v11.4.0, roadmap §1
+    tier B2): ``<case>/constant/<region>/polyMesh``. The Python fallback
+    reader has no multi-region concept at all, so a ``region`` request, or a
+    case the compiled core recognised as multi-region (and asked for one),
+    re-raises rather than silently falling back to a worse, generic
+    "no polyMesh" error from a reader that never looked for one.
+    """
     try:
-        return _core.openfoam_read(str(filename))
-    except Exception:
-        pass
+        return _core.openfoam_read(str(filename), region)
+    except Exception as exc:
+        if region or "multi-region" in str(exc):
+            raise
     return _py_read(filename)
 
 

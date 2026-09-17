@@ -162,6 +162,25 @@ def case_dir(tmp_path, hex_cube_data):
     return tmp_path
 
 
+@pytest.fixture
+def multi_region_case_dir(tmp_path, hex_cube_data):
+    """A two-region case: `constant/fluid/polyMesh` and `constant/solid/polyMesh`.
+
+    Roadmap §1 tier B2 (v11.4.0): multi-region case selection.
+    """
+    points, faces, owner, neighbour, boundary = hex_cube_data
+    for region in ("fluid", "solid"):
+        poly = tmp_path / "constant" / region / "polyMesh"
+        poly.mkdir(parents=True)
+        _write_ascii_points(poly / "points", points)
+        _write_ascii_faces(poly / "faces", faces)
+        _write_ascii_labels(poly / "owner", owner, "owner")
+        _write_ascii_boundary(poly / "boundary", boundary)
+    (tmp_path / "constant" / "regionProperties").write_text("FoamFile\n{\n}\nregions\n(\n);\n")
+    (tmp_path / "case.foam").write_text("")
+    return tmp_path
+
+
 class TestStripComments:
     def test_block_comment(self):
         assert _strip_comments("a /* foo */ b") == "a  b"
@@ -1051,6 +1070,39 @@ class TestPublicAPI:
         import meshioplusplus
 
         assert hasattr(meshioplusplus.openfoam, "read")
+
+
+class TestMultiRegion:
+    """Roadmap §1 tier B2 (v11.4.0): multi-region case selection."""
+
+    def test_no_region_set_raises_naming_the_regions(self, multi_region_case_dir):
+        import meshioplusplus
+
+        with pytest.raises(Exception) as exc_info:
+            meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam")
+        assert "fluid" in str(exc_info.value)
+        assert "solid" in str(exc_info.value)
+
+    def test_region_selects_the_named_region(self, multi_region_case_dir):
+        import meshioplusplus
+
+        mesh = meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam", region="fluid")
+        assert len(mesh.points) == 8
+        assert any(cb.type == "hexahedron" for cb in mesh.cells)
+
+    def test_unknown_region_raises_naming_it(self, multi_region_case_dir):
+        import meshioplusplus
+
+        with pytest.raises(Exception):
+            meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam", region="nope")
+
+    def test_direct_polymesh_path_needs_no_region_kwarg(self, multi_region_case_dir):
+        import meshioplusplus
+
+        mesh = meshioplusplus.openfoam.read(
+            multi_region_case_dir / "constant" / "solid" / "polyMesh"
+        )
+        assert len(mesh.points) == 8
 
 
 class TestReadTwoCellMesh:
