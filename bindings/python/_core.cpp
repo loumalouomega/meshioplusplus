@@ -73,6 +73,7 @@
 #include "meshioplusplus/formats/ugrid.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/vti.hpp"
+#include "meshioplusplus/formats/vts.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -387,6 +388,33 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, bool points_only, py::object arrays) {
             return meshioplusplus_py::mesh_to_py(
                 meshioplusplus::read_vti(path, core_read_options(points_only, arrays)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+
+    // VTS (StructuredGrid) writer / reader (v11.6.0, roadmap §1 tier B4). Same
+    // dense-lattice requirement on write as VTI; allow_ragged stays false.
+    m.def(
+        "vts_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/false);
+            meshioplusplus::write_vts_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def("vts_write", [](const std::string& path, py::object pymesh, bool binary, bool zlib) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        meshioplusplus::write_vts(path, cpp, binary, zlib);
+    });
+
+    m.def(
+        "vts_read",
+        [](const std::string& path, bool points_only, py::object arrays) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_vts(path, core_read_options(points_only, arrays)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 

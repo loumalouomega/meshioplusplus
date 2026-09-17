@@ -2264,6 +2264,10 @@ step('availableFormats reports what this build can read and write', () => {
     // WholeExtent attributes ARE a generated grid's header, so it is the only
     // one that round-trips it. Both directions.
     assert.ok(readers.includes('vti') && writers.includes('vti'));
+    // .vts (VTK XML StructuredGrid), v11.6.0 (roadmap §1 tier B4): the
+    // explicit-points sibling of .vti -- same implicit connectivity, but a
+    // curved structured mesh reads correctly too. Both directions.
+    assert.ok(readers.includes('vts') && writers.includes('vts'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2279,6 +2283,20 @@ step('.vti round-trips a lattice through MEMFS', () => {
         assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
     // A mesh that is not a lattice has no extent to write, and says so.
     assert.throws(() => m.writeMesh('/no.vti', cubeSurface));
+});
+
+step('.vts round-trips a lattice through MEMFS, no js_bindings.cpp code needed', () => {
+    // No per-format special-casing exists for .vts (or .vti) in js_bindings.cpp
+    // at all -- both reach WASM entirely through the generic registry maps,
+    // which is the probe this step actually is.
+    const g = m.grid([3, 3, 3], [-0.5, -0.5, -0.5], [0.25, 0.25, 0.25]);
+    m.writeMesh('/lattice.vts', g);
+    const back = m.readMesh('/lattice.vts');
+    assert.equal(back.cells[0].type, 'hexahedron');
+    assert.equal(back.cells[0].data.length, 27 * 8);
+    for (let i = 0; i < g.points.length; ++i)
+        assert.ok(Math.abs(back.points[i] - g.points[i]) < 1e-12);
+    assert.throws(() => m.writeMesh('/no.vts', cubeSurface));
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {

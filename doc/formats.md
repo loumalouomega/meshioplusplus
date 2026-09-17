@@ -51,6 +51,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` |
 | [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — |
 | [`vtp`](./formats/vtp.md) | `.vtp` | ✓ | ✓ | — |
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
@@ -74,6 +75,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`, one step selected by `time_step`); writing them is still out of scope. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
 
 **Note on `vti`:** VTK XML ImageData is a **regular lattice**: its geometry is the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array. Reading expands the extent into explicit `hexahedron` cells; writing therefore *requires* a lattice, and a mesh that is not one — including a **partial** grid (`voxelize`'s `surface`/`inside` fills, or `compute_sdf`'s octree, whose holes ImageData cannot express) — raises `WriteError` by name. It is the only format that round-trips a generated grid's geometry, which is why [`compute_sdf`](./sdf.md) points at it.
+
+**Note on `vts`** (v11.6.0): VTK XML StructuredGrid is the same `nx*ny*nz` hexahedron topology as `vti`, except with an explicit `<Points>` array instead of `Origin`/`Spacing` — so, unlike `vti`, **reading never requires a lattice** (a genuinely curved structured mesh reads correctly); writing still does, for the same reason `vti`'s writer does. Degenerate (2-D/1-D) extents are not expanded to quad/line/vertex cells, a documented remainder.
 
 **Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
@@ -150,6 +153,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `unv` | None general-purpose — dataset 2414's five ID-label records are a structural slot, not a comment | n/a | — |
 | `vti` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtk` / `vtk42` / `vtk51` | The legacy format's title line (line 2, ≤256 chars) is the format's own free-text slot | Fixed line 2 | Yes |
+| `vts` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
@@ -206,6 +210,16 @@ meshioplusplus.vtu.write(filename, mesh,
 
 ```python
 meshioplusplus.vti.write(filename, mesh,   # mesh must be a dense lattice
+    binary=True,
+    compression="zlib",   # "zlib", "lz4", "zstd", or None
+    header_type=None,     # "UInt32" or "UInt64"
+)
+```
+
+### VTS (`.vts`)
+
+```python
+meshioplusplus.vts.write(filename, mesh,   # mesh must be a dense lattice (write only -- read accepts any structured grid)
     binary=True,
     compression="zlib",   # "zlib", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"
