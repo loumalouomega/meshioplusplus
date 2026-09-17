@@ -354,6 +354,12 @@ def test_read_metadata_reports_both_steps_of_a_multi_step_field(tmp_path):
     ``med.read`` it never throws on a multi-step field, since a metadata call
     declining to report the very thing it exists to report would defeat its
     purpose."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip(
+            "core built without HDF5 -- read_med_metadata is C++-only, no Python fallback"
+        )
+
     from meshioplusplus._mesh import CellBlock
 
     filename = tmp_path / "two_step.med"
