@@ -15425,10 +15425,15 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
  *
  * A Tecplot FE file is a `VARIABLES = "X" "Y" "Z" ...` list followed by one
  * or more `ZONE T="..." N=<nodes> E=<elements> F=FEPOINT|FEBLOCK
- * ET=TRIANGLE|FEQUADRILATERAL|FETETRAHEDRON|FEBRICK [VARLOCATION=(...)]`
- * blocks. meshio++ only reads/writes a **single** FE zone: on read, only the
- * first zone is parsed and any subsequent zones are silently ignored (not
- * merged or errored on). `VARLOCATION=([a-b]=CELLCENTERED)` (1-based,
+ * ET=TRIANGLE|FEQUADRILATERAL|FETETRAHEDRON|FEBRICK [SOLUTIONTIME=<t>]
+ * [STRANDID=<id>] [VARLOCATION=(...)]` blocks. meshio++ writes a **single**
+ * FE zone; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one zone
+ * of a transient file's timeline -- every zone sharing the first zone's
+ * `STRANDID` (or, absent one, every zone with a `SOLUTIONTIME` at all),
+ * sorted by `SOLUTIONTIME`. With no `SOLUTIONTIME` anywhere, only the first
+ * zone is read, as before (several static, non-transient zones are a
+ * documented roadmap remainder, not concatenated or errored on).
+ * `VARLOCATION=([a-b]=CELLCENTERED)` (1-based,
  * inclusive ranges) marks cell-centered variables, otherwise cell-centered-
  * ness is inferred from `NV=`. `FEBLOCK` packing reads one variable's full
  * array before the next; `FEPOINT` reads one full-variable-tuple row per
@@ -15475,22 +15480,54 @@ MESHIOPLUSPLUS_API void write_tecplot(const std::string& rPath, const Mesh& rMes
 /**
  * @brief Read a Tecplot ASCII file's first FE zone.
  *
- * Parses the `VARIABLES` list and the first `ZONE` header (tolerating
- * multi-line continuation and a quoted `T="..."` title), then its FEBLOCK or
- * FEPOINT data body and 1-based connectivity. Any zones after the first are
- * silently ignored.
+ * Parses the `VARIABLES` list and every `ZONE` header (tolerating multi-line
+ * continuation and a quoted `T="..."` title), then the selected zone's
+ * FEBLOCK or FEPOINT data body and 1-based connectivity.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `X`/`x` is missing, the zone header uses an
- *         unsupported `F=`/`ZONETYPE=` combination, or the header/data
- *         otherwise doesn't parse (e.g. an adversarial zone title that is
- *         literally the string `"VARLOCATION"`) — the shim then falls back
- *         to the more tolerant Python reader.
+ * @throws ReadError if `X`/`x` is missing, a zone header uses an unsupported
+ *         `F=`/`ZONETYPE=` combination, or the header/data otherwise doesn't
+ *         parse (e.g. an adversarial zone title that is literally the string
+ *         `"VARLOCATION"`) — the shim then falls back to the more tolerant
+ *         Python reader.
  * @note point_data/cell_data keys are the raw Tecplot variable names (no
  *       prefix); `X`/`Y`/`Z` are reserved for coordinates.
  */
 MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath);
+
+/**
+ * @brief `read_tecplot` with read options — selects one zone of a transient
+ *        file's timeline instead of always the first.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions read options; only `mTimeStep` is consulted
+ * @return the read Mesh, as the plain overload
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range
+ *         naming the step count
+ */
+MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize a Tecplot file's shape and available time steps without
+ *        decoding any zone's data body.
+ *
+ * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
+ * every `ZONE` header is scanned for its `N=`/`E=`/`SOLUTIONTIME=`/
+ * `STRANDID=`, using the same token-budget walk `read_tecplot` uses to skip
+ * from one zone's header to the next, but without decoding the tokens
+ * themselves. `mCellBlocks`/`mNumPoints` describe the timeline's first zone
+ * (transient zones typically share topology); `mTimeValues` is the resolved
+ * timeline's `SOLUTIONTIME`s in the same sorted order `mTimeStep` indexes
+ * into -- empty when no zone carries one.
+ *
+ * @param rPath filesystem path to read
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's shape and time values
+ * @throws ReadError as `read_tecplot`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_tecplot_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/tecplot.hpp =====
@@ -68345,7 +68382,234 @@ const std::vector<int>& tecplot_order(const std::string& rM) {
 
 }  // namespace
 
-Mesh read_tecplot(const std::string& rPath) {
+namespace {
+
+// One ZONE header's parsed fields, its data section's line range, and its
+// transient identity (SOLUTIONTIME/STRANDID). Shared by read_tecplot (which
+// decodes exactly one zone's data) and read_tecplot_metadata (which decodes
+// none): both start from the same tecplot_scan_zones pass, so which zone the
+// data-decoding step picks and which zones the metadata's timeline lists can
+// never drift against each other.
+struct TecplotZoneHeader {
+    std::map<std::string, std::string> mFields;  // NODES/N/ELEMENTS/E/DATAPACKING/ZONETYPE/F/ET/NV
+    std::string mVarloc;
+    bool mHasSolutionTime = false;
+    double mSolutionTime = 0.0;
+    bool mHasStrandId = false;
+    int mStrandId = 0;
+    std::size_t mDataStart = 0;
+    std::size_t mNumNodes = 0;
+    std::size_t mNumCells = 0;
+};
+
+std::string tecplot_zone_field(const TecplotZoneHeader& rZ, const char* pA, const char* pB) {
+    auto it = rZ.mFields.find(pA);
+    if (it != rZ.mFields.end())
+        return it->second;
+    it = rZ.mFields.find(pB);
+    return it != rZ.mFields.end() ? it->second : std::string();
+}
+
+// The zone's element type and, for FEBLOCK data, which variables are
+// cell-centered -- the same derivation whether or not this zone's data is
+// ever decoded.
+void tecplot_zone_format(const TecplotZoneHeader& rZ, std::size_t NumVariables, bool& rFeblock,
+                         std::string& rZtype, std::vector<int>& rCellCentered) {
+    std::string fmt;
+    if (rZ.mFields.count("F")) {
+        fmt = tecplot_upper(rZ.mFields.at("F"));
+        rZtype = rZ.mFields.count("ET") ? rZ.mFields.at("ET") : "";
+    } else {
+        fmt = "FE" + tecplot_upper(tecplot_zone_field(rZ, "DATAPACKING", ""));
+        rZtype = tecplot_zone_field(rZ, "ZONETYPE", "");
+    }
+    rFeblock = (fmt == "FEBLOCK");
+
+    rCellCentered.assign(NumVariables, 0);
+    if (!rFeblock)
+        return;
+    if (rZ.mFields.count("NV")) {
+        int nv = std::stoi(rZ.mFields.at("NV"));
+        for (std::size_t k = static_cast<std::size_t>(nv); k < NumVariables; ++k)
+            rCellCentered[k] = 1;
+    } else if (!rZ.mVarloc.empty()) {
+        std::string vc = rZ.mVarloc.substr(1, rZ.mVarloc.size() - 2);  // strip ()
+        std::vector<std::string> entries;
+        std::string cur;
+        for (char c : vc) {
+            if (c == ',') {
+                entries.push_back(cur);
+                cur.clear();
+            } else {
+                cur += c;
+            }
+        }
+        if (!cur.empty())
+            entries.push_back(cur);
+        for (const auto& entry : entries) {
+            std::size_t eq = entry.find('=');
+            if (eq == std::string::npos)
+                continue;
+            std::string rng = entry.substr(0, eq), loc = tecplot_upper(entry.substr(eq + 1));
+            if (loc != "CELLCENTERED")
+                continue;
+            rng = rng.substr(1, rng.size() - 2);  // strip []
+            std::size_t dash = rng.find('-');
+            if (dash == std::string::npos) {
+                rCellCentered[static_cast<std::size_t>(std::stoi(rng) - 1)] = 1;
+            } else {
+                int a = std::stoi(rng.substr(0, dash)), b = std::stoi(rng.substr(dash + 1));
+                for (int k = a; k <= b; ++k)
+                    rCellCentered[static_cast<std::size_t>(k - 1)] = 1;
+            }
+        }
+    }
+}
+
+// How many numeric tokens this zone's data block holds, in file order --
+// FEBLOCK is one run per variable (cell-centered ones NumCells long, the
+// rest NumNodes long); POINT/FEPOINT is NumNodes rows of NumVariables each.
+std::size_t tecplot_zone_data_token_count(const TecplotZoneHeader& rZ, std::size_t NumVariables,
+                                          bool Feblock, const std::vector<int>& rCellCentered) {
+    if (!Feblock)
+        return rZ.mNumNodes * NumVariables;
+    std::size_t total = 0;
+    for (std::size_t k = 0; k < NumVariables; ++k)
+        total += rCellCentered[k] ? rZ.mNumCells : rZ.mNumNodes;
+    return total;
+}
+
+// One pass over every line, splitting VARIABLES from every ZONE header (not
+// just the first) and locating each zone's data section by actually counting
+// off its own token budget plus its connectivity lines -- Tecplot ASCII has
+// no fixed tokens-per-line convention, so this is the only reliable way to
+// find where one zone's data ends and the next one's header begins.
+std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>& rLines,
+                                                  std::vector<std::string>& rVariables) {
+    std::vector<TecplotZoneHeader> zones;
+    std::size_t i = 0;
+    for (; i < rLines.size(); ++i) {
+        std::string u = tecplot_upper(rLines[i]);
+        if (u.rfind("VARIABLES", 0) == 0) {
+            std::string joined = rLines[i];
+            while (i + 1 < rLines.size() && tecplot_strip(rLines[i + 1])[0] == '"')
+                joined += " " + rLines[++i];
+            std::string rhs = joined.substr(joined.find('=') + 1);
+            std::size_t p = 0;
+            while (p < rhs.size()) {
+                if (rhs[p] == '"') {
+                    std::size_t q = rhs.find('"', p + 1);
+                    rVariables.push_back(rhs.substr(p + 1, q - p - 1));
+                    p = q + 1;
+                } else if (std::isspace((unsigned char)rhs[p]) || rhs[p] == ',') {
+                    ++p;
+                } else {
+                    std::size_t q = p;
+                    while (q < rhs.size() && !std::isspace((unsigned char)rhs[q]) && rhs[q] != ',')
+                        ++q;
+                    rVariables.push_back(rhs.substr(p, q - p));
+                    p = q;
+                }
+            }
+            continue;
+        }
+        if (u.rfind("ZONE", 0) != 0)
+            continue;
+
+        TecplotZoneHeader z;
+        std::string joined = rLines[i];
+        while (i + 1 < rLines.size() && !is_float_token(tecplot_tokens(rLines[i + 1])[0]))
+            joined += " " + rLines[++i];
+        z.mDataStart = i + 1;
+
+        std::string ju = joined;
+        std::size_t vp = tecplot_upper(ju).find("VARLOCATION");
+        if (vp != std::string::npos) {
+            std::size_t p1 = ju.find('(', vp), p2 = ju.find(')', p1);
+            z.mVarloc = ju.substr(p1, p2 - p1 + 1);
+            z.mVarloc.erase(std::remove(z.mVarloc.begin(), z.mVarloc.end(), ' '), z.mVarloc.end());
+            ju = ju.substr(0, vp) + ju.substr(p2 + 1);
+        }
+        std::string body = ju.substr(4);
+        for (auto& c : body)
+            if (c == ',' || c == '=')
+                c = ' ';
+        auto tk = tecplot_tokens(body);
+        for (std::size_t k = 0; k + 1 < tk.size(); ++k) {
+            std::string key = tecplot_upper(tk[k]);
+            if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
+                key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
+                key == "NV") {
+                z.mFields[key] = tk[k + 1];
+            } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
+                if (key == "SOLUTIONTIME") {
+                    z.mSolutionTime = std::strtod(tk[k + 1].c_str(), nullptr);
+                    z.mHasSolutionTime = true;
+                } else {
+                    z.mStrandId = std::stoi(tk[k + 1]);
+                    z.mHasStrandId = true;
+                }
+            }
+        }
+        z.mNumNodes = std::stoull(tecplot_zone_field(z, "NODES", "N"));
+        z.mNumCells = std::stoull(tecplot_zone_field(z, "ELEMENTS", "E"));
+
+        bool feblock = false;
+        std::string ztype;
+        std::vector<int> cell_centered;
+        tecplot_zone_format(z, rVariables.size(), feblock, ztype, cell_centered);
+        const std::size_t want =
+            tecplot_zone_data_token_count(z, rVariables.size(), feblock, cell_centered);
+
+        std::size_t li = z.mDataStart, got = 0;
+        while (got < want && li < rLines.size()) {
+            got += tecplot_tokens(rLines[li]).size();
+            ++li;
+        }
+        li += z.mNumCells;  // one connectivity line per cell
+        zones.push_back(z);
+        i = li - 1;  // the for-loop's ++i resumes scanning right after
+    }
+    if (rVariables.empty())
+        throw ReadError("Tecplot: no VARIABLES");
+    if (zones.empty())
+        throw ReadError("Tecplot: no ZONE");
+    return zones;
+}
+
+// The zones read_tecplot/read_tecplot_metadata treat as one timeline: those
+// sharing rZones[0]'s STRANDID when any zone carries one (SOLUTIONTIME with
+// no STRANDID at all groups every zone together), sorted by SOLUTIONTIME.
+// Zones with no SOLUTIONTIME at all are not a timeline -- multiple such
+// zones is the "several static zones" case roadmap §7 owns, not this one;
+// only the first is read here, with a warning if there is more than one.
+std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& rZones) {
+    if (!rZones[0].mHasSolutionTime) {
+        if (rZones.size() > 1)
+            log::warn(
+                "Tecplot: {} zones with no SOLUTIONTIME; reading the first only (multiple "
+                "non-transient zones are not yet concatenated)",
+                rZones.size());
+        return {0};
+    }
+    std::vector<std::size_t> idx;
+    for (std::size_t k = 0; k < rZones.size(); ++k) {
+        if (!rZones[k].mHasSolutionTime)
+            continue;
+        if (rZones[0].mHasStrandId && rZones[k].mHasStrandId &&
+            rZones[k].mStrandId != rZones[0].mStrandId)
+            continue;
+        idx.push_back(k);
+    }
+    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
+        return rZones[a].mSolutionTime < rZones[b].mSolutionTime;
+    });
+    return idx;
+}
+
+}  // namespace
+
+MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
     std::ifstream in(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
@@ -68359,125 +68623,54 @@ Mesh read_tecplot(const std::string& rPath) {
     }
 
     std::vector<std::string> variables;
-    std::map<std::string, std::string> zone;
-    std::string varloc;
-    std::size_t i = 0, data_start = lines.size();
-    for (; i < lines.size(); ++i) {
-        std::string u = tecplot_upper(lines[i]);
-        if (u.rfind("VARIABLES", 0) == 0) {
-            std::string joined = lines[i];
-            while (i + 1 < lines.size() && tecplot_strip(lines[i + 1])[0] == '"')
-                joined += " " + lines[++i];
-            std::string rhs = joined.substr(joined.find('=') + 1);
-            // collect quoted names (or bare tokens)
-            std::size_t p = 0;
-            while (p < rhs.size()) {
-                if (rhs[p] == '"') {
-                    std::size_t q = rhs.find('"', p + 1);
-                    variables.push_back(rhs.substr(p + 1, q - p - 1));
-                    p = q + 1;
-                } else if (std::isspace((unsigned char)rhs[p]) || rhs[p] == ',') {
-                    ++p;
-                } else {
-                    std::size_t q = p;
-                    while (q < rhs.size() && !std::isspace((unsigned char)rhs[q]) && rhs[q] != ',')
-                        ++q;
-                    variables.push_back(rhs.substr(p, q - p));
-                    p = q;
-                }
-            }
-        } else if (u.rfind("ZONE", 0) == 0) {
-            std::string joined = lines[i];
-            while (i + 1 < lines.size() && !is_float_token(tecplot_tokens(lines[i + 1])[0]))
-                joined += " " + lines[++i];
-            data_start = i + 1;
-            // Extract VARLOCATION(...)
-            std::string ju = joined;
-            std::size_t vp = tecplot_upper(ju).find("VARLOCATION");
-            if (vp != std::string::npos) {
-                std::size_t p1 = ju.find('(', vp), p2 = ju.find(')', p1);
-                varloc = ju.substr(p1, p2 - p1 + 1);
-                varloc.erase(std::remove(varloc.begin(), varloc.end(), ' '), varloc.end());
-                ju = ju.substr(0, vp) + ju.substr(p2 + 1);
-            }
-            // tokenize key/values (drop ZONE, replace ,/= with space)
-            std::string body = ju.substr(4);
-            for (auto& c : body)
-                if (c == ',' || c == '=')
-                    c = ' ';
-            auto tk = tecplot_tokens(body);
-            for (std::size_t k = 0; k + 1 < tk.size(); ++k) {
-                std::string key = tecplot_upper(tk[k]);
-                if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
-                    key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
-                    key == "NV")
-                    zone[key] = tk[k + 1];
-            }
-            break;
-        }
-    }
-    if (variables.empty())
-        throw ReadError("Tecplot: no VARIABLES");
+    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
+    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
 
-    auto getz = [&](const char* a, const char* b) -> std::string {
-        if (zone.count(a))
-            return zone[a];
-        if (zone.count(b))
-            return zone[b];
-        return "";
-    };
-    std::size_t num_nodes = std::stoull(getz("NODES", "N"));
-    std::size_t num_cells = std::stoull(getz("ELEMENTS", "E"));
-    std::string fmt, ztype;
-    if (zone.count("F")) {
-        fmt = tecplot_upper(zone["F"]);
-        ztype = zone.count("ET") ? zone["ET"] : "";
-    } else {
-        fmt = "FE" + tecplot_upper(getz("DATAPACKING", ""));
-        ztype = getz("ZONETYPE", "");
-    }
-    bool feblock = (fmt == "FEBLOCK");
+    MeshMetadata meta;
+    meta.mFormat = "tecplot";
+    const TecplotZoneHeader& first = zones[timeline[0]];
+    meta.mNumPoints = first.mNumNodes;
+    meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
+    CellBlockInfo block;
+    bool feblock = false;
+    std::string ztype;
+    std::vector<int> cell_centered;
+    tecplot_zone_format(first, variables.size(), feblock, ztype, cell_centered);
+    block.mType = tecplot_to_meshio(ztype);
+    block.mNumCells = first.mNumCells;
+    meta.mCellBlocks.push_back(std::move(block));
+    if (first.mHasSolutionTime)
+        for (std::size_t idx : timeline)
+            meta.mTimeValues.push_back(zones[idx].mSolutionTime);
+    return meta;
+}
 
-    std::vector<int> cell_centered(variables.size(), 0);
-    if (feblock) {
-        if (zone.count("NV")) {
-            int nv = std::stoi(zone["NV"]);
-            for (std::size_t k = nv; k < variables.size(); ++k)
-                cell_centered[k] = 1;
-        } else if (!varloc.empty()) {
-            std::string vc = varloc.substr(1, varloc.size() - 2);  // strip ()
-            for (const auto& entry : [&] {
-                     std::vector<std::string> es;
-                     std::string cur;
-                     for (char c : vc) {
-                         if (c == ',') {
-                             es.push_back(cur);
-                             cur.clear();
-                         } else
-                             cur += c;
-                     }
-                     if (!cur.empty())
-                         es.push_back(cur);
-                     return es;
-                 }()) {
-                std::size_t eq = entry.find('=');
-                if (eq == std::string::npos)
-                    continue;
-                std::string rng = entry.substr(0, eq), loc = tecplot_upper(entry.substr(eq + 1));
-                if (loc != "CELLCENTERED")
-                    continue;
-                rng = rng.substr(1, rng.size() - 2);  // strip []
-                std::size_t dash = rng.find('-');
-                if (dash == std::string::npos) {
-                    cell_centered[std::stoi(rng) - 1] = 1;
-                } else {
-                    int a = std::stoi(rng.substr(0, dash)), b = std::stoi(rng.substr(dash + 1));
-                    for (int k = a; k <= b; ++k)
-                        cell_centered[k - 1] = 1;
-                }
-            }
-        }
+Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
+    std::ifstream in(rPath);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    std::vector<std::string> lines;
+    std::string l;
+    while (std::getline(in, l)) {
+        std::string s = tecplot_strip(l);
+        if (s.empty() || s[0] == '#')
+            continue;
+        lines.push_back(s);
     }
+
+    std::vector<std::string> variables;
+    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
+    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
+    const std::size_t step = rOptions.ResolveTimeStep(timeline.size());
+    const TecplotZoneHeader& zone_hdr = zones[timeline[step]];
+    const std::size_t data_start = zone_hdr.mDataStart;
+    const std::size_t num_nodes = zone_hdr.mNumNodes;
+    const std::size_t num_cells = zone_hdr.mNumCells;
+
+    bool feblock = false;
+    std::string ztype;
+    std::vector<int> cell_centered;
+    tecplot_zone_format(zone_hdr, variables.size(), feblock, ztype, cell_centered);
 
     // Read data values.
     std::vector<std::size_t> ndata(variables.size());
@@ -68573,6 +68766,8 @@ Mesh read_tecplot(const std::string& rPath) {
     mesh.AddCellBlock(mtype, std::move(celldata));
     return mesh;
 }
+
+Mesh read_tecplot(const std::string& rPath) { return read_tecplot(rPath, ReadOptions{}); }
 
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
@@ -93265,12 +93460,12 @@ std::string seq_resolve_read_format(const std::string& rPath, const std::string&
 bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
-    // it reported one step and this predicate had nothing to gate on. med and
-    // cgns joined in v11.3.0 (roadmap §1 tier B1): read_med_metadata and
-    // read_cgns_metadata are their first native metadata paths to fill
-    // mTimeValues.
+    // it reported one step and this predicate had nothing to gate on. med,
+    // cgns and tecplot joined in v11.3.0 (roadmap §1 tier B1):
+    // read_med_metadata/read_cgns_metadata/read_tecplot_metadata are their
+    // first native metadata paths to fill mTimeValues.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns";
+          rFormat == "cgns" || rFormat == "tecplot";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -98526,7 +98721,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
-        {"tecplot", meshioplusplus::read_tecplot},
+        // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns story again).
+        {"tecplot",
+         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
         {"tetgen", meshioplusplus::read_tetgen},
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
@@ -98864,6 +99062,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        // Tecplot honours mTimeStep -- selects one zone of a transient
+        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+        // first. IWYU pragma: keep
+        {"tecplot", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -98901,6 +99104,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+        {"tecplot", meshioplusplus::read_tecplot_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},

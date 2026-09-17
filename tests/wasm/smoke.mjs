@@ -2620,6 +2620,44 @@ step('cgns reports its time steps via a native metadata path (roadmap §1 tier B
     assert.equal(meta.numPoints, tet.points.length / 3);
 });
 
+step('tecplot reports and reads both zones of a transient file (roadmap §1 tier B1)', () => {
+    // Unlike med/cgns (HDF5, needing a library this JS layer doesn't have),
+    // Tecplot ASCII is plain text, so this is a genuine two-step fixture,
+    // not a wiring-only probe -- two FEBLOCK zones sharing STRANDID=1.
+    const dat = [
+        'VARIABLES = "X" "Y" "u"',
+        'ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=0.0 STRANDID=1',
+        '0.0 1.0 0.0',
+        '0.0 0.0 1.0',
+        '10.0 20.0 30.0',
+        '1 2 3',
+        'ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE SOLUTIONTIME=2.5 STRANDID=1',
+        '0.0 1.0 0.0',
+        '0.0 0.0 1.0',
+        '11.0 21.0 31.0',
+        '1 2 3',
+        '',
+    ].join('\n');
+    m.FS.writeFile('/transient.dat', dat);
+
+    const meta = m.readMetadata('/transient.dat', 'tecplot');
+    assert.equal(meta.format, 'tecplot');
+    assert.equal(meta.fellBackToFullRead, false);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+    assert.equal(meta.numPoints, 3);
+
+    const first = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 0 });
+    assert.equal(first.point_data.u[0], 10);
+    const second = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 1 });
+    assert.equal(second.point_data.u[0], 11);
+    const last = m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: -1 });
+    assert.equal(last.point_data.u[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.dat', { format: 'tecplot', timeStep: 5 }),
+        /step/i,
+    );
+});
+
 // --- multi-component (vector/tensor) data across the object boundary --------
 //
 // Before v9.9.0 point_data/cell_data/field_data crossed as flat, SHAPELESS

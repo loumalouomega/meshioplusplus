@@ -114,7 +114,10 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
         {"su2", meshioplusplus::read_su2},
-        {"tecplot", meshioplusplus::read_tecplot},
+        // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns story again).
+        {"tecplot",
+         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
         {"tetgen", meshioplusplus::read_tetgen},
         {"triangle", meshioplusplus::read_triangle},
         {"ugrid", meshioplusplus::read_ugrid},
@@ -452,6 +455,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // WASM and the native CLI with no per-binding code.
         {"mdpa", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        // Tecplot honours mTimeStep -- selects one zone of a transient
+        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+        // first. IWYU pragma: keep
+        {"tecplot", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -489,6 +497,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #endif
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
+        {"tecplot", meshioplusplus::read_tecplot_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},

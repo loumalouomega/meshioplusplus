@@ -2490,9 +2490,14 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_tecplot(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
-    m.def("tecplot_read", [](const std::string& path) {
-        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tecplot(path));
-    });
+    m.def(
+        "tecplot_read",
+        [](const std::string& path, int time_step) {
+            meshioplusplus::ReadOptions opts;
+            opts.mTimeStep = time_step;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_tecplot(path, opts));
+        },
+        py::arg("path"), py::arg("time_step") = 0);
 
     // UGRID writer / reader (.ugrid, ascii + binary variants).
     m.def("ugrid_write", [](const std::string& path, py::object pymesh) {
