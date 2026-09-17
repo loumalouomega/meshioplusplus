@@ -156,3 +156,48 @@ def test_wildcard_model_raises(tmp_path):
     )
     with pytest.raises(meshioplusplus.ReadError):
         _ensight.read(p)
+
+
+def test_read_metadata_and_time_step_reads_a_transient_case(tmp_path):
+    """roadmap §1 tier B1: read_ensight_metadata reports the .case file's
+    TIME time_values, and time_step selects one step's VARIABLE files -- one
+    file per step (EnSight's own convention), so the fixture is two
+    per-node scalar files, written by hand (plain text, no external tool)."""
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    path = tmp_path / "transient.case"
+    meshioplusplus.ensight.write(path, mesh, binary=False)
+
+    with open(path, "a") as f:
+        f.write(
+            "TIME\n"
+            "time set:              1\n"
+            "number of steps:       2\n"
+            "filename start number: 0\n"
+            "filename increment:    1\n"
+            "time values:\n"
+            "0.0\n"
+            "2.5\n"
+            "VARIABLE\n"
+            "scalar per node:    1  pressure  pressure.****.scl\n"
+        )
+
+    n = len(mesh.points)
+    for step, base in enumerate([10.0, 11.0]):
+        vpath = tmp_path / f"pressure.{step:04d}.scl"
+        lines = ["pressure", "part", "         1", "coordinates"]
+        lines += [str(base + i * 10.0) for i in range(n)]
+        vpath.write_text("\n".join(lines) + "\n")
+
+    meta = meshioplusplus.read_metadata(path, "ensight")
+    assert meta["time_values"] == [0.0, 2.5]
+    assert meta["fell_back_to_full_read"] is True
+
+    mesh0 = meshioplusplus.ensight.read(path, time_step=0)
+    assert mesh0.point_data["pressure"][0] == 10.0
+    mesh1 = meshioplusplus.ensight.read(path, time_step=1)
+    assert mesh1.point_data["pressure"][0] == 11.0
+    mesh_last = meshioplusplus.ensight.read(path, time_step=-1)
+    assert mesh_last.point_data["pressure"][0] == 11.0
+
+    with pytest.raises(meshioplusplus.ReadError):
+        meshioplusplus.ensight.read(path, time_step=5)

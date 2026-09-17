@@ -195,12 +195,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
     // it reported one step and this predicate had nothing to gate on. med,
-    // cgns, tecplot and gmsh joined in v11.3.0 (roadmap §1 tier B1):
-    // read_med_metadata/read_cgns_metadata/read_tecplot_metadata already
-    // existed for gmsh (4.1 only; 2.2 falls back to a full read either way)
-    // but never filled mTimeValues until now.
+    // cgns, tecplot, gmsh and ensight joined in v11.3.0 (roadmap §1 tier B1):
+    // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
+    // read either way) but never filled mTimeValues until now; for ensight,
+    // reading a VARIABLE file at all is new (previously geometry-only).
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh";
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

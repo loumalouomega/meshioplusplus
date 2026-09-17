@@ -2698,6 +2698,52 @@ step('gmsh 4.1 reports and reads both steps of a $NodeData timeline (roadmap §1
     );
 });
 
+step('ensight reports and reads a transient .case VARIABLE timeline (roadmap §1 tier B1)', () => {
+    // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture. EnSight's
+    // own convention is one file per step (unlike the others' one file with
+    // several sections), so this appends TIME/VARIABLE to the .case
+    // writeMesh already produces, then writes two per-node scalar files.
+    m.writeMesh('/transient.case', tri2, 'ensight');
+    const caseText = m.FS.readFile('/transient.case', { encoding: 'utf8' });
+    m.FS.writeFile(
+        '/transient.case',
+        caseText +
+            'TIME\n' +
+            'time set:              1\n' +
+            'number of steps:       2\n' +
+            'filename start number: 0\n' +
+            'filename increment:    1\n' +
+            'time values:\n' +
+            '0.0\n' +
+            '2.5\n' +
+            'VARIABLE\n' +
+            'scalar per node:    1  pressure  pressure.****.scl\n',
+    );
+    const n = tri2.points.length / 3;
+    for (const [step, base] of [[0, 10], [1, 11]]) {
+        const lines = ['pressure', 'part', '         1', 'coordinates'];
+        for (let i = 0; i < n; ++i)
+            lines.push(String(base + i * 10));
+        m.FS.writeFile(`/pressure.${String(step).padStart(4, '0')}.scl`, lines.join('\n') + '\n');
+    }
+
+    const meta = m.readMetadata('/transient.case', 'ensight');
+    assert.equal(meta.format, 'ensight');
+    assert.equal(meta.fellBackToFullRead, true);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 2.5]);
+
+    const first = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 0 });
+    assert.equal(first.point_data.pressure[0], 10);
+    const second = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 1 });
+    assert.equal(second.point_data.pressure[0], 11);
+    const last = m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: -1 });
+    assert.equal(last.point_data.pressure[0], 11);
+    assert.throws(
+        () => m.readMeshSelective('/transient.case', { format: 'ensight', timeStep: 5 }),
+        /step/i,
+    );
+});
+
 // --- multi-component (vector/tensor) data across the object boundary --------
 //
 // Before v9.9.0 point_data/cell_data/field_data crossed as flat, SHAPELESS

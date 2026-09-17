@@ -82,7 +82,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
-        {"ensight", meshioplusplus::read_ensight},
+        // A lambda, not `&read_ensight`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
+        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
         {"flac3d", meshioplusplus::read_flac3d},
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
@@ -460,6 +462,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // first. IWYU pragma: keep
         {"tecplot", [](const std::string& path,
                        const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        // EnSight honours mTimeStep AND the narrowing options -- a .case
+        // file's VARIABLE entries are only ever read here, never by the
+        // plain overload. IWYU pragma: keep
+        {"ensight", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -498,6 +505,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
         {"tecplot", meshioplusplus::read_tecplot_metadata},
+        {"ensight", meshioplusplus::read_ensight_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},

@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -25,8 +26,10 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
+#include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 
 namespace {
@@ -176,4 +179,107 @@ TEST(Ensight, NfacedPolyhedronRoundTrip) {
         std::filesystem::remove(path, ec);
         std::filesystem::remove(path.substr(0, path.size() - 5) + ".geo", ec);
     }
+}
+
+TEST(Ensight, TransientVariablesReadPerNodeAndPerElement) {
+    // roadmap §1 tier B1: static geometry + transient VARIABLE files -- the
+    // common case the plan calls out. One file per step (EnSight's own
+    // convention, unlike MED/CGNS/Tecplot/Gmsh's one-file-many-steps), so
+    // the fixture is two scalar-per-node files and a TIME/VARIABLE section
+    // appended to the .case write_ensight already produces.
+    mt::Mesh m = mt::tri_mesh();
+    const std::string path = mt::temp_path("_transient.case");
+    meshioplusplus::write_ensight(path, m, /*binary=*/false);
+    const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+
+    // Append TIME + VARIABLE to the .case file.
+    {
+        std::ofstream cf(path, std::ios::app);
+        cf << "TIME\n"
+           << "time set:              1\n"
+           << "number of steps:       2\n"
+           << "filename start number: 0\n"
+           << "filename increment:    1\n"
+           << "time values:\n"
+           << "0.0\n"
+           << "2.5\n"
+           << "VARIABLE\n"
+           << "scalar per node:    1  pressure  pressure.****.scl\n"
+           << "scalar per element: 1  density   density.****.escl\n";
+    }
+
+    // Two per-node scalar files, four points each (mt::tri_mesh()), and two
+    // per-element scalar files, two triangles each (one cell block).
+    for (int step = 0; step < 2; ++step) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "pressure.%04d.scl", step);
+        std::ofstream vf(dir + name);
+        vf << "pressure\n";
+        vf << "part\n";
+        vf << "         1\n";
+        vf << "coordinates\n";
+        const double base = step == 0 ? 10.0 : 11.0;
+        for (int i = 0; i < 4; ++i)
+            vf << (base + i * 10.0) << "\n";
+
+        std::snprintf(name, sizeof(name), "density.%04d.escl", step);
+        std::ofstream ef(dir + name);
+        ef << "density\n";
+        ef << "part\n";
+        ef << "         1\n";
+        ef << "tria3\n";
+        const double ebase = step == 0 ? 100.0 : 200.0;
+        ef << ebase << "\n" << (ebase + 1.0) << "\n";
+    }
+
+    meshioplusplus::ReadOptions opts;
+    const meshioplusplus::MeshMetadata meta = meshioplusplus::read_ensight_metadata(path, opts);
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 2.5);
+    EXPECT_TRUE(meta.mFellBackToFullRead);
+
+    meshioplusplus::ReadOptions first;
+    first.mTimeStep = 0;
+    const mt::Mesh out0 = meshioplusplus::read_ensight(path, first);
+    ASSERT_TRUE(out0.HasPointData("pressure"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out0.PointData("pressure"), 0), 10.0);
+    ASSERT_TRUE(out0.HasCellData("density"));
+    ASSERT_EQ(out0.CellDataNumBlocks("density"), 1u);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out0.CellData("density", 0), 0), 100.0);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out0.CellData("density", 0), 1), 101.0);
+
+    meshioplusplus::ReadOptions second;
+    second.mTimeStep = 1;
+    const mt::Mesh out1 = meshioplusplus::read_ensight(path, second);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out1.PointData("pressure"), 0), 11.0);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out1.CellData("density", 0), 0), 200.0);
+
+    meshioplusplus::ReadOptions last;
+    last.mTimeStep = -1;
+    const mt::Mesh out_last = meshioplusplus::read_ensight(path, last);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out_last.PointData("pressure"), 0), 11.0);
+
+    meshioplusplus::ReadOptions too_far;
+    too_far.mTimeStep = 5;
+    EXPECT_THROW(meshioplusplus::read_ensight(path, too_far), meshioplusplus::ReadError);
+
+    EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("ensight"));
+    EXPECT_EQ(meshioplusplus::sequence_num_steps(path, "ensight"), 2u);
+
+    // The plain (no-options) overload delegates to ReadOptions{}, which wants
+    // every array by default -- same as every other format -- so it reads
+    // VARIABLE too, at the default (first) step.
+    const mt::Mesh plain = meshioplusplus::read_ensight(path);
+    ASSERT_TRUE(plain.HasPointData("pressure"));
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(plain.PointData("pressure"), 0), 10.0);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(geo, ec);
+    std::filesystem::remove(dir + "pressure.0000.scl", ec);
+    std::filesystem::remove(dir + "pressure.0001.scl", ec);
+    std::filesystem::remove(dir + "density.0000.escl", ec);
+    std::filesystem::remove(dir + "density.0001.escl", ec);
 }

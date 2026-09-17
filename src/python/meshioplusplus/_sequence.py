@@ -95,7 +95,8 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd")
 # FULL read -- `read_metadata` has no native USD path, so it falls back and
 # reads the stage, whose reader attaches `mesh.time_values` (the Exodus
 # side-channel). Correct but not cheap; stated in doc/sequences.md.
-_TIME_CAPABLE_READERS = ("xdmf", "exodus", "gid", "usd", "med", "cgns", "tecplot", "gmsh")
+_TIME_CAPABLE_READERS = ("xdmf", "exodus", "gid", "usd", "med", "cgns", "tecplot", "gmsh",
+                         "ensight")
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which
 # `os.path.isfile` alone would drop -- and it is a suffix test rather than a

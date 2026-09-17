@@ -18,17 +18,20 @@
 
 /**
  * @file ensight.hpp
- * @brief EnSight Gold (.case/.geo) C++ reader/writer — geometry only.
+ * @brief EnSight Gold (.case/.geo) C++ reader/writer.
  *
  * EnSight Gold stores a dataset as a small `.case` index file plus a
- * geometry file (conventionally `.geo`). Only the mesh-geometry subset is
- * handled: the `.case` `FORMAT`/`GEOMETRY` sections (the file must declare
- * `type: ensight gold`; `VARIABLE`/`TIME` sections are ignored) and the Gold
- * geometry file in both ASCII and C-binary form (the leading `"C Binary"`
- * 80-char record selects binary; `"Fortran Binary"` is rejected). Binary
- * files use 32-bit ints/floats in the writing machine's byte order; the
- * reader auto-detects a foreign byte order from the plausibility of the
- * part-number/node-count records and byte-swaps accordingly.
+ * geometry file (conventionally `.geo`) and, optionally, one file per
+ * `VARIABLE` entry. The `.case` `FORMAT`/`GEOMETRY` sections (the file must
+ * declare `type: ensight gold`) and the Gold geometry file in both ASCII and
+ * C-binary form (the leading `"C Binary"` 80-char record selects binary;
+ * `"Fortran Binary"` is rejected) are read; since v11.3.0 (roadmap §1 tier
+ * B1) so are `TIME` (a transient file's step times) and `VARIABLE` (per-node/
+ * per-element scalar/vector `point_data`/`cell_data`) — see `read_ensight`'s
+ * own doc comment. Binary files use 32-bit ints/floats in the writing
+ * machine's byte order; the reader auto-detects a foreign byte order from
+ * the plausibility of the part-number/node-count records and byte-swaps
+ * accordingly.
  *
  * Element keywords `point`, `bar2/3`, `tria3/6`, `quad4/8`, `tetra4/10`,
  * `pyramid5/13`, `penta6/15`, `hexa8/20` map to the corresponding meshio
@@ -45,7 +48,8 @@
  * element section becomes its own cell block, and when the file has two or
  * more parts the owning part number is recorded as the integer cell_data
  * field `"ensight:part"`. The writer emits a single part (`node id assign`,
- * `element id assign`) and drops point/cell/field data (mesh-only scope).
+ * `element id assign`) and drops point/cell/field data (mesh-only scope) --
+ * the roadmap's variable-*reading* item leaves variable-*writing* to §7.
  */
 
 // System includes
@@ -54,6 +58,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -95,5 +100,60 @@ MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMes
  *         geometry, an unknown element keyword, or out-of-range connectivity
  */
 MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
+
+/**
+ * @brief `read_ensight` with read options — reads a `.case` file's
+ *        `VARIABLE` sections and selects one step of a transient one.
+ *
+ * A `scalar per node:`/`vector per node:`/`scalar per element:`/`vector per
+ * element:` entry becomes `point_data`/`cell_data` under its own name, read
+ * from the file its (possibly `mTimeStep`-templated) filename names. A
+ * variable file mirrors the geometry file's own `part`/section structure
+ * exactly (see the file doc comment), which is how a value lands on the
+ * right point or cell block with no name matching against the geometry at
+ * all -- and why a variable file whose part sequence does not match the
+ * geometry's own is a `ReadError`, not a best-effort guess. `mTimeStep`
+ * (0-based, negative counts from the end) resolves against the case file's
+ * `TIME` `time values:` (only the *first* `time set:` is honoured when a
+ * file has more than one) and templates every `*`-bearing filename with
+ * `filename start number:` + step × `filename increment:`, zero-padded to
+ * the `*` run's own width. A file with no `TIME` section has exactly one
+ * step; a non-default `mTimeStep` against it is refused rather than
+ * silently answering step 0. `mPointsOnly`/`mMetadataOnly`/`mDataArrays`
+ * narrow which variables are read, same as every other format.
+ *
+ * A bare geometry file (no `.case`) never reaches any of this: there is no
+ * `VARIABLE`/`TIME` section to read, so `rOptions`' data-selecting fields are
+ * silently inert on that path, exactly as before this overload existed.
+ *
+ * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
+ * @param rOptions read options
+ * @return the read Mesh, as the plain overload, plus point_data/cell_data
+ *         for every wanted `VARIABLE` entry
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range,
+ *         a `VARIABLE` kind other than the four listed above being silently
+ *         skipped (not an error), or a variable file whose structure does
+ *         not match the geometry's
+ */
+MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize an EnSight `.case` file's available time steps.
+ *
+ * Reads only the `.case` file's `TIME` section for `mTimeValues`; the mesh
+ * shape (`mNumPoints`/`mCellBlocks`) still needs a full geometry read (no
+ * native header-only shape scan, unlike CGNS/Gmsh 4.1), so
+ * `mFellBackToFullRead` is always `true` here -- the same shape Exodus's own
+ * metadata override has. A bare geometry file (no `.case`, hence no `TIME`
+ * section to read) throws, which lets `registry_read_metadata`'s fallback
+ * take over and answer from a plain full read instead.
+ *
+ * @param rPath filesystem path to a `.case` file
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's time values, with the geometry's shape from a full read
+ * @throws ReadError when `rPath` is not a `.case` file, or as `read_ensight`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus

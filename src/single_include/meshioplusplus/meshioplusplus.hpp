@@ -12389,17 +12389,20 @@ MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
 // ===== begin src/cpp/include/meshioplusplus/formats/ensight.hpp =====
 /**
  * @file ensight.hpp
- * @brief EnSight Gold (.case/.geo) C++ reader/writer — geometry only.
+ * @brief EnSight Gold (.case/.geo) C++ reader/writer.
  *
  * EnSight Gold stores a dataset as a small `.case` index file plus a
- * geometry file (conventionally `.geo`). Only the mesh-geometry subset is
- * handled: the `.case` `FORMAT`/`GEOMETRY` sections (the file must declare
- * `type: ensight gold`; `VARIABLE`/`TIME` sections are ignored) and the Gold
- * geometry file in both ASCII and C-binary form (the leading `"C Binary"`
- * 80-char record selects binary; `"Fortran Binary"` is rejected). Binary
- * files use 32-bit ints/floats in the writing machine's byte order; the
- * reader auto-detects a foreign byte order from the plausibility of the
- * part-number/node-count records and byte-swaps accordingly.
+ * geometry file (conventionally `.geo`) and, optionally, one file per
+ * `VARIABLE` entry. The `.case` `FORMAT`/`GEOMETRY` sections (the file must
+ * declare `type: ensight gold`) and the Gold geometry file in both ASCII and
+ * C-binary form (the leading `"C Binary"` 80-char record selects binary;
+ * `"Fortran Binary"` is rejected) are read; since v11.3.0 (roadmap §1 tier
+ * B1) so are `TIME` (a transient file's step times) and `VARIABLE` (per-node/
+ * per-element scalar/vector `point_data`/`cell_data`) — see `read_ensight`'s
+ * own doc comment. Binary files use 32-bit ints/floats in the writing
+ * machine's byte order; the reader auto-detects a foreign byte order from
+ * the plausibility of the part-number/node-count records and byte-swaps
+ * accordingly.
  *
  * Element keywords `point`, `bar2/3`, `tria3/6`, `quad4/8`, `tetra4/10`,
  * `pyramid5/13`, `penta6/15`, `hexa8/20` map to the corresponding meshio
@@ -12416,7 +12419,8 @@ MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
  * element section becomes its own cell block, and when the file has two or
  * more parts the owning part number is recorded as the integer cell_data
  * field `"ensight:part"`. The writer emits a single part (`node id assign`,
- * `element id assign`) and drops point/cell/field data (mesh-only scope).
+ * `element id assign`) and drops point/cell/field data (mesh-only scope) --
+ * the roadmap's variable-*reading* item leaves variable-*writing* to §7.
  */
 
 // System includes
@@ -12464,6 +12468,61 @@ MESHIOPLUSPLUS_API void write_ensight(const std::string& rPath, const Mesh& rMes
  *         geometry, an unknown element keyword, or out-of-range connectivity
  */
 MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath);
+
+/**
+ * @brief `read_ensight` with read options — reads a `.case` file's
+ *        `VARIABLE` sections and selects one step of a transient one.
+ *
+ * A `scalar per node:`/`vector per node:`/`scalar per element:`/`vector per
+ * element:` entry becomes `point_data`/`cell_data` under its own name, read
+ * from the file its (possibly `mTimeStep`-templated) filename names. A
+ * variable file mirrors the geometry file's own `part`/section structure
+ * exactly (see the file doc comment), which is how a value lands on the
+ * right point or cell block with no name matching against the geometry at
+ * all -- and why a variable file whose part sequence does not match the
+ * geometry's own is a `ReadError`, not a best-effort guess. `mTimeStep`
+ * (0-based, negative counts from the end) resolves against the case file's
+ * `TIME` `time values:` (only the *first* `time set:` is honoured when a
+ * file has more than one) and templates every `*`-bearing filename with
+ * `filename start number:` + step × `filename increment:`, zero-padded to
+ * the `*` run's own width. A file with no `TIME` section has exactly one
+ * step; a non-default `mTimeStep` against it is refused rather than
+ * silently answering step 0. `mPointsOnly`/`mMetadataOnly`/`mDataArrays`
+ * narrow which variables are read, same as every other format.
+ *
+ * A bare geometry file (no `.case`) never reaches any of this: there is no
+ * `VARIABLE`/`TIME` section to read, so `rOptions`' data-selecting fields are
+ * silently inert on that path, exactly as before this overload existed.
+ *
+ * @param rPath filesystem path to a `.case` file or a Gold `.geo` file
+ * @param rOptions read options
+ * @return the read Mesh, as the plain overload, plus point_data/cell_data
+ *         for every wanted `VARIABLE` entry
+ * @throws ReadError as the plain overload, plus a `mTimeStep` out of range,
+ *         a `VARIABLE` kind other than the four listed above being silently
+ *         skipped (not an error), or a variable file whose structure does
+ *         not match the geometry's
+ */
+MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief Summarize an EnSight `.case` file's available time steps.
+ *
+ * Reads only the `.case` file's `TIME` section for `mTimeValues`; the mesh
+ * shape (`mNumPoints`/`mCellBlocks`) still needs a full geometry read (no
+ * native header-only shape scan, unlike CGNS/Gmsh 4.1), so
+ * `mFellBackToFullRead` is always `true` here -- the same shape Exodus's own
+ * metadata override has. A bare geometry file (no `.case`, hence no `TIME`
+ * section to read) throws, which lets `registry_read_metadata`'s fallback
+ * take over and answer from a plain full read instead.
+ *
+ * @param rPath filesystem path to a `.case` file
+ * @param rOptions unused (metadata carries no timestep of its own to select)
+ * @return the file's time values, with the geometry's shape from a full read
+ * @throws ReadError when `rPath` is not a `.case` file, or as `read_ensight`.
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ensight.hpp =====
@@ -51370,6 +51429,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -51701,40 +51761,36 @@ private:
 // .case parsing
 // ---------------------------------------------------------------------------
 
-// Parse the .case file and return the resolved geometry file path.
-std::string ensight_parse_case(const std::string& rCasePath) {
-    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
-    const std::string data(source.View());  // small text file; parsed via istringstream
+/// One `VARIABLE` section entry -- `scalar per node:`/`vector per node:`/
+/// `scalar per element:`/`vector per element:` are the four kinds this
+/// reader understands; anything else (complex/tensor variables, `per
+/// measured node`, constants) is recorded but never read, matching the
+/// roadmap's variable-reading scope.
+struct EnsightVariableEntry {
+    std::string mKind;
+    std::string mName;
+    std::string mFilePattern;  // relative to the case file's directory; may contain '*'
+};
 
-    std::string section;
-    std::string format_type;
-    std::string model_value;
-    std::istringstream stream(data);
-    std::string raw;
-    while (std::getline(stream, raw)) {
-        std::string line = ensight_trim(raw);
-        if (line.empty() || line[0] == '#')
-            continue;
-        if (line == "FORMAT" || line == "GEOMETRY" || line == "VARIABLE" || line == "TIME" ||
-            line == "FILE" || line == "MATERIAL" || line == "SCRIPTS") {
-            section = line;
-            continue;
-        }
-        if (section == "FORMAT" && ensight_starts_with(line, "type:"))
-            format_type = ensight_trim(line.substr(5));
-        else if (section == "GEOMETRY" && ensight_starts_with(line, "model:"))
-            model_value = ensight_trim(line.substr(6));
-    }
+/// A `.case` file's GEOMETRY/TIME/VARIABLE sections, resolved against
+/// `rCasePath`'s directory. `mTimeValues` is the *first* `time set:` found
+/// (real-world Gold case files overwhelmingly have exactly one); a file with
+/// several is read against that one, which is a documented narrowing, not a
+/// silent wrong answer -- every variable's `[ts]` is otherwise ignored.
+struct EnsightCaseInfo {
+    std::string mGeoPath;
+    bool mGeoIsWildcard = false;
+    std::vector<double> mTimeValues;
+    long mFileNameStart = 0;
+    long mFileNameIncrement = 1;
+    std::vector<EnsightVariableEntry> mVariables;
+};
 
-    if (format_type.find("ensight gold") == std::string::npos)
-        throw ReadError("EnSight: case file is not 'type: ensight gold' (got '" + format_type +
-                        "')");
-    if (model_value.empty())
-        throw ReadError("EnSight: case file has no GEOMETRY 'model:' entry");
-
-    // model: [ts] [fs] filename [change_coords_only] — drop leading integer
-    // timeset/fileset tokens, take the first remaining token as the filename.
-    std::istringstream toks(model_value);
+/// Splits a whitespace-separated record and drops its leading run of pure
+/// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
+/// lines both use to make the leading timeset/fileset optional.
+std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
+    std::istringstream toks(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -51744,16 +51800,138 @@ std::string ensight_parse_case(const std::string& rCasePath) {
         char* end = nullptr;
         (void)std::strtoll(tokens[first].c_str(), &end, 10);
         if (end == tokens[first].c_str() || *end != '\0')
-            break;  // not a pure integer
+            break;
         ++first;
     }
-    if (first >= tokens.size())
-        throw ReadError("EnSight: malformed 'model:' line in case file");
-    const std::string& filename = tokens[first];
-    if (filename.find('*') != std::string::npos)
-        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+    tokens.erase(tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(first));
+    return tokens;
+}
 
-    return ensight_dirname(rCasePath) + filename;
+/// Parse the .case file: FORMAT/GEOMETRY (as before), plus TIME and
+/// VARIABLE, needed for `ReadOptions::mTimeStep` and variable-file reading.
+EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
+    const detail::FileSource source = ensight_read_whole_file(rCasePath, "case file");
+    const std::string data(source.View());  // small text file; parsed via istringstream
+
+    std::string section;
+    std::string format_type;
+    std::string model_value;
+    EnsightCaseInfo info;
+    bool in_time_values = false;
+    bool have_time_set = false;
+    long num_steps = -1;
+    std::istringstream stream(data);
+    std::string raw;
+    while (std::getline(stream, raw)) {
+        std::string line = ensight_trim(raw);
+        if (line.empty() || line[0] == '#') {
+            in_time_values = false;
+            continue;
+        }
+        if (line == "FORMAT" || line == "GEOMETRY" || line == "VARIABLE" || line == "TIME" ||
+            line == "FILE" || line == "MATERIAL" || line == "SCRIPTS") {
+            section = line;
+            in_time_values = false;
+            continue;
+        }
+        if (section == "FORMAT" && ensight_starts_with(line, "type:")) {
+            format_type = ensight_trim(line.substr(5));
+        } else if (section == "GEOMETRY" && ensight_starts_with(line, "model:")) {
+            model_value = ensight_trim(line.substr(6));
+        } else if (section == "VARIABLE") {
+            static const char* kKinds[] = {"scalar per node:", "vector per node:",
+                                           "scalar per element:", "vector per element:"};
+            for (const char* kind : kKinds) {
+                if (!ensight_starts_with(line, kind))
+                    continue;
+                const std::string kind_str(kind, std::strlen(kind) - 1);  // drop trailing ':'
+                const std::vector<std::string> toks =
+                    ensight_tokens_after_leading_ints(line.substr(std::strlen(kind)));
+                if (toks.size() < 2)
+                    throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
+                EnsightVariableEntry entry;
+                entry.mFilePattern = toks.back();
+                std::string joined;
+                for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                    joined += (i ? " " : "") + toks[i];
+                entry.mName = joined;
+                entry.mKind = kind_str;
+                info.mVariables.push_back(std::move(entry));
+                break;
+            }
+        } else if (section == "TIME") {
+            if (ensight_starts_with(line, "time set:")) {
+                // A second time set: only the first is honoured (see
+                // EnsightCaseInfo's own doc comment) -- clearing `section`
+                // stops every TIME branch below from matching until the next
+                // recognized section keyword resets it.
+                if (have_time_set) {
+                    section.clear();
+                    continue;
+                }
+                have_time_set = true;
+            } else if (ensight_starts_with(line, "number of steps:")) {
+                num_steps =
+                    std::strtol(line.c_str() + std::strlen("number of steps:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "filename start number:")) {
+                info.mFileNameStart = std::strtol(
+                    line.c_str() + std::strlen("filename start number:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "filename increment:")) {
+                info.mFileNameIncrement =
+                    std::strtol(line.c_str() + std::strlen("filename increment:"), nullptr, 10);
+            } else if (ensight_starts_with(line, "time values:")) {
+                in_time_values = true;
+                const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
+                std::istringstream iss(rest);
+                double v;
+                while (iss >> v)
+                    info.mTimeValues.push_back(v);
+            } else if (in_time_values) {
+                std::istringstream iss(line);
+                double v;
+                while (iss >> v)
+                    info.mTimeValues.push_back(v);
+                if (num_steps >= 0 &&
+                    info.mTimeValues.size() >= static_cast<std::size_t>(num_steps))
+                    in_time_values = false;
+            }
+        }
+    }
+
+    if (format_type.find("ensight gold") == std::string::npos)
+        throw ReadError("EnSight: case file is not 'type: ensight gold' (got '" + format_type +
+                        "')");
+    if (model_value.empty())
+        throw ReadError("EnSight: case file has no GEOMETRY 'model:' entry");
+
+    const std::vector<std::string> tokens = ensight_tokens_after_leading_ints(model_value);
+    if (tokens.empty())
+        throw ReadError("EnSight: malformed 'model:' line in case file");
+    const std::string& filename = tokens.front();
+    info.mGeoIsWildcard = filename.find('*') != std::string::npos;
+    if (info.mGeoIsWildcard)
+        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+    info.mGeoPath = ensight_dirname(rCasePath) + filename;
+
+    return info;
+}
+
+/// Replaces `filename`'s run of `*` characters with `Number`, zero-padded to
+/// the run's own width -- the EnSight Gold filename-templating convention
+/// TIME's `filename start number:`/`filename increment:` resolve into.
+std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
+    const std::size_t star = rPattern.find('*');
+    if (star == std::string::npos)
+        return rPattern;
+    std::size_t width = 0;
+    while (star + width < rPattern.size() && rPattern[star + width] == '*')
+        ++width;
+    std::ostringstream num;
+    num << std::setfill('0') << std::setw(static_cast<int>(width)) << Number;
+    std::string digits = num.str();
+    if (digits.size() > width)
+        digits = digits.substr(digits.size() - width);  // Number overflowed the field width
+    return rPattern.substr(0, star) + digits + rPattern.substr(star + width);
 }
 
 // ---------------------------------------------------------------------------
@@ -51771,6 +51949,20 @@ struct EnsightBlock {
     std::size_t mNumCells = 0;
 };
 
+// One part's node range (for per-node variables) and its blocks' cell ranges
+// (for per-element variables, which are per-BLOCK in meshio++ but per-PART
+// per-element-type in EnSight). A variable file's own "part"/id sections and
+// "coordinates"/<element type> sections are structured identically to the
+// geometry file's, in the same part/type order, which is what lets a
+// variable file be read against this layout with no name matching at all.
+struct EnsightPartLayout {
+    std::int64_t mPartId = 0;
+    std::size_t mPointOffset = 0, mNumPoints = 0;
+    // One entry per element-type section this part had, in file order; each
+    // names the Mesh cell-block index it landed in and how many cells.
+    std::vector<std::pair<std::size_t, std::size_t>> mBlocks;  // (block index, num cells)
+};
+
 // "given" and "ignore" both put id arrays in the file; only the presence
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
@@ -51786,7 +51978,7 @@ bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
 }
 
-Mesh ensight_parse_geo(EnsightCursor& rCur) {
+Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLayout = nullptr) {
     constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
 
     rCur.NextRecord();  // description line 1
@@ -51809,6 +52001,9 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
     std::vector<double> coords;  // xyz-interleaved, all parts concatenated
     std::vector<EnsightBlock> blocks;
     std::int64_t num_parts = 0;
+    // Point range per part, for a variable file's per-node sections; filled
+    // regardless of pLayout (cheap) and only exposed through it.
+    std::vector<std::pair<std::int64_t, std::pair<std::size_t, std::size_t>>> part_point_ranges;
 
     while (!rCur.AtEnd()) {
         std::string rec = rCur.NextRecord();
@@ -51827,6 +52022,9 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
         if (nn < 0)
             throw ReadError("EnSight: negative node count");
         const std::int64_t point_offset = static_cast<std::int64_t>(coords.size() / 3);
+        part_point_ranges.emplace_back(
+            part_id,
+            std::make_pair(static_cast<std::size_t>(point_offset), static_cast<std::size_t>(nn)));
 
         if (node_ids_in_file)
             rCur.SkipInts(static_cast<std::size_t>(nn));
@@ -51995,6 +52193,20 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
             mesh.AddPolyhedronBlock(b.mType, std::move(b.mPolyhedronCells));
     }
 
+    if (pLayout != nullptr) {
+        // Part order: first-seen, matching part_point_ranges/the file itself.
+        for (const auto& [pid, range] : part_point_ranges) {
+            EnsightPartLayout pl;
+            pl.mPartId = pid;
+            pl.mPointOffset = range.first;
+            pl.mNumPoints = range.second;
+            for (std::size_t i = 0; i < blocks.size(); ++i)
+                if (blocks[i].mPartId == pid)
+                    pl.mBlocks.emplace_back(i, blocks[i].mNumCells);
+            pLayout->push_back(std::move(pl));
+        }
+    }
+
     if (num_parts >= 2) {
         std::vector<NDArray> tags;
         tags.reserve(blocks.size());
@@ -52011,24 +52223,208 @@ Mesh ensight_parse_geo(EnsightCursor& rCur) {
     return mesh;
 }
 
+// ---------------------------------------------------------------------------
+// Variable (point_data/cell_data) reading
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Reads one EnSight Gold variable file against the geometry's own
+ *        part/block layout.
+ *
+ * A variable file mirrors the geometry file's structure exactly -- the same
+ * `part`/id sequence, the same per-part `coordinates` (per-node) or
+ * element-type-keyword (per-element) sections in the same order -- but
+ * carries no counts of its own (a part's point/cell counts are only ever
+ * given once, in the geometry file) and no `node id`/`element id` header.
+ * Multi-component (vector) data is component-major (every X, then every Y,
+ * then every Z), the same convention geometry coordinates use.
+ *
+ * @param rCur cursor over the variable file (ascii or binary; the caller
+ *        selects the concrete cursor type, as `read_ensight` does for the
+ *        geometry file)
+ * @param PerNode point (`coordinates`) sections when true, element-type
+ *        sections when false
+ * @param NumComponents 1 for a scalar variable, 3 for a vector
+ * @param rLayout the geometry's own per-part layout, in file order
+ * @param TotalPoints total point count (only used when `PerNode`)
+ * @param pPointOut filled when `PerNode`; otherwise untouched
+ * @param pCellOut filled (one entry per Mesh cell block that has one) when
+ *        `!PerNode`; otherwise untouched. Must already have as many entries
+ *        as the mesh has cell blocks.
+ * @throws ReadError if the file's part/type sequence does not match the
+ *         geometry's own.
+ */
+void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t NumComponents,
+                                const std::vector<EnsightPartLayout>& rLayout,
+                                std::size_t TotalPoints, NDArray* pPointOut,
+                                std::vector<NDArray>* pCellOut) {
+    constexpr std::int64_t plausible_max = 100000000;
+    rCur.NextRecord();  // description line
+
+    NDArray point_out;
+    if (PerNode)
+        point_out = NDArray::Uninit(DType::Float64, NumComponents == 1
+                                                         ? std::vector<std::size_t>{TotalPoints}
+                                                         : std::vector<std::size_t>{TotalPoints,
+                                                                                    NumComponents});
+    double* pp = PerNode ? point_out.As<double>() : nullptr;
+
+    for (const EnsightPartLayout& part : rLayout) {
+        std::string rec = rCur.NextRecord();
+        if (!ensight_starts_with(rec, "part"))
+            throw ReadError("EnSight: expected 'part' record in variable file, got: " + rec);
+        rCur.CheckSwap(plausible_max, /*PreferSmaller=*/true);
+        const std::int64_t pid = rCur.NextInt();
+        if (pid != part.mPartId)
+            throw ReadError(
+                "EnSight: variable file's part sequence does not match the geometry's");
+
+        if (PerNode) {
+            rec = rCur.NextRecord();
+            if (!ensight_starts_with(rec, "coordinates"))
+                throw ReadError("EnSight: expected 'coordinates' record in variable file, got: " +
+                                rec);
+            std::vector<double> comp(part.mNumPoints);
+            for (std::size_t c = 0; c < NumComponents; ++c) {
+                rCur.ReadFloats(part.mNumPoints, comp.data());
+                for (std::size_t i = 0; i < part.mNumPoints; ++i)
+                    pp[(part.mPointOffset + i) * NumComponents + c] = comp[i];
+            }
+            continue;
+        }
+
+        for (const auto& [block_index, num_cells] : part.mBlocks) {
+            std::string kw = rCur.NextRecord();  // element type; not re-validated by name
+            (void)kw;
+            NDArray block(DType::Float64, NumComponents == 1
+                                              ? std::vector<std::size_t>{num_cells}
+                                              : std::vector<std::size_t>{num_cells,
+                                                                         NumComponents});
+            double* bp = block.As<double>();
+            std::vector<double> comp(num_cells);
+            for (std::size_t c = 0; c < NumComponents; ++c) {
+                rCur.ReadFloats(num_cells, comp.data());
+                for (std::size_t i = 0; i < num_cells; ++i)
+                    bp[i * NumComponents + c] = comp[i];
+            }
+            (*pCellOut)[block_index] = std::move(block);
+        }
+    }
+
+    if (PerNode)
+        *pPointOut = std::move(point_out);
+}
+
+/// Dispatches to the ascii/binary cursor, mirroring read_ensight's own
+/// geometry-file dispatch.
+void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
+                                     std::size_t NumComponents,
+                                     const std::vector<EnsightPartLayout>& rLayout,
+                                     std::size_t TotalPoints, NDArray* pPointOut,
+                                     std::vector<NDArray>* pCellOut) {
+    const detail::FileSource source = ensight_read_whole_file(rPath, "variable file");
+    const std::string_view data = source.View();
+    if (ensight_starts_with(data, "Fortran Binary"))
+        throw ReadError("EnSight: Fortran-binary variable files are not supported");
+    if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+        EnsightBinaryCursor cur(data);
+        ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                                   pCellOut);
+        return;
+    }
+    EnsightAsciiCursor cur(data);
+    ensight_read_variable_file(cur, PerNode, NumComponents, rLayout, TotalPoints, pPointOut,
+                               pCellOut);
+}
+
 }  // namespace
 
-Mesh read_ensight(const std::string& rPath) {
+Mesh read_ensight(const std::string& rPath) { return read_ensight(rPath, ReadOptions{}); }
+
+Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
+    const bool have_case = ensight_has_suffix(rPath, ".case");
+    EnsightCaseInfo case_info;
     std::string geo_path = rPath;
-    if (ensight_has_suffix(rPath, ".case"))
-        geo_path = ensight_parse_case(rPath);
+    if (have_case) {
+        case_info = ensight_parse_case(rPath);
+        geo_path = case_info.mGeoPath;
+    }
 
     // The source outlives both cursors below, which only hold views into it.
     const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
     const std::string_view data = source.View();
     if (ensight_starts_with(data, "Fortran Binary"))
         throw ReadError("EnSight: Fortran-binary geometry files are not supported");
+
+    std::vector<EnsightPartLayout> layout;
+    Mesh mesh;
     if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
         EnsightBinaryCursor cur(data);
-        return ensight_parse_geo(cur);
+        mesh = ensight_parse_geo(cur, &layout);
+    } else {
+        EnsightAsciiCursor cur(data);
+        mesh = ensight_parse_geo(cur, &layout);
     }
-    EnsightAsciiCursor cur(data);
-    return ensight_parse_geo(cur);
+
+    if (!have_case || case_info.mVariables.empty() || !rOptions.WantsAnyData())
+        return mesh;
+
+    // Which step's variable files to read. A file with no TIME section (the
+    // static-geometry-plus-static-variables case) has exactly one step; a
+    // non-default mTimeStep against it is a real request this reader cannot
+    // honour, so it is refused rather than silently answering step 0.
+    std::size_t step = 0;
+    if (!case_info.mTimeValues.empty()) {
+        step = rOptions.ResolveTimeStep(case_info.mTimeValues.size());
+    } else if (rOptions.mTimeStep != 0) {
+        throw ReadError(
+            "EnSight: mTimeStep requested but the case file has no TIME section to resolve it "
+            "against");
+    }
+    const long file_number =
+        case_info.mFileNameStart + static_cast<long>(step) * case_info.mFileNameIncrement;
+
+    const std::string dir = ensight_dirname(rPath);
+    for (const EnsightVariableEntry& var : case_info.mVariables) {
+        if (!rOptions.WantsArray(var.mName))
+            continue;
+        const bool per_node = var.mKind.find("per node") != std::string::npos;
+        const bool per_element = var.mKind.find("per element") != std::string::npos;
+        if (!per_node && !per_element)
+            continue;  // a kind this reader does not (yet) understand
+        const std::size_t ncomp = ensight_starts_with(var.mKind, "vector") ? 3 : 1;
+        const std::string resolved = var.mFilePattern.find('*') != std::string::npos
+                                         ? ensight_resolve_wildcard(var.mFilePattern, file_number)
+                                         : var.mFilePattern;
+        const std::string var_path = dir + resolved;
+
+        if (per_node) {
+            NDArray arr;
+            ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
+                                            nullptr);
+            mesh.AddPointData(var.mName, std::move(arr));
+        } else {
+            std::vector<NDArray> blocks(mesh.NumCellBlocks());
+            ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            mesh.AddCellData(var.mName, std::move(blocks));
+        }
+    }
+
+    return mesh;
+}
+
+MeshMetadata read_ensight_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
+    if (!ensight_has_suffix(rPath, ".case"))
+        throw ReadError("EnSight: metadata needs a .case file (a bare geometry file has no TIME)");
+    const EnsightCaseInfo info = ensight_parse_case(rPath);
+
+    // No native header-only shape scan (unlike CGNS/Gmsh 4.1): the same
+    // full-read-plus-override shape Exodus's own metadata has.
+    MeshMetadata meta = metadata_from_mesh(read_ensight(rPath, ReadOptions{}));
+    meta.mFellBackToFullRead = true;
+    meta.mFormat = "ensight";
+    meta.mTimeValues = info.mTimeValues;
+    return meta;
 }
 
 namespace {
@@ -93567,12 +93963,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // gid joined in v10.19.0: its reader has always honoured mTimeStep, but
     // read_gid_metadata never opened the results sibling where steps live, so
     // it reported one step and this predicate had nothing to gate on. med,
-    // cgns, tecplot and gmsh joined in v11.3.0 (roadmap §1 tier B1):
-    // read_med_metadata/read_cgns_metadata/read_tecplot_metadata already
-    // existed for gmsh (4.1 only; 2.2 falls back to a full read either way)
-    // but never filled mTimeValues until now.
+    // cgns, tecplot, gmsh and ensight joined in v11.3.0 (roadmap §1 tier B1):
+    // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
+    // read either way) but never filled mTimeValues until now; for ensight,
+    // reading a VARIABLE file at all is new (previously geometry-only).
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh";
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -98796,7 +99192,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
-        {"ensight", meshioplusplus::read_ensight},
+        // A lambda, not `&read_ensight`: the ReadOptions overload makes the
+        // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
+        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
         {"flac3d", meshioplusplus::read_flac3d},
         {"dex", meshioplusplus::read_dex},
         {"flux", meshioplusplus::read_flux},
@@ -99174,6 +99572,11 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // first. IWYU pragma: keep
         {"tecplot", [](const std::string& path,
                        const ReadOptions& opts) { return meshioplusplus::read_tecplot(path, opts); }},
+        // EnSight honours mTimeStep AND the narrowing options -- a .case
+        // file's VARIABLE entries are only ever read here, never by the
+        // plain overload. IWYU pragma: keep
+        {"ensight", [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -99212,6 +99615,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gmsh", meshioplusplus::read_gmsh_metadata},
         {"gid", meshioplusplus::read_gid_metadata},
         {"tecplot", meshioplusplus::read_tecplot_metadata},
+        {"ensight", meshioplusplus::read_ensight_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},
