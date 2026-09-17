@@ -74,7 +74,7 @@ def test_reads_a_curved_structured_grid(tmp_path):
         '<VTKFile type="StructuredGrid" version="0.1" byte_order="LittleEndian">\n'
         '<StructuredGrid WholeExtent="0 1 0 1 0 1">\n'
         '<Piece Extent="0 1 0 1 0 1">\n'
-        "<Points><DataArray type=\"Float64\" Name=\"Points\" "
+        '<Points><DataArray type="Float64" Name="Points" '
         'NumberOfComponents="3" format="ascii">\n'
         "0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1.5 1.5 1.5\n"
         "</DataArray></Points>\n"

@@ -25,8 +25,8 @@ import numpy as np
 from .. import _provenance
 from .._clean import clean
 from .._exceptions import ReadError
-from .._mesh import Mesh
 from .._merge import _merge_py
+from .._mesh import Mesh
 from .._regions import Region
 
 
@@ -45,7 +45,9 @@ def _read_piece(path):
     elif ext == ".vtp":
         from .. import vtp as pkg
     else:
-        raise ReadError(f"Unsupported .vtm piece '{path}': only .vtu/.vtp pieces are read")
+        raise ReadError(
+            f"Unsupported .vtm piece '{path}': only .vtu/.vtp pieces are read"
+        )
     return pkg.read(path)
 
 
@@ -105,24 +107,30 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             mesh.points,
             [(cb.type, cb.data)],
             point_data=dict(mesh.point_data),
-            cell_data={
-                k: [v[i]] for k, v in mesh.cell_data.items() if i < len(v)
-            },
+            cell_data={k: [v[i]] for k, v in mesh.cell_data.items() if i < len(v)},
         )
         cleaned = clean(
-            piece, weld=False, remove_orphans=True, drop_degenerate=False,
+            piece,
+            weld=False,
+            remove_orphans=True,
+            drop_degenerate=False,
             drop_duplicate_cells=False,
         )
         piece_file_name = f"{stem}_{i}.vtu"
         vtu_pkg.write(
-            os.path.join(piece_dir, piece_file_name), cleaned, binary=binary,
-            compression=compression, header_type=header_type,
+            os.path.join(piece_dir, piece_file_name),
+            cleaned,
+            binary=binary,
+            compression=compression,
+            header_type=header_type,
         )
         piece_files.append(f"{stem}/{piece_file_name}")
         piece_names.append(f"block_{i}")
 
     lines = ['<?xml version="1.0"?>']
-    lines.append('<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">')
+    lines.append(
+        '<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">'
+    )
     lines.append(_provenance.render_xml_comment(_provenance.SlotTier.BLOCK))
     lines.append("<vtkMultiBlockDataSet>")
     lines.append('<Block index="0">')

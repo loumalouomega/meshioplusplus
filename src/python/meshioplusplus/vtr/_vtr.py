@@ -45,7 +45,16 @@ def _hex_conn(dims):
     base = (ck * py + cj) * px + ci
     top = base + px * py
     return np.stack(
-        [base, base + 1, base + px + 1, base + px, top, top + 1, top + px + 1, top + px],
+        [
+            base,
+            base + 1,
+            base + px + 1,
+            base + px,
+            top,
+            top + 1,
+            top + px + 1,
+            top + px,
+        ],
         axis=1,
     ).astype(np.int64)
 

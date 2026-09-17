@@ -6,8 +6,6 @@ An index file plus one `.vtu` piece per cell block, combined on read via
 more cell blocks round-trips.
 """
 
-import os
-
 import numpy as np
 import pytest
 

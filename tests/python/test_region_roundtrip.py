@@ -144,7 +144,9 @@ def test_region_round_trip(fmt, suffix, survives, carries, why, tmp_path):
             # cell half and the entry count are asserted here; the geometric
             # invariant that actually holds is asserted by
             # tests/cpp/test_openfoam.cpp's ZonesRoundTripAsNamedRegions.
-            assert after[(name, kind)].entries.shape == before[(name, kind)].entries.shape
+            assert (
+                after[(name, kind)].entries.shape == before[(name, kind)].entries.shape
+            )
             assert_array_equal(
                 after[(name, kind)].entries[:, 0],
                 before[(name, kind)].entries[:, 0],
@@ -181,7 +183,9 @@ def test_geometry_is_unaffected_by_regions(
         # against a REGION-FREE round trip through the same reconstruction
         # isolates "did regions perturb it" from "does OpenFOAM preserve raw
         # connectivity" (it never does, by design; see doc/formats/openfoam.md).
-        plain = meshioplusplus.Mesh(mesh.points, [("tetra", np.asarray(mesh.cells[0].data))])
+        plain = meshioplusplus.Mesh(
+            mesh.points, [("tetra", np.asarray(mesh.cells[0].data))]
+        )
         plain_path = tmp_path / ("plain" + suffix)
         meshioplusplus.write(plain_path, plain, file_format=fmt)
         plain_back = meshioplusplus.read(plain_path)

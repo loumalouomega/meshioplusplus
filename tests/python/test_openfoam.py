@@ -176,7 +176,9 @@ def multi_region_case_dir(tmp_path, hex_cube_data):
         _write_ascii_faces(poly / "faces", faces)
         _write_ascii_labels(poly / "owner", owner, "owner")
         _write_ascii_boundary(poly / "boundary", boundary)
-    (tmp_path / "constant" / "regionProperties").write_text("FoamFile\n{\n}\nregions\n(\n);\n")
+    (tmp_path / "constant" / "regionProperties").write_text(
+        "FoamFile\n{\n}\nregions\n(\n);\n"
+    )
     (tmp_path / "case.foam").write_text("")
     return tmp_path
 
@@ -1086,7 +1088,9 @@ class TestMultiRegion:
     def test_region_selects_the_named_region(self, multi_region_case_dir):
         import meshioplusplus
 
-        mesh = meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam", region="fluid")
+        mesh = meshioplusplus.openfoam.read(
+            multi_region_case_dir / "case.foam", region="fluid"
+        )
         assert len(mesh.points) == 8
         assert any(cb.type == "hexahedron" for cb in mesh.cells)
 
@@ -1094,7 +1098,9 @@ class TestMultiRegion:
         import meshioplusplus
 
         with pytest.raises(Exception):
-            meshioplusplus.openfoam.read(multi_region_case_dir / "case.foam", region="nope")
+            meshioplusplus.openfoam.read(
+                multi_region_case_dir / "case.foam", region="nope"
+            )
 
     def test_direct_polymesh_path_needs_no_region_kwarg(self, multi_region_case_dir):
         import meshioplusplus
@@ -1154,7 +1160,9 @@ class TestDecomposedCase:
         for proc, pts, conn in ((0, pts_a, conn_a), (1, pts_b, conn_b)):
             mesh = meshioplusplus.Mesh(pts, [("hexahedron", [conn])])
             meshioplusplus.write(
-                tmp_path / f"processor{proc}" / "case.foam", mesh, file_format="openfoam"
+                tmp_path / f"processor{proc}" / "case.foam",
+                mesh,
+                file_format="openfoam",
             )
 
         poly_a = tmp_path / "processor0" / "constant" / "polyMesh"
@@ -1188,10 +1196,14 @@ class TestDecomposedCase:
         _write_processor_addressing(
             poly_a, list(range(8)), [0], face_addr(6, iface_a, flip=False), [0]
         )
-        _write_processor_addressing(poly_b, b_global, [1], face_addr(6, iface_b, flip=True), [0])
+        _write_processor_addressing(
+            poly_b, b_global, [1], face_addr(6, iface_b, flip=True), [0]
+        )
         return tmp_path
 
-    def test_reconstructs_one_mesh_with_the_shared_face_restored(self, decomposed_case_dir):
+    def test_reconstructs_one_mesh_with_the_shared_face_restored(
+        self, decomposed_case_dir
+    ):
         mesh = meshioplusplus.openfoam.read(decomposed_case_dir)
         assert len(mesh.points) == 12
         n_hex = sum(len(cb.data) for cb in mesh.cells if cb.type == "hexahedron")
@@ -1235,13 +1247,18 @@ class TestTimeDirectoryFields:
             "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n"
             "internalField   uniform (1 0 0);\n"
         )
-        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam", arrays=["p"])
+        mesh = meshioplusplus.openfoam.read(
+            case_with_fields / "case.foam", arrays=["p"]
+        )
         assert "p" in mesh.cell_data
         assert "U" not in mesh.cell_data
 
     def test_metadata_lists_the_time_values(self, case_with_fields):
         meta = meshioplusplus.read_metadata(case_with_fields / "case.foam")
-        assert meta["time_values"] == [0.0, 1.0]  # directory names "0"/"1", not p's own values
+        assert meta["time_values"] == [
+            0.0,
+            1.0,
+        ]  # directory names "0"/"1", not p's own values
 
 
 class TestReadTwoCellMesh:

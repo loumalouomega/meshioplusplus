@@ -29,7 +29,9 @@ def read(filename, region="", points_only=False, arrays=None, time_step=0):
     rather than silently falling back to a worse or plain-wrong result.
     """
     try:
-        return _core.openfoam_read(str(filename), region, points_only, arrays, time_step)
+        return _core.openfoam_read(
+            str(filename), region, points_only, arrays, time_step
+        )
     except Exception as exc:
         if region or time_step or "multi-region" in str(exc):
             raise
