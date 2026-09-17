@@ -9122,7 +9122,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 11
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 3
+#define MESHIOPLUSPLUS_VERSION_MINOR 4
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9132,7 +9132,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "11.3.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "11.4.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -15041,6 +15041,58 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Read an OpenFOAM polyMesh, optionally attaching one time
+ * directory's fields (v11.4.0, roadmap §1 tier B2).
+ *
+ * Identical to the two-argument overload for the mesh topology itself.
+ * Additionally: `rOptions.mTimeStep` (via `ResolveTimeStep`) selects a time
+ * directory out of `<case_root>/<numeric>/` (case root = the directory
+ * `read_openfoam_metadata` would report `mTimeValues` for), skipped
+ * entirely when no such directory exists (matching the two-argument
+ * overload's historical no-field behaviour exactly). Each of that
+ * directory's field files becomes one `point_data`/`cell_data` array named
+ * after the file, filtered by `rOptions.mDataArrays`
+ * (`ReadOptions::WantsArray`): `volScalarField`/`volVectorField`/
+ * `volSymmTensorField`/`volTensorField` -> cell data (1/3/6/9 components);
+ * `pointScalarField`/`pointVectorField` -> point data (1/3); anything else
+ * (`surfaceScalarField`, …) is skipped with a warning, once per field.
+ * `uniform` expands to one row per cell/point. A cell field's `internalField`
+ * only ever covers volume cells (OpenFOAM's own numbering): the matching
+ * `cell_data` blocks are the volume/polyhedron ones; the boundary-face
+ * blocks get `NaN` for that field, since attaching `boundaryField`'s
+ * per-patch values is a documented follow-up, not read here. Binary field
+ * files use the same `arch`-driven reader as the polyMesh binary path.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions `mTimeStep` selects the time directory; `mDataArrays`
+ *        selects fields; `mRegion` (via @p rInfo, not here) is unrelated
+ * @param rInfo output side-channel struct (see #OpenFoamInfo)
+ * @return the read Mesh, as the two-argument overload, plus the selected
+ *         time directory's fields
+ * @throws ReadError as the two-argument overload; also if `mTimeStep`
+ *         selects an out-of-range step among the case's time directories
+ */
+MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, const ReadOptions& rOptions,
+                                      OpenFoamInfo& rInfo);
+
+/**
+ * @brief Cheaply summarize an OpenFOAM case's time directories.
+ *
+ * `mTimeValues` is a real, cheap (directory-listing only) native path: the
+ * numeric-named subdirectories of the case root that hold at least one
+ * regular file, sorted ascending. Everything else in the returned
+ * `MeshMetadata` comes from a full read (`mFellBackToFullRead = true`),
+ * since a cheap point/cell count would otherwise re-derive the whole
+ * cell-reconstruction pipeline redundantly.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions forwarded to the full read backing the non-time fields
+ * @return metadata with a native `mTimeValues` and a full-read-derived rest
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions);
 
 /**
  * @brief Write a Mesh as an OpenFOAM polyMesh case.
@@ -65643,6 +65695,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -66526,9 +66579,251 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
     return out;
 }
 
+// ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
+
+/// One field's shape: number of components, and whether it belongs on
+/// points (`pointScalarField`/`pointVectorField`) rather than cells.
+struct FoamFieldClass {
+    int mComponents = 0;
+    bool mIsPoint = false;
+    bool mSupported = true;
+};
+
+FoamFieldClass foam_field_class(const std::string& rClass) {
+    if (rClass == "volScalarField")
+        return {1, false, true};
+    if (rClass == "volVectorField")
+        return {3, false, true};
+    if (rClass == "volSymmTensorField")
+        return {6, false, true};
+    if (rClass == "volTensorField")
+        return {9, false, true};
+    if (rClass == "pointScalarField")
+        return {1, true, true};
+    if (rClass == "pointVectorField")
+        return {3, true, true};
+    return {0, false, false};  // e.g. surfaceScalarField: no cell/point home
+}
+
+/// A field value list: `mFlat` holds `mComponents` entries (uniform) or
+/// `mCount * mComponents` (nonuniform), read by `foam_read_internal_field`.
+struct FoamField {
+    bool mUniform = false;
+    std::int64_t mCount = 0;
+    std::vector<double> mFlat;
+};
+
+/// Parse `uniform <value>` (`rText` starting AT the `uniform` keyword).
+std::vector<double> foam_scan_uniform_value(std::string_view rText, int components) {
+    std::size_t p = std::strlen("uniform");
+    while (p < rText.size() && std::isspace(static_cast<unsigned char>(rText[p])))
+        ++p;
+    std::vector<double> out;
+    if (components == 1) {
+        out.push_back(std::atof(std::string(rText.substr(p)).c_str()));
+        return out;
+    }
+    const std::size_t lp = rText.find('(', p);
+    const std::size_t rp = rText.find(')', lp);
+    if (lp == std::string::npos || rp == std::string::npos)
+        return out;
+    std::istringstream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    double v;
+    while (ss >> v)
+        out.push_back(v);
+    return out;
+}
+
+/// Parse `nonuniform List<T>\n<N>\n(\n<entries>\n)` (`rText` starting AT the
+/// `nonuniform` keyword) -- ASCII only; the binary variant is read directly
+/// via `data_start` in `foam_read_internal_field`, which needs the whole raw
+/// buffer rather than a text view.
+FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
+    FoamField out;
+    const std::string text_owned(rText);
+    std::istringstream ss(text_owned);
+    std::string line;
+    bool have_n = false;
+    std::int64_t n = 0;
+    while (std::getline(ss, line)) {
+        std::string s = openfoam_strip(line);
+        if (s.empty())
+            continue;
+        if (!have_n) {
+            if (s.find_first_not_of("0123456789") == std::string::npos) {
+                n = std::atoll(s.c_str());
+                have_n = true;
+            }
+            continue;
+        }
+        if (s == "(")
+            break;
+    }
+    out.mCount = n;
+    out.mFlat.reserve(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
+    for (std::int64_t i = 0; i < n && std::getline(ss, line);) {
+        std::string s = openfoam_strip(line);
+        if (s.empty())
+            continue;
+        if (components == 1) {
+            out.mFlat.push_back(std::atof(s.c_str()));
+        } else {
+            for (char& c : s)
+                if (c == '(' || c == ')')
+                    c = ' ';
+            std::istringstream ls(s);
+            double v;
+            while (ls >> v)
+                out.mFlat.push_back(v);
+        }
+        ++i;
+    }
+    return out;
+}
+
+/**
+ * @brief Read a field file's `internalField`.
+ *
+ * `uniform` is always plain text, in both ASCII and binary field files (a
+ * single small value is never worth binary-encoding), so it is scanned the
+ * same way regardless of `FoamFormat`. `nonuniform` follows `points`/`faces`/
+ * `owner`'s own dispatch: ASCII is line-scanned, binary reuses `data_start` --
+ * safe here because nothing between the FoamFile header and `internalField`'s
+ * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
+ */
+FoamField foam_read_internal_field(const fs::path& rPath, int components) {
+    const FoamFormat fmt = detect_format(rPath.string());
+    const detail::FileSource source = read_whole(rPath.string());
+    const std::string_view raw = source.View();
+    const std::size_t kp = raw.find("internalField");
+    if (kp == std::string::npos)
+        throw ReadError("OpenFOAM: field file has no internalField: " + rPath.string());
+    std::size_t p = kp + std::strlen("internalField");
+    while (p < raw.size() && std::isspace(static_cast<unsigned char>(raw[p])))
+        ++p;
+    if (raw.compare(p, 7, "uniform") == 0) {
+        FoamField out;
+        out.mUniform = true;
+        out.mFlat = foam_scan_uniform_value(raw.substr(p), components);
+        return out;
+    }
+    if (raw.compare(p, 10, "nonuniform") != 0)
+        throw ReadError("OpenFOAM: internalField is neither uniform nor nonuniform: " +
+                        rPath.string());
+    if (!fmt.mBinary)
+        return foam_scan_nonuniform_list(raw.substr(p), components);
+
+    auto [n, start] = data_start(raw);
+    FoamField out;
+    out.mCount = n;
+    out.mFlat.resize(static_cast<std::size_t>(n) * static_cast<std::size_t>(components));
+    const char* base = raw.data() + start;
+    for (std::int64_t i = 0; i < n; ++i)
+        for (int c = 0; c < components; ++c) {
+            const std::size_t off = (static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                                     static_cast<std::size_t>(c)) *
+                                    static_cast<std::size_t>(fmt.mScalarBytes);
+            out.mFlat[static_cast<std::size_t>(i) * static_cast<std::size_t>(components) +
+                     static_cast<std::size_t>(c)] =
+                fmt.mScalarBytes == 4 ? static_cast<double>(read_le<float>(base + off))
+                                     : read_le<double>(base + off);
+        }
+    return out;
+}
+
+/// Parse a time directory's name as an OpenFOAM time value, requiring the
+/// WHOLE name to be consumed (so `"0.1_backup"` is correctly not a time dir).
+bool foam_parse_time_dir_name(const std::string& rName, double& rValue) {
+    if (rName.empty())
+        return false;
+    char* end = nullptr;
+    const double v = std::strtod(rName.c_str(), &end);
+    if (end != rName.c_str() + rName.size())
+        return false;
+    rValue = v;
+    return true;
+}
+
+/// One `<case_root>/<numeric>/` time directory: its parsed value and its
+/// own (exact, on-disk) name -- kept together because a value re-formatted
+/// back to text ("0.1" vs "0.100000") is not reliably the same string.
+struct FoamTimeDir {
+    double mValue = 0.0;
+    std::string mName;
+};
+
+/// Time directories holding at least one regular file (a field), sorted
+/// ascending by value. `0` is included only when it holds fields -- the
+/// historical (field-free) `read_openfoam` never depended on a `0/`
+/// directory existing at all.
+std::vector<FoamTimeDir> foam_time_dirs(const fs::path& rCaseRoot) {
+    std::vector<FoamTimeDir> dirs;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rCaseRoot, ec)) {
+        if (!entry.is_directory())
+            continue;
+        const std::string name = entry.path().filename().string();
+        double t = 0.0;
+        if (!foam_parse_time_dir_name(name, t))
+            continue;
+        std::error_code ec2;
+        bool has_field = false;
+        for (const auto& f : fs::directory_iterator(entry.path(), ec2)) {
+            if (f.is_regular_file()) {
+                has_field = true;
+                break;
+            }
+        }
+        if (has_field)
+            dirs.push_back({t, name});
+    }
+    std::sort(dirs.begin(), dirs.end(),
+             [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
+    return dirs;
+}
+
+/// Field file names directly inside a time directory (regular files only,
+/// non-recursive -- `uniform/`, `polyMesh/` and other sub-directories a
+/// moving-mesh case may carry there are not field files).
+std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(rTimeDir, ec))
+        if (entry.is_regular_file())
+            names.push_back(entry.path().filename().string());
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+/// The `class` entry of a field file's `FoamFile` header (`volScalarField`,
+/// …), read the same cheap line-scan way `detect_format` reads `format`/
+/// `arch` -- no full parse needed just to classify the field.
+std::string foam_field_file_class(const fs::path& rPath) {
+    std::ifstream f(rPath, std::ios::binary);
+    if (!f)
+        return {};
+    std::string line;
+    while (std::getline(f, line)) {
+        const std::string s = openfoam_strip(line);
+        if (s.rfind("class", 0) == 0) {
+            std::string rest = openfoam_strip(s.substr(std::strlen("class")));
+            if (!rest.empty() && rest.back() == ';')
+                rest.pop_back();
+            return openfoam_strip(rest);
+        }
+        if (s == "}")
+            break;
+    }
+    return {};
+}
+
 }  // namespace
 
 Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
+    return read_openfoam(rPathIn, ReadOptions{}, rInfo);
+}
+
+Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, OpenFoamInfo& rInfo) {
     // resolve polyMesh directory
     fs::path path(rPathIn);
     fs::path poly;
@@ -66748,15 +67043,15 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
         cell_tags.emplace_back(DType::Int64, std::vector<std::size_t>{nc});  // zeros
     }
 
-    // ---- zones as named regions (cellZones/faceZones/pointZones) ----
-    //
-    // Read here, between the volume/polyhedron blocks and the boundary
-    // (2D) blocks: `detail::block_bases(mesh)` only needs to be right for
-    // the blocks added so far, and boundary blocks are always appended
-    // after, so their prefix sums never change what is computed here.
+    // Original OpenFOAM cell id -> global (block-major) cell index, used by
+    // both the zones-as-regions block below and time-directory field
+    // attachment further down. `detail::block_bases(mesh)` only needs to be
+    // right for the blocks added so far (volume + polyhedron); boundary (2D)
+    // blocks are always appended after, so their prefix sums never change
+    // what is computed here.
+    std::vector<std::int64_t> orig_cell_to_global(static_cast<std::size_t>(n_cells), -1);
     {
         const std::vector<std::int64_t> bases = detail::block_bases(mesh);
-        std::vector<std::int64_t> orig_cell_to_global(static_cast<std::size_t>(n_cells), -1);
         for (std::size_t cid = 0; cid < placement.size(); ++cid) {
             const auto& [is_poly, key, row] = placement[cid];
             if (row == npos)
@@ -66765,7 +67060,10 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
             orig_cell_to_global[cid] =
                 detail::block_row_to_global(bases, block, static_cast<std::int64_t>(row));
         }
+    }
 
+    // ---- zones as named regions (cellZones/faceZones/pointZones) ----
+    {
         // Local facet index of face `fid` within its owner cell `cid`,
         // matching the order `AddPolyhedronBlock`/`AddCellBlock` end up
         // storing: for a polyhedron, that is simply `fid`'s position in
@@ -66928,7 +67226,97 @@ Mesh read_openfoam(const std::string& rPathIn, OpenFoamInfo& rInfo) {
 
     if (!cell_tags.empty())
         mesh.AddCellData("cell_tags", std::move(cell_tags));
+
+    // ---- time-directory fields (v11.4.0, roadmap §1 tier B2) ----
+    if (rOptions.WantsAnyData()) {
+        const std::vector<FoamTimeDir> time_dirs = foam_time_dirs(case_root);
+        if (!time_dirs.empty()) {
+            const std::size_t step = rOptions.ResolveTimeStep(time_dirs.size());
+            const fs::path time_dir = case_root / time_dirs[step].mName;
+            for (const std::string& field_name : foam_field_files(time_dir)) {
+                if (!rOptions.WantsArray(field_name))
+                    continue;
+                const fs::path field_path = time_dir / field_name;
+                const std::string cls = foam_field_file_class(field_path);
+                const FoamFieldClass fc = foam_field_class(cls);
+                if (!fc.mSupported) {
+                    log::warn(
+                        "OpenFOAM: field '{}' has class '{}', which has no point/cell home; skipped",
+                        field_name, cls.empty() ? "?" : cls);
+                    continue;
+                }
+                const FoamField values = foam_read_internal_field(field_path, fc.mComponents);
+
+                if (fc.mIsPoint) {
+                    if (!values.mUniform && static_cast<std::size_t>(values.mCount) != npts) {
+                        log::warn(
+                            "OpenFOAM: field '{}' has {} value(s), expected {} point(s); skipped",
+                            field_name, values.mCount, npts);
+                        continue;
+                    }
+                    NDArray arr = NDArray::Uninit(
+                        DType::Float64, {npts, static_cast<std::size_t>(fc.mComponents)});
+                    double* dst = arr.As<double>();
+                    if (values.mUniform) {
+                        for (std::size_t i = 0; i < npts; ++i)
+                            for (int c = 0; c < fc.mComponents; ++c)
+                                dst[i * static_cast<std::size_t>(fc.mComponents) +
+                                    static_cast<std::size_t>(c)] = values.mFlat[static_cast<std::size_t>(c)];
+                    } else {
+                        std::copy(values.mFlat.begin(), values.mFlat.end(), dst);
+                    }
+                    mesh.AddPointData(field_name, std::move(arr));
+                    continue;
+                }
+
+                if (!values.mUniform && values.mCount != n_cells) {
+                    log::warn("OpenFOAM: field '{}' has {} value(s), expected {} cell(s); skipped",
+                              field_name, values.mCount, n_cells);
+                    continue;
+                }
+                std::vector<NDArray> blocks(mesh.NumCellBlocks());
+                for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+                    NDArray arr = NDArray::Uninit(
+                        DType::Float64,
+                        {mesh.Cells(b).NumCells(), static_cast<std::size_t>(fc.mComponents)});
+                    double* dst = arr.As<double>();
+                    std::fill(dst, dst + arr.Size(), std::numeric_limits<double>::quiet_NaN());
+                    blocks[b] = std::move(arr);
+                }
+                for (std::size_t cid = 0; cid < placement.size(); ++cid) {
+                    const auto& [is_poly, key, row] = placement[cid];
+                    if (row == npos)
+                        continue;
+                    const std::size_t block =
+                        is_poly ? poly_block_index.at(key) : vol_block_index.at(key);
+                    double* dst = blocks[block].As<double>();
+                    for (int c = 0; c < fc.mComponents; ++c)
+                        dst[row * static_cast<std::size_t>(fc.mComponents) + static_cast<std::size_t>(c)] =
+                            values.mUniform ? values.mFlat[static_cast<std::size_t>(c)]
+                                            : values.mFlat[cid * static_cast<std::size_t>(fc.mComponents) +
+                                                            static_cast<std::size_t>(c)];
+                }
+                mesh.AddCellData(field_name, std::move(blocks));
+            }
+        }
+    }
+
     return mesh;
+}
+
+MeshMetadata read_openfoam_metadata(const std::string& rPathIn, const ReadOptions& rOptions) {
+    const fs::path path(rPathIn);
+    const fs::path case_root = path.extension() == ".foam" ? path.parent_path() : path;
+
+    std::vector<double> times;
+    for (const FoamTimeDir& t : foam_time_dirs(case_root))
+        times.push_back(t.mValue);
+
+    OpenFoamInfo info;
+    MeshMetadata meta = metadata_from_mesh(read_openfoam(rPathIn, rOptions, info));
+    meta.mTimeValues = std::move(times);
+    meta.mFellBackToFullRead = true;
+    return meta;
 }
 
 // ==========================================================================
@@ -94595,8 +94983,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
     // read either way) but never filled mTimeValues until now; for ensight,
     // reading a VARIABLE file at all is new (previously geometry-only).
+    // openfoam joined in v11.4.0 (roadmap §1 tier B2): its time-directory
+    // fields are new; the polyMesh topology itself never had a time concept.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight";
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+          rFormat == "ensight" || rFormat == "openfoam";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -100226,6 +100617,14 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"cgns", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
 #endif
+        // OpenFOAM honours mTimeStep (selects a time-directory) AND
+        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+        // here exactly as the plain reader entry drops it. IWYU pragma: keep
+        {"openfoam",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::OpenFoamInfo info;
+             return meshioplusplus::read_openfoam(path, opts, info);
+         }},
         {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
@@ -100244,6 +100643,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gid", meshioplusplus::read_gid_metadata},
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
+        {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},

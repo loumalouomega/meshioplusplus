@@ -14,20 +14,24 @@ from ._openfoam import read as _py_read
 _HAS_WRITE = hasattr(_core, "openfoam_write")
 
 
-def read(filename, region=""):
+def read(filename, region="", points_only=False, arrays=None, time_step=0):
     """Read an OpenFOAM polyMesh case (C++ core, Python fallback).
 
     ``region`` selects one region of a multi-region case (v11.4.0, roadmap §1
-    tier B2): ``<case>/constant/<region>/polyMesh``. The Python fallback
-    reader has no multi-region concept at all, so a ``region`` request, or a
-    case the compiled core recognised as multi-region (and asked for one),
-    re-raises rather than silently falling back to a worse, generic
-    "no polyMesh" error from a reader that never looked for one.
+    tier B2): ``<case>/constant/<region>/polyMesh``. ``time_step``/``arrays``
+    (same tier) select a time directory (``<case>/<time>/``) and which of its
+    fields to attach as ``point_data``/``cell_data`` -- also reachable through
+    ``meshioplusplus.read(path, time_step=..., arrays=...)``, since this
+    shim's signature is what lets the generic dispatcher forward them. The
+    Python fallback reader has none of this -- no multi-region concept, no
+    field reading at all -- so a ``region``/non-default ``time_step``
+    request, or a case the compiled core recognised as multi-region, re-raises
+    rather than silently falling back to a worse or plain-wrong result.
     """
     try:
-        return _core.openfoam_read(str(filename), region)
+        return _core.openfoam_read(str(filename), region, points_only, arrays, time_step)
     except Exception as exc:
-        if region or "multi-region" in str(exc):
+        if region or time_step or "multi-region" in str(exc):
             raise
     return _py_read(filename)
 

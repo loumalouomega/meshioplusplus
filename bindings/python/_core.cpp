@@ -2924,14 +2924,18 @@ finalizes.
     // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.
     // `region` selects one region of a multi-region case (v11.4.0, roadmap §1
-    // tier B2): `<case>/constant/<region>/polyMesh`.
+    // tier B2): `<case>/constant/<region>/polyMesh`. `time_step`/`arrays`
+    // (same tier) select a time directory and which of its fields to attach.
     m.def(
         "openfoam_read",
-        [](const std::string& path, const std::string& region) {
+        [](const std::string& path, const std::string& region, bool points_only,
+           py::object arrays, int time_step) {
             meshioplusplus::OpenFoamInfo info;
             info.mRegion = region;
+            const meshioplusplus::ReadOptions opts =
+                core_read_options(points_only, arrays, time_step);
             py::object pymesh =
-                meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, info));
+                meshioplusplus_py::mesh_to_py(meshioplusplus::read_openfoam(path, opts, info));
             py::dict ctags;
             for (const auto& kv : info.mCellTags)
                 ctags[py::int_(kv.first)] = kv.second;
@@ -2943,7 +2947,8 @@ finalizes.
             pymesh.attr("openfoam_patch_types") = ptypes;
             return pymesh;
         },
-        py::arg("path"), py::arg("region") = std::string());
+        py::arg("path"), py::arg("region") = std::string(), py::arg("points_only") = false,
+        py::arg("arrays") = py::none(), py::arg("time_step") = 0);
 
     // OpenFOAM polyMesh writer. `allow_ragged` is mandatory: a polyhedron block
     // is this format's native cell shape, and the reader emits them, so a

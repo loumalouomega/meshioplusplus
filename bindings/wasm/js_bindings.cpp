@@ -1082,8 +1082,10 @@ val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
 /**
  * @brief Read `rPath` as `rFormat` through that format's own Info-bearing
  * reader, bypassing the generic registry. `rOptions` is honoured exactly by
- * the formats whose reader takes a `ReadOptions` (med, mdpa, gmsh, exodus);
- * openfoam/ansysinp/unv have no selective-read path with or without info.
+ * the formats whose reader takes a `ReadOptions` (med, mdpa, gmsh, exodus,
+ * and openfoam since v11.4.0 -- roadmap §1 tier B2's `timeStep`/`arrays`
+ * time-directory fields); ansysinp/unv have no selective-read path with or
+ * without info.
  * @param rFormat must satisfy `format_supports_info`.
  * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
  */
@@ -1091,7 +1093,7 @@ Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
                     const meshioplusplus::ReadOptions& rOptions, val& rInfoOut) {
     if (rFormat == "openfoam") {
         meshioplusplus::OpenFoamInfo info;
-        Mesh mesh = meshioplusplus::read_openfoam(rPath, info);
+        Mesh mesh = meshioplusplus::read_openfoam(rPath, rOptions, info);
         rInfoOut = openfoam_info_to_val(info);
         return mesh;
     }

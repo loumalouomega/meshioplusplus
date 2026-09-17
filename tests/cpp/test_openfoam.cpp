@@ -971,6 +971,114 @@ TEST(OpenFoamDecompose, ReconstructsTwoProcessorsSharingOneFace) {
     fs::remove_all(base, ec);
 }
 
+// Roadmap §1 tier B2: time-directory fields (internalField only, uniform and
+// nonuniform, both cell and point homes).
+TEST(OpenFoamFields, ReadsUniformAndNonuniformInternalFieldsFromTimeZero) {
+    meshioplusplus::Mesh m = hex_grid(2);  // 8 hex cells, 27 points
+    const fs::path base = write_case(m);
+    const fs::path zero = base / "0";
+    fs::create_directories(zero);
+
+    std::ofstream(zero / "p") << "FoamFile\n{\n format ascii;\n class volScalarField;\n object "
+                                 "p;\n}\ninternalField   uniform 42;\n";
+    {
+        std::ofstream f(zero / "U");
+        f << "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n";
+        f << "internalField   nonuniform List<vector>\n8\n(\n";
+        for (int i = 0; i < 8; ++i)
+            f << "(" << i << " " << (i * 2) << " " << (i * 3) << ")\n";
+        f << ")\n;\n";
+    }
+    {
+        std::ofstream f(zero / "pointDisp");
+        f << "FoamFile\n{\n format ascii;\n class pointScalarField;\n object pointDisp;\n}\n";
+        f << "internalField   nonuniform List<scalar>\n27\n(\n";
+        for (int i = 0; i < 27; ++i)
+            f << i << "\n";
+        f << ")\n;\n";
+    }
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::ReadOptions opts;
+    const meshioplusplus::Mesh mesh =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), opts, info);
+
+    ASSERT_TRUE(mesh.HasCellData("p"));
+    ASSERT_TRUE(mesh.HasCellData("U"));
+    ASSERT_TRUE(mesh.HasPointData("pointDisp"));
+
+    std::size_t hexblock = static_cast<std::size_t>(-1);
+    for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+        if (mesh.Cells(b).Type() == "hexahedron") {
+            hexblock = b;
+            break;
+        }
+    ASSERT_NE(hexblock, static_cast<std::size_t>(-1));
+
+    const meshioplusplus::NDArray& p = mesh.CellData("p", hexblock);
+    for (std::size_t i = 0; i < 8; ++i)
+        EXPECT_DOUBLE_EQ(p.As<double>()[i], 42.0);
+
+    const meshioplusplus::NDArray& u = mesh.CellData("U", hexblock);
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_DOUBLE_EQ(u.As<double>()[static_cast<std::size_t>(i) * 3 + 0], i);
+        EXPECT_DOUBLE_EQ(u.As<double>()[static_cast<std::size_t>(i) * 3 + 1], i * 2);
+        EXPECT_DOUBLE_EQ(u.As<double>()[static_cast<std::size_t>(i) * 3 + 2], i * 3);
+    }
+
+    const meshioplusplus::NDArray& pd = mesh.PointData("pointDisp");
+    ASSERT_EQ(pd.Shape()[0], 27u);
+    for (std::size_t i = 0; i < 27; ++i)
+        EXPECT_DOUBLE_EQ(pd.As<double>()[i], static_cast<double>(i));
+
+    // A boundary (non-volume) cell block carries NaN for a volume-only field.
+    for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+        if (b == hexblock)
+            continue;
+        const meshioplusplus::NDArray& bp = mesh.CellData("p", b);
+        for (std::size_t i = 0; i < bp.Shape()[0]; ++i)
+            EXPECT_TRUE(std::isnan(bp.As<double>()[i]));
+    }
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamFields, TimeStepSelectsTheDirectoryAndMetadataListsTheValues) {
+    meshioplusplus::Mesh m = hex_grid(1);  // 1 hex cell, 8 points
+    const fs::path base = write_case(m);
+    for (const auto& [dir, val] : std::vector<std::pair<std::string, double>>{{"0", 0.0}, {"1", 10.0}}) {
+        const fs::path td = base / dir;
+        fs::create_directories(td);
+        std::ofstream(td / "p") << "FoamFile\n{\n format ascii;\n class volScalarField;\n object "
+                                   "p;\n}\ninternalField   uniform "
+                                << val << ";\n";
+    }
+
+    meshioplusplus::OpenFoamInfo info;
+    meshioplusplus::ReadOptions opts;
+    opts.mTimeStep = 1;
+    const meshioplusplus::Mesh mesh =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), opts, info);
+    ASSERT_TRUE(mesh.HasCellData("p"));
+    std::size_t hexblock = 0;
+    for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
+        if (mesh.Cells(b).Type() == "hexahedron") {
+            hexblock = b;
+            break;
+        }
+    EXPECT_DOUBLE_EQ(mesh.CellData("p", hexblock).As<double>()[0], 10.0);
+
+    const meshioplusplus::MeshMetadata meta =
+        meshioplusplus::read_openfoam_metadata((base / "case.foam").string(), meshioplusplus::ReadOptions{});
+    ASSERT_EQ(meta.mTimeValues.size(), 2u);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[0], 0.0);
+    EXPECT_DOUBLE_EQ(meta.mTimeValues[1], 1.0);  // directory name "1", not the field's own value
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
 // checkMesh is the ONLY oracle that catches a convention error -- a globally
 // inverted winding passes every internally-consistent check above. It is
 // virtually never installed, so this skips loudly rather than silently.

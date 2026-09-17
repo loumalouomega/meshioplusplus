@@ -1200,6 +1200,50 @@ class TestDecomposedCase:
         assert n_quad == 10  # 6 + 6 boundary faces minus the 2 that became internal
 
 
+class TestTimeDirectoryFields:
+    """Roadmap §1 tier B2 (v11.4.0): internalField point/cell data."""
+
+    @pytest.fixture
+    def case_with_fields(self, case_dir):
+        for time_dir, value in (("0", 1.0), ("1", 2.0)):
+            td = case_dir / time_dir
+            td.mkdir()
+            (td / "p").write_text(
+                "FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n"
+                f"internalField   uniform {value};\n"
+            )
+        return case_dir
+
+    def test_uniform_cell_field_is_read_from_time_zero(self, case_with_fields):
+        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam")
+        assert "p" in mesh.cell_data
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 1.0)
+
+    def test_time_step_selects_the_directory(self, case_with_fields):
+        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam", time_step=1)
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 2.0)
+
+    def test_reachable_through_the_generic_dispatcher(self, case_with_fields):
+        mesh = meshioplusplus.read(case_with_fields / "case.foam", time_step=1)
+        hexblock = next(i for i, cb in enumerate(mesh.cells) if cb.type == "hexahedron")
+        assert np.allclose(mesh.cell_data["p"][hexblock], 2.0)
+
+    def test_arrays_filter_excludes_an_unwanted_field(self, case_with_fields):
+        (case_with_fields / "0" / "U").write_text(
+            "FoamFile\n{\n format ascii;\n class volVectorField;\n object U;\n}\n"
+            "internalField   uniform (1 0 0);\n"
+        )
+        mesh = meshioplusplus.openfoam.read(case_with_fields / "case.foam", arrays=["p"])
+        assert "p" in mesh.cell_data
+        assert "U" not in mesh.cell_data
+
+    def test_metadata_lists_the_time_values(self, case_with_fields):
+        meta = meshioplusplus.read_metadata(case_with_fields / "case.foam")
+        assert meta["time_values"] == [0.0, 1.0]  # directory names "0"/"1", not p's own values
+
+
 class TestReadTwoCellMesh:
     """Two hexahedral cells sharing one internal face."""
 

@@ -2312,6 +2312,35 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
     assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
+step('openfoam reports and reads two time-directory fields (roadmap §1 tier B2)', () => {
+    // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture, not a
+    // wiring-only probe. Reuses the /of/case.foam single-hex polyMesh the
+    // previous step wrote.
+    m.FS.mkdir('/of/0');
+    m.FS.writeFile(
+        '/of/0/p',
+        'FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n' +
+            'internalField   uniform 1;\n',
+    );
+    m.FS.mkdir('/of/1');
+    m.FS.writeFile(
+        '/of/1/p',
+        'FoamFile\n{\n format ascii;\n class volScalarField;\n object p;\n}\n' +
+            'internalField   uniform 2;\n',
+    );
+
+    const meta = m.readMetadata('/of/case.foam', 'openfoam');
+    assert.equal(meta.format, 'openfoam');
+    assert.equal(meta.fellBackToFullRead, true);
+    assert.deepEqual(Array.from(meta.timeValues), [0, 1]);
+
+    const hexBlock = (mesh) => mesh.cells.findIndex((c) => c.type === 'hexahedron');
+    const first = m.readMeshSelective('/of/case.foam', { format: 'openfoam', timeStep: 0 });
+    assert.equal(first.cell_data.p[hexBlock(first)][0], 1);
+    const second = m.readMeshSelective('/of/case.foam', { format: 'openfoam', timeStep: 1 });
+    assert.equal(second.cell_data.p[hexBlock(second)][0], 2);
+});
+
 // --- Side channel (info): format metadata a generic Mesh cannot represent
 // (roadmap §1 "WASM parity"). readMeshSelective(path, {info: true}) attaches
 // it as mesh.info; writeMesh(path, mesh, format, {info}) (or a matching

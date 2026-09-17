@@ -61,6 +61,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -157,6 +158,58 @@ struct OpenFoamInfo {
  *         pure-Python reader
  */
 MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, OpenFoamInfo& rInfo);
+
+/**
+ * @brief Read an OpenFOAM polyMesh, optionally attaching one time
+ * directory's fields (v11.4.0, roadmap §1 tier B2).
+ *
+ * Identical to the two-argument overload for the mesh topology itself.
+ * Additionally: `rOptions.mTimeStep` (via `ResolveTimeStep`) selects a time
+ * directory out of `<case_root>/<numeric>/` (case root = the directory
+ * `read_openfoam_metadata` would report `mTimeValues` for), skipped
+ * entirely when no such directory exists (matching the two-argument
+ * overload's historical no-field behaviour exactly). Each of that
+ * directory's field files becomes one `point_data`/`cell_data` array named
+ * after the file, filtered by `rOptions.mDataArrays`
+ * (`ReadOptions::WantsArray`): `volScalarField`/`volVectorField`/
+ * `volSymmTensorField`/`volTensorField` -> cell data (1/3/6/9 components);
+ * `pointScalarField`/`pointVectorField` -> point data (1/3); anything else
+ * (`surfaceScalarField`, …) is skipped with a warning, once per field.
+ * `uniform` expands to one row per cell/point. A cell field's `internalField`
+ * only ever covers volume cells (OpenFOAM's own numbering): the matching
+ * `cell_data` blocks are the volume/polyhedron ones; the boundary-face
+ * blocks get `NaN` for that field, since attaching `boundaryField`'s
+ * per-patch values is a documented follow-up, not read here. Binary field
+ * files use the same `arch`-driven reader as the polyMesh binary path.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions `mTimeStep` selects the time directory; `mDataArrays`
+ *        selects fields; `mRegion` (via @p rInfo, not here) is unrelated
+ * @param rInfo output side-channel struct (see #OpenFoamInfo)
+ * @return the read Mesh, as the two-argument overload, plus the selected
+ *         time directory's fields
+ * @throws ReadError as the two-argument overload; also if `mTimeStep`
+ *         selects an out-of-range step among the case's time directories
+ */
+MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, const ReadOptions& rOptions,
+                                      OpenFoamInfo& rInfo);
+
+/**
+ * @brief Cheaply summarize an OpenFOAM case's time directories.
+ *
+ * `mTimeValues` is a real, cheap (directory-listing only) native path: the
+ * numeric-named subdirectories of the case root that hold at least one
+ * regular file, sorted ascending. Everything else in the returned
+ * `MeshMetadata` comes from a full read (`mFellBackToFullRead = true`),
+ * since a cheap point/cell count would otherwise re-derive the whole
+ * cell-reconstruction pipeline redundantly.
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rOptions forwarded to the full read backing the non-time fields
+ * @return metadata with a native `mTimeValues` and a full-read-derived rest
+ */
+MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
+                                                       const ReadOptions& rOptions);
 
 /**
  * @brief Write a Mesh as an OpenFOAM polyMesh case.

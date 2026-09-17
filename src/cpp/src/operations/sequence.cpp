@@ -199,8 +199,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // for gmsh, read_gmsh already existed (4.1 only; 2.2 falls back to a full
     // read either way) but never filled mTimeValues until now; for ensight,
     // reading a VARIABLE file at all is new (previously geometry-only).
+    // openfoam joined in v11.4.0 (roadmap §1 tier B2): its time-directory
+    // fields are new; the polyMesh topology itself never had a time concept.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight";
+          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+          rFormat == "ensight" || rFormat == "openfoam";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

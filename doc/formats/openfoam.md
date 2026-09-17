@@ -63,7 +63,7 @@ Boundary (patch) faces: `triangle`, `quad`, and `polygon<N>` for `N > 4` (groupe
 - `cell_data["cell_tags"]` — per-cell-block tag array: `0` for every volume cell block, and a distinct negative "MED-style family id" `-(patch_index+1)` per boundary patch's face blocks (so a triangle patch and a quad patch on the *same* physical boundary would currently get *different* tag values — see Quirks).
 - `mesh.cell_tags` — mesh-level attribute (not `cell_data`), `{family_id: [patch_name]}`, letting a MED write bridge these patch names through the same mechanism used for Gmsh physical groups (see [`med.md`](med.md)).
 - `mesh.point_tags` — always set to `{}` (present for interface symmetry with the MED-derived tag convention; OpenFOAM has no point-tag concept).
-- No point_data or field_data (OpenFOAM field files like `U`, `p`, `T` in the case's time directories are not read by this module — only the mesh topology under `constant/polyMesh`).
+- No `field_data`. `point_data`/`cell_data` come from a selected time directory's field files (`U`, `p`, `T`, …) when requested via `time_step`/`arrays` — see "Time-directory fields" below; the plain `read()` (no `time_step`/`arrays`) still attaches time-zero's fields by default, matching every other format's "data on unless opted out" convention.
 
 ## Zones as named regions
 
@@ -104,6 +104,23 @@ mesh = meshioplusplus.openfoam.read("case.foam")  # transparent -- no extra argu
 Each processor's own `pointProcAddressing`/`cellProcAddressing`/`faceProcAddressing` (plain `labelList`s) map its local ids back onto the global ones; `faceProcAddressing`'s sign says whether a processor's local copy of a face is stored reversed relative to the global orientation. A global face claimed by exactly one processor is either interior to it or a real exterior boundary face; claimed by two, it is a genuine internal face `decomposePar` split at a processor boundary — the positive-signed entry names the true owner side, the negative-signed one the neighbour side. A boundary face's global patch comes from its owning processor's `boundaryProcAddressing`; a `processor*` inter-rank patch (missing/negative addressing, or a `type` starting with `processor`) has no counterpart in the original case and is dropped.
 
 This is **read-side only and C++-core only**: a multi-region *write* (and by extension a decomposed one) is a documented follow-up, and the pure-Python fallback reader has no concept of `processor*/` directories at all.
+
+## Time-directory fields
+
+`<case>/<time>/<field>` dictionaries round-trip as `point_data`/`cell_data` (v11.4.0, roadmap [§1](../roadmap.md#_1-wasm-parity) tier B2), selected the same way every other transient format's `time_step`/`arrays` work:
+
+```python
+mesh = meshioplusplus.read("case.foam", time_step=-1, arrays=["p", "U"])  # last step, two fields
+meta = meshioplusplus.read_metadata("case.foam")
+meta["time_values"]  # sorted values of the numeric-named time directories that hold fields
+```
+
+- `volScalarField`/`volVectorField`/`volSymmTensorField`/`volTensorField` (1/3/6/9 components) become `cell_data`; `pointScalarField`/`pointVectorField` (1/3 components) become `point_data`. Any other class (`surfaceScalarField`, …) has no point/cell home and is skipped with a warning.
+- `internalField uniform <value>` expands to one row per cell/point; `nonuniform List<T>` is read row for row. Both ASCII and binary (the same `arch`-driven reader the polyMesh files use) are supported.
+- A cell field's `internalField` only ever covers **volume** cells, in OpenFOAM's own numbering — the matching `cell_data` blocks are the volume/polyhedron ones; the boundary-face blocks get `NaN` for that field. Attaching `boundaryField`'s per-patch values to those blocks is a documented follow-up, not read here.
+- Time directories are the case root's numeric-named subdirectories that hold at least one regular file; `0` is included only when it actually holds fields. `time_step` is an **index** into that sorted list (negative counts from the end), exactly like every other transient format — not the directory's own name.
+- `read_metadata(...)["time_values"]` is a real, cheap native path (a directory listing, no field parsing); everything else in that summary comes from a full read, same as Exodus/EnSight.
+- **C++ core only**: the pure-Python fallback reader (`_openfoam.py`) reads no fields at all, matching the zones/multi-region/decomposed-case precedent above.
 
 ## Quirks & limitations
 

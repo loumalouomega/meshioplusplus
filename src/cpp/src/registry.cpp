@@ -488,6 +488,14 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"cgns", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
 #endif
+        // OpenFOAM honours mTimeStep (selects a time-directory) AND
+        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+        // here exactly as the plain reader entry drops it. IWYU pragma: keep
+        {"openfoam",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::OpenFoamInfo info;
+             return meshioplusplus::read_openfoam(path, opts, info);
+         }},
         {"gid", meshioplusplus::read_gid},
         {"vti", meshioplusplus::read_vti},
         {"vtp", meshioplusplus::read_vtp},
@@ -506,6 +514,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gid", meshioplusplus::read_gid_metadata},
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
+        {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},
