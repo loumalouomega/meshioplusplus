@@ -33,13 +33,13 @@
 
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "meshioplusplus/detail/fast_number.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -109,7 +109,7 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
     switch (rA.Dtype()) {
         case DType::Float32:
-            rA.As<float>()[i] = std::strtof(rTok.c_str(), nullptr);
+            rA.As<float>()[i] = static_cast<float>(detail::parse_double(rTok));
             break;
         case DType::Float64:
             rA.As<double>()[i] = detail::parse_double(rTok);

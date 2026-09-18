@@ -82,6 +82,10 @@
 
 #if defined(_MSC_VER)
 #include <locale.h>
+// MSVC's locale.h declares `_locale_t`/`_create_locale`, not POSIX's
+// `locale_t`/`newlocale` -- alias the type so the rest of this header can
+// use one spelling for both.
+using locale_t = _locale_t;
 #define MESHIOPLUSPLUS_HAS_LOCALE_T 1
 #elif defined(__EMSCRIPTEN__) || defined(__linux__) || defined(__APPLE__) || \
     defined(__FreeBSD__) || defined(__unix__)

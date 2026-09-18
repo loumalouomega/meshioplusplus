@@ -26,7 +26,7 @@ SRC = REPO / "src" / "cpp"
 _ALLOWED_FILE = SRC / "include" / "meshioplusplus" / "detail" / "fast_number.hpp"
 
 _FLOAT_FORMAT_SPEC = re.compile(r"%[-0-9.#+ *]*[eEfgG]")
-_BANNED_CALL = re.compile(r"\b(strtod|atof|stod|stof)\s*\(")
+_BANNED_CALL = re.compile(r"\b(strtod|strtof|atof|stod|stof)\s*\(")
 _BANNED_PRINTF = re.compile(r"\b(snprintf|sprintf)\s*\(")
 
 
