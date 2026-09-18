@@ -57,7 +57,7 @@ Generic `SCALARS`/`VECTORS`/`TENSORS`/`FIELD` blocks map 1:1 to `point_data`/`ce
 - The 4.2 and 5.1 sub-readers use two genuinely different cell-reconstruction algorithms (4.2: list-based per-block append; 5.1: shared offset-diff/ vectorized helper also used by VTU) — this is historical rather than deliberate, but means bugs in one don't necessarily affect the other.
 - `_cpp_ok(mesh)` gate: the C++ path is skipped for meshes with polyhedron cells, or with any 2-component vector data — because the Python writer pads 2-component vectors to 3 components (**mutating the input mesh in place**), which the C++ writer deliberately does not replicate.
 - `COLOR_SCALARS` sections are read and discarded (only to advance the file cursor correctly).
-- The registered write-dict alias `vtk51` currently maps to the same function as `vtk42` in the format registry (both point at the 4.2 writer) — use the `fmt_version="5.1"` kwarg via `meshioplusplus.vtk.write` directly, or the default `file_format="vtk"`, to reliably get a 5.1 file.
+- The registered write-dict aliases `vtk42`/`vtk51` both dispatch through `meshioplusplus.vtk.write` (the C++-accelerated path on supported meshes, the Python writer otherwise) with `fmt_version` pinned to `"4.2"`/`"5.1"` respectively — `file_format="vtk42"`, `file_format="vtk51"` and the default `file_format="vtk"` (5.1) all reliably select their stated version.
 
 ## Notes
 
