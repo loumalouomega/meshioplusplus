@@ -72,3 +72,50 @@ def test_point_and_cell_data_of_the_same_name_do_not_clobber(tmp_path):
     assert "x" in back.cell_data, "the cell array must be the one that survives"
     assert np.array_equal(back.cell_data["x"][0], np.arange(ncells, dtype=float))
     assert "x" not in back.point_data
+
+
+# --- roadmap §1 "DOLFIN writes every cell-data block to the same sibling
+# file" ---
+
+
+def _two_triangle_block_mesh():
+    # Two distinct triangle cell blocks, each with its own cell-data values,
+    # so a write that truncates the sibling file per block is caught: block
+    # 0's values (10, 11) would be overwritten by block 1's (20) if the
+    # writer reopened "<stem>_region.xml" once per block.
+    mesh = meshioplusplus.Mesh(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0], [2, 1, 0]],
+        [("triangle", [[0, 1, 2], [0, 2, 3]]), ("triangle", [[1, 4, 5]])],
+        cell_data={"region": [np.array([10.0, 11.0]), np.array([20.0])]},
+    )
+    return mesh
+
+
+def test_two_cell_data_blocks_both_survive_in_the_sibling_file(tmp_path):
+    mesh = _two_triangle_block_mesh()
+    out = tmp_path / "two_blocks.xml"
+    meshioplusplus.dolfin.write(out, mesh)
+
+    back = meshioplusplus.dolfin.read(out)
+    assert "region" in back.cell_data
+    assert (
+        back.cell_data["region"][0].shape[0] == 3
+    ), "the second block's row was overwritten or lost"
+    assert np.array_equal(back.cell_data["region"][0], [10.0, 11.0, 20.0])
+
+
+def test_two_cell_data_blocks_python_engine(tmp_path):
+    # The pure-Python engine (_dolfin.py) has its own independent copy of
+    # this bug; exercise it directly rather than only through the
+    # C++-accelerated default dispatch.
+    from meshioplusplus.dolfin._dolfin import read as _py_read
+    from meshioplusplus.dolfin._dolfin import write as _py_write
+
+    mesh = _two_triangle_block_mesh()
+    out = tmp_path / "two_blocks_py.xml"
+    _py_write(str(out), mesh)
+
+    back = _py_read(str(out))
+    assert "region" in back.cell_data
+    assert back.cell_data["region"][0].shape[0] == 3
+    assert np.array_equal(back.cell_data["region"][0], [10.0, 11.0, 20.0])

@@ -237,34 +237,65 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     fs::path p(rPath);
     std::string base = (p.parent_path() / p.stem()).string();
 
-    // One writer for both locations: a mesh function differs only in its `dim`.
-    auto write_mesh_function = [&](const std::string& rName, const NDArray& rArr, int Dim) {
+    // One writer for both locations: a mesh function differs only in its
+    // `dim`. `rBlocks` is the list of arrays contributing to this name, in
+    // the same cell order the `<cells>` section above wrote -- the mesh file
+    // concatenates every block of `cell_type`, not just the first, so the
+    // sibling mesh-function file must match row for row.
+    auto write_mesh_function = [&](const std::string& rName,
+                                   const std::vector<const NDArray*>& rBlocks, int Dim) {
         const std::string fn = base + "_" + rName + ".xml";
         std::ofstream cf(fn, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + fn);
-        const bool is_float = detail::is_float_dtype(rArr.Dtype());
+        std::size_t sz = 0;
+        for (const NDArray* pArr : rBlocks)
+            sz += pArr->Shape().empty() ? 0 : pArr->Shape()[0];
+        const bool is_float = !rBlocks.empty() && detail::is_float_dtype(rBlocks.front()->Dtype());
         const char* type = is_float ? "float" : "int";
-        const std::size_t sz = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
         cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << Dim << "\" size=\"" << sz
            << "\">";
-        for (std::size_t k = 0; k < sz; ++k) {
-            cf << "<entity index=\"" << k << "\" value=\"";
-            if (is_float) {
-                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(rArr, k));
-                cf << buf;
-            } else {
-                cf << detail::read_int(rArr, k);
+        std::size_t idx = 0;
+        for (const NDArray* pArr : rBlocks) {
+            const std::size_t n = pArr->Shape().empty() ? 0 : pArr->Shape()[0];
+            for (std::size_t k = 0; k < n; ++k, ++idx) {
+                cf << "<entity index=\"" << idx << "\" value=\"";
+                if (is_float) {
+                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(*pArr, k));
+                    cf << buf;
+                } else {
+                    cf << detail::read_int(*pArr, k);
+                }
+                cf << "\" />";
             }
-            cf << "\" />";
         }
         cf << "</mesh_function></dolfin>";
     };
 
     for (const auto& name : rMesh.CellDataNames()) {
         const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
-        for (std::size_t bi = 0; bi < nblocks; ++bi)
-            write_mesh_function(name, rMesh.CellData(name, bi), data_dim);
+        std::vector<const NDArray*> contributing;
+        bool partial = false;
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (cb.Type() == cell_type) {
+                if (bi >= nblocks) {
+                    partial = true;
+                    break;
+                }
+                contributing.push_back(&rMesh.CellData(name, bi));
+            }
+            ++bi;
+        }
+        if (partial) {
+            log::warn(
+                "DOLFIN: cell_data '{}' does not cover every '{}' cell block written to the "
+                "mesh; not written.",
+                name, cell_type);
+            continue;
+        }
+        if (!contributing.empty())
+            write_mesh_function(name, contributing, data_dim);
     }
 
     // Point data, as `dim="0"` mesh functions -- vertices are the topological
@@ -289,7 +320,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
                 name);
             continue;
         }
-        write_mesh_function(name, arr, 0);
+        write_mesh_function(name, {&arr}, 0);
     }
 }
 
