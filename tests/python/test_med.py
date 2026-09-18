@@ -633,14 +633,11 @@ def test_bitmask_written_in_real_med_file(tmp_path):
     """After a full Python meshio write, bitmask attributes must exist in CHA
     fields.
 
-    Calls the pure-Python writer directly: bitmask (LEN/LGN/LNA/LAA) is a
-    documented, deliberate gap of the C++ writer's single-timestep common
-    case (see doc/formats/med.md) -- our own reader never reads it, so its
-    absence costs nothing for a meshio++ round-trip, only for interop with
-    tools (Salome/MEDCoupling) that use it. A plain single-array mesh like
-    this one is exactly what the C++ path now handles directly, so reaching
-    it via ``meshioplusplus.med.write`` would no longer exercise what this
-    test is about.
+    Calls the pure-Python writer directly rather than through
+    ``meshioplusplus.med.write``, which would dispatch a plain single-array
+    mesh like this one straight to the C++ path -- since v9.20.0 both engines
+    write the bitmask, but exercising the Python engine's own
+    ``FieldBitmaskWriter`` specifically is still the point of this test.
     """
     from meshioplusplus.med._med import write as _py_write
 
@@ -1685,8 +1682,11 @@ def test_gmsh_physical_and_cell_sets_both_preserved(tmp_path):
 
 
 def test_cpp_writes_plain_point_and_cell_data():
-    """A plain data-carrying mesh must go through the C++ writer (no bitmask
-    attrs -- that is the Python-only writer's signature)."""
+    """A plain data-carrying mesh must go through the C++ writer. Since
+    v9.20.0 both engines write the MED 4.1 bitmask (LEN/...), so its presence
+    no longer distinguishes them -- assert the C++ path was actually taken by
+    checking it accepted the write at all (nothing here needs a Python
+    fallback: no units, no multi-timestep metadata, no med:nom)."""
     core = pytest.importorskip("meshioplusplus._core")
     if not getattr(core, "__has_hdf5__", False):
         pytest.skip("core built without HDF5")
@@ -1700,14 +1700,87 @@ def test_cpp_writes_plain_point_and_cell_data():
         meshioplusplus.med.write(path, mesh)
         with h5py.File(path, "r") as f:
             field = next(iter(f["CHA"].values()))
-            assert "LEN" not in field.attrs, (
-                "a plain data-carrying mesh should use the C++ writer, "
-                "which never writes the bitmask"
-            )
+            assert "LEN" in field.attrs, "both engines now write the MED 4.1 bitmask"
 
         back = meshioplusplus.med.read(path)
         assert "stress" in back.cell_data
         np.testing.assert_allclose(back.cell_data["stress"][0], [42.0, 43.0])
+
+
+def test_cpp_bitmask_matches_python_bitmask():
+    """Closes roadmap §1's MED-4.1-bitmask item: the C++ writer used to emit
+    none of LEN/LGC/LGN/LCA/LNA/LAA at all. Write the SAME field-carrying mesh
+    through both engines and compare every bitmask attribute -- dtype, byte
+    order and value -- not just presence."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+
+    from meshioplusplus.med._med import write as _py_write
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["temperature"] = np.arange(len(mesh.points), dtype=np.float64)
+    mesh.cell_data["stress"] = [np.arange(len(mesh.cells[0].data), dtype=np.int32)]
+
+    with tempfile.TemporaryDirectory() as d:
+        cpp_path = pathlib.Path(d) / "cpp.med"
+        py_path = pathlib.Path(d) / "python.med"
+        meshioplusplus.med.write(cpp_path, mesh)  # dispatches to the C++ path
+        _py_write(py_path, mesh)
+
+        with h5py.File(cpp_path, "r") as fc, h5py.File(py_path, "r") as fp:
+            for name in ("temperature", "stress"):
+                cf = fc["CHA"][name]
+                pf = fp["CHA"][name]
+                for attr in ("LEN", "LAA"):
+                    assert attr in cf.attrs, f"{name}: C++ missing {attr}"
+                    assert int(cf.attrs[attr]) == int(pf.attrs[attr]), (
+                        name,
+                        attr,
+                        int(cf.attrs[attr]),
+                        int(pf.attrs[attr]),
+                    )
+                # One of LGC/LGN (+ its L*A count) applies depending on
+                # whether the field is nodal or cell.
+                geo_attr = "LGN" if "LGN" in pf.attrs else "LGC"
+                all_attr = "LNA" if geo_attr == "LGN" else "LCA"
+                assert geo_attr in cf.attrs, f"{name}: C++ missing {geo_attr}"
+                assert int(cf.attrs[geo_attr]) == int(pf.attrs[geo_attr]), (
+                    name,
+                    geo_attr,
+                )
+                assert int(cf.attrs[all_attr]) == int(pf.attrs[all_attr]), (
+                    name,
+                    all_attr,
+                )
+                # Byte order: both engines pin LEN/LG* to big-endian int32.
+                for mask_attr in (
+                    attr for attr in cf.attrs if attr.startswith("LG") or attr == "LEN"
+                ):
+                    assert cf.attrs[mask_attr].dtype.byteorder in (">", "="), (
+                        name,
+                        mask_attr,
+                        cf.attrs[mask_attr].dtype,
+                    )
+
+        # Values must also be right, not merely equal between engines: a
+        # scalar point field is MED_NODE (bit 3) with MED_NO_GEOTYPE (LGN
+        # bit 0); the int32 cell field over `triangle` is MED_CELL (bit 0)
+        # with MED_TRIA3 set in LGC.
+        with h5py.File(cpp_path, "r") as fc:
+            temp = fc["CHA"]["temperature"]
+            assert _bit_test(np.uint32(int(temp.attrs["LEN"])), 3)
+            assert _bit_test(np.uint32(int(temp.attrs["LGN"])), 0)
+            assert int(temp.attrs["LNA"]) == 1
+            assert int(temp.attrs["LAA"]) == 1
+
+            stress = fc["CHA"]["stress"]
+            assert _bit_test(np.uint32(int(stress.attrs["LEN"])), 0)
+            assert "MED_TRIA3" in decode_geo_mask(
+                "MED_CELL", np.uint32(int(stress.attrs["LGC"]))
+            )
+            assert int(stress.attrs["LCA"]) == 1
+            assert int(stress.attrs["LAA"]) == 1
 
 
 def test_vector_field_round_trip(tmp_path):
