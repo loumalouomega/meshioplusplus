@@ -76,6 +76,16 @@ TEST(Med, Basic) {
     mt::roundtrip(w, r, mt::tri_mesh(), ".med");
     mt::roundtrip(w, r, mt::tet_mesh(), ".med");  // exercises node perm
     mt::roundtrip(w, r, mt::hex_mesh(), ".med");  // exercises node perm
+    // Quadratic 3D types (roadmap §1 "MED quadratic 3-D node ordering is not
+    // converted"): a round trip alone cannot catch a wrong-but-consistently-
+    // inverse permutation (the geometric probe pinning the actual node
+    // ordering against MEDCoupling's CellModel.cxx lives in
+    // tests/python/test_med.py), but it does exercise the node-count/shape
+    // path for each quadratic type through the C++ writer and reader.
+    mt::roundtrip(w, r, mt::tet10_mesh(), ".med");      // exercises node perm
+    mt::roundtrip(w, r, mt::hex20_mesh(), ".med");      // exercises node perm
+    mt::roundtrip(w, r, mt::pyramid13_mesh(), ".med");  // exercises node perm
+    mt::roundtrip(w, r, mt::wedge15_mesh(), ".med");    // exercises node perm
 }
 
 TEST(Med, MetadataAndFamilies) {

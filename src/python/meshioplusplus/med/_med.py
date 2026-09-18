@@ -47,29 +47,46 @@ med_to_meshio_type = {v: k for k, v in meshio_to_med_type.items()}
 # meshio convention and MED->MED round-trips are the identity, while meshio->MED
 # output (e.g. from OpenFOAM/Abaqus) is correctly oriented for MED readers such
 # as Salome and code_saturne.
+#
+# The quadratic entries' corner portion is identical to their linear
+# sibling's; the mid-edge portion was derived from MEDCoupling's own
+# INTERP_KERNEL/CellModel.cxx edge tables (the same authoritative source
+# `_MED_ORIENT_REF` in test_med.py already trusts for MED's face
+# definitions) and verified geometrically: every MED mid-edge slot lands at
+# the exact arithmetic midpoint of the two MED corners it should sit
+# between. All four are genuine involutions, like the linear ones, so one
+# table again serves both read and write. Twin of med.cpp's med_node_perm().
 _med_node_perm = {
     "tetra": [0, 1, 3, 2],
     "pyramid": [0, 3, 2, 1, 4],
     "wedge": [3, 4, 5, 0, 1, 2],
     "hexahedron": [4, 5, 6, 7, 0, 1, 2, 3],
+    "tetra10": [0, 1, 3, 2, 4, 8, 7, 6, 5, 9],
+    "pyramid13": [0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10],
+    "wedge15": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14],
+    "hexahedron20": [
+        4,
+        5,
+        6,
+        7,
+        0,
+        1,
+        2,
+        3,
+        12,
+        13,
+        14,
+        15,
+        8,
+        9,
+        10,
+        11,
+        16,
+        17,
+        18,
+        19,
+    ],
 }
-
-# Quadratic 3D types have the same meshio<->MED orientation difference, but their
-# permutations (corners + edge-midpoints) are not implemented yet, so they are
-# left unconverted in both directions (read and write) and may be mis-oriented.
-_med_unconverted_3d = {"tetra10", "hexahedron20", "pyramid13", "wedge15"}
-
-
-def _warn_unconverted_3d(cell_type):
-    """Warn that a quadratic 3D cell type is being read or written without the
-    meshio <-> MED node-ordering conversion (not implemented for these types
-    yet), so it may be mis-oriented. Called on both read and write."""
-    if cell_type in _med_unconverted_3d:
-        warn(
-            f"MED: orientation conversion for quadratic 3D cells '{cell_type}' is "
-            "not yet implemented. These cells may be mis-oriented for MED tools "
-            "(Salome, code_saturne, code_aster, etc.)."
-        )
 
 
 def _reorder_med_cells(cell_type, data):
@@ -81,9 +98,10 @@ def _reorder_med_cells(cell_type, data):
 
 
 def _med_cells_for_write(cell_type, data):
-    """Like :func:`_reorder_med_cells`, for the write paths: additionally warn
-    for unconverted quadratic 3D types."""
-    _warn_unconverted_3d(cell_type)
+    """Alias of :func:`_reorder_med_cells`, kept as a separate name for the
+    write call sites (historically also warned for unconverted quadratic 3D
+    types; every meshio<->MED 3D type is now permuted, so there is nothing
+    left to warn about)."""
     return _reorder_med_cells(cell_type, data)
 
 
@@ -473,7 +491,6 @@ def read(filename):
             nod = med_cell_type_group["NOD"]
             n_cells = nod.attrs["NBR"]
             data = nod[()].reshape(n_cells, -1, order="F") - 1
-            _warn_unconverted_3d(cell_type)
             data = _reorder_med_cells(cell_type, data)  # MED -> meshio order
             cells += [(cell_type, data)]
 

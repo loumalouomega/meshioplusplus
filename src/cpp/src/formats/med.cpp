@@ -61,27 +61,26 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
     return m;
 }
 
-// Quadratic 3D types share the meshio <-> MED orientation difference, but
-// their permutations are not implemented; warn (like the Python reference)
-// when reading or writing them unconverted.
-void warn_unconverted_3d(const std::string& rCellType) {
-    if (rCellType == "tetra10" || rCellType == "hexahedron20" || rCellType == "pyramid13" ||
-        rCellType == "wedge15") {
-        log::warn(
-            "MED: orientation conversion for quadratic 3D cells '{}' is not yet "
-            "implemented. These cells may be mis-oriented for MED tools (Salome, "
-            "code_saturne, code_aster, etc.).",
-            rCellType);
-    }
-}
-
-// self-inverse meshio <-> MED node permutations (linear 3D types).
+// self-inverse meshio <-> MED node permutations. The quadratic entries'
+// corner portion is identical to their linear sibling's; the mid-edge
+// portion was derived from MEDCoupling's own INTERP_KERNEL/CellModel.cxx
+// edge tables (the same authoritative source `_MED_ORIENT_REF` in
+// test_med.py already trusts for MED's face definitions) and verified
+// geometrically: every MED mid-edge slot lands at the exact arithmetic
+// midpoint of the two MED corners it should sit between. All four are
+// genuine involutions (Q[Q[i]] == i for every i), like the linear ones, so
+// one table again serves both read and write.
 const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     static const std::unordered_map<std::string, std::vector<int>> m = {
         {"tetra", {0, 1, 3, 2}},
         {"pyramid", {0, 3, 2, 1, 4}},
         {"wedge", {3, 4, 5, 0, 1, 2}},
-        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}}};
+        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"tetra10", {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
+        {"pyramid13", {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
+        {"wedge15", {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
+        {"hexahedron20", {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+    };
     return m;
 }
 
@@ -1287,7 +1286,6 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             std::int64_t n_cells = h5::read_attr_int(nod_ds, "NBR");
             NDArray nod = h5::read_dataset(g, "NOD");
             std::size_t k = n_cells > 0 ? nod.Size() / static_cast<std::size_t>(n_cells) : 0;
-            warn_unconverted_3d(it->second);
             // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
             // node reorder into a single pass over the connectivity.
             auto pit = med_node_perm().find(it->second);
@@ -1767,13 +1765,19 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         } else {
-            warn_unconverted_3d(ctype);
             // Fuse the meshio->MED node reorder with the Fortran transpose
             // (shift +1) into a single pass (mirrors the read side), over the
-            // concatenated connectivity of every contributing block.
+            // concatenated connectivity of every contributing block. Guarded
+            // by NodesPerCell() the same way the read side guards by `k`, so
+            // a length mismatch (e.g. a future cell type added to
+            // meshio_to_med() without a matching med_node_perm() entry)
+            // cannot silently gather out of range.
+            const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
             auto pit = med_node_perm().find(ctype);
-            const std::vector<int>* perm = (pit != med_node_perm().end()) ? &pit->second : nullptr;
-            NDArray conn = med_concat_conn_rows(rMesh, idxs, rMesh.Cells(idxs[0]).NodesPerCell());
+            const std::vector<int>* perm =
+                (pit != med_node_perm().end() && pit->second.size() == npc) ? &pit->second
+                                                                            : nullptr;
+            NDArray conn = med_concat_conn_rows(rMesh, idxs, npc);
             NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);

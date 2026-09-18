@@ -1535,6 +1535,132 @@ def test_identity_perm_is_not_med_orientation():
         )
 
 
+# --- roadmap §1 "MED quadratic 3-D node ordering is not converted" ---
+#
+# meshio's own edge order per type (_convert_cells.py's _ELEVATE), giving
+# each quadratic reference element's mid-edge nodes as exact midpoints of
+# the SAME corner coordinates _MED_ORIENT_REF already uses:
+_MESHIO_EDGES = {
+    "tetra10": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
+    "pyramid13": [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)],
+    "wedge15": [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)],
+    "hexahedron20": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+# MED's own edge order per type, transcribed verbatim from MEDCoupling's
+# INTERP_KERNEL/CellModel.cxx `_little_sons_con` tables (NORM_TETRA10,
+# NORM_PYRA13, NORM_PENTA15, NORM_HEXA20) -- independent of meshio's own
+# edge convention above, which is what makes the check below a genuine
+# cross-check rather than a restatement of the permutation under test.
+_MED_EDGES = {
+    "tetra10": [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)],
+    "pyramid13": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+    ],
+    "wedge15": [
+        (0, 1),
+        (1, 2),
+        (2, 0),
+        (3, 4),
+        (4, 5),
+        (5, 3),
+        (0, 3),
+        (1, 4),
+        (2, 5),
+    ],
+    "hexahedron20": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+
+def _base_type(qtype):
+    """ "tetra10" -> "tetra", "hexahedron20" -> "hexahedron", etc."""
+    return qtype.rstrip("0123456789")
+
+
+def _quadratic_med_orient_ref():
+    """Builds each quadratic type's reference element in meshio ordering:
+    the base type's corners from `_MED_ORIENT_REF`, plus mid-edge nodes at
+    the exact arithmetic midpoint of their two corners per `_MESHIO_EDGES`."""
+    out = {}
+    for qtype, edges in _MESHIO_EDGES.items():
+        corners, _ = _MED_ORIENT_REF[_base_type(qtype)]
+        mids = np.array([(corners[a] + corners[b]) / 2.0 for a, b in edges])
+        out[qtype] = np.vstack([corners, mids])
+    return out
+
+
+def test_med_quadratic_node_perm_mid_edges_match_medcoupling():
+    """The quadratic meshio<->MED permutations must place every mid-edge node
+    at the exact midpoint of the two MED corners MEDCoupling's own edge table
+    (CellModel.cxx `_little_sons_con`) says that MED slot sits between -- a
+    check independent of meshio's own edge convention, since it uses MED's
+    edge table, not meshio's, to decide what each permuted slot should equal.
+    """
+    from meshioplusplus.med._med import _med_node_perm
+
+    ref = _quadratic_med_orient_ref()
+    for cell_type, pts in ref.items():
+        perm = _med_node_perm[cell_type]
+        med_pts = pts[perm]
+        n_corners = len(_MED_ORIENT_REF[_base_type(cell_type)][0])
+        for slot, (a, b) in enumerate(_MED_EDGES[cell_type], start=n_corners):
+            expected = (med_pts[a] + med_pts[b]) / 2.0
+            np.testing.assert_allclose(
+                med_pts[slot],
+                expected,
+                atol=1e-12,
+                err_msg=f"{cell_type}: MED mid-edge slot {slot} (MED corners {a},{b})",
+            )
+
+
+def test_med_quadratic_corner_faces_still_outward():
+    """Sanity check: the quadratic permutations' corner portion must be
+    unchanged from the linear sibling's, so the existing outward-face check
+    still passes when applied to just the corner sub-permutation."""
+    from meshioplusplus.med._med import _med_node_perm
+
+    for qtype in _MESHIO_EDGES:
+        pts, med_faces = _MED_ORIENT_REF[_base_type(qtype)]
+        n_corners = len(pts)
+        corner_perm = _med_node_perm[qtype][:n_corners]
+        assert _all_med_faces_outward(
+            pts, corner_perm, med_faces
+        ), f"{qtype}: corner portion of the quadratic permutation is not MED-outward"
+
+
 def test_med_multi_3d_orientation_and_roundtrip(tmp_path):
     """Multi-mesh MED: 3D cells are written in MED orientation, and the
     multi-mesh reader applies the inverse permutation so a write->read round-trip
