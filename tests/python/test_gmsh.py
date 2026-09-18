@@ -35,6 +35,10 @@ def gmsh_periodic():
         helpers.tet10_mesh,
         helpers.hex_mesh,
         helpers.hex20_mesh,
+        helpers.pyramid13_mesh,
+        helpers.wedge15_mesh,
+        helpers.pyramid14_mesh,
+        helpers.wedge18_mesh,
         helpers.add_point_data(helpers.tri_mesh, 1),
         helpers.add_point_data(helpers.tri_mesh, 3),
         helpers.add_point_data(helpers.tri_mesh, 9),
@@ -361,3 +365,108 @@ def test_untagged_region_gets_an_allocated_tag_on_write(tmp_path):
     assert "body" in cell_regions
     assert cell_regions["body"].tag >= 0, "an allocated tag must not round-trip as -1"
     assert list(cell_regions["body"].entries) == [0]
+
+
+# --- roadmap §1 "gmsh pyramid14 (and wedge18) node ordering is not
+# permuted" ---
+#
+# A write->read round trip cannot catch a wrong-but-consistently-inverse
+# permutation pair, so this checks against gmsh's OWN edge/face tables
+# independently: `_meshio_to_gmsh_order` tells us which meshio corner sits
+# at each gmsh slot; gmsh's corners 0..k_corner-1 are unchanged from
+# meshio's (confirmed against gmsh's own src/geo/MPyramid.h /
+# src/geo/MPrism.h edge/face tables), so re-deriving each mid-edge/
+# face-centre point from THOSE corners and comparing to what actually
+# landed there is a check independent of meshio's own edge/face
+# convention (which is what the fixture meshes in helpers.py were built
+# from).
+
+
+def _assert_gmsh_order_matches_gmsh_geometry(
+    cell_type, points, num_corners, edges, faces
+):
+    from meshioplusplus.gmsh.common import _meshio_to_gmsh_order
+
+    idx = np.arange(len(points)).reshape(1, -1)
+    gmsh_conn = _meshio_to_gmsh_order(cell_type, idx)[0]
+    gmsh_pts = points[gmsh_conn]
+
+    for slot, (a, b) in enumerate(edges, start=num_corners):
+        expected = (gmsh_pts[a] + gmsh_pts[b]) / 2.0
+        np.testing.assert_allclose(
+            gmsh_pts[slot],
+            expected,
+            atol=1e-12,
+            err_msg=f"{cell_type}: gmsh mid-edge slot {slot} (edge {a},{b})",
+        )
+    edge_end = num_corners + len(edges)
+    for slot, corners in enumerate(faces, start=edge_end):
+        expected = gmsh_pts[list(corners)].mean(axis=0)
+        np.testing.assert_allclose(
+            gmsh_pts[slot],
+            expected,
+            atol=1e-12,
+            err_msg=f"{cell_type}: gmsh face-centre slot {slot} (face {corners})",
+        )
+
+
+def test_pyramid14_gmsh_order_matches_gmsh_own_edge_and_face_tables():
+    _assert_gmsh_order_matches_gmsh_geometry(
+        "pyramid14",
+        helpers.pyramid14_mesh.points,
+        num_corners=5,
+        edges=[(0, 1), (0, 3), (0, 4), (1, 2), (1, 4), (2, 3), (2, 4), (3, 4)],
+        faces=[(0, 3, 2, 1)],
+    )
+
+
+def test_wedge18_gmsh_order_matches_gmsh_own_edge_and_face_tables():
+    _assert_gmsh_order_matches_gmsh_geometry(
+        "wedge18",
+        helpers.wedge18_mesh.points,
+        num_corners=6,
+        edges=[
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 2),
+            (1, 4),
+            (2, 5),
+            (3, 4),
+            (3, 5),
+            (4, 5),
+        ],
+        faces=[(0, 1, 4, 3), (0, 3, 5, 2), (1, 2, 5, 4)],
+    )
+
+
+def test_pyramid13_gmsh_order_matches_gmsh_own_edge_table():
+    # The already-shipped pyramid13 table, as an in-repo positive control
+    # for the helper above.
+    _assert_gmsh_order_matches_gmsh_geometry(
+        "pyramid13",
+        helpers.pyramid13_mesh.points,
+        num_corners=5,
+        edges=[(0, 1), (0, 3), (0, 4), (1, 2), (1, 4), (2, 3), (2, 4), (3, 4)],
+        faces=[],
+    )
+
+
+def test_wedge15_gmsh_order_matches_gmsh_own_edge_table():
+    _assert_gmsh_order_matches_gmsh_geometry(
+        "wedge15",
+        helpers.wedge15_mesh.points,
+        num_corners=6,
+        edges=[
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 2),
+            (1, 4),
+            (2, 5),
+            (3, 4),
+            (3, 5),
+            (4, 5),
+        ],
+        faces=[],
+    )

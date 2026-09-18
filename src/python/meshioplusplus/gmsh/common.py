@@ -187,6 +187,17 @@ def _gmsh_to_meshio_order(cell_type: str, idx: ArrayLike) -> np.ndarray:
             0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11
         ],  # http://davis.lbl.gov/Manuals/VTK-4.5/classvtkQuadraticWedge.html and https://gmsh.info/doc/texinfo/gmsh.html#Node-ordering
         "pyramid13": [0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12],
+        # wedge18/pyramid14 extend wedge15/pyramid13's corner+mid-edge
+        # portion unchanged with the added face-centre node(s) appended:
+        # wedge18's three quad-face centres, pyramid14's one base-face
+        # centre. Derived from gmsh's own edge/face tables (src/geo/MPrism.h,
+        # src/geo/MPyramid.h in gmsh's source) against meshio's own layout
+        # (`_skin.py`'s `_CELL_FACES`) and verified geometrically -- every
+        # mid-edge/face-centre slot lands at the exact arithmetic
+        # midpoint/centroid of the corners it should. Twin of gmsh.cpp's
+        # gmsh_to_meshio_perm.
+        "wedge18": [0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16],
+        "pyramid14": [0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13],
         # fmt: on
     }
     idx = np.asarray(idx)
@@ -213,6 +224,8 @@ def _meshio_to_gmsh_order(cell_type: str, idx: ArrayLike) -> np.ndarray:
             0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10,
         ],
         "pyramid13": [0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12],
+        "wedge18": [0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10, 15, 17, 16],
+        "pyramid14": [0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12, 13],
         # fmt: on
     }
     idx = np.asarray(idx)

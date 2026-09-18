@@ -245,6 +245,43 @@ wedge15_mesh = meshioplusplus.Mesh(
     [("wedge15", [np.arange(15)])],
 )
 
+pyramid13_mesh = meshioplusplus.Mesh(
+    [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.5, 0.5, 1.0],
+        # base-edge midpoints
+        [0.5, 0.0, 0.0],
+        [1.0, 0.5, 0.0],
+        [0.5, 1.0, 0.0],
+        [0.0, 0.5, 0.0],
+        # lateral-edge midpoints
+        [0.25, 0.25, 0.5],
+        [0.75, 0.25, 0.5],
+        [0.75, 0.75, 0.5],
+        [0.25, 0.75, 0.5],
+    ],
+    [("pyramid13", [np.arange(13)])],
+)
+
+pyramid14_mesh = meshioplusplus.Mesh(
+    pyramid13_mesh.points.tolist() + [[0.5, 0.5, 0.0]],  # base-face centre
+    [("pyramid14", [np.arange(14)])],
+)
+
+wedge18_mesh = meshioplusplus.Mesh(
+    wedge15_mesh.points.tolist()
+    + [
+        # quad-face centres
+        [0.5, 0.0, 0.5],
+        [1.0, 0.5, 0.5],
+        [0.5, 0.5, 0.5],
+    ],
+    [("wedge18", [np.arange(18)])],
+)
+
 polygon_mesh = meshioplusplus.Mesh(
     [
         [0.0, 0.0, 0.0],
