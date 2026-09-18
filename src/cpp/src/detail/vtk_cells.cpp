@@ -150,6 +150,15 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             rMesh.AppendCellData(kv.first, slice_rows(kv.second, start, end));
     };
 
+    // The last polyhedral cell's END offset into *pFaces, carried across the
+    // whole loop below (not reset per run): faceoffsets are END offsets, so a
+    // polyhedron's face stream begins where the *previous polyhedral* cell's
+    // ended, and a polyhedral run can be preceded by an intervening
+    // non-polyhedral run. Only cells actually decoded in the vtk_type == 42
+    // branch below ever advance it -- a non-polyhedral cell's -1 entry is
+    // simply never visited here, which is what leaves it untouched.
+    std::int64_t last_face_end = 0;
+
     std::size_t start = 0;
     while (start < ncells) {
         std::size_t end = start + 1;
@@ -168,17 +177,12 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             std::vector<std::vector<std::vector<std::int64_t>>> cells;
             std::vector<std::size_t> node_counts;
             for (std::size_t c = start; c < end; ++c) {
-                // faceoffsets are END offsets, so this cell's stream begins
-                // where the previous polyhedral cell's ended. A non-polyhedral
-                // cell carries -1 and contributes nothing.
-                std::int64_t begin_at = 0;
-                for (std::size_t q = 0; q < c; ++q)
-                    if (rFaceOffsets[q] >= 0)
-                        begin_at = rFaceOffsets[q];
+                const std::int64_t begin_at = last_face_end;
                 const std::int64_t end_at = rFaceOffsets[c];
                 if (end_at < 0 || begin_at > end_at ||
                     static_cast<std::size_t>(end_at) > pFaces->size())
                     throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
+                last_face_end = end_at;
                 std::size_t at = static_cast<std::size_t>(begin_at);
                 const std::int64_t nfaces = (*pFaces)[at++];
                 std::vector<std::vector<std::int64_t>> faces;
