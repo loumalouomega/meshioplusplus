@@ -115,3 +115,44 @@ def test_pick_best_format_falls_back_to_first():
         [("triangle", [[0, 1, 2]])],
     )
     assert _pick_best_format(["ansys", "gmsh", "freefem"], mesh) == "ansys"
+
+
+# --- ambiguous-extension fallback (roadmap §1 "reader fallback prints to
+# stdout and swallows the reason") ---
+
+MSH_PATH = Path(__file__).resolve().parent / "meshes" / "msh" / "insulated-2.2.msh"
+
+
+def test_ambiguous_extension_read_writes_nothing_to_stdout(capsys):
+    # `.msh` resolves to ["ansys", "gmsh", "freefem"] (in registration order);
+    # every real gmsh file makes the non-gmsh candidates decline with a
+    # ReadError. That must never reach stdout -- it used to via a bare
+    # print(e) in _read_file's fallback loop.
+    mesh = meshioplusplus.read(MSH_PATH)
+    assert len(mesh.points) > 0
+    assert capsys.readouterr().out == ""
+
+
+def test_declined_candidates_are_logged(caplog):
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger="meshioplusplus"):
+        meshioplusplus.read(MSH_PATH)
+    messages = [r.message for r in caplog.records if r.name == "meshioplusplus"]
+    assert any("declined" in m for m in messages)
+
+
+def test_failed_read_chains_the_last_reason(tmp_path):
+    # A file with a `.msh` extension but no readable content: every candidate
+    # declines, and the final ReadError must chain the last candidate's own
+    # exception (not discard it) and name every candidate tried.
+    bogus = tmp_path / "bogus.msh"
+    bogus.write_text("this is not a valid mesh file at all\n")
+
+    with pytest.raises(meshioplusplus.ReadError) as exc_info:
+        meshioplusplus.read(bogus)
+
+    assert exc_info.value.__cause__ is not None
+    msg = str(exc_info.value)
+    for fmt in ("ansys", "gmsh", "freefem"):
+        assert fmt in msg
