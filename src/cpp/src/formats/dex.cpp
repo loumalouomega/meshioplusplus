@@ -103,7 +103,7 @@ Mesh read_dex(const std::string& rPath) {
             for (char& c : tok)
                 if (c == 'D' || c == 'd')
                     c = 'E';
-            r.push_back(std::strtod(tok.c_str(), nullptr));
+            r.push_back(detail::parse_double(tok));
         }
         if (!r.empty())
             rows.push_back(std::move(r));

@@ -357,7 +357,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
                 std::vector<double> c;
                 for (std::size_t k = 1; k < tok.size(); ++k)
                     if (!tok[k].empty())
-                        c.push_back(std::strtod(tok[k].c_str(), nullptr));
+                        c.push_back(detail::parse_double(tok[k]));
                 rOut.mPoints.push_back(std::move(c));
             }
         } else if (kw == "ELEMENT") {

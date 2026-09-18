@@ -118,7 +118,7 @@ Mesh read_tetgen(const std::string& rPath) {
         throw ReadError("TetGen: .node data size mismatch");
 
     auto at = [&](std::int64_t r, int c) -> double {
-        return std::strtod(nf.mData[r * ncol + c].c_str(), nullptr);
+        return detail::parse_double(nf.mData[r * ncol + c]);
     };
 
     std::int64_t node_index_base = npoints > 0 ? static_cast<std::int64_t>(at(0, 0)) : 0;

@@ -128,7 +128,7 @@ Mesh read_avsucd(const std::string& rPath) {
         auto t = avsucd_tokens(lines.at(li++));
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = std::strtod(t[1 + c].c_str(), nullptr);
+            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -216,8 +216,7 @@ Mesh read_avsucd(const std::string& rPath) {
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] =
-                        std::strtod(t[j++].c_str(), nullptr);
+                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
             }
         }
     };

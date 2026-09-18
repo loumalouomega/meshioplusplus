@@ -144,10 +144,12 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             break;
         char* endp = nullptr;
         if (isflt) {
-            double x = std::strtod(p, &endp);
-            if (endp == p)
+            const char* fend = nullptr;
+            double x = detail::parse_double(p, fend);
+            if (fend == p)
                 break;
             dv.push_back(x);
+            endp = const_cast<char*>(fend);
         } else {
             long long x = std::strtoll(p, &endp, 10);
             if (endp == p)

@@ -151,7 +151,7 @@ Mesh read_permas(const std::string& rPath) {
                 if (points.empty())
                     ncoord = e.size() - 1;
                 for (std::size_t j = 1; j < e.size(); ++j)
-                    points.push_back(std::strtod(e[j].c_str(), nullptr));
+                    points.push_back(detail::parse_double(e[j]));
                 ++pos;
             }
         } else if (kw.rfind("ELEMENT", 0) == 0) {

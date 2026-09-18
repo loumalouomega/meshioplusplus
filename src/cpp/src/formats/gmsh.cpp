@@ -171,8 +171,8 @@ struct GmshCursor {
         // final partial page -- which is exactly why FileSource declines to map
         // files whose size is an exact page multiple.
         const char* base = mBuf.data();
-        char* endp = nullptr;
-        double v = std::strtod(base + mPos, &endp);
+        const char* endp = nullptr;
+        double v = detail::parse_double(base + mPos, endp);
         if (endp == base + mPos)
             throw ReadError("Gmsh: expected a number");
         mPos = static_cast<std::size_t>(endp - base);
@@ -624,8 +624,13 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     double time = 0.0;
     for (std::int64_t i = 0; i < num_real; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            time = std::stod(s);
+        if (i == 0) {
+            const char* end = nullptr;
+            time = detail::parse_double(s.c_str(), end);
+            if (end == s.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                s + "'");
+        }
     }
     std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
     std::vector<std::int64_t> itags(num_int);
@@ -1207,8 +1212,13 @@ GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) 
     const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num_real; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            out.mTime = std::stod(line);
+        if (i == 0) {
+            const char* end = nullptr;
+            out.mTime = detail::parse_double(line.c_str(), end);
+            if (end == line.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                line + "'");
+        }
     }
     rCur.skip_to_end(rTag);
     return out;

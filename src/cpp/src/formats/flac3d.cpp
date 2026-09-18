@@ -37,6 +37,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -352,7 +353,7 @@ Mesh read_flac3d(const std::string& rPath) {
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
-                    points.push_back(std::strtod(s[j].c_str(), nullptr));
+                    points.push_back(detail::parse_double(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
                 std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
@@ -656,9 +657,8 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
-            parallel_for(n, [&](std::size_t r) {
-                zcells[r] = zone_cell_flac3d(points, conn, r, key);
-            });
+            parallel_for(
+                n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
                 wu32(f, ++gid);
@@ -703,8 +703,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // is whitespace-tokenized on read, so the padding carries no meaning.
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
-            double v =
-                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
@@ -721,8 +720,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
-        parallel_for(n,
-                     [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+        parallel_for(n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
             for (auto v : zcells[r])

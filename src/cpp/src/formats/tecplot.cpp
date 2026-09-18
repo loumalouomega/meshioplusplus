@@ -64,8 +64,8 @@ std::vector<std::string> tecplot_tokens(const std::string& rS) {
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
-    char* endp = nullptr;
-    std::strtod(rS.c_str(), &endp);
+    const char* endp = nullptr;
+    detail::parse_double(rS.c_str(), endp);
     return endp == rS.c_str() + rS.size();
 }
 
@@ -274,7 +274,7 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
                 z.mFields[key] = tk[k + 1];
             } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
                 if (key == "SOLUTIONTIME") {
-                    z.mSolutionTime = std::strtod(tk[k + 1].c_str(), nullptr);
+                    z.mSolutionTime = detail::parse_double(tk[k + 1]);
                     z.mHasSolutionTime = true;
                 } else {
                     z.mStrandId = std::stoi(tk[k + 1]);
@@ -417,7 +417,7 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     std::size_t li = data_start;
     while (flat.size() < want && li < lines.size()) {
         for (const auto& t : tecplot_tokens(lines[li]))
-            flat.push_back(std::strtod(t.c_str(), nullptr));
+            flat.push_back(detail::parse_double(t));
         ++li;
     }
 

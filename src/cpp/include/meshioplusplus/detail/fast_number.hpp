@@ -69,6 +69,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <version>
 
@@ -231,6 +232,36 @@ inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
 inline double parse_double(const std::string& rText) noexcept {
     const char* end = nullptr;
     return parse_double(rText.c_str(), end);
+}
+
+/**
+ * @brief Locale-independent, throwing equivalent of `std::stod(rText)`.
+ *
+ * For CLI option parsing and similar call sites that want `std::stod`'s
+ * throw-on-failure contract rather than `parse_double`'s lenient `0.0`, so
+ * they can be migrated with a plain name substitution instead of adding a
+ * cursor check at every call site.
+ *
+ * Unlike `std::stod`, this does not distinguish "no valid prefix" from
+ * "valid but out of `double` range" -- both raise the same
+ * `std::invalid_argument`, never `std::out_of_range`. An out-of-range
+ * literal (`"1e400"`) instead saturates to +/-`HUGE_VAL`, matching
+ * `strtod`'s own C-standard behaviour. Every current call site treats any
+ * exception identically (a CLI argument error), so this difference is not
+ * observable in practice; it is called out here because it is the one
+ * place this header's contract genuinely diverges from the standard
+ * function it replaces.
+ *
+ * @param rText The text to parse.
+ * @return The parsed value.
+ * @throws std::invalid_argument if `rText` has no valid numeric prefix.
+ */
+inline double stod_c(const std::string& rText) {
+    const char* end = nullptr;
+    const double v = parse_double(rText.c_str(), end);
+    if (end == rText.c_str())
+        throw std::invalid_argument("stod_c: no conversion for '" + rText + "'");
+    return v;
 }
 
 /**

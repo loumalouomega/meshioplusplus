@@ -94,8 +94,8 @@ bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
 bool mdpa_parse_double(const std::string& rS, double& rOut) {
     if (rS.empty())
         return false;
-    char* end = nullptr;
-    const double v = std::strtod(rS.c_str(), &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(rS.c_str(), end);
     if (end != rS.c_str() + rS.size())
         return false;
     rOut = v;

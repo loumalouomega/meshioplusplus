@@ -71,7 +71,7 @@ struct MphtxtCursor {
         return mT[mI++];
     }
     long long Integer() { return std::strtoll(Tok().c_str(), nullptr, 10); }
-    double Real() { return std::strtod(Tok().c_str(), nullptr); }
+    double Real() { return detail::parse_double(Tok()); }
     std::string Str() {
         Integer();  // length prefix
         return Tok();

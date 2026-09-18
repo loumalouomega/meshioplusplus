@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/byteswap.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
@@ -147,10 +148,12 @@ struct VtkCursor {
             for (std::size_t i = 0; i < count; ++i) {
                 char* endp = nullptr;
                 if (flt) {
-                    double x = std::strtod(base + mPos, &endp);
-                    if (endp == base + mPos)
+                    const char* fend = nullptr;
+                    double x = detail::parse_double(base + mPos, fend);
+                    if (fend == base + mPos)
                         throw ReadError("VTK ascii parse error");
                     store(a, i, x, 0);
+                    endp = const_cast<char*>(fend);
                 } else {
                     long long x = std::strtoll(base + mPos, &endp, 10);
                     if (endp == base + mPos)

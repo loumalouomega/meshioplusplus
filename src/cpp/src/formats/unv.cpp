@@ -96,7 +96,7 @@ double parse_coord(std::string s) {
     for (char& c : s)
         if (c == 'D' || c == 'd')
             c = 'E';
-    return std::strtod(s.c_str(), nullptr);
+    return detail::parse_double(s);
 }
 
 // Component count -> UNV data-characteristic code (1 scalar, 2 3-vector,

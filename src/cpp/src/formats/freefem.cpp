@@ -75,7 +75,7 @@ Mesh read_freefem(const std::string& rPath) {
         if (i > 0 && !next_tokens(in, tok))
             throw ReadError("FreeFem: truncated vertices");
         for (int c = 0; c < dim; ++c)
-            pts.As<double>()[i * dim + c] = std::strtod(tok[c].c_str(), nullptr);
+            pts.As<double>()[i * dim + c] = detail::parse_double(tok[c]);
         pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
     }
     mesh.AssignPoints(std::move(pts));

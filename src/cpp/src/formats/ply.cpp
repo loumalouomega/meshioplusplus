@@ -316,7 +316,7 @@ Mesh read_ply(const std::string& rPath) {
                 std::string t;
                 rs >> t;
                 if (detail::is_float_dtype(vcols[c].Dtype()))
-                    store_scalar(vcols[c], i, std::strtod(t.c_str(), nullptr), 0, true);
+                    store_scalar(vcols[c], i, detail::parse_double(t), 0, true);
                 else
                     store_scalar(vcols[c], i, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
             }

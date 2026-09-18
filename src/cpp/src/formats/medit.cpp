@@ -88,7 +88,7 @@ struct Tokenizer {
         return mBuf.substr(start, mPos - start);
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
-    double next_double() { return std::strtod(next().c_str(), nullptr); }
+    double next_double() { return detail::parse_double(next()); }
     void skip_line() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;

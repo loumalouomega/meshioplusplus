@@ -86,7 +86,7 @@ Mesh read_ip(const std::string& rPath) {
         std::istringstream iss(s);
         std::string tok;
         while (iss >> tok)
-            flat.push_back(std::strtod(tok.c_str(), nullptr));
+            flat.push_back(detail::parse_double(tok));
     }
 
     std::size_t nsec = static_cast<std::size_t>(dim + ncomp);

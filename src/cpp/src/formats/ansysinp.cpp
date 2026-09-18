@@ -159,10 +159,10 @@ std::vector<double> slice_reals(const std::string& rS, int width) {
         std::string chunk = ansysinp_strip(rS.substr(i, static_cast<std::size_t>(width)));
         if (chunk.empty())
             continue;
-        try {
-            out.push_back(std::stod(chunk));
-        } catch (...) {
-        }
+        const char* end = nullptr;
+        const double v = detail::parse_double(chunk.c_str(), end);
+        if (end != chunk.c_str())
+            out.push_back(v);
     }
     return out;
 }
@@ -241,8 +241,12 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
                 p.push_back(tok);
             if (p.size() >= 3) {
                 try {
-                    etype_lib[std::stoi(ansysinp_strip(p[1]))] =
-                        static_cast<int>(std::stod(ansysinp_strip(p[2])));
+                    const int key = std::stoi(ansysinp_strip(p[1]));
+                    const std::string val = ansysinp_strip(p[2]);
+                    const char* end = nullptr;
+                    const double v = detail::parse_double(val.c_str(), end);
+                    if (end != val.c_str())
+                        etype_lib[key] = static_cast<int>(v);
                 } catch (...) {
                 }
             }

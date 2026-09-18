@@ -52,7 +52,7 @@ Mesh read_mff(const std::string& rPath) {
         count = toks.size() - 1;
     NDArray values(DType::Float64, {count});
     for (std::size_t i = 0; i < count; ++i)
-        values.As<double>()[i] = std::strtod(toks[i + 1].c_str(), nullptr);
+        values.As<double>()[i] = detail::parse_double(toks[i + 1]);
     mesh.AssignPoints(NDArray(DType::Float64, {count, 0}));
     mesh.AddPointData("mff:field", std::move(values));
     return mesh;

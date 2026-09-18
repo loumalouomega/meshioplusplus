@@ -133,7 +133,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(std::strtod(tok[j].c_str(), nullptr));
+            data.push_back(detail::parse_double(tok[j]));
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)

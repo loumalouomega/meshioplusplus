@@ -159,7 +159,7 @@ Mesh read_flux(const std::string& rPath) {
     for (long long i = 0; i < nnod; ++i) {
         ++cp;  // node index
         for (long long j = 0; j < dim; ++j)
-            pts.As<double>()[i * dim + j] = std::strtod(ctok[cp++].c_str(), nullptr);
+            pts.As<double>()[i * dim + j] = detail::parse_double(ctok[cp++]);
     }
     mesh.AssignPoints(std::move(pts));
 

@@ -23,6 +23,7 @@
 #include <clocale>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,7 @@
 using meshioplusplus::detail::is_c_decimal_point;
 using meshioplusplus::detail::parse_double;
 using meshioplusplus::detail::snprintf_c;
+using meshioplusplus::detail::stod_c;
 
 namespace {
 
@@ -135,6 +137,18 @@ TEST(FastNumber, StringOverloadMatchesCStringOverload) {
     std::setlocale(LC_NUMERIC, "C");
     EXPECT_DOUBLE_EQ(parse_double(std::string("3.25")), 3.25);
     EXPECT_DOUBLE_EQ(parse_double(std::string("not a number")), 0.0);
+}
+
+TEST(FastNumber, StodCMatchesStdStodOnValidInputAndThrowsOnInvalid) {
+    // stod_c exists for call sites (the native CLI's option parsing) that
+    // want std::stod's throw-on-failure contract rather than parse_double's
+    // lenient 0.0, migrated by a plain name substitution.
+    LcNumericGuard guard;
+    std::setlocale(LC_NUMERIC, "C");
+    EXPECT_DOUBLE_EQ(stod_c("1.5"), std::stod("1.5"));
+    EXPECT_DOUBLE_EQ(stod_c("-42.125"), std::stod("-42.125"));
+    EXPECT_THROW(stod_c("not a number"), std::invalid_argument);
+    EXPECT_THROW(stod_c(""), std::invalid_argument);
 }
 
 TEST(FastNumber, SnprintfCMatchesPlainSnprintfInTheCLocale) {

@@ -327,7 +327,7 @@ Mesh read_ugrid(const std::string& rPath) {
     };
     auto next_float = [&]() -> double {
         if (ft.mAscii)
-            return std::strtod(next_token().c_str(), nullptr);
+            return detail::parse_double(next_token());
         char tmp[8];
         read_exact(in, tmp, static_cast<std::size_t>(ft.mFloatSize));
         if (swap)

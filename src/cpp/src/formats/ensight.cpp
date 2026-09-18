@@ -245,8 +245,8 @@ public:
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
             const char* start = mText.data() + mPos;
-            char* end = nullptr;
-            pDst[i] = std::strtod(start, &end);
+            const char* end = nullptr;
+            pDst[i] = detail::parse_double(start, end);
             if (end == start)
                 throw ReadError("EnSight: expected a number in geometry file");
             mPos = static_cast<std::size_t>(end - mText.data());

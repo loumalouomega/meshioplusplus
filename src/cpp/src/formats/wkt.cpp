@@ -42,7 +42,7 @@ std::vector<double> parse_point(const std::string& rS) {
     std::istringstream iss(rS);
     std::string tok;
     while (iss >> tok)
-        p.push_back(std::strtod(tok.c_str(), nullptr));
+        p.push_back(detail::parse_double(tok));
     return p;
 }
 

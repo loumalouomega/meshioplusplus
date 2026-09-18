@@ -39,6 +39,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #endif
 
 namespace fs = std::filesystem;
@@ -111,7 +112,7 @@ void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
             rA.As<float>()[i] = std::strtof(rTok.c_str(), nullptr);
             break;
         case DType::Float64:
-            rA.As<double>()[i] = std::strtod(rTok.c_str(), nullptr);
+            rA.As<double>()[i] = detail::parse_double(rTok);
             break;
         case DType::Int8:
             rA.As<std::int8_t>()[i] =

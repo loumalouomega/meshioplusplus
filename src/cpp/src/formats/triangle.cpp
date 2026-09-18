@@ -64,8 +64,8 @@ struct TriangleTokens {
 
     double NextDouble(const char* pWhat) {
         const std::string& t = Next(pWhat);
-        char* end = nullptr;
-        const double v = std::strtod(t.c_str(), &end);
+        const char* end = nullptr;
+        const double v = detail::parse_double(t.c_str(), end);
         if (end == t.c_str())
             throw ReadError(std::string("Triangle: expected a number for ") + pWhat);
         return v;

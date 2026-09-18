@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -255,7 +256,7 @@ Mesh read_netgen(const std::string& rPath) {
                     throw ReadError("Netgen: unexpected EOF in points");
                 std::vector<std::string> toks = netgen_split_ws(pl);
                 for (int j = 0; j < 3 && j < static_cast<int>(toks.size()); ++j)
-                    raw_points[i * 3 + j] = std::strtod(toks[j].c_str(), nullptr);
+                    raw_points[i * 3 + j] = detail::parse_double(toks[j]);
             }
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||

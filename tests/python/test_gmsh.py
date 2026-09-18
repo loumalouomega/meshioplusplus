@@ -338,6 +338,46 @@ def test_read_metadata_reports_both_steps_of_a_transient_file(tmp_path):
         meshioplusplus.gmsh.read(path, time_step=5)
 
 
+def test_malformed_time_value_raises_read_error_not_value_error(tmp_path):
+    """A $NodeData section whose time value isn't a valid number used to
+    reach std::stod directly, propagating as a bare ValueError instead of a
+    proper ReadError -- part of the roadmap's locale item (std::stod's
+    exceptions are the reason A4 gave these two call sites an explicit
+    check rather than a blind swap to the non-throwing parse_double)."""
+    from meshioplusplus import _core
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["u"] = np.array([10.0, 20.0, 30.0, 40.0])
+    path = tmp_path / "bad_time.msh"
+    _core.gmsh41_write(str(path), mesh, False)
+
+    n = len(mesh.points)
+    lines = [
+        "$NodeData",
+        "1",
+        '"u"',
+        "1",
+        "not-a-number",
+        "3",
+        "1",
+        "1",
+        str(n),
+    ]
+    lines += [f"{i + 1} {11.0 + i * 10.0}" for i in range(n)]
+    lines.append("$EndNodeData")
+    with open(path, "a") as f:
+        f.write("\n".join(lines) + "\n")
+
+    # Straight through the C++ core, not the meshioplusplus.gmsh.read() shim:
+    # the shim's `except Exception: if time_step: raise` only re-raises for a
+    # truthy time_step, and 0 (the default/first step) is falsy, so it would
+    # otherwise swallow this and silently fall back to the Python reader --
+    # a separate, already-tracked gap (roadmap §1's other reader-fallback
+    # item), not what this test is about.
+    with pytest.raises(meshioplusplus.ReadError, match="time value"):
+        _core.gmsh_read(str(path), time_step=0)
+
+
 def test_untagged_region_gets_an_allocated_tag_on_write(tmp_path):
     """Roadmap §1 tier B3 (v11.5.0): a Cell region with no gmsh tag of its
     own (as Abaqus/MED/MDPA produce) gets a freshly allocated one instead of
