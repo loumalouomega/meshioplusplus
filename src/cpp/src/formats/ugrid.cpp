@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -512,8 +513,8 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             os << counts[i] << (i == 6 ? '\n' : ' ');
         for (std::int64_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < ncols; ++c) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16g",
-                              detail::read_double(points, i * ncols + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16g",
+                                   detail::read_double(points, i * ncols + c));
                 os << fbuf << (c + 1 == ncols ? '\n' : ' ');
             }
         }

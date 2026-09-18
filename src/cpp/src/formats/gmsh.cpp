@@ -46,6 +46,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -1458,8 +1459,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
                 rOs << idx;
                 char buf[32];
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(b, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(b, r * ncomp + c));
                     rOs << buf;
                 }
                 rOs << '\n';
@@ -1742,7 +1743,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
             double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
             double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
+            detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
             os << buf;
         }
     }
@@ -1822,8 +1823,8 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';
@@ -1911,7 +1912,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
         double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
         os << buf;
     };
 
@@ -2173,8 +2174,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';

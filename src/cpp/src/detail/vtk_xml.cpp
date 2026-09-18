@@ -25,6 +25,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -81,7 +82,7 @@ DType dtype_from_vtu(const std::string& rS) {
 
 void vtu_ascii_double(std::ostream& rOs, double v) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.11e", v);
+    detail::snprintf_c(buf, sizeof(buf), "%.11e", v);
     rOs << buf << '\n';
 }
 

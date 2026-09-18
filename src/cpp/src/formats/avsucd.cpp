@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -325,7 +326,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         os << (i + 1);
         for (int c = 0; c < 3; ++c) {
             double v = (std::size_t(c) < dim) ? detail::read_double(points, i * dim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), " %.17g", v);
+            detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
             os << buf;
         }
         os << "\n";
@@ -370,7 +371,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
             os << (e + 1);
             for (std::size_t a = 0; a < sizes.size(); ++a)
                 for (int c = 0; c < sizes[a]; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.14e", value_at(a, e, c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.14e", value_at(a, e, c));
                     os << buf;
                 }
             os << "\n";

@@ -24,6 +24,7 @@
 #include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -86,7 +87,7 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
     f << values.size() << "\n";
     char buf[64];
     for (double v : values) {
-        std::snprintf(buf, sizeof(buf), "%.16E\n", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16E\n", v);
         f << buf;
     }
 }

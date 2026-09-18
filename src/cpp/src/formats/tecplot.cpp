@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -497,7 +498,9 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     return mesh;
 }
 
-Mesh read_tecplot(const std::string& rPath) { return read_tecplot(rPath, ReadOptions{}); }
+Mesh read_tecplot(const std::string& rPath) {
+    return read_tecplot(rPath, ReadOptions{});
+}
 
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
@@ -605,7 +608,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     char buf[40];
     for (const auto& col : data) {
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.17g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
             os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
         }
         if (col.empty())

@@ -30,6 +30,7 @@
 #include "meshioplusplus/formats/medit.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -255,8 +256,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     char buf[64];
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t c = 0; c < d; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e ",
-                          detail::read_double(points, i * d + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e ", detail::read_double(points, i * d + c));
             os << buf;
         }
         std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
@@ -281,8 +281,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
             const NDArray& conn = cb.Conn();
             for (std::size_t r = 0; r < count; ++r) {
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1)
-                       << " ";
+                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1) << " ";
                 std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
                 os << l << "\n";
             }

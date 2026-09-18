@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -280,8 +281,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
             char buf[64];
             std::string& row = rows[i];
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), "%.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
                 row += (c + 1 == dim ? '\n' : ' ');
             }

@@ -37,6 +37,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -611,8 +612,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
             std::string& row = rows[i];
             row = std::to_string(i + 1);
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), ", %.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), ", %.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
             }
             row += '\n';

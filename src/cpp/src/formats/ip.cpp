@@ -25,6 +25,7 @@
 #include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -150,7 +151,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
     auto write_section = [&](const std::vector<double>& col) {
         f << "(";
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.16g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", col[i]);
             f << (i ? "\n" : "") << buf;
         }
         f << "\n)\n";

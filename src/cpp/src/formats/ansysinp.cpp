@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -240,7 +241,8 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
                 p.push_back(tok);
             if (p.size() >= 3) {
                 try {
-                    etype_lib[std::stoi(ansysinp_strip(p[1]))] = static_cast<int>(std::stod(ansysinp_strip(p[2])));
+                    etype_lib[std::stoi(ansysinp_strip(p[1]))] =
+                        static_cast<int>(std::stod(ansysinp_strip(p[2])));
                 } catch (...) {
                 }
             }
@@ -516,7 +518,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
             double y = dim > 1 ? detail::read_double(points, k * dim + 1) : 0.0;
             double z = dim > 2 ? detail::read_double(points, k * dim + 2) : 0.0;
             std::snprintf(b1, sizeof(b1), "%9zu%9d%9d", k + 1, 0, 0);
-            std::snprintf(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
+            detail::snprintf_c(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
             rows[k] = std::string(b1) + b2;
         });
         for (const auto& row : rows)

@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -299,7 +300,7 @@ void triangle_write_value(std::ostream& rOs, double v) {
         rOs << static_cast<std::int64_t>(r);
     } else {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.16e", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
         rOs << buf;
     }
 }
@@ -334,11 +335,12 @@ void triangle_write_node_rows(std::ostream& rOs, const Mesh& rMesh,
     for (std::int64_t i = 0; i < np; ++i) {
         rOs << i;
         for (int c = 0; c < 2; ++c) {
-            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
             rOs << " " << fbuf;
         }
         for (const auto& k : rAttrKeys) {
-            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(rMesh.PointData(k), i));
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                               detail::read_double(rMesh.PointData(k), i));
             rOs << " " << fbuf;
         }
         for (const auto& k : rRefKeys) {

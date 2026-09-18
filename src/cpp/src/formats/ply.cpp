@@ -36,6 +36,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -499,13 +500,15 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             for (std::size_t k = 0; k < ncoord; ++k) {
                 if (k)
                     row += " ";
-                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + k));
+                detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                                   detail::read_double(points, i * dim + k));
                 row += buf;
             }
             for (auto& p : pd) {
                 row += " ";
                 if (detail::is_float_dtype(p.second->Dtype())) {
-                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(*p.second, i));
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                                       detail::read_double(*p.second, i));
                     row += buf;
                 } else {
                     row += std::to_string(detail::read_int(*p.second, i));

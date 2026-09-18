@@ -33,6 +33,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -147,7 +148,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         stroke_width = *rStrokeWidth;
     } else {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
 
@@ -290,7 +291,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         stroke_width = *rStrokeWidth;
     } else {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
 

@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -92,7 +93,7 @@ std::string nastran_float(double v) {
         }
     }
     if (best.empty()) {
-        std::snprintf(buf, sizeof(buf), "%.11E", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.11E", v);
         best = buf;
     }
     std::size_t epos = best.find('E');

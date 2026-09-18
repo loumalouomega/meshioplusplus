@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -192,7 +193,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
 
@@ -204,7 +205,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
             os << tag;
             for (std::size_t c = 0; c < nc; ++c) {
-                std::snprintf(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
+                detail::snprintf_c(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
                 os << buf;
             }
             os << '\n';

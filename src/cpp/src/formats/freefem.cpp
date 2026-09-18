@@ -27,6 +27,7 @@
 #include "meshioplusplus/formats/freefem.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -154,14 +155,14 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t nver = rMesh.NumPoints();
     f << nver << " " << count(b1) << " " << count(b2) << "\n";
 
-    const NDArray* pref = rMesh.HasPointData("freefem:ref") ? &rMesh.PointData("freefem:ref")
-                                                            : nullptr;
+    const NDArray* pref =
+        rMesh.HasPointData("freefem:ref") ? &rMesh.PointData("freefem:ref") : nullptr;
 
     const NDArray& points = rMesh.Points();
     char buf[32];
     for (std::size_t i = 0; i < nver; ++i) {
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
             f << buf << " ";
         }
         f << (pref ? detail::read_int(*pref, i) : 0) << "\n";

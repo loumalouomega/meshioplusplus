@@ -33,6 +33,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -344,8 +345,8 @@ std::string DataItemStore::Store(const NDArray& rArr) {
         for (std::size_t cc = 0; cc < cols; ++cc) {
             std::size_t i = r * cols + cc;
             if (is_float) {
-                std::snprintf(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
-                              detail::read_double(rArr, i));
+                detail::snprintf_c(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
+                                   detail::read_double(rArr, i));
             } else {
                 std::snprintf(buf, sizeof(buf), "%lld",
                               static_cast<long long>(detail::read_int(rArr, i)));

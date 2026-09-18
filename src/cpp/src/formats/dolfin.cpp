@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace fs = std::filesystem;
 
@@ -212,7 +213,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < npts; ++i) {
         f << "      <vertex index=\"" << i << "\"";
         for (std::size_t c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
             f << " " << coord[c] << "=\"" << buf << "\"";
         }
         f << " />\n";
@@ -283,7 +284,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
             for (std::size_t k = 0; k < n; ++k, ++idx) {
                 cf << "<entity index=\"" << idx << "\" value=\"";
                 if (is_float) {
-                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(*pArr, k));
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(*pArr, k));
                     cf << buf;
                 } else {
                     cf << detail::read_int(*pArr, k);

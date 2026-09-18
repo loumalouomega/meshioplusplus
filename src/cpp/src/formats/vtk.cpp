@@ -31,6 +31,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -70,7 +71,7 @@ const char* vtk_dtype_str(DType dt) {
 
 void vtk_ascii_double(std::ostream& rOs, double v) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.17g", v);
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
     rOs << buf;
 }
 

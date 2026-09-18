@@ -31,6 +31,7 @@
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -171,8 +172,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
         std::string out;
         char buf[32];
         for (std::size_t j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), "%.17g",
-                          detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
+            detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                               detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
             if (j)
                 out += " ";
             out += buf;

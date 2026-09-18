@@ -33,6 +33,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -156,7 +157,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {
@@ -319,7 +320,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {
