@@ -7506,6 +7506,314 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/fast_number.hpp =====
+/**
+ * @file fast_number.hpp
+ * @brief Locale-independent floating-point parsing and formatting.
+ *
+ * `std::strtod` and `std::snprintf`'s `%f`/`%e`/`%g` conversions both honour
+ * the process's `LC_NUMERIC` category, which no first-party code pins: a
+ * host that adopts the environment's locale (a Qt application calling
+ * `setlocale(LC_ALL, "")` at startup, or Python code running
+ * `locale.setlocale(locale.LC_ALL, "")`) makes every ASCII reader and writer
+ * in this codebase silently misread/miswrite `1.5` as `1` (or emit `1,5`)
+ * under a comma-decimal locale. `parse_double`/`snprintf_c` give every
+ * caller a `strtod`/`snprintf`-compatible replacement that always uses `.`
+ * as the decimal separator, regardless of the process locale.
+ *
+ * `std::from_chars`'s floating-point overload is deliberately NOT used as
+ * the sole implementation: it is a real Emscripten/libc++ hazard (see the
+ * comment in `formats/gid_read.cpp`, which predates this header and is the
+ * decision this header formalizes rather than reverses) — some libc++
+ * versions declare the floating-point overload without defining it, a
+ * link-time rather than compile-time failure. Where it IS trustworthy
+ * (`__cpp_lib_to_chars` and not Emscripten) it is used as the fast path,
+ * falling back to a locale-pinned `strtod_l`, and finally to plain `strtod`
+ * with a decimal-point repair for the rare platform with neither.
+ *
+ * `snprintf_c` deliberately does not use `std::to_chars` for writing: this
+ * codebase's format strings carry width, flags and case that `to_chars`
+ * does not reproduce (`"%25.16E"`, `"%.17g"`, ...), and reproducing them
+ * would mean re-implementing padding — the risk the performance section of
+ * the project roadmap explicitly flags ("the reference files are the gate,
+ * not the claim"). Locale independence is achieved by formatting normally
+ * and repairing the decimal point afterward, which is a no-op (one cheap
+ * `localeconv()` call and a comparison, then nothing) in the common C-locale
+ * case, so this is provably byte-identical to plain `snprintf` there.
+ *
+ * Integer parsing (`strtol`/`strtoll`) is deliberately out of scope: the
+ * C locale's `LC_NUMERIC` affects only the radix character and the
+ * (grouping-only, opt-in) thousands separator, neither of which appears in
+ * the subject sequence `strtol` accepts — an integer literal has no decimal
+ * point to misparse. Only floating-point parsing and formatting are
+ * affected, so only those get a locale-independent replacement here.
+ *
+ * The `istringstream operator>>` sites elsewhere in the codebase are a
+ * separate, lower-priority exposure: a default-constructed stream is
+ * imbued with `std::locale::classic()` unless a host calls
+ * `std::locale::global`, which is a narrower and rarer trigger than
+ * `setlocale` (Qt/Python's own habit). Not addressed by this header.
+ */
+
+// System includes
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <version>
+
+#if !defined(MESHIOPLUSPLUS_FORCE_NO_FAST_FROM_CHARS) && !defined(__EMSCRIPTEN__) && \
+    defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+#define MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS 1
+#include <charconv>
+#include <system_error>
+#endif
+
+#if defined(_MSC_VER)
+#include <locale.h>
+// MSVC's locale.h declares `_locale_t`/`_create_locale`, not POSIX's
+// `locale_t`/`newlocale` -- alias the type so the rest of this header can
+// use one spelling for both.
+using locale_t = _locale_t;
+#define MESHIOPLUSPLUS_HAS_LOCALE_T 1
+#elif defined(__EMSCRIPTEN__) || defined(__linux__) || defined(__APPLE__) || \
+    defined(__FreeBSD__) || defined(__unix__)
+#include <locale.h>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h>  // newlocale/strtod_l live here on BSD-derived libc
+#endif
+#define MESHIOPLUSPLUS_HAS_LOCALE_T 1
+#endif
+
+// Printf-style format-string checking, disabled on toolchains that don't
+// support the GNU `format` attribute (MSVC).
+#if defined(__GNUC__) || defined(__clang__)
+#define MESHIOPLUSPLUS_PRINTF_LIKE(fmt_idx, first_arg_idx) \
+    __attribute__((format(printf, fmt_idx, first_arg_idx)))
+#else
+#define MESHIOPLUSPLUS_PRINTF_LIKE(fmt_idx, first_arg_idx)
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+#ifdef MESHIOPLUSPLUS_HAS_LOCALE_T
+
+/**
+ * @brief A `locale_t` handle fixed to the "C" numeric convention, created
+ * once and never freed (a magic static; thread-safe to initialize per
+ * [stmt.dcl]/4, and cheaper than creating one per call).
+ * @return The C-numeric `locale_t`, or a null handle if creation failed
+ * (caller must treat that as tier 2 being unavailable).
+ */
+inline locale_t c_numeric_locale() noexcept {
+#if defined(_MSC_VER)
+    static locale_t loc = _create_locale(LC_NUMERIC, "C");
+#else
+    static locale_t loc = newlocale(LC_NUMERIC_MASK, "C", static_cast<locale_t>(nullptr));
+#endif
+    return loc;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_LOCALE_T
+
+/**
+ * @brief Whether `pDecimalPoint` (from `localeconv()`) is the single
+ * character `'.'`, i.e. whether the active locale's decimal point is
+ * already the one this header guarantees -- the case in which every
+ * function below is a pure pass-through with no repair work to do.
+ */
+inline bool is_c_decimal_point(const char* pDecimalPoint) noexcept {
+    return pDecimalPoint != nullptr && pDecimalPoint[0] == '.' && pDecimalPoint[1] == '\0';
+}
+
+/**
+ * @brief Locale-independent equivalent of `std::strtod`, cursor form.
+ *
+ * Same contract as `std::strtod`: parses a floating-point number starting
+ * at `pFirst`, advances `rEnd` to just past the parsed text, and returns
+ * `0.0` with `rEnd == pFirst` if no conversion could be performed. Always
+ * parses with `.` as the decimal separator, regardless of the process
+ * locale.
+ *
+ * @param pFirst NUL-terminated text to parse from (only the prefix up to
+ * the parsed number is read; the buffer must outlive `rEnd`).
+ * @param rEnd Set to the first unparsed character.
+ * @return The parsed value, or `0.0` on failure (`rEnd == pFirst`).
+ */
+inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_FAST_FROM_CHARS
+    // from_chars, unlike strtod, accepts neither leading whitespace nor a
+    // leading '+' -- skip both here, and fall through to the locale-pinned
+    // tier on anything else from_chars declines (an otherwise malformed
+    // prefix, ...), so all three tiers agree bit-for-bit.
+    const char* p = pFirst;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\v' || *p == '\f' || *p == '\r')
+        ++p;
+    if (*p == '+')
+        ++p;
+    // A hex float ("0x1p3") is the one case from_chars does NOT simply
+    // decline: chars_format::general parses its leading "0" as a complete,
+    // valid decimal literal and reports SUCCESS with ptr stopping at the
+    // 'x' -- silently under-parsing relative to strtod, which greedily
+    // consumes the whole hex float. Detect the "0x"/"0X" prefix (optionally
+    // signed) upfront and skip straight to the locale-pinned tier for it,
+    // rather than trusting a from_chars "success" that isn't one.
+    const char* hex_check = (*p == '-') ? p + 1 : p;
+    const bool looks_like_hex_float =
+        hex_check[0] == '0' && (hex_check[1] == 'x' || hex_check[1] == 'X');
+    if (!looks_like_hex_float) {
+        double value = 0.0;
+        const char* last = pFirst + std::strlen(pFirst);
+        auto [ptr, ec] = std::from_chars(p, last, value);
+        if (ec == std::errc()) {
+            rEnd = ptr;
+            return value;
+        }
+    }
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_LOCALE_T
+    locale_t loc = c_numeric_locale();
+    if (loc != static_cast<locale_t>(nullptr)) {
+        char* end = nullptr;
+#if defined(_MSC_VER)
+        double value2 = _strtod_l(pFirst, &end, loc);
+#else
+        double value2 = strtod_l(pFirst, &end, loc);
+#endif
+        rEnd = end;
+        return value2;
+    }
+#endif
+    // Tier 3: plain strtod, repairing the decimal point if the active
+    // locale's isn't already '.'. Best-effort -- reached only when neither
+    // from_chars nor a locale_t is available on this platform.
+    const char* dp = localeconv()->decimal_point;
+    if (is_c_decimal_point(dp)) {
+        char* end = nullptr;
+        double value3 = std::strtod(pFirst, &end);
+        rEnd = end;
+        return value3;
+    }
+    // A non-'.' single-character decimal point: copy the token into a
+    // stack buffer with the separator swapped for '.', bounded to a length
+    // no real numeric literal exceeds.
+    char buf[64];
+    std::size_t n = 0;
+    const std::size_t dp_len = std::strlen(dp);
+    const char* src = pFirst;
+    while (*src != '\0' && n + dp_len < sizeof(buf)) {
+        if (dp_len == 1 && *src == dp[0]) {
+            buf[n++] = '.';
+            ++src;
+        } else {
+            buf[n++] = *src++;
+        }
+    }
+    buf[n] = '\0';
+    char* end = nullptr;
+    double value4 = std::strtod(buf, &end);
+    rEnd = pFirst + (end - buf);
+    return value4;
+}
+
+/**
+ * @brief Locale-independent equivalent of `std::strtod(rText.c_str(), nullptr)`.
+ * @param rText The text to parse.
+ * @return The parsed value, or `0.0` if `rText` has no valid numeric prefix.
+ */
+inline double parse_double(const std::string& rText) noexcept {
+    const char* end = nullptr;
+    return parse_double(rText.c_str(), end);
+}
+
+/**
+ * @brief Locale-independent, throwing equivalent of `std::stod(rText)`.
+ *
+ * For CLI option parsing and similar call sites that want `std::stod`'s
+ * throw-on-failure contract rather than `parse_double`'s lenient `0.0`, so
+ * they can be migrated with a plain name substitution instead of adding a
+ * cursor check at every call site.
+ *
+ * Unlike `std::stod`, this does not distinguish "no valid prefix" from
+ * "valid but out of `double` range" -- both raise the same
+ * `std::invalid_argument`, never `std::out_of_range`. An out-of-range
+ * literal (`"1e400"`) instead saturates to +/-`HUGE_VAL`, matching
+ * `strtod`'s own C-standard behaviour. Every current call site treats any
+ * exception identically (a CLI argument error), so this difference is not
+ * observable in practice; it is called out here because it is the one
+ * place this header's contract genuinely diverges from the standard
+ * function it replaces.
+ *
+ * @param rText The text to parse.
+ * @return The parsed value.
+ * @throws std::invalid_argument if `rText` has no valid numeric prefix.
+ */
+inline double stod_c(const std::string& rText) {
+    const char* end = nullptr;
+    const double v = parse_double(rText.c_str(), end);
+    if (end == rText.c_str())
+        throw std::invalid_argument("stod_c: no conversion for '" + rText + "'");
+    return v;
+}
+
+/**
+ * @brief Locale-independent `std::vsnprintf`.
+ *
+ * Same contract as `std::snprintf`, with the decimal separator always `.`
+ * regardless of the process locale. In the (overwhelmingly common) case
+ * where the process locale's own decimal point is already `.`, this calls
+ * `std::vsnprintf` and returns with no further work -- byte-identical to
+ * calling `std::snprintf` directly.
+ *
+ * @param pBuf Destination buffer.
+ * @param cap Size of `pBuf`.
+ * @param pFmt A `printf`-style format string.
+ * @return Same as `std::snprintf`: the number of characters that would
+ * have been written (excluding the NUL), or a negative value on an
+ * encoding error.
+ */
+MESHIOPLUSPLUS_PRINTF_LIKE(3, 4)
+inline int snprintf_c(char* pBuf, std::size_t cap, const char* pFmt, ...) {
+    va_list args;
+    va_start(args, pFmt);
+    const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+    va_end(args);
+
+    const char* dp = localeconv()->decimal_point;
+    if (n <= 0 || is_c_decimal_point(dp))
+        return n;
+
+    // Repair the locale's decimal point within the bytes actually written
+    // (n may exceed cap on truncation -- only the written prefix exists to
+    // repair). A formatted number carries at most one decimal point, so a
+    // single-character locale separator (every real-world locale; a
+    // multi-character one is a POSIX theoretical case with no practical
+    // decimal_point that isn't length 1) is replaced in place with no
+    // length change. A multi-character separator is left as a documented
+    // best-effort gap rather than risking a buffer-length bug for a case
+    // that does not occur on any real target this project ships for.
+    const std::size_t dp_len = std::strlen(dp);
+    if (dp_len != 1)
+        return n;
+    const std::size_t written =
+        (cap == 0)
+            ? 0
+            : (static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1);
+    for (std::size_t i = 0; i < written; ++i) {
+        if (pBuf[i] == dp[0]) {
+            pBuf[i] = '.';
+            break;  // at most one decimal point per formatted number
+        }
+    }
+    return n;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/fast_number.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/read_options.hpp =====
 /**
  * @file read_options.hpp
@@ -45533,6 +45841,15 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             rMesh.AppendCellData(kv.first, slice_rows(kv.second, start, end));
     };
 
+    // The last polyhedral cell's END offset into *pFaces, carried across the
+    // whole loop below (not reset per run): faceoffsets are END offsets, so a
+    // polyhedron's face stream begins where the *previous polyhedral* cell's
+    // ended, and a polyhedral run can be preceded by an intervening
+    // non-polyhedral run. Only cells actually decoded in the vtk_type == 42
+    // branch below ever advance it -- a non-polyhedral cell's -1 entry is
+    // simply never visited here, which is what leaves it untouched.
+    std::int64_t last_face_end = 0;
+
     std::size_t start = 0;
     while (start < ncells) {
         std::size_t end = start + 1;
@@ -45551,17 +45868,12 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             std::vector<std::vector<std::vector<std::int64_t>>> cells;
             std::vector<std::size_t> node_counts;
             for (std::size_t c = start; c < end; ++c) {
-                // faceoffsets are END offsets, so this cell's stream begins
-                // where the previous polyhedral cell's ended. A non-polyhedral
-                // cell carries -1 and contributes nothing.
-                std::int64_t begin_at = 0;
-                for (std::size_t q = 0; q < c; ++q)
-                    if (rFaceOffsets[q] >= 0)
-                        begin_at = rFaceOffsets[q];
+                const std::int64_t begin_at = last_face_end;
                 const std::int64_t end_at = rFaceOffsets[c];
                 if (end_at < 0 || begin_at > end_at ||
                     static_cast<std::size_t>(end_at) > pFaces->size())
                     throw ReadError("VTU: 'faceoffsets' entry is out of range for a polyhedron");
+                last_face_end = end_at;
                 std::size_t at = static_cast<std::size_t>(begin_at);
                 const std::int64_t nfaces = (*pFaces)[at++];
                 std::vector<std::vector<std::int64_t>> faces;
@@ -45755,7 +46067,7 @@ DType dtype_from_vtu(const std::string& rS) {
 
 void vtu_ascii_double(std::ostream& rOs, double v) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.11e", v);
+    detail::snprintf_c(buf, sizeof(buf), "%.11e", v);
     rOs << buf << '\n';
 }
 
@@ -45817,10 +46129,12 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             break;
         char* endp = nullptr;
         if (isflt) {
-            double x = std::strtod(p, &endp);
-            if (endp == p)
+            const char* fend = nullptr;
+            double x = detail::parse_double(p, fend);
+            if (fend == p)
                 break;
             dv.push_back(x);
+            endp = const_cast<char*>(fend);
         } else {
             long long x = std::strtoll(p, &endp, 10);
             if (endp == p)
@@ -46653,8 +46967,8 @@ std::string DataItemStore::Store(const NDArray& rArr) {
         for (std::size_t cc = 0; cc < cols; ++cc) {
             std::size_t i = r * cols + cc;
             if (is_float) {
-                std::snprintf(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
-                              detail::read_double(rArr, i));
+                detail::snprintf_c(buf, sizeof(buf), f32 ? "%.7e" : "%.16e",
+                                   detail::read_double(rArr, i));
             } else {
                 std::snprintf(buf, sizeof(buf), "%lld",
                               static_cast<long long>(detail::read_int(rArr, i)));
@@ -47220,7 +47534,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
                 std::vector<double> c;
                 for (std::size_t k = 1; k < tok.size(); ++k)
                     if (!tok[k].empty())
-                        c.push_back(std::strtod(tok[k].c_str(), nullptr));
+                        c.push_back(detail::parse_double(tok[k]));
                 rOut.mPoints.push_back(std::move(c));
             }
         } else if (kw == "ELEMENT") {
@@ -47475,8 +47789,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
             std::string& row = rows[i];
             row = std::to_string(i + 1);
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), ", %.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), ", %.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
             }
             row += '\n';
@@ -47907,8 +48221,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         char cbuf[32];
         for (std::size_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(cbuf, sizeof(cbuf), "%.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(cbuf, sizeof(cbuf), "%.16e",
+                                   detail::read_double(points, i * dim + c));
                 fh << cbuf << (c + 1 == dim ? "" : " ");
             }
             fh << "\n";
@@ -48103,10 +48417,10 @@ std::vector<double> slice_reals(const std::string& rS, int width) {
         std::string chunk = ansysinp_strip(rS.substr(i, static_cast<std::size_t>(width)));
         if (chunk.empty())
             continue;
-        try {
-            out.push_back(std::stod(chunk));
-        } catch (...) {
-        }
+        const char* end = nullptr;
+        const double v = detail::parse_double(chunk.c_str(), end);
+        if (end != chunk.c_str())
+            out.push_back(v);
     }
     return out;
 }
@@ -48185,7 +48499,12 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
                 p.push_back(tok);
             if (p.size() >= 3) {
                 try {
-                    etype_lib[std::stoi(ansysinp_strip(p[1]))] = static_cast<int>(std::stod(ansysinp_strip(p[2])));
+                    const int key = std::stoi(ansysinp_strip(p[1]));
+                    const std::string val = ansysinp_strip(p[2]);
+                    const char* end = nullptr;
+                    const double v = detail::parse_double(val.c_str(), end);
+                    if (end != val.c_str())
+                        etype_lib[key] = static_cast<int>(v);
                 } catch (...) {
                 }
             }
@@ -48461,7 +48780,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
             double y = dim > 1 ? detail::read_double(points, k * dim + 1) : 0.0;
             double z = dim > 2 ? detail::read_double(points, k * dim + 2) : 0.0;
             std::snprintf(b1, sizeof(b1), "%9zu%9d%9d", k + 1, 0, 0);
-            std::snprintf(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
+            detail::snprintf_c(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
             rows[k] = std::string(b1) + b2;
         });
         for (const auto& row : rows)
@@ -48674,7 +48993,7 @@ Mesh read_avsucd(const std::string& rPath) {
         auto t = avsucd_tokens(lines.at(li++));
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = std::strtod(t[1 + c].c_str(), nullptr);
+            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -48762,8 +49081,7 @@ Mesh read_avsucd(const std::string& rPath) {
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] =
-                        std::strtod(t[j++].c_str(), nullptr);
+                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
             }
         }
     };
@@ -48812,13 +49130,30 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         num_cells += cb.NumCells();
 
-    // Material = first int cell_data array (avsucd:material if present).
+    // Material = first int cell_data array (avsucd:material if present). AVS-UCD
+    // has exactly one integer "material id" column; any OTHER integer cell_data
+    // array is not dropped outright (it still lands in the generic cell-data
+    // section below), but it is demoted to a real-valued column there and loses
+    // its int-ness. Warn once, naming every array that loses it, rather than
+    // silently picking the first and demoting the rest.
     std::string mat_key;
+    std::vector<std::string> other_int_names;
     for (const auto& name : rMesh.CellDataNames()) {
         if (rMesh.CellDataNumBlocks(name) > 0 && is_int_dtype(rMesh.CellData(name, 0).Dtype())) {
-            mat_key = name;
-            break;
+            if (mat_key.empty())
+                mat_key = name;
+            else
+                other_int_names.push_back(name);
         }
+    }
+    if (!other_int_names.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < other_int_names.size(); ++i)
+            joined += (i ? ", " : "") + other_int_names[i];
+        log::warn(
+            "AVS-UCD can only write one cell-data array as the integer material id. Using "
+            "'{}'; {} written as real-valued cell data instead.",
+            mat_key, joined);
     }
 
     // Node/cell data breakdowns (excluding material).
@@ -48838,8 +49173,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == mat_key)
             continue;
-        int sz = (rMesh.CellDataNumBlocks(name) > 0 &&
-                  rMesh.CellData(name, 0).Shape().size() >= 2)
+        int sz = (rMesh.CellDataNumBlocks(name) > 0 && rMesh.CellData(name, 0).Shape().size() >= 2)
                      ? static_cast<int>(rMesh.CellData(name, 0).Shape()[1])
                      : 1;
         cdata.push_back(name);
@@ -48856,7 +49190,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         os << (i + 1);
         for (int c = 0; c < 3; ++c) {
             double v = (std::size_t(c) < dim) ? detail::read_double(points, i * dim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), " %.17g", v);
+            detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
             os << buf;
         }
         os << "\n";
@@ -48901,7 +49235,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
             os << (e + 1);
             for (std::size_t a = 0; a < sizes.size(); ++a)
                 for (int c = 0; c < sizes[a]; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.14e", value_at(a, e, c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.14e", value_at(a, e, c));
                     os << buf;
                 }
             os << "\n";
@@ -51443,7 +51777,7 @@ Mesh read_dex(const std::string& rPath) {
             for (char& c : tok)
                 if (c == 'D' || c == 'd')
                     c = 'E';
-            r.push_back(std::strtod(tok.c_str(), nullptr));
+            r.push_back(detail::parse_double(tok));
         }
         if (!r.empty())
             rows.push_back(std::move(r));
@@ -51495,11 +51829,11 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t r = 0; r < n; ++r) {
         for (int c = 0; c < kDim; ++c) {
             double v = c < static_cast<int>(pdim) ? detail::read_double(points, r * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%.16g", v);
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", v);
             f << buf << (c + 1 < kDim ? " " : "");
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
-            std::snprintf(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
             f << buf;
         }
         f << "\n";
@@ -51509,6 +51843,7 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/dex.cpp =====
 // ===== begin src/cpp/src/formats/dolfin.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -51643,6 +51978,8 @@ Mesh read_dolfin(const std::string& rPath) {
 }
 
 void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
+    log::warn("DOLFIN XML is a legacy format. Consider using XDMF instead.");
+
     // Pick the single supported cell type to write.
     std::string cell_type;
     for (const auto cb : rMesh.CellRange())
@@ -51658,6 +51995,25 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
             }
     if (cell_type.empty())
         throw WriteError("DOLFIN XML only supports triangles and tetrahedra");
+
+    // DOLFIN XML can only carry one cell type; name every OTHER type present
+    // so a mixed mesh's discarded cells are a diagnosed choice, not silence.
+    {
+        std::vector<std::string> discarded;
+        for (const auto cb : rMesh.CellRange())
+            if (cb.Type() != cell_type &&
+                std::find(discarded.begin(), discarded.end(), cb.Type()) == discarded.end())
+                discarded.push_back(cb.Type());
+        if (!discarded.empty()) {
+            std::string joined;
+            for (std::size_t i = 0; i < discarded.size(); ++i)
+                joined += (i ? ", " : "") + discarded[i];
+            log::warn(
+                "DOLFIN XML can only handle one cell type at a time. Using '{}', discarding "
+                "'{}'.",
+                cell_type, joined);
+        }
+    }
 
     const std::size_t dim = rMesh.PointDim();
     if (dim != 2 && dim != 3)
@@ -51678,7 +52034,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < npts; ++i) {
         f << "      <vertex index=\"" << i << "\"";
         for (std::size_t c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + c));
             f << " " << coord[c] << "=\"" << buf << "\"";
         }
         f << " />\n";
@@ -51725,34 +52081,65 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     fs::path p(rPath);
     std::string base = (p.parent_path() / p.stem()).string();
 
-    // One writer for both locations: a mesh function differs only in its `dim`.
-    auto write_mesh_function = [&](const std::string& rName, const NDArray& rArr, int Dim) {
+    // One writer for both locations: a mesh function differs only in its
+    // `dim`. `rBlocks` is the list of arrays contributing to this name, in
+    // the same cell order the `<cells>` section above wrote -- the mesh file
+    // concatenates every block of `cell_type`, not just the first, so the
+    // sibling mesh-function file must match row for row.
+    auto write_mesh_function = [&](const std::string& rName,
+                                   const std::vector<const NDArray*>& rBlocks, int Dim) {
         const std::string fn = base + "_" + rName + ".xml";
         std::ofstream cf(fn, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + fn);
-        const bool is_float = detail::is_float_dtype(rArr.Dtype());
+        std::size_t sz = 0;
+        for (const NDArray* pArr : rBlocks)
+            sz += pArr->Shape().empty() ? 0 : pArr->Shape()[0];
+        const bool is_float = !rBlocks.empty() && detail::is_float_dtype(rBlocks.front()->Dtype());
         const char* type = is_float ? "float" : "int";
-        const std::size_t sz = rArr.Shape().empty() ? 0 : rArr.Shape()[0];
         cf << "<dolfin><mesh_function type=\"" << type << "\" dim=\"" << Dim << "\" size=\"" << sz
            << "\">";
-        for (std::size_t k = 0; k < sz; ++k) {
-            cf << "<entity index=\"" << k << "\" value=\"";
-            if (is_float) {
-                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(rArr, k));
-                cf << buf;
-            } else {
-                cf << detail::read_int(rArr, k);
+        std::size_t idx = 0;
+        for (const NDArray* pArr : rBlocks) {
+            const std::size_t n = pArr->Shape().empty() ? 0 : pArr->Shape()[0];
+            for (std::size_t k = 0; k < n; ++k, ++idx) {
+                cf << "<entity index=\"" << idx << "\" value=\"";
+                if (is_float) {
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g", detail::read_double(*pArr, k));
+                    cf << buf;
+                } else {
+                    cf << detail::read_int(*pArr, k);
+                }
+                cf << "\" />";
             }
-            cf << "\" />";
         }
         cf << "</mesh_function></dolfin>";
     };
 
     for (const auto& name : rMesh.CellDataNames()) {
         const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
-        for (std::size_t bi = 0; bi < nblocks; ++bi)
-            write_mesh_function(name, rMesh.CellData(name, bi), data_dim);
+        std::vector<const NDArray*> contributing;
+        bool partial = false;
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            if (cb.Type() == cell_type) {
+                if (bi >= nblocks) {
+                    partial = true;
+                    break;
+                }
+                contributing.push_back(&rMesh.CellData(name, bi));
+            }
+            ++bi;
+        }
+        if (partial) {
+            log::warn(
+                "DOLFIN: cell_data '{}' does not cover every '{}' cell block written to the "
+                "mesh; not written.",
+                name, cell_type);
+            continue;
+        }
+        if (!contributing.empty())
+            write_mesh_function(name, contributing, data_dim);
     }
 
     // Point data, as `dim="0"` mesh functions -- vertices are the topological
@@ -51777,7 +52164,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
                 name);
             continue;
         }
-        write_mesh_function(name, arr, 0);
+        write_mesh_function(name, {&arr}, 0);
     }
 }
 
@@ -52006,8 +52393,8 @@ public:
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
             const char* start = mText.data() + mPos;
-            char* end = nullptr;
-            pDst[i] = std::strtod(start, &end);
+            const char* end = nullptr;
+            pDst[i] = detail::parse_double(start, end);
             if (end == start)
                 throw ReadError("EnSight: expected a number in geometry file");
             mPos = static_cast<std::size_t>(end - mText.data());
@@ -52236,8 +52623,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 num_steps =
                     std::strtol(line.c_str() + std::strlen("number of steps:"), nullptr, 10);
             } else if (ensight_starts_with(line, "filename start number:")) {
-                info.mFileNameStart = std::strtol(
-                    line.c_str() + std::strlen("filename start number:"), nullptr, 10);
+                info.mFileNameStart =
+                    std::strtol(line.c_str() + std::strlen("filename start number:"), nullptr, 10);
             } else if (ensight_starts_with(line, "filename increment:")) {
                 info.mFileNameIncrement =
                     std::strtol(line.c_str() + std::strlen("filename increment:"), nullptr, 10);
@@ -52625,10 +53012,10 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
 
     NDArray point_out;
     if (PerNode)
-        point_out = NDArray::Uninit(DType::Float64, NumComponents == 1
-                                                         ? std::vector<std::size_t>{TotalPoints}
-                                                         : std::vector<std::size_t>{TotalPoints,
-                                                                                    NumComponents});
+        point_out = NDArray::Uninit(DType::Float64,
+                                    NumComponents == 1
+                                        ? std::vector<std::size_t>{TotalPoints}
+                                        : std::vector<std::size_t>{TotalPoints, NumComponents});
     double* pp = PerNode ? point_out.As<double>() : nullptr;
 
     for (const EnsightPartLayout& part : rLayout) {
@@ -52638,8 +53025,7 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
         rCur.CheckSwap(plausible_max, /*PreferSmaller=*/true);
         const std::int64_t pid = rCur.NextInt();
         if (pid != part.mPartId)
-            throw ReadError(
-                "EnSight: variable file's part sequence does not match the geometry's");
+            throw ReadError("EnSight: variable file's part sequence does not match the geometry's");
 
         if (PerNode) {
             rec = rCur.NextRecord();
@@ -52660,8 +53046,7 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
             (void)kw;
             NDArray block(DType::Float64, NumComponents == 1
                                               ? std::vector<std::size_t>{num_cells}
-                                              : std::vector<std::size_t>{num_cells,
-                                                                         NumComponents});
+                                              : std::vector<std::size_t>{num_cells, NumComponents});
             double* bp = block.As<double>();
             std::vector<double> comp(num_cells);
             for (std::size_t c = 0; c < NumComponents; ++c) {
@@ -52701,7 +53086,9 @@ void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
 
 }  // namespace
 
-Mesh read_ensight(const std::string& rPath) { return read_ensight(rPath, ReadOptions{}); }
+Mesh read_ensight(const std::string& rPath) {
+    return read_ensight(rPath, ReadOptions{});
+}
 
 Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
     const bool have_case = ensight_has_suffix(rPath, ".case");
@@ -52861,7 +53248,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     for (std::size_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < np; ++i) {
             const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%12.5e\n", v);
+            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
             out += buf;
         }
     }
@@ -54682,7 +55069,7 @@ Mesh read_flac3d(const std::string& rPath) {
                 std::int64_t pid = std::strtoll(s[1].c_str(), nullptr, 10);
                 point_ids[pid] = static_cast<std::int64_t>(points.size() / 3);
                 for (std::size_t j = 2; j < s.size(); ++j)
-                    points.push_back(std::strtod(s[j].c_str(), nullptr));
+                    points.push_back(detail::parse_double(s[j]));
             } else if (s[0] == "Z" || s[0] == "F") {
                 int dim = (s[0] == "Z") ? 3 : 2;
                 std::int64_t cid = std::strtoll(s[2].c_str(), nullptr, 10);
@@ -54986,9 +55373,8 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             // Right-handed reorder per row is independent -> compute in
             // parallel, then stream sequentially.
             std::vector<std::vector<std::int64_t>> zcells(n);
-            parallel_for(n, [&](std::size_t r) {
-                zcells[r] = zone_cell_flac3d(points, conn, r, key);
-            });
+            parallel_for(
+                n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
             for (std::size_t r = 0; r < n; ++r) {
                 const auto& cell = zcells[r];
                 wu32(f, ++gid);
@@ -55033,8 +55419,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // is whitespace-tokenized on read, so the padding carries no meaning.
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
-            double v =
-                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
             std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
@@ -55051,8 +55436,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         // Right-handed reorder per row is independent -> compute in parallel,
         // then stream sequentially.
         std::vector<std::vector<std::int64_t>> zcells(n);
-        parallel_for(n,
-                     [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
+        parallel_for(n, [&](std::size_t r) { zcells[r] = zone_cell_flac3d(points, conn, r, key); });
         for (std::size_t r = 0; r < n; ++r) {
             f << "Z " << abbr << " " << (++gid);
             for (auto v : zcells[r])
@@ -55217,13 +55601,12 @@ Mesh read_flux(const std::string& rPath) {
             ctok.push_back(w);
     }
     Mesh mesh;
-    NDArray pts(DType::Float64,
-                {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
     std::size_t cp = 0;
     for (long long i = 0; i < nnod; ++i) {
         ++cp;  // node index
         for (long long j = 0; j < dim; ++j)
-            pts.As<double>()[i * dim + j] = std::strtod(ctok[cp++].c_str(), nullptr);
+            pts.As<double>()[i * dim + j] = detail::parse_double(ctok[cp++]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -55326,7 +55709,8 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         std::snprintf(buf, sizeof(buf), "%8zu", i + 1);
         f << buf;
         for (int j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), " %.16g", detail::read_double(points, i * dim + j));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g",
+                               detail::read_double(points, i * dim + j));
             f << buf;
         }
         f << "\n";
@@ -55391,7 +55775,7 @@ Mesh read_freefem(const std::string& rPath) {
         if (i > 0 && !next_tokens(in, tok))
             throw ReadError("FreeFem: truncated vertices");
         for (int c = 0; c < dim; ++c)
-            pts.As<double>()[i * dim + c] = std::strtod(tok[c].c_str(), nullptr);
+            pts.As<double>()[i * dim + c] = detail::parse_double(tok[c]);
         pref.As<std::int64_t>()[i] = std::strtoll(tok[dim].c_str(), nullptr, 10);
     }
     mesh.AssignPoints(std::move(pts));
@@ -55471,14 +55855,14 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t nver = rMesh.NumPoints();
     f << nver << " " << count(b1) << " " << count(b2) << "\n";
 
-    const NDArray* pref = rMesh.HasPointData("freefem:ref") ? &rMesh.PointData("freefem:ref")
-                                                            : nullptr;
+    const NDArray* pref =
+        rMesh.HasPointData("freefem:ref") ? &rMesh.PointData("freefem:ref") : nullptr;
 
     const NDArray& points = rMesh.Points();
     char buf[32];
     for (std::size_t i = 0; i < nver; ++i) {
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", detail::read_double(points, i * dim + c));
             f << buf << " ";
         }
         f << (pref ? detail::read_int(*pref, i) : 0) << "\n";
@@ -56523,14 +56907,17 @@ std::string gid_meshio_type(const std::string& rGidName, int nnode) {
 }
 
 // ---------------------------------------------------------------------------
-// Tokenization. std::strtod / std::strtoll throughout, never std::from_chars --
-// its floating-point overload is a real Emscripten/libc++ hazard (the same rule
-// dex.cpp / wkt.cpp / nastran.cpp follow).
+// Tokenization. Floats go through detail::parse_double (fast_number.hpp),
+// which honours this exact rule -- std::from_chars where trustworthy, never
+// unconditionally, since its floating-point overload is a real
+// Emscripten/libc++ hazard -- so every reader gets it without repeating the
+// reasoning; integers still go straight through std::strtoll, which has no
+// such hazard and is not locale-sensitive.
 
 double gid_to_double(const std::string& rTok, const char* pWhat) {
     const char* start = rTok.c_str();
-    char* end = nullptr;
-    const double v = std::strtod(start, &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(start, end);
     if (end == start)
         throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" + rTok +
                         "'");
@@ -58351,6 +58738,17 @@ const std::vector<int>& gmsh_to_meshio_perm(const std::string& rT) {
                           19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26}},
         {"wedge15", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
         {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
+        // wedge18/pyramid14 extend wedge15/pyramid13's corner+mid-edge
+        // portion unchanged with the added face-centre node(s): wedge18's
+        // three quad-face centres (indices 15-17), pyramid14's one
+        // base-face centre (index 13). Derived from gmsh's own edge/face
+        // tables (src/geo/MPrism.h, src/geo/MPyramid.h in gmsh's source)
+        // against meshio's own layout (`_skin.py`'s `_CELL_FACES`, pinned
+        // independently by the CGNS wedge18 permutation in cgns.cpp) and
+        // verified geometrically: every mid-edge/face-centre slot lands at
+        // the exact arithmetic midpoint/centroid of the corners it should.
+        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
+        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
     };
     static const std::vector<int> empty;
     auto it = m.find(rT);
@@ -58365,6 +58763,8 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
                           18, 19, 12, 15, 13, 14, 24, 22, 20, 21, 23, 25, 26}},
         {"wedge15", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10}},
         {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12}},
+        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10, 15, 17, 16}},
+        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12, 13}},
     };
     static const std::vector<int> empty;
     auto it = m.find(rT);
@@ -58420,8 +58820,8 @@ struct GmshCursor {
         // final partial page -- which is exactly why FileSource declines to map
         // files whose size is an exact page multiple.
         const char* base = mBuf.data();
-        char* endp = nullptr;
-        double v = std::strtod(base + mPos, &endp);
+        const char* endp = nullptr;
+        double v = detail::parse_double(base + mPos, endp);
         if (endp == base + mPos)
             throw ReadError("Gmsh: expected a number");
         mPos = static_cast<std::size_t>(endp - base);
@@ -58695,7 +59095,7 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(
  *         order), or empty when there is nothing to synthesize.
  */
 std::vector<std::int64_t> gmsh_flat_tags_from_regions(const Mesh& rMesh,
-                                                       const std::vector<GmshRegionTag>& rTags) {
+                                                      const std::vector<GmshRegionTag>& rTags) {
     bool any = false;
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         if (rMesh.Region(i).mKind == RegionKind::Cell && rTags[i].mTag >= 0 &&
@@ -58873,8 +59273,13 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     double time = 0.0;
     for (std::int64_t i = 0; i < num_real; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            time = std::stod(s);
+        if (i == 0) {
+            const char* end = nullptr;
+            time = detail::parse_double(s.c_str(), end);
+            if (end == s.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                s + "'");
+        }
     }
     std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
     std::vector<std::int64_t> itags(num_int);
@@ -59449,15 +59854,20 @@ GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) 
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
             const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
-            out.mName = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1)
-                                                              : line;
+            out.mName =
+                (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
         }
     }
     const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num_real; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            out.mTime = std::stod(line);
+        if (i == 0) {
+            const char* end = nullptr;
+            out.mTime = detail::parse_double(line.c_str(), end);
+            if (end == line.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                line + "'");
+        }
     }
     rCur.skip_to_end(rTag);
     return out;
@@ -59708,8 +60118,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
                 rOs << idx;
                 char buf[32];
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(b, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(b, r * ncomp + c));
                     rOs << buf;
                 }
                 rOs << '\n';
@@ -59854,9 +60264,9 @@ struct GmshSynthesizedTags {
  * @param rFlatTags per-cell resolved tag, block-major, from
  *        #gmsh_flat_tags_from_regions (must be non-empty).
  */
-GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
-                                            const std::vector<std::int64_t>& rFlatTags,
-                                            const std::function<int(const std::string&)>& rCellDim) {
+GmshSynthesizedTags gmsh_synthesize_tags_41(
+    const Mesh& rMesh, const std::vector<std::int64_t>& rFlatTags,
+    const std::function<int(const std::string&)>& rCellDim) {
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<std::int64_t> block_tag(nblocks, 0);
@@ -59896,8 +60306,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
             const std::size_t rowsize = cb.IsRagged() ? cb.RowSize(i) : npc;
             const std::int64_t* row = cb.IsRagged() ? cb.Row(i) : nullptr;
             for (std::size_t k = 0; k < rowsize; ++k) {
-                const std::int64_t p =
-                    row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
+                const std::int64_t p = row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
                 if (p < 0 || static_cast<std::size_t>(p) >= npts)
                     continue;
                 if (dim > point_dim[static_cast<std::size_t>(p)]) {
@@ -59993,7 +60402,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
             double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
             double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
+            detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
             os << buf;
         }
     }
@@ -60073,8 +60482,8 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';
@@ -60162,7 +60571,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
         double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
         os << buf;
     };
 
@@ -60424,8 +60833,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';
@@ -61025,7 +61434,7 @@ Mesh read_ip(const std::string& rPath) {
         std::istringstream iss(s);
         std::string tok;
         while (iss >> tok)
-            flat.push_back(std::strtod(tok.c_str(), nullptr));
+            flat.push_back(detail::parse_double(tok));
     }
 
     std::size_t nsec = static_cast<std::size_t>(dim + ncomp);
@@ -61090,7 +61499,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
     auto write_section = [&](const std::vector<double>& col) {
         f << "(";
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.16g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", col[i]);
             f << (i ? "\n" : "") << buf;
         }
         f << "\n)\n";
@@ -61177,8 +61586,8 @@ bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
 bool mdpa_parse_double(const std::string& rS, double& rOut) {
     if (rS.empty())
         return false;
-    char* end = nullptr;
-    const double v = std::strtod(rS.c_str(), &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(rS.c_str(), end);
     if (end != rS.c_str() + rS.size())
         return false;
     rOut = v;
@@ -62134,7 +62543,7 @@ std::string mdpa_format_value(const NDArray& rArray, std::size_t index) {
         std::snprintf(buf, sizeof(buf), "%lld",
                       static_cast<long long>(detail::read_int(rArray, index)));
     } else {
-        std::snprintf(buf, sizeof(buf), "%.16g", detail::read_double(rArray, index));
+        detail::snprintf_c(buf, sizeof(buf), "%.16g", detail::read_double(rArray, index));
     }
     return buf;
 }
@@ -62365,7 +62774,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
                 const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
-                std::snprintf(buf, sizeof(buf), "%.16e", v);
+                detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
                 os << " " << buf;
             }
             os << "\n";
@@ -62563,27 +62972,26 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
     return m;
 }
 
-// Quadratic 3D types share the meshio <-> MED orientation difference, but
-// their permutations are not implemented; warn (like the Python reference)
-// when reading or writing them unconverted.
-void warn_unconverted_3d(const std::string& rCellType) {
-    if (rCellType == "tetra10" || rCellType == "hexahedron20" || rCellType == "pyramid13" ||
-        rCellType == "wedge15") {
-        log::warn(
-            "MED: orientation conversion for quadratic 3D cells '{}' is not yet "
-            "implemented. These cells may be mis-oriented for MED tools (Salome, "
-            "code_saturne, code_aster, etc.).",
-            rCellType);
-    }
-}
-
-// self-inverse meshio <-> MED node permutations (linear 3D types).
+// self-inverse meshio <-> MED node permutations. The quadratic entries'
+// corner portion is identical to their linear sibling's; the mid-edge
+// portion was derived from MEDCoupling's own INTERP_KERNEL/CellModel.cxx
+// edge tables (the same authoritative source `_MED_ORIENT_REF` in
+// test_med.py already trusts for MED's face definitions) and verified
+// geometrically: every MED mid-edge slot lands at the exact arithmetic
+// midpoint of the two MED corners it should sit between. All four are
+// genuine involutions (Q[Q[i]] == i for every i), like the linear ones, so
+// one table again serves both read and write.
 const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     static const std::unordered_map<std::string, std::vector<int>> m = {
         {"tetra", {0, 1, 3, 2}},
         {"pyramid", {0, 3, 2, 1, 4}},
         {"wedge", {3, 4, 5, 0, 1, 2}},
-        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}}};
+        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"tetra10", {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
+        {"pyramid13", {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
+        {"wedge15", {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
+        {"hexahedron20", {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+    };
     return m;
 }
 
@@ -62799,11 +63207,10 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // --- CHA (field) writing: the single-timestep common case only -------------
 //
 // Deferred to the Python writer (see the guard in write_med): multi-timestep
-// metadata (med:step_meta), units (med:field_units), component names
-// (med:nom), and the MED-4.1 optimization bitmask (LEN/LGC/LNA/... -- our own
-// reader never reads these attributes, so their absence costs nothing for a
-// meshio++ round-trip; it is a narrower interoperability gap with tools that
-// use them, e.g. Salome/MEDCoupling). ELNO/ELGA (element-nodal/Gauss-point
+// metadata (med:step_meta), units (med:field_units), and component names
+// (med:nom) -- none of these has a channel in the C++ Mesh API. The MED-4.1
+// optimization bitmask (LEN/LGC/LNA/...) is NOT deferred: both engines write
+// it (see write_cha_bitmask below). ELNO/ELGA (element-nodal/Gauss-point
 // data) needs no guard at all: the uniform mesh API's cell_data is always
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
@@ -62861,13 +63268,73 @@ NDArray med_field_widen(const NDArray& rArr) {
     return out;
 }
 
+// MED 4.1's optimization bitmask (LEN/LGC/LGN/LCA/LNA/LAA/...): one 32-bit
+// mask per attribute rather than a list of strings, recording which
+// entity/geometry types a field touches so a consumer (Salome/MEDCoupling)
+// can skip support types it doesn't need to look at. Bit positions mirror
+// `_med41.py`'s `_ENTITY_BIT`/`_GEO_ORDER` exactly, so a C++-written file's
+// bitmask is byte-identical to Python's. Unlike Python's `FieldBitmaskWriter`
+// (which must track genuinely varying per-step data), the C++ writer is
+// always single-timestep by construction, so every "how many steps share the
+// global mask" count is trivially 1 and the step-level mask always equals
+// the field-level one -- no tracker state needed, just a value computed once
+// and written twice.
+constexpr int kMedEntityBitCell = 0;
+constexpr int kMedEntityBitNode = 3;
+
+// MED_CELL's geo-type bit order (index = bit position). Twin of
+// `_med41.py`'s `_GEO_ORDER["MED_CELL"]`.
+const std::vector<std::string>& med_geo_order_cell() {
+    static const std::vector<std::string> order = {
+        "MED_POINT1", "MED_SEG2",    "MED_SEG3",     "MED_SEG4",      "MED_TRIA3",
+        "MED_QUAD4",  "MED_TRIA6",   "MED_TRIA7",    "MED_QUAD8",     "MED_QUAD9",
+        "MED_TETRA4", "MED_PYRA5",   "MED_PENTA6",   "MED_HEXA8",     "MED_TETRA10",
+        "MED_OCTA12", "MED_PYRA13",  "MED_PENTA15",  "MED_PENTA18",   "MED_HEXA20",
+        "MED_HEXA27", "MED_POLYGON", "MED_POLYGON2", "MED_POLYHEDRON"};
+    return order;
+}
+
+// meshio++'s MED short code ("TE4") -> the geo-type name `med_geo_order_cell`
+// indexes by ("MED_TETRA4"). Twin of `_med.py`'s `med_to_geo_type`, restricted
+// to the subset the C++ writer can actually produce.
+const std::unordered_map<std::string, std::string>& med_short_to_geo_type() {
+    static const std::unordered_map<std::string, std::string> m = {
+        {"PO1", "MED_POINT1"},    {"SE2", "MED_SEG2"},    {"TR3", "MED_TRIA3"},
+        {"QU4", "MED_QUAD4"},     {"TR6", "MED_TRIA6"},   {"TR7", "MED_TRIA7"},
+        {"QU8", "MED_QUAD8"},     {"QU9", "MED_QUAD9"},   {"TE4", "MED_TETRA4"},
+        {"PY5", "MED_PYRA5"},     {"PE6", "MED_PENTA6"},  {"HE8", "MED_HEXA8"},
+        {"T10", "MED_TETRA10"},   {"P13", "MED_PYRA13"},  {"P15", "MED_PENTA15"},
+        {"H20", "MED_HEXA20"},    {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"},
+        {"POE", "MED_POLYHEDRON"}};
+    return m;
+}
+
+// Writes the bitmask attrs common to both entity kinds: LEN on `field` and
+// `ts` (identical -- one step, one global mask), the geo mask under
+// `rGeoAttr` on both, and the two "how many steps/agree-with-global" counts
+// on `field` (`rAllAttr` and LAA), each hard-coded to 1.
+void write_cha_bitmask(hid_t field, hid_t ts, int entity_bit, const std::string& rGeoAttr,
+                       const std::string& rAllAttr, std::int32_t geo_mask) {
+    const std::int32_t len = std::int32_t{1} << entity_bit;
+    h5::write_attr_int(field, "LEN", len, H5T_STD_I32BE);
+    h5::write_attr_int(field, rGeoAttr, geo_mask, H5T_STD_I32BE);
+    h5::write_attr_int(field, rAllAttr, 1);
+    h5::write_attr_int(field, "LAA", 1);
+    h5::write_attr_int(ts, "LEN", len, H5T_STD_I32BE);
+    h5::write_attr_int(ts, rGeoAttr, geo_mask, H5T_STD_I32BE);
+}
+
 // The field group's shared attrs (name, type, component count, blank
-// units/component-names -- the deferred metadata) and its one timestep
-// subgroup (fixed ndt=1, nor=-1, pdt=0.0 -- the single-timestep case this
-// path is scoped to). Returns the timestep group to write the actual support
-// (NOE / MAI.<type>) subgroup into.
+// units/component-names -- the deferred metadata), the MED 4.1 bitmask, and
+// its one timestep subgroup (fixed ndt=1, nor=-1, pdt=0.0 -- the
+// single-timestep case this path is scoped to). Returns the timestep group
+// to write the actual support (NOE / MAI.<type>) subgroup into.
+// `rMedCellTypes` is empty (and ignored) for a nodal field; for a cell field
+// it is every MED type the field's data actually covers, computed by the
+// caller BEFORE this call so the bitmask can be written up front.
 h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
-                               DType dt, std::size_t ncomponents) {
+                               DType dt, std::size_t ncomponents, bool IsNodal,
+                               const std::vector<std::string>& rMedCellTypes) {
     h5::Hid field = h5::create_group(cha, rName);
     write_attr_bytes(field, "MAI", rMeshName);
     h5::write_attr_int(field, "TYP", med_field_type_code(dt));
@@ -62891,6 +63358,25 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     write_attr_double(ts, "PDT", 0.0);
     h5::write_attr_int(ts, "RDT", -1);
     h5::write_attr_int(ts, "ROR", -1);
+
+    if (IsNodal) {
+        // MED_NODE has exactly one geo type ("MED_NO_GEOTYPE"), bit 0.
+        write_cha_bitmask(field, ts, kMedEntityBitNode, "LGN", "LNA", 1);
+    } else {
+        const auto& order = med_geo_order_cell();
+        const auto& short_to_geo = med_short_to_geo_type();
+        std::int32_t geo_mask = 0;
+        for (const std::string& med_type : rMedCellTypes) {
+            auto sit = short_to_geo.find(med_type);
+            if (sit == short_to_geo.end())
+                continue;
+            auto oit = std::find(order.begin(), order.end(), sit->second);
+            if (oit == order.end())
+                continue;
+            geo_mask |= (std::int32_t{1} << static_cast<int>(oit - order.begin()));
+        }
+        write_cha_bitmask(field, ts, kMedEntityBitCell, "LGC", "LCA", geo_mask);
+    }
     return ts;
 }
 
@@ -62911,7 +63397,8 @@ void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray&
 
 void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
                            const NDArray& rData) {
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData));
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData),
+                                        /*IsNodal=*/true, {});
     write_cha_support(ts, "NOE", rData);
 }
 
@@ -62931,12 +63418,13 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             found = true;
         }
     }
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents);
 
     // Group blocks by MED type first: two blocks of the same type share one
     // "MAI.<type>" support subgroup (mirrors the connectivity-writing loop's
     // own consolidation -- two calls to write_cha_support with the same
-    // name would collide creating the group).
+    // name would collide creating the group). Filter to only the types that
+    // actually contribute rows BEFORE writing the header, so the field's
+    // bitmask attrs (which name every contributing geo type) are correct.
     std::vector<std::string> type_order;
     std::unordered_map<std::string, std::vector<std::size_t>> by_type;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -62948,15 +63436,21 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             type_order.push_back(it->second);
         by_type[it->second].push_back(b);
     }
+    std::vector<std::string> contributing;
     for (const std::string& med_type : type_order) {
-        const std::vector<std::size_t>& idxs = by_type[med_type];
         std::size_t n_total = 0;
-        for (std::size_t b : idxs)
+        for (std::size_t b : by_type[med_type])
             n_total += detail::rows(rMesh.CellData(rName, b));
-        if (n_total == 0)
-            continue;  // no contributing block has rows for this array
-        write_cha_support(ts, "MAI." + med_type, med_concat_cell_data_rows(rMesh, rName, idxs));
+        if (n_total > 0)
+            contributing.push_back(med_type);
     }
+
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents,
+                                        /*IsNodal=*/false, contributing);
+
+    for (const std::string& med_type : contributing)
+        write_cha_support(ts, "MAI." + med_type,
+                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]));
 }
 
 // ---- families (point/cell tags) ----
@@ -63703,7 +64197,6 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             std::int64_t n_cells = h5::read_attr_int(nod_ds, "NBR");
             NDArray nod = h5::read_dataset(g, "NOD");
             std::size_t k = n_cells > 0 ? nod.Size() / static_cast<std::size_t>(n_cells) : 0;
-            warn_unconverted_3d(it->second);
             // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
             // node reorder into a single pass over the connectivity.
             auto pit = med_node_perm().find(it->second);
@@ -63877,7 +64370,8 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
                 block.mType = it->second;
                 block.mNumCells = static_cast<std::size_t>(h5::read_attr_int(nod_ds, "NBR"));
                 auto nit = node_counts.find(it->second);
-                block.mNodesPerCell = nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
+                block.mNodesPerCell =
+                    nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
             }
             meta.mCellBlocks.push_back(std::move(block));
         }
@@ -63898,8 +64392,7 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
                 times.insert(read_attr_double(g, "PDT"));
                 if (i == 0) {
                     std::vector<std::string> supports = h5::group_links(g);
-                    is_nodal =
-                        std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+                    is_nodal = std::find(supports.begin(), supports.end(), "NOE") != supports.end();
                 }
             }
             if (is_nodal)
@@ -64183,13 +64676,19 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         } else {
-            warn_unconverted_3d(ctype);
             // Fuse the meshio->MED node reorder with the Fortran transpose
             // (shift +1) into a single pass (mirrors the read side), over the
-            // concatenated connectivity of every contributing block.
+            // concatenated connectivity of every contributing block. Guarded
+            // by NodesPerCell() the same way the read side guards by `k`, so
+            // a length mismatch (e.g. a future cell type added to
+            // meshio_to_med() without a matching med_node_perm() entry)
+            // cannot silently gather out of range.
+            const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
             auto pit = med_node_perm().find(ctype);
-            const std::vector<int>* perm = (pit != med_node_perm().end()) ? &pit->second : nullptr;
-            NDArray conn = med_concat_conn_rows(rMesh, idxs, rMesh.Cells(idxs[0]).NodesPerCell());
+            const std::vector<int>* perm =
+                (pit != med_node_perm().end() && pit->second.size() == npc) ? &pit->second
+                                                                            : nullptr;
+            NDArray conn = med_concat_conn_rows(rMesh, idxs, npc);
             NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);
@@ -64398,7 +64897,7 @@ struct Tokenizer {
         return mBuf.substr(start, mPos - start);
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
-    double next_double() { return std::strtod(next().c_str(), nullptr); }
+    double next_double() { return detail::parse_double(next()); }
     void skip_line() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
@@ -64566,8 +65065,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
     char buf[64];
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t c = 0; c < d; ++c) {
-            std::snprintf(buf, sizeof(buf), "%.16e ",
-                          detail::read_double(points, i * d + c));
+            detail::snprintf_c(buf, sizeof(buf), "%.16e ", detail::read_double(points, i * d + c));
             os << buf;
         }
         std::int64_t lab = vlabels ? detail::read_int(*vlabels, i) : 1;
@@ -64592,8 +65090,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
             const NDArray& conn = cb.Conn();
             for (std::size_t r = 0; r < count; ++r) {
                 for (int j = 0; j < k; ++j)
-                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1)
-                       << " ";
+                    os << (detail::read_int(conn, r * static_cast<std::size_t>(k) + j) + 1) << " ";
                 std::int64_t l = lab ? detail::read_int(*lab, r) : 1;
                 os << l << "\n";
             }
@@ -64638,7 +65135,7 @@ Mesh read_mff(const std::string& rPath) {
         count = toks.size() - 1;
     NDArray values(DType::Float64, {count});
     for (std::size_t i = 0; i < count; ++i)
-        values.As<double>()[i] = std::strtod(toks[i + 1].c_str(), nullptr);
+        values.As<double>()[i] = detail::parse_double(toks[i + 1]);
     mesh.AssignPoints(NDArray(DType::Float64, {count, 0}));
     mesh.AddPointData("mff:field", std::move(values));
     return mesh;
@@ -64673,7 +65170,7 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
     f << values.size() << "\n";
     char buf[64];
     for (double v : values) {
-        std::snprintf(buf, sizeof(buf), "%.16E\n", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16E\n", v);
         f << buf;
     }
 }
@@ -64771,7 +65268,7 @@ Mesh read_mfm(const std::string& rPath) {
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     need(static_cast<std::size_t>(nver) * dim);
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = std::strtod(tok[pos++].c_str(), nullptr);
+        pts.As<double>()[i] = detail::parse_double(tok[pos++]);
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
@@ -64858,8 +65355,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     char buf[64];
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(),
-                          detail::read_double(points, i * dim + c));
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), detail::read_double(points, i * dim + c));
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain
@@ -64920,7 +65416,7 @@ struct MphtxtCursor {
         return mT[mI++];
     }
     long long Integer() { return std::strtoll(Tok().c_str(), nullptr, 10); }
-    double Real() { return std::strtod(Tok().c_str(), nullptr); }
+    double Real() { return detail::parse_double(Tok()); }
     std::string Str() {
         Integer();  // length prefix
         return Tok();
@@ -65047,7 +65543,8 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
     char buf[32];
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         for (std::size_t cc = 0; cc < sdim; ++cc) {
-            std::snprintf(buf, sizeof(buf), "%.16g", detail::read_double(points, i * sdim + cc));
+            detail::snprintf_c(buf, sizeof(buf), "%.16g",
+                               detail::read_double(points, i * sdim + cc));
             f << buf << (cc + 1 == sdim ? '\n' : ' ');
         }
     }
@@ -65150,14 +65647,15 @@ std::string nastran_float(double v) {
     char buf[40];
     std::string best;
     for (int p = 0; p <= 11; ++p) {
-        std::snprintf(buf, sizeof(buf), "%.*E", p, v);
-        if (std::strtod(buf, nullptr) == v) {
+        detail::snprintf_c(buf, sizeof(buf), "%.*E", p, v);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == v) {
             best = buf;
             break;
         }
     }
     if (best.empty()) {
-        std::snprintf(buf, sizeof(buf), "%.11E", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.11E", v);
         best = buf;
     }
     std::size_t epos = best.find('E');
@@ -65190,8 +65688,8 @@ double parse_nastran_float(std::string s) {
         return 0.0;
     std::size_t e = s.find_last_not_of(" \t");
     s = s.substr(b, e - b + 1);
-    char* endp = nullptr;
-    double v = std::strtod(s.c_str(), &endp);
+    const char* endp = nullptr;
+    double v = detail::parse_double(s.c_str(), endp);
     if (endp != s.c_str() && *endp == '\0')
         return v;
     // Nastran compressed exponent, e.g. "1.5+1" -> "1.5e+1"
@@ -65202,7 +65700,7 @@ double parse_nastran_float(std::string s) {
             t += 'e';
         t += c;
     }
-    return std::strtod(t.c_str(), nullptr);
+    return detail::parse_double(t);
 }
 
 std::string nastran_strip(const std::string& rS) {
@@ -65668,7 +66166,7 @@ Mesh read_netgen(const std::string& rPath) {
                     throw ReadError("Netgen: unexpected EOF in points");
                 std::vector<std::string> toks = netgen_split_ws(pl);
                 for (int j = 0; j < 3 && j < static_cast<int>(toks.size()); ++j)
-                    raw_points[i * 3 + j] = std::strtod(toks[j].c_str(), nullptr);
+                    raw_points[i * 3 + j] = detail::parse_double(toks[j]);
             }
         } else if (line == "pointelements" || line == "edgesegments" || line == "edgesegmentsgi" ||
                    line == "surfaceelements" || line == "surfaceelementsgi" ||
@@ -66023,7 +66521,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
 
@@ -66035,7 +66533,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
             os << tag;
             for (std::size_t c = 0; c < nc; ++c) {
-                std::snprintf(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
+                detail::snprintf_c(buf, sizeof(buf), " %.17g", detail::read_double(d, r * nc + c));
                 os << buf;
             }
             os << '\n';
@@ -66214,7 +66712,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
     for (const auto cb : rMesh.CellRange()) {
@@ -67169,7 +67667,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
         ++p;
     std::vector<double> out;
     if (components == 1) {
-        out.push_back(std::atof(std::string(rText.substr(p)).c_str()));
+        out.push_back(detail::parse_double(std::string(rText.substr(p))));
         return out;
     }
     const std::size_t lp = rText.find('(', p);
@@ -67215,7 +67713,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
         if (s.empty())
             continue;
         if (components == 1) {
-            out.mFlat.push_back(std::atof(s.c_str()));
+            out.mFlat.push_back(detail::parse_double(s));
         } else {
             for (char& c : s)
                 if (c == '(' || c == ')')
@@ -67285,8 +67783,8 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
 bool foam_parse_time_dir_name(const std::string& rName, double& rValue) {
     if (rName.empty())
         return false;
-    char* end = nullptr;
-    const double v = std::strtod(rName.c_str(), &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(rName.c_str(), end);
     if (end != rName.c_str() + rName.size())
         return false;
     rValue = v;
@@ -68706,7 +69204,7 @@ Mesh read_permas(const std::string& rPath) {
                 if (points.empty())
                     ncoord = e.size() - 1;
                 for (std::size_t j = 1; j < e.size(); ++j)
-                    points.push_back(std::strtod(e[j].c_str(), nullptr));
+                    points.push_back(detail::parse_double(e[j]));
                 ++pos;
             }
         } else if (kw.rfind("ELEMENT", 0) == 0) {
@@ -68714,9 +69212,9 @@ Mesh read_permas(const std::string& rPath) {
             std::size_t eq = kw.find('=');
             if (eq == std::string::npos)
                 throw ReadError("PERMAS: $ELEMENT without TYPE=");
-            std::string etype =
-                permas_upper(permas_split_ws(kw.substr(eq + 1)).empty() ? std::string()
-                                                          : permas_split_ws(kw.substr(eq + 1))[0]);
+            std::string etype = permas_upper(permas_split_ws(kw.substr(eq + 1)).empty()
+                                                 ? std::string()
+                                                 : permas_split_ws(kw.substr(eq + 1))[0]);
             auto tit = permas_to_meshio().find(etype);
             if (tit == permas_to_meshio().end())
                 throw ReadError("PERMAS: element type not available: " + etype);
@@ -68784,9 +69282,8 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < npts; ++i) {
         f << (i + 1);
         for (int c = 0; c < 3; ++c) {
-            double v =
-                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%.17g", v);
+            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
             f << " " << buf;
         }
         f << "\n";
@@ -69116,7 +69613,7 @@ Mesh read_ply(const std::string& rPath) {
                 std::string t;
                 rs >> t;
                 if (detail::is_float_dtype(vcols[c].Dtype()))
-                    store_scalar(vcols[c], i, std::strtod(t.c_str(), nullptr), 0, true);
+                    store_scalar(vcols[c], i, detail::parse_double(t), 0, true);
                 else
                     store_scalar(vcols[c], i, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
             }
@@ -69300,13 +69797,15 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             for (std::size_t k = 0; k < ncoord; ++k) {
                 if (k)
                     row += " ";
-                std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(points, i * dim + k));
+                detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                                   detail::read_double(points, i * dim + k));
                 row += buf;
             }
             for (auto& p : pd) {
                 row += " ";
                 if (detail::is_float_dtype(p.second->Dtype())) {
-                    std::snprintf(buf, sizeof(buf), "%.17g", detail::read_double(*p.second, i));
+                    detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                                       detail::read_double(*p.second, i));
                     row += buf;
                 } else {
                     row += std::to_string(detail::read_int(*p.second, i));
@@ -69441,7 +69940,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(std::strtod(tok[j].c_str(), nullptr));
+            data.push_back(detail::parse_double(tok[j]));
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)
@@ -69644,7 +70143,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     } else {
         auto wr3 = [&](const char* prefix, const double* p) {
             char line[160];
-            std::snprintf(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1], p[2]);
+            detail::snprintf_c(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1],
+                               p[2]);
             os << line;
         };
         os << "solid\n";
@@ -69841,7 +70341,7 @@ Mesh read_su2(const std::string& rPath) {
             for (std::size_t i = 0; i < npoin; ++i) {
                 auto t = su2_tokens(lines.at(li++));
                 for (int c = 0; c < dim; ++c)
-                    pp[i * dim + c] = std::strtod(t[c].c_str(), nullptr);
+                    pp[i * dim + c] = detail::parse_double(t[c]);
             }
             mesh.AssignPoints(std::move(pts));
         } else if (name == "NELEM") {
@@ -69923,8 +70423,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
             char buf[64];
             std::string& row = rows[i];
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), "%.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
                 row += (c + 1 == dim ? '\n' : ' ');
             }
@@ -70142,7 +70642,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         stroke_width = *rStrokeWidth;
     } else {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
 
@@ -70183,8 +70683,8 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         if (colors.mActive && !face.mIsLine) {
             const std::optional<detail::Rgb> c = colors.Color(f);
             const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
-            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
-               << hex_color << "\" />";
+            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:" << hex_color
+               << "\" />";
         } else {
             os << "<path d=\"" << d << "\" />";
         }
@@ -70285,7 +70785,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         stroke_width = *rStrokeWidth;
     } else {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%g", width / 100.0);
+        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
 
@@ -70311,10 +70811,14 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
        << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
 
     std::size_t face_index = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad")
+        if (type != "line" && type != "triangle" && type != "quad") {
+            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
+                skipped_types.push_back(type);
             continue;
+        }
 
         const NDArray& conn = cb.Conn();
         const std::size_t ncols = detail::cols(conn);
@@ -70341,8 +70845,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
                 // See the twin comment in svg_proj_write(): the inline style
                 // is what actually wins the CSS cascade; fill stays for
                 // inspection/tests.
-                os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
-                   << hex_color << "\" />";
+                os << "<path d=\"" << d << "\" fill=\"" << hex_color
+                   << "\" style=\"fill:" << hex_color << "\" />";
             } else {
                 os << "<path d=\"" << d << "\" />";
             }
@@ -70353,6 +70857,16 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         svg_append_colorbar(os, colors, min_x, min_y, width, height, rFloatFmt);
 
     os << "</svg>";
+
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i)
+            joined += (i ? ", " : "") + skipped_types[i];
+        log::warn(
+            "SVG: cell type(s) '{}' are not representable (only line/triangle/quad); "
+            "skipping.",
+            joined);
+    }
 }
 
 }  // namespace meshioplusplus
@@ -70400,8 +70914,8 @@ std::vector<std::string> tecplot_tokens(const std::string& rS) {
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
-    char* endp = nullptr;
-    std::strtod(rS.c_str(), &endp);
+    const char* endp = nullptr;
+    detail::parse_double(rS.c_str(), endp);
     return endp == rS.c_str() + rS.size();
 }
 
@@ -70610,7 +71124,7 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
                 z.mFields[key] = tk[k + 1];
             } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
                 if (key == "SOLUTIONTIME") {
-                    z.mSolutionTime = std::strtod(tk[k + 1].c_str(), nullptr);
+                    z.mSolutionTime = detail::parse_double(tk[k + 1]);
                     z.mHasSolutionTime = true;
                 } else {
                     z.mStrandId = std::stoi(tk[k + 1]);
@@ -70753,7 +71267,7 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     std::size_t li = data_start;
     while (flat.size() < want && li < lines.size()) {
         for (const auto& t : tecplot_tokens(lines[li]))
-            flat.push_back(std::strtod(t.c_str(), nullptr));
+            flat.push_back(detail::parse_double(t));
         ++li;
     }
 
@@ -70834,7 +71348,9 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     return mesh;
 }
 
-Mesh read_tecplot(const std::string& rPath) { return read_tecplot(rPath, ReadOptions{}); }
+Mesh read_tecplot(const std::string& rPath) {
+    return read_tecplot(rPath, ReadOptions{});
+}
 
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
@@ -70942,7 +71458,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     char buf[40];
     for (const auto& col : data) {
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.17g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
             os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
         }
         if (col.empty())
@@ -71065,7 +71581,7 @@ Mesh read_tetgen(const std::string& rPath) {
         throw ReadError("TetGen: .node data size mismatch");
 
     auto at = [&](std::int64_t r, int c) -> double {
-        return std::strtod(nf.mData[r * ncol + c].c_str(), nullptr);
+        return detail::parse_double(nf.mData[r * ncol + c]);
     };
 
     std::int64_t node_index_base = npoints > 0 ? static_cast<std::int64_t>(at(0, 0)) : 0;
@@ -71145,7 +71661,7 @@ void write_value(std::ostream& rOs, double v) {
         rOs << static_cast<std::int64_t>(r);
     } else {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.16e", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
         rOs << buf;
     }
 }
@@ -71215,13 +71731,13 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         for (std::int64_t i = 0; i < npoints; ++i) {
             fh << i;
             for (int c = 0; c < 3; ++c) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(points, i * 3 + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                                   detail::read_double(points, i * 3 + c));
                 fh << " " << fbuf;
             }
             for (const auto& k : attr_keys) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(rMesh.PointData(k), i));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                                   detail::read_double(rMesh.PointData(k), i));
                 fh << " " << fbuf;
             }
             for (const auto& k : ref_keys) {
@@ -71425,7 +71941,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {
@@ -71523,10 +72039,14 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
     std::vector<std::string> lines;
     std::size_t face_index = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad")
+        if (type != "line" && type != "triangle" && type != "quad") {
+            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
+                skipped_types.push_back(type);
             continue;
+        }
 
         const NDArray& conn = cb.Conn();
         const std::size_t ncols = detail::cols(conn);
@@ -71552,6 +72072,16 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
         }
     }
 
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i)
+            joined += (i ? ", " : "") + skipped_types[i];
+        log::warn(
+            "TikZ: cell type(s) '{}' are not representable (only line/triangle/quad); "
+            "skipping.",
+            joined);
+    }
+
     if (colors.mActive && spec.mColorbar && num_points > 0) {
         double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
         for (std::size_t i = 0; i < num_points; ++i) {
@@ -71574,7 +72104,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {
@@ -71650,8 +72180,8 @@ struct TriangleTokens {
 
     double NextDouble(const char* pWhat) {
         const std::string& t = Next(pWhat);
-        char* end = nullptr;
-        const double v = std::strtod(t.c_str(), &end);
+        const char* end = nullptr;
+        const double v = detail::parse_double(t.c_str(), end);
         if (end == t.c_str())
             throw ReadError(std::string("Triangle: expected a number for ") + pWhat);
         return v;
@@ -71886,7 +72416,7 @@ void triangle_write_value(std::ostream& rOs, double v) {
         rOs << static_cast<std::int64_t>(r);
     } else {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.16e", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
         rOs << buf;
     }
 }
@@ -71921,11 +72451,12 @@ void triangle_write_node_rows(std::ostream& rOs, const Mesh& rMesh,
     for (std::int64_t i = 0; i < np; ++i) {
         rOs << i;
         for (int c = 0; c < 2; ++c) {
-            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", detail::read_double(points, i * 2 + c));
             rOs << " " << fbuf;
         }
         for (const auto& k : rAttrKeys) {
-            std::snprintf(fbuf, sizeof(fbuf), "%.16e", detail::read_double(rMesh.PointData(k), i));
+            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                               detail::read_double(rMesh.PointData(k), i));
             rOs << " " << fbuf;
         }
         for (const auto& k : rRefKeys) {
@@ -72384,7 +72915,7 @@ Mesh read_ugrid(const std::string& rPath) {
     };
     auto next_float = [&]() -> double {
         if (ft.mAscii)
-            return std::strtod(next_token().c_str(), nullptr);
+            return detail::parse_double(next_token());
         char tmp[8];
         read_exact(in, tmp, static_cast<std::size_t>(ft.mFloatSize));
         if (swap)
@@ -72570,8 +73101,8 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
             os << counts[i] << (i == 6 ? '\n' : ' ');
         for (std::int64_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < ncols; ++c) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16g",
-                              detail::read_double(points, i * ncols + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16g",
+                                   detail::read_double(points, i * ncols + c));
                 os << fbuf << (c + 1 == ncols ? '\n' : ' ');
             }
         }
@@ -72800,7 +73331,7 @@ double parse_coord(std::string s) {
     for (char& c : s)
         if (c == 'D' || c == 'd')
             c = 'E';
-    return std::strtod(s.c_str(), nullptr);
+    return detail::parse_double(s);
 }
 
 // Component count -> UNV data-characteristic code (1 scalar, 2 3-vector,
@@ -73193,7 +73724,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         f << buf;
         for (int c = 0; c < 3; ++c) {
             double v = c < static_cast<int>(pdim) ? detail::read_double(points, k * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%25.16E", v);
+            detail::snprintf_c(buf, sizeof(buf), "%25.16E", v);
             f << buf;
         }
         f << "\n";
@@ -73307,7 +73838,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
             std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(labels[r]));
             f << buf;
             for (std::size_t c = 0; c < nc; ++c) {
-                std::snprintf(buf, sizeof(buf), "%13.5E", flat[r * nc + c]);
+                detail::snprintf_c(buf, sizeof(buf), "%13.5E", flat[r * nc + c]);
                 f << buf;
             }
             f << "\n";
@@ -73567,7 +74098,7 @@ NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
 // twin uses, so the two writers' attributes agree character for character.
 std::string vti_num(double Value) {
     char buf[40];
-    std::snprintf(buf, sizeof(buf), "%.17g", Value);
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
     return buf;
 }
 
@@ -73815,7 +74346,7 @@ const char* vtk_dtype_str(DType dt) {
 
 void vtk_ascii_double(std::ostream& rOs, double v) {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.17g", v);
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
     rOs << buf;
 }
 
@@ -74229,10 +74760,12 @@ struct VtkCursor {
             for (std::size_t i = 0; i < count; ++i) {
                 char* endp = nullptr;
                 if (flt) {
-                    double x = std::strtod(base + mPos, &endp);
-                    if (endp == base + mPos)
+                    const char* fend = nullptr;
+                    double x = detail::parse_double(base + mPos, fend);
+                    if (fend == base + mPos)
                         throw ReadError("VTK ascii parse error");
                     store(a, i, x, 0);
+                    endp = const_cast<char*>(fend);
                 } else {
                     long long x = std::strtoll(base + mPos, &endp, 10);
                     if (endp == base + mPos)
@@ -76498,7 +77031,7 @@ std::vector<double> parse_point(const std::string& rS) {
     std::istringstream iss(rS);
     std::string tok;
     while (iss >> tok)
-        p.push_back(std::strtod(tok.c_str(), nullptr));
+        p.push_back(detail::parse_double(tok));
     return p;
 }
 
@@ -76628,8 +77161,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
         std::string out;
         char buf[32];
         for (std::size_t j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), "%.17g",
-                          detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
+            detail::snprintf_c(buf, sizeof(buf), "%.17g",
+                               detail::read_double(points, static_cast<std::size_t>(p) * dim + j));
             if (j)
                 out += " ";
             out += buf;
@@ -76747,10 +77280,10 @@ DType xdmf_to_dtype(const std::string& rDataType, const std::string& rPrecision)
 void store_token(NDArray& rA, std::size_t i, const std::string& rTok) {
     switch (rA.Dtype()) {
         case DType::Float32:
-            rA.As<float>()[i] = std::strtof(rTok.c_str(), nullptr);
+            rA.As<float>()[i] = static_cast<float>(detail::parse_double(rTok));
             break;
         case DType::Float64:
-            rA.As<double>()[i] = std::strtod(rTok.c_str(), nullptr);
+            rA.As<double>()[i] = detail::parse_double(rTok);
             break;
         case DType::Int8:
             rA.As<std::int8_t>()[i] =
@@ -77236,8 +77769,9 @@ const char* const xts_mesh_name = "mesh";
 std::string xts_format_time(double Value) {
     char buf[40];
     for (int prec = 15; prec <= 17; ++prec) {
-        std::snprintf(buf, sizeof(buf), "%.*g", prec, Value);
-        if (std::strtod(buf, nullptr) == Value)
+        detail::snprintf_c(buf, sizeof(buf), "%.*g", prec, Value);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == Value)
             return buf;
     }
     return buf;
@@ -80903,8 +81437,8 @@ std::vector<CalcToken> calc_tokenize(const std::string& rText) {
             (c == '.' && i + 1 < n &&
              std::isdigit(static_cast<unsigned char>(rText[i + 1])) != 0)) {
             const char* begin = rText.c_str() + i;
-            char* end = nullptr;
-            const double v = std::strtod(begin, &end);
+            const char* end = nullptr;
+            const double v = detail::parse_double(begin, end);
             if (end == begin)
                 calc_fail_at("malformed number", i);
             t.mType = CalcTokenType::Number;
