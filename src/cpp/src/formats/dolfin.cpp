@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -155,6 +156,8 @@ Mesh read_dolfin(const std::string& rPath) {
 }
 
 void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
+    log::warn("DOLFIN XML is a legacy format. Consider using XDMF instead.");
+
     // Pick the single supported cell type to write.
     std::string cell_type;
     for (const auto cb : rMesh.CellRange())
@@ -170,6 +173,25 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
             }
     if (cell_type.empty())
         throw WriteError("DOLFIN XML only supports triangles and tetrahedra");
+
+    // DOLFIN XML can only carry one cell type; name every OTHER type present
+    // so a mixed mesh's discarded cells are a diagnosed choice, not silence.
+    {
+        std::vector<std::string> discarded;
+        for (const auto cb : rMesh.CellRange())
+            if (cb.Type() != cell_type &&
+                std::find(discarded.begin(), discarded.end(), cb.Type()) == discarded.end())
+                discarded.push_back(cb.Type());
+        if (!discarded.empty()) {
+            std::string joined;
+            for (std::size_t i = 0; i < discarded.size(); ++i)
+                joined += (i ? ", " : "") + discarded[i];
+            log::warn(
+                "DOLFIN XML can only handle one cell type at a time. Using '{}', discarding "
+                "'{}'.",
+                cell_type, joined);
+        }
+    }
 
     const std::size_t dim = rMesh.PointDim();
     if (dim != 2 && dim != 3)

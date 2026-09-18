@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -187,8 +188,8 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         if (colors.mActive && !face.mIsLine) {
             const std::optional<detail::Rgb> c = colors.Color(f);
             const std::string hex_color = c.has_value() ? svg_color_hex(*c) : rNanColor;
-            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
-               << hex_color << "\" />";
+            os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:" << hex_color
+               << "\" />";
         } else {
             os << "<path d=\"" << d << "\" />";
         }
@@ -315,10 +316,14 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
        << "; stroke-width: " << stroke_width << "; stroke-linejoin:bevel}</style>";
 
     std::size_t face_index = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad")
+        if (type != "line" && type != "triangle" && type != "quad") {
+            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
+                skipped_types.push_back(type);
             continue;
+        }
 
         const NDArray& conn = cb.Conn();
         const std::size_t ncols = detail::cols(conn);
@@ -345,8 +350,8 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
                 // See the twin comment in svg_proj_write(): the inline style
                 // is what actually wins the CSS cascade; fill stays for
                 // inspection/tests.
-                os << "<path d=\"" << d << "\" fill=\"" << hex_color << "\" style=\"fill:"
-                   << hex_color << "\" />";
+                os << "<path d=\"" << d << "\" fill=\"" << hex_color
+                   << "\" style=\"fill:" << hex_color << "\" />";
             } else {
                 os << "<path d=\"" << d << "\" />";
             }
@@ -357,6 +362,16 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         svg_append_colorbar(os, colors, min_x, min_y, width, height, rFloatFmt);
 
     os << "</svg>";
+
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i)
+            joined += (i ? ", " : "") + skipped_types[i];
+        log::warn(
+            "SVG: cell type(s) '{}' are not representable (only line/triangle/quad); "
+            "skipping.",
+            joined);
+    }
 }
 
 }  // namespace meshioplusplus

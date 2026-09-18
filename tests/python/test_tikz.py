@@ -249,3 +249,29 @@ def test_invalid_options_raise(kwargs, match, tmp_path):
         meshioplusplus.tikz.write(tmp_path / "bad.tikz", mesh, **kwargs)
     with pytest.raises(Exception, match=match):
         meshioplusplus._core.tikz_write(str(tmp_path / "bad.tikz"), mesh, **kwargs)
+
+
+# --- roadmap §1 "writers that drop data without a warning" ---
+
+
+def _mesh_with_unsupported_cell():
+    return meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+
+
+def test_warns_when_skipping_an_unsupported_cell_type(tmp_path, capfd):
+    mesh = _mesh_with_unsupported_cell()
+    meshioplusplus.tikz.write(tmp_path / "skip.tikz", mesh)
+    err = capfd.readouterr().err
+    assert "tetra" in err
+
+
+def test_warns_when_skipping_python_engine(tmp_path, capsys):
+    from meshioplusplus.tikz._tikz import write as _py_write
+
+    mesh = _mesh_with_unsupported_cell()
+    _py_write(str(tmp_path / "skip_py.tikz"), mesh)
+    err = capsys.readouterr().err
+    assert "tetra" in err

@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
 
@@ -253,10 +254,14 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
     std::vector<std::string> lines;
     std::size_t face_index = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad")
+        if (type != "line" && type != "triangle" && type != "quad") {
+            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
+                skipped_types.push_back(type);
             continue;
+        }
 
         const NDArray& conn = cb.Conn();
         const std::size_t ncols = detail::cols(conn);
@@ -280,6 +285,16 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
                 lines.push_back("  \\draw[" + fill_style + "] " + path + " -- cycle;");
             }
         }
+    }
+
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i)
+            joined += (i ? ", " : "") + skipped_types[i];
+        log::warn(
+            "TikZ: cell type(s) '{}' are not representable (only line/triangle/quad); "
+            "skipping.",
+            joined);
     }
 
     if (colors.mActive && spec.mColorbar && num_points > 0) {

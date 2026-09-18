@@ -142,12 +142,16 @@ TEST(Svg, EmptyMeshIsValidWithNoPaths) {
 
 TEST(Svg, SkipsUnsupportedCellTypes) {
     // A non-line/triangle/quad block (here a flat, z=0 tetra so the 2-D guard
-    // still passes) must be silently dropped rather than drawn.
+    // still passes) is dropped from the drawing -- but, unlike before, must
+    // now warn rather than vanish with no diagnostic at all.
     mt::Mesh m =
         mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "tetra", {{0, 1, 2, 3}});
     std::string path = mt::temp_path(".svg");
+    testing::internal::CaptureStderr();
     meshioplusplus::write_svg(path, m);
+    const std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(count_occurrences(slurp(path), "<path "), 0u);
+    EXPECT_NE(err.find("tetra"), std::string::npos) << err;
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
@@ -254,6 +258,21 @@ TEST(Tikz, EmptyMeshHasNoDraws) {
     std::string out = slurp(path);
     EXPECT_NE(out.find("\\begin{tikzpicture}"), std::string::npos);
     EXPECT_EQ(count_occurrences(out, "\\draw"), 0u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tikz, SkipsUnsupportedCellTypesWithAWarning) {
+    // Twin of Svg.SkipsUnsupportedCellTypes: a non-line/triangle/quad block
+    // is dropped from the drawing but must warn, not vanish silently.
+    mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "tetra", {{0, 1, 2, 3}});
+    std::string path = mt::temp_path(".tikz");
+    testing::internal::CaptureStderr();
+    meshioplusplus::write_tikz(path, m);
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(count_occurrences(slurp(path), "\\draw"), 0u);
+    EXPECT_NE(err.find("tetra"), std::string::npos) << err;
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

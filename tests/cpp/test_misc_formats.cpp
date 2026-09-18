@@ -155,6 +155,26 @@ TEST(Dolfin, TwoCellDataBlocksBothSurviveInTheSiblingFile) {
     std::filesystem::remove(sibling, ec);
 }
 
+TEST(Dolfin, WarnsAboutTheLegacyFormatAndDiscardedCellTypes) {
+    // Both warnings are documented (formats/dolfin.hpp, doc/formats/dolfin.md)
+    // and the Python engine already emits them; the C++ writer used to emit
+    // neither.
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}}));
+
+    const std::string path = mt::temp_path(".xml");
+    testing::internal::CaptureStderr();
+    meshioplusplus::write_dolfin(path, m);
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("legacy format"), std::string::npos) << err;
+    EXPECT_NE(err.find("quad"), std::string::npos) << err;
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST(Wkt, TriangleGeometry) {
     // WKT (TIN) de-duplicates points, so point order is not preserved; check
     // that the triangle count round-trips.

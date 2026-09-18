@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 
 namespace meshioplusplus {
 
@@ -264,13 +265,30 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         num_cells += cb.NumCells();
 
-    // Material = first int cell_data array (avsucd:material if present).
+    // Material = first int cell_data array (avsucd:material if present). AVS-UCD
+    // has exactly one integer "material id" column; any OTHER integer cell_data
+    // array is not dropped outright (it still lands in the generic cell-data
+    // section below), but it is demoted to a real-valued column there and loses
+    // its int-ness. Warn once, naming every array that loses it, rather than
+    // silently picking the first and demoting the rest.
     std::string mat_key;
+    std::vector<std::string> other_int_names;
     for (const auto& name : rMesh.CellDataNames()) {
         if (rMesh.CellDataNumBlocks(name) > 0 && is_int_dtype(rMesh.CellData(name, 0).Dtype())) {
-            mat_key = name;
-            break;
+            if (mat_key.empty())
+                mat_key = name;
+            else
+                other_int_names.push_back(name);
         }
+    }
+    if (!other_int_names.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < other_int_names.size(); ++i)
+            joined += (i ? ", " : "") + other_int_names[i];
+        log::warn(
+            "AVS-UCD can only write one cell-data array as the integer material id. Using "
+            "'{}'; {} written as real-valued cell data instead.",
+            mat_key, joined);
     }
 
     // Node/cell data breakdowns (excluding material).
@@ -290,8 +308,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == mat_key)
             continue;
-        int sz = (rMesh.CellDataNumBlocks(name) > 0 &&
-                  rMesh.CellData(name, 0).Shape().size() >= 2)
+        int sz = (rMesh.CellDataNumBlocks(name) > 0 && rMesh.CellData(name, 0).Shape().size() >= 2)
                      ? static_cast<int>(rMesh.CellData(name, 0).Shape()[1])
                      : 1;
         cdata.push_back(name);

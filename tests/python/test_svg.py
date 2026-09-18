@@ -303,3 +303,31 @@ def test_invalid_options_raise(kwargs, match, tmp_path):
         meshioplusplus.svg.write(tmp_path / "bad.svg", mesh, **kwargs)
     with pytest.raises(Exception, match=match):
         meshioplusplus._core.svg_write(str(tmp_path / "bad.svg"), mesh, **kwargs)
+
+
+# --- roadmap §1 "writers that drop data without a warning" ---
+
+
+def _mesh_with_unsupported_cell():
+    # Flat (z=0) so the 3-D projection path isn't taken; a bare tetra block
+    # is not one of SVG's line/triangle/quad primitives.
+    return meshioplusplus.Mesh(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+
+
+def test_warns_when_skipping_an_unsupported_cell_type(tmp_path, capfd):
+    mesh = _mesh_with_unsupported_cell()
+    meshioplusplus.svg.write(tmp_path / "skip.svg", mesh)
+    err = capfd.readouterr().err
+    assert "tetra" in err
+
+
+def test_warns_when_skipping_python_engine(tmp_path, capsys):
+    from meshioplusplus.svg._svg import write as _py_write
+
+    mesh = _mesh_with_unsupported_cell()
+    _py_write(str(tmp_path / "skip_py.svg"), mesh)
+    err = capsys.readouterr().err
+    assert "tetra" in err
