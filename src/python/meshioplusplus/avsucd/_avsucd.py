@@ -158,13 +158,24 @@ def write(filename, mesh):
         num_nodes = len(mesh.points)
         num_cells = sum(len(c.data) for c in mesh.cells)
 
-        # Try to find an appropriate materials array
-        key, other = _pick_first_int_data(mesh.cell_data)
-        if key and other:
-            other_string = ", ".join(other)
+        # Try to find an appropriate materials array. AVS-UCD has exactly one
+        # integer "material id" column; every OTHER array -- including any
+        # other integer one -- is not dropped (it still lands in the generic
+        # cell-data section below), but is demoted to a real-valued column
+        # there. Warn only about the other integer arrays, since a non-int
+        # array was always going to be written as real anyway.
+        key, _ = _pick_first_int_data(mesh.cell_data)
+        other_int = [
+            k
+            for k in mesh.cell_data
+            if k != key and mesh.cell_data[k][0].dtype.kind in ("i", "u")
+        ]
+        if key and other_int:
+            other_string = ", ".join(other_int)
             warn(
-                "AVS-UCD can only write one cell data array. "
-                f"Picking {key}, skipping {other_string}."
+                "AVS-UCD can only write one cell-data array as the integer material "
+                f"id. Using '{key}'; {other_string} written as real-valued cell "
+                "data instead."
             )
         material = (
             np.concatenate(mesh.cell_data[key])

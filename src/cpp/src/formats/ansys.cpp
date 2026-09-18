@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -370,8 +371,8 @@ void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
         char cbuf[32];
         for (std::size_t i = 0; i < npoints; ++i) {
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(cbuf, sizeof(cbuf), "%.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(cbuf, sizeof(cbuf), "%.16e",
+                                   detail::read_double(points, i * dim + c));
                 fh << cbuf << (c + 1 == dim ? "" : " ");
             }
             fh << "\n";

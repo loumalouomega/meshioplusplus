@@ -37,6 +37,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -356,7 +357,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
                 std::vector<double> c;
                 for (std::size_t k = 1; k < tok.size(); ++k)
                     if (!tok[k].empty())
-                        c.push_back(std::strtod(tok[k].c_str(), nullptr));
+                        c.push_back(detail::parse_double(tok[k]));
                 rOut.mPoints.push_back(std::move(c));
             }
         } else if (kw == "ELEMENT") {
@@ -611,8 +612,8 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
             std::string& row = rows[i];
             row = std::to_string(i + 1);
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), ", %.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), ", %.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
             }
             row += '\n';

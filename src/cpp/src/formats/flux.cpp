@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -153,13 +154,12 @@ Mesh read_flux(const std::string& rPath) {
             ctok.push_back(w);
     }
     Mesh mesh;
-    NDArray pts(DType::Float64,
-                {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
+    NDArray pts(DType::Float64, {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
     std::size_t cp = 0;
     for (long long i = 0; i < nnod; ++i) {
         ++cp;  // node index
         for (long long j = 0; j < dim; ++j)
-            pts.As<double>()[i * dim + j] = std::strtod(ctok[cp++].c_str(), nullptr);
+            pts.As<double>()[i * dim + j] = detail::parse_double(ctok[cp++]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -262,7 +262,8 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         std::snprintf(buf, sizeof(buf), "%8zu", i + 1);
         f << buf;
         for (int j = 0; j < dim; ++j) {
-            std::snprintf(buf, sizeof(buf), " %.16g", detail::read_double(points, i * dim + j));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g",
+                               detail::read_double(points, i * dim + j));
             f << buf;
         }
         f << "\n";

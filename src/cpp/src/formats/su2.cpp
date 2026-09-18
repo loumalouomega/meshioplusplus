@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -198,7 +199,7 @@ Mesh read_su2(const std::string& rPath) {
             for (std::size_t i = 0; i < npoin; ++i) {
                 auto t = su2_tokens(lines.at(li++));
                 for (int c = 0; c < dim; ++c)
-                    pp[i * dim + c] = std::strtod(t[c].c_str(), nullptr);
+                    pp[i * dim + c] = detail::parse_double(t[c]);
             }
             mesh.AssignPoints(std::move(pts));
         } else if (name == "NELEM") {
@@ -280,8 +281,8 @@ void write_su2(const std::string& rPath, const Mesh& rMesh) {
             char buf[64];
             std::string& row = rows[i];
             for (std::size_t c = 0; c < dim; ++c) {
-                std::snprintf(buf, sizeof(buf), "%.16e",
-                              detail::read_double(points, i * dim + c));
+                detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                                   detail::read_double(points, i * dim + c));
                 row += buf;
                 row += (c + 1 == dim ? '\n' : ' ');
             }

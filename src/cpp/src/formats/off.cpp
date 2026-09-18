@@ -31,6 +31,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -176,7 +177,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
         double x = (0 < dim) ? detail::read_double(points, r * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, r * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, r * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
         os << buf;
     }
     for (const auto cb : rMesh.CellRange()) {

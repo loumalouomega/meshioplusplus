@@ -33,6 +33,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -95,7 +96,7 @@ double parse_coord(std::string s) {
     for (char& c : s)
         if (c == 'D' || c == 'd')
             c = 'E';
-    return std::strtod(s.c_str(), nullptr);
+    return detail::parse_double(s);
 }
 
 // Component count -> UNV data-characteristic code (1 scalar, 2 3-vector,
@@ -488,7 +489,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
         f << buf;
         for (int c = 0; c < 3; ++c) {
             double v = c < static_cast<int>(pdim) ? detail::read_double(points, k * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%25.16E", v);
+            detail::snprintf_c(buf, sizeof(buf), "%25.16E", v);
             f << buf;
         }
         f << "\n";
@@ -602,7 +603,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
             std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(labels[r]));
             f << buf;
             for (std::size_t c = 0; c < nc; ++c) {
-                std::snprintf(buf, sizeof(buf), "%13.5E", flat[r * nc + c]);
+                detail::snprintf_c(buf, sizeof(buf), "%13.5E", flat[r * nc + c]);
                 f << buf;
             }
             f << "\n";

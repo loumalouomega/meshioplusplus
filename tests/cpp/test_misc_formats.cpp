@@ -113,6 +113,68 @@ TEST(Dolfin, PointDataRoundTripsAsADimZeroMeshFunction) {
     std::filesystem::remove(sibling, ec);
 }
 
+TEST(Dolfin, TwoCellDataBlocksBothSurviveInTheSiblingFile) {
+    // Regression: write_mesh_function used to reopen the same sibling file
+    // "<stem>_<name>.xml" once per contributing cell block (truncating each
+    // time), so on a multi-block mesh only the LAST block's values survived.
+    // The mesh file itself concatenates every block of the chosen type (here
+    // both triangle blocks), so the sibling file must match row for row.
+    mt::Mesh in;
+    in.AssignPoints(
+        mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 0, 0}, {2, 1, 0}}));
+    in.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}, {0, 2, 3}}));
+    in.AddCellBlock("triangle", mt::conn_from({{1, 4, 5}}));
+
+    meshioplusplus::NDArray block0(meshioplusplus::DType::Float64, {2});
+    block0.As<double>()[0] = 10.0;
+    block0.As<double>()[1] = 11.0;
+    meshioplusplus::NDArray block1(meshioplusplus::DType::Float64, {1});
+    block1.As<double>()[0] = 20.0;
+    std::vector<meshioplusplus::NDArray> blocks;
+    blocks.push_back(std::move(block0));
+    blocks.push_back(std::move(block1));
+    in.AddCellData("region", std::move(blocks));
+
+    const std::string path = mt::temp_path(".xml");
+    meshioplusplus::write_dolfin(path, in);
+
+    const std::string sibling = std::filesystem::path(path).parent_path().string() + "/" +
+                                std::filesystem::path(path).stem().string() + "_region.xml";
+    mt::Mesh out = meshioplusplus::read_dolfin(path);
+    ASSERT_TRUE(out.HasCellData("region"));
+    ASSERT_EQ(out.CellDataNumBlocks("region"), 1u)
+        << "the reader always merges into a single cell block for the file's one cell type";
+    const meshioplusplus::NDArray& back = out.CellData("region", 0);
+    ASSERT_EQ(back.Size(), 3u) << "the second block's row was overwritten/lost";
+    EXPECT_DOUBLE_EQ(reinterpret_cast<const double*>(back.Data())[0], 10.0);
+    EXPECT_DOUBLE_EQ(reinterpret_cast<const double*>(back.Data())[1], 11.0);
+    EXPECT_DOUBLE_EQ(reinterpret_cast<const double*>(back.Data())[2], 20.0);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(sibling, ec);
+}
+
+TEST(Dolfin, WarnsAboutTheLegacyFormatAndDiscardedCellTypes) {
+    // Both warnings are documented (formats/dolfin.hpp, doc/formats/dolfin.md)
+    // and the Python engine already emits them; the C++ writer used to emit
+    // neither.
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddCellBlock("quad", mt::conn_from({{0, 1, 2, 3}}));
+
+    const std::string path = mt::temp_path(".xml");
+    testing::internal::CaptureStderr();
+    meshioplusplus::write_dolfin(path, m);
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("legacy format"), std::string::npos) << err;
+    EXPECT_NE(err.find("quad"), std::string::npos) << err;
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 TEST(Wkt, TriangleGeometry) {
     // WKT (TIN) de-duplicates points, so point order is not preserved; check
     // that the triangle count round-trips.

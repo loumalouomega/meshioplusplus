@@ -5,6 +5,7 @@ from typing import Union
 import numpy as np
 
 from .._colormap import colormap_lookup
+from .._common import warn
 from .._facecolor import (
     ColorSpec,
     faces_flat,
@@ -142,8 +143,11 @@ def write(
 
     lines: list[str] = []
     face_index = 0
+    skipped_types = []
     for cell_block in mesh.cells:
         if cell_block.type not in ["line", "triangle", "quad"]:
+            if cell_block.type not in skipped_types:
+                skipped_types.append(cell_block.type)
             continue
 
         for cell in cell_block.data:
@@ -160,6 +164,13 @@ def write(
             else:
                 # triangle / quad: closed, filled face
                 lines.append(f"  \\draw[{fill_style}] {path} -- cycle;")
+
+    if skipped_types:
+        warn(
+            "TikZ: cell type(s) "
+            + ", ".join(skipped_types)
+            + " are not representable (only line/triangle/quad); skipping."
+        )
 
     if colors.active and colorbar and len(mesh.points) > 0:
         _append_colorbar(

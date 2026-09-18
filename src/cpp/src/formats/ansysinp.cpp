@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -158,10 +159,10 @@ std::vector<double> slice_reals(const std::string& rS, int width) {
         std::string chunk = ansysinp_strip(rS.substr(i, static_cast<std::size_t>(width)));
         if (chunk.empty())
             continue;
-        try {
-            out.push_back(std::stod(chunk));
-        } catch (...) {
-        }
+        const char* end = nullptr;
+        const double v = detail::parse_double(chunk.c_str(), end);
+        if (end != chunk.c_str())
+            out.push_back(v);
     }
     return out;
 }
@@ -240,7 +241,12 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
                 p.push_back(tok);
             if (p.size() >= 3) {
                 try {
-                    etype_lib[std::stoi(ansysinp_strip(p[1]))] = static_cast<int>(std::stod(ansysinp_strip(p[2])));
+                    const int key = std::stoi(ansysinp_strip(p[1]));
+                    const std::string val = ansysinp_strip(p[2]);
+                    const char* end = nullptr;
+                    const double v = detail::parse_double(val.c_str(), end);
+                    if (end != val.c_str())
+                        etype_lib[key] = static_cast<int>(v);
                 } catch (...) {
                 }
             }
@@ -516,7 +522,7 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
             double y = dim > 1 ? detail::read_double(points, k * dim + 1) : 0.0;
             double z = dim > 2 ? detail::read_double(points, k * dim + 2) : 0.0;
             std::snprintf(b1, sizeof(b1), "%9zu%9d%9d", k + 1, 0, 0);
-            std::snprintf(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
+            detail::snprintf_c(b2, sizeof(b2), "% .13E% .13E% .13E\n", x, y, z);
             rows[k] = std::string(b1) + b2;
         });
         for (const auto& row : rows)

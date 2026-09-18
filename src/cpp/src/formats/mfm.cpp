@@ -29,6 +29,7 @@
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -109,7 +110,7 @@ Mesh read_mfm(const std::string& rPath) {
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     need(static_cast<std::size_t>(nver) * dim);
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = std::strtod(tok[pos++].c_str(), nullptr);
+        pts.As<double>()[i] = detail::parse_double(tok[pos++]);
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
@@ -196,8 +197,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     char buf[64];
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(),
-                          detail::read_double(points, i * dim + c));
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), detail::read_double(points, i * dim + c));
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain

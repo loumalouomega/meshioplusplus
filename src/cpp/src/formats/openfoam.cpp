@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -961,7 +962,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
         ++p;
     std::vector<double> out;
     if (components == 1) {
-        out.push_back(std::atof(std::string(rText.substr(p)).c_str()));
+        out.push_back(detail::parse_double(std::string(rText.substr(p))));
         return out;
     }
     const std::size_t lp = rText.find('(', p);
@@ -1007,7 +1008,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
         if (s.empty())
             continue;
         if (components == 1) {
-            out.mFlat.push_back(std::atof(s.c_str()));
+            out.mFlat.push_back(detail::parse_double(s));
         } else {
             for (char& c : s)
                 if (c == '(' || c == ')')
@@ -1077,8 +1078,8 @@ FoamField foam_read_internal_field(const fs::path& rPath, int components) {
 bool foam_parse_time_dir_name(const std::string& rName, double& rValue) {
     if (rName.empty())
         return false;
-    char* end = nullptr;
-    const double v = std::strtod(rName.c_str(), &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(rName.c_str(), end);
     if (end != rName.c_str() + rName.size())
         return false;
     rValue = v;

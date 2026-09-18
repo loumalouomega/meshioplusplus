@@ -37,6 +37,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -148,14 +149,17 @@ std::string gid_meshio_type(const std::string& rGidName, int nnode) {
 }
 
 // ---------------------------------------------------------------------------
-// Tokenization. std::strtod / std::strtoll throughout, never std::from_chars --
-// its floating-point overload is a real Emscripten/libc++ hazard (the same rule
-// dex.cpp / wkt.cpp / nastran.cpp follow).
+// Tokenization. Floats go through detail::parse_double (fast_number.hpp),
+// which honours this exact rule -- std::from_chars where trustworthy, never
+// unconditionally, since its floating-point overload is a real
+// Emscripten/libc++ hazard -- so every reader gets it without repeating the
+// reasoning; integers still go straight through std::strtoll, which has no
+// such hazard and is not locale-sensitive.
 
 double gid_to_double(const std::string& rTok, const char* pWhat) {
     const char* start = rTok.c_str();
-    char* end = nullptr;
-    const double v = std::strtod(start, &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(start, end);
     if (end == start)
         throw ReadError(std::string("GiD: expected a number for ") + pWhat + ", got '" + rTok +
                         "'");

@@ -45,6 +45,7 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -193,7 +194,7 @@ NDArray vti_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
 // twin uses, so the two writers' attributes agree character for character.
 std::string vti_num(double Value) {
     char buf[40];
-    std::snprintf(buf, sizeof(buf), "%.17g", Value);
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
     return buf;
 }
 

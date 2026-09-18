@@ -85,7 +85,7 @@ Unlike the SVG writer, the y-coordinate is **not** flipped — TikZ/PGF already 
 
 ## Cell types
 
-`line`, `triangle`, `quad` (plus, on the 3D path, corner-linearized `triangle6`/`quad8`/`quad9` and the volume types accepted by [`extract_skin`](../extract_skin.md)). Any other cell block present in the mesh is **silently dropped** (matching the SVG writer's behaviour).
+`line`, `triangle`, `quad` (plus, on the 3D path, corner-linearized `triangle6`/`quad8`/`quad9` and the volume types accepted by [`extract_skin`](../extract_skin.md)). Any other cell block present in the mesh is dropped with a warning naming it (matching the SVG writer's behaviour).
 
 ## Data mapping
 
@@ -94,7 +94,7 @@ No data array is written to the file. One array can be *read* to drive the face 
 ## Quirks & limitations
 
 - No winding correction on `quad` cells — a "crossed" (bowtie) node ordering renders incorrectly with no error raised.
-- Unsupported cells vanish from the output silently.
+- Unsupported cells are dropped from the output with a warning naming them.
 - The painter's algorithm sorts whole faces by centroid depth — mutually intersecting faces (which a closed skin never has) can stack in the wrong order; there is no per-pixel depth test.
 - Write-only; there is no way to read a TikZ figure back into a `Mesh`.
 - Colouring is a **Python + C++-direct + CLI** feature. The C API, Fortran and WebAssembly surfaces reach this writer through the shared registry, whose `(path, mesh)` writer entries structurally cannot carry parameters, so they always emit the fixed default styling — a documented gap of the same kind as the point/cell-set gaps in `diff`/`merge`/`split`.

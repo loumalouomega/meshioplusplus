@@ -58,7 +58,7 @@ AVS-UCD → meshio++ is the same table for `tetra`/`wedge`/`hexahedron` (all inv
 ## Quirks & limitations
 
 - Node and cell ids in the file are **arbitrary integers**; both read and write maintain explicit id↔index maps so files with sparse, reordered, or non-contiguous numbering are handled correctly (write always renumbers sequentially from 1).
-- On write, `avsucd:material` is chosen as the **first** integer-typed cell_data array found; if others exist they're dropped, with a warning in the Python writer (`"AVS-UCD can only write one cell data array... Skipping ..."`) but silently in the C++ writer.
+- On write, `avsucd:material` is chosen as the **first** integer-typed cell_data array found; any other integer-typed array is not dropped — it is demoted to a real-valued column in the generic cell-data section — and both engines warn naming which array was chosen and which others were demoted.
 - Cell-data arrays spanning multiple cell blocks are read as one flat array then re-split via cumulative block-length offsets — this assumes the blocks are contiguous in the order they were originally read.
 - 2D points are promoted to 3D on write with a warning, and the Python writer does this **in place** on the caller's `Mesh.points` — a user-visible side effect worth being aware of.
 - Data-array label cleanup (`strip()` + replace spaces with `_`) is not reversible — a name with meaningful internal spaces is altered irrecoverably on read.

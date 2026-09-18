@@ -24,6 +24,7 @@
 #include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -51,7 +52,7 @@ Mesh read_mff(const std::string& rPath) {
         count = toks.size() - 1;
     NDArray values(DType::Float64, {count});
     for (std::size_t i = 0; i < count; ++i)
-        values.As<double>()[i] = std::strtod(toks[i + 1].c_str(), nullptr);
+        values.As<double>()[i] = detail::parse_double(toks[i + 1]);
     mesh.AssignPoints(NDArray(DType::Float64, {count, 0}));
     mesh.AddPointData("mff:field", std::move(values));
     return mesh;
@@ -86,7 +87,7 @@ void write_mff(const std::string& rPath, const Mesh& rMesh) {
     f << values.size() << "\n";
     char buf[64];
     for (double v : values) {
-        std::snprintf(buf, sizeof(buf), "%.16E\n", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16E\n", v);
         f << buf;
     }
 }

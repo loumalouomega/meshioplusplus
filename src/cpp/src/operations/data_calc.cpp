@@ -29,10 +29,10 @@
 //   C. the element loop, which is branch-free over dtypes and allocates
 //      nothing because widths are bounded by DATA_CALC_MAX_COMPONENTS.
 //
-// Numeric literals go through std::strtod rather than std::from_chars: the
-// floating-point overload of the latter is missing from some libc++ versions
-// (notably a hazard for the Emscripten/WASM build), and strtod matches the
-// existing precedent in the format readers (dex.cpp, wkt.cpp, nastran.cpp).
+// Numeric literals go through detail::parse_double (fast_number.hpp), which
+// falls back to std::strtod rather than trusting std::from_chars
+// unconditionally: the floating-point overload of the latter is missing from
+// some libc++ versions (notably a hazard for the Emscripten/WASM build).
 //
 // Geometry is never modified. See operations/data_calc.hpp for the contract.
 
@@ -50,6 +50,7 @@
 // Project includes
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
@@ -119,8 +120,8 @@ std::vector<CalcToken> calc_tokenize(const std::string& rText) {
             (c == '.' && i + 1 < n &&
              std::isdigit(static_cast<unsigned char>(rText[i + 1])) != 0)) {
             const char* begin = rText.c_str() + i;
-            char* end = nullptr;
-            const double v = std::strtod(begin, &end);
+            const char* end = nullptr;
+            const double v = detail::parse_double(begin, end);
             if (end == begin)
                 calc_fail_at("malformed number", i);
             t.mType = CalcTokenType::Number;

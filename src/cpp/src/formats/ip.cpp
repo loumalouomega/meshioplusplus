@@ -25,6 +25,7 @@
 #include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -85,7 +86,7 @@ Mesh read_ip(const std::string& rPath) {
         std::istringstream iss(s);
         std::string tok;
         while (iss >> tok)
-            flat.push_back(std::strtod(tok.c_str(), nullptr));
+            flat.push_back(detail::parse_double(tok));
     }
 
     std::size_t nsec = static_cast<std::size_t>(dim + ncomp);
@@ -150,7 +151,7 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
     auto write_section = [&](const std::vector<double>& col) {
         f << "(";
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.16g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", col[i]);
             f << (i ? "\n" : "") << buf;
         }
         f << "\n)\n";

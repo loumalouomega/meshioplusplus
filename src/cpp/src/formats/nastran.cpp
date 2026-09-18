@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -85,14 +86,15 @@ std::string nastran_float(double v) {
     char buf[40];
     std::string best;
     for (int p = 0; p <= 11; ++p) {
-        std::snprintf(buf, sizeof(buf), "%.*E", p, v);
-        if (std::strtod(buf, nullptr) == v) {
+        detail::snprintf_c(buf, sizeof(buf), "%.*E", p, v);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == v) {
             best = buf;
             break;
         }
     }
     if (best.empty()) {
-        std::snprintf(buf, sizeof(buf), "%.11E", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.11E", v);
         best = buf;
     }
     std::size_t epos = best.find('E');
@@ -125,8 +127,8 @@ double parse_nastran_float(std::string s) {
         return 0.0;
     std::size_t e = s.find_last_not_of(" \t");
     s = s.substr(b, e - b + 1);
-    char* endp = nullptr;
-    double v = std::strtod(s.c_str(), &endp);
+    const char* endp = nullptr;
+    double v = detail::parse_double(s.c_str(), endp);
     if (endp != s.c_str() && *endp == '\0')
         return v;
     // Nastran compressed exponent, e.g. "1.5+1" -> "1.5e+1"
@@ -137,7 +139,7 @@ double parse_nastran_float(std::string s) {
             t += 'e';
         t += c;
     }
-    return std::strtod(t.c_str(), nullptr);
+    return detail::parse_double(t);
 }
 
 std::string nastran_strip(const std::string& rS) {

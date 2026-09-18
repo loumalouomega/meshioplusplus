@@ -256,6 +256,113 @@ inline Mesh hex20_mesh() {
     return make_mesh(p, "hexahedron20", {row});
 }
 /**
+ * @brief A single 2nd-order `"wedge15"` cell with geometrically real corner
+ *        and exact-midpoint mid-edge coordinates (unlike `hex20_mesh`'s
+ *        procedural points) -- suitable for orientation/permutation checks,
+ *        not just round-trip byte-identity. Twin of `helpers.wedge15_mesh`
+ *        in `tests/python/helpers.py`; keep the two in sync.
+ * @return A single-block `wedge15` `Mesh`.
+ */
+inline Mesh wedge15_mesh() {
+    return make_mesh(
+        {
+            {0.0, 0.0, 0.0},
+            {1.0, 0.0, 0.0},
+            {1.0, 1.0, 0.0},
+            {0.0, 0.0, 1.0},
+            {1.0, 0.0, 1.0},
+            {1.0, 1.0, 1.0},
+            {0.5, 0.0, 0.0},
+            {1.0, 0.5, 0.0},
+            {0.5, 0.5, 0.0},
+            {0.5, 0.0, 1.0},
+            {1.0, 0.5, 1.0},
+            {0.5, 0.5, 1.0},
+            {0.0, 0.0, 0.5},
+            {1.0, 0.0, 0.5},
+            {1.0, 1.0, 0.5},
+        },
+        "wedge15", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}});
+}
+/**
+ * @brief A single 2nd-order `"pyramid13"` cell, geometric twin of
+ *        `wedge15_mesh` above. Twin of `helpers.pyramid13_mesh`.
+ * @return A single-block `pyramid13` `Mesh`.
+ */
+inline Mesh pyramid13_mesh() {
+    return make_mesh(
+        {
+            {0.0, 0.0, 0.0},
+            {1.0, 0.0, 0.0},
+            {1.0, 1.0, 0.0},
+            {0.0, 1.0, 0.0},
+            {0.5, 0.5, 1.0},
+            {0.5, 0.0, 0.0},
+            {1.0, 0.5, 0.0},
+            {0.5, 1.0, 0.0},
+            {0.0, 0.5, 0.0},
+            {0.25, 0.25, 0.5},
+            {0.75, 0.25, 0.5},
+            {0.75, 0.75, 0.5},
+            {0.25, 0.75, 0.5},
+        },
+        "pyramid13", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}});
+}
+/**
+ * @brief `wedge15_mesh` plus the three quad-face-centre nodes `"wedge18"`
+ *        adds. Twin of `helpers.wedge18_mesh`.
+ * @return A single-block `wedge18` `Mesh`.
+ */
+inline Mesh wedge18_mesh() {
+    return make_mesh(
+        {
+            {0.0, 0.0, 0.0},
+            {1.0, 0.0, 0.0},
+            {1.0, 1.0, 0.0},
+            {0.0, 0.0, 1.0},
+            {1.0, 0.0, 1.0},
+            {1.0, 1.0, 1.0},
+            {0.5, 0.0, 0.0},
+            {1.0, 0.5, 0.0},
+            {0.5, 0.5, 0.0},
+            {0.5, 0.0, 1.0},
+            {1.0, 0.5, 1.0},
+            {0.5, 0.5, 1.0},
+            {0.0, 0.0, 0.5},
+            {1.0, 0.0, 0.5},
+            {1.0, 1.0, 0.5},
+            {0.5, 0.0, 0.5},
+            {1.0, 0.5, 0.5},
+            {0.5, 0.5, 0.5},
+        },
+        "wedge18", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17}});
+}
+/**
+ * @brief `pyramid13_mesh` plus the base-face-centre node `"pyramid14"` adds.
+ *        Twin of `helpers.pyramid14_mesh`.
+ * @return A single-block `pyramid14` `Mesh`.
+ */
+inline Mesh pyramid14_mesh() {
+    return make_mesh(
+        {
+            {0.0, 0.0, 0.0},
+            {1.0, 0.0, 0.0},
+            {1.0, 1.0, 0.0},
+            {0.0, 1.0, 0.0},
+            {0.5, 0.5, 1.0},
+            {0.5, 0.0, 0.0},
+            {1.0, 0.5, 0.0},
+            {0.5, 1.0, 0.0},
+            {0.0, 0.5, 0.0},
+            {0.25, 0.25, 0.5},
+            {0.75, 0.25, 0.5},
+            {0.75, 0.75, 0.5},
+            {0.25, 0.75, 0.5},
+            {0.5, 0.5, 0.0},
+        },
+        "pyramid14", {{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}});
+}
+/**
  * @brief A hybrid mesh with three cell blocks of mixed types (`triangle`,
  *        `quad`, `triangle`, in that order) sharing one point set, for
  *        exercising formats that must preserve multiple heterogeneous cell

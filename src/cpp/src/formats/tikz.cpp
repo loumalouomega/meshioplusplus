@@ -30,8 +30,10 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -155,7 +157,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {
@@ -253,10 +255,14 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
 
     std::vector<std::string> lines;
     std::size_t face_index = 0;
+    std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad")
+        if (type != "line" && type != "triangle" && type != "quad") {
+            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
+                skipped_types.push_back(type);
             continue;
+        }
 
         const NDArray& conn = cb.Conn();
         const std::size_t ncols = detail::cols(conn);
@@ -282,6 +288,16 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
         }
     }
 
+    if (!skipped_types.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < skipped_types.size(); ++i)
+            joined += (i ? ", " : "") + skipped_types[i];
+        log::warn(
+            "TikZ: cell type(s) '{}' are not representable (only line/triangle/quad); "
+            "skipping.",
+            joined);
+    }
+
     if (colors.mActive && spec.mColorbar && num_points > 0) {
         double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
         for (std::size_t i = 0; i < num_points; ++i) {
@@ -304,7 +320,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     std::string pic_opts;
     if (rScale.has_value()) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "scale=%g", *rScale);
+        detail::snprintf_c(buf, sizeof(buf), "scale=%g", *rScale);
         pic_opts = buf;
     }
     if (rLineWidth.has_value()) {

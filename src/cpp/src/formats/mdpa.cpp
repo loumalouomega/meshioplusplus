@@ -42,6 +42,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -93,8 +94,8 @@ bool mdpa_parse_int(const std::string& rS, std::int64_t& rOut) {
 bool mdpa_parse_double(const std::string& rS, double& rOut) {
     if (rS.empty())
         return false;
-    char* end = nullptr;
-    const double v = std::strtod(rS.c_str(), &end);
+    const char* end = nullptr;
+    const double v = detail::parse_double(rS.c_str(), end);
     if (end != rS.c_str() + rS.size())
         return false;
     rOut = v;
@@ -1050,7 +1051,7 @@ std::string mdpa_format_value(const NDArray& rArray, std::size_t index) {
         std::snprintf(buf, sizeof(buf), "%lld",
                       static_cast<long long>(detail::read_int(rArray, index)));
     } else {
-        std::snprintf(buf, sizeof(buf), "%.16g", detail::read_double(rArray, index));
+        detail::snprintf_c(buf, sizeof(buf), "%.16g", detail::read_double(rArray, index));
     }
     return buf;
 }
@@ -1281,7 +1282,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             os << " " << id;
             for (std::size_t c = 0; c < 3; ++c) {
                 const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
-                std::snprintf(buf, sizeof(buf), "%.16e", v);
+                detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
                 os << " " << buf;
             }
             os << "\n";

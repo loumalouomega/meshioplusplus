@@ -61,27 +61,26 @@ const std::unordered_map<std::string, std::string>& meshio_to_med() {
     return m;
 }
 
-// Quadratic 3D types share the meshio <-> MED orientation difference, but
-// their permutations are not implemented; warn (like the Python reference)
-// when reading or writing them unconverted.
-void warn_unconverted_3d(const std::string& rCellType) {
-    if (rCellType == "tetra10" || rCellType == "hexahedron20" || rCellType == "pyramid13" ||
-        rCellType == "wedge15") {
-        log::warn(
-            "MED: orientation conversion for quadratic 3D cells '{}' is not yet "
-            "implemented. These cells may be mis-oriented for MED tools (Salome, "
-            "code_saturne, code_aster, etc.).",
-            rCellType);
-    }
-}
-
-// self-inverse meshio <-> MED node permutations (linear 3D types).
+// self-inverse meshio <-> MED node permutations. The quadratic entries'
+// corner portion is identical to their linear sibling's; the mid-edge
+// portion was derived from MEDCoupling's own INTERP_KERNEL/CellModel.cxx
+// edge tables (the same authoritative source `_MED_ORIENT_REF` in
+// test_med.py already trusts for MED's face definitions) and verified
+// geometrically: every MED mid-edge slot lands at the exact arithmetic
+// midpoint of the two MED corners it should sit between. All four are
+// genuine involutions (Q[Q[i]] == i for every i), like the linear ones, so
+// one table again serves both read and write.
 const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
     static const std::unordered_map<std::string, std::vector<int>> m = {
         {"tetra", {0, 1, 3, 2}},
         {"pyramid", {0, 3, 2, 1, 4}},
         {"wedge", {3, 4, 5, 0, 1, 2}},
-        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}}};
+        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"tetra10", {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
+        {"pyramid13", {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
+        {"wedge15", {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
+        {"hexahedron20", {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+    };
     return m;
 }
 
@@ -297,11 +296,10 @@ constexpr const char* kProfile = "MED_NO_PROFILE_INTERNAL";
 // --- CHA (field) writing: the single-timestep common case only -------------
 //
 // Deferred to the Python writer (see the guard in write_med): multi-timestep
-// metadata (med:step_meta), units (med:field_units), component names
-// (med:nom), and the MED-4.1 optimization bitmask (LEN/LGC/LNA/... -- our own
-// reader never reads these attributes, so their absence costs nothing for a
-// meshio++ round-trip; it is a narrower interoperability gap with tools that
-// use them, e.g. Salome/MEDCoupling). ELNO/ELGA (element-nodal/Gauss-point
+// metadata (med:step_meta), units (med:field_units), and component names
+// (med:nom) -- none of these has a channel in the C++ Mesh API. The MED-4.1
+// optimization bitmask (LEN/LGC/LNA/...) is NOT deferred: both engines write
+// it (see write_cha_bitmask below). ELNO/ELGA (element-nodal/Gauss-point
 // data) needs no guard at all: the uniform mesh API's cell_data is always
 // (n,) or (n, k), so a 3-D "per-node-within-cell" shape cannot even be
 // constructed here.
@@ -359,13 +357,73 @@ NDArray med_field_widen(const NDArray& rArr) {
     return out;
 }
 
+// MED 4.1's optimization bitmask (LEN/LGC/LGN/LCA/LNA/LAA/...): one 32-bit
+// mask per attribute rather than a list of strings, recording which
+// entity/geometry types a field touches so a consumer (Salome/MEDCoupling)
+// can skip support types it doesn't need to look at. Bit positions mirror
+// `_med41.py`'s `_ENTITY_BIT`/`_GEO_ORDER` exactly, so a C++-written file's
+// bitmask is byte-identical to Python's. Unlike Python's `FieldBitmaskWriter`
+// (which must track genuinely varying per-step data), the C++ writer is
+// always single-timestep by construction, so every "how many steps share the
+// global mask" count is trivially 1 and the step-level mask always equals
+// the field-level one -- no tracker state needed, just a value computed once
+// and written twice.
+constexpr int kMedEntityBitCell = 0;
+constexpr int kMedEntityBitNode = 3;
+
+// MED_CELL's geo-type bit order (index = bit position). Twin of
+// `_med41.py`'s `_GEO_ORDER["MED_CELL"]`.
+const std::vector<std::string>& med_geo_order_cell() {
+    static const std::vector<std::string> order = {
+        "MED_POINT1", "MED_SEG2",    "MED_SEG3",     "MED_SEG4",      "MED_TRIA3",
+        "MED_QUAD4",  "MED_TRIA6",   "MED_TRIA7",    "MED_QUAD8",     "MED_QUAD9",
+        "MED_TETRA4", "MED_PYRA5",   "MED_PENTA6",   "MED_HEXA8",     "MED_TETRA10",
+        "MED_OCTA12", "MED_PYRA13",  "MED_PENTA15",  "MED_PENTA18",   "MED_HEXA20",
+        "MED_HEXA27", "MED_POLYGON", "MED_POLYGON2", "MED_POLYHEDRON"};
+    return order;
+}
+
+// meshio++'s MED short code ("TE4") -> the geo-type name `med_geo_order_cell`
+// indexes by ("MED_TETRA4"). Twin of `_med.py`'s `med_to_geo_type`, restricted
+// to the subset the C++ writer can actually produce.
+const std::unordered_map<std::string, std::string>& med_short_to_geo_type() {
+    static const std::unordered_map<std::string, std::string> m = {
+        {"PO1", "MED_POINT1"},    {"SE2", "MED_SEG2"},    {"TR3", "MED_TRIA3"},
+        {"QU4", "MED_QUAD4"},     {"TR6", "MED_TRIA6"},   {"TR7", "MED_TRIA7"},
+        {"QU8", "MED_QUAD8"},     {"QU9", "MED_QUAD9"},   {"TE4", "MED_TETRA4"},
+        {"PY5", "MED_PYRA5"},     {"PE6", "MED_PENTA6"},  {"HE8", "MED_HEXA8"},
+        {"T10", "MED_TETRA10"},   {"P13", "MED_PYRA13"},  {"P15", "MED_PENTA15"},
+        {"H20", "MED_HEXA20"},    {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"},
+        {"POE", "MED_POLYHEDRON"}};
+    return m;
+}
+
+// Writes the bitmask attrs common to both entity kinds: LEN on `field` and
+// `ts` (identical -- one step, one global mask), the geo mask under
+// `rGeoAttr` on both, and the two "how many steps/agree-with-global" counts
+// on `field` (`rAllAttr` and LAA), each hard-coded to 1.
+void write_cha_bitmask(hid_t field, hid_t ts, int entity_bit, const std::string& rGeoAttr,
+                       const std::string& rAllAttr, std::int32_t geo_mask) {
+    const std::int32_t len = std::int32_t{1} << entity_bit;
+    h5::write_attr_int(field, "LEN", len, H5T_STD_I32BE);
+    h5::write_attr_int(field, rGeoAttr, geo_mask, H5T_STD_I32BE);
+    h5::write_attr_int(field, rAllAttr, 1);
+    h5::write_attr_int(field, "LAA", 1);
+    h5::write_attr_int(ts, "LEN", len, H5T_STD_I32BE);
+    h5::write_attr_int(ts, rGeoAttr, geo_mask, H5T_STD_I32BE);
+}
+
 // The field group's shared attrs (name, type, component count, blank
-// units/component-names -- the deferred metadata) and its one timestep
-// subgroup (fixed ndt=1, nor=-1, pdt=0.0 -- the single-timestep case this
-// path is scoped to). Returns the timestep group to write the actual support
-// (NOE / MAI.<type>) subgroup into.
+// units/component-names -- the deferred metadata), the MED 4.1 bitmask, and
+// its one timestep subgroup (fixed ndt=1, nor=-1, pdt=0.0 -- the
+// single-timestep case this path is scoped to). Returns the timestep group
+// to write the actual support (NOE / MAI.<type>) subgroup into.
+// `rMedCellTypes` is empty (and ignored) for a nodal field; for a cell field
+// it is every MED type the field's data actually covers, computed by the
+// caller BEFORE this call so the bitmask can be written up front.
 h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
-                               DType dt, std::size_t ncomponents) {
+                               DType dt, std::size_t ncomponents, bool IsNodal,
+                               const std::vector<std::string>& rMedCellTypes) {
     h5::Hid field = h5::create_group(cha, rName);
     write_attr_bytes(field, "MAI", rMeshName);
     h5::write_attr_int(field, "TYP", med_field_type_code(dt));
@@ -389,6 +447,25 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
     write_attr_double(ts, "PDT", 0.0);
     h5::write_attr_int(ts, "RDT", -1);
     h5::write_attr_int(ts, "ROR", -1);
+
+    if (IsNodal) {
+        // MED_NODE has exactly one geo type ("MED_NO_GEOTYPE"), bit 0.
+        write_cha_bitmask(field, ts, kMedEntityBitNode, "LGN", "LNA", 1);
+    } else {
+        const auto& order = med_geo_order_cell();
+        const auto& short_to_geo = med_short_to_geo_type();
+        std::int32_t geo_mask = 0;
+        for (const std::string& med_type : rMedCellTypes) {
+            auto sit = short_to_geo.find(med_type);
+            if (sit == short_to_geo.end())
+                continue;
+            auto oit = std::find(order.begin(), order.end(), sit->second);
+            if (oit == order.end())
+                continue;
+            geo_mask |= (std::int32_t{1} << static_cast<int>(oit - order.begin()));
+        }
+        write_cha_bitmask(field, ts, kMedEntityBitCell, "LGC", "LCA", geo_mask);
+    }
     return ts;
 }
 
@@ -409,7 +486,8 @@ void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray&
 
 void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
                            const NDArray& rData) {
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData));
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData),
+                                        /*IsNodal=*/true, {});
     write_cha_support(ts, "NOE", rData);
 }
 
@@ -429,12 +507,13 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             found = true;
         }
     }
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents);
 
     // Group blocks by MED type first: two blocks of the same type share one
     // "MAI.<type>" support subgroup (mirrors the connectivity-writing loop's
     // own consolidation -- two calls to write_cha_support with the same
-    // name would collide creating the group).
+    // name would collide creating the group). Filter to only the types that
+    // actually contribute rows BEFORE writing the header, so the field's
+    // bitmask attrs (which name every contributing geo type) are correct.
     std::vector<std::string> type_order;
     std::unordered_map<std::string, std::vector<std::size_t>> by_type;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -446,15 +525,21 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             type_order.push_back(it->second);
         by_type[it->second].push_back(b);
     }
+    std::vector<std::string> contributing;
     for (const std::string& med_type : type_order) {
-        const std::vector<std::size_t>& idxs = by_type[med_type];
         std::size_t n_total = 0;
-        for (std::size_t b : idxs)
+        for (std::size_t b : by_type[med_type])
             n_total += detail::rows(rMesh.CellData(rName, b));
-        if (n_total == 0)
-            continue;  // no contributing block has rows for this array
-        write_cha_support(ts, "MAI." + med_type, med_concat_cell_data_rows(rMesh, rName, idxs));
+        if (n_total > 0)
+            contributing.push_back(med_type);
     }
+
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, dt, ncomponents,
+                                        /*IsNodal=*/false, contributing);
+
+    for (const std::string& med_type : contributing)
+        write_cha_support(ts, "MAI." + med_type,
+                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]));
 }
 
 // ---- families (point/cell tags) ----
@@ -1201,7 +1286,6 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             std::int64_t n_cells = h5::read_attr_int(nod_ds, "NBR");
             NDArray nod = h5::read_dataset(g, "NOD");
             std::size_t k = n_cells > 0 ? nod.Size() / static_cast<std::size_t>(n_cells) : 0;
-            warn_unconverted_3d(it->second);
             // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
             // node reorder into a single pass over the connectivity.
             auto pit = med_node_perm().find(it->second);
@@ -1375,7 +1459,8 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
                 block.mType = it->second;
                 block.mNumCells = static_cast<std::size_t>(h5::read_attr_int(nod_ds, "NBR"));
                 auto nit = node_counts.find(it->second);
-                block.mNodesPerCell = nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
+                block.mNodesPerCell =
+                    nit != node_counts.end() ? static_cast<std::size_t>(nit->second) : 0;
             }
             meta.mCellBlocks.push_back(std::move(block));
         }
@@ -1396,8 +1481,7 @@ MeshMetadata read_med_metadata(const std::string& rPath, const ReadOptions& /*rO
                 times.insert(read_attr_double(g, "PDT"));
                 if (i == 0) {
                     std::vector<std::string> supports = h5::group_links(g);
-                    is_nodal =
-                        std::find(supports.begin(), supports.end(), "NOE") != supports.end();
+                    is_nodal = std::find(supports.begin(), supports.end(), "NOE") != supports.end();
                 }
             }
             if (is_nodal)
@@ -1681,13 +1765,19 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             h5::write_attr_int(d, "CGT", 1);
             h5::write_attr_int(d, "NBR", static_cast<std::int64_t>(n_total));
         } else {
-            warn_unconverted_3d(ctype);
             // Fuse the meshio->MED node reorder with the Fortran transpose
             // (shift +1) into a single pass (mirrors the read side), over the
-            // concatenated connectivity of every contributing block.
+            // concatenated connectivity of every contributing block. Guarded
+            // by NodesPerCell() the same way the read side guards by `k`, so
+            // a length mismatch (e.g. a future cell type added to
+            // meshio_to_med() without a matching med_node_perm() entry)
+            // cannot silently gather out of range.
+            const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
             auto pit = med_node_perm().find(ctype);
-            const std::vector<int>* perm = (pit != med_node_perm().end()) ? &pit->second : nullptr;
-            NDArray conn = med_concat_conn_rows(rMesh, idxs, rMesh.Cells(idxs[0]).NodesPerCell());
+            const std::vector<int>* perm =
+                (pit != med_node_perm().end() && pit->second.size() == npc) ? &pit->second
+                                                                            : nullptr;
+            NDArray conn = med_concat_conn_rows(rMesh, idxs, npc);
             NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);
             h5::Hid d(H5Dopen2(g, "NOD", H5P_DEFAULT), H5Dclose);

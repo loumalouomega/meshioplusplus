@@ -242,9 +242,30 @@ def write(filename, mesh):
     fname = os.path.splitext(filename)[0]
     dim = 2 if mesh.points.shape[1] == 2 or all(mesh.points[:, 2] == 0) else 3
 
+    # Cell data -> sibling files "<stem>_<name>.xml", one file per name. The
+    # mesh file concatenates every block of `cell_type` (not just the first),
+    # so the sibling file must hold the same concatenation, in the same
+    # order, rather than being reopened (and truncated) once per block.
     for name, lst in mesh.cell_data.items():
-        for data in lst:
-            _write_mesh_function(f"{fname}_{name}.xml", dim, np.array(data))
+        contributing = []
+        partial = False
+        for idx, cell_block in enumerate(mesh.cells):
+            if cell_block.type != cell_type:
+                continue
+            if idx >= len(lst):
+                partial = True
+                break
+            contributing.append(np.asarray(lst[idx]))
+        if partial:
+            warn(
+                f"DOLFIN: cell_data '{name}' does not cover every '{cell_type}' "
+                "cell block written to the mesh; not written."
+            )
+            continue
+        if contributing:
+            _write_mesh_function(
+                f"{fname}_{name}.xml", dim, np.concatenate(contributing)
+            )
 
     # Point data, as `dim="0"` mesh functions -- vertices are the topological
     # entities of dimension 0, so this is the format's own notion rather than a

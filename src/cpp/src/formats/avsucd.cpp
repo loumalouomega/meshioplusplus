@@ -32,6 +32,8 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -126,7 +128,7 @@ Mesh read_avsucd(const std::string& rPath) {
         auto t = avsucd_tokens(lines.at(li++));
         point_ids[std::strtoll(t[0].c_str(), nullptr, 10)] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = std::strtod(t[1 + c].c_str(), nullptr);
+            pp[i * 3 + c] = detail::parse_double(t[1 + c]);
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -214,8 +216,7 @@ Mesh read_avsucd(const std::string& rPath) {
             std::size_t j = 1;
             for (int i = 0; i < narr; ++i) {
                 for (int c = 0; c < sizes[i]; ++c)
-                    arrays[i].As<double>()[eid * sizes[i] + c] =
-                        std::strtod(t[j++].c_str(), nullptr);
+                    arrays[i].As<double>()[eid * sizes[i] + c] = detail::parse_double(t[j++]);
             }
         }
     };
@@ -264,13 +265,30 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         num_cells += cb.NumCells();
 
-    // Material = first int cell_data array (avsucd:material if present).
+    // Material = first int cell_data array (avsucd:material if present). AVS-UCD
+    // has exactly one integer "material id" column; any OTHER integer cell_data
+    // array is not dropped outright (it still lands in the generic cell-data
+    // section below), but it is demoted to a real-valued column there and loses
+    // its int-ness. Warn once, naming every array that loses it, rather than
+    // silently picking the first and demoting the rest.
     std::string mat_key;
+    std::vector<std::string> other_int_names;
     for (const auto& name : rMesh.CellDataNames()) {
         if (rMesh.CellDataNumBlocks(name) > 0 && is_int_dtype(rMesh.CellData(name, 0).Dtype())) {
-            mat_key = name;
-            break;
+            if (mat_key.empty())
+                mat_key = name;
+            else
+                other_int_names.push_back(name);
         }
+    }
+    if (!other_int_names.empty()) {
+        std::string joined;
+        for (std::size_t i = 0; i < other_int_names.size(); ++i)
+            joined += (i ? ", " : "") + other_int_names[i];
+        log::warn(
+            "AVS-UCD can only write one cell-data array as the integer material id. Using "
+            "'{}'; {} written as real-valued cell data instead.",
+            mat_key, joined);
     }
 
     // Node/cell data breakdowns (excluding material).
@@ -290,8 +308,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == mat_key)
             continue;
-        int sz = (rMesh.CellDataNumBlocks(name) > 0 &&
-                  rMesh.CellData(name, 0).Shape().size() >= 2)
+        int sz = (rMesh.CellDataNumBlocks(name) > 0 && rMesh.CellData(name, 0).Shape().size() >= 2)
                      ? static_cast<int>(rMesh.CellData(name, 0).Shape()[1])
                      : 1;
         cdata.push_back(name);
@@ -308,7 +325,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
         os << (i + 1);
         for (int c = 0; c < 3; ++c) {
             double v = (std::size_t(c) < dim) ? detail::read_double(points, i * dim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), " %.17g", v);
+            detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
             os << buf;
         }
         os << "\n";
@@ -353,7 +370,7 @@ void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
             os << (e + 1);
             for (std::size_t a = 0; a < sizes.size(); ++a)
                 for (int c = 0; c < sizes[a]; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.14e", value_at(a, e, c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.14e", value_at(a, e, c));
                     os << buf;
                 }
             os << "\n";

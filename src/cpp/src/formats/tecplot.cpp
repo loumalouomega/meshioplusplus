@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -63,8 +64,8 @@ std::vector<std::string> tecplot_tokens(const std::string& rS) {
 bool is_float_token(const std::string& rS) {
     if (rS.empty())
         return false;
-    char* endp = nullptr;
-    std::strtod(rS.c_str(), &endp);
+    const char* endp = nullptr;
+    detail::parse_double(rS.c_str(), endp);
     return endp == rS.c_str() + rS.size();
 }
 
@@ -273,7 +274,7 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
                 z.mFields[key] = tk[k + 1];
             } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
                 if (key == "SOLUTIONTIME") {
-                    z.mSolutionTime = std::strtod(tk[k + 1].c_str(), nullptr);
+                    z.mSolutionTime = detail::parse_double(tk[k + 1]);
                     z.mHasSolutionTime = true;
                 } else {
                     z.mStrandId = std::stoi(tk[k + 1]);
@@ -416,7 +417,7 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     std::size_t li = data_start;
     while (flat.size() < want && li < lines.size()) {
         for (const auto& t : tecplot_tokens(lines[li]))
-            flat.push_back(std::strtod(t.c_str(), nullptr));
+            flat.push_back(detail::parse_double(t));
         ++li;
     }
 
@@ -497,7 +498,9 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
     return mesh;
 }
 
-Mesh read_tecplot(const std::string& rPath) { return read_tecplot(rPath, ReadOptions{}); }
+Mesh read_tecplot(const std::string& rPath) {
+    return read_tecplot(rPath, ReadOptions{});
+}
 
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     // Gather supported cell blocks; require a single unique type.
@@ -605,7 +608,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     char buf[40];
     for (const auto& col : data) {
         for (std::size_t i = 0; i < col.size(); ++i) {
-            std::snprintf(buf, sizeof(buf), "%.17g", col[i]);
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
             os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
         }
         if (col.empty())

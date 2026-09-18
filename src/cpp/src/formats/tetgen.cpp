@@ -32,6 +32,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -117,7 +118,7 @@ Mesh read_tetgen(const std::string& rPath) {
         throw ReadError("TetGen: .node data size mismatch");
 
     auto at = [&](std::int64_t r, int c) -> double {
-        return std::strtod(nf.mData[r * ncol + c].c_str(), nullptr);
+        return detail::parse_double(nf.mData[r * ncol + c]);
     };
 
     std::int64_t node_index_base = npoints > 0 ? static_cast<std::int64_t>(at(0, 0)) : 0;
@@ -197,7 +198,7 @@ void write_value(std::ostream& rOs, double v) {
         rOs << static_cast<std::int64_t>(r);
     } else {
         char buf[40];
-        std::snprintf(buf, sizeof(buf), "%.16e", v);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
         rOs << buf;
     }
 }
@@ -267,13 +268,13 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         for (std::int64_t i = 0; i < npoints; ++i) {
             fh << i;
             for (int c = 0; c < 3; ++c) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(points, i * 3 + c));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                                   detail::read_double(points, i * 3 + c));
                 fh << " " << fbuf;
             }
             for (const auto& k : attr_keys) {
-                std::snprintf(fbuf, sizeof(fbuf), "%.16e",
-                              detail::read_double(rMesh.PointData(k), i));
+                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e",
+                                   detail::read_double(rMesh.PointData(k), i));
                 fh << " " << fbuf;
             }
             for (const auto& k : ref_keys) {

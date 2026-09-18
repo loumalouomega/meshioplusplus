@@ -6,6 +6,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 
 from .._colormap import colormap_lookup
+from .._common import warn
 from .._facecolor import (
     ColorSpec,
     faces_flat,
@@ -183,8 +184,11 @@ def write(
     style.text = "path {" + "; ".join(opts) + "}"
 
     face_index = 0
+    skipped_types = []
     for cell_block in mesh.cells:
         if cell_block.type not in ["line", "triangle", "quad"]:
+            if cell_block.type not in skipped_types:
+                skipped_types.append(cell_block.type)
             continue
 
         if cell_block.type == "line":
@@ -239,6 +243,13 @@ def write(
 
     if show_bar:
         _append_colorbar(svg, colors, min_x, min_y, width, height, float_fmt)
+
+    if skipped_types:
+        warn(
+            "SVG: cell type(s) "
+            + ", ".join(skipped_types)
+            + " are not representable (only line/triangle/quad); skipping."
+        )
 
     tree = ET.ElementTree(svg)
     tree.write(filename)

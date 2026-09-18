@@ -36,6 +36,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/skin.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -132,7 +133,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(std::strtod(tok[j].c_str(), nullptr));
+            data.push_back(detail::parse_double(tok[j]));
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)
@@ -335,7 +336,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     } else {
         auto wr3 = [&](const char* prefix, const double* p) {
             char line[160];
-            std::snprintf(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1], p[2]);
+            detail::snprintf_c(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1],
+                               p[2]);
             os << line;
         };
         os << "solid\n";

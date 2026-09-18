@@ -46,6 +46,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -88,6 +89,17 @@ const std::vector<int>& gmsh_to_meshio_perm(const std::string& rT) {
                           19, 17, 10, 12, 14, 15, 22, 23, 21, 24, 20, 25, 26}},
         {"wedge15", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11}},
         {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12}},
+        // wedge18/pyramid14 extend wedge15/pyramid13's corner+mid-edge
+        // portion unchanged with the added face-centre node(s): wedge18's
+        // three quad-face centres (indices 15-17), pyramid14's one
+        // base-face centre (index 13). Derived from gmsh's own edge/face
+        // tables (src/geo/MPrism.h, src/geo/MPyramid.h in gmsh's source)
+        // against meshio's own layout (`_skin.py`'s `_CELL_FACES`, pinned
+        // independently by the CGNS wedge18 permutation in cgns.cpp) and
+        // verified geometrically: every mid-edge/face-centre slot lands at
+        // the exact arithmetic midpoint/centroid of the corners it should.
+        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 9, 7, 12, 14, 13, 8, 10, 11, 15, 17, 16}},
+        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 10, 6, 7, 9, 11, 12, 13}},
     };
     static const std::vector<int> empty;
     auto it = m.find(rT);
@@ -102,6 +114,8 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
                           18, 19, 12, 15, 13, 14, 24, 22, 20, 21, 23, 25, 26}},
         {"wedge15", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10}},
         {"pyramid13", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12}},
+        {"wedge18", {0, 1, 2, 3, 4, 5, 6, 8, 12, 7, 13, 14, 9, 11, 10, 15, 17, 16}},
+        {"pyramid14", {0, 1, 2, 3, 4, 5, 8, 9, 6, 10, 7, 11, 12, 13}},
     };
     static const std::vector<int> empty;
     auto it = m.find(rT);
@@ -157,8 +171,8 @@ struct GmshCursor {
         // final partial page -- which is exactly why FileSource declines to map
         // files whose size is an exact page multiple.
         const char* base = mBuf.data();
-        char* endp = nullptr;
-        double v = std::strtod(base + mPos, &endp);
+        const char* endp = nullptr;
+        double v = detail::parse_double(base + mPos, endp);
         if (endp == base + mPos)
             throw ReadError("Gmsh: expected a number");
         mPos = static_cast<std::size_t>(endp - base);
@@ -432,7 +446,7 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(
  *         order), or empty when there is nothing to synthesize.
  */
 std::vector<std::int64_t> gmsh_flat_tags_from_regions(const Mesh& rMesh,
-                                                       const std::vector<GmshRegionTag>& rTags) {
+                                                      const std::vector<GmshRegionTag>& rTags) {
     bool any = false;
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
         if (rMesh.Region(i).mKind == RegionKind::Cell && rTags[i].mTag >= 0 &&
@@ -610,8 +624,13 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
     double time = 0.0;
     for (std::int64_t i = 0; i < num_real; ++i) {
         std::string s = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            time = std::stod(s);
+        if (i == 0) {
+            const char* end = nullptr;
+            time = detail::parse_double(s.c_str(), end);
+            if (end == s.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                s + "'");
+        }
     }
     std::int64_t num_int = std::stoll(gmsh_trim(rCur.read_line()));
     std::vector<std::int64_t> itags(num_int);
@@ -1186,15 +1205,20 @@ GmshDataHeader gmsh_scan_data_header(GmshCursor& rCur, const std::string& rTag) 
         const std::string line = gmsh_trim(rCur.read_line());
         if (i == 0) {
             const std::size_t q1 = line.find('"'), q2 = line.rfind('"');
-            out.mName = (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1)
-                                                              : line;
+            out.mName =
+                (q1 != std::string::npos && q2 > q1) ? line.substr(q1 + 1, q2 - q1 - 1) : line;
         }
     }
     const std::int64_t num_real = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num_real; ++i) {
         const std::string line = gmsh_trim(rCur.read_line());
-        if (i == 0)
-            out.mTime = std::stod(line);
+        if (i == 0) {
+            const char* end = nullptr;
+            out.mTime = detail::parse_double(line.c_str(), end);
+            if (end == line.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                line + "'");
+        }
     }
     rCur.skip_to_end(rTag);
     return out;
@@ -1445,8 +1469,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
                 rOs << idx;
                 char buf[32];
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(b, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(b, r * ncomp + c));
                     rOs << buf;
                 }
                 rOs << '\n';
@@ -1591,9 +1615,9 @@ struct GmshSynthesizedTags {
  * @param rFlatTags per-cell resolved tag, block-major, from
  *        #gmsh_flat_tags_from_regions (must be non-empty).
  */
-GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
-                                            const std::vector<std::int64_t>& rFlatTags,
-                                            const std::function<int(const std::string&)>& rCellDim) {
+GmshSynthesizedTags gmsh_synthesize_tags_41(
+    const Mesh& rMesh, const std::vector<std::int64_t>& rFlatTags,
+    const std::function<int(const std::string&)>& rCellDim) {
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<std::int64_t> block_tag(nblocks, 0);
@@ -1633,8 +1657,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(const Mesh& rMesh,
             const std::size_t rowsize = cb.IsRagged() ? cb.RowSize(i) : npc;
             const std::int64_t* row = cb.IsRagged() ? cb.Row(i) : nullptr;
             for (std::size_t k = 0; k < rowsize; ++k) {
-                const std::int64_t p =
-                    row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
+                const std::int64_t p = row ? row[k] : detail::read_int(cb.Conn(), i * npc + k);
                 if (p < 0 || static_cast<std::size_t>(p) >= npts)
                     continue;
                 if (dim > point_dim[static_cast<std::size_t>(p)]) {
@@ -1730,7 +1753,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
             double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
             double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
+            detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
             os << buf;
         }
     }
@@ -1810,8 +1833,8 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';
@@ -1899,7 +1922,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
         double x = (0 < dim) ? detail::read_double(points, i * dim + 0) : 0.0;
         double y = (1 < dim) ? detail::read_double(points, i * dim + 1) : 0.0;
         double z = (2 < dim) ? detail::read_double(points, i * dim + 2) : 0.0;
-        std::snprintf(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
+        detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
         os << buf;
     };
 
@@ -2161,8 +2184,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             } else {
                 os << (r + 1);
                 for (std::size_t c = 0; c < ncomp; ++c) {
-                    std::snprintf(buf, sizeof(buf), " %.17g",
-                                  detail::read_double(d, r * ncomp + c));
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g",
+                                       detail::read_double(d, r * ncomp + c));
                     os << buf;
                 }
                 os << '\n';

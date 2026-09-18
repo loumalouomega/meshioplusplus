@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Union
 
@@ -10,6 +11,8 @@ from ._common import num_nodes_per_cell
 from ._exceptions import ReadError, WriteError
 from ._files import is_buffer
 from ._mesh import CellBlock, Mesh
+
+_LOG = logging.getLogger("meshioplusplus")
 
 extension_to_filetypes = {}
 reader_map = {}
@@ -222,8 +225,10 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
             from . import _core
 
             return _core.read_metadata(str(filename), file_format or "")
-        except Exception:
-            pass
+        except ReadError as e:
+            _LOG.debug(
+                "meshio++: read_metadata(%s): C++ core declined: %s", filename, e
+            )
 
     # Fallback for buffers, Python-only formats, and any file the C++ core
     # declines (gmsh $Entities, multi-piece VTU, ...). Deliberately lives here
@@ -355,6 +360,7 @@ def _read_file(
                 raise
             possible_file_formats = [sniffed]
 
+    failures: list[tuple[str, ReadError]] = []
     for file_format in possible_file_formats:
         if file_format not in reader_map:
             raise ReadError(f"Unknown file format '{file_format}' of '{path}'.")
@@ -364,15 +370,17 @@ def _read_file(
                 reader_map[file_format], str(path), points_only, arrays, time_step
             )
         except ReadError as e:
-            print(e)
+            _LOG.debug("meshio++: %s: '%s' declined: %s", path, file_format, e)
+            failures.append((file_format, e))
 
+    detail = "; ".join(f"{fmt}: {err}" for fmt, err in failures)
     if len(possible_file_formats) == 1:
-        msg = f"Couldn't read file {path} as {possible_file_formats[0]}"
+        msg = f"Couldn't read file {path} as {possible_file_formats[0]} ({detail})"
     else:
         lst = ", ".join(possible_file_formats)
-        msg = f"Couldn't read file {path} as either of {lst}"
+        msg = f"Couldn't read file {path} as either of {lst} ({detail})"
 
-    raise ReadError(msg)
+    raise ReadError(msg) from (failures[-1][1] if failures else None)
 
 
 def write_points_cells(

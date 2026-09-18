@@ -633,14 +633,11 @@ def test_bitmask_written_in_real_med_file(tmp_path):
     """After a full Python meshio write, bitmask attributes must exist in CHA
     fields.
 
-    Calls the pure-Python writer directly: bitmask (LEN/LGN/LNA/LAA) is a
-    documented, deliberate gap of the C++ writer's single-timestep common
-    case (see doc/formats/med.md) -- our own reader never reads it, so its
-    absence costs nothing for a meshio++ round-trip, only for interop with
-    tools (Salome/MEDCoupling) that use it. A plain single-array mesh like
-    this one is exactly what the C++ path now handles directly, so reaching
-    it via ``meshioplusplus.med.write`` would no longer exercise what this
-    test is about.
+    Calls the pure-Python writer directly rather than through
+    ``meshioplusplus.med.write``, which would dispatch a plain single-array
+    mesh like this one straight to the C++ path -- since v9.20.0 both engines
+    write the bitmask, but exercising the Python engine's own
+    ``FieldBitmaskWriter`` specifically is still the point of this test.
     """
     from meshioplusplus.med._med import write as _py_write
 
@@ -1538,6 +1535,132 @@ def test_identity_perm_is_not_med_orientation():
         )
 
 
+# --- roadmap §1 "MED quadratic 3-D node ordering is not converted" ---
+#
+# meshio's own edge order per type (_convert_cells.py's _ELEVATE), giving
+# each quadratic reference element's mid-edge nodes as exact midpoints of
+# the SAME corner coordinates _MED_ORIENT_REF already uses:
+_MESHIO_EDGES = {
+    "tetra10": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
+    "pyramid13": [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)],
+    "wedge15": [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)],
+    "hexahedron20": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+# MED's own edge order per type, transcribed verbatim from MEDCoupling's
+# INTERP_KERNEL/CellModel.cxx `_little_sons_con` tables (NORM_TETRA10,
+# NORM_PYRA13, NORM_PENTA15, NORM_HEXA20) -- independent of meshio's own
+# edge convention above, which is what makes the check below a genuine
+# cross-check rather than a restatement of the permutation under test.
+_MED_EDGES = {
+    "tetra10": [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)],
+    "pyramid13": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+    ],
+    "wedge15": [
+        (0, 1),
+        (1, 2),
+        (2, 0),
+        (3, 4),
+        (4, 5),
+        (5, 3),
+        (0, 3),
+        (1, 4),
+        (2, 5),
+    ],
+    "hexahedron20": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+
+def _base_type(qtype):
+    """ "tetra10" -> "tetra", "hexahedron20" -> "hexahedron", etc."""
+    return qtype.rstrip("0123456789")
+
+
+def _quadratic_med_orient_ref():
+    """Builds each quadratic type's reference element in meshio ordering:
+    the base type's corners from `_MED_ORIENT_REF`, plus mid-edge nodes at
+    the exact arithmetic midpoint of their two corners per `_MESHIO_EDGES`."""
+    out = {}
+    for qtype, edges in _MESHIO_EDGES.items():
+        corners, _ = _MED_ORIENT_REF[_base_type(qtype)]
+        mids = np.array([(corners[a] + corners[b]) / 2.0 for a, b in edges])
+        out[qtype] = np.vstack([corners, mids])
+    return out
+
+
+def test_med_quadratic_node_perm_mid_edges_match_medcoupling():
+    """The quadratic meshio<->MED permutations must place every mid-edge node
+    at the exact midpoint of the two MED corners MEDCoupling's own edge table
+    (CellModel.cxx `_little_sons_con`) says that MED slot sits between -- a
+    check independent of meshio's own edge convention, since it uses MED's
+    edge table, not meshio's, to decide what each permuted slot should equal.
+    """
+    from meshioplusplus.med._med import _med_node_perm
+
+    ref = _quadratic_med_orient_ref()
+    for cell_type, pts in ref.items():
+        perm = _med_node_perm[cell_type]
+        med_pts = pts[perm]
+        n_corners = len(_MED_ORIENT_REF[_base_type(cell_type)][0])
+        for slot, (a, b) in enumerate(_MED_EDGES[cell_type], start=n_corners):
+            expected = (med_pts[a] + med_pts[b]) / 2.0
+            np.testing.assert_allclose(
+                med_pts[slot],
+                expected,
+                atol=1e-12,
+                err_msg=f"{cell_type}: MED mid-edge slot {slot} (MED corners {a},{b})",
+            )
+
+
+def test_med_quadratic_corner_faces_still_outward():
+    """Sanity check: the quadratic permutations' corner portion must be
+    unchanged from the linear sibling's, so the existing outward-face check
+    still passes when applied to just the corner sub-permutation."""
+    from meshioplusplus.med._med import _med_node_perm
+
+    for qtype in _MESHIO_EDGES:
+        pts, med_faces = _MED_ORIENT_REF[_base_type(qtype)]
+        n_corners = len(pts)
+        corner_perm = _med_node_perm[qtype][:n_corners]
+        assert _all_med_faces_outward(
+            pts, corner_perm, med_faces
+        ), f"{qtype}: corner portion of the quadratic permutation is not MED-outward"
+
+
 def test_med_multi_3d_orientation_and_roundtrip(tmp_path):
     """Multi-mesh MED: 3D cells are written in MED orientation, and the
     multi-mesh reader applies the inverse permutation so a write->read round-trip
@@ -1685,8 +1808,11 @@ def test_gmsh_physical_and_cell_sets_both_preserved(tmp_path):
 
 
 def test_cpp_writes_plain_point_and_cell_data():
-    """A plain data-carrying mesh must go through the C++ writer (no bitmask
-    attrs -- that is the Python-only writer's signature)."""
+    """A plain data-carrying mesh must go through the C++ writer. Since
+    v9.20.0 both engines write the MED 4.1 bitmask (LEN/...), so its presence
+    no longer distinguishes them -- assert the C++ path was actually taken by
+    checking it accepted the write at all (nothing here needs a Python
+    fallback: no units, no multi-timestep metadata, no med:nom)."""
     core = pytest.importorskip("meshioplusplus._core")
     if not getattr(core, "__has_hdf5__", False):
         pytest.skip("core built without HDF5")
@@ -1700,14 +1826,87 @@ def test_cpp_writes_plain_point_and_cell_data():
         meshioplusplus.med.write(path, mesh)
         with h5py.File(path, "r") as f:
             field = next(iter(f["CHA"].values()))
-            assert "LEN" not in field.attrs, (
-                "a plain data-carrying mesh should use the C++ writer, "
-                "which never writes the bitmask"
-            )
+            assert "LEN" in field.attrs, "both engines now write the MED 4.1 bitmask"
 
         back = meshioplusplus.med.read(path)
         assert "stress" in back.cell_data
         np.testing.assert_allclose(back.cell_data["stress"][0], [42.0, 43.0])
+
+
+def test_cpp_bitmask_matches_python_bitmask():
+    """Closes roadmap §1's MED-4.1-bitmask item: the C++ writer used to emit
+    none of LEN/LGC/LGN/LCA/LNA/LAA at all. Write the SAME field-carrying mesh
+    through both engines and compare every bitmask attribute -- dtype, byte
+    order and value -- not just presence."""
+    core = pytest.importorskip("meshioplusplus._core")
+    if not getattr(core, "__has_hdf5__", False):
+        pytest.skip("core built without HDF5")
+
+    from meshioplusplus.med._med import write as _py_write
+
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["temperature"] = np.arange(len(mesh.points), dtype=np.float64)
+    mesh.cell_data["stress"] = [np.arange(len(mesh.cells[0].data), dtype=np.int32)]
+
+    with tempfile.TemporaryDirectory() as d:
+        cpp_path = pathlib.Path(d) / "cpp.med"
+        py_path = pathlib.Path(d) / "python.med"
+        meshioplusplus.med.write(cpp_path, mesh)  # dispatches to the C++ path
+        _py_write(py_path, mesh)
+
+        with h5py.File(cpp_path, "r") as fc, h5py.File(py_path, "r") as fp:
+            for name in ("temperature", "stress"):
+                cf = fc["CHA"][name]
+                pf = fp["CHA"][name]
+                for attr in ("LEN", "LAA"):
+                    assert attr in cf.attrs, f"{name}: C++ missing {attr}"
+                    assert int(cf.attrs[attr]) == int(pf.attrs[attr]), (
+                        name,
+                        attr,
+                        int(cf.attrs[attr]),
+                        int(pf.attrs[attr]),
+                    )
+                # One of LGC/LGN (+ its L*A count) applies depending on
+                # whether the field is nodal or cell.
+                geo_attr = "LGN" if "LGN" in pf.attrs else "LGC"
+                all_attr = "LNA" if geo_attr == "LGN" else "LCA"
+                assert geo_attr in cf.attrs, f"{name}: C++ missing {geo_attr}"
+                assert int(cf.attrs[geo_attr]) == int(pf.attrs[geo_attr]), (
+                    name,
+                    geo_attr,
+                )
+                assert int(cf.attrs[all_attr]) == int(pf.attrs[all_attr]), (
+                    name,
+                    all_attr,
+                )
+                # Byte order: both engines pin LEN/LG* to big-endian int32.
+                for mask_attr in (
+                    attr for attr in cf.attrs if attr.startswith("LG") or attr == "LEN"
+                ):
+                    assert cf.attrs[mask_attr].dtype.byteorder in (">", "="), (
+                        name,
+                        mask_attr,
+                        cf.attrs[mask_attr].dtype,
+                    )
+
+        # Values must also be right, not merely equal between engines: a
+        # scalar point field is MED_NODE (bit 3) with MED_NO_GEOTYPE (LGN
+        # bit 0); the int32 cell field over `triangle` is MED_CELL (bit 0)
+        # with MED_TRIA3 set in LGC.
+        with h5py.File(cpp_path, "r") as fc:
+            temp = fc["CHA"]["temperature"]
+            assert _bit_test(np.uint32(int(temp.attrs["LEN"])), 3)
+            assert _bit_test(np.uint32(int(temp.attrs["LGN"])), 0)
+            assert int(temp.attrs["LNA"]) == 1
+            assert int(temp.attrs["LAA"]) == 1
+
+            stress = fc["CHA"]["stress"]
+            assert _bit_test(np.uint32(int(stress.attrs["LEN"])), 0)
+            assert "MED_TRIA3" in decode_geo_mask(
+                "MED_CELL", np.uint32(int(stress.attrs["LGC"]))
+            )
+            assert int(stress.attrs["LCA"]) == 1
+            assert int(stress.attrs["LAA"]) == 1
 
 
 def test_vector_field_round_trip(tmp_path):

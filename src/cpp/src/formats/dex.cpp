@@ -25,6 +25,7 @@
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -102,7 +103,7 @@ Mesh read_dex(const std::string& rPath) {
             for (char& c : tok)
                 if (c == 'D' || c == 'd')
                     c = 'E';
-            r.push_back(std::strtod(tok.c_str(), nullptr));
+            r.push_back(detail::parse_double(tok));
         }
         if (!r.empty())
             rows.push_back(std::move(r));
@@ -154,11 +155,11 @@ void write_dex(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t r = 0; r < n; ++r) {
         for (int c = 0; c < kDim; ++c) {
             double v = c < static_cast<int>(pdim) ? detail::read_double(points, r * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%.16g", v);
+            detail::snprintf_c(buf, sizeof(buf), "%.16g", v);
             f << buf << (c + 1 < kDim ? " " : "");
         }
         for (std::size_t c = 0; c < ncomp; ++c) {
-            std::snprintf(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
+            detail::snprintf_c(buf, sizeof(buf), " %.16g", detail::read_double(arr, r * ncomp + c));
             f << buf;
         }
         f << "\n";

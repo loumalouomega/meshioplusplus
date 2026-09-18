@@ -81,6 +81,33 @@ TEST(Avsucd, Basic) {
               1e-12);
 }
 
+TEST(Avsucd, WarnsWhenDemotingAnExtraIntegerCellDataArray) {
+    // AVS-UCD has exactly one integer "material id" column; a second integer
+    // cell_data array is not dropped (it still lands in the generic
+    // cell-data section, demoted to real-valued) but that demotion used to
+    // happen with no diagnostic at all.
+    mt::Mesh m = mt::tri_mesh();
+    const std::size_t nc = m.Cells(0).NumCells();
+    meshioplusplus::NDArray a(meshioplusplus::DType::Int32, {nc});
+    meshioplusplus::NDArray b(meshioplusplus::DType::Int32, {nc});
+    for (std::size_t i = 0; i < nc; ++i) {
+        a.As<std::int32_t>()[i] = static_cast<std::int32_t>(i);
+        b.As<std::int32_t>()[i] = static_cast<std::int32_t>(2 * i);
+    }
+    m.AppendCellData("first_material", std::move(a));
+    m.AppendCellData("second_material", std::move(b));
+
+    const std::string p = mt::temp_path(".avs");
+    testing::internal::CaptureStderr();
+    meshioplusplus::write_avsucd(p, m);
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("first_material"), std::string::npos) << err;
+    EXPECT_NE(err.find("second_material"), std::string::npos) << err;
+
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+}
+
 TEST(Permas, Basic) {
     SIMPLE_RT(meshioplusplus::write_permas, meshioplusplus::read_permas, mt::tri_mesh(), ".post",
               1e-12);

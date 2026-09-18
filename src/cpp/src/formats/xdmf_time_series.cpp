@@ -33,6 +33,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -63,8 +64,9 @@ const char* const xts_mesh_name = "mesh";
 std::string xts_format_time(double Value) {
     char buf[40];
     for (int prec = 15; prec <= 17; ++prec) {
-        std::snprintf(buf, sizeof(buf), "%.*g", prec, Value);
-        if (std::strtod(buf, nullptr) == Value)
+        detail::snprintf_c(buf, sizeof(buf), "%.*g", prec, Value);
+        const char* end = nullptr;
+        if (detail::parse_double(buf, end) == Value)
             return buf;
     }
     return buf;

@@ -29,6 +29,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -70,7 +71,7 @@ struct MphtxtCursor {
         return mT[mI++];
     }
     long long Integer() { return std::strtoll(Tok().c_str(), nullptr, 10); }
-    double Real() { return std::strtod(Tok().c_str(), nullptr); }
+    double Real() { return detail::parse_double(Tok()); }
     std::string Str() {
         Integer();  // length prefix
         return Tok();
@@ -197,7 +198,8 @@ void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
     char buf[32];
     for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
         for (std::size_t cc = 0; cc < sdim; ++cc) {
-            std::snprintf(buf, sizeof(buf), "%.16g", detail::read_double(points, i * sdim + cc));
+            detail::snprintf_c(buf, sizeof(buf), "%.16g",
+                               detail::read_double(points, i * sdim + cc));
             f << buf << (cc + 1 == sdim ? '\n' : ' ');
         }
     }

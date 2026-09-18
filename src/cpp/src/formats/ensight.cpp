@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -244,8 +245,8 @@ public:
     void ReadFloats(std::size_t n, double* pDst) override {
         for (std::size_t i = 0; i < n; ++i) {
             const char* start = mText.data() + mPos;
-            char* end = nullptr;
-            pDst[i] = std::strtod(start, &end);
+            const char* end = nullptr;
+            pDst[i] = detail::parse_double(start, end);
             if (end == start)
                 throw ReadError("EnSight: expected a number in geometry file");
             mPos = static_cast<std::size_t>(end - mText.data());
@@ -474,8 +475,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 num_steps =
                     std::strtol(line.c_str() + std::strlen("number of steps:"), nullptr, 10);
             } else if (ensight_starts_with(line, "filename start number:")) {
-                info.mFileNameStart = std::strtol(
-                    line.c_str() + std::strlen("filename start number:"), nullptr, 10);
+                info.mFileNameStart =
+                    std::strtol(line.c_str() + std::strlen("filename start number:"), nullptr, 10);
             } else if (ensight_starts_with(line, "filename increment:")) {
                 info.mFileNameIncrement =
                     std::strtol(line.c_str() + std::strlen("filename increment:"), nullptr, 10);
@@ -863,10 +864,10 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
 
     NDArray point_out;
     if (PerNode)
-        point_out = NDArray::Uninit(DType::Float64, NumComponents == 1
-                                                         ? std::vector<std::size_t>{TotalPoints}
-                                                         : std::vector<std::size_t>{TotalPoints,
-                                                                                    NumComponents});
+        point_out = NDArray::Uninit(DType::Float64,
+                                    NumComponents == 1
+                                        ? std::vector<std::size_t>{TotalPoints}
+                                        : std::vector<std::size_t>{TotalPoints, NumComponents});
     double* pp = PerNode ? point_out.As<double>() : nullptr;
 
     for (const EnsightPartLayout& part : rLayout) {
@@ -876,8 +877,7 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
         rCur.CheckSwap(plausible_max, /*PreferSmaller=*/true);
         const std::int64_t pid = rCur.NextInt();
         if (pid != part.mPartId)
-            throw ReadError(
-                "EnSight: variable file's part sequence does not match the geometry's");
+            throw ReadError("EnSight: variable file's part sequence does not match the geometry's");
 
         if (PerNode) {
             rec = rCur.NextRecord();
@@ -898,8 +898,7 @@ void ensight_read_variable_file(EnsightCursor& rCur, bool PerNode, std::size_t N
             (void)kw;
             NDArray block(DType::Float64, NumComponents == 1
                                               ? std::vector<std::size_t>{num_cells}
-                                              : std::vector<std::size_t>{num_cells,
-                                                                         NumComponents});
+                                              : std::vector<std::size_t>{num_cells, NumComponents});
             double* bp = block.As<double>();
             std::vector<double> comp(num_cells);
             for (std::size_t c = 0; c < NumComponents; ++c) {
@@ -939,7 +938,9 @@ void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
 
 }  // namespace
 
-Mesh read_ensight(const std::string& rPath) { return read_ensight(rPath, ReadOptions{}); }
+Mesh read_ensight(const std::string& rPath) {
+    return read_ensight(rPath, ReadOptions{});
+}
 
 Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
     const bool have_case = ensight_has_suffix(rPath, ".case");
@@ -1099,7 +1100,7 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     for (std::size_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < np; ++i) {
             const double v = c < dim ? detail::read_double(points, i * dim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%12.5e\n", v);
+            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
             out += buf;
         }
     }

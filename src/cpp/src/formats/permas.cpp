@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 
 namespace meshioplusplus {
 
@@ -150,7 +151,7 @@ Mesh read_permas(const std::string& rPath) {
                 if (points.empty())
                     ncoord = e.size() - 1;
                 for (std::size_t j = 1; j < e.size(); ++j)
-                    points.push_back(std::strtod(e[j].c_str(), nullptr));
+                    points.push_back(detail::parse_double(e[j]));
                 ++pos;
             }
         } else if (kw.rfind("ELEMENT", 0) == 0) {
@@ -158,9 +159,9 @@ Mesh read_permas(const std::string& rPath) {
             std::size_t eq = kw.find('=');
             if (eq == std::string::npos)
                 throw ReadError("PERMAS: $ELEMENT without TYPE=");
-            std::string etype =
-                permas_upper(permas_split_ws(kw.substr(eq + 1)).empty() ? std::string()
-                                                          : permas_split_ws(kw.substr(eq + 1))[0]);
+            std::string etype = permas_upper(permas_split_ws(kw.substr(eq + 1)).empty()
+                                                 ? std::string()
+                                                 : permas_split_ws(kw.substr(eq + 1))[0]);
             auto tit = permas_to_meshio().find(etype);
             if (tit == permas_to_meshio().end())
                 throw ReadError("PERMAS: element type not available: " + etype);
@@ -228,9 +229,8 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t i = 0; i < npts; ++i) {
         f << (i + 1);
         for (int c = 0; c < 3; ++c) {
-            double v =
-                c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
-            std::snprintf(buf, sizeof(buf), "%.17g", v);
+            double v = c < static_cast<int>(pdim) ? detail::read_double(points, i * pdim + c) : 0.0;
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", v);
             f << " " << buf;
         }
         f << "\n";

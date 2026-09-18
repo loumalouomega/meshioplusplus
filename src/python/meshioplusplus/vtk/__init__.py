@@ -1,7 +1,8 @@
+import functools
+
 from .. import _core
 from .._files import is_buffer
 from .._helpers import register_format
-from . import _vtk_42
 from ._main import read as _py_read
 from ._main import write as _main_write
 
@@ -56,8 +57,13 @@ register_format(
     [".vtk"],
     read,
     {
-        "vtk42": _vtk_42.write,
-        "vtk51": _vtk_42.write,
+        # Both aliases go through the version-aware `write` above (the
+        # C++-accelerated path on supported meshes, `_main_write` otherwise)
+        # rather than one of them bypassing it straight to the plain Python
+        # 4.2 writer -- `vtk51` used to alias `vtk42`'s writer outright,
+        # silently downgrading a requested 5.1 write. See doc/formats/vtk.md.
+        "vtk42": functools.partial(write, fmt_version="4.2"),
+        "vtk51": functools.partial(write, fmt_version="5.1"),
         "vtk": write,
     },
 )

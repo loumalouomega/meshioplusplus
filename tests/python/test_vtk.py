@@ -123,6 +123,26 @@ def test_color_scalars(filename, ref_num_points, ref_num_cells):
     assert len(mesh.cells) == ref_num_cells
 
 
+# --- registry-alias version dispatch (roadmap §1 "the `vtk51` registry alias
+# writes a VTK 4.2 file") ---
+
+
+def test_registry_alias_vtk51_writes_5_1(tmp_path):
+    # file_format="vtk51" used to dispatch to the same writer as "vtk42"
+    # (both pointed at _vtk_42.write), silently downgrading the file version.
+    p = tmp_path / "out.vtk"
+    meshioplusplus.write(p, helpers.tri_mesh, file_format="vtk51", binary=False)
+    with open(p) as f:
+        assert f.readline().strip() == "# vtk DataFile Version 5.1"
+
+
+def test_registry_alias_vtk42_writes_4_2(tmp_path):
+    p = tmp_path / "out.vtk"
+    meshioplusplus.write(p, helpers.tri_mesh, file_format="vtk42", binary=False)
+    with open(p) as f:
+        assert f.readline().strip() == "# vtk DataFile Version 4.2"
+
+
 # --- malformed-input / error-path coverage (Python reference reader) ---
 from meshioplusplus.vtk._vtk_51 import read as _vtk51_py_read  # noqa: E402
 
