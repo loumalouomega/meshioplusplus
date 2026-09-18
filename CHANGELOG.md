@@ -8,6 +8,19 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v12.1.0 (2026-09-18)
+
+**Roadmap correctness debts: seven admission-gated fixes plus locale-independent number I/O.** Closes seven of the eight roadmap §1 "correctness debts" items outright and lands the read and write halves of the eighth (locale-sensitive number I/O); only the `istringstream`-locale exposure and the `except Exception: pass` fallback-reason half remain open. `MESHIOPLUSPLUS_ABI_VERSION` stays 13 (see `doc/abi_reviews.md`); `detail/fast_number.hpp` is a brand-new header carrying only `inline` functions, touching no pre-existing declaration.
+
+- **MED quadratic 3-D node ordering is now converted** (`tetra10`, `hexahedron20`, `pyramid13`, `wedge15` permuted meshio++↔MED in both engines instead of warned-and-identity), and **Gmsh `pyramid14`/`wedge18` are permuted** instead of identity — both were mis-orientation bugs against the tools those formats exist for (Salome/code_aster, gmsh itself).
+- **The `vtk51` registry alias now writes VTK 5.1** (`# vtk DataFile Version 5.1` header) instead of a second copy of the 4.2 writer.
+- **Writers that dropped data silently now warn**: the C++ AVS-UCD writer names the discarded integer cell-data arrays beyond the first, and the SVG/TikZ writers name skipped cell blocks (matching the Python writers and every other writer's warn-and-skip contract).
+- **DOLFIN no longer truncates multi-block cell data**: each block's sibling file is pinned per block instead of every block overwriting the same `<stem>_<name>.xml`.
+- **The C++ MED writer emits the MED 4.1 field bitmask attributes** (`LEN`/`LGC`/…) like the Python writer already did, for medfile/mdump/Salome interop.
+- **VTU polyhedron reconstruction is linear again**: `reconstruct_cells` carries one running "last end offset" instead of rescanning `faceoffsets` from 0 per cell, so large OpenFOAM-derived VTUs stop hanging.
+- **Locale-independent number I/O**: new `detail/fast_number.hpp` (`parse_double`, throwing `stod_c`, `snprintf_c` — `from_chars` fast path where trustworthy, C-locale `strtod_l` otherwise, decimal-point repair as the last resort) with every float-format `snprintf` site (34 writers), every `strtod` site (all ASCII readers plus the data-calc expression parser), the native CLI's `stod`/`snprintf` sites, and the missed `strtof`/HDF5-gated-include/MSVC-`locale_t` sites migrated to it; byte-identical in the C locale, correct under a comma-decimal one. A static guard (`tests/python/test_no_locale_sensitive_number_io.py`) fails any new locale-sensitive call site.
+- **Ambiguous-extension fallback no longer prints to stdout**: `read()` routes per-candidate failures through warnings instead of `print`, so CLI pipelines stay clean.
+
 ## v12.0.0 (2026-09-17)
 
 **Version-only: closes roadmap section 1 "WASM parity" in full.** No code change — `doc/roadmap.md`'s §1 is removed (its five tiers, v11.2.0 through v11.6.0, are recorded here and in each tier's own CHANGELOG entry rather than as an open item any more) and the remaining sections renumber §2–§9 → §1–§8, with every cross-reference (in-repo docs, doc comments, the roadmap diagram) updated to match. The WASM-specific "Deliberately not" decisions (KaHIP, zstd/lz4/Kokkos under Emscripten, single-file output, polyhedron blocks) move into the top-level Non-goals section, since there is no longer a WASM-parity section to host them. Major version bump because this is the close of a top-level roadmap section, not because anything in the public API changed: `MESHIOPLUSPLUS_ABI_VERSION` stays 13, and no installed header changed.
