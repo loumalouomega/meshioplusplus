@@ -186,6 +186,20 @@ meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-
 
 Behaviour and file compatibility are identical either way; the native paths are only faster. Install the optional runtime deps with `pip install meshioplusplus[all]`.
 
+### When the native path declines
+
+A format's Python shim asks `meshioplusplus._fallback.core_declined` what to do with anything the C++ core raises, so a fallback is never silent and never unconditional:
+
+| Raised by the core | Meaning | Behaviour |
+| --- | --- | --- |
+| `ReadError` / `WriteError` | A recognised decline: a malformed file, or a construct the core deliberately does not handle | Logged at `DEBUG`, falls back to the Python reference |
+| `TypeError`, `MemoryError`, `RecursionError` | Never a decline: a stale build, a genuine user error, or retrying a huge file on the more memory-hungry twin | Propagates |
+| Anything else (`ValueError`, `IndexError`, `RuntimeError`, `AttributeError`, …) | The fast path broke on something it did not classify | Logged at `WARNING` naming the format, path and cause, then falls back |
+
+The fallback is also skipped where the Python twin cannot answer the same question: a non-default `time_step` (Gmsh, XDMF, MED, EnSight, Tecplot, CGNS) or an OpenFOAM `region` re-raises the core's error rather than quietly returning step 0 or a single region.
+
+To see the declines, enable logging (`logging.basicConfig(level=logging.DEBUG)` shows the `meshioplusplus` logger). To prove a file was really handled by the core, set `MESHIOPLUSPLUS_STRICT_CORE=1` (also `on`, `true`, `yes`): every decline then re-raises instead of falling back, and is logged at `WARNING`. The ambiguous-extension loop in `read()` still moves on to the next candidate format, since that is about format ambiguity rather than core versus Python. The operations (`clean`, `smooth`, …) are not covered yet; see the [roadmap](./roadmap.md#_2-quality-of-implementation).
+
 ---
 
 ## Format-specific write options

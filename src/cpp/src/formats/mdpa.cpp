@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -69,7 +70,7 @@ std::string mdpa_clean(const std::string& rS) {
 
 std::vector<std::string> mdpa_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -485,7 +486,7 @@ namespace {
  * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
  */
 Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -1124,7 +1125,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
 }
 
 void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -1357,7 +1358,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             continue;
         for (int pass = 0; pass < 2; ++pass) {
             const bool conditions = pass == 1;
-            std::ostringstream body;
+            auto body = detail::make_classic_ostringstream();
             for (std::size_t b = 0; b < nblocks; ++b) {
                 if (is_condition[b] != conditions)
                     continue;

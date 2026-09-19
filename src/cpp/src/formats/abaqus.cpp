@@ -38,6 +38,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -143,7 +144,7 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     while (std::getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
@@ -467,7 +468,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 }
 
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -591,7 +592,7 @@ Mesh read_abaqus(const std::string& rPath) {
 }
 
 void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .common import _gmsh_to_meshio_type as gmsh_to_meshioplusplus_type
@@ -33,8 +34,10 @@ def read(filename, points_only=False, arrays=None, time_step: int = 0):
                 arrays=arrays,
                 time_step=time_step,
             )
-        except Exception:
+        except Exception as exc:
             if time_step:
+                raise
+            if not core_declined(exc, "gmsh", "read", filename):
                 raise
     return _py_read(filename)
 
@@ -54,8 +57,9 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
             try:
                 _core.gmsh22_write(str(filename), mesh, binary)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                if not core_declined(exc, "gmsh", "write", filename):
+                    raise
         elif fmt_version == "4.1":
             try:
                 # Bounding entities are signed entity tags, so they live in
@@ -68,8 +72,9 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
                     mesh.cell_sets.get("gmsh:bounding_entities"),
                 )
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                if not core_declined(exc, "gmsh", "write", filename):
+                    raise
     return _py_write(
         filename, mesh, fmt_version=fmt_version, binary=binary, float_fmt=float_fmt
     )

@@ -34,6 +34,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -85,7 +86,7 @@ bool is_beam(int fedesc) {
 
 std::vector<std::string> unv_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -194,7 +195,7 @@ bool parse_field(int ds, const std::vector<std::string>& lines, std::size_t star
 }  // namespace
 
 Mesh read_unv(const std::string& rPath, UnvInfo& rInfo) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -469,7 +470,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster, int
 
 void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo, bool code_aster,
                int node_dataset) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

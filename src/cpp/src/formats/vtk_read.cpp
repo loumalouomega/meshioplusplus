@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -180,7 +181,7 @@ struct VtkCursor {
 
 std::vector<std::string> split(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);

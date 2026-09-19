@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -110,7 +111,7 @@ std::vector<std::int64_t> parse_header_nums(const std::string& rLine) {
         throw ReadError("ANSYS: malformed section header");
     std::string nums = rLine.substr(o2 + 1, c2 - o2 - 1);
     std::vector<std::int64_t> a;
-    std::istringstream iss(nums);
+    auto iss = detail::make_classic_istringstream(nums);
     std::string t;
     while (iss >> t)
         a.push_back(std::strtoll(t.c_str(), nullptr, 16));
@@ -157,7 +158,7 @@ const std::unordered_map<int, std::pair<std::string, int>>& cell_type_map() {
 }  // namespace
 
 Mesh read_ansys(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     Buf buf;
@@ -230,7 +231,7 @@ Mesh read_ansys(const std::string& rPath) {
                     std::string pl = buf.readline();
                     while (rstrip(pl).empty() && !buf.eof())
                         pl = buf.readline();
-                    std::istringstream iss(pl);
+                    auto iss = detail::make_classic_istringstream(pl);
                     for (int c = 0; c < d; ++c) {
                         double v;
                         iss >> v;
@@ -273,7 +274,7 @@ Mesh read_ansys(const std::string& rPath) {
             if (prefix.empty()) {
                 for (std::int64_t k = 0; k < n; ++k) {
                     std::string cl = buf.readline();
-                    std::istringstream iss(cl);
+                    auto iss = detail::make_classic_istringstream(cl);
                     std::string tok;
                     for (int c = 0; c < npc; ++c) {
                         iss >> tok;
@@ -325,7 +326,7 @@ Mesh read_ansys(const std::string& rPath) {
 }
 
 void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
-    std::ofstream fh(rPath, std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
 

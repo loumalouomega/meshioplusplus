@@ -37,6 +37,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -125,7 +126,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         std::string s = lstrip(line);
         if (s.empty() || is_comment_line(s))
             continue;
-        std::istringstream iss(s);
+        auto iss = detail::make_classic_istringstream(s);
         std::vector<std::string> tok;
         std::string t;
         while (iss >> t)
@@ -166,7 +167,7 @@ Mesh read_binary(std::ifstream& rIn, std::uint32_t num_tri) {
 }  // namespace
 
 Mesh read_stl(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     in.seekg(0, std::ios::end);
@@ -310,7 +311,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     std::vector<std::array<double, 3>> normals;
     gather_triangles(rMesh, tris, normals);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._flac3d import read as _py_read
@@ -10,8 +11,9 @@ def read(filename):
     if not is_buffer(filename, "r"):
         try:
             return _core.flac3d_read(str(filename))
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "flac3d", "read", filename):
+                raise
     return _py_read(filename)
 
 
@@ -24,8 +26,9 @@ def write(filename, mesh, float_fmt: str = ".16e", binary: bool = False):
         try:
             _core.flac3d_write(str(filename), mesh, float_fmt, binary)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "flac3d", "write", filename):
+                raise
     return _py_write(filename, mesh, float_fmt, binary)
 
 

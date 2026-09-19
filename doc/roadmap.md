@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v12.1.0** — 46 core formats plus four Python-only physics-ML ones, thirty-eight mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 13).
+Status at time of writing: **v13.0.0** — 46 core formats plus four Python-only physics-ML ones, thirty-eight mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 13).
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -10,7 +10,7 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 - **Sections are ordered, and the order is the recommendation.** Each section states what belongs in it; an item that sounds exciting does not move up for that reason. An empty section is removed, not kept as a placeholder.
 - **A closed item is removed, not struck through.** Its history is the `CHANGELOG.md` entry and the feature's own `doc/` page; a partly closed item is narrowed to what remains (the `AGENTS.md` change checklist rule).
-- **Defect-shaped items go to [§1](#_1-correctness-debts) regardless of size** — behaviour that loses data, mis-orients cells, does not terminate on valid input or fails silently is not a feature request, even when the fix and the feature are the same work.
+- **Defect-shaped items go in a *Correctness debts* section at the top, regardless of size** — behaviour that loses data, mis-orients cells, does not terminate on valid input or fails silently is not a feature request, even when the fix and the feature are the same work. None is open today, so there is no such section; the first defect found opens one as §1 and renumbers the rest.
 - **An item estimated from a doc, a `.d.ts` or a changelog alone says so** ("verify first") and names its probe; the code has repeatedly been more or less capable than its description.
 - **[Non-goals](#non-goals-and-decisions-taken) record decisions already taken**, with their reasons, so they are not re-proposed as gaps.
 
@@ -20,12 +20,19 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. Correctness debts
+## 1. Format reach
 
-*Admission: behaviour that loses data, mis-orients cells, does not terminate on valid input, or drops something without saying so. First regardless of size, and each is independently shippable.*
+*Admission: a format a simulation or physics-ML workflow actually exchanges, or the missing half of a shipped one.*
 
-- **Number parsing follows the process locale.** 31 C++ readers parse with `strtod`/`strtoll` — chosen over `std::from_chars` because its floating-point overload is an Emscripten/libc++ hazard (`gid_read.cpp`) — and no first-party code pins `LC_NUMERIC`, so a host that adopts the environment's locale — Qt applications call `setlocale(LC_ALL, "")` at startup, as does any Python code that runs `locale.setlocale(locale.LC_ALL, "")` — may read `1.5` as `1` under a comma-decimal locale. A `detail/fast_number.hpp` that uses `from_chars`/`to_chars` where `<version>` reports `__cpp_lib_to_chars` and a C-locale `strtod_l` otherwise — the feature-test pattern `detail/format_compat.hpp` already uses — fixes it and is the base of the [§3](#_3-performance) text-I/O items. *Probe:* read an ASCII fixture from Python after `locale.setlocale(locale.LC_ALL, "de_DE.UTF-8")`. **S–M, verify first**
-- **Reader fallback prints to stdout and swallows the reason.** `read()` `print`s the error for every ambiguous-extension candidate that fails (a `.msh` tries `ansys`, `gmsh` and `freefem` in turn, `_helpers.py`), which pollutes a CLI pipeline's output, and over forty format packages wrap the C++ reader in `except Exception: pass`, so nobody can see why the fast path declined. Route both through `warnings`/logging and let only a recognised "not handled here" exception fall back. **S**
+- **VTKHDF** — Kitware's HDF5-based VTK file format, read natively by ParaView and designed for large, transient and partitioned unstructured data, which the XML formats handle with one file per piece and step. HDF5 is already linked into every build that has MED/CGNS, so this is a reader and writer, not a new dependency. **M**
+- **`.pvd` and `.pvtu`/`.pvtp`** — the on-disk ParaView face of the sequence engine (a `.pvd` is a time-indexed collection) and of `partition` (a `.pvtu` is one piece per part plus an index). Shares the index-plus-pieces machinery the shipped [`.vtm` writer](./formats/vtm.md) already has (v11.6.0). **S–M**
+- **Point-cloud formats** `.xyz` and `.pcd` — `select_points`, `subsample_points` and `proximity_graph` form a point-cloud path with no point-cloud file at either end of it. **S**
+- **LS-DYNA keyword input `.k`** — the one major solver-input keyword format missing beside Abaqus, Nastran and ANSYS; the same ASCII reader shape, with `*PART` as regions. **M**
+- **CalculiX `.frd` results (read)** — CalculiX takes Abaqus-style `.inp` input, which meshio++ already writes; reading its results file closes the loop for an open-source solver. **S–M**
+- **glTF / `.glb` (write)** — a web-native skin export for the browser viewer, dashboards and anything downstream of the Blender path; needs `compute_normals` first. **S–M**
+- **Half-gaps of shipped formats** — OpenFOAM *binary* write (binary read exists) **S**; SU2 multizone (`NZONE`) **S**; Tecplot's non-transient multiple zones **S**; EnSight variable *write* (reading already shipped) **S**.
+
+*Considered, not queued:* 3MF, X3D, DXF, Alembic, OpenVDB and Silo (graphics, VFX or lab-specific rather than simulation interchange); Nastran OP2 and Tecplot binary (large specifications better served by pyNastran and Tecplot's own tools); LAS; OBJ materials (`.mtl`); gmsh `$PartitionedEntities` (Kratos partitions through MDPA); ICP registration; mesh duals; cylindrical/spherical coordinate transforms; shell completions. Revisit any of them when a consumer asks with a file in hand.
 
 ---
 
@@ -37,8 +44,9 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 - **Fuzzing the readers** (libFuzzer, then OSS-Fuzz if the project is accepted). 43 mostly hand-rolled parsers are reachable from a C ABI, a browser, a VS Code extension and an MCP server — untrusted input reaches them by design. One fuzz target per `registry_readers()` entry, seeded from `tests/python/meshes/`. The highest-value non-feature item in this document. **M**
 - **A format conformance matrix** — one canonical mesh written to and read back from every writable format, asserting per format what survives (points, each cell type, point/cell/field data and their dtypes, each region kind) against a declared expectation. `tests/python/test_region_roundtrip.py` already does this for regions over Gmsh/Abaqus/MED, and `tests/cpp/test_sequence.cpp`'s `WriteSupportsTimeAgreesWithReality` is the registry-iterating shape to generalise it to. The declared expectations become a lossiness column in the [format table](./formats.md), which today has only Read/Write/dependencies, with lossiness scattered across its notes and fifty-five per-format quirks sections. The canonical mesh should be a primitive constructor from [§5](#_5-operations). **M**
 - **Property-based testing** (Hypothesis) over the invariants the docs already articulate: partition-of-unity, volume conservation, conformity, byte-identical determinism, map composition. **M**
-- **A benchmark harness that covers what ships, with a CI leg.** The suite exists (`benchmark/`, up to ~1M synthetic tets in Python, 257k in the C++ backend benchmark, which is off by default) but no CI job runs any of it, so a performance regression is found by a user. It is also narrow: `benchmark/bench.py` times 6 format labels of the 43 the core reads, and [benchmarks](./benchmarks.md) has no numbers for any operation or for the parallel backends — `src/cpp/benchmark/bench_backends.cpp` compares mesh backends only. Widen `bench.py` to every registry format; add a `bench_ops.cpp` (`extract_surface`, `smooth`, `refine`, `merge`, `clean`, `compute_sdf`, `decimate`, `partition`, `reorder`) over a size sweep and SEQ/OpenMP/TBB/Kokkos; add a 10M+ cell tier; run it on a schedule that records rather than gates. Every [§3](#_3-performance) item is gated on this showing its before/after, and it decides whether the scale items in [§8](#_8-long-run-spike-first) matter at all. **S–M**
+- **A benchmark harness that covers what ships, with a CI leg.** The suite exists (`benchmark/`, up to ~1M synthetic tets in Python, 257k in the C++ backend benchmark, which is off by default) but no CI job runs any of it, so a performance regression is found by a user. It is also narrow: `benchmark/bench.py` times 6 format labels of the 43 the core reads, and [benchmarks](./benchmarks.md) has no numbers for any operation or for the parallel backends — `src/cpp/benchmark/bench_backends.cpp` compares mesh backends only. Widen `bench.py` to every registry format; add a `bench_ops.cpp` (`extract_surface`, `smooth`, `refine`, `merge`, `clean`, `compute_sdf`, `decimate`, `partition`, `reorder`) over a size sweep and SEQ/OpenMP/TBB/Kokkos; add a 10M+ cell tier; run it on a schedule that records rather than gates. Every [§3](#_3-performance) item is gated on this showing its before/after, and it decides whether the scale items in [§7](#_7-long-run-spike-first) matter at all. **S–M**
 - **Test and install the ParaView plugin.** `tools/paraview-meshioplusplus-plugin.py` ships as a reader and writer, but nothing tests it, and the `data_files` entry that would install it is commented out in `pyproject.toml`, so [its page](./paraview_plugin.md) describes a plugin path nothing writes. A `pvpython` smoke step plus the install fix. **S**
+- **Finish the fallback narrowing.** The per-format shims route every decline through `core_declined` (`_fallback.py`), but two halves of the same defect remain. First, **44 broad `except Exception` handlers in 36 package-root operation files** (`_clean.py`, `_data_average.py`, `_curvature.py`, …) still wrap the C++ core and, unlike a format fallback, silently substitute a *different algorithm*; each operation needs its own ruling on which exceptions mean "unsupported" and which mean "bad input", with `_error.py`'s `(ValueError, TypeError)` re-raise as the model. Second, the C++ core has one `ReadError` for both "malformed file" and "construct I deliberately decline", and about a hundred `std::stoi`/`stoll`/`.at()` call sites in the format readers leak `ValueError`/`IndexError` instead (`tests/python/meshes/tecplot/quad_zone_space.tec` makes the C++ Tecplot reader throw `std::stoull`, and now logs a warning before the Python twin reads it); a `ReadError` subclass, or a per-entry-point wrapper in `_core.cpp` (not the global translator, which would remap the operations' `std::invalid_argument`), makes the "recognised decline" contract total. Running the suite once under `MESHIOPLUSPLUS_STRICT_CORE=1` sizes both. **M**
 
 ---
 
@@ -52,7 +60,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **Text I/O.**
 
-- **A shared tokenizer and number path.** 29 readers split each line with `std::istringstream` and `>>` into a `std::vector<std::string>` — one stream and N heap allocations per line (`su2.cpp`, `vtk_read.cpp`, `mdpa.cpp`, `avsucd.cpp`, `tecplot.cpp`, `unv.cpp`, `flac3d.cpp` and 22 more) — while `gmsh.cpp`'s `GmshCursor`, a `string_view` cursor calling `strtod` straight on the buffer, is the in-repo model to copy. Built on the `fast_number.hpp` from [§1](#_1-correctness-debts) and migrated reader by reader against the reference files. The worst cases: XDMF ASCII `DataItem`s (a `std::string` and a dtype switch per scalar), VTU ASCII arrays (`push_back` with no `reserve`, then a second pass with a dtype switch per element) and `mdpa.cpp`, which materializes one `std::string` per line of the whole file before parsing. **M**
+- **A shared tokenizer and number path.** 29 readers split each line with `std::istringstream` and `>>` into a `std::vector<std::string>` — one stream and N heap allocations per line (`su2.cpp`, `vtk_read.cpp`, `mdpa.cpp`, `avsucd.cpp`, `tecplot.cpp`, `unv.cpp`, `flac3d.cpp` and 22 more) — while `gmsh.cpp`'s `GmshCursor`, a `string_view` cursor calling `strtod` straight on the buffer, is the in-repo model to copy. Built on the shipped `detail/fast_number.hpp` (locale-independent `parse_double`/`snprintf_c`) and migrated reader by reader against the reference files; every one of those streams is already pinned to the classic locale by `detail/classic_stream.hpp`, so what remains here is performance only. The worst cases: XDMF ASCII `DataItem`s (a `std::string` and a dtype switch per scalar), VTU ASCII arrays (`push_back` with no `reserve`, then a second pass with a dtype switch per element) and `mdpa.cpp`, which materializes one `std::string` per line of the whole file before parsing. **M**
 - **Hoist the per-element dtype switch.** `detail::dispatch_dtype` (`detail/value_io.hpp`) exists to move a `DType` switch out of a hot loop, and is used in 14 source files against nearly 500 per-element `read_double`/`read_int`/`read_point` call sites. In I/O the hot ones are the VTU ASCII writer and `vtu_to_int64` (`detail/vtk_xml.cpp`) and the Exodus reader's index shift, coordinate transpose and `column_stack` (`exodus.cpp`), which are also fully serial — the exact treatment MED already had, which took it from 0.2–0.6× to parity. **S each**
 - **Parallel row formatting in ASCII writers.** `abaqus.cpp` and `ansysinp.cpp` format rows in parallel into one string per row and stream them in order, with byte-identical output; `vtu`, `vtp`, `vtk`, `medit` and `tecplot` still format serially with a locale-aware `ostream << int` per index, and the OpenFOAM writer formats every coordinate through `ostream << std::setprecision(16)`, the slowest formatting route in the standard library. The reference files are the gate, not the claim — `setprecision(16)`'s exact output has to be reproduced. **S per writer**
 
@@ -82,7 +90,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 - **The Python bindings never release the GIL.** Nothing in `bindings/python` uses `gil_scoped_release` or a `call_guard`, so a multi-gigabyte read or a 10M-cell operation blocks every other Python thread, and no caller can convert files in a thread pool. Release after the numpy→`Mesh` conversion and re-acquire before the `Mesh`→numpy one, once the `b64decode` table race above is fixed, auditing that no released region touches a Python object. **S–M**
 - **`import meshioplusplus` takes ~180–210 ms, ~160–190 ms of it the CLI.** The package `__init__` imports `_cli`, which imports every verb module, and `_common.py` imports `rich` for library use; every MCP process and CLI call pays it. Load `_cli` lazily through a module `__getattr__` and move `rich` into the CLI. The heavy optional dependencies (`h5py`, `netCDF4`, `torch`, `pxr`, `vtk`) are already imported inside functions. **S**
-- **A declined C++ read costs a full parse before the Python one starts.** `vtu_read.cpp` builds the whole XML DOM, base64 bodies included, before rejecting lzma, appended data or multiple pieces; `gmsh.cpp` rejects `$Periodic` only after `$Nodes` and `$Elements` are parsed; with an ambiguous extension one `.msh` can be parsed up to six times. A cheap pre-flight — attribute and section-header scans — before the expensive parse, with only early rejections falling back. Pairs with the [§1](#_1-correctness-debts) swallowing item; the durable fix is [§4](#_4-core-parity-across-surfaces)'s core parity. **S–M**
+- **A declined C++ read costs a full parse before the Python one starts.** `vtu_read.cpp` builds the whole XML DOM, base64 bodies included, before rejecting lzma, appended data or multiple pieces; `gmsh.cpp` rejects `$Periodic` only after `$Nodes` and `$Elements` are parsed; with an ambiguous extension one `.msh` can be parsed up to six times. A cheap pre-flight — attribute and section-header scans — before the expensive parse, with only early rejections falling back. Every decline is now logged at DEBUG (and raises under `MESHIOPLUSPLUS_STRICT_CORE=1`), which is what shows how often it happens; the durable fix is [§4](#_4-core-parity-across-surfaces)'s core parity. **S–M**
 - **The MCP server re-reads the input file on every tool call** — 65 call sites in `mcp/_tools.py` go through an uncached `_load()`, so an agent's info → clean → decimate → convert parses one file four times. A bounded cache keyed on (path, `mtime_ns`, size); anything weaker manufactures a stale-read bug. **S**
 - **pybind11 per-call overheads**, together: the `Mesh`→numpy conversion re-imports the `Mesh` class on every call, the contiguity check does a Python attribute lookup per array, operations clone connectivity they never change (`transform`), and polygon/polyhedron blocks cross the boundary one node id and one face at a time where the WASM binding already uses a CSR triple. **S–M**
 - **Flat-binding accessor copies**, together: R copies the points twice and shifts connectivity to 1-based with a scalar loop, and Julia's safe accessors `copy` the borrowed view; both are documented, and both are fixable behind the same accessor names. **S**
@@ -95,7 +103,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 - **A BVH in place of the uniform grid** — the tiebreak argument above.
 - **Tuning the pure-Python fallback readers** — the fix is making the C++ path accept the file ([§4](#_4-core-parity-across-surfaces)), not a faster fallback; `_decimate.py`'s heap-based twin is deleted once `decimate` accepts its inputs, not optimised.
 
-*Recommended posture:* the harness and the measured regressions first; then the small isolated wins — the polyhedron rescan in [§1](#_1-correctness-debts), `b64decode`, the lazy CLI import, `optimize_volume` — then the shared facet table, the largest total win; the boundary items as their consumers ask.
+*Recommended posture:* the harness and the measured regressions first; then the small isolated wins — `b64decode`, the lazy CLI import, `optimize_volume` — then the shared facet table, the largest total win; the boundary items as their consumers ask.
 
 ---
 
@@ -104,7 +112,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 *Admission: something the Python layer can do that the C++ core cannot, or that the core can do and a binding cannot reach.* A construct that forces the Python fallback is not "slower from C" — it is **unreadable** from C, Fortran, Julia, R, WASM and the native CLI, none of which has a fallback. Ordered by this project's own consumers, Kratos first.
 
 - **MDPA beyond mesh-level blocks.** The C++ core reads and writes `Nodes`/`Elements`/`Conditions`/`SubModelPart`s, but `Begin Table`, `Begin Geometries`, `Begin Mesh <id>`, `Begin Constraints` and non-numeric `ModelPartData` throw — or, under a lenient read, are skipped and listed in `MdpaInfo`, which no flat binding exposes ([MDPA](./formats/mdpa.md#c-core)). **M**
-- **Gmsh `$Periodic` in the C++ core**, both directions: a periodic 4.1 file is unreadable from every flat binding today ([Gmsh](./formats/gmsh.md)). Pairs with periodic node matching in [§5](#_5-operations). **S–M**
+- **Gmsh `$Periodic` and format 4.0 in the C++ core.** `$Periodic`, both directions: a periodic 4.1 file is unreadable from every flat binding today ([Gmsh](./formats/gmsh.md)). The C++ reader also accepts only versions 2.2 and 4.1 (`gmsh.cpp`), so a 4.0 file, which the Python reader reads, is unreadable from them too. Pairs with periodic node matching in [§5](#_5-operations). **S–M**
 - **VTK-family constructs the C++ readers refuse**: multi-`<Piece>` `.vtu` (the Python reader merges pieces) and legacy `.vtk` structured points, structured grid and rectilinear grid ([VTU](./formats/vtu.md), [VTK](./formats/vtk.md)). **S–M**
 - **XDMF 2 and XPath references** — the C++ core implements XDMF 3 only, and `Reference="XML"` `DataItem`s not at all ([XDMF](./formats/xdmf.md)). **M**
 - **MED multi-mesh files and profiles**, which are Python-only and not reachable even under a lenient C++ read ([MED](./formats/med.md)). **M**
@@ -130,7 +138,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **Analysis and editing.**
 
-- **`compute_normals`** as attachable point and cell data. Angle-weighted pseudonormals are already computed inside `distance_to_surface` and never exposed; a public op is the prerequisite for glTF export ([§6](#_6-format-reach)) and for shading in the viewers. **S**
+- **`compute_normals`** as attachable point and cell data. Angle-weighted pseudonormals are already computed inside `distance_to_surface` and never exposed; a public op is the prerequisite for glTF export ([§1](#_1-format-reach)) and for shading in the viewers. **S**
 - **Feature edges as a line mesh.** The feature-angle crease test exists three times (`decimate`, `smooth`, `remesh` each carry `mFeatureAngleDeg`) and only ever pins nodes; one public op emitting `line` cells serves inspection, boundary-condition picking and those three in one place. **S**
 - **Hausdorff distance** between two meshes — a symmetric max-reduction over the shipped `distance_to_surface`, returning the scalar the remesh/decimate tests and the conformance matrix want to assert on. **S**
 - **Periodic node-pair matching** — given two boundary regions and a transform, return the matched node pairs. `$Periodic` already round-trips as metadata and `proximity_graph` already does minimum-image search; Kratos periodic conditions are the consumer. **S–M**
@@ -141,23 +149,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 ---
 
-## 6. Format reach
-
-*Admission: a format a simulation or physics-ML workflow actually exchanges, or the missing half of a shipped one.*
-
-- **VTKHDF** — Kitware's HDF5-based VTK file format, read natively by ParaView and designed for large, transient and partitioned unstructured data, which the XML formats handle with one file per piece and step. HDF5 is already linked into every build that has MED/CGNS, so this is a reader and writer, not a new dependency. **M**
-- **`.pvd` and `.pvtu`/`.pvtp`** — the on-disk ParaView face of the sequence engine (a `.pvd` is a time-indexed collection) and of `partition` (a `.pvtu` is one piece per part plus an index). Shares the index-plus-pieces machinery the shipped [`.vtm` writer](./formats/vtm.md) already has (v11.6.0). **S–M**
-- **Point-cloud formats** `.xyz` and `.pcd` — `select_points`, `subsample_points` and `proximity_graph` form a point-cloud path with no point-cloud file at either end of it. **S**
-- **LS-DYNA keyword input `.k`** — the one major solver-input keyword format missing beside Abaqus, Nastran and ANSYS; the same ASCII reader shape, with `*PART` as regions. **M**
-- **CalculiX `.frd` results (read)** — CalculiX takes Abaqus-style `.inp` input, which meshio++ already writes; reading its results file closes the loop for an open-source solver. **S–M**
-- **glTF / `.glb` (write)** — a web-native skin export for the browser viewer, dashboards and anything downstream of the Blender path; needs `compute_normals` first. **S–M**
-- **Half-gaps of shipped formats** — OpenFOAM *binary* write (binary read exists) **S**; SU2 multizone (`NZONE`) **S**; Tecplot's non-transient multiple zones **S**; EnSight variable *write* (reading already shipped) **S**.
-
-*Considered, not queued:* 3MF, X3D, DXF, Alembic, OpenVDB and Silo (graphics, VFX or lab-specific rather than simulation interchange); Nastran OP2 and Tecplot binary (large specifications better served by pyNastran and Tecplot's own tools); LAS; OBJ materials (`.mtl`); gmsh `$PartitionedEntities` (Kratos partitions through MDPA); ICP registration; mesh duals; cylindrical/spherical coordinate transforms; shell completions. Revisit any of them when a consumer asks with a file in hand.
-
----
-
-## 7. Ecosystem reach
+## 6. Ecosystem reach
 
 *Admission: getting what exists to the people who would use it.*
 
@@ -182,7 +174,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 ---
 
-## 8. Long run (spike first)
+## 7. Long run (spike first)
 
 *Admission: work whose shape is unknown until an investigation writes it down. Findings before code.*
 
@@ -223,11 +215,10 @@ Recorded so they are not re-proposed as gaps.
 
 Open work only; what shipped is in `CHANGELOG.md`.
 
-1. **Correctness debts ([§1](#_1-correctness-debts))** — small, independent, and any of them can be picked up between larger items; the MED and gmsh ordering pair first, since a mis-oriented cell is invisible until a solver rejects it.
+1. **Format reach ([§1](#_1-format-reach))** — `.pvd`/`.pvtu` first, VTKHDF after them; `compute_normals` ([§5](#_5-operations)) before glTF.
 2. **Sanitizer leg, then fuzzing ([§2](#_2-quality-of-implementation))** — a parallel track from day one; it does not compete for the same attention as features.
-3. **Performance ([§3](#_3-performance))** — the harness and the measured regressions first, then the isolated wins (the polyhedron rescan, `b64decode`, the lazy CLI import, `optimize_volume`), then the shared facet table.
+3. **Performance ([§3](#_3-performance))** — the harness and the measured regressions first, then the isolated wins (`b64decode`, the lazy CLI import, `optimize_volume`), then the shared facet table.
 4. **Primitive constructors ([§5](#_5-operations))** — a few days, and a prerequisite of the conformance matrix, every demo surface and `extrude`/`revolve`.
 5. **Core parity ([§4](#_4-core-parity-across-surfaces))** — MDPA first, then Side-region survival and sets → regions, then the rest by consumer demand.
-6. **Format reach ([§6](#_6-format-reach))** — `.pvd`/`.pvtu`, VTKHDF after them; `compute_normals` before glTF.
-7. **Registration ([§7](#_7-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else.
-8. **Long-run spikes ([§8](#_8-long-run-spike-first))** — the benchmark tier decides the scale items; the NURBS spike is scheduled independently of the rest.
+6. **Registration ([§6](#_6-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else.
+7. **Long-run spikes ([§7](#_7-long-run-spike-first))** — the benchmark tier decides the scale items; the NURBS spike is scheduled independently of the rest.

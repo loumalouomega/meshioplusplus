@@ -32,7 +32,7 @@ Two things tie the operations together. Chains of them are described declarative
 
 ## The language surfaces
 
-- **Python** — the `meshioplusplus._core` pybind11 extension with zero-copy numpy at the I/O boundary, wrapped by one shim per format that falls back to the pure-Python reference implementation on any exception. This is the surface the Python CLI, the MCP server and the integrations are built on.
+- **Python** — the `meshioplusplus._core` pybind11 extension with zero-copy numpy at the I/O boundary, wrapped by one shim per format that falls back to the pure-Python reference implementation when the core declines a file, logging why (see [when the native path declines](./formats.md#when-the-native-path-declines)). This is the surface the Python CLI, the MCP server and the integrations are built on.
 - **C** — [`libmeshioplusplus`](./c_api.md), a pure C99 header with `SOVERSION 0` and append-only option structs, compiled under every mesh backend. [Fortran](./fortran.md), [Julia](./julia.md) and [R](./r.md) ride on it, each in its own idiom for handles, ownership and indexing.
 - **WebAssembly** — the [`@meshioplusplus/wasm`](./wasm.md) npm package (embind over the NATIVE backend), in a sequential and a threaded build, working on a MEMFS virtual filesystem.
 - **C++** — the [installable C++ API](./cpp_api.md), one real library per backend exported into the same CMake package as the C API, under a deliberate [ABI contract](./abi.md); or the [single-header amalgamation](./single_header.md) for a build with no CMake at all.

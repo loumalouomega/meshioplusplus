@@ -26,6 +26,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -53,7 +54,7 @@ std::string sniff_lstrip(const std::string& rIn) {
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return "";
     char buf[512];

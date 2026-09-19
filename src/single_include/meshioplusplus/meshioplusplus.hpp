@@ -5811,6 +5811,114 @@ MESHIOPLUSPLUS_API const std::vector<CellQuadFace>& cell_refine_quad_faces(CellT
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/cell_subdivision.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/classic_stream.hpp =====
+/**
+ * @file classic_stream.hpp
+ * @brief Streams pinned to the classic ("C") locale.
+ *
+ * `fast_number.hpp` makes `strtod`/`snprintf` independent of `LC_NUMERIC`,
+ * which is what `setlocale` (a Qt application's `setlocale(LC_ALL, "")`, or
+ * Python's `locale.setlocale(locale.LC_ALL, "")`) moves. C++ streams are driven
+ * by a different knob: a stream is imbued at construction with the *global*
+ * `std::locale`, and only `std::locale::global` changes that. A host that calls
+ * it with a named locale then makes every stream this library constructs
+ * format and parse numbers by that locale's rules, in both directions:
+ *
+ *  - **Reading** -- `iss >> x` on a `double` uses `std::num_get`, so `1.5` reads
+ *    as `1` under a comma-decimal locale.
+ *  - **Writing** -- `os << n` on an *integer* uses `std::num_put`, which applies
+ *    the locale's digit grouping: `1234567` is written `1.234.567`. That is not a
+ *    misread file but a corrupt one, and it needs no decimal point to happen.
+ *
+ * Every stream constructed under `src/cpp/` therefore goes through one of the
+ * factories below, which imbue `std::locale::classic()`. In the default
+ * configuration -- the global locale *is* classic, as in every test and CI run --
+ * that changes no formatting decision, so output is byte-identical. The
+ * `tests/python/test_no_locale_sensitive_number_io.py` guard fails a bare
+ * `std::ifstream x(...)` so a new call site cannot reintroduce the exposure.
+ *
+ * The file-stream factories imbue *before* `open()`. `classic()`'s
+ * `codecvt<char, char, mbstate_t>` is the identity, so imbuing after would be
+ * harmless too, but an unopened stream sidesteps the question entirely.
+ *
+ * Deliberately not used by `detail/format_compat.hpp`'s `std::format` fallback:
+ * that is an installed header whose function is a template, so changing it is an
+ * ABI break, and it only renders log lines and exception text -- never a byte
+ * of a file and never anything that is re-parsed.
+ */
+
+// System includes
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <locale>
+#include <sstream>
+#include <string>
+#include <utility>
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * Pins @p rStream to the classic locale, whatever `std::locale::global` says.
+ *
+ * Skips the `imbue` when the stream already carries it -- the common case, since
+ * a stream takes the global locale at construction and that is classic unless a
+ * host changed it. `imbue` recomputes the stream's cached facets, and several
+ * readers build one stream per input line, so the comparison (a pointer test in
+ * every standard library) is what keeps the default path free.
+ */
+inline void imbue_classic(std::ios_base& rStream) {
+    if (rStream.getloc() != std::locale::classic())
+        rStream.imbue(std::locale::classic());
+}
+
+/// A read stream over @p Text (taken by value: the stream copies it anyway).
+inline std::istringstream make_classic_istringstream(
+    std::string Text, std::ios_base::openmode Mode = std::ios_base::in) {
+    std::istringstream stream(std::move(Text), Mode);
+    imbue_classic(stream);
+    return stream;
+}
+
+/// An empty output string stream.
+inline std::ostringstream make_classic_ostringstream(
+    std::ios_base::openmode Mode = std::ios_base::out) {
+    std::ostringstream stream(Mode);
+    imbue_classic(stream);
+    return stream;
+}
+
+/// A read/write string stream initialised with @p Text.
+inline std::stringstream make_classic_stringstream(
+    std::string Text = std::string(),
+    std::ios_base::openmode Mode = std::ios_base::in | std::ios_base::out) {
+    std::stringstream stream(std::move(Text), Mode);
+    imbue_classic(stream);
+    return stream;
+}
+
+/// An input file stream over @p rPath; on failure `fail()` is set, as with the constructor.
+inline std::ifstream make_classic_ifstream(const std::filesystem::path& rPath,
+                                           std::ios_base::openmode Mode = std::ios_base::in) {
+    std::ifstream stream;
+    imbue_classic(stream);
+    stream.open(rPath, Mode);
+    return stream;
+}
+
+/// An output file stream over @p rPath; on failure `fail()` is set, as with the constructor.
+inline std::ofstream make_classic_ofstream(const std::filesystem::path& rPath,
+                                           std::ios_base::openmode Mode = std::ios_base::out) {
+    std::ofstream stream;
+    imbue_classic(stream);
+    stream.open(rPath, Mode);
+    return stream;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/classic_stream.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/colormap.hpp =====
 /**
  * @file colormap.hpp
@@ -9428,9 +9536,9 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 12
+#define MESHIOPLUSPLUS_VERSION_MAJOR 13
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9440,7 +9548,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "12.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "13.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12729,7 +12837,7 @@ MESHIOPLUSPLUS_API Mesh read_dolfin(const std::string& rPath);
  * more parts the owning part number is recorded as the integer cell_data
  * field `"ensight:part"`. The writer emits a single part (`node id assign`,
  * `element id assign`) and drops point/cell/field data (mesh-only scope) --
- * the roadmap's variable-*reading* item leaves variable-*writing* to §7.
+ * the roadmap's variable-*reading* item leaves variable-*writing* to §1.
  */
 
 // System includes
@@ -26987,7 +27095,7 @@ namespace xdmfdetail {
  */
 inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
     std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::int64_t v;
     while (iss >> v)
         dims.push_back(static_cast<std::size_t>(v));
@@ -44186,7 +44294,7 @@ ProvenanceReadResult scan_provenance_text(std::string_view text) {
 ProvenanceReadResult read_provenance_lines(const std::string& rPath, std::size_t max_bytes) {
     // Best-effort: an unopenable path is "nothing found", never a throw. This
     // enriches a summary; it must not be able to fail one.
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return {};
     std::string head(max_bytes, '\0');
@@ -46934,7 +47042,7 @@ std::string DataItemStore::Store(const NDArray& rArr) {
 
     if (mImpl->mDataFormat == "Binary") {
         std::string fn = mImpl->mBase + std::to_string(mImpl->mCounter++) + ".bin";
-        std::ofstream bf(fn, std::ios::binary);
+        auto bf = detail::make_classic_ofstream(fn, std::ios::binary);
         if (!bf)
             throw WriteError("XDMF: could not write " + fn);
         bf.write(reinterpret_cast<const char*>(rArr.Data()),
@@ -47053,7 +47161,7 @@ FileSource::Mode FileSource::FromMmapMode(MmapMode mmap_mode) {
 }
 
 void FileSource::LoadBuffered(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     in.seekg(0, std::ios::end);
@@ -47320,7 +47428,7 @@ std::string abaqus_trim(const std::string& rS) {
 std::vector<std::string> split(const std::string& rS, char sep) {
     std::vector<std::string> out;
     std::string cur;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     while (std::getline(iss, cur, sep))
         out.push_back(abaqus_trim(cur));
     return out;
@@ -47644,7 +47752,7 @@ void abq_read_lines(const std::vector<std::string>& rLines, const std::string& r
 }
 
 void abq_read_file(const std::string& rPath, AbqFile& rOut, int Depth) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -47768,7 +47876,7 @@ Mesh read_abaqus(const std::string& rPath) {
 }
 
 void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -47960,7 +48068,7 @@ std::vector<std::int64_t> parse_header_nums(const std::string& rLine) {
         throw ReadError("ANSYS: malformed section header");
     std::string nums = rLine.substr(o2 + 1, c2 - o2 - 1);
     std::vector<std::int64_t> a;
-    std::istringstream iss(nums);
+    auto iss = detail::make_classic_istringstream(nums);
     std::string t;
     while (iss >> t)
         a.push_back(std::strtoll(t.c_str(), nullptr, 16));
@@ -48007,7 +48115,7 @@ const std::unordered_map<int, std::pair<std::string, int>>& cell_type_map() {
 }  // namespace
 
 Mesh read_ansys(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     Buf buf;
@@ -48080,7 +48188,7 @@ Mesh read_ansys(const std::string& rPath) {
                     std::string pl = buf.readline();
                     while (rstrip(pl).empty() && !buf.eof())
                         pl = buf.readline();
-                    std::istringstream iss(pl);
+                    auto iss = detail::make_classic_istringstream(pl);
                     for (int c = 0; c < d; ++c) {
                         double v;
                         iss >> v;
@@ -48123,7 +48231,7 @@ Mesh read_ansys(const std::string& rPath) {
             if (prefix.empty()) {
                 for (std::int64_t k = 0; k < n; ++k) {
                     std::string cl = buf.readline();
-                    std::istringstream iss(cl);
+                    auto iss = detail::make_classic_istringstream(cl);
                     std::string tok;
                     for (int c = 0; c < npc; ++c) {
                         iss >> tok;
@@ -48175,7 +48283,7 @@ Mesh read_ansys(const std::string& rPath) {
 }
 
 void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
-    std::ofstream fh(rPath, std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -48454,7 +48562,7 @@ bool is_data_line(const std::string& rLine) {
 }
 
 std::vector<std::string> read_lines_file(const std::string& rPath) {
-    std::ifstream f(rPath);
+    auto f = detail::make_classic_ifstream(rPath);
     if (!f)
         throw ReadError("Could not open ansysInp file: " + rPath);
     std::vector<std::string> lines;
@@ -48492,7 +48600,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
         std::string up = ansysinp_upper(line);
 
         if (up.rfind("ET,", 0) == 0) {
-            std::stringstream ss(line);
+            auto ss = detail::make_classic_stringstream(line);
             std::string tok;
             std::vector<std::string> p;
             while (std::getline(ss, tok, ','))
@@ -48609,7 +48717,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
             }
         } else if (up.rfind("CMBLOCK", 0) == 0) {
             saw_block = true;
-            std::stringstream ss(line);
+            auto ss = detail::make_classic_stringstream(line);
             std::string tok;
             std::vector<std::string> p;
             while (std::getline(ss, tok, ','))
@@ -48739,7 +48847,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
 }
 
 void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo) {
-    std::ofstream f(rPath);
+    auto f = detail::make_classic_ofstream(rPath);
     if (!f)
         throw WriteError("Could not open ansysInp file for writing: " + rPath);
 
@@ -48951,7 +49059,7 @@ bool is_int_dtype(DType t) {
 
 std::vector<std::string> avsucd_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -48961,7 +49069,7 @@ std::vector<std::string> avsucd_tokens(const std::string& rS) {
 }  // namespace
 
 Mesh read_avsucd(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -49120,7 +49228,7 @@ Mesh read_avsucd(const std::string& rPath) {
 }
 
 void write_avsucd(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -49391,7 +49499,7 @@ NDArray cgns_padded_int8(const std::string& rS, std::size_t total) {
 std::string cgns_hdf5_version_string() {
     unsigned maj = 0, min = 0, rel = 0;
     H5get_libversion(&maj, &min, &rel);
-    std::ostringstream os;
+    auto os = detail::make_classic_ostringstream();
     os << "HDF5 Version " << maj << "." << min << "." << rel;
     return os.str();
 }
@@ -51728,7 +51836,7 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
 }  // namespace
 
 Mesh read_dex(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -51770,7 +51878,7 @@ Mesh read_dex(const std::string& rPath) {
 
     std::vector<std::vector<double>> rows;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::vector<double> r;
         std::string tok;
         while (iss >> tok) {
@@ -51806,7 +51914,7 @@ Mesh read_dex(const std::string& rPath) {
 }
 
 void write_dex(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -52019,7 +52127,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     if (dim != 2 && dim != 3)
         throw WriteError("DOLFIN: can only write dimension 2 or 3");
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -52089,7 +52197,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     auto write_mesh_function = [&](const std::string& rName,
                                    const std::vector<const NDArray*>& rBlocks, int Dim) {
         const std::string fn = base + "_" + rName + ".xml";
-        std::ofstream cf(fn, std::ios::binary);
+        auto cf = detail::make_classic_ofstream(fn, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + fn);
         std::size_t sz = 0;
@@ -52539,7 +52647,7 @@ struct EnsightCaseInfo {
 /// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
 /// lines both use to make the leading timeset/fileset optional.
 std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
-    std::istringstream toks(rValue);
+    auto toks = detail::make_classic_istringstream(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -52569,7 +52677,7 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     bool in_time_values = false;
     bool have_time_set = false;
     long num_steps = -1;
-    std::istringstream stream(data);
+    auto stream = detail::make_classic_istringstream(data);
     std::string raw;
     while (std::getline(stream, raw)) {
         std::string line = ensight_trim(raw);
@@ -52631,12 +52739,12 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             } else if (ensight_starts_with(line, "time values:")) {
                 in_time_values = true;
                 const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
-                std::istringstream iss(rest);
+                auto iss = detail::make_classic_istringstream(rest);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
             } else if (in_time_values) {
-                std::istringstream iss(line);
+                auto iss = detail::make_classic_istringstream(line);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
@@ -52675,7 +52783,7 @@ std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
     std::size_t width = 0;
     while (star + width < rPattern.size() && rPattern[star + width] == '*')
         ++width;
-    std::ostringstream num;
+    auto num = detail::make_classic_ostringstream();
     num << std::setfill('0') << std::setw(static_cast<int>(width)) << Number;
     std::string digits = num.str();
     if (digits.size() > width)
@@ -52716,7 +52824,7 @@ struct EnsightPartLayout {
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     // rRecord is e.g. "node id assign"; the mode is the last token.
-    std::istringstream iss(rRecord);
+    auto iss = detail::make_classic_istringstream(rRecord);
     std::string tok, mode;
     while (iss >> tok)
         mode = tok;
@@ -53429,7 +53537,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
 
     {
-        std::ofstream cf(case_path, std::ios::binary);
+        auto cf = detail::make_classic_ofstream(case_path, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + case_path);
         std::string out;
@@ -53441,7 +53549,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         cf.write(out.data(), static_cast<std::streamsize>(out.size()));
     }
 
-    std::ofstream gf(geo_path, std::ios::binary);
+    auto gf = detail::make_classic_ofstream(geo_path, std::ios::binary);
     if (!gf)
         throw WriteError("Could not open file for writing: " + geo_path);
     if (binary)
@@ -54958,7 +55066,7 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
 
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -54971,7 +55079,7 @@ Mesh read_flac3d(const std::string& rPath) {
     // Sniff binary (a null byte in the first 8 bytes).
     bool binary = false;
     {
-        std::ifstream sniff(rPath, std::ios::binary);
+        auto sniff = detail::make_classic_ifstream(rPath, std::ios::binary);
         if (!sniff)
             throw ReadError("Could not open file: " + rPath);
         char block[8] = {0};
@@ -54991,7 +55099,7 @@ Mesh read_flac3d(const std::string& rPath) {
     std::vector<Flac3dGroup> groups;
 
     if (binary) {
-        std::ifstream in(rPath, std::ios::binary);
+        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
         char hdr[8];
         in.read(hdr, 8);  // unknown header
         std::uint32_t num_nodes = ru32(in);
@@ -55040,7 +55148,7 @@ Mesh read_flac3d(const std::string& rPath) {
             }
         }
     } else {
-        std::ifstream in(rPath, std::ios::binary);
+        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
         std::string line;
         // Index of the group whose id list the following lines belong to
         // (`npos` = none). A group header is followed by whitespace-separated
@@ -55334,7 +55442,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             face_idx.push_back(i);
     }
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -55514,7 +55622,7 @@ bool contains(const std::string& rHay, const char* pNeedle) {
 }
 
 long long leading_int(const std::string& rLine) {
-    std::istringstream iss(rLine);
+    auto iss = detail::make_classic_istringstream(rLine);
     long long v = 0;
     iss >> v;
     return v;
@@ -55523,7 +55631,7 @@ long long leading_int(const std::string& rLine) {
 }  // namespace
 
 Mesh read_flux(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -55554,7 +55662,7 @@ Mesh read_flux(const std::string& rPath) {
     // element tokens
     std::vector<std::string> etok;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::string w;
         while (iss >> w)
             etok.push_back(w);
@@ -55595,7 +55703,7 @@ Mesh read_flux(const std::string& rPath) {
     // coordinate tokens
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::string w;
         while (iss >> w)
             ctok.push_back(w);
@@ -55630,7 +55738,7 @@ Mesh read_flux(const std::string& rPath) {
 }
 
 void write_flux(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -55737,7 +55845,7 @@ namespace {
 bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
     std::string line;
     while (std::getline(rIn, line)) {
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string t;
         rOut.clear();
         while (iss >> t)
@@ -55751,7 +55859,7 @@ bool next_tokens(std::istream& rIn, std::vector<std::string>& rOut) {
 }  // namespace
 
 Mesh read_freefem(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -55848,7 +55956,7 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
         return n;
     };
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -58863,7 +58971,7 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = rCur.read_line();
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         long long dim, tag;
         iss >> dim >> tag;
         std::size_t q1 = line.find('"');
@@ -59201,7 +59309,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
     if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
-            std::istringstream iss(line);
+            auto iss = detail::make_classic_istringstream(line);
             std::vector<std::int64_t> v;
             long long x;
             while (iss >> x)
@@ -59884,7 +59992,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    std::istringstream fss(cur.read_line());
+    auto fss = detail::make_classic_istringstream(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -59930,7 +60038,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
     std::string fmt = cur.read_line();
-    std::istringstream fss(fmt);
+    auto fss = detail::make_classic_istringstream(fmt);
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -60341,7 +60449,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -60507,7 +60615,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                   const GmshInfo& rInfo) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -60858,7 +60966,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    std::istringstream fss(cur.read_line());
+    auto fss = detail::make_classic_istringstream(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -61388,7 +61496,7 @@ std::string ip_strip(const std::string& s) {
 }  // namespace
 
 Mesh read_ip(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -61402,7 +61510,7 @@ Mesh read_ip(const std::string& rPath) {
     while (ints.size() < 4 && idx < lines.size()) {
         std::string s = ip_strip(lines[idx++]);
         if (!s.empty()) {
-            std::istringstream iss(s);
+            auto iss = detail::make_classic_istringstream(s);
             int v;
             iss >> v;
             ints.push_back(v);
@@ -61431,7 +61539,7 @@ Mesh read_ip(const std::string& rPath) {
                 c = ' ';
             else if (c == 'D' || c == 'd')
                 c = 'E';
-        std::istringstream iss(s);
+        auto iss = detail::make_classic_istringstream(s);
         std::string tok;
         while (iss >> tok)
             flat.push_back(detail::parse_double(tok));
@@ -61461,7 +61569,7 @@ Mesh read_ip(const std::string& rPath) {
 }
 
 void write_ip(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -61561,7 +61669,7 @@ std::string mdpa_clean(const std::string& rS) {
 
 std::vector<std::string> mdpa_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -61977,7 +62085,7 @@ namespace {
  * @param pInfo   where to put what the `Mesh` cannot hold, or null to drop it
  */
 Mesh mdpa_read_impl(const std::string& rPath, bool Lenient, MdpaInfo* pInfo) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -62616,7 +62724,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh) {
 }
 
 void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rInfo) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -62849,7 +62957,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
             continue;
         for (int pass = 0; pass < 2; ++pass) {
             const bool conditions = pass == 1;
-            std::ostringstream body;
+            auto body = detail::make_classic_ostringstream();
             for (std::size_t b = 0; b < nblocks; ++b) {
                 if (is_condition[b] != conditions)
                     continue;
@@ -64942,7 +65050,7 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -65047,7 +65155,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
 }
 
 void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -65112,7 +65220,7 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 namespace meshioplusplus {
 
 Mesh read_mff(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -65142,7 +65250,7 @@ Mesh read_mff(const std::string& rPath) {
 }
 
 void write_mff(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -65212,7 +65320,7 @@ std::string type_from_dims(int lnv, int lne, int lnf, int lnn) {
 }  // namespace
 
 Mesh read_mfm(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -65220,7 +65328,7 @@ Mesh read_mfm(const std::string& rPath) {
     std::string line;
     std::vector<long long> header;
     while (std::getline(in, line)) {
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         long long v;
         while (iss >> v)
             header.push_back(v);
@@ -65322,7 +65430,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
         }
     }
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
     f << nel << " " << nver << " " << nver << " " << dim << " " << lnn << " " << lnv << " " << lne
@@ -65426,7 +65534,7 @@ struct MphtxtCursor {
 }  // namespace
 
 Mesh read_mphtxt(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     MphtxtCursor c;
@@ -65435,7 +65543,7 @@ Mesh read_mphtxt(const std::string& rPath) {
         std::size_t h = line.find('#');
         if (h != std::string::npos)
             line = line.substr(0, h);
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string w;
         while (iss >> w)
             c.mT.push_back(w);
@@ -65510,7 +65618,7 @@ Mesh read_mphtxt(const std::string& rPath) {
 }
 
 void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -65720,7 +65828,7 @@ std::string field(const std::string& rLine, std::size_t start, std::size_t width
 }  // namespace
 
 void write_nastran(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -65804,7 +65912,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
 }
 
 Mesh read_nastran(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -66013,7 +66121,7 @@ int topo_dim(const std::string& rType) {
 
 std::vector<std::string> netgen_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -66134,7 +66242,7 @@ Mesh read_netgen(const std::string& rPath) {
     if (rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0)
         throw ReadError("Netgen: gzip container handled by Python fallback");
 
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     LineCursor c(in);
@@ -66262,7 +66370,7 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
 }  // namespace
 
 void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -66393,7 +66501,7 @@ NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -66413,7 +66521,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        std::istringstream iss(line.substr(b, e - b));
+        auto iss = detail::make_classic_istringstream(line.substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -66507,7 +66615,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
                 "Wavefront .obj files can only contain triangle, quad, "
                 "or polygon cells.");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -66595,7 +66703,7 @@ std::string off_cell_type_from_count(std::size_t n) {
 }  // namespace
 
 Mesh read_off(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -66612,7 +66720,7 @@ Mesh read_off(const std::string& rPath) {
             break;
         }
     }
-    std::istringstream cs(counts);
+    auto cs = detail::make_classic_istringstream(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
 
@@ -66669,7 +66777,7 @@ Mesh read_off(const std::string& rPath) {
 }
 
 void write_off(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -66796,7 +66904,7 @@ std::string openfoam_strip(const std::string& rS) {
 // Parse the FoamFile header for format/arch (label/scalar byte widths).
 FoamFormat detect_format(const std::string& rPath) {
     FoamFormat fmt;
-    std::ifstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return fmt;
     std::string line;
@@ -66851,7 +66959,7 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    std::istringstream ss(out);
+    auto ss = detail::make_classic_istringstream(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
@@ -66880,7 +66988,7 @@ std::string strip_comments_and_header(std::string_view rText) {
 
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
@@ -66904,7 +67012,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            std::istringstream ns(t);
+            auto ns = detail::make_classic_istringstream(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -66915,7 +67023,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false, have_n = false;
     while (std::getline(ss, line)) {
@@ -66939,7 +67047,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            std::istringstream ns(inside);
+            auto ns = detail::make_classic_istringstream(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -66952,7 +67060,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false, have_n = false;
     while (std::getline(ss, line)) {
@@ -66970,7 +67078,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            std::istringstream ns(s);
+            auto ns = detail::make_classic_istringstream(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -67131,7 +67239,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    std::istringstream ss(inside);
+    auto ss = detail::make_classic_istringstream(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -67674,7 +67782,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    std::istringstream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -67688,7 +67796,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    std::istringstream ss(text_owned);
+    auto ss = detail::make_classic_istringstream(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
@@ -67718,7 +67826,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            std::istringstream ls(s);
+            auto ls = detail::make_classic_istringstream(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -67846,7 +67954,7 @@ std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
 /// …), read the same cheap line-scan way `detect_format` reads `format`/
 /// `arch` -- no full parse needed just to classify the field.
 std::string foam_field_file_class(const fs::path& rPath) {
-    std::ifstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return {};
     std::string line;
@@ -68768,8 +68876,8 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
     return "";
 }
 
-std::ofstream foam_open(const fs::path& rPath) {
-    std::ofstream f(rPath, std::ios::binary);
+auto foam_open(const fs::path& rPath) {
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
     return f;
@@ -68783,7 +68891,7 @@ using FoamZoneOut = std::pair<std::string, std::vector<std::int64_t>>;
 void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char* pObject,
                           const char* pZoneType, const char* pLabelKey,
                           const std::vector<FoamZoneOut>& rZones) {
-    std::ofstream f = foam_open(rPath);
+    auto f = foam_open(rPath);
     foam_write_header(f, pClass, pObject);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
@@ -68950,7 +69058,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     if (fs::path(rPath).extension() == ".foam") {
         // The marker file is what makes the case openable by ParaView and by
         // this reader's own `.foam` branch.
-        std::ofstream marker(rPath, std::ios::binary);
+        auto marker = detail::make_classic_ofstream(rPath, std::ios::binary);
     }
 
     // Companion files this writer does not produce but OpenFOAM would read.
@@ -68974,7 +69082,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     const std::size_t np = rMesh.NumPoints();
 
     {
-        std::ofstream f = foam_open(poly / "points");
+        auto f = foam_open(poly / "points");
         foam_write_header(f, "vectorField", "points");
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
@@ -68988,7 +69096,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "faces");
+        auto f = foam_open(poly / "faces");
         foam_write_header(f, "faceList", "faces");
         f << order.mNewToOld.size() << "\n(\n";
         for (std::int64_t old : order.mNewToOld) {
@@ -69001,7 +69109,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "owner");
+        auto f = foam_open(poly / "owner");
         foam_write_header(f, "labelList", "owner");
         f << order.mNewToOld.size() << "\n(\n";
         for (std::int64_t old : order.mNewToOld)
@@ -69014,7 +69122,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
-        std::ofstream f = foam_open(poly / "neighbour");
+        auto f = foam_open(poly / "neighbour");
         foam_write_header(f, "labelList", "neighbour");
         f << order.mNumInternal << "\n(\n";
         for (std::int64_t i = 0; i < order.mNumInternal; ++i)
@@ -69024,7 +69132,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "boundary");
+        auto f = foam_open(poly / "boundary");
         foam_write_header(f, "polyBoundaryMesh", "boundary");
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {
@@ -69139,7 +69247,7 @@ const std::vector<int>* write_reorder(const std::string& rType) {
 
 std::vector<std::string> permas_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -69165,7 +69273,7 @@ std::string keyword_of(const std::string& rLine) {
 }  // namespace
 
 Mesh read_permas(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -69265,7 +69373,7 @@ Mesh read_permas(const std::string& rPath) {
 }
 
 void write_permas(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -69478,7 +69586,7 @@ void store_scalar(NDArray& rA, std::size_t idx, double dval, std::int64_t ival, 
 }  // namespace
 
 Mesh read_ply(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -69524,7 +69632,7 @@ Mesh read_ply(const std::string& rPath) {
 
     std::string line = next_sig();
     while (line != "end_header") {
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         iss >> tok;
         if (tok == "obj_info") {
@@ -69537,7 +69645,7 @@ Mesh read_ply(const std::string& rPath) {
                 num_verts = count;
                 line = next_sig();
                 while (line.rfind("property", 0) == 0) {
-                    std::istringstream ps(line);
+                    auto ps = detail::make_classic_istringstream(line);
                     std::string p, type, name;
                     ps >> p >> type >> name;
                     if (type == "list")
@@ -69551,7 +69659,7 @@ Mesh read_ply(const std::string& rPath) {
                 line = next_sig();
                 bool got_list = false;
                 while (line.rfind("property", 0) == 0) {
-                    std::istringstream ps(line);
+                    auto ps = detail::make_classic_istringstream(line);
                     std::string p, kind;
                     ps >> p >> kind;
                     if (kind == "list") {
@@ -69608,7 +69716,7 @@ Mesh read_ply(const std::string& rPath) {
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();
-            std::istringstream rs(row);
+            auto rs = detail::make_classic_istringstream(row);
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
@@ -69672,7 +69780,7 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                std::istringstream rs(read_line());
+                auto rs = detail::make_classic_istringstream(read_line());
                 long long cnt;
                 rs >> cnt;
                 n = static_cast<std::size_t>(cnt);
@@ -69713,7 +69821,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         return;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -69932,7 +70040,7 @@ Mesh read_ascii(std::ifstream& rIn) {
         std::string s = lstrip(line);
         if (s.empty() || is_comment_line(s))
             continue;
-        std::istringstream iss(s);
+        auto iss = detail::make_classic_istringstream(s);
         std::vector<std::string> tok;
         std::string t;
         while (iss >> t)
@@ -69973,7 +70081,7 @@ Mesh read_binary(std::ifstream& rIn, std::uint32_t num_tri) {
 }  // namespace
 
 Mesh read_stl(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     in.seekg(0, std::ios::end);
@@ -70117,7 +70225,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     std::vector<std::array<double, 3>> normals;
     gather_triangles(rMesh, tris, normals);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -70249,7 +70357,7 @@ std::string su2_strip(const std::string& rS) {
 }
 std::vector<std::string> su2_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -70301,7 +70409,7 @@ void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, s
 }  // namespace
 
 Mesh read_su2(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -70405,7 +70513,7 @@ Mesh read_su2(const std::string& rPath) {
 }
 
 void write_su2(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -70646,7 +70754,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         stroke_width = buf;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -70789,7 +70897,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         stroke_width = buf;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -70905,7 +71013,7 @@ std::string tecplot_strip(const std::string& rS) {
 }
 std::vector<std::string> tecplot_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -71162,7 +71270,7 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
 // sharing rZones[0]'s STRANDID when any zone carries one (SOLUTIONTIME with
 // no STRANDID at all groups every zone together), sorted by SOLUTIONTIME.
 // Zones with no SOLUTIONTIME at all are not a timeline -- multiple such
-// zones is the "several static zones" case roadmap §7 owns, not this one;
+// zones is the "several static zones" case roadmap §1 owns, not this one;
 // only the first is read here, with a warning if there is more than one.
 std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& rZones) {
     if (!rZones[0].mHasSolutionTime) {
@@ -71191,7 +71299,7 @@ std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& 
 }  // namespace
 
 MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -71227,7 +71335,7 @@ MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& 
 }
 
 Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -71369,7 +71477,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     std::string ztype = meshio_to_tecplot(mtype);
     const std::vector<int>& order = tecplot_order(mtype);
 
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -71524,7 +71632,7 @@ struct Parsed {
 };
 
 Parsed parse_file(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     Parsed p;
@@ -71537,7 +71645,7 @@ Parsed parse_file(const std::string& rPath) {
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         if (!have_header) {
             while (iss >> tok)
@@ -71685,7 +71793,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
     // ---- node file ----
     {
-        std::ofstream fh(node_path, std::ios::binary);
+        auto fh = detail::make_classic_ofstream(node_path, std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + node_path);
 
@@ -71750,7 +71858,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
     // ---- ele file ----
     {
-        std::ofstream fh(ele_path, std::ios::binary);
+        auto fh = detail::make_classic_ofstream(ele_path, std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + ele_path);
 
@@ -71964,7 +72072,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     if (Standalone)
         out.push_back("\\end{document}");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -72127,7 +72235,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     if (Standalone)
         out.push_back("\\end{document}");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -72190,7 +72298,7 @@ struct TriangleTokens {
 
 TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
     TriangleTokens tokens;
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     rOk = static_cast<bool>(in);
     if (!rOk)
         return tokens;
@@ -72199,7 +72307,7 @@ TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
         const std::size_t hash = line.find('#');
         if (hash != std::string::npos)
             line.resize(hash);
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         while (iss >> tok)
             tokens.mToks.push_back(tok);
@@ -72472,7 +72580,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     triangle_split_point_keys(rMesh, attr_keys, ref_keys);
 
     {
-        std::ofstream fh(rStem + ".node", std::ios::binary);
+        auto fh = detail::make_classic_ofstream(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
         fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
@@ -72507,7 +72615,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         }
     }
 
-    std::ofstream fh(rStem + ".ele", std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
     fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
@@ -72548,7 +72656,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
             break;
         }
 
-    std::ofstream fh(rPath, std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
     fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
@@ -72880,7 +72988,7 @@ const VolSpec kVolume[] = {
 Mesh read_ugrid(const std::string& rPath) {
     UgridType ft = resolve_type(rPath);
 
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -73045,7 +73153,7 @@ Mesh read_ugrid(const std::string& rPath) {
 void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
     UgridType ft = resolve_type(rPath);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -73320,7 +73428,7 @@ bool is_beam(int fedesc) {
 
 std::vector<std::string> unv_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -73429,7 +73537,7 @@ bool parse_field(int ds, const std::vector<std::string>& lines, std::size_t star
 }  // namespace
 
 Mesh read_unv(const std::string& rPath, UnvInfo& rInfo) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -73704,7 +73812,7 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster, int
 
 void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo, bool code_aster,
                int node_dataset) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -73966,7 +74074,7 @@ template <class T>
 bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    std::istringstream is(pText);
+    auto is = detail::make_classic_istringstream(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -74130,7 +74238,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         detail::vtk_codec_require_write(codec);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -74145,7 +74253,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
-    std::ostringstream ext;
+    auto ext = detail::make_classic_ostringstream();
     ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -74442,7 +74550,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
         if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTK writer does not support polyhedron cells");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -74792,7 +74900,7 @@ struct VtkCursor {
 
 std::vector<std::string> split(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -75152,7 +75260,7 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
         piece_names.push_back("block_" + std::to_string(i));
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -75365,7 +75473,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         if (verts.mOffsets[i] - (i == 0 ? 0 : verts.mOffsets[i - 1]) != 1)
             throw WriteError("VTP: vertex cells must have exactly one node");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -75801,7 +75909,7 @@ template <class T>
 bool vtr_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    std::istringstream is(pText);
+    auto is = detail::make_classic_istringstream(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -75956,7 +76064,7 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         detail::vtk_codec_require_write(codec);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -75971,7 +76079,7 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
-    std::ostringstream ext;
+    auto ext = detail::make_classic_ostringstream();
     ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -76182,7 +76290,7 @@ template <class T>
 bool vts_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    std::istringstream is(pText);
+    auto is = detail::make_classic_istringstream(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -76324,7 +76432,7 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         detail::vtk_codec_require_write(codec);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -76339,7 +76447,7 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
-    std::ostringstream ext;
+    auto ext = detail::make_classic_ostringstream();
     ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
 
     os << "<?xml version=\"1.0\"?>\n";
@@ -76549,7 +76657,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -77028,7 +77136,7 @@ namespace {
 
 std::vector<double> parse_point(const std::string& rS) {
     std::vector<double> p;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string tok;
     while (iss >> tok)
         p.push_back(detail::parse_double(tok));
@@ -77051,7 +77159,7 @@ struct CoordHash {
 }  // namespace
 
 Mesh read_wkt(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -77150,7 +77258,7 @@ Mesh read_wkt(const std::string& rPath) {
 }
 
 void write_wkt(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -77336,7 +77444,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
 
     if (fmt == "XML") {
         NDArray a(dt, dims);
-        std::istringstream iss(rDi.text().get());
+        auto iss = detail::make_classic_istringstream(rDi.text().get());
         std::string tok;
         std::size_t i = 0;
         while (i < total && (iss >> tok))
@@ -77349,7 +77457,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
         std::size_t a0 = rel.find_first_not_of(" \t\r\n");
         std::size_t a1 = rel.find_last_not_of(" \t\r\n");
         std::string path = (a0 == std::string::npos) ? "" : rel.substr(a0, a1 - a0 + 1);
-        std::ifstream bin(path, std::ios::binary);
+        auto bin = detail::make_classic_ifstream(path, std::ios::binary);
         if (!bin) {  // try relative to the xdmf file
             bin.open((rBaseDir / path).string(), std::ios::binary);
             if (!bin)
@@ -89638,7 +89746,7 @@ const char* pipe_excluded_hint(const std::string& rOp) {
 /// provenance operation chain -- `mParams` is a `std::map`, so key order is
 /// already deterministic without a separate sort here.
 std::string pipe_render_op(const PipelineStep& rStep) {
-    std::ostringstream out;
+    auto out = detail::make_classic_ostringstream();
     out << rStep.mOp << "(";
     bool first = true;
     for (const auto& [key, value] : rStep.mParams) {
@@ -90843,10 +90951,10 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
 }
 
 std::string pipe_read_file(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("meshio++: pipeline: cannot open settings file '" + rPath + "'");
-    std::ostringstream buffer;
+    auto buffer = detail::make_classic_ostringstream();
     buffer << in.rdbuf();
     return buffer.str();
 }
@@ -99084,7 +99192,7 @@ std::string sniff_lstrip(const std::string& rIn) {
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return "";
     char buf[512];

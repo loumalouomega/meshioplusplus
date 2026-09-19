@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -54,7 +55,7 @@ std::string type_from_dims(int lnv, int lne, int lnf, int lnn) {
 }  // namespace
 
 Mesh read_mfm(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -62,7 +63,7 @@ Mesh read_mfm(const std::string& rPath) {
     std::string line;
     std::vector<long long> header;
     while (std::getline(in, line)) {
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         long long v;
         while (iss >> v)
             header.push_back(v);
@@ -164,7 +165,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
         }
     }
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
     f << nel << " " << nver << " " << nver << " " << dim << " " << lnn << " " << lnv << " " << lne

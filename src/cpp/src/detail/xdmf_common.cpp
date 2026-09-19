@@ -34,6 +34,7 @@
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -312,7 +313,7 @@ std::string DataItemStore::Store(const NDArray& rArr) {
 
     if (mImpl->mDataFormat == "Binary") {
         std::string fn = mImpl->mBase + std::to_string(mImpl->mCounter++) + ".bin";
-        std::ofstream bf(fn, std::ios::binary);
+        auto bf = detail::make_classic_ofstream(fn, std::ios::binary);
         if (!bf)
             throw WriteError("XDMF: could not write " + fn);
         bf.write(reinterpret_cast<const char*>(rArr.Data()),

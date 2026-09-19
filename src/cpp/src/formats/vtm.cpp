@@ -44,6 +44,7 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -180,7 +181,7 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
         piece_names.push_back("block_" + std::to_string(i));
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

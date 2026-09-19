@@ -49,7 +49,7 @@
  * more parts the owning part number is recorded as the integer cell_data
  * field `"ensight:part"`. The writer emits a single part (`node id assign`,
  * `element id assign`) and drops point/cell/field data (mesh-only scope) --
- * the roadmap's variable-*reading* item leaves variable-*writing* to §7.
+ * the roadmap's variable-*reading* item leaves variable-*writing* to §1.
  */
 
 // System includes

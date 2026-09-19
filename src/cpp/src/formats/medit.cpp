@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -133,7 +134,7 @@ std::string pick_first_int_cell(const Mesh& rMesh) {
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -238,7 +239,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
 }
 
 void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

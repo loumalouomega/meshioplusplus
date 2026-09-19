@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._helpers import register_format
 from ._openfoam import read as _py_read
 
@@ -34,6 +35,8 @@ def read(filename, region="", points_only=False, arrays=None, time_step=0):
         )
     except Exception as exc:
         if region or time_step or "multi-region" in str(exc):
+            raise
+        if not core_declined(exc, "openfoam", "read", filename):
             raise
     return _py_read(filename)
 

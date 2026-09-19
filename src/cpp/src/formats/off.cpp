@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -60,7 +61,7 @@ std::string off_cell_type_from_count(std::size_t n) {
 }  // namespace
 
 Mesh read_off(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -77,7 +78,7 @@ Mesh read_off(const std::string& rPath) {
             break;
         }
     }
-    std::istringstream cs(counts);
+    auto cs = detail::make_classic_istringstream(counts);
     long long num_verts = 0, num_faces = 0, num_edges = 0;
     cs >> num_verts >> num_faces >> num_edges;
 
@@ -134,7 +135,7 @@ Mesh read_off(const std::string& rPath) {
 }
 
 void write_off(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

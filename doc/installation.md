@@ -112,6 +112,8 @@ Notes:
 
 The C++ core logs through `std::format`-based helpers with source locations. Control verbosity with the `MESHIOPLUSPLUS_LOG_LEVEL` environment variable: `debug`, `info`, `warn` (default), `error`, or `off`.
 
+The Python layer logs through the standard `logging` module under the logger name `meshioplusplus`. It never prints to stdout, so a CLI pipeline's output stays clean. At `DEBUG` it reports every ambiguous-extension candidate that declined a file and every C++ fast path that fell back to its Python twin; at `WARNING` it reports a fast path that failed unexpectedly. Set `MESHIOPLUSPLUS_STRICT_CORE=1` to turn every such fallback into an error instead; see [when the native path declines](./formats.md#when-the-native-path-declines).
+
 ### JavaScript / WebAssembly
 
 The same C++ core also compiles to WebAssembly for use in the browser or Node.js, published as [`@meshioplusplus/wasm`](https://www.npmjs.com/package/@meshioplusplus/wasm) (`npm install @meshioplusplus/wasm`). Building it from source needs the [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html) instead of a native compiler:

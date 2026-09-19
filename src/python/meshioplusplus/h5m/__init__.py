@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._h5m import read as _py_read
@@ -12,8 +13,9 @@ def read(filename):
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
             return _core.h5m_read(str(filename))
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "h5m", "read", filename):
+                raise
     return _py_read(filename)
 
 
@@ -29,8 +31,9 @@ def write(filename, mesh, add_global_ids=True, compression="gzip", compression_o
         try:
             _core.h5m_write(str(filename), mesh, bool(add_global_ids), gzip_level)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "h5m", "write", filename):
+                raise
     return _py_write(filename, mesh, add_global_ids, compression, compression_opts)
 
 

@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._vtr import read as _py_read
@@ -11,8 +12,9 @@ def read(filename, points_only=False, arrays=None):
     if not is_buffer(filename, "r"):
         try:
             return _core.vtr_read(str(filename), points_only=points_only, arrays=arrays)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "vtr", "read", filename):
+                raise
     return _py_read(filename)
 
 
@@ -32,8 +34,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         try:
             _core.vtr_write_codec(str(filename), mesh, binary, _CPP_CODECS[compression])
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "vtr", "write", filename):
+                raise
     return _py_write(
         filename, mesh, binary=binary, compression=compression, header_type=header_type
     )

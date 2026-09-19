@@ -1,6 +1,7 @@
 from typing import Union
 
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._projection import ISO_AZIMUTH, ISO_ELEVATION
@@ -69,8 +70,9 @@ def write(
                 colorbar,
             )
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "tikz", "write", filename):
+                raise
     return _py_write(
         filename,
         mesh,

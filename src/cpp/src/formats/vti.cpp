@@ -46,6 +46,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -62,7 +63,7 @@ template <class T>
 bool vti_parse_n(const char* pText, T* pOut, std::size_t Count) {
     if (pText == nullptr)
         return false;
-    std::istringstream is(pText);
+    auto is = detail::make_classic_istringstream(pText);
     for (std::size_t i = 0; i < Count; ++i)
         if (!(is >> pOut[i]))
             return false;
@@ -226,7 +227,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (binary && codec != detail::VtkCodec::None)
         detail::vtk_codec_require_write(codec);
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -241,7 +242,7 @@ void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         os << detail::vtu_encode_binary(d, n, binary ? codec : detail::VtkCodec::None) << "\n";
     };
 
-    std::ostringstream ext;
+    auto ext = detail::make_classic_ostringstream();
     ext << "0 " << spec.mDims[0] << " 0 " << spec.mDims[1] << " 0 " << spec.mDims[2];
 
     os << "<?xml version=\"1.0\"?>\n";
