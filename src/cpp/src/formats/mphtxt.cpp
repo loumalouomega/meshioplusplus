@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -81,7 +82,7 @@ struct MphtxtCursor {
 }  // namespace
 
 Mesh read_mphtxt(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     MphtxtCursor c;
@@ -90,7 +91,7 @@ Mesh read_mphtxt(const std::string& rPath) {
         std::size_t h = line.find('#');
         if (h != std::string::npos)
             line = line.substr(0, h);
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string w;
         while (iss >> w)
             c.mT.push_back(w);
@@ -165,7 +166,7 @@ Mesh read_mphtxt(const std::string& rPath) {
 }
 
 void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

@@ -35,6 +35,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -159,7 +160,7 @@ std::string field(const std::string& rLine, std::size_t start, std::size_t width
 }  // namespace
 
 void write_nastran(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -243,7 +244,7 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
 }
 
 Mesh read_nastran(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;

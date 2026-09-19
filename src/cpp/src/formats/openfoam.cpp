@@ -48,6 +48,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace fs = std::filesystem;
 
@@ -91,7 +92,7 @@ std::string openfoam_strip(const std::string& rS) {
 // Parse the FoamFile header for format/arch (label/scalar byte widths).
 FoamFormat detect_format(const std::string& rPath) {
     FoamFormat fmt;
-    std::ifstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return fmt;
     std::string line;
@@ -146,7 +147,7 @@ std::string strip_comments_and_header(std::string_view rText) {
         }
     }
     // drop FoamFile { ... }
-    std::istringstream ss(out);
+    auto ss = detail::make_classic_istringstream(out);
     std::string line, result;
     bool in_header = false;
     int depth = 0;
@@ -175,7 +176,7 @@ std::string strip_comments_and_header(std::string_view rText) {
 
 std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) {
     std::vector<std::array<double, 3>> pts;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false;
     bool have_n = false;
@@ -199,7 +200,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
             for (char& c : t)
                 if (c == '(' || c == ')')
                     c = ' ';
-            std::istringstream ns(t);
+            auto ns = detail::make_classic_istringstream(t);
             double a, b, c;
             if (ns >> a >> b >> c)
                 pts.push_back({a, b, c});
@@ -210,7 +211,7 @@ std::vector<std::array<double, 3>> parse_points_ascii(const std::string& rBody) 
 
 std::vector<Face> parse_faces_ascii(const std::string& rBody) {
     std::vector<Face> faces;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false, have_n = false;
     while (std::getline(ss, line)) {
@@ -234,7 +235,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
             if (lp == std::string::npos || rp == std::string::npos)
                 continue;
             std::string inside = s.substr(lp + 1, rp - lp - 1);
-            std::istringstream ns(inside);
+            auto ns = detail::make_classic_istringstream(inside);
             Face f;
             std::int64_t v;
             while (ns >> v)
@@ -247,7 +248,7 @@ std::vector<Face> parse_faces_ascii(const std::string& rBody) {
 
 std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
     std::vector<std::int64_t> out;
-    std::istringstream ss(rBody);
+    auto ss = detail::make_classic_istringstream(rBody);
     std::string line;
     bool in_block = false, have_n = false;
     while (std::getline(ss, line)) {
@@ -265,7 +266,7 @@ std::vector<std::int64_t> parse_int_list_ascii(const std::string& rBody) {
         if (s == ")")
             break;
         if (in_block) {
-            std::istringstream ns(s);
+            auto ns = detail::make_classic_istringstream(s);
             std::int64_t v;
             while (ns >> v)
                 out.push_back(v);
@@ -426,7 +427,7 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
         ++rp;
     }
     const std::string inside = rBlock.substr(lp + 1, rp - lp - 2);
-    std::istringstream ss(inside);
+    auto ss = detail::make_classic_istringstream(inside);
     std::vector<std::int64_t> out;
     std::int64_t v;
     while (ss >> v)
@@ -969,7 +970,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
     const std::size_t rp = rText.find(')', lp);
     if (lp == std::string::npos || rp == std::string::npos)
         return out;
-    std::istringstream ss(std::string(rText.substr(lp + 1, rp - lp - 1)));
+    auto ss = detail::make_classic_istringstream(std::string(rText.substr(lp + 1, rp - lp - 1)));
     double v;
     while (ss >> v)
         out.push_back(v);
@@ -983,7 +984,7 @@ std::vector<double> foam_scan_uniform_value(std::string_view rText, int componen
 FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
     FoamField out;
     const std::string text_owned(rText);
-    std::istringstream ss(text_owned);
+    auto ss = detail::make_classic_istringstream(text_owned);
     std::string line;
     bool have_n = false;
     std::int64_t n = 0;
@@ -1013,7 +1014,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
             for (char& c : s)
                 if (c == '(' || c == ')')
                     c = ' ';
-            std::istringstream ls(s);
+            auto ls = detail::make_classic_istringstream(s);
             double v;
             while (ls >> v)
                 out.mFlat.push_back(v);
@@ -1141,7 +1142,7 @@ std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
 /// …), read the same cheap line-scan way `detect_format` reads `format`/
 /// `arch` -- no full parse needed just to classify the field.
 std::string foam_field_file_class(const fs::path& rPath) {
-    std::ifstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return {};
     std::string line;
@@ -2063,8 +2064,8 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
     return "";
 }
 
-std::ofstream foam_open(const fs::path& rPath) {
-    std::ofstream f(rPath, std::ios::binary);
+auto foam_open(const fs::path& rPath) {
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
     return f;
@@ -2078,7 +2079,7 @@ using FoamZoneOut = std::pair<std::string, std::vector<std::int64_t>>;
 void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char* pObject,
                           const char* pZoneType, const char* pLabelKey,
                           const std::vector<FoamZoneOut>& rZones) {
-    std::ofstream f = foam_open(rPath);
+    auto f = foam_open(rPath);
     foam_write_header(f, pClass, pObject);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
@@ -2245,7 +2246,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     if (fs::path(rPath).extension() == ".foam") {
         // The marker file is what makes the case openable by ParaView and by
         // this reader's own `.foam` branch.
-        std::ofstream marker(rPath, std::ios::binary);
+        auto marker = detail::make_classic_ofstream(rPath, std::ios::binary);
     }
 
     // Companion files this writer does not produce but OpenFOAM would read.
@@ -2269,7 +2270,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
     const std::size_t np = rMesh.NumPoints();
 
     {
-        std::ofstream f = foam_open(poly / "points");
+        auto f = foam_open(poly / "points");
         foam_write_header(f, "vectorField", "points");
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
@@ -2283,7 +2284,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "faces");
+        auto f = foam_open(poly / "faces");
         foam_write_header(f, "faceList", "faces");
         f << order.mNewToOld.size() << "\n(\n";
         for (std::int64_t old : order.mNewToOld) {
@@ -2296,7 +2297,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "owner");
+        auto f = foam_open(poly / "owner");
         foam_write_header(f, "labelList", "owner");
         f << order.mNewToOld.size() << "\n(\n";
         for (std::int64_t old : order.mNewToOld)
@@ -2309,7 +2310,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
-        std::ofstream f = foam_open(poly / "neighbour");
+        auto f = foam_open(poly / "neighbour");
         foam_write_header(f, "labelList", "neighbour");
         f << order.mNumInternal << "\n(\n";
         for (std::int64_t i = 0; i < order.mNumInternal; ++i)
@@ -2319,7 +2320,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         f << ")\n";
     }
     {
-        std::ofstream f = foam_open(poly / "boundary");
+        auto f = foam_open(poly / "boundary");
         foam_write_header(f, "polyBoundaryMesh", "boundary");
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {

@@ -38,6 +38,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -242,7 +243,7 @@ std::pair<std::string, std::string> flac3d_decompose_group_name(const std::strin
 
 std::vector<std::string> flac3d_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -255,7 +256,7 @@ Mesh read_flac3d(const std::string& rPath) {
     // Sniff binary (a null byte in the first 8 bytes).
     bool binary = false;
     {
-        std::ifstream sniff(rPath, std::ios::binary);
+        auto sniff = detail::make_classic_ifstream(rPath, std::ios::binary);
         if (!sniff)
             throw ReadError("Could not open file: " + rPath);
         char block[8] = {0};
@@ -275,7 +276,7 @@ Mesh read_flac3d(const std::string& rPath) {
     std::vector<Flac3dGroup> groups;
 
     if (binary) {
-        std::ifstream in(rPath, std::ios::binary);
+        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
         char hdr[8];
         in.read(hdr, 8);  // unknown header
         std::uint32_t num_nodes = ru32(in);
@@ -324,7 +325,7 @@ Mesh read_flac3d(const std::string& rPath) {
             }
         }
     } else {
-        std::ifstream in(rPath, std::ios::binary);
+        auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
         std::string line;
         // Index of the group whose id list the following lines belong to
         // (`npos` = none). A group header is followed by whitespace-separated
@@ -618,7 +619,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
             face_idx.push_back(i);
     }
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -339,7 +340,7 @@ const char* pipe_excluded_hint(const std::string& rOp) {
 /// provenance operation chain -- `mParams` is a `std::map`, so key order is
 /// already deterministic without a separate sort here.
 std::string pipe_render_op(const PipelineStep& rStep) {
-    std::ostringstream out;
+    auto out = detail::make_classic_ostringstream();
     out << rStep.mOp << "(";
     bool first = true;
     for (const auto& [key, value] : rStep.mParams) {
@@ -1544,10 +1545,10 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
 }
 
 std::string pipe_read_file(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("meshio++: pipeline: cannot open settings file '" + rPath + "'");
-    std::ostringstream buffer;
+    auto buffer = detail::make_classic_ostringstream();
     buffer << in.rdbuf();
     return buffer.str();
 }

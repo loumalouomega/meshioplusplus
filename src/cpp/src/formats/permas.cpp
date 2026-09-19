@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -86,7 +87,7 @@ const std::vector<int>* write_reorder(const std::string& rType) {
 
 std::vector<std::string> permas_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -112,7 +113,7 @@ std::string keyword_of(const std::string& rLine) {
 }  // namespace
 
 Mesh read_permas(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -212,7 +213,7 @@ Mesh read_permas(const std::string& rPath) {
 }
 
 void write_permas(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

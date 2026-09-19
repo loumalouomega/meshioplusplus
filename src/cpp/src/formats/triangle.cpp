@@ -35,6 +35,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -74,7 +75,7 @@ struct TriangleTokens {
 
 TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
     TriangleTokens tokens;
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     rOk = static_cast<bool>(in);
     if (!rOk)
         return tokens;
@@ -83,7 +84,7 @@ TriangleTokens triangle_tokenize(const std::string& rPath, bool& rOk) {
         const std::size_t hash = line.find('#');
         if (hash != std::string::npos)
             line.resize(hash);
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         while (iss >> tok)
             tokens.mToks.push_back(tok);
@@ -356,7 +357,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     triangle_split_point_keys(rMesh, attr_keys, ref_keys);
 
     {
-        std::ofstream fh(rStem + ".node", std::ios::binary);
+        auto fh = detail::make_classic_ofstream(rStem + ".node", std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + rStem + ".node");
         fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
@@ -391,7 +392,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
         }
     }
 
-    std::ofstream fh(rStem + ".ele", std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rStem + ".ele", std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rStem + ".ele");
     fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
@@ -432,7 +433,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
             break;
         }
 
-    std::ofstream fh(rPath, std::ios::binary);
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
     fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");

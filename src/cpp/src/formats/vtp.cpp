@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -117,7 +118,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         if (verts.mOffsets[i] - (i == 0 ? 0 : verts.mOffsets[i - 1]) != 1)
             throw WriteError("VTP: vertex cells must have exactly one node");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

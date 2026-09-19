@@ -47,6 +47,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -214,7 +215,7 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     std::int64_t num = std::stoll(gmsh_trim(rCur.read_line()));
     for (std::int64_t i = 0; i < num; ++i) {
         std::string line = rCur.read_line();
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         long long dim, tag;
         iss >> dim >> tag;
         std::size_t q1 = line.find('"');
@@ -552,7 +553,7 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
     if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
-            std::istringstream iss(line);
+            auto iss = detail::make_classic_istringstream(line);
             std::vector<std::int64_t> v;
             long long x;
             while (iss >> x)
@@ -1235,7 +1236,7 @@ std::vector<double> gmsh_scan_time_values(std::string_view rBuf) {
     GmshCursor cur(rBuf);
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         return {};
-    std::istringstream fss(cur.read_line());
+    auto fss = detail::make_classic_istringstream(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -1281,7 +1282,7 @@ Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo, const ReadOptions& rOp
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
     std::string fmt = cur.read_line();
-    std::istringstream fss(fmt);
+    auto fss = detail::make_classic_istringstream(fmt);
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;
@@ -1692,7 +1693,7 @@ GmshSynthesizedTags gmsh_synthesize_tags_41(
 }  // namespace
 
 void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -1858,7 +1859,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                   const GmshInfo& rInfo) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -2209,7 +2210,7 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     if (gmsh_trim(cur.read_line()) != "$MeshFormat")
         throw ReadError("Expected $MeshFormat");
-    std::istringstream fss(cur.read_line());
+    auto fss = detail::make_classic_istringstream(cur.read_line());
     std::string version;
     int file_type = 0, data_size = 8;
     fss >> version >> file_type >> data_size;

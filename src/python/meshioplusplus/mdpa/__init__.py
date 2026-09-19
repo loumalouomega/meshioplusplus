@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._mdpa import read as _py_read
@@ -53,8 +54,9 @@ def write(filename, mesh, float_fmt=".16e", binary=False):
         try:
             _core.mdpa_write(str(filename), mesh)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "mdpa", "write", filename):
+                raise
     return _py_write(filename, mesh, float_fmt=float_fmt, binary=binary)
 
 

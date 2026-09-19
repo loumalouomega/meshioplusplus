@@ -26,6 +26,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -54,7 +55,7 @@ std::string header_value(const std::string& rText, const std::string& rKey) {
 }  // namespace
 
 Mesh read_dex(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -96,7 +97,7 @@ Mesh read_dex(const std::string& rPath) {
 
     std::vector<std::vector<double>> rows;
     for (std::size_t i = body_start; i < lines.size(); ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::vector<double> r;
         std::string tok;
         while (iss >> tok) {
@@ -132,7 +133,7 @@ Mesh read_dex(const std::string& rPath) {
 }
 
 void write_dex(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

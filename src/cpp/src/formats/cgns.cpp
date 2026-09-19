@@ -39,6 +39,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -141,7 +142,7 @@ NDArray cgns_padded_int8(const std::string& rS, std::size_t total) {
 std::string cgns_hdf5_version_string() {
     unsigned maj = 0, min = 0, rel = 0;
     H5get_libversion(&maj, &min, &rel);
-    std::ostringstream os;
+    auto os = detail::make_classic_ostringstream();
     os << "HDF5 Version " << maj << "." << min << "." << rel;
     return os.str();
 }

@@ -32,6 +32,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -54,7 +55,7 @@ void write_vtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

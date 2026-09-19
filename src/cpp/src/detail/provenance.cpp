@@ -28,6 +28,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -429,7 +430,7 @@ ProvenanceReadResult scan_provenance_text(std::string_view text) {
 ProvenanceReadResult read_provenance_lines(const std::string& rPath, std::size_t max_bytes) {
     // Best-effort: an unopenable path is "nothing found", never a throw. This
     // enriches a summary; it must not be able to fail one.
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return {};
     std::string head(max_bytes, '\0');

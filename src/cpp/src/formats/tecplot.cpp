@@ -36,6 +36,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -55,7 +56,7 @@ std::string tecplot_strip(const std::string& rS) {
 }
 std::vector<std::string> tecplot_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -312,7 +313,7 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
 // sharing rZones[0]'s STRANDID when any zone carries one (SOLUTIONTIME with
 // no STRANDID at all groups every zone together), sorted by SOLUTIONTIME.
 // Zones with no SOLUTIONTIME at all are not a timeline -- multiple such
-// zones is the "several static zones" case roadmap §7 owns, not this one;
+// zones is the "several static zones" case roadmap §1 owns, not this one;
 // only the first is read here, with a warning if there is more than one.
 std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& rZones) {
     if (!rZones[0].mHasSolutionTime) {
@@ -341,7 +342,7 @@ std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& 
 }  // namespace
 
 MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -377,7 +378,7 @@ MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& 
 }
 
 Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -519,7 +520,7 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     std::string ztype = meshio_to_tecplot(mtype);
     const std::vector<int>& order = tecplot_order(mtype);
 
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

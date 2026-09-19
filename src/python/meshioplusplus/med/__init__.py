@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._med import read as _py_read
@@ -41,8 +42,10 @@ def read(filename, time_step: int = 0):
             # would silently discard the dim/tag `mesh_to_py` already
             # attached to each one.
             return _core.med_read(str(filename), time_step)
-        except Exception:
+        except Exception as exc:
             if time_step:
+                raise
+            if not core_declined(exc, "med", "read", filename):
                 raise
     return _py_read(filename)
 
@@ -124,8 +127,9 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
                 str(med_version),
             )
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "med", "write", filename):
+                raise
     return _py_write(filename, mesh, med_version=med_version, **kwargs)
 
 

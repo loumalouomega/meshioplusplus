@@ -34,6 +34,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -180,7 +181,7 @@ void tikz_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Me
     if (Standalone)
         out.push_back("\\end{document}");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -343,7 +344,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     if (Standalone)
         out.push_back("\\end{document}");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

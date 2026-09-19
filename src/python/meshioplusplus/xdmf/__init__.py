@@ -4,6 +4,7 @@ https://xdmf.org/index.php/XDMF_Model_and_Format
 """
 
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .main import read as _py_read
@@ -34,10 +35,12 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                 arrays=arrays,
                 time_step=time_step,
             )
-        except Exception:
+        except Exception as exc:
             if time_step:
                 # Falling back here would quietly hand back step 0 under the
                 # name of step N -- a wrong answer, not a slower one.
+                raise
+            if not core_declined(exc, "xdmf", "read", filename):
                 raise
     return _py_read(filename)
 
@@ -54,8 +57,9 @@ def write(filename, mesh, data_format="HDF", **kwargs):
         try:
             _core.xdmf_write(str(filename), mesh, data_format, gzip_level)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "xdmf", "write", filename):
+                raise
     return _py_write(filename, mesh, data_format=data_format, **kwargs)
 
 

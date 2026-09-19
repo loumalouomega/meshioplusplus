@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -61,7 +62,7 @@ struct Parsed {
 };
 
 Parsed parse_file(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     Parsed p;
@@ -74,7 +75,7 @@ Parsed parse_file(const std::string& rPath) {
             ++s;
         if (s >= line.size() || line[s] == '#')
             continue;
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         if (!have_header) {
             while (iss >> tok)
@@ -222,7 +223,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
     // ---- node file ----
     {
-        std::ofstream fh(node_path, std::ios::binary);
+        auto fh = detail::make_classic_ofstream(node_path, std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + node_path);
 
@@ -287,7 +288,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
     // ---- ele file ----
     {
-        std::ofstream fh(ele_path, std::ios::binary);
+        auto fh = detail::make_classic_ofstream(ele_path, std::ios::binary);
         if (!fh)
             throw WriteError("Could not open file for writing: " + ele_path);
 

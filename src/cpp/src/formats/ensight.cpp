@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -391,7 +392,7 @@ struct EnsightCaseInfo {
 /// integer tokens (a `[ts] [fs]` prefix) -- the same rule `model:`/variable
 /// lines both use to make the leading timeset/fileset optional.
 std::vector<std::string> ensight_tokens_after_leading_ints(const std::string& rValue) {
-    std::istringstream toks(rValue);
+    auto toks = detail::make_classic_istringstream(rValue);
     std::vector<std::string> tokens;
     std::string tok;
     while (toks >> tok)
@@ -421,7 +422,7 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
     bool in_time_values = false;
     bool have_time_set = false;
     long num_steps = -1;
-    std::istringstream stream(data);
+    auto stream = detail::make_classic_istringstream(data);
     std::string raw;
     while (std::getline(stream, raw)) {
         std::string line = ensight_trim(raw);
@@ -483,12 +484,12 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             } else if (ensight_starts_with(line, "time values:")) {
                 in_time_values = true;
                 const std::string rest = ensight_trim(line.substr(std::strlen("time values:")));
-                std::istringstream iss(rest);
+                auto iss = detail::make_classic_istringstream(rest);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
             } else if (in_time_values) {
-                std::istringstream iss(line);
+                auto iss = detail::make_classic_istringstream(line);
                 double v;
                 while (iss >> v)
                     info.mTimeValues.push_back(v);
@@ -527,7 +528,7 @@ std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
     std::size_t width = 0;
     while (star + width < rPattern.size() && rPattern[star + width] == '*')
         ++width;
-    std::ostringstream num;
+    auto num = detail::make_classic_ostringstream();
     num << std::setfill('0') << std::setw(static_cast<int>(width)) << Number;
     std::string digits = num.str();
     if (digits.size() > width)
@@ -568,7 +569,7 @@ struct EnsightPartLayout {
 // matters — Gold connectivity is positional, so ids are always skipped.
 bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     // rRecord is e.g. "node id assign"; the mode is the last token.
-    std::istringstream iss(rRecord);
+    auto iss = detail::make_classic_istringstream(rRecord);
     std::string tok, mode;
     while (iss >> tok)
         mode = tok;
@@ -1281,7 +1282,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
 
     {
-        std::ofstream cf(case_path, std::ios::binary);
+        auto cf = detail::make_classic_ofstream(case_path, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + case_path);
         std::string out;
@@ -1293,7 +1294,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         cf.write(out.data(), static_cast<std::streamsize>(out.size()));
     }
 
-    std::ofstream gf(geo_path, std::ios::binary);
+    auto gf = detail::make_classic_ofstream(geo_path, std::ios::binary);
     if (!gf)
         throw WriteError("Could not open file for writing: " + geo_path);
     if (binary)

@@ -37,6 +37,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -181,7 +182,7 @@ void store_scalar(NDArray& rA, std::size_t idx, double dval, std::int64_t ival, 
 }  // namespace
 
 Mesh read_ply(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::string buf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -227,7 +228,7 @@ Mesh read_ply(const std::string& rPath) {
 
     std::string line = next_sig();
     while (line != "end_header") {
-        std::istringstream iss(line);
+        auto iss = detail::make_classic_istringstream(line);
         std::string tok;
         iss >> tok;
         if (tok == "obj_info") {
@@ -240,7 +241,7 @@ Mesh read_ply(const std::string& rPath) {
                 num_verts = count;
                 line = next_sig();
                 while (line.rfind("property", 0) == 0) {
-                    std::istringstream ps(line);
+                    auto ps = detail::make_classic_istringstream(line);
                     std::string p, type, name;
                     ps >> p >> type >> name;
                     if (type == "list")
@@ -254,7 +255,7 @@ Mesh read_ply(const std::string& rPath) {
                 line = next_sig();
                 bool got_list = false;
                 while (line.rfind("property", 0) == 0) {
-                    std::istringstream ps(line);
+                    auto ps = detail::make_classic_istringstream(line);
                     std::string p, kind;
                     ps >> p >> kind;
                     if (kind == "list") {
@@ -311,7 +312,7 @@ Mesh read_ply(const std::string& rPath) {
     } else {
         for (std::size_t i = 0; i < num_verts; ++i) {
             std::string row = read_line();
-            std::istringstream rs(row);
+            auto rs = detail::make_classic_istringstream(row);
             for (std::size_t c = 0; c < vprops.size(); ++c) {
                 std::string t;
                 rs >> t;
@@ -375,7 +376,7 @@ Mesh read_ply(const std::string& rPath) {
                 for (std::size_t j = 0; j < n; ++j)
                     idx[j] = rd_int_val(buf, pos, face_index_dt, big);
             } else {
-                std::istringstream rs(read_line());
+                auto rs = detail::make_classic_istringstream(read_line());
                 long long cnt;
                 rs >> cnt;
                 n = static_cast<std::size_t>(cnt);
@@ -416,7 +417,7 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         return;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

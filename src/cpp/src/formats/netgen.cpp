@@ -33,6 +33,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -103,7 +104,7 @@ int topo_dim(const std::string& rType) {
 
 std::vector<std::string> netgen_split_ws(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string tok;
     while (iss >> tok)
         out.push_back(tok);
@@ -224,7 +225,7 @@ Mesh read_netgen(const std::string& rPath) {
     if (rPath.size() >= 7 && rPath.compare(rPath.size() - 7, 7, ".vol.gz") == 0)
         throw ReadError("Netgen: gzip container handled by Python fallback");
 
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     LineCursor c(in);
@@ -352,7 +353,7 @@ void write_block(std::ostream& rOs, Mesh::CellView cb, const NDArray* pIndex) {
 }  // namespace
 
 void write_netgen(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

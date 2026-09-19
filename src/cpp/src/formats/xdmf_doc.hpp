@@ -52,6 +52,7 @@
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 namespace xdmfdetail {
@@ -66,7 +67,7 @@ namespace xdmfdetail {
  */
 inline std::vector<std::size_t> xdmf_parse_dims(const std::string& rS) {
     std::vector<std::size_t> dims;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::int64_t v;
     while (iss >> v)
         dims.push_back(static_cast<std::size_t>(v));

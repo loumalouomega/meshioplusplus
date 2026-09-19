@@ -32,6 +32,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -167,7 +168,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
         if (cb.Type().rfind("polyhedron", 0) == 0)
             throw WriteError("C++ VTK writer does not support polyhedron cells");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
