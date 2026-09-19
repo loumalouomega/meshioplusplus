@@ -60,7 +60,7 @@ def _asks_core_declined(handler):
 def test_no_broad_except_around_core_without_core_declined():
     violations = []
     for path in _format_python_files():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Try):
                 continue
@@ -82,7 +82,7 @@ def test_the_guard_actually_sees_the_shims():
     # 47 shim packages' handlers.
     seen = 0
     for path in _format_python_files():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Try) and any(_calls_core(s) for s in node.body):
                 seen += sum(1 for h in node.handlers if _catches_everything(h))

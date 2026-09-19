@@ -146,7 +146,9 @@ def test_the_stream_guard_actually_sees_the_factories():
     for path in SRC.rglob("*.[hc]pp"):
         if "third_party" in path.parts or path == _CLASSIC_STREAM:
             continue
-        factories += len(re.findall(r"\bmake_classic_\w+stream\(", path.read_text()))
+        factories += len(
+            re.findall(r"\bmake_classic_\w+stream\(", path.read_text(encoding="utf-8"))
+        )
     assert factories >= 150, factories
 
     for reintroduced in (
@@ -214,7 +216,7 @@ def test_classic_stream_include_covers_every_use():
     for path in SRC.rglob("*.[hc]pp"):
         if "third_party" in path.parts or path == _CLASSIC_STREAM:
             continue
-        for problem in _classic_stream_scope_problems(path.read_text()):
+        for problem in _classic_stream_scope_problems(path.read_text(encoding="utf-8")):
             violations.append(f"{path.relative_to(REPO)}: {problem}")
     assert not violations, (
         "classic_stream.hpp must be included at a scope that covers every "
