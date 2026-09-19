@@ -164,3 +164,82 @@ def test_the_stream_guard_actually_sees_the_factories():
         "    std::ifstream* p = nullptr;",
     ):
         assert not _STREAM_DECL.search(fine), fine
+
+
+_CLASSIC_INCLUDE = '#include "meshioplusplus/detail/classic_stream.hpp"'
+_COND_OPEN = re.compile(r"^\s*#\s*(?:if|ifdef|ifndef)\b")
+_COND_BRANCH = re.compile(r"^\s*#\s*(?:else|elif|elifdef|elifndef)\b")
+_COND_CLOSE = re.compile(r"^\s*#\s*endif\b")
+
+
+def _classic_stream_scope_problems(text):
+    """Uses of ``make_classic_*`` that their own ``#include`` does not cover.
+
+    A CI build with HDF5/netCDF off and one with them on compile different
+    lines, so an include dropped inside ``#ifdef MESHIOPLUSPLUS_HAS_HDF5`` while
+    the stream is used outside it builds fine on a developer machine and fails
+    on every feature-off CI leg. The include's chain of enclosing conditional
+    branches must therefore be a prefix of each use's chain (a file wrapped
+    wholesale in one guard, like ``cgns.cpp``, passes: its uses share it).
+    """
+    stack, include_scope, uses = [], None, []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if _COND_OPEN.match(line):
+            stack.append((lineno, 0))
+        elif _COND_BRANCH.match(line) and stack:
+            stack[-1] = (stack[-1][0], stack[-1][1] + 1)
+        elif _COND_CLOSE.match(line) and stack:
+            stack.pop()
+        elif line.strip() == _CLASSIC_INCLUDE:
+            include_scope = tuple(stack)
+        elif "make_classic_" in line and not line.lstrip().startswith(
+            ("//", "*", "/*")
+        ):
+            uses.append((lineno, tuple(stack)))
+    if not uses:
+        return []
+    if include_scope is None:
+        return [
+            f"line {uses[0][0]}: uses make_classic_* but does not include classic_stream.hpp itself"
+        ]
+    return [
+        f"line {lineno}: used outside the conditional block its #include is inside"
+        for lineno, scope in uses
+        if scope[: len(include_scope)] != include_scope
+    ]
+
+
+def test_classic_stream_include_covers_every_use():
+    violations = []
+    for path in SRC.rglob("*.[hc]pp"):
+        if "third_party" in path.parts or path == _CLASSIC_STREAM:
+            continue
+        for problem in _classic_stream_scope_problems(path.read_text()):
+            violations.append(f"{path.relative_to(REPO)}: {problem}")
+    assert not violations, (
+        "classic_stream.hpp must be included at a scope that covers every "
+        "make_classic_* use, or feature-off builds fail (see the helper):\n"
+        + "\n".join(violations)
+    )
+
+
+def test_the_scope_guard_catches_the_bug_it_exists_for():
+    include = _CLASSIC_INCLUDE
+    # xdmf_common.cpp as first migrated: include inside the HDF5 block, use outside.
+    bad = f"#ifdef MESHIOPLUSPLUS_HAS_HDF5\n{include}\n#endif\nauto f = detail::make_classic_ofstream(p);\n"
+    assert _classic_stream_scope_problems(bad)
+    # Include at top level: fine wherever the use is.
+    good = f"{include}\n#ifdef X\nauto f = detail::make_classic_ofstream(p);\n#endif\n"
+    assert not _classic_stream_scope_problems(good)
+    # cgns.cpp: the whole file sits in one guard, and so does the use.
+    wrapped = (
+        f"#ifdef X\n{include}\nauto f = detail::make_classic_ofstream(p);\n#endif\n"
+    )
+    assert not _classic_stream_scope_problems(wrapped)
+    # Include in the #if branch, use in the #else branch: a different scope.
+    branches = f"#ifdef X\n{include}\n#else\nauto f = detail::make_classic_ofstream(p);\n#endif\n"
+    assert _classic_stream_scope_problems(branches)
+    # No include of its own (would only compile through a transitive include).
+    assert _classic_stream_scope_problems(
+        "auto f = detail::make_classic_ofstream(p);\n"
+    )

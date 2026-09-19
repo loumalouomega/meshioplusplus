@@ -28,13 +28,13 @@
 
 // Project includes
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
-#include "meshioplusplus/detail/classic_stream.hpp"
 #endif
 
 namespace meshioplusplus {
