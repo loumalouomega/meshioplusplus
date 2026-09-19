@@ -18,9 +18,11 @@
 // External includes
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <iterator>
+#include <limits>
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -211,43 +213,70 @@ TEST(Vtu, ThreePolyhedraWithAnInterleavedCellReadCorrectly) {
     EXPECT_NEAR(stats.mUnsignedVolume, 4.0, 1e-12);
 }
 
-TEST(Vtu, PolyhedronReconstructionIsNotQuadraticInCellCount) {
-    // Direct regression test for the roadmap's own probe: the pre-fix
-    // reconstruct_cells rescanned `faceoffsets` from index 0 for EVERY cell,
-    // so total work was O(ncells^2) regardless of how much face data there
-    // was -- a 100k-cell file cost ~5e9 trivial-loop iterations, on the order
-    // of several seconds to "effectively hangs" depending on the machine. The
-    // fix makes it O(ncells + |faces|); this asserts the read completes well
-    // inside a generous budget that the O(n^2) version could not plausibly
-    // meet. All 100k cells reuse the same 8 points/6 faces on purpose --
-    // construction cost and memory are irrelevant here, only the read-side
-    // cell-reconstruction loop is being timed.
-    constexpr std::size_t kNumCells = 100000;
+namespace {
+
+/// Seconds to read back an ASCII VTU of @p NumCells identical unit-cube
+/// polyhedra (best of two reads, which damps scheduler jitter). Every cell
+/// reuses the same 8 points / 6 faces on purpose: construction cost and memory
+/// are irrelevant here, only the read-side cell-reconstruction loop is timed.
+double vtu_polyhedron_read_seconds(std::size_t NumCells) {
     meshioplusplus::Mesh m;
     m.AssignPoints(mt::points_from(
         {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}));
     std::vector<std::vector<std::vector<std::int64_t>>> cells(
-        kNumCells,
+        NumCells,
         std::vector<std::vector<std::int64_t>>{
             {0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 4, 7, 3}, {1, 2, 6, 5}});
     m.AddPolyhedronBlock("polyhedron8", std::move(cells));
 
-    const std::string p = mt::temp_path("_poly_100k.vtu");
+    const std::string p = mt::temp_path("_poly_scaling.vtu");
     meshioplusplus::write_vtu(p, m, /*binary=*/false, /*zlib=*/false);
 
-    const auto t0 = std::chrono::steady_clock::now();
-    const meshioplusplus::Mesh back = meshioplusplus::read_vtu(p);
-    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0);
+    double best = std::numeric_limits<double>::infinity();
+    for (int rep = 0; rep < 2; ++rep) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const meshioplusplus::Mesh back = meshioplusplus::read_vtu(p);
+        const double elapsed =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        EXPECT_EQ(back.NumCellBlocks(), 1u);
+        EXPECT_EQ(back.Cells(0).NumCells(), NumCells);
+        best = std::min(best, elapsed);
+    }
 
     std::error_code ec;
     std::filesystem::remove(p, ec);
+    return best;
+}
 
-    ASSERT_EQ(back.NumCellBlocks(), 1u);
-    EXPECT_EQ(back.Cells(0).NumCells(), kNumCells);
-    // A linear pass over 100k cells / 600k face entries is milliseconds; the
-    // quadratic version was on the order of seconds to tens of seconds. 3s
-    // is generous headroom for a loaded CI machine while still failing fast
-    // if the O(n^2) behaviour ever comes back.
-    EXPECT_LT(elapsed.count(), 3.0) << "reconstruct_cells took " << elapsed.count() << "s for "
-                                    << kNumCells << " cells -- looks quadratic again";
+}  // namespace
+
+TEST(Vtu, PolyhedronReconstructionIsNotQuadraticInCellCount) {
+    // Direct regression test for the roadmap's own probe: the pre-fix
+    // reconstruct_cells rescanned `faceoffsets` from index 0 for EVERY cell, so
+    // total work was O(ncells^2) regardless of how much face data there was. The
+    // fix makes it O(ncells + |faces|).
+    //
+    // This asserts how the time SCALES, not how long it takes. It used to assert
+    // an absolute 3 s budget for 100k cells, which is a statement about the
+    // machine as much as the code: under the instrumented coverage build the
+    // linear read already used ~90% of it (4.7 s of ctest wall time on master),
+    // so the test failed intermittently on unrelated changes. Growing the cell
+    // count 5x costs about 5x when reconstruction is linear and about 25x when
+    // it is quadratic, whatever the machine or instrumentation; the threshold
+    // sits between the two (their geometric mean is ~11).
+    constexpr std::size_t kSmall = 20000;
+    constexpr std::size_t kLarge = 100000;
+    constexpr double kMaxRatio = 12.0;
+
+    const double t_small = vtu_polyhedron_read_seconds(kSmall);
+    const double t_large = vtu_polyhedron_read_seconds(kLarge);
+    // A floor keeps the ratio finite if a fast machine resolves the small read as ~0.
+    const double ratio = t_large / std::max(t_small, 1e-3);
+
+    GTEST_LOG_(INFO) << "read " << kSmall << " cells in " << t_small << "s, " << kLarge << " in "
+                     << t_large << "s: x" << ratio << " for x" << kLarge / kSmall << " the cells";
+    EXPECT_LT(ratio, kMaxRatio) << "reading " << kLarge / kSmall << "x the cells took " << ratio
+                                << "x as long (" << t_small << "s -> " << t_large
+                                << "s); linear is ~" << kLarge / kSmall
+                                << "x, so reconstruct_cells looks quadratic again";
 }
