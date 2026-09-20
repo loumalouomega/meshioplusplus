@@ -313,9 +313,9 @@ def tool_info(input_path, file_format=None):
     return _json_safe(meta)
 
 
-def tool_stats(input_path, file_format=None, time_step=0):
+def tool_stats(input_path, file_format=None, time_step=0, piece=None):
     """Geometric statistics: bbox, centroid, areas/volumes, inverted cells."""
-    mesh = _load(input_path, file_format, time_step=time_step)
+    mesh = _load(input_path, file_format, time_step=time_step, piece=piece)
     return _json_safe(compute_stats(mesh))
 
 
@@ -505,7 +505,7 @@ def _variant_kwargs(out_fmt, mode, compression):
             )
         kwargs.update({"binary": True, "compression": compression})
     elif compression == "gzip":
-        if out_fmt in ("cgns", "h5m"):
+        if out_fmt in ("cgns", "h5m", "vtkhdf"):
             kwargs.update({"compression": "gzip", "compression_opts": 4})
         elif out_fmt == "xdmf":
             kwargs.update(
@@ -513,11 +513,11 @@ def _variant_kwargs(out_fmt, mode, compression):
             )
         else:
             raise ValueError(
-                f"meshio++: mcp: gzip compression applies to cgns/h5m/xdmf, "
+                f"meshio++: mcp: gzip compression applies to cgns/h5m/vtkhdf/xdmf, "
                 f"not '{out_fmt}'"
             )
     elif compression == "none":
-        if out_fmt in ("cgns", "h5m"):
+        if out_fmt in ("cgns", "h5m", "vtkhdf"):
             kwargs.update({"compression": None})
         elif out_fmt == "vtu":
             kwargs.update({"binary": True, "compression": None})
@@ -525,8 +525,8 @@ def _variant_kwargs(out_fmt, mode, compression):
             kwargs.update({"data_format": "HDF", "compression": None})
         else:
             raise ValueError(
-                f"meshio++: mcp: compression='none' applies to cgns/h5m/vtu/xdmf, "
-                f"not '{out_fmt}'"
+                f"meshio++: mcp: compression='none' applies to "
+                f"cgns/h5m/vtkhdf/vtu/xdmf, not '{out_fmt}'"
             )
     else:
         raise ValueError(
@@ -546,6 +546,7 @@ def tool_convert(
     time_step=0,
     mode="auto",
     compression=None,
+    piece=None,
 ):
     """Convert between mesh formats, optionally selecting variant/compression."""
     mesh = _load(
@@ -554,6 +555,7 @@ def tool_convert(
         points_only=points_only,
         arrays=arrays,
         time_step=time_step,
+        piece=piece,
     )
     out_fmt = output_format
     if out_fmt is None:

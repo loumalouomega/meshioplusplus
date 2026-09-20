@@ -146,9 +146,36 @@ struct ReadOptions {
      * still throw, because continuing past those would hand back a mesh that is
      * quietly wrong rather than merely incomplete.
      *
-     * Currently honoured by `mdpa` only; every other reader ignores it.
+     * Currently honoured by `mdpa` and `vtkhdf` (which skips cells with no
+     * meshio++ type -- poly-vertex, poly-line, triangle strips -- with a warning);
+     * every other reader ignores it.
      */
     bool mLenient = false;
+
+    /**
+     * @brief Which piece of a partitioned file to materialize; meaningful only
+     * when @ref mPieceSet is true.
+     *
+     * A partitioned file (VTKHDF partitions or composite blocks, and `.pvtu`/`.vtm`
+     * pieces) holds several pieces that the historical read merges into one mesh.
+     * `0` is the first piece, negative values count from the end (`-1` = last).
+     * Out of range is an error naming the piece count, never a clamp.
+     *
+     * A reader for a format with no pieces ignores this field.
+     */
+    std::int64_t mPiece = 0;
+
+    /**
+     * @brief Whether @ref mPiece was chosen.
+     *
+     * `false` (the default, and what zero-initialization gives) merges every piece
+     * into one mesh with one `RegionKind::Cell` region per piece. A value/flag pair
+     * rather than a `-1` sentinel: `mio_read_opts` documents "always
+     * zero-initialize ... so fields added later default sensibly", and a `-1`
+     * default would make a hand-`memset` caller silently ask for piece 0 alone
+     * instead of the merged mesh -- the silent wrongness `mTimeStep` warns about.
+     */
+    bool mPieceSet = false;
 
     /**
      * @brief Resolve `mTimeStep` against an actual step count.
@@ -158,6 +185,15 @@ struct ReadOptions {
      * @throws ReadError when the request is out of range.
      */
     MESHIOPLUSPLUS_API std::size_t ResolveTimeStep(std::size_t NumSteps) const;
+
+    /**
+     * @brief Resolve `mPiece` against an actual piece count.
+     *
+     * @param NumPieces Number of pieces the file carries.
+     * @return The 0-based piece index; negative `mPiece` counts from the end.
+     * @throws ReadError when `mPieceSet` is false or the request is out of range.
+     */
+    MESHIOPLUSPLUS_API std::size_t ResolvePiece(std::size_t NumPieces) const;
 
     /** @brief Whether @p rName survives the `mDataArrays` filter. */
     bool WantsArray(const std::string& rName) const {

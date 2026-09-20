@@ -324,6 +324,153 @@ MESHIOPLUSPLUS_API std::vector<std::string> group_links(hid_t loc);
  */
 MESHIOPLUSPLUS_API std::vector<std::string> group_links_crt(hid_t loc);
 
+// ---- schema helpers: fixed-length strings, integer-array attributes, partial and
+// appendable datasets, creation-ordered groups, soft links (VTKHDF and other
+// formats that carry offset tables into flat arrays) ----
+
+/**
+ * @brief Writes a scalar string attribute as a **fixed-length ASCII** string
+ * (`H5T_CSET_ASCII`, `H5T_STR_NULLPAD`, size = `rValue.size()`).
+ *
+ * The counterpart of `write_attr_string`, which writes h5py's default
+ * variable-length UTF-8. Some HDF5 readers (VTK's `vtkHDFReader` documentation
+ * names this for `VTKHDF/Type`) expect the fixed-length form, so a format that
+ * specifies it must not use the variable-length helper. A sibling function
+ * rather than a new parameter on `write_attr_string`: a new default argument
+ * on an installed function is an ABI change (`doc/abi.md`, Tier B).
+ * @param loc Object to attach the attribute to.
+ * @param rName Attribute name.
+ * @param rValue Non-empty ASCII value.
+ * @throws WriteError if `rValue` is empty (HDF5 has no zero-size string type),
+ *         holds a byte above 0x7F, or the attribute cannot be created.
+ */
+MESHIOPLUSPLUS_API void write_attr_string_fixed(hid_t loc, const std::string& rName,
+                                                const std::string& rValue);
+
+/**
+ * @brief Writes a one-dimensional integer array attribute (VTKHDF's
+ * `Version` = `[2, 0]`).
+ * @param loc Object to attach the attribute to.
+ * @param rName Attribute name.
+ * @param rValues The elements; must not be empty.
+ * @param ftype On-disk integer type (default `H5T_STD_I64LE`).
+ * @throws WriteError if `rValues` is empty or the attribute cannot be created.
+ */
+MESHIOPLUSPLUS_API void write_attr_int_array(hid_t loc, const std::string& rName,
+                                             const std::vector<std::int64_t>& rValues,
+                                             hid_t ftype = H5T_STD_I64LE);
+
+/**
+ * @brief Reads an integer attribute of any length, scalar or array, as `int64_t`.
+ * @param loc Object the attribute is attached to.
+ * @param rName Attribute name.
+ * @return Every element in storage order (one element for a scalar attribute).
+ * @throws ReadError if the attribute is missing, not an integer, or unreadable.
+ */
+MESHIOPLUSPLUS_API std::vector<std::int64_t> read_attr_int_array(hid_t loc,
+                                                                 const std::string& rName);
+
+/**
+ * @brief The dimensions of a dataset, without reading it.
+ * @param loc Group or file handle the dataset lives under.
+ * @param rName Dataset name.
+ * @return The dimensions; a scalar dataset reports `{1}`, as `read_dataset` does.
+ * @throws ReadError if the dataset is missing.
+ */
+MESHIOPLUSPLUS_API std::vector<std::size_t> dataset_shape(hid_t loc, const std::string& rName);
+
+/**
+ * @brief Reads rows `[Row0, Row0 + Count)` of a dataset of rank >= 1, through a
+ * hyperslab, so only those bytes leave the file.
+ *
+ * The result keeps the dataset's trailing dimensions: rows of a `(n, 3)`
+ * dataset come back as `(Count, 3)`. `Count == 0` returns an empty array of
+ * the dataset's dtype without touching the data. This is what makes a
+ * per-time-step or per-partition slice of a flat array cost only its own size.
+ * @param loc Group or file handle the dataset lives under.
+ * @param rName Dataset name.
+ * @param Row0 First row.
+ * @param Count Number of rows.
+ * @throws ReadError if the dataset is missing, is scalar, or the range exceeds
+ *         its first dimension.
+ */
+MESHIOPLUSPLUS_API NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
+                                             std::size_t Count);
+
+/**
+ * @brief Creates an empty dataset that can grow along axis 0.
+ *
+ * Always **chunked** (an unlimited dimension requires it). The dataset starts
+ * with zero rows; `append_rows` grows it.
+ * @param loc Group or file handle to create the dataset under.
+ * @param rName Dataset name.
+ * @param dt Element type.
+ * @param rRowShape Trailing dimensions of one row; empty for a 1-D dataset. No
+ *        entry may be zero.
+ * @param ChunkRows Rows per chunk; `0` targets a chunk near 1 MiB.
+ * @param gzip_level Deflate level 0-9, or negative for none (the default).
+ * @throws WriteError if a row dimension is zero or the dataset cannot be created.
+ */
+MESHIOPLUSPLUS_API void create_appendable_dataset(hid_t loc, const std::string& rName, DType dt,
+                                                  const std::vector<std::size_t>& rRowShape,
+                                                  std::size_t ChunkRows = 0, int gzip_level = -1);
+
+/**
+ * @brief Appends `rRows` to the end of a dataset along axis 0.
+ * @param loc Group or file handle the dataset lives under.
+ * @param rName Dataset name; must be extendable (see `create_appendable_dataset`).
+ * @param rRows Rows to add; `rRows.Shape()[1:]` must equal the dataset's row shape.
+ * @throws WriteError if the dataset is missing or not extendable, the row shape
+ *         differs, or the write fails.
+ */
+MESHIOPLUSPLUS_API void append_rows(hid_t loc, const std::string& rName, const NDArray& rRows);
+
+/**
+ * @brief The current length of a dataset's first dimension.
+ * @throws ReadError if the dataset is missing or scalar.
+ */
+MESHIOPLUSPLUS_API std::size_t dataset_num_rows(hid_t loc, const std::string& rName);
+
+/**
+ * @brief Overwrites an existing dataset's whole contents in place.
+ *
+ * For bookkeeping that is rewritten as a run progresses (a step count, an
+ * offset table) without recreating the dataset.
+ * @param rArr New contents; its shape must equal the dataset's current shape.
+ * @throws WriteError if the dataset is missing, the shape differs, or the write fails.
+ */
+MESHIOPLUSPLUS_API void rewrite_dataset(hid_t loc, const std::string& rName, const NDArray& rArr);
+
+/**
+ * @brief Creates a group that tracks and indexes link creation order
+ * (`H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED`).
+ *
+ * The write half of `group_links_crt`. Required wherever a reader depends on
+ * child order: VTKHDF's composite `VTKHDF` and `Assembly` groups (a reader
+ * given an untracked one aborts).
+ * @throws WriteError if the group cannot be created.
+ */
+MESHIOPLUSPLUS_API Hid create_group_crt(hid_t loc, const std::string& rName);
+
+/**
+ * @brief Creates an HDF5 soft (symbolic) link.
+ * @param loc Group or file handle to create the link in.
+ * @param rName Name of the new link.
+ * @param rTargetPath Path the link points at; need not exist yet.
+ * @throws WriteError if the link cannot be created.
+ */
+MESHIOPLUSPLUS_API void create_soft_link(hid_t loc, const std::string& rName,
+                                         const std::string& rTargetPath);
+
+/** @brief Whether the link `rName` under `loc` exists and is a soft link. */
+MESHIOPLUSPLUS_API bool is_soft_link(hid_t loc, const std::string& rName);
+
+/**
+ * @brief The path a soft link points at.
+ * @throws ReadError if `rName` is missing or is not a soft link.
+ */
+MESHIOPLUSPLUS_API std::string soft_link_target(hid_t loc, const std::string& rName);
+
 /**
  * @brief RAII guard that silences HDF5's default stderr error-stack printing
  * for its lifetime, restoring the previous handler on destruction.

@@ -61,6 +61,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [UGRID](https://www.simcenter.msstate.edu/software/documentation/ug_io/3d_grid_file_type_ugrid.html) (`.ugrid`),
 > [VTI](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (VTK XML ImageData; a regular lattice) (`.vti`),
 > [VTK](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf) (`.vtk`),
+> [VTKHDF](https://docs.vtk.org/en/latest/vtk_file_formats/vtkhdf_file_format/index.html) (`.vtkhdf`; Kitware's HDF5-based VTK format: time, partitions and fields in one file, read by ParaView),
 > [VTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.vtp`),
 > [VTU](https://vtk.org/Wiki/VTK_XML_Formats) (`.vtu`),
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
@@ -1006,7 +1007,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 13.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 14.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

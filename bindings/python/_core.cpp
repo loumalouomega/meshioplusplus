@@ -38,6 +38,8 @@
 #include "meshioplusplus/formats/h5m.hpp"
 #include "meshioplusplus/formats/hmf.hpp"
 #include "meshioplusplus/formats/med.hpp"
+#include "meshioplusplus/formats/vtkhdf.hpp"
+#include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #endif
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
@@ -165,10 +167,17 @@ namespace {
  * would make `arrays=[]` silently mean "everything".
  */
 meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays,
-                                              int time_step = 0) {
+                                              int time_step = 0,
+                                              const py::object& rPiece = py::none(),
+                                              bool lenient = false) {
     meshioplusplus::ReadOptions opts;
     opts.mPointsOnly = points_only;
     opts.mTimeStep = time_step;
+    opts.mLenient = lenient;
+    if (!rPiece.is_none()) {
+        opts.mPiece = rPiece.cast<std::int64_t>();
+        opts.mPieceSet = true;
+    }
     if (!rArrays.is_none())
         opts.mDataArrays = rArrays.cast<std::vector<std::string>>();
     return opts;
@@ -2868,6 +2877,150 @@ finalizes.
     m.def("h5m_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_h5m(path));
     });
+
+    // VTKHDF writer / reader (.vtkhdf). Ragged conversions are on
+    // both ways: polyhedra and jagged polygons are first-class here. `piece` is
+    // None (merge every piece, one region each) or an int (that piece alone).
+    m.def(
+        "vtkhdf_write",
+        [](const std::string& path, py::object pymesh, int gzip_level,
+           const std::string& dataset_type, py::object version) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::VtkhdfType type;
+            if (dataset_type == "UnstructuredGrid")
+                type = meshioplusplus::VtkhdfType::UnstructuredGrid;
+            else if (dataset_type == "PolyData")
+                type = meshioplusplus::VtkhdfType::PolyData;
+            else if (dataset_type == "PartitionedDataSetCollection")
+                type = meshioplusplus::VtkhdfType::PartitionedDataSetCollection;
+            else if (dataset_type == "MultiBlockDataSet")
+                type = meshioplusplus::VtkhdfType::MultiBlockDataSet;
+            else
+                throw meshioplusplus::WriteError("meshio++: vtkhdf: unknown dataset_type '" +
+                                                 dataset_type + "'");
+            meshioplusplus::VtkhdfVersion v;
+            if (!version.is_none()) {
+                const auto pair = version.cast<std::pair<int, int>>();
+                v.mMajor = pair.first;
+                v.mMinor = pair.second;
+            }
+            meshioplusplus::write_vtkhdf(path, cpp, gzip_level, type, v);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("gzip_level") = 4,
+        py::arg("dataset_type") = "UnstructuredGrid", py::arg("version") = py::none());
+    m.def(
+        "vtkhdf_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           py::object piece, bool lenient) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_vtkhdf(
+                path, core_read_options(points_only, arrays, time_step, piece, lenient)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("lenient") = false);
+
+    // Transient (time-series) VTKHDF -- the C++ `VtkhdfTimeSeriesWriter`, exposed
+    // explicitly like `XdmfTimeSeriesWriter` above (no shim swap under the Python
+    // `meshioplusplus.vtkhdf.TimeSeriesWriter`, whose documented API takes raw
+    // arrays where this one takes a whole Mesh). Unlike XDMF's, every step lands in
+    // the file as it is written, so `auto_flush` defaults to True.
+    py::class_<meshioplusplus::VtkhdfTimeSeriesWriter>(m, "VtkhdfTimeSeriesWriter",
+                                                       R"doc(
+Transient VTKHDF writer: one static grid, then one step at a time.
+
+The C++ core's writer, reachable explicitly. Both methods take a whole ``Mesh``:
+``write_points_cells`` uses its points/cells, ``write_data`` its point/cell/field
+data. Usable as a context manager; ``__exit__`` finalizes.
+
+>>> with _core.VtkhdfTimeSeriesWriter("out.vtkhdf") as w:
+...     w.write_points_cells(mesh)
+...     for k in range(3):
+...         w.write_data(k * 0.5, mesh)
+)doc")
+        .def(py::init([](const std::string& rPath, int gzip_level, const std::string& rMode) {
+                 if (rMode != "truncate" && rMode != "append")
+                     throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
+                                                 rMode + "'");
+                 return std::make_unique<meshioplusplus::VtkhdfTimeSeriesWriter>(
+                     rPath, gzip_level,
+                     rMode == "append" ? meshioplusplus::VtkhdfSeriesMode::Append
+                                       : meshioplusplus::VtkhdfSeriesMode::Truncate);
+             }),
+             py::arg("path"), py::arg("gzip_level") = -1, py::arg("mode") = "truncate")
+        .def(
+            "write_points_cells",
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                rSelf.WritePointsCells(cpp);
+            },
+            py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
+        .def(
+            "write_data",
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                rSelf.WriteData(time, cpp);
+            },
+            py::arg("time"), py::arg("mesh"),
+            "Append one step's point_data/cell_data/field_data at simulation time `time`.")
+        .def(
+            "write_data_arrays",
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time,
+               const py::dict& rPointData, const py::dict& rCellData) {
+                const auto convert = [](const py::dict& rSrc) {
+                    std::vector<meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray> out;
+                    for (const auto& r_item : rSrc) {
+                        auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>(
+                            py::reinterpret_borrow<py::object>(r_item.second));
+                        meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray a;
+                        a.mName = py::cast<std::string>(r_item.first);
+                        a.mNumComponents = arr.ndim() >= 2
+                                               ? static_cast<std::size_t>(arr.shape(arr.ndim() - 1))
+                                               : 1u;
+                        a.mValues.assign(arr.data(), arr.data() + arr.size());
+                        out.push_back(std::move(a));
+                    }
+                    return out;
+                };
+                rSelf.WriteData(time, convert(rPointData), convert(rCellData));
+            },
+            py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
+            "Append one step from name -> array dicts, with no Mesh in between. Arrays "
+            "are written in dict order.")
+        .def(
+            "flush", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { rSelf.Flush(); },
+            "H5Fflush: everything written so far is durable. Cheap.")
+        .def_property(
+            "auto_flush",
+            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.AutoFlush(); },
+            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, bool enable) {
+                rSelf.SetAutoFlush(enable);
+            },
+            "Flush after every write_data (default True: a flush here is cheap, and a "
+            "run that is killed leaves a file ParaView opens).")
+        .def(
+            "finalize", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { rSelf.Finalize(); },
+            "Flush and close the file. Idempotent; the destructor would do this too, but "
+            "only an explicit call can raise on failure.")
+        .def_property_readonly(
+            "num_steps",
+            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.NumSteps(); },
+            "How many steps have been written so far.")
+        .def_property_readonly(
+            "finalized",
+            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.Finalized(); },
+            "Whether finalize() has already run.")
+        .def("__enter__", [](py::object self) { return self; })
+        .def("__exit__", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, const py::object&,
+                            const py::object&, const py::object&) {
+            rSelf.Finalize();
+            return false;
+        });
 
     // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
     // attributes and med:nom is a list of string-lists, so they travel outside

@@ -23,6 +23,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 
 #include <hdf5.h>
@@ -1083,6 +1084,207 @@ TEST(Med, MixedPolyhedronNodeCountsShareOnePoeSection) {
     EXPECT_EQ(total, 2u);
     std::error_code ec;
     std::filesystem::remove(p, ec);
+}
+
+// ---- h5:: schema helpers (fixed-length strings, integer-array attributes, partial
+// and appendable datasets, creation-ordered groups, soft links) ----
+
+namespace {
+
+// Removes the file on scope exit so an assertion failure does not leak it.
+struct H5utilTempFile {
+    std::string mPath;
+    explicit H5utilTempFile(const std::string& rSuffix) : mPath(mt::temp_path(rSuffix)) {}
+    ~H5utilTempFile() {
+        std::error_code ec;
+        std::filesystem::remove(mPath, ec);
+    }
+};
+
+meshioplusplus::NDArray h5util_i64(std::vector<std::size_t> shape,
+                                   const std::vector<std::int64_t>& v) {
+    meshioplusplus::NDArray a(meshioplusplus::DType::Int64, std::move(shape));
+    std::copy(v.begin(), v.end(), a.template As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+TEST(H5Util, FixedLengthStringAttrIsFixedAsciiAndReadsBack) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::Hid g = h5::create_group(file, "VTKHDF");
+        h5::write_attr_string_fixed(g, "Type", "UnstructuredGrid");
+        h5::write_attr_string(g, "Var", "UnstructuredGrid");
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    h5::Hid g = h5::open_group(file, "VTKHDF");
+    EXPECT_EQ(h5::read_attr_string(g, "Type"), "UnstructuredGrid");
+
+    // The point of the helper: the on-disk type is fixed-length ASCII, not h5py's
+    // variable-length UTF-8. A round trip through read_attr_string cannot tell.
+    h5::Hid a(H5Aopen(g, "Type", H5P_DEFAULT), H5Aclose);
+    h5::Hid t(H5Aget_type(a), H5Tclose);
+    EXPECT_EQ(H5Tis_variable_str(t), 0);
+    EXPECT_EQ(H5Tget_cset(t), H5T_CSET_ASCII);
+    EXPECT_EQ(H5Tget_size(t), std::string("UnstructuredGrid").size());
+    h5::Hid av(H5Aopen(g, "Var", H5P_DEFAULT), H5Aclose);
+    h5::Hid tv(H5Aget_type(av), H5Tclose);
+    EXPECT_GT(H5Tis_variable_str(tv), 0);  // the existing helper is still variable-length
+}
+
+TEST(H5Util, FixedLengthStringAttrRejectsEmptyAndNonAscii) {
+    H5utilTempFile f(".h5");
+    h5::Hid file = h5::create_file(f.mPath);
+    h5::SilenceErrors silence;
+    EXPECT_THROW(h5::write_attr_string_fixed(file, "Empty", ""), meshioplusplus::WriteError);
+    EXPECT_THROW(h5::write_attr_string_fixed(file, "Utf8", "caf\xC3\xA9"),
+                 meshioplusplus::WriteError);
+}
+
+TEST(H5Util, IntArrayAttrRoundTripsAndReadsScalarsToo) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::write_attr_int_array(file, "Version", {2, 5});
+        h5::write_attr_int(file, "Scalar", 7);
+        h5::write_attr_int_array(file, "Narrow", {-1, 3, 9}, H5T_STD_I32LE);
+        h5::SilenceErrors silence;
+        EXPECT_THROW(h5::write_attr_int_array(file, "Empty", {}), meshioplusplus::WriteError);
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::read_attr_int_array(file, "Version"), (std::vector<std::int64_t>{2, 5}));
+    EXPECT_EQ(h5::read_attr_int_array(file, "Scalar"), (std::vector<std::int64_t>{7}));
+    EXPECT_EQ(h5::read_attr_int_array(file, "Narrow"), (std::vector<std::int64_t>{-1, 3, 9}));
+    h5::SilenceErrors silence;
+    EXPECT_THROW(h5::read_attr_int_array(file, "Missing"), meshioplusplus::ReadError);
+}
+
+TEST(H5Util, DatasetShapeAndReadRowsKeepTrailingDimensions) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        std::vector<std::int64_t> v(12);
+        for (std::size_t i = 0; i < v.size(); ++i)
+            v[i] = static_cast<std::int64_t>(i);
+        h5::write_dataset(file, "m", h5util_i64({4, 3}, v));
+        h5::write_dataset(file, "v", h5util_i64({12}, v), /*gzip_level=*/4);
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    EXPECT_EQ(h5::dataset_shape(file, "m"), (std::vector<std::size_t>{4, 3}));
+    EXPECT_EQ(h5::dataset_num_rows(file, "m"), 4u);
+
+    auto rows = h5::read_dataset_rows(file, "m", 1, 2);
+    EXPECT_EQ(rows.Shape(), (std::vector<std::size_t>{2, 3}));
+    const auto* p = rows.template As<std::int64_t>();
+    for (int i = 0; i < 6; ++i)
+        EXPECT_EQ(p[i], 3 + i);
+
+    auto tail = h5::read_dataset_rows(file, "v", 9, 3);  // a compressed, chunked 1-D slice
+    ASSERT_EQ(tail.Shape(), (std::vector<std::size_t>{3}));
+    EXPECT_EQ(tail.template As<std::int64_t>()[0], 9);
+    EXPECT_EQ(tail.template As<std::int64_t>()[2], 11);
+
+    auto empty = h5::read_dataset_rows(file, "m", 4, 0);  // Row0 == rows, Count == 0 is legal
+    EXPECT_EQ(empty.Shape(), (std::vector<std::size_t>{0, 3}));
+    EXPECT_EQ(empty.Size(), 0u);
+
+    h5::SilenceErrors silence;
+    EXPECT_THROW(h5::read_dataset_rows(file, "m", 3, 2), meshioplusplus::ReadError);
+    EXPECT_THROW(h5::read_dataset_rows(file, "nope", 0, 1), meshioplusplus::ReadError);
+}
+
+TEST(H5Util, AppendableDatasetIsChunkedAndGrowsAlongAxisZero) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::create_appendable_dataset(file, "u", meshioplusplus::DType::Int64, {3});
+        h5::create_appendable_dataset(file, "flat", meshioplusplus::DType::Int64, {},
+                                      /*ChunkRows=*/2,
+                                      /*gzip_level=*/4);
+        EXPECT_EQ(h5::dataset_num_rows(file, "u"), 0u);
+        h5::append_rows(file, "u", h5util_i64({2, 3}, {0, 1, 2, 3, 4, 5}));
+        h5::append_rows(file, "u", h5util_i64({0, 3}, {}));  // appending nothing is a no-op
+        h5::append_rows(file, "u", h5util_i64({1, 3}, {6, 7, 8}));
+        h5::append_rows(file, "flat", h5util_i64({5}, {10, 11, 12, 13, 14}));
+        EXPECT_EQ(h5::dataset_num_rows(file, "u"), 3u);
+
+        h5::SilenceErrors silence;
+        EXPECT_THROW(h5::append_rows(file, "u", h5util_i64({1, 2}, {0, 0})),
+                     meshioplusplus::WriteError);
+        EXPECT_THROW(h5::append_rows(file, "u", h5util_i64({3}, {0, 0, 0})),
+                     meshioplusplus::WriteError);
+        EXPECT_THROW(h5::append_rows(file, "missing", h5util_i64({1}, {0})),
+                     meshioplusplus::WriteError);
+        EXPECT_THROW(
+            h5::create_appendable_dataset(file, "bad", meshioplusplus::DType::Float64, {0}),
+            meshioplusplus::WriteError);
+        // A fixed-size (non-appendable) dataset must be refused, not silently grown.
+        h5::write_dataset(file, "fixed", h5util_i64({2}, {1, 2}));
+        EXPECT_THROW(h5::append_rows(file, "fixed", h5util_i64({1}, {3})),
+                     meshioplusplus::WriteError);
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    // The chunking the roadmap names: an unlimited dimension is impossible without it.
+    for (const char* name : {"u", "flat"}) {
+        h5::Hid d(H5Dopen2(file, name, H5P_DEFAULT), H5Dclose);
+        h5::Hid dcpl(H5Dget_create_plist(d), H5Pclose);
+        EXPECT_EQ(H5Pget_layout(dcpl), H5D_CHUNKED) << name;
+    }
+    auto u = h5::read_dataset(file, "u");
+    ASSERT_EQ(u.Shape(), (std::vector<std::size_t>{3, 3}));
+    for (int i = 0; i < 9; ++i)
+        EXPECT_EQ(u.template As<std::int64_t>()[i], i);
+    auto flat = h5::read_dataset_rows(file, "flat", 1, 3);
+    EXPECT_EQ(flat.template As<std::int64_t>()[0], 11);
+}
+
+TEST(H5Util, RewriteDatasetOverwritesInPlaceAndRefusesAShapeChange) {
+    H5utilTempFile f(".h5");
+    h5::Hid file = h5::create_file(f.mPath);
+    h5::write_dataset(file, "steps", h5util_i64({3}, {0, 0, 0}));
+    h5::rewrite_dataset(file, "steps", h5util_i64({3}, {4, 5, 6}));
+    auto back = h5::read_dataset(file, "steps");
+    EXPECT_EQ(back.template As<std::int64_t>()[1], 5);
+    h5::SilenceErrors silence;
+    EXPECT_THROW(h5::rewrite_dataset(file, "steps", h5util_i64({2}, {1, 1})),
+                 meshioplusplus::WriteError);
+    EXPECT_THROW(h5::rewrite_dataset(file, "nope", h5util_i64({1}, {1})),
+                 meshioplusplus::WriteError);
+}
+
+TEST(H5Util, CreationOrderGroupAndSoftLinkKeepChildOrder) {
+    H5utilTempFile f(".h5");
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::Hid root = h5::create_group_crt(file, "VTKHDF");
+        // Created in a NON-alphabetical order: a name-ordered listing would give a, m, z.
+        h5::Hid z = h5::create_group(root, "zeta");
+        h5::Hid a = h5::create_group(root, "alpha");
+        h5::Hid asm_ = h5::create_group_crt(root, "Assembly");
+        h5::create_soft_link(asm_, "zeta", "/VTKHDF/zeta");
+        h5::create_soft_link(asm_, "alpha", "/VTKHDF/alpha");
+        h5::create_soft_link(asm_, "dangling", "/VTKHDF/not_there_yet");  // a target need not exist
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    h5::Hid root = h5::open_group(file, "VTKHDF");
+    EXPECT_EQ(h5::group_links_crt(root), (std::vector<std::string>{"zeta", "alpha", "Assembly"}));
+
+    // The flags the composite spec requires -- and a reader given an untracked group aborts.
+    h5::Hid gcpl(H5Gget_create_plist(root), H5Pclose);
+    unsigned crt = 0;
+    ASSERT_GE(H5Pget_link_creation_order(gcpl, &crt), 0);
+    EXPECT_EQ(crt, unsigned(H5P_CRT_ORDER_TRACKED | H5P_CRT_ORDER_INDEXED));
+
+    h5::Hid asm_ = h5::open_group(root, "Assembly");
+    EXPECT_EQ(h5::group_links_crt(asm_), (std::vector<std::string>{"zeta", "alpha", "dangling"}));
+    EXPECT_TRUE(h5::is_soft_link(asm_, "zeta"));
+    EXPECT_EQ(h5::soft_link_target(asm_, "zeta"), "/VTKHDF/zeta");
+    EXPECT_FALSE(h5::is_soft_link(root, "zeta"));  // a hard link
+    EXPECT_FALSE(h5::is_soft_link(root, "absent"));
+    h5::SilenceErrors silence;
+    EXPECT_THROW(h5::soft_link_target(root, "zeta"), meshioplusplus::ReadError);
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

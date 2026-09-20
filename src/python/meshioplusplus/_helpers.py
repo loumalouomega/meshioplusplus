@@ -131,7 +131,9 @@ def _apply_read_filter(mesh, points_only: bool, arrays):
     return mesh
 
 
-def _call_reader(reader, arg, points_only: bool, arrays, time_step: int = 0):
+def _call_reader(
+    reader, arg, points_only: bool, arrays, time_step: int = 0, piece=None
+):
     """Invoke `reader`, passing the selective-read options when it accepts them.
 
     Readers are plain callables registered by each format, and only some take
@@ -143,17 +145,28 @@ def _call_reader(reader, arg, points_only: bool, arrays, time_step: int = 0):
     not one: no caller-side filter can recover a step that was never read, so a
     non-default request must reach a reader that understands it or fail loudly
     rather than silently returning the first step.
+
+    `piece` is in the same class: a request for one piece of a partitioned file
+    cannot be emulated after a merged read, so it must reach a reader that
+    understands it or fail loudly.
     """
     kwargs = {}
     if points_only or arrays is not None:
         kwargs.update(points_only=points_only, arrays=arrays)
     if time_step:
         kwargs.update(time_step=time_step)
+    if piece is not None:
+        kwargs.update(piece=piece)
     if not kwargs:
         return reader(arg)
     try:
         return reader(arg, **kwargs)
     except TypeError:
+        if piece is not None:
+            raise ReadError(
+                f"meshio++: this format's reader does not support piece "
+                f"(requested {piece})"
+            ) from None
         if time_step:
             # Unlike the narrowing options, this one cannot be emulated after
             # the fact -- say so instead of handing back the wrong step.
@@ -171,6 +184,7 @@ def read(
     points_only=False,
     arrays=None,
     time_step=0,
+    piece=None,
 ):
     """Reads an unstructured mesh with added data.
 
@@ -184,13 +198,21 @@ def read(
         counts from the end. Out of range is an error naming the available
         count, and a format whose reader has no time concept raises rather than
         silently returning the first step. Currently honoured by ``exodus``.
+    :param piece: Keep only this piece of a partitioned file (VTKHDF partitions
+        or composite blocks); negative counts from the end. ``None`` (default)
+        merges every piece into one mesh with one cell region per piece. A format
+        whose reader has no pieces raises rather than returning the merged mesh.
 
     :returns mesh{2,3}d: The mesh data.
     """
     if is_buffer(filename, "r"):
-        mesh = _read_buffer(filename, file_format, points_only, arrays, time_step)
+        mesh = _read_buffer(
+            filename, file_format, points_only, arrays, time_step, piece
+        )
     else:
-        mesh = _read_file(Path(filename), file_format, points_only, arrays, time_step)
+        mesh = _read_file(
+            Path(filename), file_format, points_only, arrays, time_step, piece
+        )
     return _apply_read_filter(mesh, points_only, arrays)
 
 
@@ -318,7 +340,12 @@ def _metadata_from_mesh(mesh, file_format: Union[str, None]) -> dict:
 
 
 def _read_buffer(
-    filename, file_format: Union[str, None], points_only=False, arrays=None, time_step=0
+    filename,
+    file_format: Union[str, None],
+    points_only=False,
+    arrays=None,
+    time_step=0,
+    piece=None,
 ):
     if file_format is None:
         raise ReadError("File format must be given if buffer is used")
@@ -331,7 +358,7 @@ def _read_buffer(
         raise ReadError(f"Unknown file format '{file_format}'")
 
     return _call_reader(
-        reader_map[file_format], filename, points_only, arrays, time_step
+        reader_map[file_format], filename, points_only, arrays, time_step, piece
     )
 
 
@@ -341,6 +368,7 @@ def _read_file(
     points_only=False,
     arrays=None,
     time_step=0,
+    piece=None,
 ):
     if not path.exists():
         raise ReadError(f"File {path} not found.")
@@ -367,7 +395,12 @@ def _read_file(
 
         try:
             return _call_reader(
-                reader_map[file_format], str(path), points_only, arrays, time_step
+                reader_map[file_format],
+                str(path),
+                points_only,
+                arrays,
+                time_step,
+                piece,
             )
         except ReadError as e:
             _LOG.debug("meshio++: %s: '%s' declined: %s", path, file_format, e)

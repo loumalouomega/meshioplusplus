@@ -84,7 +84,10 @@ def _register_inspection(server: FastMCP) -> None:
 
     @server.tool()
     def stats(
-        input_path: str, file_format: Optional[str] = None, time_step: int = 0
+        input_path: str,
+        file_format: Optional[str] = None,
+        time_step: int = 0,
+        piece: Optional[int] = None,
     ) -> dict:
         """Geometric statistics: bounding box, centroid, total area, signed and
         unsigned volume, per-type cell counts, inverted-cell count."""
@@ -93,6 +96,7 @@ def _register_inspection(server: FastMCP) -> None:
             input_path=input_path,
             file_format=file_format,
             time_step=time_step,
+            piece=piece,
         )
 
     @server.tool()
@@ -214,12 +218,14 @@ def _register_conversion(server: FastMCP) -> None:
         time_step: int = 0,
         mode: str = "auto",
         compression: Optional[str] = None,
+        piece: Optional[int] = None,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
-        unless given). points_only/arrays/time_step narrow the read. mode
-        selects ascii|binary output where the format supports it; compression
-        selects zlib|lz4|zstd|lzma (VTU/VTP block codecs), gzip (CGNS/H5M/XDMF)
-        or 'none' to decompress."""
+        unless given). points_only/arrays/time_step narrow the read; piece
+        keeps one partition/block of a partitioned file (VTKHDF) instead of
+        the merged mesh. mode selects ascii|binary output where the format
+        supports it; compression selects zlib|lz4|zstd|lzma (VTU/VTP block
+        codecs), gzip (CGNS/H5M/VTKHDF/XDMF) or 'none' to decompress."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -231,6 +237,7 @@ def _register_conversion(server: FastMCP) -> None:
             time_step=time_step,
             mode=mode,
             compression=compression,
+            piece=piece,
         )
 
     @server.tool()

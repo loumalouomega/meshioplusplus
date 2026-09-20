@@ -234,7 +234,7 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 13
+#define MIO_VERSION_MAJOR 14
 #define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
@@ -341,7 +341,19 @@ typedef struct mio_read_opts {
      *  historical behaviour. Takes one of the former `reserved` slots, keeping
      *  the struct's size and every preceding field's offset unchanged. */
     int64_t lenient;
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    /** Which piece of a partitioned file to keep (VTKHDF partitions or composite
+     *  blocks); meaningful only when `piece_set` is nonzero. 0 is the first,
+     *  negative counts from the end (-1 = last); out of range fails the call
+     *  naming the piece count. Takes one of the former `reserved` slots, keeping
+     *  the struct's size and every preceding field's offset unchanged. */
+    int64_t piece;
+    /** Nonzero means `piece` was chosen. 0 (the default, and what
+     *  mio_read_opts_init() or any zero-initialization gives) merges every piece
+     *  into one mesh with one cell region per piece. A separate flag rather than a
+     *  `-1` sentinel: a hand-zeroed struct must not silently ask for piece 0 alone.
+     *  Takes one of the former `reserved` slots; size unchanged. */
+    int64_t piece_set;
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
 } mio_read_opts;
 
 /** Initialize `opts` to the defaults (read everything). Always use this. */

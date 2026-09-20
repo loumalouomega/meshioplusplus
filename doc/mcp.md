@@ -96,7 +96,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 
 | Tool | Notes |
 |---|---|
-| `convert` | any-to-any format conversion; `points_only`/`arrays`/`time_step` narrow the read; `mode: ascii\|binary` and `compression: zlib\|lz4\|zstd\|lzma\|gzip\|none` subsume the CLI's `ascii`/`binary`/`compress`/`decompress` verbs |
+| `convert` | any-to-any format conversion; `points_only`/`arrays`/`time_step` narrow the read and `piece` keeps one partition/block of a partitioned file (VTKHDF) instead of the merged mesh; `mode: ascii\|binary` and `compression: zlib\|lz4\|zstd\|lzma\|gzip\|none` (`gzip`/`none` also for `vtkhdf`) subsume the CLI's `ascii`/`binary`/`compress`/`decompress` verbs |
 | `pipeline` | run a whole [settings pipeline](pipeline.md) (`settings_path`; read → operation chain → write, PascalCase ops/keys); `input_path`/`output_path` override the document's paths, and the sandbox root covers the paths **inside** the settings file, not just the file itself |
 | `sequence` | run a multi-file / transient [sequence](sequences.md) (`input_pattern` **or** `input_paths`, `output_path`; optional `mode`/`times`/`time_from`). A `{step}`/`{index}` token in `output_path` writes one file per step (fan-out); a plain path writes one multi-step file (fan-in, XDMF only — anything else fails by name rather than keeping step 0). Ordering is natural-numeric, so `out_9` precedes `out_10`. A pattern's **directory** component is containment-checked against the sandbox root before it is expanded, and every matched file is re-checked individually |
 

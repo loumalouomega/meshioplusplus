@@ -283,6 +283,7 @@ Two spellings to note. `method` is given as an underscored symbol (`:green_gauss
 ## v9.1.0 additions
 
 - `ReadOptions(; lenient=true)` — see [`doc/selective_read.md`](selective_read.md).
+- `ReadOptions(; piece=k)` — keep one piece of a partitioned file (VTKHDF partitions or composite blocks): `0` is the first, negative counts from the end, `nothing` (the default) merges every piece into one mesh with one cell region per piece; out of range fails the read naming the piece count. See [`doc/selective_read.md`](selective_read.md#picking-a-piece).
 - XDMF series: `flush!(s)`, `finalized(s)`, `XdmfSeries(path; mode=:append, auto_flush=false)`, and `write_data!(s, t, Dict("u" => values))` for writing a step from raw arrays with no `Mesh` in between. An `n x k` matrix is transposed on the way out, since Julia is column-major and the C ABI expects `k` components per entity row-major.
 
 `flush!` is named with a bang for the same reason `finalize!` is: `Base.flush` means "flush this IO stream". `MdpaInfo` is not exposed (as for every flat binding).

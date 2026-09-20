@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -35,6 +36,7 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/gid.hpp"
+#include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 
@@ -201,9 +203,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // reading a VARIABLE file at all is new (previously geometry-only).
     // openfoam joined in v11.4.0 (roadmap §1 tier B2): its time-directory
     // fields are new; the polyMesh topology itself never had a time concept.
+    // vtkhdf joined in v14.0.0: its metadata reader reads
+    // Steps/Values without touching the geometry, so the count is cheap.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-          rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
-          rFormat == "ensight" || rFormat == "openfoam";
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -232,13 +236,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf" || rFormat == "gid") {
+    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf' and 'gid' can); write one file per "
-           "step with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf', 'gid' and 'vtkhdf' can); write one "
+           "file per step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -481,17 +485,73 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 #endif
 }
 
-/// The transient writer bypasses `registry_write_ex` (it drives
-/// `XdmfTimeSeriesWriter` directly, not a `(path, mesh)` registry entry), so
-/// it must apply the write_options.hpp rule -- "an option the writer cannot
-/// honour is an error, never silently ignored" -- itself. Only `Encoding`
-/// (XML vs HDF) has anywhere to go; `Codec`/`FloatFormat` do not.
-void seq_check_series_write_options(const WriteOptions& rOptions) {
+/// The transient writers bypass `registry_write_ex` (they drive a stateful writer
+/// class directly, not a `(path, mesh)` registry entry), so they must apply the
+/// write_options.hpp rule -- "an option the writer cannot honour is an error,
+/// never silently ignored" -- themselves. XDMF's `Encoding` (XML vs HDF) is the
+/// only option with anywhere to go; VTKHDF has no encoding variant at all.
+void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
+    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : "XDMF";
     if (rOptions.mCodecSet)
-        throw WriteError("meshio++: sequence: the transient XDMF writer does not support Codec");
+        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+                         " writer does not support Codec");
     if (!rOptions.mFloatFormat.empty())
+        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+                         " writer does not support FloatFormat");
+    if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
         throw WriteError(
-            "meshio++: sequence: the transient XDMF writer does not support FloatFormat");
+            "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
+            "select");
+}
+
+/// One interface over the two stateful multi-step writers (XDMF, VTKHDF), so the two
+/// fan-in call sites stay one loop each. `gid` is a free function with a provider and
+/// never comes through here.
+class SeqSeriesSink {
+public:
+    virtual ~SeqSeriesSink() = default;
+    virtual void WritePointsCells(const Mesh& rMesh) = 0;
+    virtual void WriteData(double Time, const Mesh& rMesh) = 0;
+    virtual void Finalize() = 0;
+};
+
+class SeqXdmfSink final : public SeqSeriesSink {
+public:
+    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat) : mWriter(rPath, rDataFormat) {}
+    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    XdmfTimeSeriesWriter mWriter;
+};
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+class SeqVtkhdfSink final : public SeqSeriesSink {
+public:
+    explicit SeqVtkhdfSink(const std::string& rPath) : mWriter(rPath) {}
+    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    VtkhdfTimeSeriesWriter mWriter;
+};
+#endif
+
+std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
+                                                    const std::string& rPath,
+                                                    const WriteOptions& rOptions) {
+    if (rFormat == "vtkhdf") {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+        return std::make_unique<SeqVtkhdfSink>(rPath);
+#else
+        throw WriteError(
+            "meshio++: sequence: the VTKHDF writer requires an HDF5-enabled build "
+            "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
+#endif
+    }
+    return std::make_unique<SeqXdmfSink>(rPath, seq_resolve_data_format(rOptions));
 }
 
 }  // namespace
@@ -505,7 +565,7 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
     std::string why;
     if (!sequence_write_supports_time(ofmt, why))
         throw WriteError(why);
-    seq_check_series_write_options(rOutput.mOptions);
+    seq_check_series_write_options(ofmt, rOutput.mOptions);
 
     // Streaming: one mesh enters scope per iteration and leaves it. There is
     // deliberately no std::vector<Mesh> anywhere in this file.
@@ -531,7 +591,8 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
         return;
     }
 
-    XdmfTimeSeriesWriter writer(rOutput.mPath, seq_resolve_data_format(rOutput.mOptions));
+    const std::unique_ptr<SeqSeriesSink> writer =
+        seq_make_series_sink(ofmt, rOutput.mPath, rOutput.mOptions);
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         Mesh mesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
@@ -545,12 +606,12 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
                 time = t;
         }
         if (!grid_written) {
-            writer.WritePointsCells(mesh);
+            writer->WritePointsCells(mesh);
             grid_written = true;
         }
-        writer.WriteData(time, mesh);
+        writer->WriteData(time, mesh);
     }
-    writer.Finalize();
+    writer->Finalize();
 }
 
 void timeseries_to_sequence(const std::string& rInPath, const std::string& rInFormat,
@@ -715,9 +776,9 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         std::string why;
         if (!sequence_write_supports_time(ofmt, why))
             throw WriteError(why);
-        seq_check_series_write_options(rPipeline.mOutput.mOptions);
-        XdmfTimeSeriesWriter writer(rPipeline.mOutput.mPath,
-                                    seq_resolve_data_format(rPipeline.mOutput.mOptions));
+        seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
+        const std::unique_ptr<SeqSeriesSink> writer =
+            seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
         bool grid_written = false;
         for (std::size_t i = 0; i < entries.size(); ++i) {
             Mesh mesh =
@@ -733,12 +794,12 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
             // driver AROUND run_pipeline_steps, never a second dispatch path.
             mesh = run_pipeline_steps(std::move(mesh), rPipeline.mSteps, report);
             if (!grid_written) {
-                writer.WritePointsCells(mesh);
+                writer->WritePointsCells(mesh);
                 grid_written = true;
             }
-            writer.WriteData(time, mesh);
+            writer->WriteData(time, mesh);
         }
-        writer.Finalize();
+        writer->Finalize();
         return report;
     }
 

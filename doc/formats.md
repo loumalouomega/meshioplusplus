@@ -51,6 +51,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` |
 | [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — |
 | [`vtk` / `vtk42` / `vtk51`](./formats/vtk.md) | `.vtk` | ✓ | ✓ | — |
+| [`vtkhdf`](./formats/vtkhdf.md) | `.vtkhdf`, `.hdf` | ✓ | ✓ | `h5py` |
 | [`vts`](./formats/vts.md) | `.vts` | ✓ | ✓ | — |
 | [`vtr`](./formats/vtr.md) | `.vtr` | ✓ | ✓ | — |
 | [`vtm`](./formats/vtm.md) | `.vtm` | ✓ | ✓ | — |
@@ -77,6 +78,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`, one step selected by `time_step`); writing them is still out of scope. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
 
 **Note on `vti`:** VTK XML ImageData is a **regular lattice**: its geometry is the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array. Reading expands the extent into explicit `hexahedron` cells; writing therefore *requires* a lattice, and a mesh that is not one — including a **partial** grid (`voxelize`'s `surface`/`inside` fills, or `compute_sdf`'s octree, whose holes ImageData cannot express) — raises `WriteError` by name. It is the only format that round-trips a generated grid's geometry, which is why [`compute_sdf`](./sdf.md) points at it.
+
+**Note on `vtkhdf`** (v14.0.0): Kitware's HDF5-based VTK format — the one ParaView-native format that keeps time, partitions and fields in a single file. It reads and writes `UnstructuredGrid`, `PolyData`, `PartitionedDataSetCollection` and `MultiBlockDataSet`, including polyhedra, partitioned files (merged into one mesh with one cell region per piece, or `piece=k` for one) and transient files (`time_step=k`; the [time-series writers](./vtkhdf_time_series.md) and the [sequence engine](./sequences.md) write them). The version written is the oldest that covers the content. `.hdf` is registered but is a generic HDF5 extension, so a file without a `/VTKHDF` group is refused with a message asking for an explicit format. See [its own page](./formats/vtkhdf.md) for the layout facts, the composite constraints and the transient-composite limitation.
 
 **Note on `vts`** (v11.6.0): VTK XML StructuredGrid is the same `nx*ny*nz` hexahedron topology as `vti`, except with an explicit `<Points>` array instead of `Origin`/`Spacing` — so, unlike `vti`, **reading never requires a lattice** (a genuinely curved structured mesh reads correctly); writing still does, for the same reason `vti`'s writer does. Degenerate (2-D/1-D) extents are not expanded to quad/line/vertex cells, a documented remainder.
 
@@ -161,6 +164,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtk` / `vtk42` / `vtk51` | The legacy format's title line (line 2, ≤256 chars) is the format's own free-text slot | Fixed line 2 | Yes |
 | `vts` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtr` | XML `<!-- -->` | Anywhere in the document | Yes |
+| `vtkhdf` | The `VTKHDF` group's `meshioplusplus:provenance` attribute (plain UTF-8 text) | Group metadata; ignored by `vtkHDFReader` | Yes |
 | `vtm` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
@@ -178,7 +182,7 @@ Two formats carry a related but **structurally distinct** record that this table
 
 meshio++ ships a C++ core (`meshioplusplus._core`, built with pybind11 + scikit-build-core). Most formats read and write through the C++ core with zero-copy numpy at the I/O boundary; each has a pure-Python fallback that is used automatically when the C++ path can't handle a file or when the extension was built without an optional dependency:
 
-- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families — including ones synthesized from named regions or `gmsh:physical`, same-type block consolidation — metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations). `cgns` is a genuine CGNS/SIDS-compliant subset since v9.8.0 (readable by cgnslib/ParaView/VTK), covering the fixed-node-count element types and, since v9.21.0, polyhedral `NGON_n`/`NFACE_n` sections in both directions; see [`cgns.md`](./formats/cgns.md).
+- **HDF5** (`cgns`, `h5m`, `hmf`, `med`, `vtkhdf`, and XDMF `data_format="HDF"`) — C++ when built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`. For `med`, the C++ core covers the mesh-representation part (points, tags, families — including ones synthesized from named regions or `gmsh:physical`, same-type block consolidation — metadata, node orientation, `POG` ragged polygons) and defers the field/bitmask/multi-mesh constructs to the Python reference; see [`med.md`](./formats/med.md#quirks-limitations). `cgns` is a genuine CGNS/SIDS-compliant subset since v9.8.0 (readable by cgnslib/ParaView/VTK), covering the fixed-node-count element types and, since v9.21.0, polyhedral `NGON_n`/`NFACE_n` sections in both directions; see [`cgns.md`](./formats/cgns.md).
 - **netCDF** (`exodus`) — C++ when built with `MESHIOPLUSPLUS_WITH_NETCDF`, otherwise `netCDF4`.
 - **zlib** (VTU zlib compression) — C++ when built with `MESHIOPLUSPLUS_WITH_ZLIB`, otherwise the Python stdlib.
 
@@ -266,6 +270,19 @@ meshioplusplus.vtm.write(filename, mesh,   # any mesh with one or more cell bloc
     compression="zlib",   # "zlib", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"
 )
+```
+
+### VTKHDF (`.vtkhdf`)
+
+```python
+meshioplusplus.vtkhdf.write(filename, mesh,
+    compression="gzip",             # "gzip" or None; datasets under 4 KiB are never compressed
+    compression_opts=4,             # gzip level 0-9
+    dataset_type="UnstructuredGrid",  # "PolyData", "PartitionedDataSetCollection" or "MultiBlockDataSet"
+    version=None,                   # None = oldest covering version, or (major, minor)
+)
+
+meshioplusplus.read(filename, time_step=-1, piece=None)  # a step, and/or one piece
 ```
 
 ### VTK (`.vtk`)

@@ -252,6 +252,7 @@ The two counters come back as `double`, like every other 64-bit integer in this 
 ## v9.1.0 additions
 
 - `mio_read(..., lenient = TRUE)` — see [`doc/selective_read.md`](selective_read.md).
+- `mio_read(..., piece = k)` — keep one piece of a partitioned file (VTKHDF partitions or composite blocks): `0` is the first, negative counts from the end, `NULL` (the default) merges every piece into one mesh with one cell region per piece; out of range is an error naming the piece count. See [`doc/selective_read.md`](selective_read.md#picking-a-piece). The generated `man/mio_read.Rd` was already behind the roxygen source (no `time_step`/`lenient`); regenerate it with `roxygen2::roxygenise()`.
 - XDMF series: `mio_xdmf_series_flush()`, `mio_xdmf_series_finalized()`, and `mio_xdmf_series(..., mode = "append", auto_flush = FALSE)`.
 
 As elsewhere in this binding, remember to release a series *before* its tempdir is removed: a write failure during the implicit finalize in a GC finalizer cannot be reported. `MdpaInfo` is not exposed (as for every flat binding).

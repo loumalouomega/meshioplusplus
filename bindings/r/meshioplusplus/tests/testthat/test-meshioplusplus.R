@@ -361,6 +361,31 @@ test_that("agglomerate polyhedrally coarsens with a flat cell map", {
   mio_release(a$mesh)
 })
 
+test_that("piece selects one piece of a partitioned file and NULL merges", {
+  # A plain VTKHDF file has exactly one piece: piece = 0 and piece = -1 are that
+  # piece, piece = 1 is out of range and fails naming the count, and the default
+  # (piece = NULL) is the merged mesh a read always returned.
+  m <- fixture()
+  dir <- tempfile()
+  dir.create(dir)
+  on.exit({
+    mio_release(m)
+    unlink(dir, recursive = TRUE)
+  })
+  path <- file.path(dir, "mesh.vtkhdf")
+  mio_write(m, path)
+
+  whole <- mio_read(path)
+  expect_equal(mio_num_points(whole), 5)
+  mio_release(whole)
+  for (k in c(0L, -1L)) {
+    one <- mio_read(path, piece = k)
+    expect_equal(mio_num_points(one), 5)
+    mio_release(one)
+  }
+  expect_error(mio_read(path, piece = 1L), "1 piece")
+})
+
 test_that("selective refine closes up conformingly", {
   m <- fixture()
   on.exit(mio_release(m))

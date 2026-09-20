@@ -50,6 +50,18 @@ std::size_t ReadOptions::ResolveTimeStep(std::size_t NumSteps) const {
     return static_cast<std::size_t>(resolved);
 }
 
+std::size_t ReadOptions::ResolvePiece(std::size_t NumPieces) const {
+    if (!mPieceSet)
+        throw ReadError("meshio++: ResolvePiece called with no piece selected");
+    const long long n = static_cast<long long>(NumPieces);
+    const long long resolved = mPiece < 0 ? n + mPiece : mPiece;
+    if (resolved < 0 || resolved >= n)
+        throw ReadError("meshio++: piece " + std::to_string(mPiece) +
+                        " is out of range: this file has " + std::to_string(NumPieces) +
+                        (NumPieces == 1 ? " piece" : " pieces"));
+    return static_cast<std::size_t>(resolved);
+}
+
 MeshMetadata metadata_from_mesh(const Mesh& rMesh) {
     MeshMetadata meta;
     meta.mNumPoints = rMesh.NumPoints();

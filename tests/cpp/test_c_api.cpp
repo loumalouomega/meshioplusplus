@@ -46,6 +46,8 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/vtkhdf.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #endif
 
@@ -1409,18 +1411,72 @@ TEST(CApi, ReadOptsInitIsReadEverything) {
     // 0 = throw on a construct the reader cannot represent, the historical
     // behaviour, so the defaults still read exactly what they always did.
     EXPECT_EQ(opts.lenient, 0);
-    for (int i = 0; i < 4; ++i)
+    // No piece chosen: a partitioned file merges into one mesh, as it always did.
+    EXPECT_EQ(opts.piece, 0);
+    EXPECT_EQ(opts.piece_set, 0);
+    for (int i = 0; i < 2; ++i)
         EXPECT_EQ(opts.reserved[i], 0) << "reserved must stay zero for ABI growth";
-    // `time_step` and `lenient` each took one of the six former reserved int64
-    // slots rather than growing the struct, so the tail is still exactly six
-    // int64s wide and a caller compiled against an older header passes a
+    // `time_step`, `lenient`, `piece` and `piece_set` each took one of the six former
+    // reserved int64 slots rather than growing the struct, so the tail is still
+    // exactly six int64s wide and a caller compiled against an older header passes a
     // correctly-sized object. Stated as the tail's width rather than sizeof(the
     // whole struct), which would be a padding assertion rather than an ABI one.
     static_assert(sizeof(mio_read_opts::time_step) + sizeof(mio_read_opts::lenient) +
+                          sizeof(mio_read_opts::piece) + sizeof(mio_read_opts::piece_set) +
                           sizeof(mio_read_opts::reserved) ==
                       6 * sizeof(std::int64_t),
                   "mio_read_opts grew: that is an ABI break, not additive growth");
 }
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+TEST(CApi, ReadExPieceSelectsOnePartitionAndMergesByDefault) {
+    // Two cell regions -> a two-block composite VTKHDF; the tags carry the block order.
+    mt::Mesh m;
+    m.AssignPoints(mt::points_from(
+        {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {5, 0, 0}, {6, 0, 0}, {5, 1, 0}, {5, 0, 1}}));
+    mt::NDArray conn = mt::NDArray::Uninit(meshioplusplus::DType::Int64, {2, 4});
+    const std::int64_t rows[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    std::copy(rows, rows + 8, conn.As<std::int64_t>());
+    m.AddCellBlock("tetra", std::move(conn));
+    mt::NDArray near_cells = mt::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    near_cells.As<std::int64_t>()[0] = 0;
+    mt::NDArray far_cells = mt::NDArray::Uninit(meshioplusplus::DType::Int64, {1});
+    far_cells.As<std::int64_t>()[0] = 1;
+    m.AddRegion(meshioplusplus::Region("near", meshioplusplus::RegionKind::Cell, -1, 0,
+                                       std::move(near_cells)));
+    m.AddRegion(meshioplusplus::Region("far", meshioplusplus::RegionKind::Cell, -1, 1,
+                                       std::move(far_cells)));
+    const std::string path = mt::temp_path(".vtkhdf");
+    meshioplusplus::write_vtkhdf(path, m, 4,
+                                 meshioplusplus::VtkhdfType::PartitionedDataSetCollection);
+
+    mio_mesh* whole = mio_read(path.c_str(), "vtkhdf");
+    ASSERT_NE(whole, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(whole), 8);
+
+    mio_read_opts opts;
+    mio_read_opts_init(&opts);
+    opts.piece = 1;
+    opts.piece_set = 1;
+    mio_mesh* one = mio_read_ex(path.c_str(), "vtkhdf", &opts);
+    ASSERT_NE(one, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(one), 4);  // the "far" block alone
+
+    opts.piece = 2;  // out of range fails the call rather than clamping
+    EXPECT_EQ(mio_read_ex(path.c_str(), "vtkhdf", &opts), nullptr);
+
+    // A hand-zeroed struct must NOT ask for piece 0 alone: piece_set is what selects.
+    mio_read_opts zeroed{};
+    mio_mesh* merged = mio_read_ex(path.c_str(), "vtkhdf", &zeroed);
+    ASSERT_NE(merged, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(merged), 8);
+
+    mio_mesh_free(merged);
+    mio_mesh_free(one);
+    mio_mesh_free(whole);
+    std::filesystem::remove(path);
+}
+#endif
 
 TEST(CApi, ReadExPointsOnlyDropsDataKeepsGeometry) {
     const std::string path = mt::temp_path(".vtu");

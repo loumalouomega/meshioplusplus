@@ -165,6 +165,8 @@ def _polyhedron_cells_from_data(offsets, faces, faceoffsets, cell_data_raw):
 
     cells = {}
     cell_data = {}
+    # Which bucket each cell (in file order) landed in, so cell_data can follow it.
+    keys_per_cell = []
 
     # The data format for face-cells is:
     # num_faces_cell_0,
@@ -205,22 +207,19 @@ def _polyhedron_cells_from_data(offsets, faces, faceoffsets, cell_data_raw):
         if key not in cells.keys():
             cells[key] = []
         cells[key].append(faces_this_cell)
+        keys_per_cell.append(key)
 
     # The cells will be assigned to blocks according to their number of nodes.
     # This is potentially a reordering, compared to the ordering in faces.
     # Cell data must be reorganized accordingly.
 
-    # Start of the cell-node relations
-    start_cn = np.hstack((0, offsets))
-    size = np.diff(start_cn)
-
-    # Loop over all cell sizes, find all cells with this size, and store
-    # cell data.
-    for sz in np.unique(size):
-        # Cells with this number of nodes.
-        items = np.where(size == sz)[0]
-
-        # Store cell data for this set of cells
+    # One block of cell_data per bucket, in the buckets' own (first-seen) order and
+    # gathering each bucket's cells from their FILE rows -- which are not contiguous
+    # when the run mixes node counts. (This used to loop over np.unique of the row
+    # sizes, an ascending order that only matched the buckets by coincidence.)
+    keys = np.asarray(keys_per_cell)
+    for key in cells:
+        items = np.flatnonzero(keys == key)
         for name, d in cell_data_raw.items():
             if name not in cell_data:
                 cell_data[name] = []

@@ -174,7 +174,12 @@ print.mio_mesh <- function(x, ...) {
 #'   a warning plus a skip -- currently `mdpa`'s `Table`, `Geometries`, `Mesh`
 #'   and `Constraints` blocks. This is *not* "ignore all errors": a malformed
 #'   file, a truncated block or a bad node reference still fails, because
-#'   continuing past those would return a mesh that is quietly wrong.
+#'   continuing past those would return a mesh that is quietly wrong. VTKHDF
+#'   also honours it, skipping poly-vertex, poly-line and triangle-strip cells.
+#' @param piece Keep only this piece of a partitioned file (VTKHDF partitions or
+#'   composite blocks): `0` is the first, negative counts from the end. `NULL`
+#'   (the default) merges every piece into one mesh with one cell region per
+#'   piece. Out of range is an error naming the piece count.
 #' @return A `mio_mesh` object.
 #' @examples
 #' \dontrun{
@@ -182,14 +187,17 @@ print.mio_mesh <- function(x, ...) {
 #' m <- mio_read("bracket.vtu", points_only = TRUE)
 #' m <- mio_read("run.exo", time_step = -1) # the last step
 #' m <- mio_read("model.mdpa", lenient = TRUE) # skip unsupported blocks
+#' m <- mio_read("case.vtkhdf", piece = 0) # one partition, not the merged mesh
 #' }
 #' @export
 mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = FALSE,
-                     arrays = NULL, mmap = "auto", time_step = 0, lenient = FALSE) {
+                     arrays = NULL, mmap = "auto", time_step = 0, lenient = FALSE,
+                     piece = NULL) {
   .Call(
     R_mio_read, as.character(path), format, isTRUE(points_only),
     isTRUE(metadata_only), if (is.null(arrays)) NULL else as.character(arrays),
-    .mio_mmap(mmap), as.integer(time_step), isTRUE(lenient)
+    .mio_mmap(mmap), as.integer(time_step), isTRUE(lenient),
+    if (is.null(piece)) NULL else as.integer(piece)
   )
 }
 

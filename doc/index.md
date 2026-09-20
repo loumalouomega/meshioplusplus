@@ -24,7 +24,7 @@ hero:
 
 features:
   - icon: 🗂️
-    title: 46 formats
+    title: 47 formats
     details: Read 43 and write 46 mesh formats — VTK, VTU, XDMF, Gmsh, MED, Exodus, CGNS, Abaqus, Nastran, UNV, OpenFOAM, GiD, COMSOL, FLUX and more — through a single API, with per-format options where the format has them.
     link: /formats
   - icon: 🧩
@@ -59,7 +59,7 @@ features:
 
 ## What is meshio++?
 
-meshio++ reads and writes unstructured mesh files. It supports 46 formats through one unified [data model](./mesh_data_model.md), so you can convert between any of them and run the same operations on the result, from the command line or from Python:
+meshio++ reads and writes unstructured mesh files. It supports 47 formats through one unified [data model](./mesh_data_model.md), so you can convert between any of them and run the same operations on the result, from the command line or from Python:
 
 ```python
 import meshioplusplus

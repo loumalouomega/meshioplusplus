@@ -71,6 +71,7 @@
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vts.hpp"
 #include "meshioplusplus/formats/vtr.hpp"
+#include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
@@ -157,6 +158,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
         {"h5m", meshioplusplus::read_h5m},
         {"hmf", meshioplusplus::read_hmf},
+        // A lambda for the same overload reason as cgns above.
+        {"vtkhdf", [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); }},
         {"med",
          [](const std::string& path) {
              // The family-id maps/link names/mesh metadata in MedInfo are
@@ -337,6 +340,10 @@ const std::map<std::string, WriteFn>& registry_writers() {
          }},
         {"hmf", [](const std::string& p,
                    const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
+        // UnstructuredGrid with the oldest covering version; PolyData and the
+        // composite types are reached through write_vtkhdf's `Type` argument.
+        {"vtkhdf", [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_vtkhdf(p, mm, /*gzip_level=*/4); }},
         {"med",
          [](const std::string& p, const Mesh& mm) {
              // No point_tags/cell_tags to hand over here (they live in the
@@ -430,6 +437,8 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".cgns", "cgns"},
         {".h5m", "h5m"},
         {".hmf", "hmf"},
+        {".vtkhdf", "vtkhdf"},
+        {".hdf", "vtkhdf"},
         {".med", "med"},
         {".e", "exodus"},
         {".exo", "exodus"},
@@ -522,6 +531,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // ZoneIterativeData_t) file. IWYU pragma: keep
         {"cgns", [](const std::string& path,
                     const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
+        // VTKHDF honours mTimeStep (a step of a transient file), mPiece/mPieceSet
+        // (one partition or composite block instead of the merged mesh), mLenient
+        // (skip poly-vertex/poly-line/strip cells) and the narrowing options.
+        // IWYU pragma: keep
+        {"vtkhdf", [](const std::string& path,
+                      const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); }},
 #endif
         // OpenFOAM honours mTimeStep (selects a time-directory) AND
         // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
@@ -556,6 +571,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},
+        {"vtkhdf", meshioplusplus::read_vtkhdf_metadata},
 #endif
         {"vti", meshioplusplus::read_vti_metadata},
         {"vts", meshioplusplus::read_vts_metadata},
@@ -639,7 +655,8 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
 
 const char* registry_compiled_out(const std::string& rFormat) {
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
-    if (rFormat == "cgns" || rFormat == "h5m" || rFormat == "hmf" || rFormat == "med")
+    if (rFormat == "cgns" || rFormat == "h5m" || rFormat == "hmf" || rFormat == "med" ||
+        rFormat == "vtkhdf")
         return "HDF5";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_NETCDF

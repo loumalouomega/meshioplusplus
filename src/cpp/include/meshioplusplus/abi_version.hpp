@@ -63,6 +63,7 @@
  *  | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back |
  *  | 12  | v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 |
  *  | 13  | v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 -> 128 bytes |
+ *  | 14  | v14.0.0            | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 -> 72 bytes, and with it the four aggregates that embed it by value (PipelineInput, Pipeline, SequenceInput, SequencePipeline; +16 each) |
  *
  * ### This is the ONE place the number is written
  *
@@ -81,4 +82,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 13
+#define MESHIOPLUSPLUS_ABI_VERSION 14

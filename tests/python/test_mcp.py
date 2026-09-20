@@ -222,6 +222,92 @@ def test_convert_variant_errors(mesh_file, tmp_path):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")
 
 
+def _has_vtkhdf():
+    """VTKHDF needs HDF5: the compiled core's, or h5py for the Python fallback."""
+    try:
+        from meshioplusplus import _core
+
+        if getattr(_core, "__has_hdf5__", False):
+            return True
+    except ImportError:
+        pass
+    try:
+        import h5py  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+requires_vtkhdf = pytest.mark.skipif(
+    not _has_vtkhdf(), reason="VTKHDF needs HDF5 (compiled in) or h5py"
+)
+
+
+@requires_vtkhdf
+def test_convert_vtkhdf_gzip_and_none(mesh_file, tmp_path):
+    for compression in ("gzip", "none"):
+        out = _dump(
+            _tools.tool_convert(
+                mesh_file,
+                str(tmp_path / f"{compression}.vtkhdf"),
+                compression=compression,
+            )
+        )
+        assert out["output_format"] == "vtkhdf" and out["num_cells"] == 3
+    with pytest.raises(ValueError, match="cgns/h5m/vtkhdf/xdmf"):
+        _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), compression="gzip")
+    with pytest.raises(ValueError, match="cgns/h5m/vtkhdf/vtu/xdmf"):
+        _tools.tool_convert(mesh_file, str(tmp_path / "a.stl"), compression="none")
+
+
+def _partitioned_file(tmp_path):
+    """A VTKHDF holding two pieces, as a composite (blocks named by cell region)."""
+    from meshioplusplus._regions import Region
+
+    mesh = meshioplusplus.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [5, 0, 0],
+                [6, 0, 0],
+                [5, 1, 0],
+                [5, 0, 1],
+            ],
+            dtype=float,
+        ),
+        [("tetra", np.array([[0, 1, 2, 3], [4, 5, 6, 7]]))],
+    )
+    mesh.regions = [
+        Region("near", "cell", np.array([0]), tag=0),
+        Region("far", "cell", np.array([1]), tag=1),
+    ]
+    path = str(tmp_path / "parts.vtkhdf")
+    meshioplusplus.vtkhdf.write(path, mesh, dataset_type="PartitionedDataSetCollection")
+    return path
+
+
+@requires_vtkhdf
+def test_convert_and_stats_select_a_piece(tmp_path):
+    src = _partitioned_file(tmp_path)
+    whole = _dump(_tools.tool_convert(src, str(tmp_path / "whole.vtu")))
+    one = _dump(_tools.tool_convert(src, str(tmp_path / "one.vtu"), piece=1))
+    assert whole["num_cells"] == 2 and one["num_cells"] == 1 and one["num_points"] == 4
+    assert meshioplusplus.read(str(tmp_path / "one.vtu")).points[0][0] == 5.0
+    last = _dump(_tools.tool_convert(src, str(tmp_path / "last.vtu"), piece=-1))
+    assert last["num_points"] == 4
+    assert _dump(_tools.tool_stats(src, piece=0))["num_points"] == 4
+    with pytest.raises(Exception, match="2 piece"):
+        _tools.tool_convert(src, str(tmp_path / "bad.vtu"), piece=2)
+
+
+def test_a_format_without_pieces_refuses_a_piece(mesh_file, tmp_path):
+    with pytest.raises(Exception, match="does not support piece"):
+        _tools.tool_convert(mesh_file, str(tmp_path / "x.vtk"), piece=0)
+
+
 def test_pipeline_tool(mesh_file, tmp_path):
     out_path = str(tmp_path / "piped.vtu")
     settings_path = str(tmp_path / "settings.json")

@@ -74,7 +74,7 @@ SEXP R_mio_mesh_is_open(SEXP x) {
 }
 
 SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SEXP arrays,
-                SEXP mmap_mode, SEXP time_step, SEXP lenient) {
+                SEXP mmap_mode, SEXP time_step, SEXP lenient, SEXP piece) {
     const char *p = mio_r_string(path, "path");
     const char *f = mio_r_opt_string(format);
 
@@ -85,6 +85,12 @@ SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SE
     opts.mmap_mode = mio_r_int(mmap_mode, "mmap_mode");
     opts.time_step = mio_r_int(time_step, "time_step");
     opts.lenient = mio_r_bool(lenient, "lenient");
+    /* NULL merges every piece of a partitioned file; an integer keeps that piece.
+     * piece_set is what selects: piece alone (0) must never mean "merge". */
+    if (piece != R_NilValue) {
+        opts.piece = mio_r_int(piece, "piece");
+        opts.piece_set = 1;
+    }
 
     /* NULL means "every array"; a valid pointer with count 0 means "no arrays
      * at all". The distinction is load-bearing at the ABI, so an R NULL and an

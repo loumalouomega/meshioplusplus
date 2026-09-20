@@ -69,7 +69,10 @@ TIME_KEY = "meshio:time"
 # mesh alive.
 # **`usd` joined in v10.35.0**: one stage carries many time samples, so a
 # fan-in is its natural shape (`usd.SeriesWriter`, pushed like XDMF's).
-_SERIES_WRITERS = ("xdmf", "gid", "usd")
+# **`vtkhdf` joined in v14.0.0**: its `Steps` group is an offset table into flat
+# arrays, so a fan-in is the geometry once plus one appended step per entry --
+# the on-disk form of this engine. Pushed like XDMF's (`_SeriesWriter`).
+_SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf")
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
 # out.Y` on one of them might silently write step 0 of many. Consulted before
@@ -106,6 +109,7 @@ _TIME_CAPABLE_READERS = (
     "gmsh",
     "ensight",
     "openfoam",
+    "vtkhdf",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which
@@ -723,7 +727,7 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         _core.gid_write_series(str(path), _next)
         return [str(path)]
 
-    with _SeriesWriter(path) as writer:
+    with _SeriesWriter(path, fmt) as writer:
         for time, mesh in steps:
             writer.write(time, mesh)
     return [str(path)]
@@ -736,25 +740,44 @@ def _time_array(value):
 
 
 class _SeriesWriter:
-    """One interface over the two XDMF time-series writers.
+    """One interface over the pushed time-series writers (XDMF and VTKHDF).
 
-    Prefers the C++ one (``_core.XdmfTimeSeriesWriter``) because it writes its
-    heavy-data companion as a **sibling** of the ``.xdmf``, whereas the
+    For XDMF it prefers the C++ one (``_core.XdmfTimeSeriesWriter``) because it
+    writes its heavy-data companion as a **sibling** of the ``.xdmf``, whereas the
     pure-Python ``xdmf.TimeSeriesWriter`` writes ``<stem>.h5`` relative to the
     process's working directory (a documented divergence -- see
     ``doc/xdmf_time_series.md``). For a sequence the output path is routinely
     not in the CWD, so the Python writer would leave a ``.xdmf`` pointing at a
     companion that is not where it says it is.
 
+    For VTKHDF (``fmt="vtkhdf"``) it prefers ``_core.VtkhdfTimeSeriesWriter`` too,
+    though the two write the same layout; both consume the step's point, cell and
+    field data.
+
     Falls back to the Python writer when the C++ one is unavailable (no HDF5 in
     the build, or an older ``_core``), which is the repo-wide shim pattern.
     """
 
-    def __init__(self, path):
+    def __init__(self, path, fmt=None):
         from . import _core
 
         self._path = str(path)
         self._wrote_grid = False
+        self._vtkhdf = fmt == "vtkhdf"
+        if self._vtkhdf:
+            writer_cls = getattr(_core, "VtkhdfTimeSeriesWriter", None)
+            if writer_cls is not None and getattr(_core, "__has_hdf5__", False):
+                try:
+                    self._impl = writer_cls(self._path)
+                    self._cpp = True
+                    return
+                except Exception:
+                    pass
+            from .vtkhdf import TimeSeriesWriter as _PyVtkhdfWriter
+
+            self._impl = _PyVtkhdfWriter(self._path)
+            self._cpp = False
+            return
         # Follow the build, exactly like the registry's own xdmf entry does
         # ("HDF when HDF5 is available, XML otherwise"): an HDF-format series
         # is unreadable by a core with no HDF5 support, including the very
@@ -792,6 +815,13 @@ class _SeriesWriter:
             self._wrote_grid = True
         if self._cpp:
             self._impl.write_data(time, mesh)
+        elif self._vtkhdf:
+            self._impl.write_data(
+                time,
+                point_data=mesh.point_data,
+                cell_data=mesh.cell_data,
+                field_data=mesh.field_data,
+            )
         else:
             self._impl.write_data(
                 time, point_data=mesh.point_data, cell_data=mesh.cell_data
@@ -1045,7 +1075,9 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
     steps_report = []
     if resolved_mode == "fan-in":
         _check_series_target(out_path, out.get("Format"))
-        with _SeriesWriter(out_path) as writer:
+        with _SeriesWriter(
+            out_path, _series_target_format(out_path, out.get("Format"))
+        ) as writer:
             for entry in entries:
                 # Streaming: one mesh enters scope per iteration and leaves it.
                 mesh = read(

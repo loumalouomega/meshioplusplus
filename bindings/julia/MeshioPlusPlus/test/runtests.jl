@@ -243,6 +243,48 @@ end
     end
 end
 
+@testset "piece switch on a VTKHDF file" begin
+    # A plain file has exactly one piece, so piece=0 (and piece=-1) are that piece,
+    # piece=1 is out of range and must fail naming the count -- and the default
+    # (piece=nothing) is the merged mesh, exactly what a read always returned.
+    @test ReadOptions().piece === nothing
+    @test ReadOptions(piece=-1).piece == -1
+    mktempdir() do dir
+        path = joinpath(dir, "mesh.vtkhdf")
+        m = fixture()
+        # VTKHDF is HDF5-backed, and a library built without HDF5 compiles it out.
+        written = try
+            mio.write(m, path)
+            true
+        catch e
+            (e isa MeshioError && occursin("no HDF5 support", sprint(showerror, e))) || rethrow()
+            false
+        end
+        close(m)
+
+        if !written
+            @info "skipping the VTKHDF read half: this library has no HDF5 support"
+        else
+            whole = mio.read(path)
+            @test num_points(whole) == 5
+            close(whole)
+            for k in (0, -1)
+                r = mio.read(path; options=ReadOptions(piece=k))
+                @test num_points(r) == 5
+                close(r)
+            end
+            err = try
+                mio.read(path; options=ReadOptions(piece=1))
+                nothing
+            catch e
+                e
+            end
+            @test err !== nothing
+            @test occursin("1 piece", sprint(showerror, err))
+        end
+    end
+end
+
 @testset "regions round-trip" begin
     m = fixture()
     add_region!(m, "inlet", :point, [1, 3, 5])

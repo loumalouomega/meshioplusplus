@@ -270,6 +270,7 @@ for (const [format, path, mesh] of [
     ['cgns', '/tet.cgns', tet],
     ['h5m', '/tet.h5m', tet],
     ['hmf', '/tet.hmf', tet],
+    ['vtkhdf', '/tet.vtkhdf', tet],
     ['exodus', '/tet.exo', tet],
 ]) {
     step(`${format} round-trip (HDF5/netCDF-backed)`, () => {
@@ -284,6 +285,20 @@ for (const [format, path, mesh] of [
         assert.deepEqual(Array.from(back.cells[0].data), [0, 1, 2, 3]);
     });
 }
+
+step('vtkhdf: piece selects one piece, and out of range names the piece count', () => {
+    // A plain file has exactly one piece: piece 0 and -1 are that piece, the
+    // default (no piece) is the merged mesh, and piece 1 is out of range.
+    m.writeMesh('/piece.vtkhdf', tet, 'vtkhdf');
+    const whole = m.readMeshSelective('/piece.vtkhdf');
+    assert.equal(whole.points.length, 12);
+    for (const piece of [0, -1]) {
+        const one = m.readMeshSelective('/piece.vtkhdf', { piece });
+        assert.equal(one.points.length, 12);
+        assert.deepEqual(Array.from(one.cells[0].data), [0, 1, 2, 3]);
+    }
+    assert.throws(() => m.readMeshSelective('/piece.vtkhdf', { piece: 1 }), /1 piece/);
+});
 
 step('exodus SPHERE elements and per-element attributes round-trip', () => {
     // The pair of things a particle/peridynamics mesh is made of, and the
@@ -2250,7 +2265,7 @@ step('availableFormats reports what this build can read and write', () => {
     // is missing, the artifact was linked without its dependency and the
     // regression is silent everywhere else, since the registry simply omits
     // the entry rather than failing.
-    for (const fmt of ['cgns', 'h5m', 'hmf', 'med', 'exodus'])
+    for (const fmt of ['cgns', 'h5m', 'hmf', 'med', 'vtkhdf', 'exodus'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // Sorted, so a UI can render them without sorting again.
     assert.deepEqual(readers, [...readers].sort());

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -249,6 +250,58 @@ double vtu_polyhedron_read_seconds(std::size_t NumCells) {
 }
 
 }  // namespace
+
+TEST(Vtu, PolyhedraWithAlternatingNodeCountsKeepTheirCellData) {
+    // A polyhedral run mixing node counts is bucketed into one block per count, so a
+    // bucket's cells are not contiguous in the file: wedge(1), tet(2), wedge(3) must read
+    // back as polyhedron6 -> {1, 3} and polyhedron4 -> {2}, not the file-order slices
+    // {1, 2} and {3} that bucket-by-bucket slicing used to hand out.
+    auto wedge = [](std::int64_t b) {
+        return std::vector<std::vector<std::int64_t>>{{b, b + 2, b + 1},
+                                                      {b + 3, b + 4, b + 5},
+                                                      {b, b + 1, b + 4, b + 3},
+                                                      {b + 1, b + 2, b + 5, b + 4},
+                                                      {b + 2, b, b + 3, b + 5}};
+    };
+    auto tet = [](std::int64_t b) {
+        return std::vector<std::vector<std::int64_t>>{
+            {b, b + 2, b + 1}, {b, b + 1, b + 3}, {b + 1, b + 2, b + 3}, {b + 2, b, b + 3}};
+    };
+    std::vector<std::vector<double>> pts;
+    for (int i = 0; i < 16; ++i)
+        pts.push_back({0.1 * i, (i % 3) * 0.5, (i % 5) * 0.25});
+
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from(pts));
+    m.AddPolyhedronBlock("polyhedron6", {wedge(0)});
+    m.AddPolyhedronBlock("polyhedron4", {tet(6)});
+    m.AddPolyhedronBlock("polyhedron6", {wedge(10)});
+    std::vector<meshioplusplus::NDArray> tags;
+    for (double v : {1.0, 2.0, 3.0}) {
+        meshioplusplus::NDArray blk(meshioplusplus::DType::Float64, {std::size_t{1}});
+        blk.As<double>()[0] = v;
+        tags.push_back(std::move(blk));
+    }
+    m.AddCellData("tag", std::move(tags));
+
+    const std::string p = mt::temp_path("_poly_alternating.vtu");
+    meshioplusplus::write_vtu(p, m, /*binary=*/false, /*zlib=*/false);
+    const meshioplusplus::Mesh back = meshioplusplus::read_vtu(p);
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    ASSERT_TRUE(back.HasCellData("tag"));
+    std::map<std::string, std::vector<double>> tags_by_type;
+    for (std::size_t b = 0; b < back.NumCellBlocks(); ++b) {
+        const meshioplusplus::NDArray& d = back.CellData("tag", b);
+        ASSERT_EQ(d.Size(), back.Cells(b).NumCells());
+        tags_by_type[std::string(back.Cells(b).Type())] =
+            std::vector<double>(d.As<double>(), d.As<double>() + d.Size());
+    }
+    EXPECT_EQ(tags_by_type["polyhedron6"], (std::vector<double>{1.0, 3.0}));
+    EXPECT_EQ(tags_by_type["polyhedron4"], (std::vector<double>{2.0}));
+}
 
 TEST(Vtu, PolyhedronReconstructionIsNotQuadraticInCellCount) {
     // Direct regression test for the roadmap's own probe: the pre-fix
