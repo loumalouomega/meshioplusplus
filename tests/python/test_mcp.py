@@ -222,6 +222,28 @@ def test_convert_variant_errors(mesh_file, tmp_path):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")
 
 
+def _has_vtkhdf():
+    """VTKHDF needs HDF5: the compiled core's, or h5py for the Python fallback."""
+    try:
+        from meshioplusplus import _core
+
+        if getattr(_core, "__has_hdf5__", False):
+            return True
+    except ImportError:
+        pass
+    try:
+        import h5py  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+requires_vtkhdf = pytest.mark.skipif(
+    not _has_vtkhdf(), reason="VTKHDF needs HDF5 (compiled in) or h5py"
+)
+
+
+@requires_vtkhdf
 def test_convert_vtkhdf_gzip_and_none(mesh_file, tmp_path):
     for compression in ("gzip", "none"):
         out = _dump(
@@ -267,6 +289,7 @@ def _partitioned_file(tmp_path):
     return path
 
 
+@requires_vtkhdf
 def test_convert_and_stats_select_a_piece(tmp_path):
     src = _partitioned_file(tmp_path)
     whole = _dump(_tools.tool_convert(src, str(tmp_path / "whole.vtu")))

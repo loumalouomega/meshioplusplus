@@ -252,25 +252,36 @@ end
     mktempdir() do dir
         path = joinpath(dir, "mesh.vtkhdf")
         m = fixture()
-        mio.write(m, path)
+        # VTKHDF is HDF5-backed, and a library built without HDF5 compiles it out.
+        written = try
+            mio.write(m, path)
+            true
+        catch e
+            (e isa MeshioError && occursin("no HDF5 support", sprint(showerror, e))) || rethrow()
+            false
+        end
         close(m)
 
-        whole = mio.read(path)
-        @test num_points(whole) == 5
-        close(whole)
-        for k in (0, -1)
-            r = mio.read(path; options=ReadOptions(piece=k))
-            @test num_points(r) == 5
-            close(r)
+        if !written
+            @info "skipping the VTKHDF read half: this library has no HDF5 support"
+        else
+            whole = mio.read(path)
+            @test num_points(whole) == 5
+            close(whole)
+            for k in (0, -1)
+                r = mio.read(path; options=ReadOptions(piece=k))
+                @test num_points(r) == 5
+                close(r)
+            end
+            err = try
+                mio.read(path; options=ReadOptions(piece=1))
+                nothing
+            catch e
+                e
+            end
+            @test err !== nothing
+            @test occursin("1 piece", sprint(showerror, err))
         end
-        err = try
-            mio.read(path; options=ReadOptions(piece=1))
-            nothing
-        catch e
-            e
-        end
-        @test err !== nothing
-        @test occursin("1 piece", sprint(showerror, err))
     end
 end
 

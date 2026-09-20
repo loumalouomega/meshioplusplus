@@ -161,13 +161,13 @@ MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
 // which is what made growing them *look* free; that gap is what motivated
 // adding a whole new header for the sequence types instead.
 MIO_ABI_LAYOUT(meshioplusplus::PipelineStep, 80, 8);
-MIO_ABI_LAYOUT(meshioplusplus::PipelineInput, 120, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PipelineInput, 136, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PipelineOutput, 112, 8);
-MIO_ABI_LAYOUT(meshioplusplus::Pipeline, 264, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Pipeline, 280, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequenceEntry, 56, 8);
-MIO_ABI_LAYOUT(meshioplusplus::SequenceInput, 176, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequenceInput, 192, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequenceOutput, 112, 8);
-MIO_ABI_LAYOUT(meshioplusplus::SequencePipeline, 336, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SequencePipeline, 352, 8);
 
 // The distance/voxelization aggregates, pinned from the release that introduced
 // them (v9.24.0) rather than after the fact -- the pipeline lesson above, applied
