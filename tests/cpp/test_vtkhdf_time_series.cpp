@@ -298,18 +298,28 @@ TEST(VtkhdfTimeSeries, AppendRefusesAFileItCannotContinue) {
 }
 
 TEST(VtkhdfTimeSeries, PolyhedralGridsCarryTheExtraStepTables) {
-    mt::Mesh grid;
-    grid.AssignPoints(mt::points_from(
-        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}));
-    grid.AddPolyhedronBlock(
-        "polyhedron8",
-        {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}}});
+    // Built afresh per use: a KRATOS mesh cannot be copied.
+    auto make_grid = [] {
+        mt::Mesh grid;
+        grid.AssignPoints(mt::points_from({{0, 0, 0},
+                                           {1, 0, 0},
+                                           {1, 1, 0},
+                                           {0, 1, 0},
+                                           {0, 0, 1},
+                                           {1, 0, 1},
+                                           {1, 1, 1},
+                                           {0, 1, 1}}));
+        grid.AddPolyhedronBlock(
+            "polyhedron8",
+            {{{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4}, {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}}});
+        return grid;
+    };
     SeriesTempFile f;
     {
         VtkhdfTimeSeriesWriter w(f.mPath);
-        w.WritePointsCells(grid);
+        w.WritePointsCells(make_grid());
         for (int k = 0; k < 2; ++k) {
-            mt::Mesh m = grid;
+            mt::Mesh m = make_grid();
             m.AddPointData("u", mt::data_array(std::vector<double>(8, k)));
             w.WriteData(k, m);
         }

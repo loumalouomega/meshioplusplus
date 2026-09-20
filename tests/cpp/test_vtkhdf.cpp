@@ -144,14 +144,17 @@ void vtkhdf_raw_type(hid_t Grp, const char* pType, std::int64_t Major = 2, std::
 }
 
 // A partitioned UnstructuredGrid (piece-local ids, n+1 offsets per piece) from single-piece
-// meshes, laid out the way vtkHDFWriter does it.
-void vtkhdf_write_partitioned(const std::string& rPath, const std::vector<mt::Mesh>& rPieces) {
+// meshes, laid out the way vtkHDFWriter does it. Each piece is a `vtkhdf_test_tets(Shift, U)`,
+// given as the pair and built here one at a time: a KRATOS mesh cannot be copied into a list.
+void vtkhdf_write_partitioned(const std::string& rPath,
+                              const std::vector<std::pair<double, double>>& rPieces) {
     h5::Hid f = h5::create_file(rPath);
     h5::Hid g = h5::create_group_crt(f, "VTKHDF");
     vtkhdf_raw_type(g, "UnstructuredGrid");
     I64Vec npts, ncells, nconn, conn, offs, types;
     std::vector<double> pts, u, p;
-    for (const auto& m : rPieces) {
+    for (const auto& [shift, value] : rPieces) {
+        const mt::Mesh m = vtkhdf_test_tets(shift, value);
         npts.push_back(static_cast<std::int64_t>(m.NumPoints()));
         const auto cb = m.Cells(0);
         ncells.push_back(static_cast<std::int64_t>(cb.NumCells()));
@@ -190,7 +193,7 @@ void vtkhdf_write_partitioned(const std::string& rPath, const std::vector<mt::Me
 
 // Geometry written once, fields appended per step: every step's offsets name the same geometry.
 void vtkhdf_write_static_once(const std::string& rPath, std::size_t NSteps) {
-    vtkhdf_write_partitioned(rPath, {vtkhdf_test_tets()});
+    vtkhdf_write_partitioned(rPath, {{0.0, 0.0}});
     h5::Hid f(H5Fopen(rPath.c_str(), H5F_ACC_RDWR, H5P_DEFAULT), H5Fclose);
     h5::Hid g = h5::open_group(f, "VTKHDF");
     H5Ldelete(g, "PointData", H5P_DEFAULT);
@@ -231,31 +234,31 @@ void vtkhdf_write_static_once(const std::string& rPath, std::size_t NSteps) {
 // round trips
 // ---------------------------------------------------------------------------
 TEST(Vtkhdf, RoundTripsTheSharedFixtures) {
-    const std::vector<std::pair<const char*, mt::Mesh>> meshes = {
-        {"line", mt::line_mesh()},
-        {"tri", mt::tri_mesh()},
-        {"quad", mt::quad_mesh()},
-        {"tet", mt::tet_mesh()},
-        {"hex", mt::hex_mesh()},
-        {"wedge", mt::wedge_mesh()},
-        {"triangle6", mt::triangle6_mesh()},
-        {"quad8", mt::quad8_mesh()},
-        {"tet10", mt::tet10_mesh()},
-        {"hex20", mt::hex20_mesh()},
-        {"wedge15", mt::wedge15_mesh()},
-        {"pyramid13", mt::pyramid13_mesh()},
-        {"wedge18", mt::wedge18_mesh()},
-        {"tri_quad", mt::tri_quad_mesh()},
-        {"data", mt::data_mesh()},
+    const std::vector<std::pair<const char*, mt::Mesh (*)()>> meshes = {
+        {"line", mt::line_mesh},
+        {"tri", mt::tri_mesh},
+        {"quad", mt::quad_mesh},
+        {"tet", mt::tet_mesh},
+        {"hex", mt::hex_mesh},
+        {"wedge", mt::wedge_mesh},
+        {"triangle6", mt::triangle6_mesh},
+        {"quad8", mt::quad8_mesh},
+        {"tet10", mt::tet10_mesh},
+        {"hex20", mt::hex20_mesh},
+        {"wedge15", mt::wedge15_mesh},
+        {"pyramid13", mt::pyramid13_mesh},
+        {"wedge18", mt::wedge18_mesh},
+        {"tri_quad", mt::tri_quad_mesh},
+        {"data", mt::data_mesh},
     };
     for (int gzip : {-1, 4}) {
         auto w = [=](const std::string& p, const mt::Mesh& m) {
             meshioplusplus::write_vtkhdf(p, m, gzip);
         };
         auto r = [](const std::string& p) { return meshioplusplus::read_vtkhdf(p); };
-        for (const auto& [name, mesh] : meshes) {
+        for (const auto& [name, make] : meshes) {
             SCOPED_TRACE(name);
-            mt::roundtrip(w, r, mesh, ".vtkhdf");
+            mt::roundtrip(w, r, make(), ".vtkhdf");
         }
     }
 }
@@ -297,7 +300,10 @@ TEST(Vtkhdf, DataDtypesAndShapesSurvive) {
     VtkhdfTempFile f;
     meshioplusplus::write_vtkhdf(f.mPath, m);
     mt::Mesh back = meshioplusplus::read_vtkhdf(f.mPath);
+#if !defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) && !defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+    // The NATIVE and KRATOS meshes normalize data arrays to Float64/Int64 themselves.
     EXPECT_EQ(back.PointData("f32").Dtype(), meshioplusplus::DType::Float32);
+#endif
     EXPECT_EQ(vtkhdf_test_doubles(back.PointData("f32")), vtkhdf_test_doubles(m.PointData("f32")));
     EXPECT_EQ(back.PointData("vec").Shape(), (std::vector<std::size_t>{5, 3}));
     EXPECT_EQ(back.FieldData("matrix").Shape(), (std::vector<std::size_t>{2, 3}));
@@ -817,7 +823,7 @@ TEST(Vtkhdf, CompositePieceSelection) {
 // ---------------------------------------------------------------------------
 TEST(Vtkhdf, PartitionsMergeWithOneRegionPerPiece) {
     VtkhdfTempFile f;
-    vtkhdf_write_partitioned(f.mPath, {vtkhdf_test_tets(0.0, 1.0), vtkhdf_test_tets(5.0, 2.0)});
+    vtkhdf_write_partitioned(f.mPath, {{0.0, 1.0}, {5.0, 2.0}});
     mt::Mesh back = meshioplusplus::read_vtkhdf(f.mPath);
     EXPECT_EQ(back.NumPoints(), 10u);
     ASSERT_EQ(back.NumCellBlocks(), 1u);  // adjacent same-type blocks join
@@ -834,8 +840,7 @@ TEST(Vtkhdf, PartitionsMergeWithOneRegionPerPiece) {
 
 TEST(Vtkhdf, PartitionPieceSwitch) {
     VtkhdfTempFile f;
-    vtkhdf_write_partitioned(f.mPath, {vtkhdf_test_tets(0.0, 1.0), vtkhdf_test_tets(5.0, 2.0),
-                                       vtkhdf_test_tets(9.0, 3.0)});
+    vtkhdf_write_partitioned(f.mPath, {{0.0, 1.0}, {5.0, 2.0}, {9.0, 3.0}});
     struct Case {
         std::int64_t mPiece;
         double mX, mU;
