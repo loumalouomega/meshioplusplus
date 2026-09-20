@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._cgns import read as _py_read
@@ -40,14 +41,14 @@ def read(filename, time_step: int = 0):
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
             return _core.cgns_read(str(filename), time_step)
-        except Exception:
+        except Exception as exc:
             # Falling back is only sound when the fallback answers the same
             # question. It cannot for an ADF-container file: the reference
             # reader is h5py-based and would report a confusing signature
             # error rather than the real one. (The xdmf `time_step` precedent.)
             if not is_buffer(filename, "r") and not _is_hdf5(filename):
                 raise
-            if time_step:
+            if time_step or not core_declined(exc, "cgns", "read", filename):
                 raise
     return _py_read(filename)
 
@@ -59,8 +60,9 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
         try:
             _core.cgns_write(str(filename), mesh, gzip_level)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "cgns", "write", filename):
+                raise
     return _py_write(filename, mesh, compression, compression_opts)
 
 

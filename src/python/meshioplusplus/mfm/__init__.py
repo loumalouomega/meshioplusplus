@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._mfm import read as _py_read
@@ -10,8 +11,9 @@ def read(filename):
     if not is_buffer(filename, "r"):
         try:
             return _core.mfm_read(str(filename))
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "mfm", "read", filename):
+                raise
     return _py_read(filename)
 
 
@@ -21,8 +23,9 @@ def write(filename, mesh, float_fmt=".16e"):
         try:
             _core.mfm_write(str(filename), mesh, float_fmt)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "mfm", "write", filename):
+                raise
     return _py_write(filename, mesh, float_fmt)
 
 

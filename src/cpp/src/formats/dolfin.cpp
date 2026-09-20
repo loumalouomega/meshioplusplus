@@ -33,6 +33,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace fs = std::filesystem;
 
@@ -198,7 +199,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     if (dim != 2 && dim != 3)
         throw WriteError("DOLFIN: can only write dimension 2 or 3");
 
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -268,7 +269,7 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
     auto write_mesh_function = [&](const std::string& rName,
                                    const std::vector<const NDArray*>& rBlocks, int Dim) {
         const std::string fn = base + "_" + rName + ".xml";
-        std::ofstream cf(fn, std::ios::binary);
+        auto cf = detail::make_classic_ofstream(fn, std::ios::binary);
         if (!cf)
             throw WriteError("Could not open file for writing: " + fn);
         std::size_t sz = 0;

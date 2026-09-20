@@ -26,6 +26,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -40,7 +41,7 @@ std::string ip_strip(const std::string& s) {
 }  // namespace
 
 Mesh read_ip(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -54,7 +55,7 @@ Mesh read_ip(const std::string& rPath) {
     while (ints.size() < 4 && idx < lines.size()) {
         std::string s = ip_strip(lines[idx++]);
         if (!s.empty()) {
-            std::istringstream iss(s);
+            auto iss = detail::make_classic_istringstream(s);
             int v;
             iss >> v;
             ints.push_back(v);
@@ -83,7 +84,7 @@ Mesh read_ip(const std::string& rPath) {
                 c = ' ';
             else if (c == 'D' || c == 'd')
                 c = 'E';
-        std::istringstream iss(s);
+        auto iss = detail::make_classic_istringstream(s);
         std::string tok;
         while (iss >> tok)
             flat.push_back(detail::parse_double(tok));
@@ -113,7 +114,7 @@ Mesh read_ip(const std::string& rPath) {
 }
 
 void write_ip(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

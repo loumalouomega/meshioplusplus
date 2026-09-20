@@ -34,6 +34,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -152,7 +153,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         stroke_width = buf;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
@@ -295,7 +296,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         stroke_width = buf;
     }
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

@@ -32,6 +32,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -67,7 +68,7 @@ bool contains(const std::string& rHay, const char* pNeedle) {
 }
 
 long long leading_int(const std::string& rLine) {
-    std::istringstream iss(rLine);
+    auto iss = detail::make_classic_istringstream(rLine);
     long long v = 0;
     iss >> v;
     return v;
@@ -76,7 +77,7 @@ long long leading_int(const std::string& rLine) {
 }  // namespace
 
 Mesh read_flux(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -107,7 +108,7 @@ Mesh read_flux(const std::string& rPath) {
     // element tokens
     std::vector<std::string> etok;
     for (std::size_t i = di + 1; i < ci; ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::string w;
         while (iss >> w)
             etok.push_back(w);
@@ -148,7 +149,7 @@ Mesh read_flux(const std::string& rPath) {
     // coordinate tokens
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
-        std::istringstream iss(lines[i]);
+        auto iss = detail::make_classic_istringstream(lines[i]);
         std::string w;
         while (iss >> w)
             ctok.push_back(w);
@@ -183,7 +184,7 @@ Mesh read_flux(const std::string& rPath) {
 }
 
 void write_flux(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream f(rPath, std::ios::binary);
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
 

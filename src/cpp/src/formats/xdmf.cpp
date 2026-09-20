@@ -34,6 +34,7 @@
 // Project includes
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/xdmf_common.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -165,7 +166,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
 
     if (fmt == "XML") {
         NDArray a(dt, dims);
-        std::istringstream iss(rDi.text().get());
+        auto iss = detail::make_classic_istringstream(rDi.text().get());
         std::string tok;
         std::size_t i = 0;
         while (i < total && (iss >> tok))
@@ -178,7 +179,7 @@ NDArray read_data_item(const pugi::xml_node& rDi, const fs::path& rBaseDir) {
         std::size_t a0 = rel.find_first_not_of(" \t\r\n");
         std::size_t a1 = rel.find_last_not_of(" \t\r\n");
         std::string path = (a0 == std::string::npos) ? "" : rel.substr(a0, a1 - a0 + 1);
-        std::ifstream bin(path, std::ios::binary);
+        auto bin = detail::make_classic_ifstream(path, std::ios::binary);
         if (!bin) {  // try relative to the xdmf file
             bin.open((rBaseDir / path).string(), std::ios::binary);
             if (!bin)

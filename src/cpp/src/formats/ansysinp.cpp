@@ -35,6 +35,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -196,7 +197,7 @@ bool is_data_line(const std::string& rLine) {
 }
 
 std::vector<std::string> read_lines_file(const std::string& rPath) {
-    std::ifstream f(rPath);
+    auto f = detail::make_classic_ifstream(rPath);
     if (!f)
         throw ReadError("Could not open ansysInp file: " + rPath);
     std::vector<std::string> lines;
@@ -234,7 +235,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
         std::string up = ansysinp_upper(line);
 
         if (up.rfind("ET,", 0) == 0) {
-            std::stringstream ss(line);
+            auto ss = detail::make_classic_stringstream(line);
             std::string tok;
             std::vector<std::string> p;
             while (std::getline(ss, tok, ','))
@@ -351,7 +352,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
             }
         } else if (up.rfind("CMBLOCK", 0) == 0) {
             saw_block = true;
-            std::stringstream ss(line);
+            auto ss = detail::make_classic_stringstream(line);
             std::string tok;
             std::vector<std::string> p;
             while (std::getline(ss, tok, ','))
@@ -481,7 +482,7 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
 }
 
 void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo) {
-    std::ofstream f(rPath);
+    auto f = detail::make_classic_ofstream(rPath);
     if (!f)
         throw WriteError("Could not open ansysInp file for writing: " + rPath);
 

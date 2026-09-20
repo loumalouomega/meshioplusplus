@@ -23,6 +23,7 @@
 // Project includes
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 #if defined(__EMSCRIPTEN__)
 // No mapping under Emscripten: the virtual FS has nothing to map.
@@ -85,7 +86,7 @@ FileSource::Mode FileSource::FromMmapMode(MmapMode mmap_mode) {
 }
 
 void FileSource::LoadBuffered(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     in.seekg(0, std::ios::end);

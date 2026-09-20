@@ -1,6 +1,7 @@
 import functools
 
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._main import read as _py_read
@@ -32,8 +33,9 @@ def read(filename):
     if not is_buffer(filename, "r"):
         try:
             return _core.vtk_read(str(filename))
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "vtk", "read", filename):
+                raise
     return _py_read(filename)
 
 
@@ -47,8 +49,9 @@ def write(filename, mesh, fmt_version="5.1", binary=True, **kwargs):
         try:
             _core.vtk_write(str(filename), mesh, binary, fmt_version == "5.1")
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "vtk", "write", filename):
+                raise
     return _main_write(filename, mesh, fmt_version=fmt_version, binary=binary, **kwargs)
 
 

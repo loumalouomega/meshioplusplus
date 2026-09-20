@@ -31,6 +31,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -65,7 +66,7 @@ NDArray make_point_data(const std::vector<std::vector<double>>& rRows) {
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
 
@@ -85,7 +86,7 @@ Mesh read_obj(const std::string& rPath) {
         if (b == e || line[b] == '#')
             continue;
 
-        std::istringstream iss(line.substr(b, e - b));
+        auto iss = detail::make_classic_istringstream(line.substr(b, e - b));
         std::string tag;
         iss >> tag;
         if (tag == "v") {
@@ -179,7 +180,7 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
                 "Wavefront .obj files can only contain triangle, quad, "
                 "or polygon cells.");
 
-    std::ofstream os(rPath, std::ios::binary);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 

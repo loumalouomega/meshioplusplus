@@ -1,4 +1,5 @@
 from .. import _core
+from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._exodus import read as _py_read
@@ -17,12 +18,13 @@ def read(filename, time_step=0):
     if _HAS_NETCDF and not is_buffer(filename, "r"):
         try:
             return _core.exodus_read(str(filename), time_step=time_step)
-        except Exception:
-            # The standard shim contract: any refusal from the core retries on
-            # the Python twin. A genuine user error (an out-of-range time step)
+        except Exception as exc:
+            # A recognised refusal from the core retries on the Python twin (see
+            # `core_declined`). A genuine user error (an out-of-range time step)
             # is not lost -- the twin implements the same rule and raises the
             # same way, so declining costs a slower answer, not a wrong one.
-            pass
+            if not core_declined(exc, "exodus", "read", filename):
+                raise
     return _py_read(filename, time_step=time_step)
 
 
@@ -33,8 +35,9 @@ def write(filename, mesh):
         try:
             _core.exodus_write(str(filename), mesh)
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            if not core_declined(exc, "exodus", "write", filename):
+                raise
     return _py_write(filename, mesh)
 
 

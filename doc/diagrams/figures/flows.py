@@ -938,11 +938,12 @@ def roadmap_map():
     )
     columns = [
         (
-            "§1 correctness debts",
+            "§1 format reach",
             [
-                ("MED · gmsh node ordering", "M"),
-                ("vtk51 alias · silent drops", "S"),
-                ("DOLFIN blocks · MED bitmask", "S"),
+                ("VTKHDF", "M"),
+                (".pvd · .pvtu · .xyz · .pcd", "S"),
+                ("LS-DYNA .k · CalculiX .frd", "M"),
+                ("glTF export", "S"),
             ],
             [],
         ),
@@ -987,17 +988,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§6 format reach",
-            [
-                ("VTKHDF", "M"),
-                (".pvd · .pvtu · .xyz · .pcd", "S"),
-                ("LS-DYNA .k · CalculiX .frd", "M"),
-                ("glTF export", "S"),
-            ],
-            [],
-        ),
-        (
-            "§7 ecosystem reach",
+            "§6 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1007,7 +998,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§8 long run (spike first)",
+            "§7 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),

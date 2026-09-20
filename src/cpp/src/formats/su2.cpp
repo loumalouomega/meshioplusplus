@@ -35,6 +35,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 
 namespace meshioplusplus {
 
@@ -107,7 +108,7 @@ std::string su2_strip(const std::string& rS) {
 }
 std::vector<std::string> su2_tokens(const std::string& rS) {
     std::vector<std::string> out;
-    std::istringstream iss(rS);
+    auto iss = detail::make_classic_istringstream(rS);
     std::string t;
     while (iss >> t)
         out.push_back(t);
@@ -159,7 +160,7 @@ void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, s
 }  // namespace
 
 Mesh read_su2(const std::string& rPath) {
-    std::ifstream in(rPath);
+    auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
     std::vector<std::string> lines;
@@ -263,7 +264,7 @@ Mesh read_su2(const std::string& rPath) {
 }
 
 void write_su2(const std::string& rPath, const Mesh& rMesh) {
-    std::ofstream os(rPath);
+    auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
