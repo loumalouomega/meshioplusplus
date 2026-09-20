@@ -1679,7 +1679,10 @@ def _register_operations(server: FastMCP) -> None:
         name_template: str = "{stem}_part{part}.vtu",
     ) -> dict:
         """Partition into exactly nparts balanced pieces (method: auto | sfc |
-        kahip). Writes one file per part and returns their paths."""
+        kahip). Writes one file per part and returns their paths; a
+        name_template ending in .pvtu/.pvtp with no {part} writes one
+        parallel index over every part instead (halo layers kept as
+        vtkGhostType) and also returns its path as `index`."""
         return _guard(
             _tools.tool_partition,
             input_path=input_path,

@@ -403,6 +403,42 @@ def test_partition_writes_nparts_files(mesh_file, tmp_path):
     assert sum(s["num_cells"] for s in out["summaries"]) == 3
 
 
+def test_partition_index_form_writes_one_index_over_every_part(mesh_file, tmp_path):
+    out = _dump(
+        _tools.tool_partition(
+            mesh_file,
+            2,
+            method="sfc",
+            output_dir=str(tmp_path / "idx"),
+            name_template="{stem}.pvtu",
+        )
+    )
+    assert os.path.isfile(out["index"]) and out["index"].endswith(".pvtu")
+    assert len(out["parts"]) == 2 and all(os.path.isfile(p) for p in out["parts"])
+    assert sum(s["num_cells"] for s in out["summaries"]) == 3
+    back = meshioplusplus.read(out["index"])
+    assert sum(len(c.data) for c in back.cells) == 3
+
+
+def test_partition_template_without_a_part_token_is_refused(mesh_file, tmp_path):
+    with pytest.raises(ValueError, match=r"must contain '\{part\}'.*\.pvtu/\.pvtp"):
+        _tools.tool_partition(
+            mesh_file, 2, output_dir=str(tmp_path), name_template="all.vtu"
+        )
+    assert not list(tmp_path.glob("all*"))
+
+
+def test_convert_block_codec_reaches_the_index_formats(mesh_file, tmp_path):
+    for ext in (".pvtu", ".pvd"):
+        out = _dump(
+            _tools.tool_convert(
+                mesh_file, str(tmp_path / f"a{ext}"), compression="zlib"
+            )
+        )
+        assert os.path.isfile(out["output_path"])
+        assert out["num_cells"] == 3
+
+
 def test_crop(mesh_file, tmp_path):
     out = _dump(
         _tools.tool_crop(

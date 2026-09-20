@@ -67,6 +67,8 @@
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -150,6 +152,18 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
+
+// The ParaView index formats (v14.1.0, roadmap §1.1), pinned from the release
+// that introduces them -- the `OpenFoamInfo` lesson above. `PvtuReadOptions`
+// exists as a struct of its own, passed as a defaulted trailing parameter of
+// `read_pvtu`/`read_pvtp`/`read_pvd`, precisely because the alternative -- a
+// `ReadOptions` member for the ghost policy -- is a Tier A layout change that
+// also reaches the four aggregates embedding `ReadOptions` (`PipelineInput`,
+// `Pipeline`, `SequenceInput`, `SequencePipeline`). Growing THIS struct later is
+// the same Tier A break, hence the pin. `PvdSeriesWriter` is a pimpl handle, one
+// pointer.
+MIO_ABI_LAYOUT(meshioplusplus::PvtuReadOptions, 4, 4);
+MIO_ABI_LAYOUT(meshioplusplus::PvdSeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both

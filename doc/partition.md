@@ -27,7 +27,21 @@ Both CLIs expose the same thing:
 ```bash
 meshioplusplus partition domain.msh 'domain_{part}.vtu' --nparts 4
 meshioplusplus partition domain.msh labelled.vtu --nparts 4 --labels-only
+meshioplusplus partition domain.msh domain.pvtu --nparts 4 --ghost-layers 1
 ```
+
+## Writing a partition as one dataset
+
+A `.pvtu` (or `.pvtp`) is the ParaView index of a partition: one file that declares the arrays and names one piece per part, so the decomposition opens as a single dataset. `pvtu.write_pieces` takes exactly what `partition` returns — halo layers included, which a single mesh with a `partition:part` label cannot express, since a cell can be a ghost of several parts:
+
+```python
+pieces = meshioplusplus.partition(mesh, 4, ghost_layers=1)
+meshioplusplus.pvtu.write_pieces("domain.pvtu", pieces)   # domain.pvtu + domain/domain_0000.vtu ... domain_0003.vtu
+
+meshioplusplus.pvtu.write("labelled.pvtu", mesh_with_partition_part)   # or carve one mesh by its partition:part labels
+```
+
+`partition:ghost` becomes `vtkGhostType` on cells (`DUPLICATECELL` for any layer) and on points (`DUPLICATEPOINT` when no owned cell of the piece uses the point), and sets the index's `GhostLevel` to the deepest layer; `partition:ghost` itself is kept too, since `vtkGhostType` collapses layer 2 onto layer 1. Reading the index merges the pieces (one `piece_<i>` region each); `ghosts="drop"` removes the halo and returns the partition of unity, so `partition` → `.pvtu` → read is the original mesh up to point ordering (`clean` with `weld=True` fuses the interface points). See [PVTU](/formats/pvtu).
 
 ## Two methods
 

@@ -35,6 +35,11 @@ _MULTIFILE_FORMATS = (
     "pmsh",
     "zarr",
     "usd",
+    # An index whose piece paths resolve against its own directory, which a
+    # buffer does not have.
+    "pvd",
+    "pvtu",
+    "pvtp",
 )
 
 

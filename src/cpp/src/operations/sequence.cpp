@@ -36,6 +36,7 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/gid.hpp"
+#include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
@@ -205,9 +206,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // fields are new; the polyMesh topology itself never had a time concept.
     // vtkhdf joined in v14.0.0: its metadata reader reads
     // Steps/Values without touching the geometry, so the count is cheap.
+    // pvd joined in v14.1.0: its steps are the distinct `timestep=` values of
+    // the index, read without opening a piece.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
-           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf";
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -236,13 +239,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf") {
+    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid' and 'vtkhdf' can); write one "
-           "file per step with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf' and 'pvd' can); "
+           "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -488,10 +491,11 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// The transient writers bypass `registry_write_ex` (they drive a stateful writer
 /// class directly, not a `(path, mesh)` registry entry), so they must apply the
 /// write_options.hpp rule -- "an option the writer cannot honour is an error,
-/// never silently ignored" -- themselves. XDMF's `Encoding` (XML vs HDF) is the
-/// only option with anywhere to go; VTKHDF has no encoding variant at all.
+/// never silently ignored" -- themselves. `Encoding` is the only option with
+/// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
+/// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : "XDMF";
+    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : rFormat == "pvd" ? "PVD" : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -526,6 +530,20 @@ private:
     XdmfTimeSeriesWriter mWriter;
 };
 
+/// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
+/// static grid to write and `WritePointsCells` has nothing to do.
+class SeqPvdSink final : public SeqSeriesSink {
+public:
+    SeqPvdSink(const std::string& rPath, bool Binary, detail::VtkCodec Codec)
+        : mWriter(rPath, Binary, Codec) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    PvdSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -542,6 +560,16 @@ private:
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
+    if (rFormat == "pvd") {
+        // The zlib codec follows the build, as the registry's own writers do.
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        const detail::VtkCodec codec = detail::VtkCodec::Zlib;
+#else
+        const detail::VtkCodec codec = detail::VtkCodec::None;
+#endif
+        return std::make_unique<SeqPvdSink>(rPath, rOptions.mEncoding != WriteEncoding::Ascii,
+                                            codec);
+    }
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);

@@ -940,7 +940,7 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                (".pvd · .pvtu · .xyz · .pcd", "S"),
+                ("ParaView index edges · .xyz · .pcd", "S"),
                 ("LS-DYNA .k · CalculiX .frd", "M"),
                 ("glTF export", "S"),
             ],

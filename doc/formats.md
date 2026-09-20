@@ -39,6 +39,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — |
+| [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — |
+| [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — |
+| [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — |
 | [`svg`](./formats/svg.md) | `.svg` | — | ✓ | — |
@@ -86,6 +89,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on `vtr`** (v11.6.0): VTK XML RectilinearGrid states the same topology via three independent per-axis coordinate arrays (a tensor product) instead of explicit points. **Reading is fully general** — a genuinely graded (non-uniformly spaced) grid reads correctly, with no uniformity check at all. **Writing still requires a *uniform* lattice**, since recovering three arbitrary per-axis arrays needs a detector that does not exist yet; a graded mesh raises `WriteError` — a documented follow-up.
 
 **Note on `vtm`** (v11.6.0): VTK XML MultiBlock is an index file plus one `.vtu` piece per cell block, so unlike `vti`/`vts`/`vtr` it has **no lattice restriction at all** — any mesh with one or more cell blocks round-trips. Writing carves the mesh into pieces (points pruned per piece via `clean`); reading combines the pieces with [`merge()`](./merge.md) (no welding), attaching one named "cell" region per piece. See [its own page](./formats/vtm.md) for the directory layout and the region-naming asymmetry between read and write.
+
+**Note on `pvd`, `pvtu` and `pvtp`** (v14.1.0): the ParaView index formats, the on-disk face of [`partition`](./partition.md) and of the [sequence engine](./sequences.md). A `.pvtu` (or `.pvtp`, over `.vtp` pieces) declares the arrays every piece holds and names one `.vtu` piece per *part*, where `.vtm` carves by cell *block*: writing carves a mesh by the integer `partition:part` cell array (what `partition_labels` produces), or takes already-carved pieces (`pvtu.write_pieces`, e.g. `partition` output with its `ghost_layers` halos, which become `vtkGhostType` cells and points and the index's `GhostLevel`); every piece must declare identical arrays, checked before anything is written. Reading merges the pieces without welding, one `piece_<i>` cell region each, or keeps one with `piece=`; ghost cells are kept unless `ghosts="drop"`. A `.pvd` is a time-indexed collection of serial or parallel XML files: `timestep=` selects the step (`time_step=`) and `part=` the piece within it (`piece=`), it is a series reader and writer for `read_sequence`/`write_sequence`, and a step that is one `.pvtu` nests without special cases. `field_data` is not carried, because the `.vtu` writer emits none.
 
 **Note on `vtp`:** VTK XML PolyData holds surface cells only (`vertex`/`line`/`triangle`/`quad`/`polygon`); volume or quadratic cells raise `WriteError`. PolyData has no cell-type array, so 3-/4-noded `polygon` cells read back as `triangle`/`quad`. Triangle strips are not supported.
 
@@ -166,6 +171,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtr` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtkhdf` | The `VTKHDF` group's `meshioplusplus:provenance` attribute (plain UTF-8 text) | Group metadata; ignored by `vtkHDFReader` | Yes |
 | `vtm` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
+| `pvd` / `pvtu` / `pvtp` | XML `<!-- -->` (the index file only; each piece carries its own) | Anywhere in the document | Yes |
 | `vtp` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
@@ -270,6 +276,31 @@ meshioplusplus.vtm.write(filename, mesh,   # any mesh with one or more cell bloc
     compression="zlib",   # "zlib", "lz4", "zstd", or None
     header_type=None,     # "UInt32" or "UInt64"
 )
+```
+
+### PVTU (`.pvtu`) and PVTP (`.pvtp`)
+
+```python
+meshioplusplus.pvtu.write(filename, mesh,   # carved by the integer cell_data array `part_key`, else one piece
+    binary=True,
+    compression="zlib",   # "zlib", "lz4", "zstd", or None
+    header_type=None,     # "UInt32" or "UInt64"
+    part_key="partition:part",
+)
+meshioplusplus.pvtu.write_pieces(filename, pieces)  # e.g. partition(mesh, n, ghost_layers=1); every piece must declare identical arrays
+
+meshioplusplus.pvtu.read(filename, piece=None, ghosts="keep")  # piece=k keeps one; ghosts="drop" removes vtkGhostType cells
+```
+
+`meshioplusplus.pvtp` takes the same arguments over `.vtp` pieces.
+
+### PVD (`.pvd`)
+
+```python
+meshioplusplus.pvd.write(filename, mesh, binary=True, compression="zlib")  # a one-step collection
+meshioplusplus.write_sequence("run.pvd", steps)                            # many steps, streamed
+
+meshioplusplus.read(filename, time_step=-1, piece=None)  # a step (timestep=), and/or one part (part=) of it
 ```
 
 ### VTKHDF (`.vtkhdf`)

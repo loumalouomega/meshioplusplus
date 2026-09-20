@@ -68,6 +68,26 @@ std::string sniff_format(const std::string& rPath) {
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {
+        // The parallel indices and the collection come first, and match the
+        // quoted `type=` value: `PUnstructuredGrid` contains `UnstructuredGrid`
+        // and `PPolyData` contains `PolyData`, so the loose substring checks
+        // below would call an index a piece; and a bare `Collection` would also
+        // match `vtkPartitionedDataSetCollection`. A parallel image, structured
+        // or rectilinear index is refused outright rather than mistaken for its
+        // serial twin. (v14.1.0; mirrors `_sniff.py`.)
+        static const struct {
+            const char* mValue;
+            const char* mFormat;
+        } kIndexTypes[] = {
+            {"Collection", "pvd"}, {"PUnstructuredGrid", "pvtu"}, {"PPolyData", "pvtp"},
+            {"PImageData", ""},    {"PStructuredGrid", ""},       {"PRectilinearGrid", ""},
+        };
+        for (const char quote : {'"', '\''})
+            for (const auto& index_type : kIndexTypes) {
+                const std::string needle = std::string("type=") + quote + index_type.mValue + quote;
+                if (sniff_contains(head, needle.c_str()))
+                    return index_type.mFormat;
+            }
         if (sniff_contains(head, "UnstructuredGrid"))
             return "vtu";
         if (sniff_contains(head, "PolyData"))

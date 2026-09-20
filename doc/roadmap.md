@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v14.0.0** — 47 core formats plus four Python-only physics-ML ones, thirty-eight mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 14).
+Status at time of writing: **v14.1.0** — 50 core formats plus four Python-only physics-ML ones, thirty-eight mesh operations + five data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 14).
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -32,17 +32,14 @@ Link legend: unmarked links were opened or returned by a search while this secti
 
 ### A. VTK/ParaView, point clouds, open solvers, web
 
-### 1.1 `.pvd` and `.pvtu` / `.pvtp` — **S–M**
+### 1.1 The ParaView index formats: what `.pvd` / `.pvtu` / `.pvtp` still lack — **S**
 
-The on-disk ParaView face of the sequence engine (a `.pvd` is a time-indexed collection) and of `partition` (a `.pvtu` is one piece per part plus an index). Shares the index-plus-pieces machinery the shipped [`.vtm` writer](./formats/vtm.md) already has (v11.6.0), and the merge-or-select-pieces switch (`ReadOptions::mPiece`, `--piece`) that VTKHDF introduced in v14.0.0.
+Shipped in v14.1.0: [`.pvd`](./formats/pvd.md), [`.pvtu`](./formats/pvtu.md) and [`.pvtp`](./formats/pvtp.md) in both engines, with `vtkGhostType` cells and points, `GhostLevel`, the declaration check, `piece=` / `time_step=` selection and a `.pvd` that nests over `.pvtu`; `partition` → `.pvtu` → read-merge returns the original mesh up to point ordering, and VTK's own parallel readers and writers agree with both engines. Three edges remain, each deliberate.
 
-- **`.pvd`.** `<VTKFile type="Collection">` with one `<DataSet timestep= part= group= file=>` per entry; entries point at serial or parallel XML files, never legacy `.vtk`. A ParaView format, documented on the ParaView wiki rather than in VTK. Write: one piece file per step, relative paths, zero-padded names. Read: resolve paths relative to the `.pvd`, tolerate non-uniform time values and `part`-indexed entries, expose a sequence.
-- **`.pvtu` / `.pvtp`.** `PUnstructuredGrid` / `PPolyData` index holding the *declarations* (`PPoints`, `PPointData`, `PCellData`: names, types, component counts) and one `<Piece Source=>` per part. Every piece must declare identical arrays; the writer validates that before emitting anything.
-- **Ghosts.** `GhostLevel` on the index and the `vtkGhostType` `UInt8` arrays (cells: `DUPLICATECELL`=1, `REFINEDCELL`=8, `HIDDENCELL`=32; points: `DUPLICATEPOINT`=1, `HIDDENPOINT`=32): written when `partition` produced halo layers, dropped or kept by flag on read and merge.
-- **Composition.** `.pvd` → `.pvtu` → `.vtu` is the normal layout for a partitioned transient run; both levels must nest without special cases. A `TimeValue` field-data array is the per-file alternative for time.
-- **Pitfalls.** Piece paths with spaces or absolute paths from other machines; pieces with zero cells; `header_type`/`byte_order` differing between index and pieces.
-- **Done when.** `partition` → `.pvtu` → read-merge returns the original mesh up to point ordering, and a `.pvd` of `.pvtu` plays in ParaView.
-- **References.** [VTK XML formats, serial and parallel](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) · [Time in field data](https://docs.vtk.org/en/latest/design_documents/IOXMLTimeInFieldData.html) · [`vtkXMLPUnstructuredGridWriter`](https://vtk.org/doc/nightly/html/classvtkXMLPUnstructuredGridWriter.html) · [ParaView wiki: data formats, `.pvd`](https://www.paraview.org/Wiki/ParaView/Data_formats) † · [Classic file-formats PDF](https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf)
+- **A `ghosts` switch on the generic read surfaces.** `pvtu.read(ghosts="drop")` and the C++ `PvtuReadOptions::mGhosts` remove halo cells, but `meshioplusplus.read`, both CLIs, the MCP tools and the C / Fortran / Julia / R / WASM bindings cannot ask for it and always keep them. It needs a `ReadOptions` member: a Tier A layout change that also reaches `PipelineInput`, `Pipeline`, `SequenceInput` and `SequencePipeline`, hence an ABI 15, plus a slot in the C option struct's reserved tail — which is why it was not folded into a minor release. **Probe:** `convert --drop-ghosts` on a ghosted `.pvtu`.
+- **A `TimeValue` field-data array as a file's time.** The per-file alternative to `timestep=` ([Time in field data](https://docs.vtk.org/en/latest/design_documents/IOXMLTimeInFieldData.html)). The `.vtu` writer emits no `<FieldData>` and the C++ `.vtu` reader does not read it (the Python reference reader does), so a piece cannot carry one; closing it is a `.vtu` change, not an index change. **Probe:** a `.vtu` with a `TimeValue` array reads it into `field_data` in the C++ core, and a `.pvd` entry with no `timestep=` takes its step time from it.
+- **A `.pvd` of `.pvtu` opened in ParaView.** Vanilla VTK has no collection reader (`vtkPVDReader` ships with ParaView only), so the automated tests check the index's structure and that every file it names opens in VTK's own readers, never ParaView itself. Open one and record the ParaView version used, the convention §1.27 sets for vendor routes.
+- **References.** [VTK XML formats, serial and parallel](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) · [ParaView wiki: data formats, `.pvd`](https://www.paraview.org/Wiki/ParaView/Data_formats) † · [`vtkXMLPUnstructuredGridWriter`](https://vtk.org/doc/nightly/html/classvtkXMLPUnstructuredGridWriter.html)
 
 ### 1.2 Point-cloud formats `.xyz` and `.pcd` — **S**
 
@@ -345,7 +342,7 @@ For these, the deliverable is a documented, tested route — a script that runs 
 
 ### 1.29 Suggested order
 
-1. **Cheap, high reuse:** §1.1 `.pvd`/`.pvtu` → §1.6 half-gaps (fill between larger items).
+1. **Cheap, high reuse:** §1.1 the ParaView index edges → §1.6 half-gaps (fill between larger items).
 2. **First FEM wave (build tokenizer + permutation registry):** §1.7 UNV → §1.9 `.mail` → §1.10 OptiStruct → §1.3 LS-DYNA `.k` → §1.4 `.frd`.
 3. **HDF5 and point/web outputs:** §1.8 Nastran `.h5` → §1.2 point clouds → §1.5 glTF (gated on `compute_normals`).
 4. **Second FEM wave:** §1.11 COMSOL → §1.13 Elmer → §1.12 FEBio → §1.22 ANSYS `.cdb`.

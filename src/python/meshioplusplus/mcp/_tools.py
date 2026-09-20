@@ -498,10 +498,20 @@ def _variant_kwargs(out_fmt, mode, compression):
     if compression is None:
         return kwargs
     if compression in _BLOCK_CODECS:
-        if out_fmt not in ("vti", "vts", "vtr", "vtm", "vtu", "vtp"):
+        if out_fmt not in (
+            "vti",
+            "vts",
+            "vtr",
+            "vtm",
+            "vtu",
+            "vtp",
+            "pvd",
+            "pvtu",
+            "pvtp",
+        ):
             raise ValueError(
                 f"meshio++: mcp: compression '{compression}' selects the VTK XML "
-                "block codec and only vti/vts/vtr/vtm/vtu/vtp have one"
+                "block codec and only vti/vts/vtr/vtm/vtu/vtp/pvd/pvtu/pvtp have one"
             )
         kwargs.update({"binary": True, "compression": compression})
     elif compression == "gzip":
@@ -1898,7 +1908,21 @@ def tool_partition(
     output_dir=None,
     name_template="{stem}_part{part}.vtu",
 ):
-    """Partition into exactly nparts balanced pieces; writes one file per part."""
+    """Partition into exactly nparts balanced pieces; writes one file per part,
+    or one ``.pvtu``/``.pvtp`` index over every part (a ``name_template`` with
+    that extension and no ``{part}``), which keeps ``ghost_layers`` halos as
+    ``vtkGhostType``."""
+    index_kind = None
+    if "{part}" not in name_template:
+        index_kind = {".pvtu": "pvtu", ".pvtp": "pvtp"}.get(
+            os.path.splitext(name_template)[1].lower()
+        )
+        if index_kind is None:
+            raise ValueError(
+                "meshio++: mcp: partition: name_template must contain '{part}' "
+                "(every part would otherwise overwrite the last) or be a "
+                ".pvtu/.pvtp index"
+            )
     resolved_in = _resolve(input_path, must_exist=True)
     mesh = read(resolved_in, file_format=input_format)
     pieces = partition(
@@ -1914,6 +1938,25 @@ def tool_partition(
     )
     stem = os.path.splitext(os.path.basename(resolved_in))[0]
     out_dir = output_dir if output_dir is not None else os.path.dirname(resolved_in)
+    if index_kind is not None:
+        from .. import _pvtk_index, pvtp, pvtu
+
+        index = _resolve(
+            os.path.join(out_dir, name_template.format(stem=stem)), for_write=True
+        )
+        (pvtu if index_kind == "pvtu" else pvtp).write_pieces(index, pieces)
+        _dir, layout = _pvtk_index.piece_layout(
+            index, len(pieces), _pvtk_index.KINDS[index_kind][1]
+        )
+        return _json_safe(
+            {
+                "nparts": int(nparts),
+                "method": method,
+                "index": index,
+                "parts": [path for path, _rel in layout],
+                "summaries": [_mesh_summary(piece) for piece in pieces],
+            }
+        )
     written = []
     summaries = []
     for i, piece in enumerate(pieces):

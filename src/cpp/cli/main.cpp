@@ -51,6 +51,8 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/formats/pvtp.hpp"
+#include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/write_options.hpp"
 
@@ -480,8 +482,9 @@ void print_usage(std::ostream& os) {
           "  optimize-volume         ODT-remesh a tetrahedral mesh: relocate vertices and\n"
           "                            flip connectivity (2-3/3-2) to raise element quality\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
-          "                            OUT pattern needs {part}; --labels-only writes one\n"
-          "                            file with the partition:part cell_data instead\n"
+          "                            OUT pattern needs {part}, or is a .pvtu/.pvtp index\n"
+          "                            over every part; --labels-only writes one file\n"
+          "                            with the partition:part cell_data instead\n"
           "  smooth                  Relax node positions (Laplacian / Taubin / ODT)\n"
           "  interpolate             Sample data arrays from a source mesh onto a target\n"
           "                            (nearest / barycentric; --arrays a,b names them)\n"
@@ -2359,6 +2362,21 @@ std::string partition_replace_part(const std::string& rPattern, int part) {
     return out;
 }
 
+/// `"pvtu"` / `"pvtp"` when the output (an explicit `--output-format`, else the
+/// path's extension) is a parallel index, otherwise empty.
+std::string partition_index_kind(const std::string& rPath, const std::string& rFormat) {
+    if (!rFormat.empty())
+        return rFormat == "pvtu" || rFormat == "pvtp" ? rFormat : std::string();
+    std::string ext = std::filesystem::path(rPath).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext == ".pvtu")
+        return "pvtu";
+    if (ext == ".pvtp")
+        return "pvtp";
+    return {};
+}
+
 int cmd_partition(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -2376,8 +2394,8 @@ int cmd_partition(const std::vector<std::string>& rArgs) {
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error(
-            "partition requires exactly INFILE and OUTPATTERN (with {part}, or a "
-            "plain path with --labels-only)");
+            "partition requires exactly INFILE and OUTPATTERN (with {part}, a .pvtu/.pvtp "
+            "index, or a plain path with --labels-only)");
     if (opt_value(p, "nparts").empty())
         throw std::runtime_error("partition: --nparts N is required");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -2401,13 +2419,32 @@ int cmd_partition(const std::vector<std::string>& rArgs) {
         return 0;
     }
 
-    if (p.positionals[1].find("{part}") == std::string::npos)
+    const bool has_token = p.positionals[1].find("{part}") != std::string::npos;
+    const std::string index_kind = partition_index_kind(p.positionals[1], out_fmt);
+    if (!has_token && index_kind.empty())
         throw std::runtime_error(
-            "partition: output pattern must contain '{part}' (e.g. out_{part}.vtu), or "
-            "pass --labels-only");
+            "partition: output pattern must contain '{part}' (e.g. out_{part}.vtu), or be a "
+            ".pvtu/.pvtp index (one file per part plus an index), or pass --labels-only");
     auto result = meshioplusplus::partition(mesh, options);
     if (!has_flag(p, "quiet"))
         std::cout << "partitioned into " << result.mPieces.size() << " piece(s)\n";
+    if (!has_token) {
+        // One index over every piece, so the halo layers survive as vtkGhostType.
+        std::vector<const Mesh*> ptrs;
+        for (const auto& piece : result.mPieces)
+            ptrs.push_back(&piece.mMesh);
+        const auto codec =
+            meshioplusplus::detail::vtk_codec_available(meshioplusplus::detail::VtkCodec::Zlib)
+                ? meshioplusplus::detail::VtkCodec::Zlib
+                : meshioplusplus::detail::VtkCodec::None;
+        if (index_kind == "pvtu")
+            meshioplusplus::write_pvtu_pieces_codec(p.positionals[1], ptrs, /*binary=*/true, codec);
+        else
+            meshioplusplus::write_pvtp_pieces_codec(p.positionals[1], ptrs, /*binary=*/true, codec);
+        if (!has_flag(p, "quiet"))
+            std::cout << "  " << ptrs.size() << " pieces -> " << p.positionals[1] << "\n";
+        return 0;
+    }
     for (auto& piece : result.mPieces) {
         std::string path = partition_replace_part(p.positionals[1], piece.mPartId);
         std::int64_t ncells = 0;

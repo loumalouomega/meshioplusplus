@@ -22,6 +22,24 @@ def _sniff_format_py(path) -> str:
     stripped = head.lstrip()
 
     if b"VTKFile" in head:
+        # The parallel indices and the collection come first, and match the
+        # quoted `type=` value: `PUnstructuredGrid` contains `UnstructuredGrid`
+        # and `PPolyData` contains `PolyData`, so the loose substring checks
+        # below would call an index a piece; and a bare `Collection` would also
+        # match `vtkPartitionedDataSetCollection`. A parallel image, structured
+        # or rectilinear index is refused outright rather than mistaken for its
+        # serial twin.
+        for quote in (b'"', b"'"):
+            for value, name in (
+                (b"Collection", "pvd"),
+                (b"PUnstructuredGrid", "pvtu"),
+                (b"PPolyData", "pvtp"),
+                (b"PImageData", ""),
+                (b"PStructuredGrid", ""),
+                (b"PRectilinearGrid", ""),
+            ):
+                if b"type=" + quote + value + quote in head:
+                    return name
         if b"UnstructuredGrid" in head:
             return "vtu"
         if b"PolyData" in head:
