@@ -911,6 +911,11 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         field_data[key] = arr
 
     def numpy_to_xml_array(parent, name, data, field=False):
+        if name == "vtkGhostType" and data.dtype != np.uint8:
+            # VTK's reserved ghost-flag name: a reader only recognises it as the
+            # ghost array when it is an unsigned char array (ParaView ignores an
+            # Int64 one), so it is always UInt8 on disk, as the C++ writer does.
+            data = data.astype(np.uint8)
         vtu_type = numpy_to_vtu_type[data.dtype]
         fmt = "{:.11e}" if vtu_type.startswith("Float") else "{:d}"
         da = ET.SubElement(parent, "DataArray", type=vtu_type, Name=name)

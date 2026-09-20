@@ -95,9 +95,11 @@ struct pvtu_decls {
     std::map<std::string, pvtu_decl> mCellData;
 };
 
-pvtu_decl pvtu_decl_of(const NDArray& rArray) {
+pvtu_decl pvtu_decl_of(const std::string& rName, const NDArray& rArray) {
     pvtu_decl d;
-    d.mType = detail::vtu_type_str(rArray.Dtype());
+    // What the piece files write: `vtkGhostType` is always UInt8 on disk (see
+    // `detail::vtu_disk_array`), whatever dtype the mesh backend holds it as.
+    d.mType = detail::vtu_type_str(detail::vtu_disk_dtype(rName, rArray.Dtype()));
     d.mComp = rArray.Shape().size() == 2 ? rArray.Shape()[1] : 1;
     return d;
 }
@@ -120,12 +122,12 @@ pvtu_decls pvtu_declarations_of(const Mesh& rMesh) {
     d.mPoints.mType = detail::vtu_type_str(rMesh.Points().Dtype());
     d.mPoints.mComp = 3;
     for (const std::string& name : rMesh.PointDataNames())
-        d.mPointData[name] = pvtu_decl_of(rMesh.PointData(name));
+        d.mPointData[name] = pvtu_decl_of(name, rMesh.PointData(name));
     for (const std::string& name : rMesh.CellDataNames()) {
         bool have = false;
         pvtu_decl decl;
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b) {
-            const pvtu_decl cur = pvtu_decl_of(rMesh.CellData(name, b));
+            const pvtu_decl cur = pvtu_decl_of(name, rMesh.CellData(name, b));
             if (!have) {
                 decl = cur;
                 have = true;

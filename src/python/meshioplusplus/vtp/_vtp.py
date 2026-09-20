@@ -265,6 +265,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         )
 
     def data_array_str(name, data, ncomp, ntuples=None):
+        if name == "vtkGhostType" and data.dtype != np.uint8:
+            # VTK's reserved ghost-flag name: always UInt8 on disk (see the VTU writer).
+            data = data.astype(np.uint8)
         vtu_type = numpy_to_vtu_type[data.dtype.newbyteorder("=")]
         out = [f'<DataArray type="{vtu_type}" Name="{name}"']
         if ntuples is not None:

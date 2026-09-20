@@ -105,7 +105,7 @@ whole = meshioplusplus.clean(merged, weld=True)   # the original mesh, up to poi
 - `GhostLevel="N"` on the index, the deepest layer present.
 - `partition:ghost` itself is written too, as an ordinary `Int64` cell array: `vtkGhostType` collapses layer 2 onto layer 1, so keeping both makes meshio++ → meshio++ exact, and ParaView simply ignores the extra array.
 
-An array you already named `vtkGhostType` is passed through unchanged (all of VTK's bits survive, `REFINEDCELL` = 8 and `HIDDENCELL` = 32 included), and nothing is fabricated when there is neither. The caller's meshes are never modified.
+An array you already named `vtkGhostType` is passed through with all of VTK's bits (`REFINEDCELL` = 8 and `HIDDENCELL` = 32 included) and nothing is fabricated when there is neither. It is always written as `UInt8` on disk, whatever dtype the mesh holds it in (the NATIVE and KRATOS mesh backends widen integers to `Int64`): ParaView ignores a `vtkGhostType` array of any other type. The caller's meshes are never modified.
 
 On read the ghost cells are **kept by default** — a reader must not silently discard data, and keeping is what makes read → write round-trip. `ghosts="drop"` (on `meshioplusplus.read` and the format's own `read` alike) removes every cell with any `vtkGhostType` bit set, and the points only those cells used, from each piece *before* merging, and then removes the ghost arrays:
 

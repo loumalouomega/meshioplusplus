@@ -912,3 +912,27 @@ def test_a_single_write_carries_its_field_data_through_the_pieces(engine, tmp_pa
     back = engine.read(tmp_path / "w.pvtu")
     assert sorted(back.field_data) == ["TimeValue"]
     assert float(back.field_data["TimeValue"][0]) == 1.5
+
+
+def test_vtkGhostType_is_always_uint8_on_disk_whatever_dtype_it_is_given(
+    engine, tmp_path
+):
+    """ParaView takes vtkGhostType as the ghost array only when it is an unsigned
+    char array (an Int64 one is ignored); the NATIVE and KRATOS backends hold every
+    integer array as Int64, and a caller can hand any integer dtype to either
+    engine, so the writers and the index declaration pin the on-disk type."""
+    piece = _piece(cells=2)
+    piece.cell_data["vtkGhostType"] = [np.array([0, 8], dtype=np.int64)]
+    piece.point_data["vtkGhostType"] = np.array([0, 1, 0], dtype=np.int32)
+    for binary in (False, True):
+        engine.write_pieces(tmp_path / "g.pvtu", [piece], binary=binary)
+        index = (tmp_path / "g.pvtu").read_text()
+        assert index.count('<PDataArray type="UInt8" Name="vtkGhostType"/>') == 2
+        text = (tmp_path / "g" / "g_0000.vtu").read_text()
+        assert text.count('type="UInt8" Name="vtkGhostType"') == 2
+        back = engine.read(tmp_path / "g.pvtu")
+        assert back.cell_data["vtkGhostType"][0].tolist() == [0, 8]  # the bit survives
+        assert back.point_data["vtkGhostType"].tolist() == [0, 1, 0]
+    # ... and the caller's arrays keep their dtype
+    assert piece.cell_data["vtkGhostType"][0].dtype == np.int64
+    assert piece.point_data["vtkGhostType"].dtype == np.int32

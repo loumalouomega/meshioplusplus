@@ -12122,6 +12122,28 @@ MESHIOPLUSPLUS_API NDArray vtu_parse_binary(const std::string& rText, DType dt, 
 MESHIOPLUSPLUS_API std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
 /**
+ * @brief The array to write under @p rName: @p rArray, except that `vtkGhostType` is
+ * always `UInt8` on disk.
+ *
+ * `vtkGhostType` is VTK's reserved ghost-flag name, and a reader only recognises it
+ * as the ghost array when it is an unsigned char array (ParaView ignores an `Int64`
+ * one entirely). The NATIVE and KRATOS mesh backends hold every integer array as
+ * `Int64`, so a ghost array they read or derive would otherwise be written -- and
+ * declared by a `.pvtu` index -- as `Int64`. Any other name, and an array that is
+ * already `UInt8`, is returned as is; otherwise the values are copied into
+ * @p rScratch (each cast to a byte, as a ghost flag is a bit set) and that is returned.
+ *
+ * @param rName the array's name.
+ * @param rArray the array as the mesh holds it.
+ * @param rScratch storage for the converted copy; untouched when none is needed.
+ */
+MESHIOPLUSPLUS_API const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray,
+                                                 NDArray& rScratch);
+
+/// The dtype `vtu_disk_array` writes @p rName as: `UInt8` for `vtkGhostType`, else @p Dt.
+MESHIOPLUSPLUS_API DType vtu_disk_dtype(const std::string& rName, DType Dt);
+
+/**
  * @brief Write one `<FieldData>` array as a complete `<DataArray>` element.
  *
  * A field-data array is one value (or row) per *tuple* of the dataset, so unlike
@@ -47674,6 +47696,26 @@ NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std
     return a;
 }
 
+namespace {
+
+constexpr const char* kVtuGhostName = "vtkGhostType";
+
+}  // namespace
+
+DType vtu_disk_dtype(const std::string& rName, DType Dt) {
+    return rName == kVtuGhostName ? DType::UInt8 : Dt;
+}
+
+const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, NDArray& rScratch) {
+    if (rName != kVtuGhostName || rArray.Dtype() == DType::UInt8)
+        return rArray;
+    rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
+    std::uint8_t* out = rScratch.As<std::uint8_t>();
+    for (std::size_t i = 0; i < rArray.Size(); ++i)
+        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    return rScratch;
+}
+
 void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
                            bool Binary, VtkCodec Codec) {
     const std::vector<std::size_t>& shape = rArray.Shape();
@@ -71732,9 +71774,11 @@ struct pvtu_decls {
     std::map<std::string, pvtu_decl> mCellData;
 };
 
-pvtu_decl pvtu_decl_of(const NDArray& rArray) {
+pvtu_decl pvtu_decl_of(const std::string& rName, const NDArray& rArray) {
     pvtu_decl d;
-    d.mType = detail::vtu_type_str(rArray.Dtype());
+    // What the piece files write: `vtkGhostType` is always UInt8 on disk (see
+    // `detail::vtu_disk_array`), whatever dtype the mesh backend holds it as.
+    d.mType = detail::vtu_type_str(detail::vtu_disk_dtype(rName, rArray.Dtype()));
     d.mComp = rArray.Shape().size() == 2 ? rArray.Shape()[1] : 1;
     return d;
 }
@@ -71757,12 +71801,12 @@ pvtu_decls pvtu_declarations_of(const Mesh& rMesh) {
     d.mPoints.mType = detail::vtu_type_str(rMesh.Points().Dtype());
     d.mPoints.mComp = 3;
     for (const std::string& name : rMesh.PointDataNames())
-        d.mPointData[name] = pvtu_decl_of(rMesh.PointData(name));
+        d.mPointData[name] = pvtu_decl_of(name, rMesh.PointData(name));
     for (const std::string& name : rMesh.CellDataNames()) {
         bool have = false;
         pvtu_decl decl;
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b) {
-            const pvtu_decl cur = pvtu_decl_of(rMesh.CellData(name, b));
+            const pvtu_decl cur = pvtu_decl_of(name, rMesh.CellData(name, b));
             if (!have) {
                 decl = cur;
                 have = true;
@@ -79910,7 +79954,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -79929,15 +79974,17 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t ndblocks = rMesh.CellDataNumBlocks(name);
             if (ndblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
@@ -79946,7 +79993,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
                 }
             }
             os << "</DataArray>\n";
@@ -81256,7 +81304,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -81274,20 +81323,23 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
                 emit_bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
             }
             os << "</DataArray>\n";
         }

@@ -33,6 +33,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/pvtp.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
@@ -368,28 +369,33 @@ TEST(Pvtu, PieceSelectionResolvesLikeEveryOtherPartitionedFormat) {
 // --- declarations -------------------------------------------------------------
 
 TEST(Pvtu, AMismatchedDeclarationRefusesBeforeWritingAnything) {
+    // Every needle must appear. The type case is a *kind* mismatch (integer vs
+    // float), not Float32 vs Float64: the NATIVE and KRATOS mesh backends hold
+    // floats as Float64 and integers as Int64, so a width-only difference is not
+    // one there -- and the bad type is spelled "Int32" on MESHIO, "Int64" on those.
     struct Case {
         Mesh mBad;
-        const char* mNeedle;
+        std::vector<std::string> mNeedles;
     };
     std::vector<Case> cases;
-    cases.push_back({pvtu_piece(DType::Float32),
-                     "piece 1 declares point_data 'u' as Float32 with 1 component, but piece 0 "
-                     "declares it as Float64 with 1 component"});
+    cases.push_back({pvtu_piece(DType::Int32),
+                     {"piece 1 declares point_data 'u' as Int",
+                      " with 1 component, but piece 0 declares it as Float64 with 1 component"}});
     cases.push_back({pvtu_piece(DType::Float64, "u", 3),
-                     "point_data 'u' as Float64 with 3 components, but piece 0 declares it as "
-                     "Float64 with 1 component"});
+                     {"point_data 'u' as Float64 with 3 components, but piece 0 declares it as "
+                      "Float64 with 1 component"}});
     cases.push_back({pvtu_piece(DType::Float64, "v"),
-                     "piece 1 is missing point_data 'u', which piece 0 declares"});
+                     {"piece 1 is missing point_data 'u', which piece 0 declares"}});
     for (const Case& c : cases) {
         const std::string path = mt::temp_path(".pvtu");
         const Mesh good = pvtu_piece();
         try {
             write_pvtu_pieces_codec(path, {&good, &c.mBad}, false, kNone);
-            FAIL() << "expected a WriteError for " << c.mNeedle;
+            FAIL() << "expected a WriteError for " << c.mNeedles.front();
         } catch (const WriteError& e) {
             const std::string msg = e.what();
-            EXPECT_NE(msg.find(c.mNeedle), std::string::npos) << msg;
+            for (const std::string& needle : c.mNeedles)
+                EXPECT_NE(msg.find(needle), std::string::npos) << needle << " in " << msg;
             EXPECT_NE(msg.find("every piece of a parallel index must declare identical arrays"),
                       std::string::npos)
                 << msg;
@@ -462,18 +468,22 @@ TEST(Pvtu, GhostLayersBecomeVtkGhostTypeAndGhostLevel) {
         (idx.parent_path() / idx.stem() / (idx.stem().string() + "_0000.vtu")).string());
     ASSERT_TRUE(piece0.HasCellData("vtkGhostType"));
     ASSERT_TRUE(piece0.HasPointData("vtkGhostType"));
-    EXPECT_EQ(piece0.CellData("vtkGhostType", 0).Dtype(), DType::UInt8);
-    EXPECT_EQ(piece0.PointData("vtkGhostType").Dtype(), DType::UInt8);
+    // UInt8 on disk, whatever dtype the mesh backend holds it as (NATIVE and KRATOS
+    // hold every integer array as Int64, which ParaView would not take as a ghost array).
+    const std::string piece_text =
+        pvtu_slurp((idx.parent_path() / idx.stem() / (idx.stem().string() + "_0000.vtu")).string());
+    EXPECT_EQ(pvtu_count(piece_text, "type=\"UInt8\" Name=\"vtkGhostType\""), 2u);
     EXPECT_TRUE(piece0.HasCellData("partition:ghost"));  // the layer number survives
 
     // cell flags are exactly (layer > 0)
     const NDArray& layers = result.mPieces[0].mMesh.CellData("partition:ghost", 0);
-    const NDArray& flags = piece0.CellData("vtkGhostType", 0);
-    ASSERT_EQ(layers.Size(), flags.Size());
+    const std::vector<std::int64_t> flags =
+        meshioplusplus::detail::vtu_to_int64(piece0.CellData("vtkGhostType", 0));
+    ASSERT_EQ(layers.Size(), flags.size());
     std::size_t ghost_cells = 0;
-    for (std::size_t i = 0; i < flags.Size(); ++i) {
+    for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool halo = layers.As<std::int64_t>()[i] > 0;
-        EXPECT_EQ(flags.As<std::uint8_t>()[i], halo ? 1 : 0);
+        EXPECT_EQ(flags[i], halo ? 1 : 0);
         ghost_cells += halo ? 1 : 0;
     }
     EXPECT_GT(ghost_cells, 0u);
@@ -485,9 +495,11 @@ TEST(Pvtu, GhostLayersBecomeVtkGhostTypeAndGhostLevel) {
         if (layers.As<std::int64_t>()[c] == 0)
             for (std::size_t v = 0; v < 3; ++v)
                 owned[static_cast<std::size_t>(cb.Conn().As<std::int64_t>()[3 * c + v])] = true;
-    const NDArray& pflags = piece0.PointData("vtkGhostType");
+    const std::vector<std::int64_t> pflags =
+        meshioplusplus::detail::vtu_to_int64(piece0.PointData("vtkGhostType"));
+    ASSERT_EQ(pflags.size(), owned.size());
     for (std::size_t i = 0; i < owned.size(); ++i)
-        EXPECT_EQ(pflags.As<std::uint8_t>()[i], owned[i] ? 0 : 1) << "point " << i;
+        EXPECT_EQ(pflags[i], owned[i] ? 0 : 1) << "point " << i;
     pvtu_cleanup(path);
 }
 
@@ -760,6 +772,43 @@ TEST(Pvtu, TheGhostOptionIsAReadOptionsMemberSoTheRegistryHonoursIt) {
     pvtu_cleanup(path);
 }
 
+TEST(Pvtu, VtkGhostTypeIsAlwaysUInt8OnDiskWhateverTheMeshHoldsIt) {
+    // ParaView takes vtkGhostType as the ghost array only when it is an unsigned char
+    // array (an Int64 one is ignored). The NATIVE and KRATOS mesh backends hold every
+    // integer array as Int64, and a caller can hand any integer dtype to MESHIO, so
+    // the writers -- and the index's declaration -- pin the on-disk type.
+    Mesh piece = pvtu_piece();
+    NDArray flags(DType::Int64, {1});
+    flags.As<std::int64_t>()[0] = 8;  // REFINEDCELL: a bit set, not just 0/1
+    std::vector<NDArray> blocks;
+    blocks.push_back(std::move(flags));
+    piece.AddCellData("vtkGhostType", std::move(blocks));
+    NDArray pflags(DType::Int64, {3});
+    pflags.As<std::int64_t>()[1] = 1;
+    piece.AddPointData("vtkGhostType", std::move(pflags));
+
+    const std::string path = mt::temp_path(".pvtu");
+    for (const bool binary : {false, true}) {
+        write_pvtu_pieces_codec(path, {&piece}, binary, kNone);
+        EXPECT_EQ(
+            pvtu_count(pvtu_slurp(path), "<PDataArray type=\"UInt8\" Name=\"vtkGhostType\"/>"), 2u);
+        const fs::path idx(path);
+        const std::string piece_text = pvtu_slurp(
+            (idx.parent_path() / idx.stem() / (idx.stem().string() + "_0000.vtu")).string());
+        EXPECT_EQ(pvtu_count(piece_text, "type=\"UInt8\" Name=\"vtkGhostType\""), 2u);
+        EXPECT_EQ(pvtu_count(piece_text, "Name=\"vtkGhostType\" format=\"" +
+                                             std::string(binary ? "binary" : "ascii") + "\""),
+                  2u);
+        // the value survives the narrowing, and reads back
+        const Mesh back = read_pvtu(path);
+        EXPECT_EQ(meshioplusplus::detail::vtu_to_int64(back.CellData("vtkGhostType", 0)),
+                  (std::vector<std::int64_t>{8}));
+        EXPECT_EQ(meshioplusplus::detail::vtu_to_int64(back.PointData("vtkGhostType")),
+                  (std::vector<std::int64_t>{0, 1, 0}));
+    }
+    pvtu_cleanup(path);
+}
+
 // --- polyhedra ------------------------------------------------------------------
 
 namespace {
@@ -851,7 +900,7 @@ TEST(Pvtp, RoundTripsOverVtpPieces) {
 TEST(Pvtp, SharesTheDeclarationCheck) {
     Mesh good = pvtu_quads();
     Mesh bad = pvtu_quads();
-    bad.AddPointData("u", NDArray(DType::Float32, {bad.NumPoints()}));
+    bad.AddPointData("u", NDArray(DType::Int32, {bad.NumPoints()}));  // integer vs float
     good.AddPointData("u", NDArray(DType::Float64, {good.NumPoints()}));
     const std::string path = mt::temp_path(".pvtp");
     try {

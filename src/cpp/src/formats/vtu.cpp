@@ -230,7 +230,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -248,20 +249,23 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
                 emit_bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
             }
             os << "</DataArray>\n";
         }

@@ -127,6 +127,28 @@ MESHIOPLUSPLUS_API NDArray vtu_parse_binary(const std::string& rText, DType dt, 
 MESHIOPLUSPLUS_API std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
 /**
+ * @brief The array to write under @p rName: @p rArray, except that `vtkGhostType` is
+ * always `UInt8` on disk.
+ *
+ * `vtkGhostType` is VTK's reserved ghost-flag name, and a reader only recognises it
+ * as the ghost array when it is an unsigned char array (ParaView ignores an `Int64`
+ * one entirely). The NATIVE and KRATOS mesh backends hold every integer array as
+ * `Int64`, so a ghost array they read or derive would otherwise be written -- and
+ * declared by a `.pvtu` index -- as `Int64`. Any other name, and an array that is
+ * already `UInt8`, is returned as is; otherwise the values are copied into
+ * @p rScratch (each cast to a byte, as a ghost flag is a bit set) and that is returned.
+ *
+ * @param rName the array's name.
+ * @param rArray the array as the mesh holds it.
+ * @param rScratch storage for the converted copy; untouched when none is needed.
+ */
+MESHIOPLUSPLUS_API const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray,
+                                                 NDArray& rScratch);
+
+/// The dtype `vtu_disk_array` writes @p rName as: `UInt8` for `vtkGhostType`, else @p Dt.
+MESHIOPLUSPLUS_API DType vtu_disk_dtype(const std::string& rName, DType Dt);
+
+/**
  * @brief Write one `<FieldData>` array as a complete `<DataArray>` element.
  *
  * A field-data array is one value (or row) per *tuple* of the dataset, so unlike

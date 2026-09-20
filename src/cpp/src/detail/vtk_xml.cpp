@@ -189,6 +189,26 @@ NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std
     return a;
 }
 
+namespace {
+
+constexpr const char* kVtuGhostName = "vtkGhostType";
+
+}  // namespace
+
+DType vtu_disk_dtype(const std::string& rName, DType Dt) {
+    return rName == kVtuGhostName ? DType::UInt8 : Dt;
+}
+
+const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, NDArray& rScratch) {
+    if (rName != kVtuGhostName || rArray.Dtype() == DType::UInt8)
+        return rArray;
+    rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
+    std::uint8_t* out = rScratch.As<std::uint8_t>();
+    for (std::size_t i = 0; i < rArray.Size(); ++i)
+        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    return rScratch;
+}
+
 void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
                            bool Binary, VtkCodec Codec) {
     const std::vector<std::size_t>& shape = rArray.Shape();

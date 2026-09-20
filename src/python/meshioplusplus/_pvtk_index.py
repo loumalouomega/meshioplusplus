@@ -150,6 +150,8 @@ def _vtu_type(name, arr):
     from .vtu._vtu import numpy_to_vtu_type
 
     dt = np.asarray(arr).dtype.newbyteorder("=")
+    if name == GHOST_NAME:
+        dt = np.dtype(np.uint8)  # the piece writers always store it as UInt8
     try:
         return numpy_to_vtu_type[dt]
     except KeyError:
