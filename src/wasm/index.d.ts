@@ -1007,7 +1007,11 @@ export interface MeshioPlusPlusModule {
    * itself. `pointsOnly`/`arrays` reach the read only for the formats whose
    * info-bearing reader takes selective-read options (med/mdpa/gmsh/exodus).
    *
-   * @throws {Error} on an out-of-range `timeStep`.
+   * `piece` keeps one partition or composite block of a partitioned file
+   * (VTKHDF): `0` is the first, negative counts from the end. `null` (the
+   * default) merges every piece into one mesh with one `cell` region per piece.
+   *
+   * @throws {Error} on an out-of-range `timeStep` or `piece`.
    */
   readMeshSelective(
     path: string,
@@ -1017,6 +1021,7 @@ export interface MeshioPlusPlusModule {
       arrays?: string[] | null;
       timeStep?: number;
       lenient?: boolean;
+      piece?: number | null;
       info?: boolean;
     }
   ): Mesh;

@@ -63,6 +63,25 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     return out;
 }
 
+namespace {
+
+/// Rows `rIdx` of `rA` (any rank >= 1), as an owning array: what a polyhedron bucket needs,
+/// because its members are not contiguous in the file.
+NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& rIdx) {
+    const std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
+    const std::size_t rowbytes = nc * dtype_size(rA.Dtype());
+    std::vector<std::size_t> shape = rA.Shape();
+    if (shape.empty())
+        shape = {0};
+    shape[0] = rIdx.size();
+    NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
+    for (std::size_t i = 0; i < rIdx.size(); ++i)
+        std::memcpy(out.Data() + i * rowbytes, rA.Data() + rIdx[i] * rowbytes, rowbytes);
+    return out;
+}
+
+}  // namespace
+
 std::vector<CellBlockInfo> summarize_cells(const std::vector<std::int64_t>& rOffsets,
                                            const std::vector<std::int64_t>& rTypes) {
     const auto& vmap = vtk_to_meshio_type();
@@ -203,7 +222,6 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             }
             std::vector<std::size_t> order;
             std::map<std::size_t, std::vector<std::size_t>> groups;
-            std::size_t at_row = start;
             for (std::size_t i = 0; i < cells.size(); ++i) {
                 if (groups.find(node_counts[i]) == groups.end())
                     order.push_back(node_counts[i]);
@@ -211,13 +229,17 @@ void reconstruct_cells(const std::int64_t* pConn, const std::vector<std::int64_t
             }
             for (std::size_t n : order) {
                 std::vector<std::vector<std::vector<std::int64_t>>> group;
-                for (std::size_t i : groups[n])
+                // The bucket's members sit at these FILE rows, which are not contiguous
+                // when the run mixes node counts: slicing [at_row, at_row + m) would hand
+                // each block another block's cell_data.
+                std::vector<std::size_t> file_rows;
+                for (std::size_t i : groups[n]) {
                     group.push_back(std::move(cells[i]));
-                const std::size_t m = group.size();
+                    file_rows.push_back(start + i);
+                }
                 rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(n), std::move(group));
                 for (const auto& kv : rCellDataRaw)
-                    rMesh.AppendCellData(kv.first, slice_rows(kv.second, at_row, at_row + m));
-                at_row += m;
+                    rMesh.AppendCellData(kv.first, vtkcells_gather_rows(kv.second, file_rows));
             }
             start = end;
             continue;

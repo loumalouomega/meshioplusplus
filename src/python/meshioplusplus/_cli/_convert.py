@@ -86,6 +86,20 @@ def add_args(parser):
             "needs the --time-step=-1 form."
         ),
     )
+    parser.add_argument(
+        "--piece",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "keep only this piece of a partitioned file (VTKHDF partitions or "
+            "composite blocks): 0 is the first, negative counts from the end "
+            "(-1 = last). By default every piece is merged into one mesh with "
+            "one cell region per piece. Out of range is an error naming the "
+            "piece count; a format with no pieces refuses rather than merging. "
+            "A negative value needs the --piece=-1 form."
+        ),
+    )
     seq = parser.add_argument_group(
         "transient sequences (multi-file datasets)",
         "Treat a set of files, or the steps inside one file, as one ordered "
@@ -342,6 +356,7 @@ def convert(args):
         points_only=args.points_only,
         arrays=arrays,
         time_step=args.time_step,
+        piece=args.piece,
     )
 
     # Some converters (like VTK) require `points` to be contiguous.

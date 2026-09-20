@@ -199,7 +199,7 @@ export class MeshioPlusPlusLoadError extends Error {
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, info?: boolean}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, piece?: number, info?: boolean}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string, info?: object}) => string[],
@@ -360,6 +360,9 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         // first, negative counts from the end, out of range throws.
         // `lenient` downgrades "this reader cannot represent construct X" to a
         // warning plus a skip; a malformed file still throws.
+        // `piece` keeps one partition/block of a partitioned file (VTKHDF): 0 is
+        // the first, negative counts from the end; null (default) merges every
+        // piece into one mesh with one cell region per piece.
         // `info: true` attaches the format's side channel as `mesh.info`
         // (openfoam/med/mdpa/ansysinp/unv/gmsh/exodus; ignored, not thrown,
         // for any other format) -- see doc/wasm.md's "Side channel (info)"
@@ -373,9 +376,13 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
                 arrays = null,
                 timeStep = 0,
                 lenient = false,
+                piece = null,
                 info = false,
             } = {},
-        ) => Module.readMeshSelective(path, format, pointsOnly, arrays, timeStep, lenient, info),
+        ) =>
+            Module.readMeshSelective(
+                path, format, pointsOnly, arrays, timeStep, lenient, piece, info,
+            ),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.
         readMetadata: (path, format = '') => Module.readMetadata(path, format),

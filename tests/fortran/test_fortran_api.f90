@@ -349,6 +349,31 @@ program test_fortran_api
         call check(.not. meta%fell_back_to_full_read, 'vtu metadata is not a fallback')
     end block
 
+    ! -- the piece switch on a VTKHDF file ---------------------------------
+    ! A plain file has exactly one piece: piece=0 and piece=-1 are that piece,
+    ! piece=1 is out of range and fails, and omitting it is the merged mesh.
+    ! The formats registry has vtkhdf only on an HDF5 build, so a build without
+    ! it skips this block rather than failing.
+    block
+        type(mio_mesh) :: sel
+        integer :: st, st_write
+
+        call m%write('fortran_piece.vtkhdf', stat=st_write)
+        if (st_write == 0) then
+            call sel%read('fortran_piece.vtkhdf', stat=st)
+            call check(st == 0 .and. sel%num_points() == 5, 'vtkhdf merged read')
+            call sel%free()
+            call sel%read('fortran_piece.vtkhdf', piece=0, stat=st)
+            call check(st == 0 .and. sel%num_points() == 5, 'vtkhdf piece=0')
+            call sel%free()
+            call sel%read('fortran_piece.vtkhdf', piece=-1, stat=st)
+            call check(st == 0 .and. sel%num_points() == 5, 'vtkhdf piece=-1')
+            call sel%free()
+            call sel%read('fortran_piece.vtkhdf', piece=1, stat=st)
+            call check(st /= 0, 'vtkhdf piece out of range fails')
+        end if
+    end block
+
     ! -- convert_cells: elevate then linearize returns the original topology --
     block
         type(mio_mesh) :: up, down

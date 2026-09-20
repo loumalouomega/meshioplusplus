@@ -417,6 +417,7 @@ void print_usage(std::ostream& os) {
           "  convert (c)             Convert between mesh formats\n"
           "                            --points-only / --arrays a,b narrow what is read\n"
           "                            --time-step=N picks a step of a multi-step file\n"
+          "                            --piece=N keeps one piece of a partitioned file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
           "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
           "                            sequence IN; an out_{step}.vtu output fans one OUT\n"
@@ -586,6 +587,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"points-only", {}, false},
                                   {"arrays", {}, true},
                                   {"time-step", {}, true},
+                                  {"piece", {}, true},
                                   {"lenient", {}, false},
                                   {"color-by", {}, true},
                                   {"component", {}, true},
@@ -629,6 +631,13 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     // that was never read, so it goes to the reader or nowhere.
     if (has_opt(p, "time-step"))
         opts.mTimeStep = std::stoi(opt_value(p, "time-step"));
+    // --piece keeps one partition / composite block of a partitioned file (VTKHDF)
+    // instead of the merged mesh. Like --time-step it cannot be emulated after the
+    // fact, so it goes to the reader or fails there.
+    if (has_opt(p, "piece")) {
+        opts.mPiece = std::stoll(opt_value(p, "piece"));
+        opts.mPieceSet = true;
+    }
     // --lenient downgrades "this reader cannot represent construct X" to a
     // warning plus a skip. Not "ignore all errors": a malformed file still
     // fails. There is no Python fallback here, so this is what makes a

@@ -72,6 +72,8 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 10 | v10.13.0 | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type — a genuine 4-byte-to-1-byte narrowing, and Tier A independently of the `Odt` enumerator that rode in on it |
 | 11 | v10.17.0 – v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 → 288 bytes), so `read_metadata` can report the block a file carries |
 | 12 | v10.35.0 | **Tier B, and the first entry here that is not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone silently dropped a 0-d scalar's single element; it now counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72, which is exactly why the layout snapshot could not see this and the version had to move by hand |
+| 13 | v11.4.0 | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 → 128 bytes |
+| 14 | v14.0.0 | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 → 72 bytes |
 
 It reaches consumers three ways:
 

@@ -213,7 +213,7 @@ end
 
 """
     ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto,
-                  time_step=0, lenient=false)
+                  time_step=0, lenient=false, piece=nothing)
 
 Narrow what a read materializes (see `doc/selective_read.md`).
 
@@ -225,7 +225,12 @@ Narrow what a read materializes (see `doc/selective_read.md`).
 * `mmap` — `:auto`, `:on` or `:off` (see `doc/mmap.md`).
 * `lenient` — downgrade "this reader cannot represent construct X" errors to a
   warning plus a skip (currently mdpa's `Table`/`Geometries`/`Mesh`/
-  `Constraints` blocks). Not "ignore all errors": a malformed file still fails.
+  `Constraints` blocks; VTKHDF's poly-vertex/poly-line/strip cells). Not "ignore
+  all errors": a malformed file still fails.
+* `piece` — keep only this piece of a partitioned file (VTKHDF partitions or
+  composite blocks): `0` is the first, negative counts from the end. `nothing`
+  (the default) merges every piece into one mesh with one cell region per piece.
+  Out of range fails the read, naming the piece count.
 
 Formats without a native selective path are read in full; the options are
 still honoured, just without the saving.
@@ -237,15 +242,16 @@ struct ReadOptions
     mmap::Symbol
     time_step::Int
     lenient::Bool
+    piece::Union{Nothing,Int}
 
     function ReadOptions(; points_only::Bool=false, metadata_only::Bool=false,
                          arrays=nothing, mmap::Symbol=:auto, time_step::Integer=0,
-                         lenient::Bool=false)
+                         lenient::Bool=false, piece::Union{Nothing,Integer}=nothing)
         mmap in (:auto, :on, :off) ||
             throw(ArgumentError("mmap must be :auto, :on or :off, got :$mmap"))
         new(points_only, metadata_only,
             arrays === nothing ? nothing : String[String(a) for a in arrays], mmap,
-            Int(time_step), lenient)
+            Int(time_step), lenient, piece === nothing ? nothing : Int(piece))
     end
 end
 
@@ -268,6 +274,8 @@ function _with_read_opts(f, opts::ReadOptions)
                          opts.metadata_only ? Cint(1) : Cint(0),
                          arrays_ptr, Int64(length(names)), _mmap_mode(opts.mmap),
                          Cint(0), Int64(opts.time_step), opts.lenient ? Int64(1) : Int64(0),
+                         Int64(opts.piece === nothing ? 0 : opts.piece),
+                         opts.piece === nothing ? Int64(0) : Int64(1),
                          base[].reserved)
         ref = Ref(cfg)
         GC.@preserve ref f(ref)

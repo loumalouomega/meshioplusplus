@@ -1326,7 +1326,12 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  *   (currently exodus); ignored by the rest.
  * @param lenient downgrade "this reader cannot represent construct X" errors to
  *   a warning plus a skip (currently mdpa's Table/Geometries/Mesh/Constraints
- *   blocks). Not "ignore all errors": a malformed file still throws.
+ *   blocks, and VTKHDF's poly-vertex/poly-line/strip cells). Not "ignore all
+ *   errors": a malformed file still throws.
+ * @param rPiece keep only this piece of a partitioned file (VTKHDF partitions or
+ *   composite blocks): a number, 0 the first, negative counting from the end.
+ *   `null`/`undefined` merges every piece into one mesh with one cell region per
+ *   piece. Out of range throws naming the piece count.
  * @param info when true and the format has a side channel (`format_supports_info`:
  *   openfoam/med/mdpa/ansysinp/unv/gmsh/exodus), attach it to the result as
  *   `.info` (`{format, ...}`, shape per format -- see doc/wasm.md); ignored
@@ -1340,13 +1345,18 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
-                        const val& rArrays, int time_step, bool lenient, bool info) {
+                        const val& rArrays, int time_step, bool lenient, const val& rPiece,
+                        bool info) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
         opts.mPointsOnly = points_only;
         opts.mTimeStep = time_step;
         opts.mLenient = lenient;
+        if (!rPiece.isNull() && !rPiece.isUndefined()) {
+            opts.mPiece = static_cast<std::int64_t>(rPiece.as<double>());
+            opts.mPieceSet = true;
+        }
         if (!rArrays.isNull() && !rArrays.isUndefined())
             opts.mDataArrays = emscripten::vecFromJSArray<std::string>(rArrays);
         if (info && format_supports_info(fmt)) {

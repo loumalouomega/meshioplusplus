@@ -147,3 +147,53 @@ def test_polyhedra_mix_with_other_cell_types_both_engines():
             types = [c.type for c in out.cells]
             assert any(t.startswith("polyhedron") for t in types), (tag, types)
             assert "triangle" in types, (tag, types)
+
+
+def _wedge_faces(b):
+    return [
+        np.array([b + 0, b + 2, b + 1]),
+        np.array([b + 3, b + 4, b + 5]),
+        np.array([b + 0, b + 1, b + 4, b + 3]),
+        np.array([b + 1, b + 2, b + 5, b + 4]),
+        np.array([b + 2, b + 0, b + 3, b + 5]),
+    ]
+
+
+def _tet_faces(b):
+    return [
+        np.array([b + 0, b + 2, b + 1]),
+        np.array([b + 0, b + 1, b + 3]),
+        np.array([b + 1, b + 2, b + 3]),
+        np.array([b + 2, b + 0, b + 3]),
+    ]
+
+
+def test_polyhedra_with_alternating_node_counts_keep_their_cell_data():
+    # A polyhedral run that mixes node counts is bucketed into one block per count, so a
+    # bucket's cells are not contiguous in the file. cell_data has to follow the cells.
+    pts = np.random.default_rng(0).random((16, 3))
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [
+            ("polyhedron6", [_wedge_faces(0)]),
+            ("polyhedron4", [_tet_faces(6)]),
+            ("polyhedron6", [_wedge_faces(10)]),
+        ],
+        cell_data={"tag": [np.array([1.0]), np.array([2.0]), np.array([3.0])]},
+    )
+
+    for writer, reader, label in (
+        (_vtu.write, _vtu.read, "python"),
+        (meshioplusplus.vtu.write, meshioplusplus.vtu.read, "shim"),
+    ):
+        with tempfile.TemporaryDirectory() as d:
+            p = pathlib.Path(d) / "alt.vtu"
+            writer(p, mesh)
+            out = reader(p)
+        by_type = {}
+        for cell, tag in zip(out.cells, out.cell_data["tag"]):
+            by_type[cell.type] = np.asarray(tag).tolist()
+        assert by_type == {"polyhedron6": [1.0, 3.0], "polyhedron4": [2.0]}, (
+            label,
+            by_type,
+        )

@@ -940,7 +940,6 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("VTKHDF", "M"),
                 (".pvd · .pvtu · .xyz · .pcd", "S"),
                 ("LS-DYNA .k · CalculiX .frd", "M"),
                 ("glTF export", "S"),

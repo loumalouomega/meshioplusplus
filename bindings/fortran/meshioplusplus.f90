@@ -389,7 +389,16 @@ module meshioplusplus
         !> Constraints blocks). Not "ignore all errors": a malformed file still
         !> fails. Takes a second former `reserved` slot; size unchanged.
         integer(c_int64_t) :: lenient = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        !> Which piece of a partitioned file to keep (VTKHDF partitions or composite
+        !> blocks); meaningful only when `piece_set` is nonzero. 0 is the first,
+        !> negative counts from the end. Takes a third former `reserved` slot; size
+        !> unchanged.
+        integer(c_int64_t) :: piece = 0
+        !> Nonzero means `piece` was chosen; 0 (the default) merges every piece into
+        !> one mesh with one cell region per piece. Takes a fourth former `reserved`
+        !> slot; size unchanged.
+        integer(c_int64_t) :: piece_set = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_refine_opts`. Field order and types are ABI and
@@ -2708,7 +2717,7 @@ contains
     !> selective path are read whole and filtered, so the result is the same
     !> either way; only the cost differs.
     subroutine mesh_read(self, path, format, points_only, arrays, time_step, lenient, &
-                         stat, errmsg)
+                         stat, errmsg, piece)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
@@ -2722,6 +2731,12 @@ contains
         logical, intent(in), optional :: lenient
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> Keep only this piece of a partitioned file (VTKHDF partitions or
+        !> composite blocks): 0 is the first, negative counts from the end.
+        !> Omitted merges every piece into one mesh with one cell region per
+        !> piece. Out of range fails, never clamps. Last in the argument list so
+        !> a caller passing `stat`/`errmsg` positionally keeps working.
+        integer, intent(in), optional :: piece
         character(:), allocatable :: fmt
         type(c_ptr) :: h
         type(mio_read_opts_t) :: opts
@@ -2734,7 +2749,8 @@ contains
         fmt = ''; if (present(format)) fmt = format
 
         if (.not. present(points_only) .and. .not. present(arrays) &
-            .and. .not. present(time_step) .and. .not. present(lenient)) then
+            .and. .not. present(time_step) .and. .not. present(lenient) &
+            .and. .not. present(piece)) then
             h = c_mio_read(c_str(path), c_str(fmt))
         else
             call c_mio_read_opts_init(opts)
@@ -2744,6 +2760,10 @@ contains
             if (present(time_step)) opts%time_step = int(time_step, c_int64_t)
             if (present(lenient)) then
                 if (lenient) opts%lenient = 1
+            end if
+            if (present(piece)) then
+                opts%piece = int(piece, c_int64_t)
+                opts%piece_set = 1
             end if
             if (present(arrays)) then
                 n = size(arrays)

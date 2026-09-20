@@ -1267,7 +1267,7 @@ meshioplusplus binary [options] INFILE
 
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
-`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtu`, `wkt`, `xdmf`
+`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`
 
 ## Selective reads and fast summaries
 
@@ -1283,6 +1283,8 @@ meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a tim
 `--points-only` keeps connectivity — it narrows data, not topology. `arrays` with an empty list keeps no arrays; omitting the flag keeps every array.
 
 `--time-step=N` picks one step of a multi-step file: `0` (the default) is the first, negative counts from the end. A negative value needs the `--time-step=-1` form, as with the other negative-valued options. Out of range is an error naming the available count, never a silent clamp; `info --fast` prints `Time steps: N [...]` when a file records more than one. Honoured by formats carrying a time series (currently `exodus`); a format whose reader has no time concept refuses rather than quietly returning the first step.
+
+`--piece=N` keeps one piece of a partitioned file (VTKHDF partitions or composite blocks) instead of the merged mesh: `0` is the first, negative counts from the end (`--piece=-1`). Out of range is an error naming the piece count, and a format with no pieces refuses rather than quietly merging. `compress`/`decompress` deliberately do not handle `vtkhdf`: they rewrite in place from one merged read, which would drop every step but the first from a transient file — use `convert` to a new file instead.
 
 `--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X" errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and `Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore all errors": a malformed row, a bad node reference or a duplicate node id still fail, because continuing past those returns a mesh that is quietly wrong rather than merely incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the pure-Python reference, which already accepts every construct the flag covers.
 

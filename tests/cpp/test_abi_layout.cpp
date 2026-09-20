@@ -116,7 +116,7 @@ namespace {
 
 MIO_ABI_LAYOUT(meshioplusplus::NDArray, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Region, 120, 8);
-MIO_ABI_LAYOUT(meshioplusplus::ReadOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ReadOptions, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);

@@ -606,6 +606,8 @@ meshioplusplus::ReadOptions capi_read_options(const mio_read_opts* pOpts) {
         throw meshioplusplus::ReadError("meshio++: time_step is out of range");
     out.mTimeStep = static_cast<int>(pOpts->time_step);
     out.mLenient = pOpts->lenient != 0;
+    out.mPiece = pOpts->piece;
+    out.mPieceSet = pOpts->piece_set != 0;
     return out;
 }
 

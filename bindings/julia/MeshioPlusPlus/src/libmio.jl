@@ -128,7 +128,12 @@ struct _CReadOpts
     # _check_abi_layout, which is what would catch a mismatch.
     time_step::Int64
     lenient::Int64
-    reserved::NTuple{4,Int64}
+    # `piece` (which partition / composite block of a partitioned file to keep)
+    # and `piece_set` (nonzero when `piece` was chosen; 0 merges every piece) took
+    # two more of the former reserved slots -- still 80 bytes.
+    piece::Int64
+    piece_set::Int64
+    reserved::NTuple{2,Int64}
 end
 
 """
