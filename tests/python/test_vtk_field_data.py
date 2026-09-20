@@ -15,6 +15,12 @@ from meshioplusplus._fallback import set_strict_core
 from meshioplusplus.vtp import _vtp
 from meshioplusplus.vtu import _vtu
 
+# The core-engine cases run the C++ path under strict-core with the default
+# zlib codec, which a build without zlib (the Windows wheels) cannot honour --
+# there the Python twin covers the format and these cases are skipped.
+HAS_ZLIB = getattr(_core, "__has_zlib__", False)
+requires_zlib = pytest.mark.skipif(not HAS_ZLIB, reason="build has no zlib")
+
 XY = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 
 
@@ -37,6 +43,8 @@ class _Engine:
 @pytest.fixture(params=["core", "python"])
 def engine(request):
     if request.param == "core":
+        if not HAS_ZLIB:
+            pytest.skip("the core engine writes zlib and this build has none")
         if not hasattr(_core, "vtu_write_codec"):
             pytest.skip("no C++ core")
         set_strict_core(True)
@@ -72,6 +80,7 @@ def test_vtp_roundtrips_field_data(engine, binary, compression, tmp_path):
     _same(engine.vtp.read(tmp_path / "a.vtp"), mesh)
 
 
+@requires_zlib
 def test_the_engines_read_each_others_field_data(tmp_path):
     if not hasattr(_core, "vtu_write_codec"):
         pytest.skip("no C++ core")

@@ -19,6 +19,12 @@ from meshioplusplus.pvtu import _pvtu
 
 from . import helpers
 
+# The core-engine cases run the C++ path under strict-core with the default
+# zlib codec, which a build without zlib (the Windows wheels) cannot honour --
+# there the Python twin covers the format and these cases are skipped.
+HAS_ZLIB = getattr(_core, "__has_zlib__", False)
+requires_zlib = pytest.mark.skipif(not HAS_ZLIB, reason="build has no zlib")
+
 INDEX_TAG = {"pvtu": "PUnstructuredGrid", "pvtp": "PPolyData"}
 
 
@@ -82,6 +88,8 @@ def _engines(kind):
 def engine(request):
     """The pvtu engine under test; the core one runs with strict-core on."""
     if request.param == "core":
+        if not HAS_ZLIB:
+            pytest.skip("the core engine writes zlib and this build has none")
         if not hasattr(_core, "pvtu_read"):
             pytest.skip("this build has no pvtu core")
         set_strict_core(True)
@@ -587,7 +595,8 @@ def test_the_index_records_provenance(tmp_path):
 
 @pytest.mark.skipif(not hasattr(_core, "pvtu_read"), reason="no pvtu core")
 @pytest.mark.parametrize(
-    "binary, compression", [(False, None), (True, None), (True, "zlib")]
+    "binary, compression",
+    [(False, None), (True, None), pytest.param(True, "zlib", marks=requires_zlib)],
 )
 def test_cross_compat(binary, compression, tmp_path, strict_core):
     mesh = _labelled()
@@ -637,6 +646,8 @@ def _polydata(n=3):
 @pytest.fixture(params=["core", "python"])
 def pvtp_engine(request):
     if request.param == "core":
+        if not HAS_ZLIB:
+            pytest.skip("the core engine writes zlib and this build has none")
         if not hasattr(_core, "pvtp_read"):
             pytest.skip("this build has no pvtp core")
         set_strict_core(True)
@@ -777,6 +788,7 @@ def _polyhedra(part):
     return mesh, [part(len(c.data)) for c in mesh.cells]
 
 
+@requires_zlib
 @pytest.mark.skipif(not hasattr(_core, "pvtu_read"), reason="no pvtu core")
 def test_the_core_carves_ghosts_and_drops_polyhedron_blocks(tmp_path, strict_core):
     mesh, parts = _polyhedra(lambda n: np.arange(n) % 2)
@@ -936,3 +948,16 @@ def test_vtkGhostType_is_always_uint8_on_disk_whatever_dtype_it_is_given(
     # ... and the caller's arrays keep their dtype
     assert piece.cell_data["vtkGhostType"][0].dtype == np.int64
     assert piece.point_data["vtkGhostType"].dtype == np.int32
+
+
+@pytest.mark.parametrize("compression", [None, "zlib"])
+def test_the_python_vtu_reader_reads_a_cell_free_piece(compression, tmp_path):
+    """An empty piece has empty (block-less, when compressed) connectivity."""
+    from meshioplusplus.vtu import _vtu
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), [("line", np.empty((0, 2), int))]
+    )
+    _vtu.write(tmp_path / "e.vtu", mesh, compression=compression)
+    back = _vtu.read(tmp_path / "e.vtu")
+    assert len(back.points) == 2 and _num_cells(back) == 0

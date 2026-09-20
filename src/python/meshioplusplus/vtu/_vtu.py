@@ -697,6 +697,11 @@ class VtuReader:
         assert self.compression is not None
         c = _compressor_for(self.compression)  # already the compressor= attribute
 
+        # An empty array is written with no blocks at all; there is nothing to
+        # concatenate (an empty piece of a partitioned file is one).
+        if int(num_blocks) == 0:
+            return np.empty(0, dtype=dtype)
+
         # process the compressed data
         # Every block decompresses to max_uncompressed_block_size except the
         # last. zlib/lzma infer that themselves, but LZ4's raw block format

@@ -14,6 +14,12 @@ from meshioplusplus import ReadError, WriteError, _core
 from meshioplusplus._fallback import set_strict_core
 from meshioplusplus.pvd import SeriesWriter, _pvd
 
+# The core-engine cases run the C++ path under strict-core with the default
+# zlib codec, which a build without zlib (the Windows wheels) cannot honour --
+# there the Python twin covers the format and these cases are skipped.
+HAS_ZLIB = getattr(_core, "__has_zlib__", False)
+requires_zlib = pytest.mark.skipif(not HAS_ZLIB, reason="build has no zlib")
+
 XY = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
 TRI = [[0, 1, 2]]
 
@@ -39,6 +45,8 @@ class _Engine:
 @pytest.fixture(params=["core", "python"])
 def engine(request):
     if request.param == "core":
+        if not HAS_ZLIB:
+            pytest.skip("the core engine writes zlib and this build has none")
         if not hasattr(_core, "pvd_read"):
             pytest.skip("this build has no pvd core")
         set_strict_core(True)
@@ -218,7 +226,7 @@ def test_metadata_reports_every_time_without_opening_a_later_step(tmp_path):
     meta = meshioplusplus.read_metadata(path)
     assert meta["time_values"] == [0.0, 0.5, 2.0]
     assert meta["format"] == "pvd"
-    if hasattr(_core, "pvd_read"):
+    if hasattr(_core, "pvd_read") and HAS_ZLIB:
         assert meta["fell_back_to_full_read"] is False
 
 
@@ -436,7 +444,8 @@ def test_buffers_are_refused(tmp_path):
 
 @pytest.mark.skipif(not hasattr(_core, "pvd_read"), reason="no pvd core")
 @pytest.mark.parametrize(
-    "binary, compression", [(False, None), (True, None), (True, "zlib")]
+    "binary, compression",
+    [(False, None), (True, None), pytest.param(True, "zlib", marks=requires_zlib)],
 )
 def test_cross_compat(binary, compression, tmp_path):
     set_strict_core(True)
