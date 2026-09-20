@@ -68,7 +68,7 @@
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 14
+#define MESHIOPLUSPLUS_VERSION_MAJOR 15
 /// Minor component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
@@ -80,7 +80,7 @@
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "14.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "15.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \

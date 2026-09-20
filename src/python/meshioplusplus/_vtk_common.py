@@ -94,6 +94,10 @@ def vtk_cells_from_data(connectivity, offsets, types, cell_data_raw):
     if len(offsets) != len(types):
         raise ReadError(f"len(offsets) != len(types) ({len(offsets)} != {len(types)})")
 
+    # A grid with no cells (an empty piece of a partitioned file) has no blocks.
+    if len(types) == 0:
+        return [], {}
+
     # identify cell blocks
     breaks = np.where(types[:-1] != types[1:])[0] + 1
     # all cells with indices between start[k] and end[k] have the same type

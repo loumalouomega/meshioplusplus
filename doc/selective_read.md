@@ -38,7 +38,7 @@ meshioplusplus.read_metadata("run.exo")["time_values"]   # [0.0, 0.5, 1.0]
 - Unlike `points_only`/`arrays`, this is **not** a narrowing option: no caller-side filter can recover a step that was never read. So a format whose reader has no time concept **raises** rather than quietly returning the first step.
 - `read_metadata(...)["time_values"]` reports the recorded times, so a request is checkable before it is issued. It is always present — empty for a format with no time concept — so `len(meta["time_values"])` needs no key test.
 
-Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload), **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order), **`cgns`** (`BaseIterativeData_t`/`ZoneIterativeData_t`: `mTimeStep` resolves against `NumberOfSteps` and picks the one `FlowSolution_t` its `FlowSolutionPointers` names for that step, instead of reading every one), **`tecplot`** (every `ZONE`'s `SOLUTIONTIME`/`STRANDID`, not just the first), **`gmsh`** (4.1 only; every `$NodeData`/`$ElementData` section's own real-tag time value, not just the first per name), **`ensight`** (`.case` `TIME`/`VARIABLE`: one file per step, templated by `mTimeStep` into `filename start number:` + step × `filename increment:`) and **`openfoam`** (`<case>/<time>/<field>` dictionaries: `mTimeStep` resolves against the case root's numeric-named time directories, sorted ascending; `arrays` selects which of that directory's field files to attach). `time_step` selection on MED dates to v9.9.0; on CGNS, Tecplot, Gmsh and EnSight, `time_step` selection and `read_metadata`'s `time_values` are both new in v11.3.0 (`read_cgns_metadata`/`read_tecplot_metadata`/`read_gmsh_metadata`/`read_ensight_metadata`, roadmap §1 tier B1) rather than a full-read fallback or "takes the first step/zone/section" default — for EnSight, *any* variable reading is new; the format was geometry-only before. On OpenFOAM, both are new in v11.4.0 (`read_openfoam_metadata`, roadmap §1 tier B2) — the plain `read()` (no `time_step`/`arrays` at all) now attaches time-zero's fields by default too, where the format previously never carried `point_data`/`cell_data` at all. A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to; a transient CGNS file used to silently concatenate every `FlowSolution_t`'s arrays under whichever one's array name won last; a transient Tecplot file always read only its first `ZONE`, with every later one silently discarded; a transient Gmsh file always kept the first `$NodeData`/`$ElementData` section per name, silently discarding every later step of the same field; a transient EnSight `.case` file's `VARIABLE` section was ignored outright; OpenFOAM's time-directory fields were never read at all. **`vtkhdf`** joined in v14.0.0: `Steps/Values` supplies `read_metadata`'s `time_values` without touching the geometry, and `time_step=k` reads only step `k`'s slice of each flat array through the `Steps` offset tables (see [VTKHDF](formats/vtkhdf.md#time)).
+Currently honoured by **`exodus`**, **`xdmf`** (temporal collections — the counterpart to `XdmfTimeSeriesWriter`, see [XDMF time series](xdmf_time_series.md); the C++ reader resolves the collection structurally rather than running an XInclude/XPointer pass, and `read_metadata`'s `time_values` come off each step's `<Time Value>` attribute without touching a payload), **`med`** (a `CHA` field's `(NDT, NOR)` step subgroups, whose zero-padded group names sort into step order), **`cgns`** (`BaseIterativeData_t`/`ZoneIterativeData_t`: `mTimeStep` resolves against `NumberOfSteps` and picks the one `FlowSolution_t` its `FlowSolutionPointers` names for that step, instead of reading every one), **`tecplot`** (every `ZONE`'s `SOLUTIONTIME`/`STRANDID`, not just the first), **`gmsh`** (4.1 only; every `$NodeData`/`$ElementData` section's own real-tag time value, not just the first per name), **`ensight`** (`.case` `TIME`/`VARIABLE`: one file per step, templated by `mTimeStep` into `filename start number:` + step × `filename increment:`) and **`openfoam`** (`<case>/<time>/<field>` dictionaries: `mTimeStep` resolves against the case root's numeric-named time directories, sorted ascending; `arrays` selects which of that directory's field files to attach). `time_step` selection on MED dates to v9.9.0; on CGNS, Tecplot, Gmsh and EnSight, `time_step` selection and `read_metadata`'s `time_values` are both new in v11.3.0 (`read_cgns_metadata`/`read_tecplot_metadata`/`read_gmsh_metadata`/`read_ensight_metadata`, roadmap §1 tier B1) rather than a full-read fallback or "takes the first step/zone/section" default — for EnSight, *any* variable reading is new; the format was geometry-only before. On OpenFOAM, both are new in v11.4.0 (`read_openfoam_metadata`, roadmap §1 tier B2) — the plain `read()` (no `time_step`/`arrays` at all) now attaches time-zero's fields by default too, where the format previously never carried `point_data`/`cell_data` at all. A multi-step MED field used to fail the read outright unless there was a Python fallback to defer to; a transient CGNS file used to silently concatenate every `FlowSolution_t`'s arrays under whichever one's array name won last; a transient Tecplot file always read only its first `ZONE`, with every later one silently discarded; a transient Gmsh file always kept the first `$NodeData`/`$ElementData` section per name, silently discarding every later step of the same field; a transient EnSight `.case` file's `VARIABLE` section was ignored outright; OpenFOAM's time-directory fields were never read at all. **`vtkhdf`** joined in v14.0.0: `Steps/Values` supplies `read_metadata`'s `time_values` without touching the geometry, and `time_step=k` reads only step `k`'s slice of each flat array through the `Steps` offset tables (see [VTKHDF](formats/vtkhdf.md#time)). **`pvd`** joined in v15.0.0: the steps are the distinct `timestep=` values of the index, so `read_metadata`'s `time_values` needs no piece opened, and `time_step=k` reads only that step's entries (see [PVD](formats/pvd.md#two-axes-time-and-part)).
 
 ## Picking a piece
 
@@ -50,7 +50,18 @@ mesh = meshioplusplus.read("case.vtkhdf", piece=1)     # the second piece alone 
 mesh = meshioplusplus.read("case.vtkhdf", piece=-1)    # the last piece
 ```
 
-Out of range is an error naming the piece count, never a clamp, and a format whose reader has no pieces raises rather than returning the merged mesh. The switch is a value plus a flag (`ReadOptions::mPiece` / `mPieceSet`, `mio_read_opts.piece` / `piece_set`) rather than a `-1` sentinel: a hand-zeroed options struct must merge, not silently ask for piece 0 alone. `ReadOptions::ResolvePiece(n)` resolves a request against a piece count. Currently honoured by **`vtkhdf`** only; the reserved `.pvtu` reader will inherit it.
+Out of range is an error naming the piece count, never a clamp, and a format whose reader has no pieces raises rather than returning the merged mesh. The switch is a value plus a flag (`ReadOptions::mPiece` / `mPieceSet`, `mio_read_opts.piece` / `piece_set`) rather than a `-1` sentinel: a hand-zeroed options struct must merge, not silently ask for piece 0 alone. `ReadOptions::ResolvePiece(n)` resolves a request against a piece count. Currently honoured by **`vtkhdf`**, by **`pvtu`** and **`pvtp`** (one `<Piece>` of the index; v15.0.0) and by **`pvd`** (one `part` of the chosen step: `timestep=` picks the step with `time_step`, `part=` the piece within it, so the two are orthogonal). A file with a single piece reads as that piece either way.
+
+## Dropping ghost cells
+
+A partitioned `.pvtu`, `.pvtp` or a `.pvd` of them can carry a halo: cells another part owns, flagged in a `vtkGhostType` array so a piece is self-contained (`partition(..., ghost_layers=N)` writes one). Reading keeps them by default, because a reader must not silently discard data and keeping is what makes read → write round-trip. `ghosts="drop"` removes every cell with any `vtkGhostType` bit set, and the points only those cells used, from each piece before merging, and then the ghost arrays, which reconstructs the partition of unity:
+
+```python
+mesh = meshioplusplus.read("case.pvtu")                     # halo kept: more cells than the original
+mesh = meshioplusplus.read("case.pvtu", ghosts="drop")      # the original cells
+```
+
+The switch is `ReadOptions::mGhosts` (a `GhostPolicy`, `Keep` by default and for a zero-initialized struct) and `mio_read_opts.drop_ghosts`. It is deliberately **not** in the class `time_step` and `piece` are in: those cannot be emulated after a read, so they must reach a reader that understands them or fail, whereas a file with no halo is already the answer `"drop"` asks for. Like `lenient`, it is honoured by the readers that have the concept (`pvtu`, `pvtp`, `pvd`, which forwards it to every entry) and ignored by all the others. It is not an `Input.Options` key of a pipeline document, any more than `piece` is.
 
 ## Summarizing without loading
 
@@ -70,6 +81,8 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 | --- | --- | --- | --- |
 | XDMF | native | native, and genuinely O(1) | ✗ (takes the first step) |
 | VTU / VTP | native | native | n/a |
+| PVTU / PVTP | native (`arrays`, `piece`), forwarded to every piece | native, the sum of the pieces' own summaries | n/a |
+| PVD | native (`arrays`, `time_step`, `piece`), forwarded to every entry | native: every step's time from the index alone, plus step 0's pieces' summary | native |
 | VTKHDF | native (`arrays`, `time_step`, `piece`) | native for a polyhedron-free `UnstructuredGrid` (steps from `Steps/Values`); otherwise a full read | native |
 | Gmsh 4.1 | native | native | ✅ |
 | Gmsh 2.2 | native | falls back to a full read | n/a |
@@ -99,6 +112,7 @@ meshioplusplus convert --points-only in.vtu out.vtu
 meshioplusplus convert --arrays u,p in.vtu out.vtu
 meshioplusplus convert --time-step=-1 run.exo last.vtu   # negatives need the = form
 meshioplusplus convert --piece=1 case.vtkhdf part.vtu    # one partition instead of the merged mesh
+meshioplusplus convert --drop-ghosts case.pvtu whole.vtu # the halo removed
 ```
 
 `info --fast` prints `(no header-only path for this format; the file was read in full)` when the summary was not actually cheap, and `Time steps: N [...]` when the file records more than one (a single-step file gives you nothing to choose). `--points-only`/`--arrays` cannot be combined with `-s`/`-d`, which operate on exactly the arrays that were skipped.
@@ -114,6 +128,7 @@ opts.points_only = 1;
 opts.time_step = -1;  /* the last step; 0 (the default) is the first */
 opts.piece = 1;       /* one piece of a partitioned file ... */
 opts.piece_set = 1;   /* ... only when piece_set is nonzero (0 merges every piece) */
+opts.drop_ghosts = 1; /* remove the halo of a .pvtu/.pvtp/.pvd; other readers ignore it */
 mio_mesh* mesh = mio_read_ex("big.vtu", "vtu", &opts);
 
 mio_read_metadata* meta = mio_read_metadata_create("big.vtu", NULL);
@@ -127,6 +142,7 @@ mio_read_metadata_free(meta);
 call m%read('big.msh', points_only=.true.)
 call m%read('run.exo', time_step=-1)   ! the last step
 ! a piece: set opts%piece = 1 and opts%piece_set = 1 on a mio_read_opts_t
+call m%read('case.pvtu', drop_ghosts=.true.)   ! without the halo
 meta = mio_read_metadata('big.msh')
 ```
 
@@ -134,6 +150,7 @@ meta = mio_read_metadata('big.msh')
 const mesh = m.readMeshSelective('big.vtu', { arrays: ['u'] });
 const last = m.readMeshSelective('run.exo', { format: 'exodus', timeStep: -1 });
 const part = m.readMeshSelective('case.vtkhdf', { piece: 1 });   // one partition, not the merged mesh
+const whole = m.readMeshSelective('case.pvtu', { dropGhosts: true });   // without the halo
 m.readMetadata('run.exo', 'exodus').timeValues;  // [0, 0.5, 1]
 const meta = m.readMetadata('big.vtu');
 const withInfo = m.readMeshSelective('case.mdpa', { format: 'mdpa', lenient: true, info: true });

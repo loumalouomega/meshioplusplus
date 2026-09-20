@@ -1011,6 +1011,10 @@ export interface MeshioPlusPlusModule {
    * (VTKHDF): `0` is the first, negative counts from the end. `null` (the
    * default) merges every piece into one mesh with one `cell` region per piece.
    *
+   * `dropGhosts: true` removes the ghost cells (halo) of a partitioned `.pvtu`,
+   * `.pvtp` or `.pvd` -- every cell with a `vtkGhostType` bit set, and the points
+   * only they used. `false` (the default) keeps them. Every other reader ignores it.
+   *
    * @throws {Error} on an out-of-range `timeStep` or `piece`.
    */
   readMeshSelective(
@@ -1022,6 +1026,7 @@ export interface MeshioPlusPlusModule {
       timeStep?: number;
       lenient?: boolean;
       piece?: number | null;
+      dropGhosts?: boolean;
       info?: boolean;
     }
   ): Mesh;

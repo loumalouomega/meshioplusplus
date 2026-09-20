@@ -75,13 +75,28 @@
  *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
  *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
- *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
- *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
- *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
- *  | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back |
- *  | 12  | v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 |
- *  | 13  | v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 -> 128 bytes |
- *  | 14  | v14.0.0            | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 -> 72 bytes, and with it the four aggregates that embed it by value (PipelineInput, Pipeline, SequenceInput, SequencePipeline; +16 each) |
+ *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`,
+ * `RemeshResult` gained `mNumNonManifoldVertices` | | 9   | v10.12.0           | `RemeshOptions`
+ * gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` | | 10  | v10.13.0           |
+ * `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum
+ * default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding
+ * along) | | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained
+ * `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back | | 12  |
+ * v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It
+ * reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single
+ * element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 | | 13  |
+ * v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1
+ * tier B2), 96 -> 128 bytes | | 14  | v14.0.0            | `ReadOptions` gained
+ * `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 -> 72
+ * bytes, and with it the four aggregates that embed it by value (PipelineInput, Pipeline,
+ * SequenceInput, SequencePipeline; +16 each) | | 15  | v15.0.0            | **Tier A, and `sizeof`
+ * did not move**: `ReadOptions` gained `mGhosts` (`GhostPolicy`, `std::uint8_t`), the keep-or-drop
+ * switch for the ghost cells of a partitioned file (`pvtu`/`pvtp`/`pvd`). It was appended into the
+ * 7 bytes of tail padding after `mPieceSet`, so `sizeof(ReadOptions)` stays 72 and the four
+ * embedding aggregates are unchanged -- but a consumer compiled against v14 headers leaves that
+ * byte indeterminate and a v15 library reads it as the policy, so it is a break all the same.
+ * `tests/cpp/test_abi_layout.cpp` cannot see it beyond the new offset pin; this number is the
+ * record |
  *
  * ### This is the ONE place the number is written
  *
@@ -100,7 +115,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 14
+#define MESHIOPLUSPLUS_ABI_VERSION 15
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -7953,6 +7968,7 @@ inline int snprintf_c(char* pBuf, std::size_t cap, const char* pFmt, ...) {
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -7971,6 +7987,17 @@ namespace meshioplusplus {
  * buffered reading rather than failing, so `On` is a preference, not a demand.
  */
 enum class MmapMode { Auto, On, Off };
+
+/**
+ * @brief What a partitioned-file reader does with ghost cells (`vtkGhostType`).
+ *
+ * A parallel `.pvtu`/`.pvtp` or a `.pvd` of them can carry a halo: cells another
+ * part owns, kept so a piece is self-contained. See `ReadOptions::mGhosts`.
+ */
+enum class GhostPolicy : std::uint8_t {
+    Keep,  ///< Leave `vtkGhostType` cells in the mesh (the default).
+    Drop,  ///< Remove cells with a ghost bit set, and the points only they used.
+};
 
 /** @brief File size at or above which `MmapMode::Auto` maps instead of copying. */
 inline constexpr std::size_t mmap_auto_threshold_bytes = 16u * 1024u * 1024u;
@@ -8081,6 +8108,27 @@ struct ReadOptions {
      * instead of the merged mesh -- the silent wrongness `mTimeStep` warns about.
      */
     bool mPieceSet = false;
+
+    /**
+     * @brief Whether to keep the ghost cells (halo) of a partitioned file.
+     *
+     * `Keep` (the default, and what zero-initialization gives) leaves every cell in,
+     * `vtkGhostType` array included: a reader must not silently discard data, and
+     * keeping is what makes read -> write round-trip. `Drop` removes every cell
+     * with any `vtkGhostType` bit set, and the points only those cells used, from
+     * each piece *before* merging, then removes the now-meaningless ghost arrays
+     * (`partition:ghost` too when it is all zero). That reconstructs the partition
+     * of unity a halo'd `partition` broke.
+     *
+     * Like `mLenient` and unlike `mTimeStep`/`mPiece` it is **not** in the class
+     * that must reach a reader or fail: a file with no ghost cells is already the
+     * answer `Drop` asks for, and the removal can be done after the fact, so a
+     * reader that has no such concept simply ignores it.
+     *
+     * Currently honoured by `pvtu`, `pvtp` and `pvd` (which forwards it to every
+     * entry it reads); every other reader ignores it.
+     */
+    GhostPolicy mGhosts = GhostPolicy::Keep;
 
     /**
      * @brief Resolve `mTimeStep` against an actual step count.
@@ -9720,7 +9768,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 14
+#define MESHIOPLUSPLUS_VERSION_MAJOR 15
 /// Minor component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
@@ -9732,7 +9780,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "14.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "15.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -12072,6 +12120,47 @@ MESHIOPLUSPLUS_API NDArray vtu_parse_binary(const std::string& rText, DType dt, 
  * @return The widened values.
  */
 MESHIOPLUSPLUS_API std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
+
+/**
+ * @brief The array to write under @p rName: @p rArray, except that `vtkGhostType` is
+ * always `UInt8` on disk.
+ *
+ * `vtkGhostType` is VTK's reserved ghost-flag name, and a reader only recognises it
+ * as the ghost array when it is an unsigned char array (ParaView ignores an `Int64`
+ * one entirely). The NATIVE and KRATOS mesh backends hold every integer array as
+ * `Int64`, so a ghost array they read or derive would otherwise be written -- and
+ * declared by a `.pvtu` index -- as `Int64`. Any other name, and an array that is
+ * already `UInt8`, is returned as is; otherwise the values are copied into
+ * @p rScratch (each cast to a byte, as a ghost flag is a bit set) and that is returned.
+ *
+ * @param rName the array's name.
+ * @param rArray the array as the mesh holds it.
+ * @param rScratch storage for the converted copy; untouched when none is needed.
+ */
+MESHIOPLUSPLUS_API const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray,
+                                                 NDArray& rScratch);
+
+/// The dtype `vtu_disk_array` writes @p rName as: `UInt8` for `vtkGhostType`, else @p Dt.
+MESHIOPLUSPLUS_API DType vtu_disk_dtype(const std::string& rName, DType Dt);
+
+/**
+ * @brief Write one `<FieldData>` array as a complete `<DataArray>` element.
+ *
+ * A field-data array is one value (or row) per *tuple* of the dataset, so unlike
+ * a point or cell array it carries an explicit `NumberOfTuples` (VTK's readers
+ * require it there): the leading extent, or 1 for a rank-0 scalar. A rank of two
+ * or more also gets `NumberOfComponents`, the product of the trailing extents, so
+ * `(n, m)` reads back as `(n, m)`; a higher rank is flattened to that shape.
+ * The caller writes the surrounding `<FieldData>` element.
+ *
+ * @param rOs the output stream.
+ * @param rName the array's `Name` attribute (written verbatim, like point data's).
+ * @param rArray the array.
+ * @param Binary base64-encode the body instead of writing text.
+ * @param Codec the block compressor for a binary body; ignored when @p Binary is false.
+ */
+MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
+                                              const NDArray& rArray, bool Binary, VtkCodec Codec);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -15911,6 +16000,270 @@ MESHIOPLUSPLUS_API Mesh read_ply(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ply.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/pvtu.hpp =====
+/**
+ * @file formats/pvtu.hpp
+ * @brief VTK XML parallel unstructured grid (`.pvtu`): an index that declares
+ * the arrays and names one `.vtu` piece per part (v15.0.0).
+ *
+ * A `.pvtu` is `<VTKFile type="PUnstructuredGrid"><PUnstructuredGrid
+ * GhostLevel="N"><PPointData/><PCellData/><PPoints/><Piece Source="..."/>...`.
+ * The index carries no geometry, only the *declarations* of the arrays every
+ * piece holds (name, type, component count) and the relative path of each piece.
+ * `.pvtp` (`formats/pvtp.hpp`) is the same over `.vtp` pieces.
+ *
+ * ### Write
+ *
+ * `write_pvtu_pieces_codec` is the primitive: it takes already-carved pieces --
+ * `partition`'s output, halo layers included -- and writes each as a `.vtu` in a
+ * sibling directory named after the index's stem (`<stem>/<stem>_0000.vtu`,
+ * zero-padded like a `{step}` pattern, relative `Source=` paths). **Every piece
+ * must declare identical arrays** (name, type, component count); that is
+ * validated before anything is created, so a refusal leaves nothing on disk.
+ * A piece with no cells is legal and written (an idle rank): skipping it would
+ * renumber the parts.
+ *
+ * `write_pvtu_codec` takes one mesh and carves it by the integer `cell_data`
+ * array named by its part key (`partition:part`, what `partition_labels`
+ * produces); without that array the mesh is one piece.
+ *
+ * A `partition:ghost` array (`partition`'s halo tag: 0 owned, L reached at layer
+ * L) becomes `vtkGhostType` on cells (`DUPLICATECELL` for any layer) and on
+ * points (`DUPLICATEPOINT` when no owned cell of the piece uses the point), and
+ * sets the index's `GhostLevel` to the deepest layer. `partition:ghost` itself is
+ * written too, since `vtkGhostType` collapses layer 2 onto layer 1. An array the
+ * caller already named `vtkGhostType` is passed through unchanged.
+ *
+ * ### Read
+ *
+ * `read_pvtu` reads every piece and combines them with `merge()` (no welding: a
+ * partition's interface points appear once per piece; `clean` with `weld=true`
+ * fuses them), with one `RegionKind::Cell` region per piece (`piece_0`,
+ * `piece_1`, ...). `ReadOptions::mPiece` keeps one piece instead. A file with a
+ * single piece reads as that piece, with no region. Piece paths are resolved
+ * against the index's own directory.
+ *
+ * Ghost cells are kept by default -- a reader must not silently discard data --
+ * and `ReadOptions::mGhosts = GhostPolicy::Drop` removes every cell with a
+ * `vtkGhostType` bit set (and the points only they used) before merging, which
+ * reconstructs the partition of unity a halo'd `partition` broke.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The integer `cell_data` array `write_pvtu*` carves a mesh by (`partition_labels`'s).
+inline constexpr const char* kPvtuPartKey = "partition:part";
+
+/**
+ * @brief Write a mesh as a `.pvtu` index plus one `.vtu` piece per part.
+ * @param rPath the output `.pvtu` path; pieces land in `<stem>/` beside it.
+ * @param rMesh the mesh; carved by `partition:part` when that array exists.
+ * @param binary base64-encode each piece's arrays instead of writing text.
+ * @param zlib compress each piece's binary blocks. Ignored when @p binary is false.
+ * @throws WriteError on an unwritable path or a non-integer part array.
+ */
+MESHIOPLUSPLUS_API void write_pvtu(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                   bool zlib = true);
+
+/**
+ * @brief `write_pvtu` with an explicit block codec and part key.
+ * @param rPartKey the integer `cell_data` array to carve by; empty (or absent
+ *        from the mesh) writes one piece.
+ */
+MESHIOPLUSPLUS_API void write_pvtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                         detail::VtkCodec codec,
+                                         const std::string& rPartKey = kPvtuPartKey);
+
+/**
+ * @brief Write already-carved pieces (e.g. `partition`'s) as an index plus one file each.
+ * @throws WriteError on no pieces, or when the pieces do not declare identical
+ *         arrays (the message names the array and both pieces).
+ */
+MESHIOPLUSPLUS_API void write_pvtu_pieces_codec(const std::string& rPath,
+                                                const std::vector<const Mesh*>& rPieces,
+                                                bool binary, detail::VtkCodec codec);
+
+/**
+ * @brief Read a `.pvtu`: every piece merged (one region each), or one piece.
+ * @param rOpts selective-read options, forwarded to each piece; `mPieceSet`
+ *        selects one piece (`ResolvePiece`) and `mGhosts` decides what happens
+ *        to ghost cells.
+ * @throws ReadError on an unparsable index, a missing piece file, or a piece
+ *         that is not `.vtu`/`.vtp`.
+ */
+MESHIOPLUSPLUS_API Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/// The sum of the pieces' own metadata, in the order a real read would produce.
+MESHIOPLUSPLUS_API MeshMetadata read_pvtu_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/pvtu.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/pvd.hpp =====
+/**
+ * @file formats/pvd.hpp
+ * @brief ParaView collection (`.pvd`): a time-indexed list of VTK XML files
+ * (v15.0.0).
+ *
+ * A `.pvd` is `<VTKFile type="Collection"><Collection><DataSet timestep="t"
+ * part="p" group="g" file="..."/>...`. Entries name serial or parallel XML files
+ * (`.vtu`, `.vtp`, `.vtm`, `.pvtu`, `.pvtp`), never legacy `.vtk`, so
+ * `.pvd` -> `.pvtu` -> `.vtu` is the ordinary layout of a partitioned transient
+ * run and nests without special cases.
+ *
+ * ### Two axes
+ *
+ * `timestep` selects the *step* (`ReadOptions::mTimeStep`) and, within a step,
+ * `part` selects the *piece* (`ReadOptions::mPiece`). The steps are the distinct
+ * `timestep` values in ascending order; a missing `timestep` or `part` is 0, as
+ * ParaView reads it. `read_pvd` returns step 0 with every part merged (one
+ * `RegionKind::Cell` region per entry, named from `name=`, else `group/part_<p>`,
+ * else `part_<p>`); a step with a single entry is returned as that file reads, so
+ * a step that is one `.pvtu` keeps its own `piece_<i>` regions. The chosen step's
+ * time is attached as `field_data["meshio:time"]`.
+ *
+ * `read_pvd_metadata` reports every step's time from the index alone, without
+ * opening a piece; the rest of the summary is step 0's pieces'.
+ *
+ * ### Write
+ *
+ * `write_pvd` writes a one-step collection: one `.vtu` in a sibling directory
+ * named after the index's stem (`<stem>/<stem>_0000.vtu`, relative paths) whose
+ * `timestep` is the mesh's `meshio:time` field data when present, else 0.
+ * `PvdSeriesWriter` streams many steps: one mesh alive at a time, and the index
+ * is rewritten after every step, so a run that is killed leaves a collection
+ * ParaView opens covering every finished step.
+ */
+
+// System includes
+#include <memory>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Streams `(time, mesh)` steps into a `.pvd` plus one `.vtu` per step.
+ *
+ * Move-only. A moved-from writer's `Write` throws `WriteError`; `Finalize` is
+ * idempotent.
+ */
+class MESHIOPLUSPLUS_API PvdSeriesWriter {
+public:
+    /**
+     * @param rPath the `.pvd` index; pieces land in `<stem>/` beside it.
+     * @param binary base64-encode each piece's arrays instead of writing text.
+     * @param codec the block compressor; `None` writes uncompressed base64.
+     * @throws WriteError when @p codec is not in this build, or the piece
+     *         directory cannot be created.
+     */
+    explicit PvdSeriesWriter(const std::string& rPath, bool binary = true,
+                             detail::VtkCodec codec = detail::VtkCodec::Zlib);
+    ~PvdSeriesWriter();
+
+    PvdSeriesWriter(const PvdSeriesWriter&) = delete;
+    PvdSeriesWriter& operator=(const PvdSeriesWriter&) = delete;
+    PvdSeriesWriter(PvdSeriesWriter&&) noexcept;
+    PvdSeriesWriter& operator=(PvdSeriesWriter&&) noexcept;
+
+    /**
+     * @brief Write one step: its piece file, then the index listing every step so far.
+     * @param Time the step's time; must be finite.
+     * @throws WriteError on a non-finite time, an unwritable path, or a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the final index. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mImpl;
+};
+
+/**
+ * @brief Write a one-step `.pvd` collection.
+ * @param rPath the `.pvd` path.
+ * @param rMesh the mesh; its `field_data["meshio:time"]` (one value) is the step's time.
+ * @param binary base64-encode the piece's arrays instead of writing text.
+ * @param zlib compress the piece's binary blocks. Ignored when @p binary is false.
+ */
+MESHIOPLUSPLUS_API void write_pvd(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                  bool zlib = true);
+
+/// `write_pvd` with an explicit block codec.
+MESHIOPLUSPLUS_API void write_pvd_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                        detail::VtkCodec codec);
+
+/**
+ * @brief Read one step of a `.pvd`, its parts merged (or one part).
+ * @param rOpts `mTimeStep` selects the step (`ResolveTimeStep`: negative counts
+ *        from the end, out of range names the step count); `mPieceSet` selects one
+ *        `part` of that step; the narrowing options and `mGhosts` reach every piece.
+ * @throws ReadError on an unparsable index, a missing piece file, or an entry
+ *         that is not one of `.vtu`/`.vtp`/`.vtm`/`.pvtu`/`.pvtp`.
+ */
+MESHIOPLUSPLUS_API Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/// Every step's time (`mTimeValues`) from the index alone, plus step 0's pieces' summary.
+MESHIOPLUSPLUS_API MeshMetadata read_pvd_metadata(const std::string& rPath,
+                                                  const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/pvd.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/pvtp.hpp =====
+/**
+ * @file formats/pvtp.hpp
+ * @brief VTK XML parallel polygonal data (`.pvtp`): `formats/pvtu.hpp`'s index
+ * over `.vtp` pieces (v15.0.0).
+ *
+ * `<VTKFile type="PPolyData"><PPolyData GhostLevel="N">...<Piece Source=
+ * "stem/stem_0000.vtp"/>`. Everything in `formats/pvtu.hpp` applies -- carving
+ * by `partition:part`, the declaration check, ghosts, merging with one region
+ * per piece -- with `.vtp` in place of `.vtu`.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// @copydoc write_pvtu
+MESHIOPLUSPLUS_API void write_pvtp(const std::string& rPath, const Mesh& rMesh, bool binary = true,
+                                   bool zlib = true);
+
+/// @copydoc write_pvtu_codec
+MESHIOPLUSPLUS_API void write_pvtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                                         detail::VtkCodec codec,
+                                         const std::string& rPartKey = kPvtuPartKey);
+
+/// @copydoc write_pvtu_pieces_codec
+MESHIOPLUSPLUS_API void write_pvtp_pieces_codec(const std::string& rPath,
+                                                const std::vector<const Mesh*>& rPieces,
+                                                bool binary, detail::VtkCodec codec);
+
+/// @copydoc read_pvtu
+MESHIOPLUSPLUS_API Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts = {});
+
+/// @copydoc read_pvtu_metadata
+MESHIOPLUSPLUS_API MeshMetadata read_pvtp_metadata(const std::string& rPath,
+                                                   const ReadOptions& rOpts = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/pvtp.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/stl.hpp =====
 /**
  * @file stl.hpp
@@ -26005,6 +26358,312 @@ inline std::string gid_gauss_coords_key(const std::string& rMeshioName, std::siz
 }  // namespace gid_detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/gid_common.hpp =====
+// ===== begin src/cpp/src/formats/pindex_common.hpp =====
+/**
+ * @file formats/pindex_common.hpp
+ * @brief Machinery shared by the ParaView index formats `.pvtu`, `.pvtp` and
+ * `.pvd`: resolving a piece path, reading and merging pieces, dropping ghost
+ * cells, and summarizing pieces' metadata.
+ *
+ * A **format-private** header (the `formats/gid_common.hpp` precedent): it sits
+ * beside the `.cpp` files because nothing outside these formats needs it and no
+ * installed header may name it. Its functions are in a *named* namespace
+ * (`pidx`), not an anonymous one, because the amalgamation concatenates every
+ * `.cpp` under `src/cpp/src` into one translation unit, and the amalgamator
+ * inlines a quoted include exactly once.
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace pidx {
+
+namespace fs = std::filesystem;
+
+/// VTK's ghost vocabulary (`vtkDataSetAttributes`) and the name `partition`
+/// tags its halo layers with.
+inline constexpr const char* kGhostName = "vtkGhostType";
+inline constexpr const char* kPartitionGhost = "partition:ghost";
+
+/// The value of an XML attribute, escaped for a double-quoted context.
+inline std::string escape_attr(const std::string& rValue) {
+    std::string out;
+    out.reserve(rValue.size());
+    for (const char c : rValue) {
+        switch (c) {
+            case '&':
+                out += "&amp;";
+                break;
+            case '<':
+                out += "&lt;";
+                break;
+            case '>':
+                out += "&gt;";
+                break;
+            case '"':
+                out += "&quot;";
+                break;
+            default:
+                out += c;
+        }
+    }
+    return out;
+}
+
+/**
+ * Where a piece named by @p rFile lives: resolved against the index's own
+ * directory; an absolute path is used as written. There is deliberately no
+ * search for the file elsewhere -- an absolute path from another machine that
+ * does not exist here is an error naming the attribute and the index, because a
+ * fallback could read the wrong file.
+ */
+inline fs::path resolve_path(const std::string& rIndexPath, const std::string& rFile,
+                             const std::string& rFormat, const char* pAttr) {
+    if (rFile.empty())
+        throw ReadError("meshio++: " + rFormat + ": an entry is missing its '" + pAttr +
+                        "' attribute: " + rIndexPath);
+    const fs::path file(rFile);
+    const fs::path base = fs::path(rIndexPath).parent_path();
+    const fs::path path = file.is_absolute() || base.empty() ? file : base / file;
+    std::error_code ec;
+    if (!fs::exists(path, ec))
+        throw ReadError("meshio++: " + rFormat + ": piece file '" + rFile + "' (" + pAttr +
+                        "=) named by " + rIndexPath + " does not exist (looked for " +
+                        path.string() +
+                        "); a relative path is resolved against the index's own directory and an "
+                        "absolute path is not searched for elsewhere");
+    return path;
+}
+
+/// `<stem>_0000<ext>` ... zero-padded to `max(4, digits(count - 1))`, the width
+/// `{step}` patterns use.
+inline std::vector<std::string> piece_names(const std::string& rStem, std::size_t Count,
+                                            const std::string& rExt) {
+    std::size_t width = 4;
+    if (Count > 1)
+        width = std::max<std::size_t>(width, std::to_string(Count - 1).size());
+    std::vector<std::string> names;
+    names.reserve(Count);
+    for (std::size_t i = 0; i < Count; ++i) {
+        std::string idx = std::to_string(i);
+        names.push_back(rStem + "_" + std::string(width - idx.size(), '0') + idx + rExt);
+    }
+    return names;
+}
+
+/// The options handed to a piece's own reader: the narrowing options apply, but
+/// the index's step and piece selectors were consumed by the index itself.
+inline ReadOptions child_options(const ReadOptions& rOpts) {
+    ReadOptions child = rOpts;
+    child.mTimeStep = 0;
+    child.mPiece = 0;
+    child.mPieceSet = false;
+    return child;
+}
+
+/// A mesh with no points and no cells: what an index naming no piece reads as.
+inline Mesh empty_mesh() {
+    Mesh empty;
+    empty.AssignPoints(NDArray::Uninit(DType::Float64, {0, 3}));
+    return empty;
+}
+
+/**
+ * Read one piece with the reader for its extension. @p Wide widens the set to
+ * what a `.pvd` may name (`.vtm`, `.pvtu`, `.pvtp` as well); a parallel index
+ * names serial files only, so the only nesting is a `.pvd` over them and no
+ * cycle is expressible.
+ */
+inline Mesh read_child(const fs::path& rPath, const ReadOptions& rOpts, bool Wide) {
+    const std::string ext = rPath.extension().string();
+    const ReadOptions child = child_options(rOpts);
+    if (ext == ".vtu")
+        return read_vtu(rPath.string(), child);
+    if (ext == ".vtp")
+        return read_vtp(rPath.string(), child);
+    if (Wide) {
+        if (ext == ".vtm")
+            return read_vtm(rPath.string(), child);
+        if (ext == ".pvtu")
+            return read_pvtu(rPath.string(), child);
+        if (ext == ".pvtp")
+            return read_pvtp(rPath.string(), child);
+    }
+    throw ReadError("meshio++: unsupported piece '" + rPath.string() + "': only " +
+                    (Wide ? ".vtu/.vtp/.vtm/.pvtu/.pvtp" : ".vtu/.vtp") + " pieces are read");
+}
+
+inline MeshMetadata read_child_metadata(const fs::path& rPath, const ReadOptions& rOpts,
+                                        bool Wide) {
+    const std::string ext = rPath.extension().string();
+    const ReadOptions child = child_options(rOpts);
+    if (ext == ".vtp")
+        return read_vtp_metadata(rPath.string(), child);
+    if (ext == ".vtu")
+        return read_vtu_metadata(rPath.string(), child);
+    if (Wide) {
+        if (ext == ".vtm")
+            return read_vtm_metadata(rPath.string(), child);
+        if (ext == ".pvtu")
+            return read_pvtu_metadata(rPath.string(), child);
+        if (ext == ".pvtp")
+            return read_pvtp_metadata(rPath.string(), child);
+    }
+    throw ReadError("meshio++: unsupported piece '" + rPath.string() + "': only " +
+                    (Wide ? ".vtu/.vtp/.vtm/.pvtu/.pvtp" : ".vtu/.vtp") + " pieces are read");
+}
+
+/// Whether every entry of @p rArray is zero (any integer dtype).
+inline bool all_zero(const NDArray& rArray) {
+    for (const std::int64_t v : detail::vtu_to_int64(rArray))
+        if (v != 0)
+            return false;
+    return true;
+}
+
+/**
+ * Drop ghost cells (any `vtkGhostType` bit set) and the points only they used,
+ * then the now meaningless ghost arrays. A piece with no `vtkGhostType` array is
+ * returned unchanged; one with the array but no flagged cell keeps its points
+ * and loses only the array. `partition:ghost` goes too, when it is all zero.
+ */
+inline Mesh drop_ghosts(Mesh Piece) {
+    if (!Piece.HasCellData(kGhostName))
+        return Piece;
+    bool any_flagged = false;
+    for (std::size_t b = 0; b < Piece.CellDataNumBlocks(kGhostName) && !any_flagged; ++b)
+        any_flagged = !all_zero(Piece.CellData(kGhostName, b));
+
+    Mesh kept;
+    if (any_flagged)
+        kept = crop_predicate(Piece, kGhostName, RefineCompare::Equal, 0.0).mMesh;
+    else
+        kept = std::move(Piece);
+
+    bool drop_layers = kept.HasCellData(kPartitionGhost);
+    for (std::size_t b = 0; drop_layers && b < kept.CellDataNumBlocks(kPartitionGhost); ++b)
+        drop_layers = all_zero(kept.CellData(kPartitionGhost, b));
+    return detail::clone_mesh(
+        kept, [drop_layers](DataLocation Where, const std::string& rName, std::string&) {
+            if (Where == DataLocation::Field)
+                return true;
+            if (rName == kGhostName)
+                return false;
+            return !(drop_layers && Where == DataLocation::Cell && rName == kPartitionGhost);
+        });
+}
+
+/**
+ * `merge()`, except that field data is the union across the inputs instead of being
+ * namespaced.
+ *
+ * Field data belongs to the dataset, not to a piece: a parallel writer repeats it in
+ * every piece (or writes it once), so the copies are the same value. `merge` cannot
+ * know that -- it renames any key present in more than one input to `0:name`,
+ * `1:name` -- which would turn a `TimeValue` every piece carries into keys nothing
+ * looks up, and make the metadata (a union of names) disagree with the read. The
+ * first piece to carry a name wins.
+ */
+inline MergeResult merge_keeping_field_data(const std::vector<const Mesh*>& rPieces,
+                                            const MergeOptions& rOpts) {
+    MergeResult result = merge(rPieces, rOpts);
+    bool any_field = false;
+    for (const Mesh* pPiece : rPieces)
+        any_field = any_field || pPiece->NumFieldData() > 0;
+    if (!any_field)
+        return result;
+    result.mMesh =
+        detail::clone_mesh(result.mMesh, [](DataLocation Where, const std::string&, std::string&) {
+            return Where != DataLocation::Field;
+        });
+    for (const Mesh* pPiece : rPieces)
+        for (const std::string& name : pPiece->FieldDataNames())
+            if (!result.mMesh.HasFieldData(name))
+                result.mMesh.AddFieldData(name, detail::data_owned_copy(pPiece->FieldData(name)));
+    return result;
+}
+
+/**
+ * Merge @p rPieces without welding and add one `Cell` region per piece, named
+ * `rNames[i]`. A single piece is returned as read: wrapping it in one all-cells
+ * region would hide the regions it already has (a `.pvd` step that is one
+ * `.pvtu`).
+ */
+inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string>& rNames) {
+    if (Pieces.size() == 1)
+        return std::move(Pieces.front());
+
+    std::vector<const Mesh*> ptrs;
+    ptrs.reserve(Pieces.size());
+    for (const Mesh& m : Pieces)
+        ptrs.push_back(&m);
+
+    MergeOptions mopts;
+    mopts.weld = false;
+    mopts.source_tag = false;
+    mopts.data_policy = MergeDataPolicy::Fill;
+    MergeResult result = merge_keeping_field_data(ptrs, mopts);
+
+    for (std::size_t i = 0; i < Pieces.size(); ++i)
+        result.mMesh.AddRegion(Region(rNames[i], RegionKind::Cell, std::move(result.mCellMaps[i])));
+    return std::move(result.mMesh);
+}
+
+/// The sum of the pieces' own metadata, in the same first-seen, same-type
+/// consolidation order `merge_pieces` would produce.
+inline MeshMetadata aggregate_metadata(const std::vector<MeshMetadata>& rParts,
+                                       const std::string& rFormat) {
+    MeshMetadata meta;
+    meta.mFormat = rFormat;
+    std::vector<CellBlockInfo> blocks;
+    std::vector<std::string> point_names, cell_names, field_names;
+    auto merge_names = [](std::vector<std::string>& rInto, const std::vector<std::string>& rFrom) {
+        for (const std::string& n : rFrom)
+            if (std::find(rInto.begin(), rInto.end(), n) == rInto.end())
+                rInto.push_back(n);
+    };
+    for (const MeshMetadata& pm : rParts) {
+        meta.mNumPoints += pm.mNumPoints;
+        meta.mPointDim = std::max(meta.mPointDim, pm.mPointDim);
+        meta.mFellBackToFullRead = meta.mFellBackToFullRead || pm.mFellBackToFullRead;
+        merge_names(point_names, pm.mPointDataNames);
+        merge_names(cell_names, pm.mCellDataNames);
+        merge_names(field_names, pm.mFieldDataNames);
+        for (const CellBlockInfo& cb : pm.mCellBlocks) {
+            auto it = std::find_if(blocks.begin(), blocks.end(),
+                                   [&](const CellBlockInfo& rB) { return rB.mType == cb.mType; });
+            if (it == blocks.end()) {
+                blocks.push_back(cb);
+            } else {
+                it->mNumCells += cb.mNumCells;
+                it->mRagged = it->mRagged || cb.mRagged;
+                if (it->mNodesPerCell != cb.mNodesPerCell)
+                    it->mNodesPerCell = 0;
+            }
+        }
+    }
+    meta.mCellBlocks = std::move(blocks);
+    std::sort(point_names.begin(), point_names.end());
+    std::sort(cell_names.begin(), cell_names.end());
+    std::sort(field_names.begin(), field_names.end());
+    meta.mPointDataNames = std::move(point_names);
+    meta.mCellDataNames = std::move(cell_names);
+    meta.mFieldDataNames = std::move(field_names);
+    return meta;
+}
+
+}  // namespace pidx
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/pindex_common.hpp =====
 // ===== begin src/cpp/third_party/pugixml/pugixml.hpp =====
 /**
  * pugixml parser - version 1.14
@@ -47035,6 +47694,48 @@ NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std
     if (n)
         std::memcpy(a.Data(), bytes.data(), n * isz);
     return a;
+}
+
+namespace {
+
+constexpr const char* kVtuGhostName = "vtkGhostType";
+
+}  // namespace
+
+DType vtu_disk_dtype(const std::string& rName, DType Dt) {
+    return rName == kVtuGhostName ? DType::UInt8 : Dt;
+}
+
+const NDArray& vtu_disk_array(const std::string& rName, const NDArray& rArray, NDArray& rScratch) {
+    if (rName != kVtuGhostName || rArray.Dtype() == DType::UInt8)
+        return rArray;
+    rScratch = NDArray::Uninit(DType::UInt8, rArray.Shape());
+    std::uint8_t* out = rScratch.As<std::uint8_t>();
+    for (std::size_t i = 0; i < rArray.Size(); ++i)
+        out[i] = static_cast<std::uint8_t>(read_int(rArray, i));
+    return rScratch;
+}
+
+void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
+                           bool Binary, VtkCodec Codec) {
+    const std::vector<std::size_t>& shape = rArray.Shape();
+    const std::size_t tuples = shape.empty() ? 1 : shape[0];
+    rOs << "<DataArray type=\"" << vtu_type_str(rArray.Dtype()) << "\" Name=\"" << rName
+        << "\" NumberOfTuples=\"" << tuples << "\"";
+    if (shape.size() >= 2) {
+        std::size_t components = 1;
+        for (std::size_t d = 1; d < shape.size(); ++d)
+            components *= shape[d];
+        rOs << " NumberOfComponents=\"" << components << "\"";
+    }
+    rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
+    if (Binary)
+        rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
+                                 rArray.Nbytes(), Codec)
+            << "\n";
+    else
+        vtu_ascii_ndarray(rOs, rArray);
+    rOs << "</DataArray>\n";
 }
 
 std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
@@ -70693,6 +71394,815 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/ply.cpp =====
+// ===== begin src/cpp/src/formats/pvd.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+// The value of the single-element field-data array @p pKey, if the mesh has one.
+bool pvd_field_scalar(const Mesh& rMesh, const char* pKey, double& rOut) {
+    if (!rMesh.HasFieldData(pKey))
+        return false;
+    const NDArray& a = rMesh.FieldData(pKey);
+    if (a.Size() != 1)
+        return false;
+    switch (a.Dtype()) {
+        case DType::Float32:
+            rOut = static_cast<double>(*a.As<float>());
+            return true;
+        case DType::Float64:
+            rOut = *a.As<double>();
+            return true;
+        case DType::Int8:
+            rOut = static_cast<double>(*a.As<std::int8_t>());
+            return true;
+        case DType::Int16:
+            rOut = static_cast<double>(*a.As<std::int16_t>());
+            return true;
+        case DType::Int32:
+            rOut = static_cast<double>(*a.As<std::int32_t>());
+            return true;
+        case DType::Int64:
+            rOut = static_cast<double>(*a.As<std::int64_t>());
+            return true;
+        case DType::UInt8:
+            rOut = static_cast<double>(*a.As<std::uint8_t>());
+            return true;
+        case DType::UInt16:
+            rOut = static_cast<double>(*a.As<std::uint16_t>());
+            return true;
+        case DType::UInt32:
+            rOut = static_cast<double>(*a.As<std::uint32_t>());
+            return true;
+        case DType::UInt64:
+            rOut = static_cast<double>(*a.As<std::uint64_t>());
+            return true;
+    }
+    return false;
+}
+
+struct pvd_entry {
+    double mTime = 0.0;
+    bool mHasTimestep = false;
+    std::int64_t mPart = 0;
+    std::size_t mOrder = 0;
+    std::string mGroup;
+    std::string mName;
+    std::string mFile;
+};
+
+struct pvd_index {
+    std::vector<pvd_entry> mEntries;
+    std::vector<double> mTimes;  // distinct, ascending
+};
+
+pvd_index pvd_parse(const std::string& rPath) {
+    pugi::xml_document doc;
+    const pugi::xml_parse_result parsed = doc.load_file(rPath.c_str());
+    if (!parsed)
+        throw ReadError("meshio++: pvd: could not parse " + rPath + ": " + parsed.description());
+    const pugi::xml_node root = doc.child("VTKFile");
+    if (!root)
+        throw ReadError("meshio++: pvd: expected tag 'VTKFile': " + rPath);
+    const std::string type = root.attribute("type").as_string();
+    if (type != "Collection")
+        throw ReadError("meshio++: pvd: expected type Collection, got '" + type + "': " + rPath);
+    const pugi::xml_node coll = root.child("Collection");
+    if (!coll)
+        throw ReadError("meshio++: pvd: expected tag 'Collection': " + rPath);
+
+    pvd_index index;
+    std::size_t order = 0;
+    for (const pugi::xml_node ds : coll.children("DataSet")) {
+        pvd_entry e;
+        try {
+            // A missing part is 0. A missing timestep is resolved below: from the
+            // entry's own file when it names one, else 0 as ParaView reads it.
+            e.mHasTimestep = static_cast<bool>(ds.attribute("timestep"));
+            if (e.mHasTimestep)
+                e.mTime = detail::stod_c(ds.attribute("timestep").as_string());
+            e.mPart = std::stoll(ds.attribute("part").as_string("0"));
+        } catch (const std::exception& ex) {
+            throw ReadError("meshio++: pvd: bad timestep/part in " + rPath + ": " + ex.what());
+        }
+        e.mOrder = order++;
+        e.mGroup = ds.attribute("group").as_string("");
+        e.mName = ds.attribute("name").as_string("");
+        e.mFile = ds.attribute("file").as_string("");
+        index.mEntries.push_back(std::move(e));
+    }
+
+    // The per-file alternative to `timestep=` (VTK's "time in field data"): a
+    // `TimeValue` array in the file's own `<FieldData>`, else our `meshio:time`.
+    // Resolved here, for every entry, so a summary and a real read cannot group
+    // the steps differently. An index whose entries all carry `timestep=` -- what
+    // meshio++ and ParaView write -- never opens a piece for this; one that relies
+    // on the file's own time opens those files, narrowed to just the two arrays.
+    for (pvd_entry& e : index.mEntries) {
+        if (e.mHasTimestep || e.mFile.empty())
+            continue;
+        ReadOptions probe;
+        probe.mDataArrays = std::vector<std::string>{"TimeValue", kSequenceTimeKey};
+        const Mesh piece = pidx::read_child(pidx::resolve_path(rPath, e.mFile, "pvd", "file"),
+                                            probe, /*Wide=*/true);
+        if (!pvd_field_scalar(piece, "TimeValue", e.mTime))
+            pvd_field_scalar(piece, kSequenceTimeKey, e.mTime);
+    }
+    for (const pvd_entry& e : index.mEntries)
+        index.mTimes.push_back(e.mTime);
+    std::sort(index.mTimes.begin(), index.mTimes.end());
+    index.mTimes.erase(std::unique(index.mTimes.begin(), index.mTimes.end()), index.mTimes.end());
+    return index;
+}
+
+std::string pvd_region_name(const pvd_entry& rEntry) {
+    if (!rEntry.mName.empty())
+        return rEntry.mName;
+    const std::string base = "part_" + std::to_string(rEntry.mPart);
+    return rEntry.mGroup.empty() ? base : rEntry.mGroup + "/" + base;
+}
+
+// The entries of the step at index @p Step, part ascending then document order.
+std::vector<const pvd_entry*> pvd_step_entries(const pvd_index& rIndex, std::size_t Step) {
+    std::vector<const pvd_entry*> chosen;
+    for (const pvd_entry& e : rIndex.mEntries)
+        if (e.mTime == rIndex.mTimes[Step])
+            chosen.push_back(&e);
+    std::stable_sort(chosen.begin(), chosen.end(), [](const pvd_entry* pA, const pvd_entry* pB) {
+        return pA->mPart != pB->mPart ? pA->mPart < pB->mPart : pA->mOrder < pB->mOrder;
+    });
+    return chosen;
+}
+
+// The shortest of %.15g / %.16g / %.17g that reads back exactly: locale-independent
+// (`snprintf_c` / `stod_c`) and "0.1" rather than "0.10000000000000001".
+std::string pvd_format_time(double Time) {
+    char buf[40];
+    for (int precision = 15; precision <= 17; ++precision) {
+        detail::snprintf_c(buf, sizeof(buf), "%.*g", precision, Time);
+        if (precision == 17 || detail::stod_c(buf) == Time)
+            break;
+    }
+    return buf;
+}
+
+// The step time a plain write records: `meshio:time` when it holds one value.
+double pvd_mesh_time(const Mesh& rMesh) {
+    double t = 0.0;
+    pvd_field_scalar(rMesh, kSequenceTimeKey, t);
+    return t;
+}
+
+}  // namespace
+
+// --- PvdSeriesWriter -----------------------------------------------------------
+
+struct PvdSeriesWriter::Impl {
+    std::string mPath;
+    fs::path mDir;
+    std::string mStem;
+    bool mBinary = true;
+    detail::VtkCodec mCodec = detail::VtkCodec::Zlib;
+    std::vector<std::pair<double, std::string>> mEntries;  // time, index-relative path
+    bool mFinalized = false;
+
+    void FlushIndex() const {
+        auto os = detail::make_classic_ofstream(mPath, std::ios::binary);
+        if (!os)
+            throw WriteError("Could not open file for writing: " + mPath);
+        os << "<?xml version=\"1.0\"?>\n";
+        os << "<VTKFile type=\"Collection\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
+        os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+        os << "<Collection>\n";
+        for (const auto& entry : mEntries)
+            os << "<DataSet timestep=\"" << pvd_format_time(entry.first) << "\" part=\"0\" file=\""
+               << pidx::escape_attr(entry.second) << "\"/>\n";
+        os << "</Collection>\n";
+        os << "</VTKFile>\n";
+        if (!os)
+            throw WriteError("Failed while writing: " + mPath);
+    }
+};
+
+PvdSeriesWriter::PvdSeriesWriter(const std::string& rPath, bool binary, detail::VtkCodec codec)
+    : mImpl(std::make_unique<Impl>()) {
+    if (binary && codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(codec);
+    const fs::path index_path(rPath);
+    mImpl->mPath = rPath;
+    mImpl->mStem = index_path.stem().string();
+    mImpl->mDir = index_path.parent_path().empty() ? fs::path(mImpl->mStem)
+                                                   : index_path.parent_path() / mImpl->mStem;
+    mImpl->mBinary = binary;
+    mImpl->mCodec = codec;
+    std::error_code ec;
+    fs::create_directories(mImpl->mDir, ec);
+    if (ec)
+        throw WriteError("Could not create directory for .pvd pieces: " + mImpl->mDir.string() +
+                         ": " + ec.message());
+}
+
+PvdSeriesWriter::~PvdSeriesWriter() = default;
+PvdSeriesWriter::PvdSeriesWriter(PvdSeriesWriter&&) noexcept = default;
+PvdSeriesWriter& PvdSeriesWriter::operator=(PvdSeriesWriter&&) noexcept = default;
+
+void PvdSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mImpl)
+        throw WriteError("meshio++: pvd: Write on a moved-from PvdSeriesWriter");
+    if (mImpl->mFinalized)
+        throw WriteError("meshio++: pvd: Write after Finalize");
+    if (!std::isfinite(Time))
+        throw WriteError("meshio++: pvd: a step's time must be finite");
+    // Width 4 for every file: the step count is not known up front, and a run
+    // whose first files were padded differently from its last is worse than one
+    // that is merely wider past 10000 steps.
+    std::string idx = std::to_string(mImpl->mEntries.size());
+    const std::string name =
+        mImpl->mStem + "_" + std::string(idx.size() < 4 ? 4 - idx.size() : 0, '0') + idx + ".vtu";
+    write_vtu_codec((mImpl->mDir / name).string(), rMesh, mImpl->mBinary,
+                    mImpl->mBinary ? mImpl->mCodec : detail::VtkCodec::None);
+    mImpl->mEntries.emplace_back(Time, mImpl->mStem + "/" + name);
+    mImpl->FlushIndex();
+}
+
+std::size_t PvdSeriesWriter::NumSteps() const noexcept {
+    return mImpl ? mImpl->mEntries.size() : 0;
+}
+
+void PvdSeriesWriter::Finalize() {
+    if (!mImpl || mImpl->mFinalized)
+        return;
+    if (mImpl->mEntries.empty())
+        throw WriteError("meshio++: pvd: a collection needs at least one step");
+    mImpl->FlushIndex();
+    mImpl->mFinalized = true;
+}
+
+// --- write -------------------------------------------------------------------------
+
+void write_pvd(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_pvd_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+}
+
+void write_pvd_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                     detail::VtkCodec codec) {
+    PvdSeriesWriter writer(rPath, binary, codec);
+    writer.Write(pvd_mesh_time(rMesh), rMesh);
+    writer.Finalize();
+}
+
+// --- read --------------------------------------------------------------------------
+
+Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts) {
+    const pvd_index index = pvd_parse(rPath);
+    if (index.mEntries.empty())
+        return pidx::empty_mesh();
+
+    const std::size_t step = rOpts.ResolveTimeStep(index.mTimes.size());
+    const std::vector<const pvd_entry*> chosen = pvd_step_entries(index, step);
+
+    auto one = [&](const pvd_entry& rEntry) {
+        Mesh m = pidx::read_child(pidx::resolve_path(rPath, rEntry.mFile, "pvd", "file"), rOpts,
+                                  /*Wide=*/true);
+        if (rOpts.mGhosts == GhostPolicy::Drop)
+            return pidx::drop_ghosts(std::move(m));
+        return m;
+    };
+
+    Mesh out;
+    if (rOpts.mPieceSet) {
+        out = one(*chosen[rOpts.ResolvePiece(chosen.size())]);
+    } else {
+        std::vector<Mesh> pieces;
+        std::vector<std::string> names;
+        pieces.reserve(chosen.size());
+        for (const pvd_entry* e : chosen) {
+            pieces.push_back(one(*e));
+            names.push_back(pvd_region_name(*e));
+        }
+        out = pidx::merge_pieces(std::move(pieces), names);
+    }
+    NDArray time(DType::Float64, {1});
+    *time.As<double>() = index.mTimes[step];
+    out.AddFieldData(kSequenceTimeKey, std::move(time));
+    return out;
+}
+
+MeshMetadata read_pvd_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    const pvd_index index = pvd_parse(rPath);
+    std::vector<MeshMetadata> parts;
+    if (!index.mEntries.empty())
+        for (const pvd_entry* e : pvd_step_entries(index, 0))
+            parts.push_back(pidx::read_child_metadata(
+                pidx::resolve_path(rPath, e->mFile, "pvd", "file"), rOpts, /*Wide=*/true));
+    MeshMetadata meta = pidx::aggregate_metadata(parts, "pvd");
+    meta.mTimeValues = index.mTimes;
+    return meta;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/pvd.cpp =====
+// ===== begin src/cpp/src/formats/pvtu.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+// External includes
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+enum class pvtu_kind { Pvtu, Pvtp };
+
+struct pvtu_kind_info {
+    const char* mFormat;
+    const char* mRoot;
+    const char* mExt;
+};
+
+const pvtu_kind_info& pvtu_info(pvtu_kind Kind) {
+    static const pvtu_kind_info sPvtu{"pvtu", "PUnstructuredGrid", ".vtu"};
+    static const pvtu_kind_info sPvtp{"pvtp", "PPolyData", ".vtp"};
+    return Kind == pvtu_kind::Pvtu ? sPvtu : sPvtp;
+}
+
+// vtkDataSetAttributes: DUPLICATECELL = 1, DUPLICATEPOINT = 1. REFINEDCELL (8) and
+// HIDDENCELL/HIDDENPOINT (32) are read back faithfully; nothing here produces them.
+constexpr std::uint8_t pvtu_duplicate_cell = 1;
+constexpr std::uint8_t pvtu_duplicate_point = 1;
+
+// --- declarations ------------------------------------------------------------
+
+struct pvtu_decl {
+    std::string mType;
+    std::size_t mComp = 1;
+
+    bool operator==(const pvtu_decl& rOther) const {
+        return mType == rOther.mType && mComp == rOther.mComp;
+    }
+    bool operator!=(const pvtu_decl& rOther) const { return !(*this == rOther); }
+};
+
+struct pvtu_decls {
+    pvtu_decl mPoints;
+    std::map<std::string, pvtu_decl> mPointData;
+    std::map<std::string, pvtu_decl> mCellData;
+};
+
+pvtu_decl pvtu_decl_of(const std::string& rName, const NDArray& rArray) {
+    pvtu_decl d;
+    // What the piece files write: `vtkGhostType` is always UInt8 on disk (see
+    // `detail::vtu_disk_array`), whatever dtype the mesh backend holds it as.
+    d.mType = detail::vtu_type_str(detail::vtu_disk_dtype(rName, rArray.Dtype()));
+    d.mComp = rArray.Shape().size() == 2 ? rArray.Shape()[1] : 1;
+    return d;
+}
+
+std::string pvtu_fmt_decl(const pvtu_decl& rDecl) {
+    return rDecl.mType + " with " + std::to_string(rDecl.mComp) +
+           (rDecl.mComp == 1 ? " component" : " components");
+}
+
+std::size_t pvtu_num_cells(const Mesh& rMesh) {
+    std::size_t n = 0;
+    for (const auto cb : rMesh.CellRange())
+        n += cb.NumCells();
+    return n;
+}
+
+// What a piece will hold, as `<PDataArray>` declares it.
+pvtu_decls pvtu_declarations_of(const Mesh& rMesh) {
+    pvtu_decls d;
+    d.mPoints.mType = detail::vtu_type_str(rMesh.Points().Dtype());
+    d.mPoints.mComp = 3;
+    for (const std::string& name : rMesh.PointDataNames())
+        d.mPointData[name] = pvtu_decl_of(name, rMesh.PointData(name));
+    for (const std::string& name : rMesh.CellDataNames()) {
+        bool have = false;
+        pvtu_decl decl;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b) {
+            const pvtu_decl cur = pvtu_decl_of(name, rMesh.CellData(name, b));
+            if (!have) {
+                decl = cur;
+                have = true;
+            } else if (cur != decl) {
+                throw WriteError("meshio++: cell_data '" + name +
+                                 "' has differing types or component counts across cell blocks");
+            }
+        }
+        if (have)
+            d.mCellData[name] = decl;
+    }
+    return d;
+}
+
+// Refuse a piece list whose pieces do not declare identical arrays, before
+// anything is emitted. Piece 0 is the reference. A piece with no cells is exempt
+// from the cell_data comparison only when it carries no cell arrays (an idle rank
+// legitimately allocated nothing); points are never exempt.
+pvtu_decls pvtu_validate(pvtu_kind Kind, const std::vector<const Mesh*>& rPieces) {
+    const std::string format = pvtu_info(Kind).mFormat;
+    std::vector<pvtu_decls> decls;
+    decls.reserve(rPieces.size());
+    for (const Mesh* p : rPieces)
+        decls.push_back(pvtu_declarations_of(*p));
+
+    const std::string tail =
+        "; every piece of a parallel index must declare identical arrays (name, type, "
+        "NumberOfComponents)";
+    for (std::size_t k = 1; k < decls.size(); ++k) {
+        const std::string head = "meshio++: " + format + ": piece " + std::to_string(k);
+        const pvtu_decls& ref = decls[0];
+        const pvtu_decls& cur = decls[k];
+        if (cur.mPoints != ref.mPoints)
+            throw WriteError(head + " declares Points as " + pvtu_fmt_decl(cur.mPoints) +
+                             ", but piece 0 declares it as " + pvtu_fmt_decl(ref.mPoints) + tail);
+
+        struct section {
+            const char* mLabel;
+            const std::map<std::string, pvtu_decl>* mRef;
+            const std::map<std::string, pvtu_decl>* mCur;
+        };
+        const section sections[] = {{"point_data", &ref.mPointData, &cur.mPointData},
+                                    {"cell_data", &ref.mCellData, &cur.mCellData}};
+        for (const section& s : sections) {
+            if (std::string(s.mLabel) == "cell_data" && s.mCur->empty() &&
+                pvtu_num_cells(*rPieces[k]) == 0)
+                continue;
+            std::set<std::string> names;
+            for (const auto& kv : *s.mRef)
+                names.insert(kv.first);
+            for (const auto& kv : *s.mCur)
+                names.insert(kv.first);
+            for (const std::string& name : names) {
+                const auto in_cur = s.mCur->find(name);
+                const auto in_ref = s.mRef->find(name);
+                if (in_cur == s.mCur->end())
+                    throw WriteError(head + " is missing " + s.mLabel + " '" + name +
+                                     "', which piece 0 declares" + tail);
+                if (in_ref == s.mRef->end())
+                    throw WriteError(head + " declares " + s.mLabel + " '" + name +
+                                     "', which piece 0 does not" + tail);
+                if (in_ref->second != in_cur->second)
+                    throw WriteError(head + " declares " + s.mLabel + " '" + name + "' as " +
+                                     pvtu_fmt_decl(in_cur->second) +
+                                     ", but piece 0 declares it as " +
+                                     pvtu_fmt_decl(in_ref->second) + tail);
+            }
+        }
+    }
+    return decls.front();
+}
+
+// --- ghosts ------------------------------------------------------------------
+
+std::int64_t pvtu_ghost_level(const std::vector<const Mesh*>& rPieces) {
+    std::int64_t level = 0;
+    for (const Mesh* p : rPieces) {
+        if (!p->HasCellData(pidx::kPartitionGhost))
+            continue;
+        for (std::size_t b = 0; b < p->CellDataNumBlocks(pidx::kPartitionGhost); ++b)
+            for (const std::int64_t v : detail::vtu_to_int64(p->CellData(pidx::kPartitionGhost, b)))
+                level = std::max(level, v);
+    }
+    return level;
+}
+
+bool pvtu_needs_ghosts(const Mesh& rMesh) {
+    return rMesh.HasCellData(pidx::kPartitionGhost) &&
+           !(rMesh.HasCellData(pidx::kGhostName) && rMesh.HasPointData(pidx::kGhostName));
+}
+
+// A copy of @p rMesh carrying `vtkGhostType` derived from `partition:ghost`.
+// Cells: 0 for an owned cell (layer 0), DUPLICATECELL for any halo layer. Points:
+// DUPLICATEPOINT when no owned cell of this piece references the point. An array
+// the caller already supplied is passed through unchanged.
+Mesh pvtu_derive_ghosts(const Mesh& rMesh) {
+    Mesh out = detail::clone_mesh(rMesh);
+    const bool have_cell = rMesh.HasCellData(pidx::kGhostName);
+    const bool have_point = rMesh.HasPointData(pidx::kGhostName);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::uint8_t> owned(rMesh.NumPoints(), 0);
+    std::vector<NDArray> cell_gh;
+    cell_gh.reserve(nblocks);
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::vector<std::int64_t> layers =
+            detail::vtu_to_int64(rMesh.CellData(pidx::kPartitionGhost, b));
+        const auto cb = rMesh.Cells(b);
+        if (layers.size() != cb.NumCells())
+            throw WriteError("meshio++: partition:ghost has " + std::to_string(layers.size()) +
+                             " values for a block of " + std::to_string(cb.NumCells()) + " cells");
+        NDArray gh = NDArray::Uninit(DType::UInt8, {layers.size()});
+        std::uint8_t* g = gh.As<std::uint8_t>();
+        for (std::size_t c = 0; c < layers.size(); ++c)
+            g[c] = layers[c] > 0 ? pvtu_duplicate_cell : 0;
+        cell_gh.push_back(std::move(gh));
+
+        auto own = [&](std::int64_t Node) {
+            if (Node >= 0 && static_cast<std::size_t>(Node) < owned.size())
+                owned[static_cast<std::size_t>(Node)] = 1;
+        };
+        if (cb.IsPolyhedron()) {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                if (layers[c] != 0)
+                    continue;
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    for (std::size_t i = 0; i < face.second; ++i)
+                        own(face.first[i]);
+                }
+            }
+        } else if (cb.IsRagged()) {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                if (layers[c] == 0)
+                    for (std::size_t i = 0; i < cb.RowSize(c); ++i)
+                        own(cb.Row(c)[i]);
+        } else {
+            const std::vector<std::int64_t> conn = detail::vtu_to_int64(cb.Conn());
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                if (layers[c] == 0)
+                    for (std::size_t i = 0; i < npc; ++i)
+                        own(conn[c * npc + i]);
+        }
+    }
+
+    if (!have_cell)
+        out.AddCellData(pidx::kGhostName, std::move(cell_gh));
+    if (!have_point) {
+        NDArray pg = NDArray::Uninit(DType::UInt8, {owned.size()});
+        std::uint8_t* g = pg.As<std::uint8_t>();
+        for (std::size_t i = 0; i < owned.size(); ++i)
+            g[i] = owned[i] ? 0 : pvtu_duplicate_point;
+        out.AddPointData(pidx::kGhostName, std::move(pg));
+    }
+    return out;
+}
+
+// --- carving a single mesh into parts ----------------------------------------
+
+// One piece per part id 0..max of the integer cell_data @p rKey. Parts with no
+// cells are kept (they are real ranks; skipping one would renumber the rest).
+// Each piece keeps every block (possibly empty) and only the points its cells use.
+std::vector<Mesh> pvtu_carve(const Mesh& rMesh, const std::string& rKey) {
+    std::int64_t max_id = -1;
+    for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(rKey); ++b) {
+        const NDArray& ids = rMesh.CellData(rKey, b);
+        if (ids.Dtype() == DType::Float32 || ids.Dtype() == DType::Float64)
+            throw WriteError("meshio++: cell_data '" + rKey + "' must hold integer part ids");
+        for (const std::int64_t v : detail::vtu_to_int64(ids)) {
+            if (v < 0)
+                throw WriteError("meshio++: cell_data '" + rKey + "' holds a negative part id");
+            max_id = std::max(max_id, v);
+        }
+    }
+    const std::int64_t nparts = std::max<std::int64_t>(max_id + 1, 1);
+    std::vector<Mesh> pieces;
+    pieces.reserve(static_cast<std::size_t>(nparts));
+    for (std::int64_t p = 0; p < nparts; ++p)
+        pieces.push_back(std::move(
+            crop_predicate(rMesh, rKey, RefineCompare::Equal, static_cast<double>(p)).mMesh));
+    return pieces;
+}
+
+// --- write -------------------------------------------------------------------
+
+void pvtu_write_pieces(pvtu_kind Kind, const std::string& rPath,
+                       const std::vector<const Mesh*>& rPieces, bool Binary,
+                       detail::VtkCodec Codec) {
+    const pvtu_kind_info& info = pvtu_info(Kind);
+    if (rPieces.empty())
+        throw WriteError(std::string("meshio++: ") + info.mFormat +
+                         ": a parallel index needs at least one piece");
+    if (Binary && Codec != detail::VtkCodec::None)
+        detail::vtk_codec_require_write(Codec);
+
+    // Ghost arrays are derived on a copy: the caller's meshes are never mutated.
+    std::vector<Mesh> derived;
+    derived.reserve(rPieces.size());
+    std::vector<const Mesh*> prepared;
+    prepared.reserve(rPieces.size());
+    for (const Mesh* p : rPieces) {
+        if (pvtu_needs_ghosts(*p)) {
+            derived.push_back(pvtu_derive_ghosts(*p));
+            prepared.push_back(&derived.back());
+        } else {
+            prepared.push_back(p);
+        }
+    }
+
+    // Validate before create_directories, so a refusal leaves no half-written tree.
+    const pvtu_decls decls = pvtu_validate(Kind, prepared);
+    const std::int64_t level = pvtu_ghost_level(rPieces);
+
+    const fs::path index_path(rPath);
+    const std::string stem = index_path.stem().string();
+    const fs::path dir =
+        index_path.parent_path().empty() ? fs::path(stem) : index_path.parent_path() / stem;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec)
+        throw WriteError("Could not create directory for " + std::string(info.mExt) +
+                         " pieces: " + dir.string() + ": " + ec.message());
+
+    const std::vector<std::string> names = pidx::piece_names(stem, prepared.size(), info.mExt);
+    const detail::VtkCodec piece_codec = Binary ? Codec : detail::VtkCodec::None;
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+        const std::string path = (dir / names[i]).string();
+        if (Kind == pvtu_kind::Pvtu)
+            write_vtu_codec(path, *prepared[i], Binary, piece_codec);
+        else
+            write_vtp_codec(path, *prepared[i], Binary, piece_codec);
+    }
+
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os << "<?xml version=\"1.0\"?>\n";
+    os << "<VTKFile type=\"" << info.mRoot << "\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
+    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    os << "<" << info.mRoot << " GhostLevel=\"" << level << "\">\n";
+    const std::pair<const char*, const std::map<std::string, pvtu_decl>*> sections[] = {
+        {"PPointData", &decls.mPointData}, {"PCellData", &decls.mCellData}};
+    for (const auto& section : sections) {
+        if (section.second->empty())
+            continue;
+        os << "<" << section.first << ">\n";
+        for (const auto& kv : *section.second) {
+            os << "<PDataArray type=\"" << kv.second.mType << "\" Name=\""
+               << pidx::escape_attr(kv.first) << "\"";
+            if (kv.second.mComp != 1)
+                os << " NumberOfComponents=\"" << kv.second.mComp << "\"";
+            os << "/>\n";
+        }
+        os << "</" << section.first << ">\n";
+    }
+    os << "<PPoints>\n<PDataArray type=\"" << decls.mPoints.mType
+       << "\" Name=\"Points\" NumberOfComponents=\"3\"/>\n</PPoints>\n";
+    for (const std::string& name : names)
+        os << "<Piece Source=\"" << pidx::escape_attr(stem + "/" + name) << "\"/>\n";
+    os << "</" << info.mRoot << ">\n";
+    os << "</VTKFile>\n";
+    if (!os)
+        throw WriteError("Failed while writing: " + rPath);
+}
+
+void pvtu_write_mesh(pvtu_kind Kind, const std::string& rPath, const Mesh& rMesh, bool Binary,
+                     detail::VtkCodec Codec, const std::string& rPartKey) {
+    if (rPartKey.empty() || !rMesh.HasCellData(rPartKey)) {
+        pvtu_write_pieces(Kind, rPath, {&rMesh}, Binary, Codec);
+        return;
+    }
+    const std::vector<Mesh> parts = pvtu_carve(rMesh, rPartKey);
+    std::vector<const Mesh*> ptrs;
+    ptrs.reserve(parts.size());
+    for (const Mesh& m : parts)
+        ptrs.push_back(&m);
+    pvtu_write_pieces(Kind, rPath, ptrs, Binary, Codec);
+}
+
+// --- read --------------------------------------------------------------------
+
+std::vector<fs::path> pvtu_parse_index(pvtu_kind Kind, const std::string& rPath) {
+    const pvtu_kind_info& info = pvtu_info(Kind);
+    const std::string head = std::string("meshio++: ") + info.mFormat + ": ";
+    pugi::xml_document doc;
+    const pugi::xml_parse_result parsed = doc.load_file(rPath.c_str());
+    if (!parsed)
+        throw ReadError(head + "could not parse " + rPath + ": " + parsed.description());
+    const pugi::xml_node root = doc.child("VTKFile");
+    if (!root)
+        throw ReadError(head + "expected tag 'VTKFile': " + rPath);
+    const std::string type = root.attribute("type").as_string();
+    if (type != info.mRoot)
+        throw ReadError(head + "expected type " + info.mRoot + ", got '" + type + "': " + rPath);
+    const pugi::xml_node body = root.child(info.mRoot);
+    if (!body)
+        throw ReadError(head + "expected tag '" + info.mRoot + "': " + rPath);
+
+    std::vector<fs::path> sources;
+    for (const pugi::xml_node piece : body.children("Piece"))
+        sources.push_back(pidx::resolve_path(rPath, piece.attribute("Source").as_string(""),
+                                             info.mFormat, "Source"));
+    return sources;
+}
+
+Mesh pvtu_read_one(const fs::path& rSource, const ReadOptions& rOpts) {
+    Mesh piece = pidx::read_child(rSource, rOpts, /*Wide=*/false);
+    if (rOpts.mGhosts == GhostPolicy::Drop)
+        return pidx::drop_ghosts(std::move(piece));
+    return piece;
+}
+
+Mesh pvtu_read(pvtu_kind Kind, const std::string& rPath, const ReadOptions& rOpts) {
+    const std::vector<fs::path> sources = pvtu_parse_index(Kind, rPath);
+    if (sources.empty())
+        return pidx::empty_mesh();
+    if (rOpts.mPieceSet)
+        return pvtu_read_one(sources[rOpts.ResolvePiece(sources.size())], rOpts);
+
+    std::vector<Mesh> pieces;
+    std::vector<std::string> names;
+    pieces.reserve(sources.size());
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        pieces.push_back(pvtu_read_one(sources[i], rOpts));
+        names.push_back("piece_" + std::to_string(i));
+    }
+    return pidx::merge_pieces(std::move(pieces), names);
+}
+
+MeshMetadata pvtu_read_metadata(pvtu_kind Kind, const std::string& rPath,
+                                const ReadOptions& rOpts) {
+    const std::vector<fs::path> sources = pvtu_parse_index(Kind, rPath);
+    std::vector<MeshMetadata> parts;
+    parts.reserve(sources.size());
+    for (const fs::path& s : sources)
+        parts.push_back(pidx::read_child_metadata(s, rOpts, /*Wide=*/false));
+    return pidx::aggregate_metadata(parts, pvtu_info(Kind).mFormat);
+}
+
+detail::VtkCodec pvtu_zlib_codec(bool Zlib) {
+    return Zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None;
+}
+
+}  // namespace
+
+// --- .pvtu -------------------------------------------------------------------
+
+void write_pvtu(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_pvtu_codec(rPath, rMesh, binary, pvtu_zlib_codec(zlib));
+}
+
+void write_pvtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                      detail::VtkCodec codec, const std::string& rPartKey) {
+    pvtu_write_mesh(pvtu_kind::Pvtu, rPath, rMesh, binary, codec, rPartKey);
+}
+
+void write_pvtu_pieces_codec(const std::string& rPath, const std::vector<const Mesh*>& rPieces,
+                             bool binary, detail::VtkCodec codec) {
+    pvtu_write_pieces(pvtu_kind::Pvtu, rPath, rPieces, binary, codec);
+}
+
+Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read(pvtu_kind::Pvtu, rPath, rOpts);
+}
+
+MeshMetadata read_pvtu_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read_metadata(pvtu_kind::Pvtu, rPath, rOpts);
+}
+
+// --- .pvtp -------------------------------------------------------------------
+
+void write_pvtp(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
+    write_pvtp_codec(rPath, rMesh, binary, pvtu_zlib_codec(zlib));
+}
+
+void write_pvtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
+                      detail::VtkCodec codec, const std::string& rPartKey) {
+    pvtu_write_mesh(pvtu_kind::Pvtp, rPath, rMesh, binary, codec, rPartKey);
+}
+
+void write_pvtp_pieces_codec(const std::string& rPath, const std::vector<const Mesh*>& rPieces,
+                             bool binary, detail::VtkCodec codec) {
+    pvtu_write_pieces(pvtu_kind::Pvtp, rPath, rPieces, binary, codec);
+}
+
+Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read(pvtu_kind::Pvtp, rPath, rOpts);
+}
+
+MeshMetadata read_pvtp_metadata(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read_metadata(pvtu_kind::Pvtp, rPath, rOpts);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/pvtu.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
 #include <array>
 #include <cctype>
@@ -78199,7 +79709,7 @@ Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
     mopts.weld = false;
     mopts.source_tag = true;
     mopts.data_policy = MergeDataPolicy::Fill;
-    MergeResult result = merge(ptrs, mopts);
+    MergeResult result = pidx::merge_keeping_field_data(ptrs, mopts);
 
     for (std::size_t i = 0; i < refs.size(); ++i)
         result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));
@@ -78397,6 +79907,15 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<PolyData>\n";
+    // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
+    // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
+    if (rMesh.NumFieldData() != 0) {
+        os << "<FieldData>\n";
+        for (const auto& name : rMesh.FieldDataNames())
+            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+                                          binary ? codec : detail::VtkCodec::None);
+        os << "</FieldData>\n";
+    }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
        << "\" NumberOfLines=\"" << lines.mOffsets.size()
        << "\" NumberOfStrips=\"0\" NumberOfPolys=\"" << polys.mOffsets.size() << "\">\n";
@@ -78435,7 +79954,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -78454,15 +79974,17 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t ndblocks = rMesh.CellDataNumBlocks(name);
             if (ndblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
@@ -78471,7 +79993,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
                 }
             }
             os << "</DataArray>\n";
@@ -78549,6 +80072,7 @@ VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec
 
 /** @brief `<Piece>` plus the framing attributes; mirrors `vtu_parse_header`. */
 struct vtp_header {
+    pugi::xml_node mGrid;
     pugi::xml_node mPiece;
     detail::VtkCodec mCodec = detail::VtkCodec::None;
     std::size_t mHeaderSize = 4;
@@ -78591,6 +80115,7 @@ vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTP data not supported by the C++ reader");
 
+    h.mGrid = grid;
     h.mPiece = grid.child("Piece");
     if (!h.mPiece)
         throw ReadError("No Piece found");
@@ -78608,6 +80133,62 @@ std::vector<std::string> vtp_array_names(const pugi::xml_node& rPiece, const cha
     for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
         names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
+    return names;
+}
+
+/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
+bool vtp_is_numeric_type(const std::string& rType) {
+    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
+           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
+           rType == "UInt32" || rType == "UInt64";
+}
+
+/**
+ * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
+ *
+ * Field data belongs to the dataset, not to a piece: VTK writes it on the
+ * `<PolyData>` element, before the `<Piece>`, and also accepts it inside one, so the
+ * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
+ * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
+ * meshio++ dtype: it is skipped with a warning rather than failing a read that
+ * used to succeed by ignoring the whole section.
+ */
+void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
+                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
+            log::warn(
+                "meshio++: VTP: skipping <FieldData> array '{}' of type '{}' (only numeric "
+                "arrays are read)",
+                name, da.attribute("type").as_string());
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        rMesh.AddFieldData(name, std::move(arr));
+    }
+}
+
+/**
+ * @brief The field-data names a real read would return: the numeric arrays of the
+ * grid's and the piece's `<FieldData>`, sorted and unique.
+ *
+ * Numeric only, like `vtp_read_field_data`, so a summary never names an array the
+ * read skips.
+ */
+std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
+    std::vector<std::string> names;
+    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
+        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+            if (vtp_is_numeric_type(da.attribute("type").as_string()))
+                names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -78700,6 +80281,11 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
+    if (want_data) {
+        vtp_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
+        vtp_read_field_data(piece, codec, hsz, rOpts, mesh);
+    }
+
     VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
     VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
     VtpPiece polys = vtp_read_section(piece.child("Polys"), codec, hsz);
@@ -78760,6 +80346,7 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
 
     meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
+    meta.mFieldDataNames = vtp_field_data_names(h);
 
     // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
     meta.mHasBBox = false;
@@ -79575,6 +81162,15 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
+    // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
+    // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
+    if (rMesh.NumFieldData() != 0) {
+        os << "<FieldData>\n";
+        for (const auto& name : rMesh.FieldDataNames())
+            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+                                          binary ? codec : detail::VtkCodec::None);
+        os << "</FieldData>\n";
+    }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
        << "\">\n";
 
@@ -79708,7 +81304,8 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -79726,20 +81323,23 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t nblocks = rMesh.CellDataNumBlocks(name);
             if (nblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi = 0; bi < nblocks; ++bi) {
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
                 emit_bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi = 0; bi < nblocks; ++bi)
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
             }
             os << "</DataArray>\n";
         }
@@ -79792,6 +81392,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
  * `read_vtu` would reject.
  */
 struct vtu_header {
+    pugi::xml_node mGrid;
     pugi::xml_node mPiece;
     detail::VtkCodec mCodec = detail::VtkCodec::None;
     std::size_t mHeaderSize = 4;
@@ -79834,6 +81435,7 @@ vtu_header vtu_parse_header(const pugi::xml_document& rDoc) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTU data not supported by the C++ reader");
 
+    h.mGrid = grid;
     h.mPiece = grid.child("Piece");
     if (!h.mPiece)
         throw ReadError("No Piece found");
@@ -79853,6 +81455,62 @@ std::vector<std::string> vtu_array_names(const pugi::xml_node& rPiece, const cha
     // The uniform mesh API hands back sorted names; match it so a summary and a
     // real read report data arrays in the same order.
     std::sort(names.begin(), names.end());
+    return names;
+}
+
+/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
+bool vtu_is_numeric_type(const std::string& rType) {
+    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
+           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
+           rType == "UInt32" || rType == "UInt64";
+}
+
+/**
+ * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
+ *
+ * Field data belongs to the dataset, not to a piece: VTK writes it on the
+ * `<UnstructuredGrid>` element, before the `<Piece>`, and also accepts it inside one, so the
+ * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
+ * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
+ * meshio++ dtype: it is skipped with a warning rather than failing a read that
+ * used to succeed by ignoring the whole section.
+ */
+void vtu_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
+                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        if (!vtu_is_numeric_type(da.attribute("type").as_string())) {
+            log::warn(
+                "meshio++: VTU: skipping <FieldData> array '{}' of type '{}' (only numeric "
+                "arrays are read)",
+                name, da.attribute("type").as_string());
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtu_read_data_array(da, Codec, HeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        rMesh.AddFieldData(name, std::move(arr));
+    }
+}
+
+/**
+ * @brief The field-data names a real read would return: the numeric arrays of the
+ * grid's and the piece's `<FieldData>`, sorted and unique.
+ *
+ * Numeric only, like `vtu_read_field_data`, so a summary never names an array the
+ * read skips.
+ */
+std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
+    std::vector<std::string> names;
+    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
+        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+            if (vtu_is_numeric_type(da.attribute("type").as_string()))
+                names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -79935,6 +81593,11 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
+    if (want_data) {
+        vtu_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
+        vtu_read_field_data(piece, codec, hsz, rOpts, mesh);
+    }
+
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;
@@ -79989,8 +81652,7 @@ MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
 
     meta.mPointDataNames = vtu_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtu_array_names(h.mPiece, "CellData");
-    // VTU has no field-data section the C++ reader consumes, so the list stays
-    // empty rather than claiming an unknown.
+    meta.mFieldDataNames = vtu_field_data_names(h);
 
     // No bounding box: it would require decoding the point coordinates, which
     // are usually the largest array in the file -- exactly what this path exists
@@ -100073,9 +101735,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // fields are new; the polyMesh topology itself never had a time concept.
     // vtkhdf joined in v14.0.0: its metadata reader reads
     // Steps/Values without touching the geometry, so the count is cheap.
+    // pvd joined in v15.0.0: its steps are the distinct `timestep=` values of
+    // the index, read without opening a piece.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
-           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
-           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf";
+           rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
@@ -100104,13 +101768,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     // sequence_to_timeseries actually accepts, over every registry_writers()
     // entry -- a format that grows a series writer without updating this turns
     // CI red naming itself.
-    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf") {
+    if (rFormat == "xdmf" || rFormat == "gid" || rFormat == "vtkhdf" || rFormat == "pvd") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
-           "' cannot hold a multi-step series (only 'xdmf', 'gid' and 'vtkhdf' can); write one "
-           "file per step with an Output path containing '{step}' instead";
+           "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf' and 'pvd' can); "
+           "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
 
@@ -100356,10 +102020,11 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// The transient writers bypass `registry_write_ex` (they drive a stateful writer
 /// class directly, not a `(path, mesh)` registry entry), so they must apply the
 /// write_options.hpp rule -- "an option the writer cannot honour is an error,
-/// never silently ignored" -- themselves. XDMF's `Encoding` (XML vs HDF) is the
-/// only option with anywhere to go; VTKHDF has no encoding variant at all.
+/// never silently ignored" -- themselves. `Encoding` is the only option with
+/// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
+/// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : "XDMF";
+    const char* who = rFormat == "vtkhdf" ? "VTKHDF" : rFormat == "pvd" ? "PVD" : "XDMF";
     if (rOptions.mCodecSet)
         throw WriteError(std::string("meshio++: sequence: the transient ") + who +
                          " writer does not support Codec");
@@ -100394,6 +102059,20 @@ private:
     XdmfTimeSeriesWriter mWriter;
 };
 
+/// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
+/// static grid to write and `WritePointsCells` has nothing to do.
+class SeqPvdSink final : public SeqSeriesSink {
+public:
+    SeqPvdSink(const std::string& rPath, bool Binary, detail::VtkCodec Codec)
+        : mWriter(rPath, Binary, Codec) {}
+    void WritePointsCells(const Mesh&) override {}
+    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    void Finalize() override { mWriter.Finalize(); }
+
+private:
+    PvdSeriesWriter mWriter;
+};
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 class SeqVtkhdfSink final : public SeqSeriesSink {
 public:
@@ -100410,6 +102089,16 @@ private:
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
+    if (rFormat == "pvd") {
+        // The zlib codec follows the build, as the registry's own writers do.
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        const detail::VtkCodec codec = detail::VtkCodec::Zlib;
+#else
+        const detail::VtkCodec codec = detail::VtkCodec::None;
+#endif
+        return std::make_unique<SeqPvdSink>(rPath, rOptions.mEncoding != WriteEncoding::Ascii,
+                                            codec);
+    }
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         return std::make_unique<SeqVtkhdfSink>(rPath);
@@ -102151,6 +103840,26 @@ std::string sniff_format(const std::string& rPath) {
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {
+        // The parallel indices and the collection come first, and match the
+        // quoted `type=` value: `PUnstructuredGrid` contains `UnstructuredGrid`
+        // and `PPolyData` contains `PolyData`, so the loose substring checks
+        // below would call an index a piece; and a bare `Collection` would also
+        // match `vtkPartitionedDataSetCollection`. A parallel image, structured
+        // or rectilinear index is refused outright rather than mistaken for its
+        // serial twin. (v15.0.0; mirrors `_sniff.py`.)
+        static const struct {
+            const char* mValue;
+            const char* mFormat;
+        } kIndexTypes[] = {
+            {"Collection", "pvd"}, {"PUnstructuredGrid", "pvtu"}, {"PPolyData", "pvtp"},
+            {"PImageData", ""},    {"PStructuredGrid", ""},       {"PRectilinearGrid", ""},
+        };
+        for (const char quote : {'"', '\''})
+            for (const auto& index_type : kIndexTypes) {
+                const std::string needle = std::string("type=") + quote + index_type.mValue + quote;
+                if (sniff_contains(head, needle.c_str()))
+                    return index_type.mFormat;
+            }
         if (sniff_contains(head, "UnstructuredGrid"))
             return "vtu";
         if (sniff_contains(head, "PolyData"))
@@ -105422,6 +107131,11 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
         {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
         {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
+        // The ParaView index formats take a trailing defaulted ReadOptions, so they
+        // are wrapped like vtm above.
+        {"pvd", [](const std::string& path) { return meshioplusplus::read_pvd(path); }},
+        {"pvtu", [](const std::string& path) { return meshioplusplus::read_pvtu(path); }},
+        {"pvtp", [](const std::string& path) { return meshioplusplus::read_pvtp(path); }},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
@@ -105567,6 +107281,30 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
 #else
              meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvd",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvtu",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvtp",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/false);
 #endif
          }},
         {"vtk",
@@ -105717,6 +107455,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".vts", "vts"},
         {".vtr", "vtr"},
         {".vtm", "vtm"},
+        {".pvd", "pvd"},
+        {".pvtu", "pvtu"},
+        {".pvtp", "pvtp"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
         {".wkt", "wkt"},
@@ -105840,6 +107581,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"vts", meshioplusplus::read_vts},
         {"vtr", meshioplusplus::read_vtr},
         {"vtm", meshioplusplus::read_vtm},
+        {"pvd", meshioplusplus::read_pvd},
+        {"pvtu", meshioplusplus::read_pvtu},
+        {"pvtp", meshioplusplus::read_pvtp},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -105866,6 +107610,9 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"vts", meshioplusplus::read_vts_metadata},
         {"vtr", meshioplusplus::read_vtr_metadata},
         {"vtm", meshioplusplus::read_vtm_metadata},
+        {"pvd", meshioplusplus::read_pvd_metadata},
+        {"pvtu", meshioplusplus::read_pvtu_metadata},
+        {"pvtp", meshioplusplus::read_pvtp_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},

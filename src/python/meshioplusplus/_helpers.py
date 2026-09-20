@@ -35,6 +35,11 @@ _MULTIFILE_FORMATS = (
     "pmsh",
     "zarr",
     "usd",
+    # An index whose piece paths resolve against its own directory, which a
+    # buffer does not have.
+    "pvd",
+    "pvtu",
+    "pvtp",
 )
 
 
@@ -131,8 +136,17 @@ def _apply_read_filter(mesh, points_only: bool, arrays):
     return mesh
 
 
+GHOST_POLICIES = ("keep", "drop")
+
+
 def _call_reader(
-    reader, arg, points_only: bool, arrays, time_step: int = 0, piece=None
+    reader,
+    arg,
+    points_only: bool,
+    arrays,
+    time_step: int = 0,
+    piece=None,
+    ghosts="keep",
 ):
     """Invoke `reader`, passing the selective-read options when it accepts them.
 
@@ -149,6 +163,10 @@ def _call_reader(
     `piece` is in the same class: a request for one piece of a partitioned file
     cannot be emulated after a merged read, so it must reach a reader that
     understands it or fail loudly.
+
+    `ghosts` is deliberately *not*: like the C++ `ReadOptions::mGhosts` it is
+    honoured by `pvtu`/`pvtp`/`pvd` and ignored by every other reader, because a
+    file with no halo is already the answer `"drop"` asks for.
     """
     kwargs = {}
     if points_only or arrays is not None:
@@ -157,11 +175,17 @@ def _call_reader(
         kwargs.update(time_step=time_step)
     if piece is not None:
         kwargs.update(piece=piece)
+    if ghosts != "keep":
+        kwargs.update(ghosts=ghosts)
     if not kwargs:
         return reader(arg)
     try:
         return reader(arg, **kwargs)
     except TypeError:
+        if ghosts != "keep":
+            # A reader with no halo concept: retry without it, so the other
+            # options still reach a reader that does understand them.
+            return _call_reader(reader, arg, points_only, arrays, time_step, piece)
         if piece is not None:
             raise ReadError(
                 f"meshio++: this format's reader does not support piece "
@@ -185,6 +209,7 @@ def read(
     arrays=None,
     time_step=0,
     piece=None,
+    ghosts="keep",
 ):
     """Reads an unstructured mesh with added data.
 
@@ -202,16 +227,28 @@ def read(
         or composite blocks); negative counts from the end. ``None`` (default)
         merges every piece into one mesh with one cell region per piece. A format
         whose reader has no pieces raises rather than returning the merged mesh.
+    :param ghosts: ``"keep"`` (default) leaves the ghost cells (halo) of a
+        partitioned file in the mesh; ``"drop"`` removes every cell with a
+        ``vtkGhostType`` bit set and the points only they used. Honoured by
+        ``pvtu``, ``pvtp`` and ``pvd``; every other reader ignores it.
 
     :returns mesh{2,3}d: The mesh data.
     """
+    if ghosts not in GHOST_POLICIES:
+        raise ValueError(f"meshio++: ghosts must be 'keep' or 'drop', got {ghosts!r}")
     if is_buffer(filename, "r"):
         mesh = _read_buffer(
-            filename, file_format, points_only, arrays, time_step, piece
+            filename, file_format, points_only, arrays, time_step, piece, ghosts
         )
     else:
         mesh = _read_file(
-            Path(filename), file_format, points_only, arrays, time_step, piece
+            Path(filename),
+            file_format,
+            points_only,
+            arrays,
+            time_step,
+            piece,
+            ghosts,
         )
     return _apply_read_filter(mesh, points_only, arrays)
 
@@ -346,6 +383,7 @@ def _read_buffer(
     arrays=None,
     time_step=0,
     piece=None,
+    ghosts="keep",
 ):
     if file_format is None:
         raise ReadError("File format must be given if buffer is used")
@@ -358,7 +396,13 @@ def _read_buffer(
         raise ReadError(f"Unknown file format '{file_format}'")
 
     return _call_reader(
-        reader_map[file_format], filename, points_only, arrays, time_step, piece
+        reader_map[file_format],
+        filename,
+        points_only,
+        arrays,
+        time_step,
+        piece,
+        ghosts,
     )
 
 
@@ -369,6 +413,7 @@ def _read_file(
     arrays=None,
     time_step=0,
     piece=None,
+    ghosts="keep",
 ):
     if not path.exists():
         raise ReadError(f"File {path} not found.")
@@ -401,6 +446,7 @@ def _read_file(
                 arrays,
                 time_step,
                 piece,
+                ghosts,
             )
         except ReadError as e:
             _LOG.debug("meshio++: %s: '%s' declined: %s", path, file_format, e)

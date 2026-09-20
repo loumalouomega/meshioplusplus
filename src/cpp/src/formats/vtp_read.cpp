@@ -28,6 +28,7 @@
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
 
 namespace meshioplusplus {
@@ -85,6 +86,7 @@ VtpPiece vtp_read_section(const pugi::xml_node& rSection, detail::VtkCodec codec
 
 /** @brief `<Piece>` plus the framing attributes; mirrors `vtu_parse_header`. */
 struct vtp_header {
+    pugi::xml_node mGrid;
     pugi::xml_node mPiece;
     detail::VtkCodec mCodec = detail::VtkCodec::None;
     std::size_t mHeaderSize = 4;
@@ -127,6 +129,7 @@ vtp_header vtp_parse_header(const pugi::xml_document& rDoc) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTP data not supported by the C++ reader");
 
+    h.mGrid = grid;
     h.mPiece = grid.child("Piece");
     if (!h.mPiece)
         throw ReadError("No Piece found");
@@ -144,6 +147,62 @@ std::vector<std::string> vtp_array_names(const pugi::xml_node& rPiece, const cha
     for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
         names.emplace_back(da.attribute("Name").as_string());
     std::sort(names.begin(), names.end());
+    return names;
+}
+
+/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
+bool vtp_is_numeric_type(const std::string& rType) {
+    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
+           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
+           rType == "UInt32" || rType == "UInt64";
+}
+
+/**
+ * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
+ *
+ * Field data belongs to the dataset, not to a piece: VTK writes it on the
+ * `<PolyData>` element, before the `<Piece>`, and also accepts it inside one, so the
+ * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
+ * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
+ * meshio++ dtype: it is skipped with a warning rather than failing a read that
+ * used to succeed by ignoring the whole section.
+ */
+void vtp_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
+                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        if (!vtp_is_numeric_type(da.attribute("type").as_string())) {
+            log::warn(
+                "meshio++: VTP: skipping <FieldData> array '{}' of type '{}' (only numeric "
+                "arrays are read)",
+                name, da.attribute("type").as_string());
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtp_read_data_array(da, Codec, HeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        rMesh.AddFieldData(name, std::move(arr));
+    }
+}
+
+/**
+ * @brief The field-data names a real read would return: the numeric arrays of the
+ * grid's and the piece's `<FieldData>`, sorted and unique.
+ *
+ * Numeric only, like `vtp_read_field_data`, so a summary never names an array the
+ * read skips.
+ */
+std::vector<std::string> vtp_field_data_names(const vtp_header& rHeader) {
+    std::vector<std::string> names;
+    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
+        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+            if (vtp_is_numeric_type(da.attribute("type").as_string()))
+                names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -236,6 +295,11 @@ Mesh read_vtp(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
+    if (want_data) {
+        vtp_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
+        vtp_read_field_data(piece, codec, hsz, rOpts, mesh);
+    }
+
     VtpPiece verts = vtp_read_section(piece.child("Verts"), codec, hsz);
     VtpPiece lines = vtp_read_section(piece.child("Lines"), codec, hsz);
     VtpPiece polys = vtp_read_section(piece.child("Polys"), codec, hsz);
@@ -296,6 +360,7 @@ MeshMetadata read_vtp_metadata(const std::string& rPath, const ReadOptions&) {
 
     meta.mPointDataNames = vtp_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtp_array_names(h.mPiece, "CellData");
+    meta.mFieldDataNames = vtp_field_data_names(h);
 
     // No bbox: it would mean decoding the point coordinates. See read_options.hpp.
     meta.mHasBBox = false;

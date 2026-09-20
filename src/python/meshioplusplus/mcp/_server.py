@@ -88,15 +88,18 @@ def _register_inspection(server: FastMCP) -> None:
         file_format: Optional[str] = None,
         time_step: int = 0,
         piece: Optional[int] = None,
+        ghosts: str = "keep",
     ) -> dict:
         """Geometric statistics: bounding box, centroid, total area, signed and
-        unsigned volume, per-type cell counts, inverted-cell count."""
+        unsigned volume, per-type cell counts, inverted-cell count. ghosts is
+        keep|drop for the halo of a .pvtu/.pvtp/.pvd."""
         return _guard(
             _tools.tool_stats,
             input_path=input_path,
             file_format=file_format,
             time_step=time_step,
             piece=piece,
+            ghosts=ghosts,
         )
 
     @server.tool()
@@ -219,11 +222,13 @@ def _register_conversion(server: FastMCP) -> None:
         mode: str = "auto",
         compression: Optional[str] = None,
         piece: Optional[int] = None,
+        ghosts: str = "keep",
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). points_only/arrays/time_step narrow the read; piece
-        keeps one partition/block of a partitioned file (VTKHDF) instead of
-        the merged mesh. mode selects ascii|binary output where the format
+        keeps one partition/block of a partitioned file (VTKHDF, .pvtu/.pvtp,
+        or one part of a .pvd step) instead of the merged mesh; ghosts=drop
+        removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd. mode selects ascii|binary output where the format
         supports it; compression selects zlib|lz4|zstd|lzma (VTU/VTP block
         codecs), gzip (CGNS/H5M/VTKHDF/XDMF) or 'none' to decompress."""
         return _guard(
@@ -238,6 +243,7 @@ def _register_conversion(server: FastMCP) -> None:
             mode=mode,
             compression=compression,
             piece=piece,
+            ghosts=ghosts,
         )
 
     @server.tool()
@@ -1679,7 +1685,10 @@ def _register_operations(server: FastMCP) -> None:
         name_template: str = "{stem}_part{part}.vtu",
     ) -> dict:
         """Partition into exactly nparts balanced pieces (method: auto | sfc |
-        kahip). Writes one file per part and returns their paths."""
+        kahip). Writes one file per part and returns their paths; a
+        name_template ending in .pvtu/.pvtp with no {part} writes one
+        parallel index over every part instead (halo layers kept as
+        vtkGhostType) and also returns its path as `index`."""
         return _guard(
             _tools.tool_partition,
             input_path=input_path,

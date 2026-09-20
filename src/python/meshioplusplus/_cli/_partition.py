@@ -1,3 +1,5 @@
+import os
+
 from .._helpers import _writer_map, read, reader_map, write
 from .._partition import partition, partition_labels
 
@@ -9,7 +11,9 @@ def add_args(parser):
         type=str,
         help=(
             "output path pattern containing '{part}' (e.g. 'out_{part}.vtu'), "
-            "expanded once per piece; with --labels-only, a single plain path"
+            "expanded once per piece; or a '.pvtu'/'.pvtp' path, written as one "
+            "index over every piece (halo layers included); with --labels-only, "
+            "a single plain path"
         ),
     )
     parser.add_argument(
@@ -97,6 +101,15 @@ def add_args(parser):
     )
 
 
+def _parallel_index_kind(outpattern, output_format):
+    """``"pvtu"`` / ``"pvtp"`` when the output is a parallel index, else ``None``."""
+    if output_format is not None:
+        return output_format if output_format in ("pvtu", "pvtp") else None
+    return {".pvtu": "pvtu", ".pvtp": "pvtp"}.get(
+        os.path.splitext(outpattern)[1].lower()
+    )
+
+
 def partition_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
 
@@ -114,10 +127,12 @@ def partition_cmd(args):
         write(args.outpattern, mesh, file_format=args.output_format)
         return 0
 
-    if "{part}" not in args.outpattern:
+    index_kind = _parallel_index_kind(args.outpattern, args.output_format)
+    if "{part}" not in args.outpattern and index_kind is None:
         raise ValueError(
             "partition: the output pattern must contain '{part}' "
-            "(e.g. 'out_{part}.vtu'), or pass --labels-only"
+            "(e.g. 'out_{part}.vtu'), or be a .pvtu/.pvtp index (one file per "
+            "part plus an index), or pass --labels-only"
         )
     pieces = partition(
         mesh,
@@ -130,6 +145,12 @@ def partition_cmd(args):
         ghost_layers=args.ghost_layers,
         weights=args.weights,
     )
+    if "{part}" not in args.outpattern:
+        # One index over every piece, so the halo layers survive as vtkGhostType.
+        from .. import pvtp, pvtu
+
+        (pvtu if index_kind == "pvtu" else pvtp).write_pieces(args.outpattern, pieces)
+        return 0
     for part_id, piece in enumerate(pieces):
         write(
             args.outpattern.format(part=part_id),

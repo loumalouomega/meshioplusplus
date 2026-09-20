@@ -213,7 +213,7 @@ end
 
 """
     ReadOptions(; points_only=false, metadata_only=false, arrays=nothing, mmap=:auto,
-                  time_step=0, lenient=false, piece=nothing)
+                  time_step=0, lenient=false, piece=nothing, drop_ghosts=false)
 
 Narrow what a read materializes (see `doc/selective_read.md`).
 
@@ -231,6 +231,9 @@ Narrow what a read materializes (see `doc/selective_read.md`).
   composite blocks): `0` is the first, negative counts from the end. `nothing`
   (the default) merges every piece into one mesh with one cell region per piece.
   Out of range fails the read, naming the piece count.
+* `drop_ghosts` — remove the ghost cells (halo) of a partitioned `.pvtu`/`.pvtp`/
+  `.pvd`: every cell with a `vtkGhostType` bit set, and the points only they used.
+  `false` (the default) keeps them. Every other reader ignores it.
 
 Formats without a native selective path are read in full; the options are
 still honoured, just without the saving.
@@ -243,15 +246,18 @@ struct ReadOptions
     time_step::Int
     lenient::Bool
     piece::Union{Nothing,Int}
+    drop_ghosts::Bool
 
     function ReadOptions(; points_only::Bool=false, metadata_only::Bool=false,
                          arrays=nothing, mmap::Symbol=:auto, time_step::Integer=0,
-                         lenient::Bool=false, piece::Union{Nothing,Integer}=nothing)
+                         lenient::Bool=false, piece::Union{Nothing,Integer}=nothing,
+                         drop_ghosts::Bool=false)
         mmap in (:auto, :on, :off) ||
             throw(ArgumentError("mmap must be :auto, :on or :off, got :$mmap"))
         new(points_only, metadata_only,
             arrays === nothing ? nothing : String[String(a) for a in arrays], mmap,
-            Int(time_step), lenient, piece === nothing ? nothing : Int(piece))
+            Int(time_step), lenient, piece === nothing ? nothing : Int(piece),
+            drop_ghosts)
     end
 end
 
@@ -276,6 +282,7 @@ function _with_read_opts(f, opts::ReadOptions)
                          Cint(0), Int64(opts.time_step), opts.lenient ? Int64(1) : Int64(0),
                          Int64(opts.piece === nothing ? 0 : opts.piece),
                          opts.piece === nothing ? Int64(0) : Int64(1),
+                         opts.drop_ghosts ? Int64(1) : Int64(0),
                          base[].reserved)
         ref = Ref(cfg)
         GC.@preserve ref f(ref)

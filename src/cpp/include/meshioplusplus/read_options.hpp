@@ -45,6 +45,7 @@
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -66,6 +67,17 @@ namespace meshioplusplus {
  * buffered reading rather than failing, so `On` is a preference, not a demand.
  */
 enum class MmapMode { Auto, On, Off };
+
+/**
+ * @brief What a partitioned-file reader does with ghost cells (`vtkGhostType`).
+ *
+ * A parallel `.pvtu`/`.pvtp` or a `.pvd` of them can carry a halo: cells another
+ * part owns, kept so a piece is self-contained. See `ReadOptions::mGhosts`.
+ */
+enum class GhostPolicy : std::uint8_t {
+    Keep,  ///< Leave `vtkGhostType` cells in the mesh (the default).
+    Drop,  ///< Remove cells with a ghost bit set, and the points only they used.
+};
 
 /** @brief File size at or above which `MmapMode::Auto` maps instead of copying. */
 inline constexpr std::size_t mmap_auto_threshold_bytes = 16u * 1024u * 1024u;
@@ -176,6 +188,27 @@ struct ReadOptions {
      * instead of the merged mesh -- the silent wrongness `mTimeStep` warns about.
      */
     bool mPieceSet = false;
+
+    /**
+     * @brief Whether to keep the ghost cells (halo) of a partitioned file.
+     *
+     * `Keep` (the default, and what zero-initialization gives) leaves every cell in,
+     * `vtkGhostType` array included: a reader must not silently discard data, and
+     * keeping is what makes read -> write round-trip. `Drop` removes every cell
+     * with any `vtkGhostType` bit set, and the points only those cells used, from
+     * each piece *before* merging, then removes the now-meaningless ghost arrays
+     * (`partition:ghost` too when it is all zero). That reconstructs the partition
+     * of unity a halo'd `partition` broke.
+     *
+     * Like `mLenient` and unlike `mTimeStep`/`mPiece` it is **not** in the class
+     * that must reach a reader or fail: a file with no ghost cells is already the
+     * answer `Drop` asks for, and the removal can be done after the fact, so a
+     * reader that has no such concept simply ignores it.
+     *
+     * Currently honoured by `pvtu`, `pvtp` and `pvd` (which forwards it to every
+     * entry it reads); every other reader ignores it.
+     */
+    GhostPolicy mGhosts = GhostPolicy::Keep;
 
     /**
      * @brief Resolve `mTimeStep` against an actual step count.

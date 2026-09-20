@@ -608,6 +608,8 @@ meshioplusplus::ReadOptions capi_read_options(const mio_read_opts* pOpts) {
     out.mLenient = pOpts->lenient != 0;
     out.mPiece = pOpts->piece;
     out.mPieceSet = pOpts->piece_set != 0;
+    out.mGhosts = pOpts->drop_ghosts != 0 ? meshioplusplus::GhostPolicy::Drop
+                                          : meshioplusplus::GhostPolicy::Keep;
     return out;
 }
 
@@ -627,6 +629,11 @@ const std::vector<std::string>& capi_metadata_names(const meshioplusplus::MeshMe
 }
 
 }  // namespace
+
+// The layout the Fortran (`mio_read_opts_t`) and Julia (`_CReadOpts`, which also
+// checks it at load time) mirrors are written against: every field added since
+// the struct shipped took a former `reserved` slot, so it has never moved.
+static_assert(sizeof(mio_read_opts) == 80, "mio_read_opts grew outside its reserved tail");
 
 void mio_read_opts_init(mio_read_opts* opts) {
     if (!opts)

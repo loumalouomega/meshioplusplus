@@ -280,6 +280,17 @@ READ_ONLY_REGIONS = {
         "(see tests/python/test_exodus.py); the writer still emits neither "
         "eb_names nor side sets, so a region written here would not come back"
     ),
+    "pvtu": (
+        "reads one Cell region per piece (`piece_<i>`); the writer carves by the "
+        "`partition:part` cell_data array and does not look at regions "
+        "(tests/python/test_pvtu.py)"
+    ),
+    "pvtp": "as pvtu: one Cell region per piece on read, none written",
+    "pvd": (
+        "reads one Cell region per entry of the chosen step (`name=`, else "
+        "`group/part_<p>`, else `part_<p>`); a step is one file on write "
+        "(tests/python/test_pvd.py)"
+    ),
 }
 
 

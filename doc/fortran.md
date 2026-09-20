@@ -91,7 +91,7 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 
 ## Selective reads and file summaries
 
-`read` takes optional `points_only`, `arrays`, `time_step`, `lenient` and (last, so positional `stat`/`errmsg` callers keep working) `piece`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
+`read` takes optional `points_only`, `arrays`, `time_step`, `lenient` and (last, so positional `stat`/`errmsg` callers keep working) `piece` and `drop_ghosts`, and the module-level `mio_read_metadata` returns a `type(mio_metadata)`:
 
 ```fortran
 type(mio_mesh) :: m
@@ -151,6 +151,7 @@ Handles are freed explicitly, exactly like `type(mio_mesh)`; there is no finaliz
 
 - `m%read(..., lenient=.true.)` — see [`doc/selective_read.md`](selective_read.md).
 - `m%read(path, piece=k)` — keep one piece of a partitioned file (VTKHDF partitions or composite blocks): 0 is the first, negative counts from the end, omitted merges every piece into one mesh with one cell region per piece; out of range fails, never clamps. On a `type(mio_read_opts_t)` set `piece` and `piece_set = 1` (`piece_set` is what selects; a zeroed struct merges). See [`doc/selective_read.md`](selective_read.md#picking-a-piece).
+- `m%read(path, drop_ghosts=.true.)` — remove the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd` (every cell with a `vtkGhostType` bit set, and the points only they used); omitted keeps them, and every other reader ignores it. On a `type(mio_read_opts_t)` set `drop_ghosts = 1` (it took the fifth former `reserved` slot; size unchanged). See [`doc/selective_read.md`](selective_read.md#dropping-ghost-cells).
 - XDMF series: `s%flush()`, `s%finalized()`, and `s%create(..., mode='append', auto_flush=...)`.
 
 **Gap, deliberate:** four Python-only formats — `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) — are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them; see [formats](/formats). And there is no Fortran counterpart to the solver-array `write_data` overload. An array of derived types holding interop pointers is a poor fit for Fortran, and a Fortran solver already holds an `mio_mesh` handle it can `add_point_data` into before `write_data`. `MdpaInfo` is likewise absent, as for every flat binding.

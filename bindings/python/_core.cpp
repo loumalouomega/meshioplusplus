@@ -77,6 +77,9 @@
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vts.hpp"
 #include "meshioplusplus/formats/vtr.hpp"
+#include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/pvtp.hpp"
+#include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
@@ -159,6 +162,16 @@ provenance_scope_stack() {
 
 namespace {
 
+/** @brief `ghosts=` keyword -> `GhostPolicy` (`"keep"` / `"drop"`; anything else is a ValueError).
+ */
+meshioplusplus::GhostPolicy core_ghost_policy(const std::string& rGhosts) {
+    if (rGhosts == "keep")
+        return meshioplusplus::GhostPolicy::Keep;
+    if (rGhosts == "drop")
+        return meshioplusplus::GhostPolicy::Drop;
+    throw std::invalid_argument("meshio++: ghosts must be 'keep' or 'drop', got '" + rGhosts + "'");
+}
+
 /**
  * @brief Build a `ReadOptions` from the reader bindings' keyword arguments.
  *
@@ -169,11 +182,13 @@ namespace {
 meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays,
                                               int time_step = 0,
                                               const py::object& rPiece = py::none(),
-                                              bool lenient = false) {
+                                              bool lenient = false,
+                                              const std::string& rGhosts = "keep") {
     meshioplusplus::ReadOptions opts;
     opts.mPointsOnly = points_only;
     opts.mTimeStep = time_step;
     opts.mLenient = lenient;
+    opts.mGhosts = core_ghost_policy(rGhosts);
     if (!rPiece.is_none()) {
         opts.mPiece = rPiece.cast<std::int64_t>();
         opts.mPieceSet = true;
@@ -487,6 +502,119 @@ PYBIND11_MODULE(_core, m) {
                 meshioplusplus::read_vtm(path, core_read_options(points_only, arrays)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
+
+    // ParaView parallel indices (.pvtu / .pvtp, v15.0.0): an index
+    // plus one .vtu/.vtp piece per part. allow_ragged=true like vtm -- a piece is a
+    // standalone file that may hold jagged blocks. `write_pieces_codec` takes the
+    // list `partition` returns; `ghosts` is "keep" or "drop".
+    m.def(
+        "pvtu_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
+           const std::string& part_key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::write_pvtu_codec(path, cpp, binary, core_codec_from_name(codec),
+                                             part_key);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib",
+        py::arg("part_key") = meshioplusplus::kPvtuPartKey);
+
+    m.def(
+        "pvtu_write_pieces_codec",
+        [](const std::string& path, py::list pieces, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            std::vector<meshioplusplus::Mesh> meshes;
+            meshes.reserve(pieces.size());
+            for (py::handle piece : pieces)
+                meshes.push_back(meshioplusplus_py::py_to_mesh(piece, refs,
+                                                               /*lenient_field_data=*/false,
+                                                               /*allow_ragged=*/true));
+            std::vector<const meshioplusplus::Mesh*> ptrs;
+            ptrs.reserve(meshes.size());
+            for (const meshioplusplus::Mesh& piece : meshes)
+                ptrs.push_back(&piece);
+            meshioplusplus::write_pvtu_pieces_codec(path, ptrs, binary,
+                                                    core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("pieces"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def(
+        "pvtu_read",
+        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
+           const std::string& ghosts) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtu(
+                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
+
+    m.def(
+        "pvtp_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
+           const std::string& part_key) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::write_pvtp_codec(path, cpp, binary, core_codec_from_name(codec),
+                                             part_key);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib",
+        py::arg("part_key") = meshioplusplus::kPvtuPartKey);
+
+    m.def(
+        "pvtp_write_pieces_codec",
+        [](const std::string& path, py::list pieces, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            std::vector<meshioplusplus::Mesh> meshes;
+            meshes.reserve(pieces.size());
+            for (py::handle piece : pieces)
+                meshes.push_back(meshioplusplus_py::py_to_mesh(piece, refs,
+                                                               /*lenient_field_data=*/false,
+                                                               /*allow_ragged=*/true));
+            std::vector<const meshioplusplus::Mesh*> ptrs;
+            ptrs.reserve(meshes.size());
+            for (const meshioplusplus::Mesh& piece : meshes)
+                ptrs.push_back(&piece);
+            meshioplusplus::write_pvtp_pieces_codec(path, ptrs, binary,
+                                                    core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("pieces"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def(
+        "pvtp_read",
+        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
+           const std::string& ghosts) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtp(
+                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
+
+    // ParaView collection (.pvd): one .vtu per step. `time_step` selects the step
+    // (the distinct `timestep=` values), `piece` one part of it.
+    m.def(
+        "pvd_write_codec",
+        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                     /*lenient_field_data=*/false,
+                                                                     /*allow_ragged=*/true);
+            meshioplusplus::write_pvd_codec(path, cpp, binary, core_codec_from_name(codec));
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    m.def(
+        "pvd_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           py::object piece, const std::string& ghosts) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvd(
+                path, core_read_options(points_only, arrays, time_step, piece, false, ghosts)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
 
     // VTP (PolyData) writer / reader; allow_ragged so jagged polygon blocks
     // reach the C++ writer (they are legal PolyData Polys rows).

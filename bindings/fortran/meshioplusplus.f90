@@ -398,7 +398,12 @@ module meshioplusplus
         !> one mesh with one cell region per piece. Takes a fourth former `reserved`
         !> slot; size unchanged.
         integer(c_int64_t) :: piece_set = 0
-        integer(c_int64_t) :: reserved(2) = 0
+        !> Nonzero removes the ghost cells (halo) of a partitioned .pvtu/.pvtp/.pvd
+        !> (every cell with a vtkGhostType bit set, and the points only they used);
+        !> 0 keeps them. Every other reader ignores it. Takes a fifth former
+        !> `reserved` slot; size unchanged.
+        integer(c_int64_t) :: drop_ghosts = 0
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_refine_opts`. Field order and types are ABI and
@@ -2717,7 +2722,7 @@ contains
     !> selective path are read whole and filtered, so the result is the same
     !> either way; only the cost differs.
     subroutine mesh_read(self, path, format, points_only, arrays, time_step, lenient, &
-                         stat, errmsg, piece)
+                         stat, errmsg, piece, drop_ghosts)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         character(*), intent(in), optional :: format
@@ -2737,6 +2742,10 @@ contains
         !> piece. Out of range fails, never clamps. Last in the argument list so
         !> a caller passing `stat`/`errmsg` positionally keeps working.
         integer, intent(in), optional :: piece
+        !> Remove the ghost cells (halo) of a partitioned .pvtu/.pvtp/.pvd; every
+        !> other reader ignores it. Omitted keeps them. Last in the argument list
+        !> for the same reason as `piece`.
+        logical, intent(in), optional :: drop_ghosts
         character(:), allocatable :: fmt
         type(c_ptr) :: h
         type(mio_read_opts_t) :: opts
@@ -2750,7 +2759,7 @@ contains
 
         if (.not. present(points_only) .and. .not. present(arrays) &
             .and. .not. present(time_step) .and. .not. present(lenient) &
-            .and. .not. present(piece)) then
+            .and. .not. present(piece) .and. .not. present(drop_ghosts)) then
             h = c_mio_read(c_str(path), c_str(fmt))
         else
             call c_mio_read_opts_init(opts)
@@ -2764,6 +2773,9 @@ contains
             if (present(piece)) then
                 opts%piece = int(piece, c_int64_t)
                 opts%piece_set = 1
+            end if
+            if (present(drop_ghosts)) then
+                if (drop_ghosts) opts%drop_ghosts = 1
             end if
             if (present(arrays)) then
                 n = size(arrays)

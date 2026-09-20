@@ -71,6 +71,9 @@
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/formats/vts.hpp"
 #include "meshioplusplus/formats/vtr.hpp"
+#include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/pvtp.hpp"
+#include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/formats/vtm.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
@@ -133,6 +136,11 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
         {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
         {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
+        // The ParaView index formats take a trailing defaulted ReadOptions, so they
+        // are wrapped like vtm above.
+        {"pvd", [](const std::string& path) { return meshioplusplus::read_pvd(path); }},
+        {"pvtu", [](const std::string& path) { return meshioplusplus::read_pvtu(path); }},
+        {"pvtp", [](const std::string& path) { return meshioplusplus::read_pvtp(path); }},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
         // pointers no longer convert to ReadFn -- wrapped like unv/med below.
         {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
@@ -278,6 +286,30 @@ const std::map<std::string, WriteFn>& registry_writers() {
              meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
 #else
              meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvd",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvtu",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/false);
+#endif
+         }},
+        {"pvtp",
+         [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/true);
+#else
+             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/false);
 #endif
          }},
         {"vtk",
@@ -428,6 +460,9 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".vts", "vts"},
         {".vtr", "vtr"},
         {".vtm", "vtm"},
+        {".pvd", "pvd"},
+        {".pvtu", "pvtu"},
+        {".pvtp", "pvtp"},
         {".vtp", "vtp"},
         {".vtu", "vtu"},
         {".wkt", "wkt"},
@@ -551,6 +586,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"vts", meshioplusplus::read_vts},
         {"vtr", meshioplusplus::read_vtr},
         {"vtm", meshioplusplus::read_vtm},
+        {"pvd", meshioplusplus::read_pvd},
+        {"pvtu", meshioplusplus::read_pvtu},
+        {"pvtp", meshioplusplus::read_pvtp},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},
@@ -577,6 +615,9 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"vts", meshioplusplus::read_vts_metadata},
         {"vtr", meshioplusplus::read_vtr_metadata},
         {"vtm", meshioplusplus::read_vtm_metadata},
+        {"pvd", meshioplusplus::read_pvd_metadata},
+        {"pvtu", meshioplusplus::read_pvtu_metadata},
+        {"pvtp", meshioplusplus::read_pvtp_metadata},
         {"vtp", meshioplusplus::read_vtp_metadata},
         {"vtu", meshioplusplus::read_vtu_metadata},
         {"xdmf", meshioplusplus::read_xdmf_metadata},

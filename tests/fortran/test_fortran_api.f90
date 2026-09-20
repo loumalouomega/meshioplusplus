@@ -374,6 +374,41 @@ program test_fortran_api
         end if
     end block
 
+    ! -- the ghost switch on a .pvtu (v15.0.0) ----------------------------------
+    ! A cell whose vtkGhostType is nonzero is a halo cell. Reading keeps it by
+    ! default and drop_ghosts removes it; every other reader ignores the switch.
+    block
+        type(mio_mesh) :: gm, sel
+        integer :: st, st_write
+        integer(int64) :: n_keep, n_drop, b
+
+        call gm%set_points(points)
+        call gm%add_cell_block('tetra', conn)
+        call gm%add_cell_data('vtkGhostType', [0.0_real64, 1.0_real64])
+        call gm%write('fortran_ghost.pvtu', stat=st_write)
+        if (st_write == 0) then
+            n_keep = 0
+            call sel%read('fortran_ghost.pvtu', stat=st)
+            call check(st == 0, 'pvtu read')
+            do b = 1, sel%num_cell_blocks()
+                n_keep = n_keep + sel%cell_block_num_cells(int(b))
+            end do
+            call sel%free()
+            n_drop = 0
+            call sel%read('fortran_ghost.pvtu', drop_ghosts=.true., stat=st)
+            call check(st == 0, 'pvtu read with drop_ghosts')
+            do b = 1, sel%num_cell_blocks()
+                n_drop = n_drop + sel%cell_block_num_cells(int(b))
+            end do
+            call check(n_keep == 2_int64, 'pvtu keeps ghost cells by default')
+            call check(n_drop == 1_int64, 'drop_ghosts removes the ghost cell')
+            call sel%free()
+            ! a reader with no halo concept ignores it
+            call sel%read('fortran_piece.vtkhdf', drop_ghosts=.true., stat=st)
+            if (st == 0) call check(sel%num_points() == 5_int64, 'other readers ignore drop_ghosts')
+        end if
+    end block
+
     ! -- convert_cells: elevate then linearize returns the original topology --
     block
         type(mio_mesh) :: up, down

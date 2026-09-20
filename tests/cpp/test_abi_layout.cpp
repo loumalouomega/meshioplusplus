@@ -67,6 +67,8 @@
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/pvd.hpp"
+#include "meshioplusplus/formats/pvtu.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -117,6 +119,18 @@ namespace {
 MIO_ABI_LAYOUT(meshioplusplus::NDArray, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Region, 120, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReadOptions, 72, 8);
+// ReadOptions::mGhosts (v15.0.0, ABI 15) was appended into the tail padding
+// after `mPieceSet`: `sizeof` did NOT move, so the pin above -- and the four
+// aggregates that embed `ReadOptions` by value -- are unchanged. It is still a
+// Tier A change (a consumer compiled against v14 headers leaves those bytes
+// indeterminate and a v15 library would read them as the policy), and this
+// snapshot cannot see it: the ABI number is the only record. The offset pin
+// below at least makes the placement deliberate, so moving the member is a
+// compile error rather than a silent second break.
+static_assert(offsetof(meshioplusplus::ReadOptions, mPieceSet) == 64,
+              "meshio++ ABI: ReadOptions::mPieceSet moved");
+static_assert(offsetof(meshioplusplus::ReadOptions, mGhosts) == 65,
+              "meshio++ ABI: ReadOptions::mGhosts moved (ABI 15 placed it at offset 65)");
 MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
@@ -150,6 +164,10 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
+
+// `PvdSeriesWriter` (v15.0.0) is a pimpl handle, one pointer, pinned from the
+// release that introduces it -- the `OpenFoamInfo` lesson above.
+MIO_ABI_LAYOUT(meshioplusplus::PvdSeriesWriter, 8, 8);
 
 // The pipeline and sequence aggregates. `run_pipeline(const Pipeline&)` and
 // `run_sequence_pipeline(const SequencePipeline&)` are exported, and both

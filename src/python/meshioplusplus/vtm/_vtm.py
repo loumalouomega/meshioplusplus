@@ -27,6 +27,7 @@ from .._clean import clean
 from .._exceptions import ReadError
 from .._merge import _merge_py
 from .._mesh import Mesh
+from .._pvtk_index import share_field_data
 from .._regions import Region
 
 
@@ -86,6 +87,8 @@ def read(filename):
         data_policy="fill",
         drop_duplicate_cells=False,
     )
+    # Dataset-global field data is the union across pieces, not namespaced.
+    share_field_data(out, pieces)
     for name, cmap in zip(names, cell_maps):
         out.regions.append(Region(name, "cell", np.asarray(cmap, dtype=np.int64)))
     return out

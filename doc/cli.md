@@ -936,7 +936,7 @@ Decompose a mesh into N balanced parts for domain decomposition (see [partitioni
 meshioplusplus partition [options] INFILE OUTPATTERN
 ```
 
-`OUTPATTERN` must contain `{part}` (e.g. `out_{part}.vtu`), expanded once per piece — except with `--labels-only`, where it is a single plain path.
+`OUTPATTERN` must contain `{part}` (e.g. `out_{part}.vtu`), expanded once per piece — or be a `.pvtu`/`.pvtp` path (or name `--output-format pvtu|pvtp`) with no `{part}`, which writes **one parallel index over every part** plus one piece file each (see [PVTU](/formats/pvtu)); a `{part}` token wins over an index extension. With `--labels-only` it is a single plain path.
 
 | Option | Description |
 |--------|-------------|
@@ -948,7 +948,7 @@ meshioplusplus partition [options] INFILE OUTPATTERN
 | `--weights NAME` | Scalar `cell_data` array of per-cell weights to balance instead of the cell count |
 | `--record-ids` | Attach `partition:original_point_id` / `partition:original_cell_id` arrays to every piece |
 | `--labels-only` | Write the input once with the Int64 `partition:part` cell_data attached instead of writing pieces |
-| `--ghost-layers N` | Reserved; only `0` is supported |
+| `--ghost-layers N` | Grow each piece by `N` shared-node BFS layers of other parts' cells (a halo), tagged `partition:ghost` (`0` = owned). Written to a `.pvtu`/`.pvtp` output they become `vtkGhostType` cells and points and the index's `GhostLevel` |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 Every piece keeps the input's cell-block structure 1:1 (empty blocks included, unlike `split`), so the pieces recombine into the input — each cell lands in exactly one piece.
@@ -960,6 +960,7 @@ meshioplusplus partition domain.msh 'domain_{part}.vtu' --nparts 4
 meshioplusplus partition domain.msh 'domain_{part}.vtu' -n 16 --method kahip --mode strong
 meshioplusplus partition domain.msh labelled.vtu --nparts 4 --labels-only
 meshioplusplus partition domain.msh 'p_{part}.vtu' -n 8 --weights cost --record-ids
+meshioplusplus partition domain.msh domain.pvtu -n 4 --ghost-layers 1   # one index over four parts, halo kept as vtkGhostType
 ```
 
 ---
@@ -1267,7 +1268,7 @@ meshioplusplus binary [options] INFILE
 
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
-`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`
+`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`
 
 ## Selective reads and fast summaries
 
@@ -1284,7 +1285,9 @@ meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a tim
 
 `--time-step=N` picks one step of a multi-step file: `0` (the default) is the first, negative counts from the end. A negative value needs the `--time-step=-1` form, as with the other negative-valued options. Out of range is an error naming the available count, never a silent clamp; `info --fast` prints `Time steps: N [...]` when a file records more than one. Honoured by formats carrying a time series (currently `exodus`); a format whose reader has no time concept refuses rather than quietly returning the first step.
 
-`--piece=N` keeps one piece of a partitioned file (VTKHDF partitions or composite blocks) instead of the merged mesh: `0` is the first, negative counts from the end (`--piece=-1`). Out of range is an error naming the piece count, and a format with no pieces refuses rather than quietly merging. `compress`/`decompress` deliberately do not handle `vtkhdf`: they rewrite in place from one merged read, which would drop every step but the first from a transient file — use `convert` to a new file instead.
+`--drop-ghosts` (both CLIs) removes the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd` — every cell with a `vtkGhostType` bit set, and the points only they used — so a partition written with `partition --ghost-layers` reads back as the original mesh; every other reader ignores it, and by default ghost cells are kept.
+
+`--piece=N` keeps one piece of a partitioned file (VTKHDF partitions or composite blocks, the pieces of a `.pvtu`/`.pvtp`, or one `part` of a `.pvd` step) instead of the merged mesh: `0` is the first, negative counts from the end (`--piece=-1`). Out of range is an error naming the piece count, and a format with no pieces refuses rather than quietly merging. `compress`/`decompress` deliberately do not handle `vtkhdf`: they rewrite in place from one merged read, which would drop every step but the first from a transient file — use `convert` to a new file instead.
 
 `--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X" errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and `Constraints` blocks, which nearly every production `.mdpa` carries. It is *not* "ignore all errors": a malformed row, a bad node reference or a duplicate node id still fail, because continuing past those returns a mesh that is quietly wrong rather than merely incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the pure-Python reference, which already accepts every construct the flag covers.
 

@@ -157,6 +157,15 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<PolyData>\n";
+    // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
+    // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
+    if (rMesh.NumFieldData() != 0) {
+        os << "<FieldData>\n";
+        for (const auto& name : rMesh.FieldDataNames())
+            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+                                          binary ? codec : detail::VtkCodec::None);
+        os << "</FieldData>\n";
+    }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfVerts=\"" << verts.mOffsets.size()
        << "\" NumberOfLines=\"" << lines.mOffsets.size()
        << "\" NumberOfStrips=\"0\" NumberOfPolys=\"" << polys.mOffsets.size() << "\">\n";
@@ -195,7 +204,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (rMesh.NumPointData() != 0) {
         os << "<PointData>\n";
         for (const auto& name : rMesh.PointDataNames()) {
-            const NDArray& d = rMesh.PointData(name);
+            NDArray scratch;
+            const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
             da_header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
@@ -214,15 +224,17 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             const std::size_t ndblocks = rMesh.CellDataNumBlocks(name);
             if (ndblocks == 0)
                 continue;
+            NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(first.Dtype()), name, ncomp);
+            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    const NDArray& blk = rMesh.CellData(name, bi);
+                    const NDArray& blk =
+                        detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch);
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
@@ -231,7 +243,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)
                         continue;
-                    vtu_ascii_ndarray(os, rMesh.CellData(name, bi));
+                    vtu_ascii_ndarray(
+                        os, detail::vtu_disk_array(name, rMesh.CellData(name, bi), scratch));
                 }
             }
             os << "</DataArray>\n";

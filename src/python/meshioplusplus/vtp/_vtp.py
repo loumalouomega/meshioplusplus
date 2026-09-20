@@ -19,6 +19,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 
 from .. import _provenance
+from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
 from .._vtk_common import vtk_cells_from_data
@@ -121,8 +122,25 @@ def read(filename):
 
     points = None
     point_data = {}
+    field_data = {}
     cell_data_raw = {}
     sections = {}
+
+    # <FieldData> belongs to the dataset: VTK writes it on the grid, before the
+    # <Piece>, and also accepts it inside one (the piece's overriding the grid's).
+    # A non-numeric array (`type="String"`) has no numpy dtype here: skipped with
+    # a warning rather than failing a file whose field data used to be ignored.
+    for holder in (grid, piece):
+        for fd in holder.findall("FieldData"):
+            for da in fd.findall("DataArray"):
+                if da.get("type") not in vtu_to_numpy_type:
+                    warn(
+                        f"VTP: skipping <FieldData> array '{da.get('Name')}' of "
+                        f"type '{da.get('type')}' (only numeric arrays are read)"
+                    )
+                    continue
+                field_data[da.get("Name")] = read_data(da)
+
     for child in piece:
         if child.tag == "Points":
             points = read_data(child.find("DataArray"))
@@ -187,7 +205,13 @@ def read(filename):
 
     if points is None:
         points = np.empty((0, 3))
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_data,
+    )
 
 
 def _chunk_it(array, n):
@@ -240,9 +264,15 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
             [points, np.zeros((points.shape[0], 3 - points.shape[1]), points.dtype)]
         )
 
-    def data_array_str(name, data, ncomp):
+    def data_array_str(name, data, ncomp, ntuples=None):
+        if name == "vtkGhostType" and data.dtype != np.uint8:
+            # VTK's reserved ghost-flag name: always UInt8 on disk (see the VTU writer).
+            data = data.astype(np.uint8)
         vtu_type = numpy_to_vtu_type[data.dtype.newbyteorder("=")]
         out = [f'<DataArray type="{vtu_type}" Name="{name}"']
+        if ntuples is not None:
+            # <FieldData> arrays carry an explicit tuple count (VTK requires it).
+            out.append(f' NumberOfTuples="{ntuples}"')
         if ncomp > 0:
             out.append(f' NumberOfComponents="{ncomp}"')
         out.append(f' format="{"binary" if binary else "ascii"}">\n')
@@ -300,6 +330,28 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     out.append(">\n")
     out.append(_provenance.render_xml_comment(_provenance.SlotTier.BLOCK) + "\n")
     out.append("<PolyData>\n")
+    # Field data is dataset-global: on the grid, before the <Piece>, where VTK's
+    # own writers put it. A value that is not a numeric array has no VTK type and
+    # is skipped with a warning; the caller's mapping is never modified.
+    field_arrays = {}
+    for name in sorted(mesh.field_data):
+        try:
+            arr = np.asarray(mesh.field_data[name])
+            arr = arr.astype(arr.dtype.newbyteorder("="), copy=False)
+        except Exception:
+            arr = None
+        if arr is None or arr.dtype not in numpy_to_vtu_type:
+            warn(f"VTP: field_data '{name}' is not a numeric array; not written")
+            continue
+        field_arrays[name] = arr.reshape(arr.shape[0], -1) if arr.ndim > 2 else arr
+    if field_arrays:
+        out.append("<FieldData>\n")
+        for name, arr in field_arrays.items():
+            ncomp = arr.shape[1] if arr.ndim == 2 else 0
+            out.append(
+                data_array_str(name, arr, ncomp, arr.shape[0] if arr.ndim else 1)
+            )
+        out.append("</FieldData>\n")
     out.append(
         f'<Piece NumberOfPoints="{points.shape[0]}"'
         f' NumberOfVerts="{len(section_rows[0])}"'

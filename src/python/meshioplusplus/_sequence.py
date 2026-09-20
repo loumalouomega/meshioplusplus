@@ -72,7 +72,11 @@ TIME_KEY = "meshio:time"
 # **`vtkhdf` joined in v14.0.0**: its `Steps` group is an offset table into flat
 # arrays, so a fan-in is the geometry once plus one appended step per entry --
 # the on-disk form of this engine. Pushed like XDMF's (`_SeriesWriter`).
-_SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf")
+# **`pvd` joined in v15.0.0**: a collection is an index over one file per step,
+# so a fan-in is one piece written and one index line appended per entry
+# (`pvd.SeriesWriter`, pushed like XDMF's; the index is rewritten after every
+# step so a killed run still opens).
+_SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
 # out.Y` on one of them might silently write step 0 of many. Consulted before
@@ -98,6 +102,11 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf")
 # FULL read -- `read_metadata` has no native USD path, so it falls back and
 # reads the stage, whose reader attaches `mesh.time_values` (the Exodus
 # side-channel). Correct but not cheap; stated in doc/sequences.md.
+#
+# **`pvd` joined in v15.0.0.** Its steps are the distinct `timestep=` values of
+# the index, so the C++ metadata reader answers without opening a piece; the
+# pure-Python twin reads one step and attaches every step's time the same way
+# `usd` does.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -110,6 +119,7 @@ _TIME_CAPABLE_READERS = (
     "ensight",
     "openfoam",
     "vtkhdf",
+    "pvd",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which
@@ -708,6 +718,16 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
 
         # Pushed, like XDMF's: one stage, one time sample per step, topology
         # re-authored only when it changes -- so one mesh is alive at a time.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "pvd":
+        from .pvd import SeriesWriter
+
+        # Pushed: one `.vtu` per step next to the index, so one mesh is alive
+        # at a time and the index lists every step finished so far.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)
