@@ -133,7 +133,10 @@ struct _CReadOpts
     # two more of the former reserved slots -- still 80 bytes.
     piece::Int64
     piece_set::Int64
-    reserved::NTuple{2,Int64}
+    # `drop_ghosts` (nonzero removes the ghost cells of a .pvtu/.pvtp/.pvd) took a
+    # fifth former reserved slot -- still 80 bytes.
+    drop_ghosts::Int64
+    reserved::NTuple{1,Int64}
 end
 
 """

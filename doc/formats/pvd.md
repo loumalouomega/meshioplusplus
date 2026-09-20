@@ -1,6 +1,6 @@
 # PVD — ParaView collection (`.pvd`)
 
-A time-indexed list of VTK XML files: the on-disk face of the [sequence engine](/sequences) for ParaView, where a `.pvd` gives the time slider its steps (v14.1.0, roadmap §1.1). An entry names a serial or parallel XML file — `.vtu`, `.vtp`, `.vtm`, `.pvtu` or `.pvtp`, never legacy `.vtk` — so `.pvd` → [`.pvtu`](./pvtu.md) → `.vtu` is the ordinary layout of a partitioned transient run. The format is documented on the [ParaView wiki](https://www.paraview.org/Wiki/ParaView/Data_formats) rather than in VTK.
+A time-indexed list of VTK XML files: the on-disk face of the [sequence engine](/sequences) for ParaView, where a `.pvd` gives the time slider its steps (v15.0.0). An entry names a serial or parallel XML file — `.vtu`, `.vtp`, `.vtm`, `.pvtu` or `.pvtp`, never legacy `.vtk` — so `.pvd` → [`.pvtu`](./pvtu.md) → `.vtu` is the ordinary layout of a partitioned transient run. The format is documented on the [ParaView wiki](https://www.paraview.org/Wiki/ParaView/Data_formats) rather than in VTK.
 
 | | |
 |---|---|
@@ -67,7 +67,7 @@ A `<DataSet>` carries `timestep`, `part` and (optionally) `group` and `name`. Th
 | `part=` | `piece=` (`ReadOptions::mPiece`) | unset: every part of the chosen step, merged |
 | `group=` / `name=` | region name | — |
 
-- **Steps** are the distinct `timestep` values in ascending order, whatever order the entries are listed in and however unevenly they are spaced. A missing `timestep` is `0`, as ParaView reads it. `time_step=-1` is the last step; out of range names the step count.
+- **Steps** are the distinct `timestep` values in ascending order, whatever order the entries are listed in and however unevenly they are spaced. A missing `timestep` is taken from the entry's own file (below), else `0`, as ParaView reads it. `time_step=-1` is the last step; out of range names the step count.
 - **Parts** of a step are its entries, ordered by `part` and then by document order. `read()` merges them (no welding) with one `RegionKind::Cell` region per entry, named from `name=`, else `group/part_<p>`, else `part_<p>`. `piece=k` keeps one of them alone, with no region.
 - A step with a **single entry** is returned as that file reads: a step that is one `.pvtu` keeps its own `piece_<i>` regions and is not wrapped in a second all-cells region.
 - The chosen step's time is attached as `field_data["meshio:time"]`, so fan-out and fan-in close on time.
@@ -88,17 +88,17 @@ for k, (t, mesh) in enumerate(steps):
 # then a .pvd whose entries are timestep="t" file="step{k}.pvtu"
 ```
 
-Both levels go through the same piece reader, so they nest with no special case; `ghosts="drop"` (`meshioplusplus.pvd.read(..., ghosts="drop")`) reaches every child. A parallel index does not nest (a `.pvtu` names `.vtu` files only), so no cycle is expressible.
+Both levels go through the same piece reader, so they nest with no special case; `ghosts="drop"` (`meshioplusplus.read(..., ghosts="drop")`, `convert --drop-ghosts`, `ReadOptions::mGhosts`) reaches every child. A parallel index does not nest (a `.pvtu` names `.vtu` files only), so no cycle is expressible.
 
 ## Quirks & limitations
 
 - **A plain `write` is one step.** `meshioplusplus.write("x.pvd", mesh)` writes a one-entry collection. Many steps go through `write_sequence`, which streams them: one mesh alive at a time, and the index is rewritten after **every** step, so a run that is killed leaves a collection ParaView opens covering every finished step.
 - **Step pieces are `.vtu`.** Whatever the mesh, each step is written as a `.vtu` (polygonal data included). The `PvdSeriesWriter` class does not take a piece format.
-- **A `TimeValue` field-data array is not read as a time.** The index's `timestep` is the only time source; a piece's own `<FieldData>` is neither written by the `.vtu` writer nor read by the C++ `.vtu` reader.
+- **A file's own time is the fallback for a missing `timestep=`.** VTK's "time in field data" convention puts a `TimeValue` array in a file's `<FieldData>`; an entry without `timestep=` takes its step time from the file it names: `TimeValue` first, else `meshio:time`, else `0`. An explicit `timestep=` always wins. The resolution runs for **every** entry in both the read and `read_metadata`, so a summary and a real read cannot group the steps differently. An index whose entries all carry `timestep=` — what meshio++ and ParaView write — never opens a piece for it; one that relies on the files' own time opens those files (narrowed to the two arrays in C++). ParaView itself does not do this for a `.pvd` (it treats a missing `timestep` as 0), so write `timestep=` when the collection is meant for ParaView, which `write_sequence` always does.
 - **Non-finite times are refused** on write; a `timestep` that is not a number is refused on read.
 - An entry whose `file=` is missing, does not exist (naming the attribute and the path — an absolute path from another machine is not searched for elsewhere) or is not one of the five XML extensions raises `ReadError`. An empty collection reads as an empty mesh.
 - **Windows-style backslashes** in a `file=` attribute are not translated.
-- Opening a `.pvd` in ParaView is not covered by the automated tests: vanilla VTK has no collection reader (`vtkPVDReader` ships with ParaView). What is covered is the index's structure, and that every file it names opens in VTK's own readers.
+- **ParaView opens it.** Vanilla VTK has no collection reader (`vtkPVDReader` ships with ParaView), so `tests/python/test_pvd_paraview.py` drives a real `pvpython` (6.1.1 when written; skipped where it is absent): a `.pvd` of `.vtu` reports the written time steps and each step's geometry, and a `.pvd` of ghosted `.pvtu` reports the same steps with every halo cell recognised as a ghost cell and the dataset's field data (one `TimeValue` per step). PyVista's independent pure-Python `PVDReader` is checked the same way where PyVista is installed.
 
 ## Notes
 

@@ -72,7 +72,7 @@ TIME_KEY = "meshio:time"
 # **`vtkhdf` joined in v14.0.0**: its `Steps` group is an offset table into flat
 # arrays, so a fan-in is the geometry once plus one appended step per entry --
 # the on-disk form of this engine. Pushed like XDMF's (`_SeriesWriter`).
-# **`pvd` joined in v14.1.0**: a collection is an index over one file per step,
+# **`pvd` joined in v15.0.0**: a collection is an index over one file per step,
 # so a fan-in is one piece written and one index line appended per entry
 # (`pvd.SeriesWriter`, pushed like XDMF's; the index is rewritten after every
 # step so a killed run still opens).
@@ -103,7 +103,7 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 # reads the stage, whose reader attaches `mesh.time_values` (the Exodus
 # side-channel). Correct but not cheap; stated in doc/sequences.md.
 #
-# **`pvd` joined in v14.1.0.** Its steps are the distinct `timestep=` values of
+# **`pvd` joined in v15.0.0.** Its steps are the distinct `timestep=` values of
 # the index, so the C++ metadata reader answers without opening a piece; the
 # pure-Python twin reads one step and attaches every step's time the same way
 # `usd` does.

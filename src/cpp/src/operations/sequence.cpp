@@ -206,7 +206,7 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // fields are new; the polyMesh topology itself never had a time concept.
     // vtkhdf joined in v14.0.0: its metadata reader reads
     // Steps/Values without touching the geometry, so the count is cheap.
-    // pvd joined in v14.1.0: its steps are the distinct `timestep=` values of
+    // pvd joined in v15.0.0: its steps are the distinct `timestep=` values of
     // the index, read without opening a piece.
     return rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" || rFormat == "med" ||
            rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||

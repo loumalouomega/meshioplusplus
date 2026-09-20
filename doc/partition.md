@@ -41,7 +41,7 @@ meshioplusplus.pvtu.write_pieces("domain.pvtu", pieces)   # domain.pvtu + domain
 meshioplusplus.pvtu.write("labelled.pvtu", mesh_with_partition_part)   # or carve one mesh by its partition:part labels
 ```
 
-`partition:ghost` becomes `vtkGhostType` on cells (`DUPLICATECELL` for any layer) and on points (`DUPLICATEPOINT` when no owned cell of the piece uses the point), and sets the index's `GhostLevel` to the deepest layer; `partition:ghost` itself is kept too, since `vtkGhostType` collapses layer 2 onto layer 1. Reading the index merges the pieces (one `piece_<i>` region each); `ghosts="drop"` removes the halo and returns the partition of unity, so `partition` → `.pvtu` → read is the original mesh up to point ordering (`clean` with `weld=True` fuses the interface points). See [PVTU](/formats/pvtu).
+`partition:ghost` becomes `vtkGhostType` on cells (`DUPLICATECELL` for any layer) and on points (`DUPLICATEPOINT` when no owned cell of the piece uses the point), and sets the index's `GhostLevel` to the deepest layer; `partition:ghost` itself is kept too, since `vtkGhostType` collapses layer 2 onto layer 1. Reading the index merges the pieces (one `piece_<i>` region each); `ghosts="drop"` (on `meshioplusplus.read`, or `--drop-ghosts` on `convert`) removes the halo and returns the partition of unity, so `partition` → `.pvtu` → read is the original mesh up to point ordering (`clean` with `weld=True` fuses the interface points). See [PVTU](/formats/pvtu).
 
 ## Two methods
 

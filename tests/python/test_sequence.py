@@ -325,8 +325,12 @@ def test_fan_in_then_fan_out_reproduces_every_step(steps, tmp_path):
         str(tmp_path / "back_{step}.vtu"), meshioplusplus.read_sequence(series)
     )
     assert len(written) == 12
-    for original, path in zip(originals, written):
-        assert meshioplusplus.meshes_equal(original, meshioplusplus.read(path))
+    for i, (original, path) in enumerate(zip(originals, written)):
+        back = meshioplusplus.read(path)
+        # VTU carries field_data since v15.0.0, so a fan-out records each step's
+        # time in its file; the mesh is otherwise the original, step for step.
+        assert float(back.field_data.pop("meshio:time")[0]) == float(i)
+        assert meshioplusplus.meshes_equal(original, back)
 
 
 def test_round_trip_is_stable(steps, tmp_path):
@@ -564,6 +568,11 @@ def test_per_step_pipeline_matches_applying_the_steps_individually(steps, tmp_pa
         )
         via_sequence = meshioplusplus.read(str(tmp_path / f"seq_{i:04d}.vtu"))
         alone = meshioplusplus.read(one)
+        # A `{step}` output labels its file with its step's time (`meshio:time`),
+        # which a single plain output deliberately does not: that key marks one
+        # step OF A SERIES. Everything else is the same.
+        assert float(via_sequence.field_data.pop("meshio:time")[0]) == float(i)
+        assert "meshio:time" not in alone.field_data
         assert meshioplusplus.meshes_equal(via_sequence, alone)
 
 

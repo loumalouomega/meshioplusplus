@@ -19,7 +19,7 @@
 /**
  * @file formats/pvtp.hpp
  * @brief VTK XML parallel polygonal data (`.pvtp`): `formats/pvtu.hpp`'s index
- * over `.vtp` pieces (v14.1.0, roadmap §1.1).
+ * over `.vtp` pieces (v15.0.0).
  *
  * `<VTKFile type="PPolyData"><PPolyData GhostLevel="N">...<Piece Source=
  * "stem/stem_0000.vtp"/>`. Everything in `formats/pvtu.hpp` applies -- carving
@@ -55,8 +55,7 @@ MESHIOPLUSPLUS_API void write_pvtp_pieces_codec(const std::string& rPath,
                                                 bool binary, detail::VtkCodec codec);
 
 /// @copydoc read_pvtu
-MESHIOPLUSPLUS_API Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts = {},
-                                  const PvtuReadOptions& rGhost = {});
+MESHIOPLUSPLUS_API Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /// @copydoc read_pvtu_metadata
 MESHIOPLUSPLUS_API MeshMetadata read_pvtp_metadata(const std::string& rPath,

@@ -511,13 +511,27 @@ class VtuReader:
 
         pieces = []
         field_data = {}
+
+        def read_field_data(fd):
+            # `type="String"` and friends have no numpy dtype here. Skipped with
+            # a warning, as the C++ reader does, rather than failing a file whose
+            # field data used to be ignored.
+            for data_array in fd:
+                if data_array.attrib.get("type") not in vtu_to_numpy_type:
+                    warn(
+                        f"VTU: skipping <FieldData> array "
+                        f"'{data_array.attrib.get('Name')}' of type "
+                        f"'{data_array.attrib.get('type')}' (only numeric "
+                        "arrays are read)"
+                    )
+                    continue
+                field_data[data_array.attrib["Name"]] = self.read_data(data_array)
+
         for c in grid:
             if c.tag == "Piece":
                 pieces.append(c)
             elif c.tag == "FieldData":
-                # TODO test field data
-                for data_array in c:
-                    field_data[data_array.attrib["Name"]] = self.read_data(data_array)
+                read_field_data(c)
             else:
                 raise ReadError(f"Unknown grid subtag '{c.tag}'.")
 
@@ -585,6 +599,10 @@ class VtuReader:
                         piece_cell_data_raw[c.attrib["Name"]] = self.read_data(c)
 
                     cell_data_raw.append(piece_cell_data_raw)
+                elif child.tag == "FieldData":
+                    # VTK also accepts field data inside a piece; it is dataset
+                    # metadata all the same, and overrides the grid's.
+                    read_field_data(child)
                 else:
                     raise ReadError(f"Unknown tag '{child.tag}'.")
 
@@ -874,13 +892,32 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     for data in mesh.cell_data.values():
         for k, dat in enumerate(data):
             data[k] = dat.astype(dat.dtype.newbyteorder("="), copy=False)
-    for key, data in mesh.field_data.items():
-        mesh.field_data[key] = data.astype(data.dtype.newbyteorder("="), copy=False)
+    # Field data is dataset-global and goes on the grid element. Collected here
+    # rather than written back into `mesh.field_data`, so the caller's mapping is
+    # never modified; a value that is not a numeric array has no VTK type and is
+    # skipped with a warning instead of failing the write.
+    field_data = {}
+    for key in sorted(mesh.field_data):
+        try:
+            arr = np.asarray(mesh.field_data[key])
+            arr = arr.astype(arr.dtype.newbyteorder("="), copy=False)
+        except Exception:
+            arr = None
+        if arr is None or arr.dtype not in numpy_to_vtu_type:
+            warn(f"VTU: field_data '{key}' is not a numeric array; not written")
+            continue
+        if arr.ndim > 2:
+            arr = arr.reshape(arr.shape[0], -1)
+        field_data[key] = arr
 
-    def numpy_to_xml_array(parent, name, data):
+    def numpy_to_xml_array(parent, name, data, field=False):
         vtu_type = numpy_to_vtu_type[data.dtype]
         fmt = "{:.11e}" if vtu_type.startswith("Float") else "{:d}"
         da = ET.SubElement(parent, "DataArray", type=vtu_type, Name=name)
+        if field:
+            # A field-data array is one row per tuple of the dataset, so VTK
+            # requires the count explicitly (1 for a scalar).
+            da.set("NumberOfTuples", f"{data.shape[0] if data.ndim else 1}")
         if len(data.shape) == 2:
             da.set("NumberOfComponents", f"{data.shape[1]}")
 
@@ -969,6 +1006,12 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     vtk_file.insert(1, comment)
 
     grid = ET.SubElement(vtk_file, "UnstructuredGrid")
+
+    if field_data:
+        # Before the <Piece>, where VTK's own writers put it.
+        fd = ET.SubElement(grid, "FieldData")
+        for key, arr in field_data.items():
+            numpy_to_xml_array(fd, key, arr, field=True)
 
     total_num_cells = sum(len(c.data) for c in mesh.cells)
     piece = ET.SubElement(

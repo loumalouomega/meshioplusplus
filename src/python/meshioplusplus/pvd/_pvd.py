@@ -48,8 +48,10 @@ def _parse(filename):
     entries = []
     for order, el in enumerate(coll.findall("DataSet")):
         try:
-            # A missing timestep is 0, as ParaView reads it; a missing part is 0.
-            time = float(el.get("timestep", "0"))
+            # A missing part is 0. A missing timestep is resolved below: from the
+            # entry's own file when it names one, else 0 as ParaView reads it.
+            has_time = el.get("timestep") is not None
+            time = float(el.get("timestep")) if has_time else 0.0
             part = int(el.get("part", "0"))
         except ValueError as e:
             raise ReadError(
@@ -58,6 +60,7 @@ def _parse(filename):
         entries.append(
             {
                 "time": time,
+                "has_time": has_time,
                 "part": part,
                 "order": order,
                 "group": el.get("group", ""),
@@ -65,6 +68,21 @@ def _parse(filename):
                 "file": el.get("file"),
             }
         )
+    # The per-file alternative to `timestep=` (VTK's "time in field data"): a
+    # `TimeValue` array in the file's own `<FieldData>`, else our `meshio:time`.
+    # Resolved here, for every entry, so a summary and a real read cannot group
+    # the steps differently. An index whose entries all carry `timestep=` -- what
+    # meshio++ and ParaView write -- never opens a piece for this.
+    for e in entries:
+        if e["has_time"] or not e["file"]:
+            continue
+        path = _ix.resolve_path(filename, e["file"], "pvd")
+        piece = _ix.read_child(path, "keep", _ix.COLLECTION_EXTENSIONS)
+        for key in ("TimeValue", TIME_KEY):
+            value = piece.field_data.get(key)
+            if value is not None and np.asarray(value).size == 1:
+                e["time"] = float(np.asarray(value).ravel()[0])
+                break
     return entries, sorted({e["time"] for e in entries})
 
 

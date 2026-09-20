@@ -1,6 +1,6 @@
 # PVTP — VTK XML parallel polygonal data (`.pvtp`)
 
-The [`.pvtu`](./pvtu.md) index over `.vtp` pieces: it declares the arrays every piece holds and names one polygonal-data piece per part, for surface meshes, line sets and point sets that are split across ranks (v14.1.0, roadmap §1.1). Everything on the [`.pvtu` page](./pvtu.md) applies unchanged — carving by `partition:part`, the declaration check, ghost cells, merging with one region per piece, `piece=` — with `.vtp` in place of `.vtu`. See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html).
+The [`.pvtu`](./pvtu.md) index over `.vtp` pieces: it declares the arrays every piece holds and names one polygonal-data piece per part, for surface meshes, line sets and point sets that are split across ranks (v15.0.0). Everything on the [`.pvtu` page](./pvtu.md) applies unchanged — carving by `partition:part`, the declaration check, ghost cells, merging with one region per piece, `piece=` — with `.vtp` in place of `.vtu`. See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html).
 
 | | |
 |---|---|

@@ -432,26 +432,25 @@ std::vector<fs::path> pvtu_parse_index(pvtu_kind Kind, const std::string& rPath)
     return sources;
 }
 
-Mesh pvtu_read_one(const fs::path& rSource, const ReadOptions& rOpts, GhostPolicy Ghosts) {
-    Mesh piece = pidx::read_child(rSource, rOpts, PvtuReadOptions{Ghosts}, /*Wide=*/false);
-    if (Ghosts == GhostPolicy::Drop)
+Mesh pvtu_read_one(const fs::path& rSource, const ReadOptions& rOpts) {
+    Mesh piece = pidx::read_child(rSource, rOpts, /*Wide=*/false);
+    if (rOpts.mGhosts == GhostPolicy::Drop)
         return pidx::drop_ghosts(std::move(piece));
     return piece;
 }
 
-Mesh pvtu_read(pvtu_kind Kind, const std::string& rPath, const ReadOptions& rOpts,
-               const PvtuReadOptions& rGhost) {
+Mesh pvtu_read(pvtu_kind Kind, const std::string& rPath, const ReadOptions& rOpts) {
     const std::vector<fs::path> sources = pvtu_parse_index(Kind, rPath);
     if (sources.empty())
         return pidx::empty_mesh();
     if (rOpts.mPieceSet)
-        return pvtu_read_one(sources[rOpts.ResolvePiece(sources.size())], rOpts, rGhost.mGhosts);
+        return pvtu_read_one(sources[rOpts.ResolvePiece(sources.size())], rOpts);
 
     std::vector<Mesh> pieces;
     std::vector<std::string> names;
     pieces.reserve(sources.size());
     for (std::size_t i = 0; i < sources.size(); ++i) {
-        pieces.push_back(pvtu_read_one(sources[i], rOpts, rGhost.mGhosts));
+        pieces.push_back(pvtu_read_one(sources[i], rOpts));
         names.push_back("piece_" + std::to_string(i));
     }
     return pidx::merge_pieces(std::move(pieces), names);
@@ -489,8 +488,8 @@ void write_pvtu_pieces_codec(const std::string& rPath, const std::vector<const M
     pvtu_write_pieces(pvtu_kind::Pvtu, rPath, rPieces, binary, codec);
 }
 
-Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts, const PvtuReadOptions& rGhost) {
-    return pvtu_read(pvtu_kind::Pvtu, rPath, rOpts, rGhost);
+Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read(pvtu_kind::Pvtu, rPath, rOpts);
 }
 
 MeshMetadata read_pvtu_metadata(const std::string& rPath, const ReadOptions& rOpts) {
@@ -513,8 +512,8 @@ void write_pvtp_pieces_codec(const std::string& rPath, const std::vector<const M
     pvtu_write_pieces(pvtu_kind::Pvtp, rPath, rPieces, binary, codec);
 }
 
-Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts, const PvtuReadOptions& rGhost) {
-    return pvtu_read(pvtu_kind::Pvtp, rPath, rOpts, rGhost);
+Mesh read_pvtp(const std::string& rPath, const ReadOptions& rOpts) {
+    return pvtu_read(pvtu_kind::Pvtp, rPath, rOpts);
 }
 
 MeshMetadata read_pvtp_metadata(const std::string& rPath, const ReadOptions& rOpts) {

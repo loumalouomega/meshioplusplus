@@ -88,6 +88,15 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     os << ">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<UnstructuredGrid>\n";
+    // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
+    // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
+    if (rMesh.NumFieldData() != 0) {
+        os << "<FieldData>\n";
+        for (const auto& name : rMesh.FieldDataNames())
+            detail::vtu_write_field_array(os, name, rMesh.FieldData(name), binary,
+                                          binary ? codec : detail::VtkCodec::None);
+        os << "</FieldData>\n";
+    }
     os << "<Piece NumberOfPoints=\"" << num_points << "\" NumberOfCells=\"" << total_cells
        << "\">\n";
 

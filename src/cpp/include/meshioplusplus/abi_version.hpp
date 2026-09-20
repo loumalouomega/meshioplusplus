@@ -57,13 +57,28 @@
  *  | 5   | v9.9.0 .. v9.19.0  | `MedInfo` gained four lenient-read fields       |
  *  | 6   | v9.20.0 .. v10.0.0 | `OpenFoamInfo` gained `mPatchTypes`             |
  *  | 7   | v10.1.0            | `RefineOptions` gained `mRecordHierarchy`       |
- *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`, `RemeshResult` gained `mNumNonManifoldVertices` |
- *  | 9   | v10.12.0           | `RemeshOptions` gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` |
- *  | 10  | v10.13.0           | `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding along) |
- *  | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back |
- *  | 12  | v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 |
- *  | 13  | v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 -> 128 bytes |
- *  | 14  | v14.0.0            | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 -> 72 bytes, and with it the four aggregates that embed it by value (PipelineInput, Pipeline, SequenceInput, SequencePipeline; +16 each) |
+ *  | 8   | v10.11.0           | `RemeshOptions` gained `mGradation`/`mPreserveBoundary`,
+ * `RemeshResult` gained `mNumNonManifoldVertices` | | 9   | v10.12.0           | `RemeshOptions`
+ * gained `mMaxAnisotropy`; `RemeshMetric` gained `Anisotropic` | | 10  | v10.13.0           |
+ * `SmoothMethod` gained an explicit `: std::uint8_t` underlying type (previously the scoped-enum
+ * default `int`) plus `Odt`; `RemeshVolumeOptions`/`RemeshVolumeResult` are new (Tier C, riding
+ * along) | | 11  | v10.17.0 .. v10.34.0 | `MeshMetadata` gained
+ * `mProvenance`/`mProvenanceRecognised` (256 -> 288 bytes) for provenance read-back | | 12  |
+ * v10.35.0           | **Tier B, not a layout change**: `NDArray::Size()`'s inline body. It
+ * reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone dropped a 0-d scalar's single
+ * element -- now it counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72 | | 13  |
+ * v11.4.0            | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1
+ * tier B2), 96 -> 128 bytes | | 14  | v14.0.0            | `ReadOptions` gained
+ * `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 -> 72
+ * bytes, and with it the four aggregates that embed it by value (PipelineInput, Pipeline,
+ * SequenceInput, SequencePipeline; +16 each) | | 15  | v15.0.0            | **Tier A, and `sizeof`
+ * did not move**: `ReadOptions` gained `mGhosts` (`GhostPolicy`, `std::uint8_t`), the keep-or-drop
+ * switch for the ghost cells of a partitioned file (`pvtu`/`pvtp`/`pvd`). It was appended into the
+ * 7 bytes of tail padding after `mPieceSet`, so `sizeof(ReadOptions)` stays 72 and the four
+ * embedding aggregates are unchanged -- but a consumer compiled against v14 headers leaves that
+ * byte indeterminate and a v15 library reads it as the policy, so it is a break all the same.
+ * `tests/cpp/test_abi_layout.cpp` cannot see it beyond the new offset pin; this number is the
+ * record |
  *
  * ### This is the ONE place the number is written
  *
@@ -82,4 +97,4 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 14
+#define MESHIOPLUSPLUS_ABI_VERSION 15

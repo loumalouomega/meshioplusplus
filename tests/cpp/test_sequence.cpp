@@ -584,14 +584,14 @@ TEST(SequenceDriver, FanOutWritesOneFilePerStep) {
     mt::expect_same_geometry(mt::tri_mesh(), meshioplusplus::registry_readers().at("vtu")(written));
 }
 
-TEST(SequenceDriver, FanOutTimesSurviveOnlyWhereFieldDataDoes) {
-    // A documented limitation, pinned so it cannot regress silently in either
-    // direction: `timeseries_to_sequence` always attaches
-    // `field_data["meshio:time"]`, but only a handful of formats carry
-    // field_data at all -- VTU carries none, in either direction. So a fan-out
-    // to .vtu followed by a fan-in recovers the step INDEX (from the `{step}`
-    // filename), not the original time value, and `mTimeSource` says so rather
-    // than letting a caller believe otherwise.
+TEST(SequenceDriver, FanOutTimesSurviveWhereFieldDataDoes) {
+    // `timeseries_to_sequence` always attaches `field_data["meshio:time"]`, and it
+    // survives only where the format carries field_data at all. VTU joined that
+    // set in v15.0.0 (`<FieldData>`), so each fanned-out file now records its
+    // step's time. A fan-in over the `{step}` glob still takes the number in the
+    // filename, which outranks a time found in the file, and `mTimeSource` says so
+    // rather than letting a caller believe otherwise. Pinned so neither half can
+    // change silently.
     SeqTempDir dir;
     const std::vector<std::string> files = seq_write_files(dir, "in_", 1);
 
@@ -600,8 +600,9 @@ TEST(SequenceDriver, FanOutTimesSurviveOnlyWhereFieldDataDoes) {
     meshioplusplus::timeseries_to_sequence(files[0], "", ReadOptions{}, out);
 
     const Mesh back = meshioplusplus::registry_readers().at("vtu")(dir / "step_0000.vtu");
-    EXPECT_FALSE(back.HasFieldData(meshioplusplus::kSequenceTimeKey))
-        << "VTU grew field_data support; doc/sequences.md's round-trip note needs revisiting";
+    ASSERT_TRUE(back.HasFieldData(meshioplusplus::kSequenceTimeKey))
+        << "VTU lost field_data support; doc/sequences.md's round-trip note needs revisiting";
+    EXPECT_EQ(back.FieldData(meshioplusplus::kSequenceTimeKey).Size(), 1u);
 
     SequenceInput in;
     in.mPattern = dir / "step_*.vtu";

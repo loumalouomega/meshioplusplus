@@ -100,6 +100,17 @@ def add_args(parser):
             "A negative value needs the --piece=-1 form."
         ),
     )
+    parser.add_argument(
+        "--drop-ghosts",
+        action="store_true",
+        help=(
+            "remove the ghost cells (halo) of a partitioned file: every cell "
+            "with a vtkGhostType bit set, and the points only they used, so "
+            "a partition written with --ghost-layers reads back as the "
+            "original mesh. Honoured by .pvtu, .pvtp and .pvd; every other "
+            "reader ignores it. By default ghost cells are kept."
+        ),
+    )
     seq = parser.add_argument_group(
         "transient sequences (multi-file datasets)",
         "Treat a set of files, or the steps inside one file, as one ordered "
@@ -313,6 +324,7 @@ def _convert_sequence(args, arrays, write_kwargs):
         time_from=args.time_from,
         points_only=args.points_only,
         arrays=arrays,
+        ghosts="drop" if args.drop_ghosts else "keep",
     )
     written = write_sequence(
         args.outfile, steps, file_format=args.output_format, **write_kwargs
@@ -357,6 +369,7 @@ def convert(args):
         arrays=arrays,
         time_step=args.time_step,
         piece=args.piece,
+        ghosts="drop" if args.drop_ghosts else "keep",
     )
 
     # Some converters (like VTK) require `points` to be contiguous.

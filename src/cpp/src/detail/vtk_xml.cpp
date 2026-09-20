@@ -189,6 +189,28 @@ NDArray vtu_parse_binary(const std::string& rText, DType dt, VtkCodec codec, std
     return a;
 }
 
+void vtu_write_field_array(std::ostream& rOs, const std::string& rName, const NDArray& rArray,
+                           bool Binary, VtkCodec Codec) {
+    const std::vector<std::size_t>& shape = rArray.Shape();
+    const std::size_t tuples = shape.empty() ? 1 : shape[0];
+    rOs << "<DataArray type=\"" << vtu_type_str(rArray.Dtype()) << "\" Name=\"" << rName
+        << "\" NumberOfTuples=\"" << tuples << "\"";
+    if (shape.size() >= 2) {
+        std::size_t components = 1;
+        for (std::size_t d = 1; d < shape.size(); ++d)
+            components *= shape[d];
+        rOs << " NumberOfComponents=\"" << components << "\"";
+    }
+    rOs << " format=\"" << (Binary ? "binary" : "ascii") << "\">\n";
+    if (Binary)
+        rOs << vtu_encode_binary(reinterpret_cast<const unsigned char*>(rArray.Data()),
+                                 rArray.Nbytes(), Codec)
+            << "\n";
+    else
+        vtu_ascii_ndarray(rOs, rArray);
+    rOs << "</DataArray>\n";
+}
+
 std::vector<std::int64_t> vtu_to_int64(const NDArray& rA) {
     std::vector<std::int64_t> v(rA.Size());
     for (std::size_t i = 0; i < rA.Size(); ++i)

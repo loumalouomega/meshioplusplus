@@ -74,7 +74,7 @@ std::string sniff_format(const std::string& rPath) {
         // below would call an index a piece; and a bare `Collection` would also
         // match `vtkPartitionedDataSetCollection`. A parallel image, structured
         // or rectilinear index is refused outright rather than mistaken for its
-        // serial twin. (v14.1.0; mirrors `_sniff.py`.)
+        // serial twin. (v15.0.0; mirrors `_sniff.py`.)
         static const struct {
             const char* mValue;
             const char* mFormat;

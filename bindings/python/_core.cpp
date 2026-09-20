@@ -162,6 +162,16 @@ provenance_scope_stack() {
 
 namespace {
 
+/** @brief `ghosts=` keyword -> `GhostPolicy` (`"keep"` / `"drop"`; anything else is a ValueError).
+ */
+meshioplusplus::GhostPolicy core_ghost_policy(const std::string& rGhosts) {
+    if (rGhosts == "keep")
+        return meshioplusplus::GhostPolicy::Keep;
+    if (rGhosts == "drop")
+        return meshioplusplus::GhostPolicy::Drop;
+    throw std::invalid_argument("meshio++: ghosts must be 'keep' or 'drop', got '" + rGhosts + "'");
+}
+
 /**
  * @brief Build a `ReadOptions` from the reader bindings' keyword arguments.
  *
@@ -172,11 +182,13 @@ namespace {
 meshioplusplus::ReadOptions core_read_options(bool points_only, const py::object& rArrays,
                                               int time_step = 0,
                                               const py::object& rPiece = py::none(),
-                                              bool lenient = false) {
+                                              bool lenient = false,
+                                              const std::string& rGhosts = "keep") {
     meshioplusplus::ReadOptions opts;
     opts.mPointsOnly = points_only;
     opts.mTimeStep = time_step;
     opts.mLenient = lenient;
+    opts.mGhosts = core_ghost_policy(rGhosts);
     if (!rPiece.is_none()) {
         opts.mPiece = rPiece.cast<std::int64_t>();
         opts.mPieceSet = true;
@@ -201,18 +213,6 @@ meshioplusplus::detail::VtkCodec core_codec_from_name(const std::string& rName) 
         return VtkCodec::LZMA;
     throw meshioplusplus::WriteError("meshio++: unknown codec '" + rName +
                                      "' (expected zlib, lz4, zstd or none)");
-}
-
-/** @brief `ghosts=` keyword -> `PvtuReadOptions` (`"keep"` / `"drop"`; anything else is a
- * ValueError). */
-meshioplusplus::PvtuReadOptions core_ghost_options(const std::string& rGhosts) {
-    meshioplusplus::PvtuReadOptions options;
-    if (rGhosts == "drop")
-        options.mGhosts = meshioplusplus::GhostPolicy::Drop;
-    else if (rGhosts != "keep")
-        throw std::invalid_argument("meshio++: ghosts must be 'keep' or 'drop', got '" + rGhosts +
-                                    "'");
-    return options;
 }
 
 /** @brief `MeshMetadata` -> the dict shape the Python layer exposes. */
@@ -503,7 +503,7 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none());
 
-    // ParaView parallel indices (.pvtu / .pvtp, v14.1.0, roadmap §1.1): an index
+    // ParaView parallel indices (.pvtu / .pvtp, v15.0.0): an index
     // plus one .vtu/.vtp piece per part. allow_ragged=true like vtm -- a piece is a
     // standalone file that may hold jagged blocks. `write_pieces_codec` takes the
     // list `partition` returns; `ghosts` is "keep" or "drop".
@@ -544,9 +544,8 @@ PYBIND11_MODULE(_core, m) {
         "pvtu_read",
         [](const std::string& path, bool points_only, py::object arrays, py::object piece,
            const std::string& ghosts) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_pvtu(path, core_read_options(points_only, arrays, 0, piece),
-                                          core_ghost_options(ghosts)));
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtu(
+                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
@@ -588,9 +587,8 @@ PYBIND11_MODULE(_core, m) {
         "pvtp_read",
         [](const std::string& path, bool points_only, py::object arrays, py::object piece,
            const std::string& ghosts) {
-            return meshioplusplus_py::mesh_to_py(
-                meshioplusplus::read_pvtp(path, core_read_options(points_only, arrays, 0, piece),
-                                          core_ghost_options(ghosts)));
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvtp(
+                path, core_read_options(points_only, arrays, 0, piece, false, ghosts)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
@@ -613,8 +611,7 @@ PYBIND11_MODULE(_core, m) {
         [](const std::string& path, bool points_only, py::object arrays, int time_step,
            py::object piece, const std::string& ghosts) {
             return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pvd(
-                path, core_read_options(points_only, arrays, time_step, piece),
-                core_ghost_options(ghosts)));
+                path, core_read_options(points_only, arrays, time_step, piece, false, ghosts)));
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("ghosts") = "keep");

@@ -74,6 +74,7 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 12 | v10.35.0 | **Tier B, and the first entry here that is not a layout change**: `NDArray::Size()`'s inline body. It reported 0 for a rank-0 array, so `Nbytes()` was 0 and every clone silently dropped a 0-d scalar's single element; it now counts what the buffer holds. `sizeof(NDArray)` is unchanged at 72, which is exactly why the layout snapshot could not see this and the version had to move by hand |
 | 13 | v11.4.0 | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 → 128 bytes |
 | 14 | v14.0.0 | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 → 72 bytes, and with it the four aggregates that embed it by value (`PipelineInput`, `Pipeline`, `SequenceInput`, `SequencePipeline`; +16 each) |
+| 15 | v15.0.0 | **Tier A, and `sizeof` did not move**: `ReadOptions` gained `mGhosts` (`GhostPolicy`, `std::uint8_t`), the keep-or-drop switch for the ghost cells of a partitioned file (`pvtu`/`pvtp`/`pvd`). It was appended into the 7 bytes of tail padding after `mPieceSet`, so `sizeof(ReadOptions)` stays 72 and `PipelineInput`, `Pipeline`, `SequenceInput` and `SequencePipeline` do not move either — but a consumer compiled against v14 headers leaves that byte indeterminate and a v15 library reads it as the policy, so it is a break all the same. The layout snapshot cannot see it beyond the new offset pin; the ABI number is the record. |
 
 It reaches consumers three ways:
 

@@ -421,6 +421,7 @@ void print_usage(std::ostream& os) {
           "                            --time-step=N picks a step of a multi-step file\n"
           "                            --piece=N keeps one piece of a partitioned file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
+          "                            --drop-ghosts removes a .pvtu/.pvd halo (vtkGhostType)\n"
           "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
           "                            sequence IN; an out_{step}.vtu output fans one OUT\n"
           "                            (--times, --time-from, --sequence/--no-sequence)\n"
@@ -592,6 +593,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"time-step", {}, true},
                                   {"piece", {}, true},
                                   {"lenient", {}, false},
+                                  {"drop-ghosts", {}, false},
                                   {"color-by", {}, true},
                                   {"component", {}, true},
                                   {"cmap", {}, true},
@@ -646,6 +648,10 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     // fails. There is no Python fallback here, so this is what makes a
     // production .mdpa readable at all from the native CLI.
     opts.mLenient = has_flag(p, "lenient");
+    // --drop-ghosts removes the ghost cells (halo) of a partitioned .pvtu/.pvtp/.pvd
+    // and the points only they used; every other reader ignores it, like --lenient.
+    if (has_flag(p, "drop-ghosts"))
+        opts.mGhosts = meshioplusplus::GhostPolicy::Drop;
 
     // Transient sequences: a quoted glob, repeated --input, or a {step}/{index}
     // output. `--input` is read through the parser's `multi` map (added for the

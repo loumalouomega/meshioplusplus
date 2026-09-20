@@ -60,7 +60,9 @@ The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`
 
 ## Data mapping
 
-`<PointData>`/`<CellData>` map generically to `point_data`/`cell_data`; `cell_sets` round-trip as extra data arrays with an info-level message (VTU has no native set concept). `<FieldData>` → `mesh.field_data`.
+`<PointData>`/`<CellData>` map generically to `point_data`/`cell_data`; `cell_sets` round-trip as extra data arrays with an info-level message (VTU has no native set concept).
+
+`<FieldData>` ↔ `mesh.field_data` (v15.0.0): mesh-level arrays travel in a `<FieldData>` element on the grid, before the `<Piece>`, exactly where VTK's own writers put it, one `<DataArray>` per name with the `NumberOfTuples` VTK requires (and `NumberOfComponents` for a two-or-more-dimensional array; a higher rank is flattened to `(tuples, components)`, and a rank-0 scalar reads back as a length-1 array). Reading accepts it on the grid and inside a `<Piece>` (the piece's overriding the grid's); an array of a non-numeric type (`type="String"`) has no meshio++ dtype and is skipped with a warning rather than failing the read. A mesh without field data writes no `<FieldData>` element at all, so every existing file is byte-identical. A `TimeValue` array is VTK's "time in field data" convention: ParaView reads it as the dataset's time step (verified against ParaView 6.1.1), and a [`.pvd`](./pvd.md) entry with no `timestep=` takes its step time from it. A value that is not a numeric array has no VTK type and is not written (Python warns).
 
 ## Quirks & limitations
 

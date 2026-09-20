@@ -36,6 +36,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/vtm.hpp"
+#include "pindex_common.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -235,7 +236,7 @@ Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
     mopts.weld = false;
     mopts.source_tag = true;
     mopts.data_policy = MergeDataPolicy::Fill;
-    MergeResult result = merge(ptrs, mopts);
+    MergeResult result = pidx::merge_keeping_field_data(ptrs, mopts);
 
     for (std::size_t i = 0; i < refs.size(); ++i)
         result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));

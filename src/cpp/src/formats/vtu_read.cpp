@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 
 namespace meshioplusplus {
@@ -63,6 +64,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
  * `read_vtu` would reject.
  */
 struct vtu_header {
+    pugi::xml_node mGrid;
     pugi::xml_node mPiece;
     detail::VtkCodec mCodec = detail::VtkCodec::None;
     std::size_t mHeaderSize = 4;
@@ -105,6 +107,7 @@ vtu_header vtu_parse_header(const pugi::xml_document& rDoc) {
     if (grid.parent().child("AppendedData") || root.child("AppendedData"))
         throw ReadError("appended VTU data not supported by the C++ reader");
 
+    h.mGrid = grid;
     h.mPiece = grid.child("Piece");
     if (!h.mPiece)
         throw ReadError("No Piece found");
@@ -124,6 +127,62 @@ std::vector<std::string> vtu_array_names(const pugi::xml_node& rPiece, const cha
     // The uniform mesh API hands back sorted names; match it so a summary and a
     // real read report data arrays in the same order.
     std::sort(names.begin(), names.end());
+    return names;
+}
+
+/** @brief Whether a `<DataArray type=>` is one of the ten numeric types meshio++ holds. */
+bool vtu_is_numeric_type(const std::string& rType) {
+    return rType == "Float32" || rType == "Float64" || rType == "Int8" || rType == "Int16" ||
+           rType == "Int32" || rType == "Int64" || rType == "UInt8" || rType == "UInt16" ||
+           rType == "UInt32" || rType == "UInt64";
+}
+
+/**
+ * @brief Read the `<FieldData>` arrays under @p rNode into `mesh.field_data`.
+ *
+ * Field data belongs to the dataset, not to a piece: VTK writes it on the
+ * `<UnstructuredGrid>` element, before the `<Piece>`, and also accepts it inside one, so the
+ * reader looks at both (the piece's overriding the grid's, since `AddFieldData`
+ * is insert-or-assign). A non-numeric array (`type="String"`, `"Bit"`) has no
+ * meshio++ dtype: it is skipped with a warning rather than failing a read that
+ * used to succeed by ignoring the whole section.
+ */
+void vtu_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
+                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+    for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
+        const std::string name = da.attribute("Name").as_string();
+        if (!rOpts.WantsArray(name))
+            continue;
+        if (!vtu_is_numeric_type(da.attribute("type").as_string())) {
+            log::warn(
+                "meshio++: VTU: skipping <FieldData> array '{}' of type '{}' (only numeric "
+                "arrays are read)",
+                name, da.attribute("type").as_string());
+            continue;
+        }
+        int nc = 0;
+        NDArray arr = vtu_read_data_array(da, Codec, HeaderSize, nc);
+        if (nc > 1)
+            arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+        rMesh.AddFieldData(name, std::move(arr));
+    }
+}
+
+/**
+ * @brief The field-data names a real read would return: the numeric arrays of the
+ * grid's and the piece's `<FieldData>`, sorted and unique.
+ *
+ * Numeric only, like `vtu_read_field_data`, so a summary never names an array the
+ * read skips.
+ */
+std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
+    std::vector<std::string> names;
+    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
+        for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
+            if (vtu_is_numeric_type(da.attribute("type").as_string()))
+                names.emplace_back(da.attribute("Name").as_string());
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -206,6 +265,11 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         }
     }
 
+    if (want_data) {
+        vtu_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
+        vtu_read_field_data(piece, codec, hsz, rOpts, mesh);
+    }
+
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
                               faces.empty() ? nullptr : &faces, face_offsets, mesh);
     return mesh;
@@ -260,8 +324,7 @@ MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
 
     meta.mPointDataNames = vtu_array_names(h.mPiece, "PointData");
     meta.mCellDataNames = vtu_array_names(h.mPiece, "CellData");
-    // VTU has no field-data section the C++ reader consumes, so the list stays
-    // empty rather than claiming an unknown.
+    meta.mFieldDataNames = vtu_field_data_names(h);
 
     // No bounding box: it would require decoding the point coordinates, which
     // are usually the largest array in the file -- exactly what this path exists

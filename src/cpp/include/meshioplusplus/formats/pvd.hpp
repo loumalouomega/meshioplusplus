@@ -19,7 +19,7 @@
 /**
  * @file formats/pvd.hpp
  * @brief ParaView collection (`.pvd`): a time-indexed list of VTK XML files
- * (v14.1.0, roadmap §1.1).
+ * (v15.0.0).
  *
  * A `.pvd` is `<VTKFile type="Collection"><Collection><DataSet timestep="t"
  * part="p" group="g" file="..."/>...`. Entries name serial or parallel XML files
@@ -124,13 +124,11 @@ MESHIOPLUSPLUS_API void write_pvd_codec(const std::string& rPath, const Mesh& rM
  * @brief Read one step of a `.pvd`, its parts merged (or one part).
  * @param rOpts `mTimeStep` selects the step (`ResolveTimeStep`: negative counts
  *        from the end, out of range names the step count); `mPieceSet` selects one
- *        `part` of that step; the narrowing options reach every piece.
- * @param rGhost ghost policy, applied to every piece.
+ *        `part` of that step; the narrowing options and `mGhosts` reach every piece.
  * @throws ReadError on an unparsable index, a missing piece file, or an entry
  *         that is not one of `.vtu`/`.vtp`/`.vtm`/`.pvtu`/`.pvtp`.
  */
-MESHIOPLUSPLUS_API Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts = {},
-                                 const PvtuReadOptions& rGhost = {});
+MESHIOPLUSPLUS_API Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /// Every step's time (`mTimeValues`) from the index alone, plus step 0's pieces' summary.
 MESHIOPLUSPLUS_API MeshMetadata read_pvd_metadata(const std::string& rPath,

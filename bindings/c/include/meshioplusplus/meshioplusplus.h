@@ -234,8 +234,8 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 14
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MAJOR 15
+#define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -353,7 +353,13 @@ typedef struct mio_read_opts {
      *  `-1` sentinel: a hand-zeroed struct must not silently ask for piece 0 alone.
      *  Takes one of the former `reserved` slots; size unchanged. */
     int64_t piece_set;
-    int64_t reserved[2]; /**< must be zero; room for additive growth */
+    /** Nonzero removes the ghost cells (halo) of a partitioned `.pvtu`/`.pvtp`/`.pvd`:
+     *  every cell with a `vtkGhostType` bit set, and the points only they used. 0
+     *  (the default) keeps them. Every other reader ignores it. Takes one of the
+     *  former `reserved` slots, keeping the struct's size and every preceding
+     *  field's offset unchanged. */
+    int64_t drop_ghosts;
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_read_opts;
 
 /** Initialize `opts` to the defaults (read everything). Always use this. */

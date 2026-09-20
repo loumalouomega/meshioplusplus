@@ -136,8 +136,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
         {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
         {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
-        // The ParaView index formats take a trailing defaulted PvtuReadOptions, so
-        // they are wrapped like vtm above.
+        // The ParaView index formats take a trailing defaulted ReadOptions, so they
+        // are wrapped like vtm above.
         {"pvd", [](const std::string& path) { return meshioplusplus::read_pvd(path); }},
         {"pvtu", [](const std::string& path) { return meshioplusplus::read_pvtu(path); }},
         {"pvtp", [](const std::string& path) { return meshioplusplus::read_pvtp(path); }},
@@ -586,14 +586,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"vts", meshioplusplus::read_vts},
         {"vtr", meshioplusplus::read_vtr},
         {"vtm", meshioplusplus::read_vtm},
-        // Three-argument readers (a trailing defaulted PvtuReadOptions): lambdas,
-        // as a bare function pointer would not convert to ReadExFn.
-        {"pvd", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_pvd(path, opts); }},
-        {"pvtu", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_pvtu(path, opts); }},
-        {"pvtp", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_pvtp(path, opts); }},
+        {"pvd", meshioplusplus::read_pvd},
+        {"pvtu", meshioplusplus::read_pvtu},
+        {"pvtp", meshioplusplus::read_pvtp},
         {"vtp", meshioplusplus::read_vtp},
         {"vtu", meshioplusplus::read_vtu},
         {"xdmf", meshioplusplus::read_xdmf},

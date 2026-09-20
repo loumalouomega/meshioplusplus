@@ -126,5 +126,24 @@ MESHIOPLUSPLUS_API NDArray vtu_parse_binary(const std::string& rText, DType dt, 
  */
 MESHIOPLUSPLUS_API std::vector<std::int64_t> vtu_to_int64(const NDArray& rA);
 
+/**
+ * @brief Write one `<FieldData>` array as a complete `<DataArray>` element.
+ *
+ * A field-data array is one value (or row) per *tuple* of the dataset, so unlike
+ * a point or cell array it carries an explicit `NumberOfTuples` (VTK's readers
+ * require it there): the leading extent, or 1 for a rank-0 scalar. A rank of two
+ * or more also gets `NumberOfComponents`, the product of the trailing extents, so
+ * `(n, m)` reads back as `(n, m)`; a higher rank is flattened to that shape.
+ * The caller writes the surrounding `<FieldData>` element.
+ *
+ * @param rOs the output stream.
+ * @param rName the array's `Name` attribute (written verbatim, like point data's).
+ * @param rArray the array.
+ * @param Binary base64-encode the body instead of writing text.
+ * @param Codec the block compressor for a binary body; ignored when @p Binary is false.
+ */
+MESHIOPLUSPLUS_API void vtu_write_field_array(std::ostream& rOs, const std::string& rName,
+                                              const NDArray& rArray, bool Binary, VtkCodec Codec);
+
 }  // namespace detail
 }  // namespace meshioplusplus

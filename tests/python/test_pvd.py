@@ -1,4 +1,4 @@
-"""ParaView collection `.pvd` (roadmap §1.1, v14.1.0).
+"""ParaView collection `.pvd` (v15.0.0).
 
 A time-indexed list of VTK XML files. `timestep` selects the step (`time_step=`)
 and, within a step, `part` selects the piece (`piece=`). Behavioural tests run
@@ -465,3 +465,89 @@ def test_cross_compat(binary, compression, tmp_path):
         assert body(tmp_path / "core" / "c.pvd") == body(tmp_path / "py" / "c.pvd")
     finally:
         set_strict_core(None)
+
+
+# --- the file's own time: TimeValue (v15.0.0) ----------------------------------
+
+
+def _write_timed(path, k, time_value=True, meshio_time=False):
+    mesh = _step(k)
+    if time_value:
+        mesh.field_data["TimeValue"] = np.array([10.0 * k + 0.5])
+    if meshio_time:
+        mesh.field_data[TIME_KEY] = np.array([100.0 * k])
+    meshioplusplus.vtu.write(path, mesh)
+
+
+TIME_KEY = "meshio:time"
+
+
+def test_an_entry_without_a_timestep_takes_its_time_from_the_files_time_value(
+    engine, tmp_path
+):
+    """The per-file alternative to `timestep=` (VTK's "time in field data")."""
+    _write_timed(tmp_path / "a.vtu", 3)  # TimeValue 30.5
+    _write_timed(tmp_path / "b.vtu", 1, meshio_time=True)  # TimeValue wins: 10.5
+    _write_timed(tmp_path / "c.vtu", 2, time_value=False, meshio_time=True)  # 200
+    _write_timed(tmp_path / "e.vtu", 4, time_value=False)  # neither: 0
+    _write_pvd(
+        tmp_path / "t.pvd",
+        [{"file": "a.vtu"}, {"file": "b.vtu"}, {"file": "c.vtu"}, {"file": "e.vtu"}],
+    )
+    times = [0.0, 10.5, 30.5, 200.0]
+    assert meshioplusplus.read_metadata(tmp_path / "t.pvd")["time_values"] == times
+    expected_x = [4.0, 1.0, 3.0, 2.0]  # ascending time: e, b, a, c
+    for step in range(4):
+        back = engine.read(tmp_path / "t.pvd", time_step=step)
+        assert back.points[0][0] == expected_x[step]
+        assert float(np.ravel(back.field_data[TIME_KEY])[0]) == times[step]
+
+
+def test_an_explicit_timestep_outranks_the_files_own_time(engine, tmp_path):
+    _write_timed(tmp_path / "a.vtu", 1, meshio_time=True)
+    _write_pvd(tmp_path / "t.pvd", [{"timestep": 7, "file": "a.vtu"}])
+    assert meshioplusplus.read_metadata(tmp_path / "t.pvd")["time_values"] == [7.0]
+
+
+def test_a_missing_child_of_a_timeless_entry_names_the_file(engine, tmp_path):
+    _write_pvd(tmp_path / "t.pvd", [{"file": "gone.vtu"}])
+    with pytest.raises(ReadError, match=r"gone\.vtu"):
+        engine.read(tmp_path / "t.pvd")
+
+
+def test_a_pvd_of_a_pvtu_whose_pieces_carry_time_value(engine, tmp_path):
+    """Every piece repeats it (union, not `0:TimeValue`), and the step is timed by it."""
+    for step in range(2):
+        pieces = []
+        for _ in range(2):
+            piece = _step(step)
+            piece.field_data["TimeValue"] = np.array([0.5 * (step + 1)])
+            pieces.append(piece)
+        meshioplusplus.pvtu.write_pieces(tmp_path / f"s{step}.pvtu", pieces)
+    _write_pvd(tmp_path / "run.pvd", [{"file": "s0.pvtu"}, {"file": "s1.pvtu"}])
+    assert meshioplusplus.read_metadata(tmp_path / "run.pvd")["time_values"] == [
+        0.5,
+        1.0,
+    ]
+    assert (
+        float(
+            np.ravel(
+                engine.read(tmp_path / "run.pvd", time_step=1).field_data[TIME_KEY]
+            )[0]
+        )
+        == 1.0
+    )
+
+
+# --- fan-out writes the time into each file (v15.0.0) ---------------------------
+
+
+def test_a_fan_out_to_vtu_records_each_steps_time_in_the_file(tmp_path):
+    path = _series(tmp_path, times=(0.0, 0.5, 2.0))
+    written = meshioplusplus.write_sequence(
+        str(tmp_path / "out_{step}.vtu"), meshioplusplus.read_sequence(path)
+    )
+    times = [
+        float(np.ravel(meshioplusplus.read(p).field_data[TIME_KEY])[0]) for p in written
+    ]
+    assert times == [0.0, 0.5, 2.0]

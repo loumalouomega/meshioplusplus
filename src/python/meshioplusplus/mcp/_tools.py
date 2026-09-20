@@ -313,9 +313,11 @@ def tool_info(input_path, file_format=None):
     return _json_safe(meta)
 
 
-def tool_stats(input_path, file_format=None, time_step=0, piece=None):
+def tool_stats(input_path, file_format=None, time_step=0, piece=None, ghosts="keep"):
     """Geometric statistics: bbox, centroid, areas/volumes, inverted cells."""
-    mesh = _load(input_path, file_format, time_step=time_step, piece=piece)
+    mesh = _load(
+        input_path, file_format, time_step=time_step, piece=piece, ghosts=ghosts
+    )
     return _json_safe(compute_stats(mesh))
 
 
@@ -557,6 +559,7 @@ def tool_convert(
     mode="auto",
     compression=None,
     piece=None,
+    ghosts="keep",
 ):
     """Convert between mesh formats, optionally selecting variant/compression."""
     mesh = _load(
@@ -566,6 +569,7 @@ def tool_convert(
         arrays=arrays,
         time_step=time_step,
         piece=piece,
+        ghosts=ghosts,
     )
     out_fmt = output_format
     if out_fmt is None:

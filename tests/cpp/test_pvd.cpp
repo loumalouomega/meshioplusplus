@@ -14,7 +14,7 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// ParaView collection `.pvd` (roadmap §1.1, v14.1.0): a time-indexed list of VTK
+// ParaView collection `.pvd` (v15.0.0): a time-indexed list of VTK
 // XML files. `timestep` selects the step, `part` the piece within it.
 
 // System includes
@@ -50,7 +50,6 @@ using meshioplusplus::kSequenceTimeKey;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
 using meshioplusplus::PvdSeriesWriter;
-using meshioplusplus::PvtuReadOptions;
 using meshioplusplus::read_pvd;
 using meshioplusplus::read_pvd_metadata;
 using meshioplusplus::ReadError;
@@ -350,6 +349,68 @@ TEST(Pvd, PartsAreOrderedByPartThenDocumentOrderAndNamedFromNameThenGroup) {
     EXPECT_EQ(pvd_x0(read_pvd(d / "g.pvd", o)), 0.0);
 }
 
+namespace {
+
+// A one-triangle piece carrying `TimeValue` (and optionally `meshio:time`).
+void pvd_write_timed(const std::string& rPath, double K, bool TimeValue, bool MeshioTime) {
+    Mesh m = pvd_step(K);
+    if (TimeValue) {
+        NDArray t(DType::Float64, {1});
+        *t.As<double>() = 10.0 * K + 0.5;
+        m.AddFieldData("TimeValue", std::move(t));
+    }
+    if (MeshioTime) {
+        NDArray t(DType::Float64, {1});
+        *t.As<double>() = 100.0 * K;
+        m.AddFieldData(kSequenceTimeKey, std::move(t));
+    }
+    meshioplusplus::write_vtu(rPath, m, false, false);
+}
+
+}  // namespace
+
+TEST(Pvd, AnEntryWithoutATimestepTakesItsTimeFromItsFilesTimeValue) {
+    // The per-file alternative to `timestep=` (VTK's "time in field data").
+    PvdDir d;
+    pvd_write_timed(d / "a.vtu", 3, /*TimeValue=*/true, /*MeshioTime=*/false);  // t = 30.5
+    pvd_write_timed(d / "b.vtu", 1, /*TimeValue=*/true,
+                    /*MeshioTime=*/true);  // TimeValue wins: 10.5
+    pvd_write_timed(d / "c.vtu", 2, /*TimeValue=*/false, /*MeshioTime=*/true);   // meshio:time: 200
+    pvd_write_timed(d / "e.vtu", 4, /*TimeValue=*/false, /*MeshioTime=*/false);  // neither: 0
+    pvd_write_index(d / "t.pvd",
+                    {"file=\"a.vtu\"", "file=\"b.vtu\"", "file=\"c.vtu\"", "file=\"e.vtu\""});
+    const meshioplusplus::MeshMetadata meta = read_pvd_metadata(d / "t.pvd");
+    EXPECT_EQ(meta.mTimeValues, (std::vector<double>{0.0, 10.5, 30.5, 200.0}));
+
+    // A real read groups the steps exactly as the summary does.
+    const double expected_x[4] = {4, 1, 3, 2};  // ascending time: e, b, a, c
+    for (int step = 0; step < 4; ++step) {
+        ReadOptions o;
+        o.mTimeStep = step;
+        const Mesh back = read_pvd(d / "t.pvd", o);
+        EXPECT_EQ(pvd_x0(back), expected_x[step]) << "step " << step;
+        EXPECT_EQ(pvd_time(back), meta.mTimeValues[static_cast<std::size_t>(step)]);
+    }
+}
+
+TEST(Pvd, AnExplicitTimestepOutranksTheFilesOwnTime) {
+    PvdDir d;
+    pvd_write_timed(d / "a.vtu", 1, true, true);
+    pvd_write_index(d / "t.pvd", {"timestep=\"7\" file=\"a.vtu\""});
+    EXPECT_EQ(read_pvd_metadata(d / "t.pvd").mTimeValues, (std::vector<double>{7.0}));
+}
+
+TEST(Pvd, AMissingChildOfATimelessEntryNamesTheAttributeAndTheFile) {
+    PvdDir d;
+    pvd_write_index(d / "t.pvd", {"file=\"gone.vtu\""});
+    try {
+        read_pvd_metadata(d / "t.pvd");
+        FAIL() << "expected a ReadError";
+    } catch (const ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("gone.vtu"), std::string::npos) << e.what();
+    }
+}
+
 TEST(Pvd, MetadataReportsEveryTimeWithoutOpeningALaterStep) {
     PvdDir d;
     const std::string path = pvd_series(d);
@@ -439,9 +500,9 @@ TEST(Pvd, TheGhostPolicyReachesEveryChild) {
     const Mesh kept = read_pvd(path);
     EXPECT_GT(pvd_num_cells(kept), cells);
     EXPECT_TRUE(kept.HasCellData("vtkGhostType"));
-    PvtuReadOptions drop;
+    ReadOptions drop;
     drop.mGhosts = GhostPolicy::Drop;
-    const Mesh dropped = read_pvd(path, {}, drop);
+    const Mesh dropped = read_pvd(path, drop);
     EXPECT_EQ(pvd_num_cells(dropped), cells);
     EXPECT_FALSE(dropped.HasCellData("vtkGhostType"));
 
@@ -455,7 +516,7 @@ TEST(Pvd, TheGhostPolicyReachesEveryChild) {
     meshioplusplus::write_vtu(d / "g.vtu", piece, false, false);
     pvd_write_index(d / "g.pvd", {"timestep=\"0\" file=\"g.vtu\""});
     EXPECT_EQ(pvd_num_cells(read_pvd(d / "g.pvd")), 1u);
-    EXPECT_EQ(pvd_num_cells(read_pvd(d / "g.pvd", {}, drop)), 0u);
+    EXPECT_EQ(pvd_num_cells(read_pvd(d / "g.pvd", drop)), 0u);
 }
 
 TEST(Pvd, RefusesWhatItCannotRead) {

@@ -1,6 +1,6 @@
 # PVTU — VTK XML parallel unstructured grid (`.pvtu`)
 
-The index of a partitioned dataset: it *declares* the arrays every piece holds and names one `.vtu` piece per part, so a mesh split across ranks opens in ParaView as one dataset (v14.1.0, roadmap §1.1). This is the on-disk face of [`partition`](/partition): `partition` → `.pvtu` → read-merge returns the original mesh, up to point ordering. See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) and [`.pvtp`](./pvtp.md) for the `.vtp` twin.
+The index of a partitioned dataset: it *declares* the arrays every piece holds and names one `.vtu` piece per part, so a mesh split across ranks opens in ParaView as one dataset (v15.0.0). This is the on-disk face of [`partition`](/partition): `partition` → `.pvtu` → read-merge returns the original mesh, up to point ordering. See the [VTK XML file formats documentation](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) and [`.pvtp`](./pvtp.md) for the `.vtp` twin.
 
 | | |
 |---|---|
@@ -107,14 +107,16 @@ whole = meshioplusplus.clean(merged, weld=True)   # the original mesh, up to poi
 
 An array you already named `vtkGhostType` is passed through unchanged (all of VTK's bits survive, `REFINEDCELL` = 8 and `HIDDENCELL` = 32 included), and nothing is fabricated when there is neither. The caller's meshes are never modified.
 
-On read the ghost cells are **kept by default** — a reader must not silently discard data, and keeping is what makes read → write round-trip. `ghosts="drop"` removes every cell with any `vtkGhostType` bit set, and the points only those cells used, from each piece *before* merging, and then removes the ghost arrays:
+On read the ghost cells are **kept by default** — a reader must not silently discard data, and keeping is what makes read → write round-trip. `ghosts="drop"` (on `meshioplusplus.read` and the format's own `read` alike) removes every cell with any `vtkGhostType` bit set, and the points only those cells used, from each piece *before* merging, and then removes the ghost arrays:
 
 ```python
 kept = meshioplusplus.pvtu.read("case.pvtu")                    # more cells than the original: the halo is real data
 whole = meshioplusplus.pvtu.read("case.pvtu", ghosts="drop")    # the partition of unity again
 ```
 
-Merging does not deduplicate ghost cells by itself; `ghosts="drop"` is the precise tool for that. From C++ the same choice is `PvtuReadOptions::mGhosts` (`GhostPolicy::Keep` / `Drop`), a defaulted trailing parameter of `read_pvtu` rather than a `ReadOptions` member, so `ReadOptions` (and the ABI) does not change.
+Merging does not deduplicate ghost cells by itself; `ghosts="drop"` is the precise tool for that.
+
+The choice reaches every surface, each in its own idiom: `meshioplusplus.read(path, ghosts="drop")`, `convert --drop-ghosts` on both CLIs, the MCP `ghosts` argument, `ReadOptions::mGhosts = GhostPolicy::Drop` in C++, `mio_read_opts.drop_ghosts` in C, `drop_ghosts=.true.` in Fortran, `ReadOptions(; drop_ghosts=true)` in Julia, `mio_read(drop_ghosts = TRUE)` in R and `readMeshSelective(path, { dropGhosts: true })` in WASM. It is honoured by `.pvtu`, `.pvtp` and `.pvd` and ignored by every other reader, like `lenient`: a file with no halo is already the answer it asks for. Adding it to `ReadOptions` is what took the C++ ABI to 15; `sizeof(ReadOptions)` did not move (the member sits in tail padding), which the ABI history records.
 
 ## Data mapping
 
@@ -125,16 +127,16 @@ Merging does not deduplicate ghost cells by itself; `ghosts="drop"` is the preci
 | `cell_data` | each piece gets its own cells' slice, declared under `PCellData` |
 | `partition:part` | the carving key; kept as an ordinary array in each piece |
 | `partition:ghost` | kept, and translated to `vtkGhostType` + `GhostLevel` |
-| `field_data` | **not written** (the `.vtu` writer does not emit it) |
+| `field_data` | dataset-global: written in `<FieldData>` on the grid of **every** piece, and read back as the union across pieces (the first piece carrying a name wins), never namespaced `0:name`, `1:name` |
 | named cell regions | recovered as `piece_<i>` on read, not round-tripped on write |
 
 ## Quirks & limitations
 
-- **`field_data` is not carried.** The `.vtu` writer emits none, so it cannot travel through a piece, and the C++ `.vtu` reader does not read a piece's `<FieldData>` (the Python reference reader does). Both are properties of `.vtu`, not of the index.
+- **Field data is one value per dataset, repeated per piece.** Every piece carries the same `<FieldData>` and the reader takes the union rather than `merge()`'s renaming, so a `TimeValue` every piece repeats stays `TimeValue`; a name only some pieces carry is kept. See [VTU](./vtu.md#data-mapping) for the element's layout.
 - **The Python reference handles rectangular cell blocks only** when carving, deriving ghost arrays or dropping ghosts; a polygon or polyhedron block raises `NotImplementedError` there, and the C++ core (the normal path) handles them.
 - **Regions are not round-tripped symmetrically**: `write` does not look at existing regions, while `read` always attaches one per piece.
 - The index's own `byte_order` and `header_type` attributes are not used for reading: each piece's own header is authoritative, so an index and its pieces may disagree.
-- Opening the index in ParaView is not covered by the automated tests; what is covered is VTK's own `vtkXMLPUnstructuredGridReader` / `vtkXMLPPolyDataReader` reading every file either engine writes, and both engines reading what `vtkXMLPUnstructuredGridWriter` writes.
+- ParaView itself is driven by the tests (`tests/python/test_pvd_paraview.py`, through `pvpython`, skipped where it is absent): version 6.1.1 opens a ghosted `.pvtu`, recognises every `vtkGhostType` flag we write as a ghost cell, reads the pieces and the dataset's field data. Alongside it, VTK's own `vtkXMLPUnstructuredGridReader` / `vtkXMLPPolyDataReader` read every file either engine writes, and both engines read what `vtkXMLPUnstructuredGridWriter` writes.
 
 ## Notes
 

@@ -14,7 +14,7 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// VTK XML parallel indices `.pvtu` / `.pvtp` (roadmap §1.1, v14.1.0): an index
+// VTK XML parallel indices `.pvtu` / `.pvtp` (v15.0.0): an index
 // that declares the arrays and names one `.vtu`/`.vtp` piece per part.
 
 // System includes
@@ -39,13 +39,13 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/region.hpp"
 
 using meshioplusplus::DType;
 using meshioplusplus::GhostPolicy;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
-using meshioplusplus::PvtuReadOptions;
 using meshioplusplus::read_pvtp;
 using meshioplusplus::read_pvtp_metadata;
 using meshioplusplus::read_pvtu;
@@ -509,9 +509,9 @@ TEST(Pvtu, GhostsAreKeptByDefaultAndDroppedOnRequest) {
     EXPECT_TRUE(kept.HasCellData("vtkGhostType"));
     EXPECT_TRUE(kept.HasPointData("vtkGhostType"));
 
-    PvtuReadOptions drop;
+    ReadOptions drop;
     drop.mGhosts = GhostPolicy::Drop;
-    const Mesh dropped = read_pvtu(path, {}, drop);
+    const Mesh dropped = read_pvtu(path, drop);
     EXPECT_EQ(pvtu_num_cells(dropped), pvtu_num_cells(m));
     EXPECT_FALSE(dropped.HasCellData("vtkGhostType"));
     EXPECT_FALSE(dropped.HasPointData("vtkGhostType"));
@@ -526,7 +526,8 @@ TEST(Pvtu, GhostsAreKeptByDefaultAndDroppedOnRequest) {
     const NDArray& layers = result.mPieces[0].mMesh.CellData("partition:ghost", 0);
     for (std::size_t i = 0; i < layers.Size(); ++i)
         owned += layers.As<std::int64_t>()[i] == 0 ? 1 : 0;
-    EXPECT_EQ(pvtu_num_cells(read_pvtu(path, one, drop)), owned);
+    one.mGhosts = GhostPolicy::Drop;
+    EXPECT_EQ(pvtu_num_cells(read_pvtu(path, one)), owned);
     pvtu_cleanup(path);
 }
 
@@ -547,9 +548,9 @@ TEST(Pvtu, ASuppliedVtkGhostTypeIsPassedThroughAndDropsRefinedCells) {
     write_pvtu_pieces_codec(path, {&piece, &second}, false, kNone);
     const Mesh back = read_pvtu(path);
     EXPECT_EQ(pvtu_num_cells(back), 2u);
-    PvtuReadOptions drop;
+    ReadOptions drop;
     drop.mGhosts = GhostPolicy::Drop;
-    EXPECT_EQ(pvtu_num_cells(read_pvtu(path, {}, drop)), 1u);
+    EXPECT_EQ(pvtu_num_cells(read_pvtu(path, drop)), 1u);
     (void)plain;
     pvtu_cleanup(path);
 }
@@ -710,6 +711,55 @@ TEST(Pvtu, MetadataAgreesWithARealRead) {
     pvtu_cleanup(path);
 }
 
+// --- field data and the ghost option through the registry ------------------------
+
+TEST(Pvtu, FieldDataIsTheUnionAcrossPiecesNotNamespaced) {
+    // Field data belongs to the dataset: every piece repeats it, and merge() would
+    // rename the copies `0:TimeValue`, `1:TimeValue`, ... which nothing looks up.
+    Mesh a = pvtu_piece(), b = pvtu_piece(), c = pvtu_piece();
+    for (Mesh* m : {&a, &b, &c}) {
+        NDArray t(DType::Float64, {1});
+        *t.As<double>() = 0.25;
+        m->AddFieldData("TimeValue", std::move(t));
+    }
+    NDArray extra(DType::Float64, {2});
+    b.AddFieldData("only_in_b", std::move(extra));
+
+    const std::string path = mt::temp_path(".pvtu");
+    write_pvtu_pieces_codec(path, {&a, &b, &c}, false, kNone);
+    const Mesh back = read_pvtu(path);
+    EXPECT_EQ(back.FieldDataNames(), (std::vector<std::string>{"TimeValue", "only_in_b"}));
+    EXPECT_EQ(*back.FieldData("TimeValue").As<double>(), 0.25);
+    // ... and the summary names exactly what the read returns.
+    EXPECT_EQ(read_pvtu_metadata(path).mFieldDataNames, back.FieldDataNames());
+    pvtu_cleanup(path);
+}
+
+TEST(Pvtu, TheGhostOptionIsAReadOptionsMemberSoTheRegistryHonoursIt) {
+    const Mesh m = pvtu_grid(6);
+    const meshioplusplus::PartitionResult result = pvtu_ghosted(m, 3, 1);
+    std::vector<const Mesh*> ptrs;
+    for (const auto& piece : result.mPieces)
+        ptrs.push_back(&piece.mMesh);
+    const std::string path = mt::temp_path(".pvtu");
+    write_pvtu_pieces_codec(path, ptrs, false, kNone);
+
+    ReadOptions keep;  // default: Keep -- and what a zero-initialized struct means
+    const Mesh kept = meshioplusplus::registry_read(path, "pvtu", keep);
+    ReadOptions drop;
+    drop.mGhosts = GhostPolicy::Drop;
+    const Mesh dropped = meshioplusplus::registry_read(path, "pvtu", drop);
+    EXPECT_GT(pvtu_num_cells(kept), pvtu_num_cells(dropped));
+    EXPECT_EQ(pvtu_num_cells(dropped), pvtu_num_cells(m));
+    EXPECT_FALSE(dropped.HasCellData("vtkGhostType"));
+
+    // Every other reader ignores it: a plain file with no halo is already the answer.
+    const std::string vtu = mt::temp_path(".vtu");
+    meshioplusplus::write_vtu(vtu, m, false, false);
+    EXPECT_EQ(pvtu_num_cells(meshioplusplus::registry_read(vtu, "vtu", drop)), pvtu_num_cells(m));
+    pvtu_cleanup(path);
+}
+
 // --- polyhedra ------------------------------------------------------------------
 
 namespace {
@@ -754,9 +804,9 @@ TEST(Pvtu, PolyhedronBlocksAreCarvedGhostedAndDropped) {
     const Mesh kept = read_pvtu(path);
     EXPECT_EQ(pvtu_num_cells(kept), 2u);
     EXPECT_TRUE(kept.HasCellData("vtkGhostType"));
-    PvtuReadOptions drop;
+    ReadOptions drop;
     drop.mGhosts = GhostPolicy::Drop;
-    const Mesh dropped = read_pvtu(path, {}, drop);
+    const Mesh dropped = read_pvtu(path, drop);
     EXPECT_EQ(pvtu_num_cells(dropped), 1u);
     EXPECT_FALSE(dropped.HasCellData("vtkGhostType"));
     pvtu_cleanup(path);

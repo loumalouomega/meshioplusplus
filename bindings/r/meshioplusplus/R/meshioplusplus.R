@@ -180,6 +180,10 @@ print.mio_mesh <- function(x, ...) {
 #'   composite blocks): `0` is the first, negative counts from the end. `NULL`
 #'   (the default) merges every piece into one mesh with one cell region per
 #'   piece. Out of range is an error naming the piece count.
+#' @param drop_ghosts Remove the ghost cells (halo) of a partitioned `.pvtu`,
+#'   `.pvtp` or `.pvd`: every cell with a `vtkGhostType` bit set, and the points
+#'   only they used. `FALSE` (the default) keeps them. Every other reader ignores
+#'   it.
 #' @return A `mio_mesh` object.
 #' @examples
 #' \dontrun{
@@ -188,16 +192,17 @@ print.mio_mesh <- function(x, ...) {
 #' m <- mio_read("run.exo", time_step = -1) # the last step
 #' m <- mio_read("model.mdpa", lenient = TRUE) # skip unsupported blocks
 #' m <- mio_read("case.vtkhdf", piece = 0) # one partition, not the merged mesh
+#' m <- mio_read("case.pvtu", drop_ghosts = TRUE) # the partition of unity, no halo
 #' }
 #' @export
 mio_read <- function(path, format = NULL, points_only = FALSE, metadata_only = FALSE,
                      arrays = NULL, mmap = "auto", time_step = 0, lenient = FALSE,
-                     piece = NULL) {
+                     piece = NULL, drop_ghosts = FALSE) {
   .Call(
     R_mio_read, as.character(path), format, isTRUE(points_only),
     isTRUE(metadata_only), if (is.null(arrays)) NULL else as.character(arrays),
     .mio_mmap(mmap), as.integer(time_step), isTRUE(lenient),
-    if (is.null(piece)) NULL else as.integer(piece)
+    if (is.null(piece)) NULL else as.integer(piece), isTRUE(drop_ghosts)
   )
 }
 

@@ -542,6 +542,22 @@ def read_index(filename, kind, piece=None, ghosts="keep"):
     )
 
 
+def share_field_data(out, meshes):
+    """Give ``out`` the union of the inputs' ``field_data``, the first input winning.
+
+    Field data belongs to the dataset, not to a piece: a parallel writer repeats it
+    in every piece (or writes it once), so the copies are the same value. ``merge``
+    cannot know that and renames any key present in more than one input to
+    ``0:name``, ``1:name``, which would turn a ``TimeValue`` every piece carries
+    into keys nothing looks up, and make the metadata (a union of names) disagree
+    with the read.
+    """
+    out.field_data.clear()
+    for m in meshes:
+        for key, value in m.field_data.items():
+            out.field_data.setdefault(key, value)
+
+
 def merge_pieces(meshes, names):
     """Merge without welding and add one ``cell`` region per input, named ``names[i]``.
 
@@ -559,6 +575,7 @@ def merge_pieces(meshes, names):
         drop_duplicate_cells=False,
     )
     _merge_sets(meshes, out, point_maps, cell_maps)
+    share_field_data(out, meshes)
     for name, cmap in zip(names, cell_maps):
         out.regions.append(Region(name, "cell", np.asarray(cmap, dtype=np.int64)))
     return out

@@ -1,4 +1,4 @@
-"""VTK XML parallel indices `.pvtu` / `.pvtp` (roadmap §1.1, v14.1.0).
+"""VTK XML parallel indices `.pvtu` / `.pvtp` (v15.0.0).
 
 An index that declares the arrays and names one `.vtu`/`.vtp` piece per part.
 Every behavioural test runs against both engines: the C++ core (with strict-core
@@ -801,3 +801,114 @@ def test_the_python_reference_refuses_polyhedron_blocks_by_name(tmp_path):
     mesh.cell_data["partition:part"] = parts
     with pytest.raises(NotImplementedError, match=r"needs the C\+\+ core"):
         _pvtu.write(tmp_path / "x.pvtu", mesh)
+
+
+# --- the ghost switch on the generic read surfaces (v15.0.0) ------------------
+
+
+def _ghosted_index(tmp_path, name="g.pvtu"):
+    if not hasattr(_core, "partition"):
+        pytest.skip("ghost layers need the C++ core")
+    mesh = _grid(6)
+    pieces = meshioplusplus.partition(mesh, 3, ghost_layers=1)
+    meshioplusplus.pvtu.write_pieces(tmp_path / name, pieces)
+    return mesh, tmp_path / name
+
+
+def test_the_generic_read_takes_ghosts(tmp_path):
+    mesh, index = _ghosted_index(tmp_path)
+    kept = meshioplusplus.read(index)
+    dropped = meshioplusplus.read(index, ghosts="drop")
+    assert _num_cells(kept) > _num_cells(mesh)
+    assert _num_cells(dropped) == _num_cells(mesh)
+    assert "vtkGhostType" not in dropped.cell_data
+    # an explicit "keep" is the default
+    assert _num_cells(meshioplusplus.read(index, ghosts="keep")) == _num_cells(kept)
+
+
+def test_the_generic_read_refuses_a_bad_policy_by_name(tmp_path):
+    _mesh, index = _ghosted_index(tmp_path)
+    with pytest.raises(ValueError, match="ghosts must be 'keep' or 'drop'"):
+        meshioplusplus.read(index, ghosts="maybe")
+
+
+def test_every_other_reader_ignores_the_ghost_policy(tmp_path):
+    """A file with no halo is already the answer "drop" asks for."""
+    mesh = _grid(3)
+    meshioplusplus.vtu.write(tmp_path / "a.vtu", mesh)
+    assert _num_cells(meshioplusplus.read(tmp_path / "a.vtu", ghosts="drop")) == (
+        _num_cells(mesh)
+    )
+    # ... and it does not swallow the options that reader *does* take
+    assert sorted(
+        meshioplusplus.read(tmp_path / "a.vtu", ghosts="drop", arrays=["u"]).point_data
+    ) == ["u"]
+
+
+def test_the_ghost_policy_and_piece_reach_a_reader_together(tmp_path):
+    mesh, index = _ghosted_index(tmp_path)
+    one = meshioplusplus.read(index, piece=0, ghosts="drop")
+    assert 0 < _num_cells(one) < _num_cells(mesh)
+    assert "vtkGhostType" not in one.cell_data
+
+
+def test_read_sequence_forwards_the_ghost_policy(tmp_path):
+    mesh, index = _ghosted_index(tmp_path)
+    (tmp_path / "run.pvd").write_text(
+        '<VTKFile type="Collection" version="0.1"><Collection>'
+        f'<DataSet timestep="0" file="{index.name}"/></Collection></VTKFile>'
+    )
+    ((_t, back),) = meshioplusplus.read_sequence(tmp_path / "run.pvd", ghosts="drop")
+    assert _num_cells(back) == _num_cells(mesh)
+
+
+def test_convert_cli_drop_ghosts(tmp_path):
+    mesh, index = _ghosted_index(tmp_path)
+    _cli("convert", index, tmp_path / "kept.vtu")
+    _cli("convert", index, tmp_path / "dropped.vtu", "--drop-ghosts")
+    assert _num_cells(meshioplusplus.read(tmp_path / "kept.vtu")) > _num_cells(mesh)
+    dropped = meshioplusplus.read(tmp_path / "dropped.vtu")
+    assert _num_cells(dropped) == _num_cells(mesh)
+    assert "vtkGhostType" not in dropped.cell_data
+
+
+def test_mcp_tools_take_ghosts(tmp_path):
+    from meshioplusplus.mcp import _tools
+
+    mesh, index = _ghosted_index(tmp_path)
+    kept = _tools.tool_stats(str(index))
+    dropped = _tools.tool_stats(str(index), ghosts="drop")
+    assert kept["num_cells"] > dropped["num_cells"] == _num_cells(mesh)
+    out = _tools.tool_convert(str(index), str(tmp_path / "o.vtu"), ghosts="drop")
+    assert "o.vtu" in str(out)
+    assert _num_cells(meshioplusplus.read(tmp_path / "o.vtu")) == _num_cells(mesh)
+
+
+# --- field data is dataset-global (v15.0.0) ------------------------------------
+
+
+def _timed(cells=1):
+    piece = _piece(cells=cells)
+    piece.field_data["TimeValue"] = np.array([0.25])
+    return piece
+
+
+def test_field_data_is_the_union_across_pieces_not_namespaced(engine, tmp_path):
+    """merge() would rename the copies `0:TimeValue`, `1:TimeValue`, ..."""
+    a, b, c = _timed(), _timed(), _timed()
+    b.field_data["only_in_b"] = np.arange(2.0)
+    engine.write_pieces(tmp_path / "f.pvtu", [a, b, c])
+    back = engine.read(tmp_path / "f.pvtu")
+    assert sorted(back.field_data) == ["TimeValue", "only_in_b"]
+    assert float(back.field_data["TimeValue"][0]) == 0.25
+    meta = meshioplusplus.read_metadata(tmp_path / "f.pvtu")
+    assert meta["field_data_names"] == sorted(back.field_data)
+
+
+def test_a_single_write_carries_its_field_data_through_the_pieces(engine, tmp_path):
+    mesh = _labelled()
+    mesh.field_data["TimeValue"] = np.array([1.5])
+    engine.write(tmp_path / "w.pvtu", mesh)
+    back = engine.read(tmp_path / "w.pvtu")
+    assert sorted(back.field_data) == ["TimeValue"]
+    assert float(back.field_data["TimeValue"][0]) == 1.5

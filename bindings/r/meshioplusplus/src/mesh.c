@@ -74,7 +74,7 @@ SEXP R_mio_mesh_is_open(SEXP x) {
 }
 
 SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SEXP arrays,
-                SEXP mmap_mode, SEXP time_step, SEXP lenient, SEXP piece) {
+                SEXP mmap_mode, SEXP time_step, SEXP lenient, SEXP piece, SEXP drop_ghosts) {
     const char *p = mio_r_string(path, "path");
     const char *f = mio_r_opt_string(format);
 
@@ -91,6 +91,9 @@ SEXP R_mio_read(SEXP path, SEXP format, SEXP points_only, SEXP metadata_only, SE
         opts.piece = mio_r_int(piece, "piece");
         opts.piece_set = 1;
     }
+    /* Removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd; every other reader
+     * ignores it. */
+    opts.drop_ghosts = mio_r_bool(drop_ghosts, "drop_ghosts");
 
     /* NULL means "every array"; a valid pointer with count 0 means "no arrays
      * at all". The distinction is load-bearing at the ABI, so an R NULL and an

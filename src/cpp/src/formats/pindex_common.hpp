@@ -151,8 +151,7 @@ inline Mesh empty_mesh() {
  * names serial files only, so the only nesting is a `.pvd` over them and no
  * cycle is expressible.
  */
-inline Mesh read_child(const fs::path& rPath, const ReadOptions& rOpts,
-                       const PvtuReadOptions& rGhost, bool Wide) {
+inline Mesh read_child(const fs::path& rPath, const ReadOptions& rOpts, bool Wide) {
     const std::string ext = rPath.extension().string();
     const ReadOptions child = child_options(rOpts);
     if (ext == ".vtu")
@@ -163,9 +162,9 @@ inline Mesh read_child(const fs::path& rPath, const ReadOptions& rOpts,
         if (ext == ".vtm")
             return read_vtm(rPath.string(), child);
         if (ext == ".pvtu")
-            return read_pvtu(rPath.string(), child, rGhost);
+            return read_pvtu(rPath.string(), child);
         if (ext == ".pvtp")
-            return read_pvtp(rPath.string(), child, rGhost);
+            return read_pvtp(rPath.string(), child);
     }
     throw ReadError("meshio++: unsupported piece '" + rPath.string() + "': only " +
                     (Wide ? ".vtu/.vtp/.vtm/.pvtu/.pvtp" : ".vtu/.vtp") + " pieces are read");
@@ -232,6 +231,36 @@ inline Mesh drop_ghosts(Mesh Piece) {
 }
 
 /**
+ * `merge()`, except that field data is the union across the inputs instead of being
+ * namespaced.
+ *
+ * Field data belongs to the dataset, not to a piece: a parallel writer repeats it in
+ * every piece (or writes it once), so the copies are the same value. `merge` cannot
+ * know that -- it renames any key present in more than one input to `0:name`,
+ * `1:name` -- which would turn a `TimeValue` every piece carries into keys nothing
+ * looks up, and make the metadata (a union of names) disagree with the read. The
+ * first piece to carry a name wins.
+ */
+inline MergeResult merge_keeping_field_data(const std::vector<const Mesh*>& rPieces,
+                                            const MergeOptions& rOpts) {
+    MergeResult result = merge(rPieces, rOpts);
+    bool any_field = false;
+    for (const Mesh* pPiece : rPieces)
+        any_field = any_field || pPiece->NumFieldData() > 0;
+    if (!any_field)
+        return result;
+    result.mMesh =
+        detail::clone_mesh(result.mMesh, [](DataLocation Where, const std::string&, std::string&) {
+            return Where != DataLocation::Field;
+        });
+    for (const Mesh* pPiece : rPieces)
+        for (const std::string& name : pPiece->FieldDataNames())
+            if (!result.mMesh.HasFieldData(name))
+                result.mMesh.AddFieldData(name, detail::data_owned_copy(pPiece->FieldData(name)));
+    return result;
+}
+
+/**
  * Merge @p rPieces without welding and add one `Cell` region per piece, named
  * `rNames[i]`. A single piece is returned as read: wrapping it in one all-cells
  * region would hide the regions it already has (a `.pvd` step that is one
@@ -250,7 +279,7 @@ inline Mesh merge_pieces(std::vector<Mesh> Pieces, const std::vector<std::string
     mopts.weld = false;
     mopts.source_tag = false;
     mopts.data_policy = MergeDataPolicy::Fill;
-    MergeResult result = merge(ptrs, mopts);
+    MergeResult result = merge_keeping_field_data(ptrs, mopts);
 
     for (std::size_t i = 0; i < Pieces.size(); ++i)
         result.mMesh.AddRegion(Region(rNames[i], RegionKind::Cell, std::move(result.mCellMaps[i])));

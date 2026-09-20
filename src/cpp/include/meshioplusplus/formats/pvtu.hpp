@@ -19,7 +19,7 @@
 /**
  * @file formats/pvtu.hpp
  * @brief VTK XML parallel unstructured grid (`.pvtu`): an index that declares
- * the arrays and names one `.vtu` piece per part (v14.1.0, roadmap §1.1).
+ * the arrays and names one `.vtu` piece per part (v15.0.0).
  *
  * A `.pvtu` is `<VTKFile type="PUnstructuredGrid"><PUnstructuredGrid
  * GhostLevel="N"><PPointData/><PCellData/><PPoints/><Piece Source="..."/>...`.
@@ -59,9 +59,9 @@
  * against the index's own directory.
  *
  * Ghost cells are kept by default -- a reader must not silently discard data --
- * and `GhostPolicy::Drop` removes every cell with a `vtkGhostType` bit set (and
- * the points only they used) before merging, which reconstructs the partition
- * of unity a halo'd `partition` broke.
+ * and `ReadOptions::mGhosts = GhostPolicy::Drop` removes every cell with a
+ * `vtkGhostType` bit set (and the points only they used) before merging, which
+ * reconstructs the partition of unity a halo'd `partition` broke.
  */
 
 // System includes
@@ -75,23 +75,6 @@
 #include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
-
-/// What `read_pvtu`/`read_pvtp`/`read_pvd` do with ghost cells.
-enum class GhostPolicy {
-    Keep,  ///< Leave `vtkGhostType` cells in the mesh (the default).
-    Drop,  ///< Remove cells with a ghost bit set, and the points only they used.
-};
-
-/**
- * Options specific to the parallel-index readers.
- *
- * A struct of its own, passed as a defaulted trailing parameter, rather than a
- * new `ReadOptions` member: growing `ReadOptions` is an ABI-tier-A layout change
- * that also reaches the aggregates embedding it.
- */
-struct PvtuReadOptions {
-    GhostPolicy mGhosts = GhostPolicy::Keep;
-};
 
 /// The integer `cell_data` array `write_pvtu*` carves a mesh by (`partition_labels`'s).
 inline constexpr const char* kPvtuPartKey = "partition:part";
@@ -128,13 +111,12 @@ MESHIOPLUSPLUS_API void write_pvtu_pieces_codec(const std::string& rPath,
 /**
  * @brief Read a `.pvtu`: every piece merged (one region each), or one piece.
  * @param rOpts selective-read options, forwarded to each piece; `mPieceSet`
- *        selects one piece (`ResolvePiece`).
- * @param rGhost what to do with ghost cells.
+ *        selects one piece (`ResolvePiece`) and `mGhosts` decides what happens
+ *        to ghost cells.
  * @throws ReadError on an unparsable index, a missing piece file, or a piece
  *         that is not `.vtu`/`.vtp`.
  */
-MESHIOPLUSPLUS_API Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts = {},
-                                  const PvtuReadOptions& rGhost = {});
+MESHIOPLUSPLUS_API Mesh read_pvtu(const std::string& rPath, const ReadOptions& rOpts = {});
 
 /// The sum of the pieces' own metadata, in the order a real read would produce.
 MESHIOPLUSPLUS_API MeshMetadata read_pvtu_metadata(const std::string& rPath,

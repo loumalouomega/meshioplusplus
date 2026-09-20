@@ -52,8 +52,51 @@ namespace {
 
 namespace fs = std::filesystem;
 
+// The value of the single-element field-data array @p pKey, if the mesh has one.
+bool pvd_field_scalar(const Mesh& rMesh, const char* pKey, double& rOut) {
+    if (!rMesh.HasFieldData(pKey))
+        return false;
+    const NDArray& a = rMesh.FieldData(pKey);
+    if (a.Size() != 1)
+        return false;
+    switch (a.Dtype()) {
+        case DType::Float32:
+            rOut = static_cast<double>(*a.As<float>());
+            return true;
+        case DType::Float64:
+            rOut = *a.As<double>();
+            return true;
+        case DType::Int8:
+            rOut = static_cast<double>(*a.As<std::int8_t>());
+            return true;
+        case DType::Int16:
+            rOut = static_cast<double>(*a.As<std::int16_t>());
+            return true;
+        case DType::Int32:
+            rOut = static_cast<double>(*a.As<std::int32_t>());
+            return true;
+        case DType::Int64:
+            rOut = static_cast<double>(*a.As<std::int64_t>());
+            return true;
+        case DType::UInt8:
+            rOut = static_cast<double>(*a.As<std::uint8_t>());
+            return true;
+        case DType::UInt16:
+            rOut = static_cast<double>(*a.As<std::uint16_t>());
+            return true;
+        case DType::UInt32:
+            rOut = static_cast<double>(*a.As<std::uint32_t>());
+            return true;
+        case DType::UInt64:
+            rOut = static_cast<double>(*a.As<std::uint64_t>());
+            return true;
+    }
+    return false;
+}
+
 struct pvd_entry {
     double mTime = 0.0;
+    bool mHasTimestep = false;
     std::int64_t mPart = 0;
     std::size_t mOrder = 0;
     std::string mGroup;
@@ -86,8 +129,11 @@ pvd_index pvd_parse(const std::string& rPath) {
     for (const pugi::xml_node ds : coll.children("DataSet")) {
         pvd_entry e;
         try {
-            // A missing timestep is 0, as ParaView reads it; a missing part is 0.
-            e.mTime = detail::stod_c(ds.attribute("timestep").as_string("0"));
+            // A missing part is 0. A missing timestep is resolved below: from the
+            // entry's own file when it names one, else 0 as ParaView reads it.
+            e.mHasTimestep = static_cast<bool>(ds.attribute("timestep"));
+            if (e.mHasTimestep)
+                e.mTime = detail::stod_c(ds.attribute("timestep").as_string());
             e.mPart = std::stoll(ds.attribute("part").as_string("0"));
         } catch (const std::exception& ex) {
             throw ReadError("meshio++: pvd: bad timestep/part in " + rPath + ": " + ex.what());
@@ -96,9 +142,27 @@ pvd_index pvd_parse(const std::string& rPath) {
         e.mGroup = ds.attribute("group").as_string("");
         e.mName = ds.attribute("name").as_string("");
         e.mFile = ds.attribute("file").as_string("");
-        index.mTimes.push_back(e.mTime);
         index.mEntries.push_back(std::move(e));
     }
+
+    // The per-file alternative to `timestep=` (VTK's "time in field data"): a
+    // `TimeValue` array in the file's own `<FieldData>`, else our `meshio:time`.
+    // Resolved here, for every entry, so a summary and a real read cannot group
+    // the steps differently. An index whose entries all carry `timestep=` -- what
+    // meshio++ and ParaView write -- never opens a piece for this; one that relies
+    // on the file's own time opens those files, narrowed to just the two arrays.
+    for (pvd_entry& e : index.mEntries) {
+        if (e.mHasTimestep || e.mFile.empty())
+            continue;
+        ReadOptions probe;
+        probe.mDataArrays = std::vector<std::string>{"TimeValue", kSequenceTimeKey};
+        const Mesh piece = pidx::read_child(pidx::resolve_path(rPath, e.mFile, "pvd", "file"),
+                                            probe, /*Wide=*/true);
+        if (!pvd_field_scalar(piece, "TimeValue", e.mTime))
+            pvd_field_scalar(piece, kSequenceTimeKey, e.mTime);
+    }
+    for (const pvd_entry& e : index.mEntries)
+        index.mTimes.push_back(e.mTime);
     std::sort(index.mTimes.begin(), index.mTimes.end());
     index.mTimes.erase(std::unique(index.mTimes.begin(), index.mTimes.end()), index.mTimes.end());
     return index;
@@ -137,34 +201,9 @@ std::string pvd_format_time(double Time) {
 
 // The step time a plain write records: `meshio:time` when it holds one value.
 double pvd_mesh_time(const Mesh& rMesh) {
-    if (!rMesh.HasFieldData(kSequenceTimeKey))
-        return 0.0;
-    const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
-    if (a.Size() != 1)
-        return 0.0;
-    switch (a.Dtype()) {
-        case DType::Float32:
-            return static_cast<double>(*a.As<float>());
-        case DType::Float64:
-            return *a.As<double>();
-        case DType::Int8:
-            return static_cast<double>(*a.As<std::int8_t>());
-        case DType::Int16:
-            return static_cast<double>(*a.As<std::int16_t>());
-        case DType::Int32:
-            return static_cast<double>(*a.As<std::int32_t>());
-        case DType::Int64:
-            return static_cast<double>(*a.As<std::int64_t>());
-        case DType::UInt8:
-            return static_cast<double>(*a.As<std::uint8_t>());
-        case DType::UInt16:
-            return static_cast<double>(*a.As<std::uint16_t>());
-        case DType::UInt32:
-            return static_cast<double>(*a.As<std::uint32_t>());
-        case DType::UInt64:
-            return static_cast<double>(*a.As<std::uint64_t>());
-    }
-    return 0.0;
+    double t = 0.0;
+    pvd_field_scalar(rMesh, kSequenceTimeKey, t);
+    return t;
 }
 
 }  // namespace
@@ -267,7 +306,7 @@ void write_pvd_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
 // --- read --------------------------------------------------------------------------
 
-Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts, const PvtuReadOptions& rGhost) {
+Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts) {
     const pvd_index index = pvd_parse(rPath);
     if (index.mEntries.empty())
         return pidx::empty_mesh();
@@ -277,8 +316,8 @@ Mesh read_pvd(const std::string& rPath, const ReadOptions& rOpts, const PvtuRead
 
     auto one = [&](const pvd_entry& rEntry) {
         Mesh m = pidx::read_child(pidx::resolve_path(rPath, rEntry.mFile, "pvd", "file"), rOpts,
-                                  rGhost, /*Wide=*/true);
-        if (rGhost.mGhosts == GhostPolicy::Drop)
+                                  /*Wide=*/true);
+        if (rOpts.mGhosts == GhostPolicy::Drop)
             return pidx::drop_ghosts(std::move(m));
         return m;
     };
