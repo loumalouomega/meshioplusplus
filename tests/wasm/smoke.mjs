@@ -2420,7 +2420,8 @@ step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one b
     m.FS.writeFile(
         '/deck.k',
         '*KEYWORD\n*INCLUDE\nnodes.k\n*ELEMENT_SOLID\n' +
-            [1, 1, 1, 2, 3, 4, 5, 5, 5, 5].map((v) => pad(v, 8)).join('') +
+            // eid 1, pid 7: the element belongs to the part declared below.
+            [1, 7, 1, 2, 3, 4, 5, 5, 5, 5].map((v) => pad(v, 8)).join('') +
             '\n*PART\nblock\n' +
             [7, 1, 1].map((v) => pad(v, 10)).join('') +
             '\n*SET_NODE_LIST_TITLE\nbase\n' +
@@ -2436,6 +2437,8 @@ step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one b
     const byName = Object.fromEntries(mesh.regions.map((r) => [r.name, r]));
     assert.equal(byName.block.kind, 'cell');
     assert.equal(byName.block.tag, 7);
+    assert.equal(byName.block.dim, 3);
+    assert.deepEqual(Array.from(byName.block.entries), [0]);
     assert.equal(byName.base.kind, 'point');
     assert.deepEqual(Array.from(byName.base.entries), [0, 1, 2, 3]);
     m.writeMesh('/out.k', mesh);
