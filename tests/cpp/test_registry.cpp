@@ -42,6 +42,7 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("deck.k", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
+    EXPECT_EQ(resolve_format("results.frd", ""), "frd");
 }
 
 TEST(Registry, ResolveFormatNodeElePairStayTetgen) {

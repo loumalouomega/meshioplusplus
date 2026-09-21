@@ -65,6 +65,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
+#include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -282,6 +283,9 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
               "enumerators is safe and expected; changing the underlying type is a "
               "Tier A break (doc/abi.md).");
 
+// The CalculiX reader's option struct (v15.3.0, an addition, ABI unchanged): one `bool`.
+MIO_ABI_LAYOUT(meshioplusplus::FrdReadOptions, 1, 1);
+
 // The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
 // and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
 // mode is fine and changing its width is not.
@@ -356,6 +360,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::PcdReadOptions>("PcdReadOptions");
     report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
     report<meshioplusplus::detail::CardField>("CardField");
+    report<meshioplusplus::FrdReadOptions>("FrdReadOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

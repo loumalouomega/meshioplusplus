@@ -940,7 +940,6 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("CalculiX .frd", "M"),
                 ("glTF export", "S"),
             ],
             [],

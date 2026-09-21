@@ -257,6 +257,7 @@ export default defineConfig({
           { text: "exodus", link: "/formats/exodus" },
           { text: "flac3d", link: "/formats/flac3d" },
           { text: "flux", link: "/formats/flux" },
+          { text: "frd", link: "/formats/frd" },
           { text: "freefem", link: "/formats/freefem" },
           { text: "gid", link: "/formats/gid" },
           { text: "gmsh", link: "/formats/gmsh" },

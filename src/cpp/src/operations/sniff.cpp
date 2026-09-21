@@ -138,6 +138,19 @@ std::string sniff_format(const std::string& rPath) {
     if (sniff_starts_with(stripped, "# .PCD") ||
         (sniff_starts_with(stripped, "VERSION") && sniff_contains(head, "\nFIELDS")))
         return "pcd";
+    // CalculiX results: a lone "    1C" record, then the "1U" user header (or the "2C"
+    // node block of a file without one). Matched on the unstripped head, so the fixed
+    // columns are part of the signature.
+    if (sniff_starts_with(head, "    1C")) {
+        std::size_t eol = 6;
+        while (eol < head.size() && (head[eol] == ' ' || head[eol] == '\r'))
+            ++eol;
+        if (eol < head.size() && head[eol] == '\n') {
+            const std::string next = head.substr(eol + 1, 6);
+            if (sniff_starts_with(next, "    1U") || sniff_starts_with(next, "    2C"))
+                return "frd";
+        }
+    }
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";
