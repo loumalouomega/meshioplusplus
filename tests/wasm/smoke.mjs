@@ -2294,6 +2294,8 @@ step('availableFormats reports what this build can read and write', () => {
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // LS-DYNA keyword decks (roadmap section 1.1, v15.2.0): .k, .key and .dyn.
     assert.ok(readers.includes('lsdyna') && writers.includes('lsdyna'));
+    // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
+    assert.ok(readers.includes('frd') && !writers.includes('frd'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2404,6 +2406,44 @@ step('.xyz reads its column layouts and refuses chemistry XYZ by name', () => {
     };
     m.writeMesh('/out.xyz', cloud);
     assert.deepEqual(Array.from(m.readMesh('/out.xyz').points), [0.5, 1, -2]);
+});
+
+step('.frd reads a CalculiX result file: node permutation, steps, tensors, read-only', () => {
+    const pad = (v, w) => String(v).padStart(w, ' ');
+    const e12 = (v) => v.toExponential(5).toUpperCase().replace(/E([+-])(\d)$/, 'E$10$2').padStart(12, ' ');
+    const header = (ids) => '    1C\n    2C' + pad(ids.length, 30) + ' '.repeat(37) + '1\n';
+    // one he20 (type 4), its 20 nodes on a line so the permutation is visible in the result
+    const nodes = Array.from({ length: 20 }, (_, i) => [i, 0, 0]);
+    const block = (idx, value, name, comps, rows) =>
+        '    1PSTEP' + ' '.repeat(25) + '1           1           1          \n' +
+        '  100CL ' + pad(100 + idx, 4) + value.toFixed(9).padStart(12, ' ') + pad(rows.length, 12) +
+        ' '.repeat(20) + ' 0' + pad(idx, 5) + ' '.repeat(10) + ' 1\n' +
+        ' -4  ' + name.padEnd(8, ' ') + pad(comps.length, 5) + pad(1, 5) + '\n' +
+        comps.map((c, k) => ' -5  ' + c.padEnd(8, ' ') + pad(1, 5) + pad(1, 5) + pad(k + 1, 5) + pad(0, 5) + pad(0, 5) + '\n').join('') +
+        rows.map(([n, v]) => ' -1' + pad(n, 10) + v.map(e12).join('') + '\n').join('') + ' -3\n';
+    const ids = Array.from({ length: 20 }, (_, i) => i + 1);
+    const wrap = (l) => [l.slice(0, 10), l.slice(10)].map((c) => ' -2' + c.map((v) => pad(v, 10)).join('') + '\n').join('');
+    m.FS.writeFile(
+        '/r.frd',
+        header(ids) +
+            nodes.map(([x, y, z], i) => ' -1' + pad(i + 1, 10) + e12(x) + e12(y) + e12(z) + '\n').join('') +
+            ' -3\n    3C' + pad(1, 30) + ' '.repeat(37) + '1\n -1' + pad(1, 10) + pad(4, 5) + pad(0, 5) + pad(1, 5) + '\n' +
+            wrap(ids) + ' -3\n' +
+            block(1, 0.5, 'NDTEMP', ['T'], ids.map((n) => [n, [n]])) +
+            block(2, 1.5, 'STRESS', ['SXX', 'SYY', 'SZZ', 'SXY', 'SYZ', 'SZX'], ids.map((n) => [n, [n, 0, 0, 0, 0, 0]])) +
+            '  9999\n',
+    );
+    const first = m.readMesh('/r.frd');
+    assert.deepEqual(first.cells.map((c) => c.type), ['hexahedron20']);
+    // the four vertical mid-edge nodes (file 12..15) come after the top ring in meshio++ order
+    assert.deepEqual(Array.from(first.cells[0].data), [...Array(12).keys(), 16, 17, 18, 19, 12, 13, 14, 15]);
+    assert.equal(first.point_data.NDTEMP[19], 20);
+    assert.equal(first.field_data['meshio:time'][0], 0.5);
+    const last = m.readMeshSelective('/r.frd', { timeStep: -1 });
+    assert.equal(last.field_data['meshio:time'][0], 1.5);
+    assert.equal(last.point_data.STRESS.length, 20 * 6);
+    assert.throws(() => m.readMeshSelective('/r.frd', { timeStep: 2 }), /out of range/);
+    assert.throws(() => m.writeMesh('/out.frd', first), /frd/);
 });
 
 step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one back', () => {

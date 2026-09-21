@@ -107,6 +107,10 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 # the index, so the C++ metadata reader answers without opening a piece; the
 # pure-Python twin reads one step and attaches every step's time the same way
 # `usd` does.
+#
+# **`frd` joined in v15.3.0.** Its steps are the `100C` increments; the C++
+# metadata reader parses the whole file (no header-only path), and the Python
+# twin attaches `mesh.time_values` the same way.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -120,6 +124,7 @@ _TIME_CAPABLE_READERS = (
     "openfoam",
     "vtkhdf",
     "pvd",
+    "frd",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
+#include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
@@ -90,6 +91,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
         {"lsdyna", meshioplusplus::read_lsdyna},
+        // Read-only, and a lambda for the same reason as ensight's: overloaded.
+        {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
@@ -416,6 +419,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".frd", "frd"},
         {".k", "lsdyna"},
         {".key", "lsdyna"},
         {".dyn", "lsdyna"},
@@ -569,6 +573,8 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // plain overload. IWYU pragma: keep
         {"ensight", [](const std::string& path,
                        const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
+        {"frd", [](const std::string& path,
+                   const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -628,6 +634,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"gid", meshioplusplus::read_gid_metadata},
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
+        {"frd", meshioplusplus::read_frd_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},

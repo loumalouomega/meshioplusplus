@@ -30,6 +30,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
@@ -2744,6 +2745,19 @@ PYBIND11_MODULE(_core, m) {
         meshioplusplus_py::PyMeshRefs refs;
         meshioplusplus::write_lsdyna(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
     });
+    // CalculiX results (.frd): read-only. `time_step` selects the increment;
+    // `derived` adds <NAME>_mises/<NAME>_principal beside each tensor.
+    m.def(
+        "frd_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           bool derived) {
+            meshioplusplus::FrdReadOptions frd_opts;
+            frd_opts.mDerived = derived;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_frd(
+                path, core_read_options(points_only, arrays, time_step), frd_opts));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("derived") = false);
     m.def("lsdyna_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
     });

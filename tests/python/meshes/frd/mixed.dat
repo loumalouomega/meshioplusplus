@@ -1,0 +1,22 @@
+
+                        S T E P       1
+
+
+                                INCREMENT     1
+
+
+ displacements (vx,vy,vz) for set LOAD and time  0.1000000E+01
+
+         9  2.755948E-03  9.293617E-03  4.399643E-04
+        10  2.755948E-03  9.293617E-03 -4.399643E-04
+
+                        S T E P       2
+
+
+                                INCREMENT     1
+
+
+ displacements (vx,vy,vz) for set LOAD and time  0.2000000E+01
+
+         9  8.147406E-03  9.293617E-03  1.589650E-02
+        10 -2.635510E-03  9.293617E-03  1.501657E-02

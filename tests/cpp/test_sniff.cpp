@@ -55,6 +55,10 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {"*Heading\n test\n*Node\n", "abaqus"},
         {"*KEYWORD\n*NODE\n", "lsdyna"},
         {"$ a comment\n*keyword long=y\n*NODE\n", "lsdyna"},
+        {"    1C\n    1UCALCULIX\n    2C\n", "frd"},
+        {"    1C\r\n    2C                            20\r\n", "frd"},
+        {"    1C\n", ""},
+        {"    1C\nsomething else\n", ""},
     };
     for (const Case& c : cases) {
         const std::string path = write_temp(c.contents, ".dat");

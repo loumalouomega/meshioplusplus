@@ -18,6 +18,8 @@ from meshioplusplus._sniff import _sniff_format_py
         (b"*Heading\n test\n*Node\n", "abaqus"),
         (b"*KEYWORD\n*NODE\n", "lsdyna"),
         (b"$ a comment\n$ another\n*keyword long=y\n*NODE\n", "lsdyna"),
+        (b"    1C\n    1UCALCULIX\n    2C\n", "frd"),
+        (b"    1C\r\n    2C                            20\r\n", "frd"),
         (b"GiD Post Results File 1.2\n", "gid"),
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
     ],

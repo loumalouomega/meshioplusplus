@@ -73,6 +73,12 @@ def _sniff_format_py(path) -> str:
         stripped.startswith(b"VERSION") and b"\nFIELDS" in head
     ):
         return "pcd"
+    # CalculiX results: a lone "    1C" record, then the "1U" user header (or the "2C"
+    # node block of a file without one); see the C++ twin.
+    if head.startswith(b"    1C"):
+        rest = head[6:].lstrip(b" \r")
+        if rest.startswith(b"\n") and rest[1:7] in (b"    1U", b"    2C"):
+            return "frd"
     if stripped.startswith(b"solid "):
         return "stl"
     # LS-DYNA decks open with "*KEYWORD" after any `$` comment lines; checked before

@@ -69,6 +69,10 @@ mesh.cell_data = {
 }
 ```
 
+## Symmetric tensors
+
+A symmetric tensor stored as six components per point or cell uses the order **`xx yy zz xy yz zx`**, the order of VTK's six-component arrays and of CalculiX's `STRESS`/`TOSTRAIN` blocks. Readers keep the order the file uses rather than reordering it; the [CalculiX reader](formats/frd.md#results-and-steps) is the one that documents it, and the ones that leave a six-component array untouched (GiD's `Sxx Syy Szz Sxy Syz Sxz`, XDMF's `Tensor6`) name their own.
+
 ## Convenience properties
 
 | Property | Returns |
