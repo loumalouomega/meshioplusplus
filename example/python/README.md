@@ -10,6 +10,7 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
 | [`02_convert_and_inspect.ipynb`](02_convert_and_inspect.ipynb) | Convert the geometry to VTU / VTK / XDMF / Gmsh / PLY, compare file sizes, and verify the round trip. |
 | [`03_mesh_operations.ipynb`](03_mesh_operations.ipynb) | Tour of the operations layer -- surface/skin extraction, quality, reorder, diff, transform, clean, crop (bounding box / half-space / data predicate), merge, split, stats, convert_cells, refine, partition, smooth, interpolate, regular grids and signed distance fields (`grid`, `voxelize`, `compute_sdf` voxel/octree, `.vti`), slice, isosurface, gradient, the settings pipeline, sequences, the five data operations, and selective reads -- each rendered with PyVista. |
 | [`04_interop.ipynb`](04_interop.ipynb) | Hand the mesh to PyVista, trimesh and Arrow/Parquet with no file round-trip -- shared buffers checked with `np.shares_memory`, `zero_copy_only`, regions through a PyVista round-trip, and a Parquet export read back with pandas. Needs `meshioplusplus[interop]`. |
+| [`05_point_clouds.ipynb`](05_point_clouds.ipynb) | Read PCL's own `.pcd` files (ASCII, binary, `binary_compressed`, organised), render the colour-coded cloud, write every `DATA` mode and compare sizes, then `subsample_points` → `proximity_graph`, and the column rules and chemistry-XYZ refusal of `.xyz`. |
 
 See [`../cpp/`](../cpp/) for the same tour written directly against the **C++ core** (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel.
 

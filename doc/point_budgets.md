@@ -46,7 +46,7 @@ Seeding follows the library's one convention: a keyword-only `seed` fed to a loc
 
 ## The point cloud: `subsample_points`
 
-`subsample_points(mesh, budget_or_count, *, record_ids=False, **select_kwargs)` returns a mesh carrying only the budgeted points, in selection order. What survives: the points, every per-point `point_data` array gathered to them, `field_data`, and every **Point** region remapped. What does not: the cells, `cell_data` and Cell/Side regions — a point cloud has no cells, and that is the operation rather than a limitation, so each drop is one warning naming what went. The output gets a single `vertex` block so every writer accepts it (`.vtu`, `.vtp`, `.ply` all round-trip a cloud), and `record_ids=True` attaches `budget:original_point_id`, the index each point had in the source.
+`subsample_points(mesh, budget_or_count, *, record_ids=False, **select_kwargs)` returns a mesh carrying only the budgeted points, in selection order. What survives: the points, every per-point `point_data` array gathered to them, `field_data`, and every **Point** region remapped. What does not: the cells, `cell_data` and Cell/Side regions — a point cloud has no cells, and that is the operation rather than a limitation, so each drop is one warning naming what went. The output gets a single `vertex` block so every writer accepts it (`.vtu`, `.vtp`, `.ply`, and the point-cloud files [`.pcd`](formats/pcd.md) and [`.xyz`](formats/xyz.md) all round-trip a cloud); a `vertex` block on the *input* is the same form and is not reported as dropped cells, and `record_ids=True` attaches `budget:original_point_id`, the index each point had in the source.
 
 Because a subsampled mesh keeps its point data and Point regions, `feature_matrix` on it has the **same columns** as on the source, and the table it builds equals `budget.take(feature_matrix(mesh).matrix)` row for row — pinned by a test, since that equality is what lets a preprocessing script and a training script agree without sharing code.
 
@@ -63,6 +63,10 @@ meshioplusplus subsample wing.stl tip.vtp --count 512 --bounds=0.8,-1,-1,1,1,1 -
 ```
 
 `--start N` names the first selected point, `--start random` draws it from `--seed`; `--record-ids` attaches `budget:original_point_id`. The MCP tool is `subsample`, with the same parameters (`count`, `method`, `seed`, `start`, `bounds`, `record_ids`); it reports the method, the count and the source point count alongside the usual mesh summary. `PointBudget` and `select_points` themselves are in-memory values with no path form, so they are consciously exempted from the tool parity guard.
+
+## Point-cloud files
+
+`.pcd` and `.xyz` read into exactly that shape, so the path from a scanner or PCL export to a budgeted cloud needs no intermediate format: `meshioplusplus subsample cloud.pcd small.pcd -n 20000` and then `meshioplusplus proximity-graph small.pcd graph.vtu --knn 8`. Colours (`rgb`/`rgba`), normals and scalars ride along as `point_data` and survive the subsampling.
 
 ## Scope
 

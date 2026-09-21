@@ -56,6 +56,7 @@
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/permas.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
@@ -80,6 +81,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/formats/xyz.hpp"
 
 namespace meshioplusplus {
 
@@ -119,6 +121,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"netgen", meshioplusplus::read_netgen},
         {"obj", meshioplusplus::read_obj},
         {"off", meshioplusplus::read_off},
+        // pcd/xyz take a trailing defaulted options struct, so the function pointers do
+        // not convert to ReadFn -- wrapped like vtu/mdpa.
+        {"pcd", [](const std::string& path) { return meshioplusplus::read_pcd(path); }},
         {"permas", meshioplusplus::read_permas},
         {"ply", meshioplusplus::read_ply},
         {"stl", meshioplusplus::read_stl},
@@ -147,6 +152,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
+        {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
         // Side-channel info (point_sets/cell_sets, cell-tag family names) is
         // not carried by the flat bindings -- v1 limitation, see doc/wasm.md
         // and doc/c_api.md.
@@ -233,6 +239,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
          [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
         {"obj", meshioplusplus::write_obj},
         {"off", meshioplusplus::write_off},
+        {"pcd", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_pcd(p, mm); }},
         {"permas", meshioplusplus::write_permas},
         // ply/stl default to skin=true (matching the Python shims): a volume
         // mesh writes its extracted boundary skin instead of dropping the
@@ -342,6 +349,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // XDMF's heavy-data format follows the build: HDF companion file when
         // HDF5 is available (the Python writer's default), inline XML text
         // otherwise (the only always-available option; what WASM ships).
+        {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         {"xdmf",
          [](const std::string& p, const Mesh& mm) {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -427,6 +435,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // extension at all, so that form still needs an explicit format.
         {".foam", "openfoam"},
         {".off", "off"},
+        {".pcd", "pcd"},
         {".post", "permas"},
         {".dato", "permas"},
         // GiD postprocess. All four are compound extensions, and
@@ -468,6 +477,14 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".wkt", "wkt"},
         {".xdmf", "xdmf"},
         {".xmf", "xdmf"},
+        // Point-cloud text: a convention rather than a specification, so every alias the
+        // wild uses maps to the one column-sniffing reader.
+        {".xyz", "xyz"},
+        {".xyzn", "xyz"},
+        {".xyzrgb", "xyz"},
+        {".asc", "xyz"},
+        {".pts", "xyz"},
+        {".txt", "xyz"},
         {".msh", "gmsh"},
         {".cgns", "cgns"},
         {".h5m", "h5m"},

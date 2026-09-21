@@ -1210,7 +1210,7 @@ The verb exists in **both** CLIs. The Python CLI runs the pure-Python engine (an
 
 ## meshioplusplus compress
 
-Compress the data in a mesh file (formats that support compression, e.g. VTU).
+Compress the data in a mesh file (formats that support compression, e.g. VTU). A `.pcd` file is rewritten in place as `DATA binary_compressed` (LZF) at the file's own coordinate precision; `decompress` turns it back into `DATA binary`, and `ascii`/`binary` rewrite it as those encodings, in both CLIs.
 
 ```
 meshioplusplus compress [options] INFILE
@@ -1268,7 +1268,7 @@ meshioplusplus binary [options] INFILE
 
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
-`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`
+`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`, `xyz`
 
 ## Selective reads and fast summaries
 

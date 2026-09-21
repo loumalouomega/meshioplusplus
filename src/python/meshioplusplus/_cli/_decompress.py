@@ -1,7 +1,7 @@
 import os
 import pathlib
 
-from .. import cgns, h5m, vtu, xdmf
+from .. import cgns, h5m, pcd, vtu, xdmf
 from .._common import error
 from .._helpers import _filetypes_from_path, read, reader_map
 
@@ -38,6 +38,8 @@ def decompress(args):
         cgns.write(args.infile, mesh, compression=None)
     elif fmt == "h5m":
         h5m.write(args.infile, mesh, compression=None)
+    elif fmt == "pcd":
+        pcd.write(args.infile, mesh, data="binary", point_dtype="keep")
     elif fmt == "vtu":
         vtu.write(args.infile, mesh, binary=True, compression=None)
     elif fmt == "xdmf":

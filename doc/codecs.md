@@ -80,6 +80,10 @@ A file needing a codec present in **neither** the C++ core nor Python is genuine
 - meshio++ reads a `.vtu` VTK wrote with `SetCompressorTypeToLZ4()`;
 - VTK **cleanly refuses** a `zstd` file (`Error creating vtkZSTDDataCompressor`) rather than misreading it — which is the trade being made by writing a non-VTK compressor name.
 
+## LZF, for PCD only
+
+`.pcd` files use one more codec, unrelated to the VTK block codecs above and with no build option: **LZF**, the stream format of [liblzf](http://oldhome.schmorp.de/marc/liblzf.html), which PCL wraps around the struct-of-arrays payload of `DATA binary_compressed` (two `uint32` sizes, then the stream). It is implemented from the stream format in `pcd.cpp` and in `pcd/_lzf.py` — no liblzf code is copied and there is no dependency — and both encoders emit the same bytes. It is only reachable through `.pcd`; `--codec` still names the VTK block codecs and is refused for it. See [PCD](formats/pcd.md).
+
 ## Compression is framing-only
 
 All codecs share VTU's block framing verbatim, and every codec's decoded payload is required by test to be byte-identical to the uncompressed variant's. Compression changes how the bytes are packaged, never which bytes they are — files written by the C++ core and by the pure-Python reference read interchangeably in both directions.

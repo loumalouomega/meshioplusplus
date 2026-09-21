@@ -507,10 +507,13 @@ def subsample_points(mesh, budget, *, record_ids: bool = False, **select_kwargs)
         point_data[BUDGET_ID_NAME] = idx.astype(np.int64)
 
     notes = []
-    num_cells = sum(len(cb) for cb in mesh.cells)
+    # A ``vertex`` block is the point-cloud form this operation itself emits (and what
+    # the pcd/xyz readers produce), so only other cell types count as dropped cells.
+    solid = [cb for cb in mesh.cells if cb.type != "vertex"]
+    num_cells = sum(len(cb) for cb in solid)
     if num_cells:
         notes.append(
-            f"dropped {num_cells} cells in {len(mesh.cells)} blocks (a point cloud "
+            f"dropped {num_cells} cells in {len(solid)} blocks (a point cloud "
             "has no cells)"
         )
     if mesh.cell_data:

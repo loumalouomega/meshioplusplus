@@ -81,6 +81,7 @@ def _cases():
     from meshioplusplus.netgen import _netgen as py_netgen
     from meshioplusplus.obj import _obj as py_obj
     from meshioplusplus.off import _off as py_off
+    from meshioplusplus.pcd import _pcd as py_pcd
     from meshioplusplus.permas import _permas as py_permas
     from meshioplusplus.ply import _ply as py_ply
     from meshioplusplus.stl import _stl as py_stl
@@ -92,10 +93,13 @@ def _cases():
     from meshioplusplus.vtk import _vtk_51 as py_vtk51
     from meshioplusplus.vtp import _vtp as py_vtp
     from meshioplusplus.vtu import _vtu as py_vtu
+    from meshioplusplus.xyz import _xyz as py_xyz
 
     cases = {
         "obj": (TRI, ".obj", _core.obj_write, py_obj.write),
         "off": (TRI, ".off", _core.off_write, py_off.write),
+        "pcd": (TRI, ".pcd", _core.pcd_write, py_pcd.write),
+        "xyz": (TRI, ".xyz", _core.xyz_write, py_xyz.write),
         "mphtxt": (TRI, ".mphtxt", _core.mphtxt_write, py_mphtxt.write),
         "avsucd": (TRI, ".avs", _core.avsucd_write, py_avsucd.write),
         "netgen": (

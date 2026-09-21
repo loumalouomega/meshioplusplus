@@ -62,6 +62,7 @@
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/permas.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
@@ -86,6 +87,7 @@
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
+#include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
@@ -2591,6 +2593,57 @@ PYBIND11_MODULE(_core, m) {
     m.def("obj_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_obj(path));
     });
+
+    // PCD (PCL point clouds) writer / reader.
+    m.def(
+        "pcd_write",
+        [](const std::string& path, py::object pymesh, const std::string& data,
+           bool float64_points) {
+            meshioplusplus::PcdData encoding;
+            if (data == "ascii")
+                encoding = meshioplusplus::PcdData::Ascii;
+            else if (data == "binary")
+                encoding = meshioplusplus::PcdData::Binary;
+            else if (data == "binary_compressed")
+                encoding = meshioplusplus::PcdData::BinaryCompressed;
+            else
+                throw meshioplusplus::WriteError(
+                    "PCD: data must be one of ('ascii', 'binary', 'binary_compressed'), got '" +
+                    data + "'");
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_pcd(path, meshioplusplus_py::py_to_mesh(pymesh, refs), encoding,
+                                      float64_points);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("data") = "binary",
+        py::arg("float64_points") = false);
+    m.def(
+        "pcd_read",
+        [](const std::string& path, bool drop_invalid) {
+            meshioplusplus::PcdReadOptions options;
+            options.mDropInvalid = drop_invalid;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_pcd(path, options));
+        },
+        py::arg("path"), py::arg("drop_invalid") = false);
+
+    // XYZ (headerless ASCII point clouds) writer / reader.
+    m.def(
+        "xyz_write",
+        [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_xyz(path, meshioplusplus_py::py_to_mesh(pymesh, refs), float_fmt);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = "");
+    m.def(
+        "xyz_read",
+        [](const std::string& path, const std::vector<std::string>& columns,
+           const std::string& delimiter) {
+            meshioplusplus::XyzReadOptions options;
+            options.mColumns = columns;
+            options.mDelimiter = delimiter;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_xyz(path, options));
+        },
+        py::arg("path"), py::arg("columns") = std::vector<std::string>{},
+        py::arg("delimiter") = "");
 
     // Gmsh 2.2 writer / reader.
     m.def("gmsh22_write", [](const std::string& path, py::object pymesh, bool binary) {

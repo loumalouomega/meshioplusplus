@@ -12,6 +12,28 @@ import meshioplusplus
 
 empty_mesh = meshioplusplus.Mesh(np.empty((0, 3)), [])
 
+
+def _point_cloud():
+    rng = np.random.default_rng(7)
+    n = 40
+    normals = rng.normal(size=(n, 3))
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    return meshioplusplus.Mesh(
+        rng.random((n, 3)),
+        [("vertex", np.arange(n).reshape(-1, 1))],
+        point_data={
+            "normals": normals,
+            "rgb": rng.integers(0, 256, size=(n, 3)).astype(np.uint8),
+            "intensity": rng.random(n),
+            "label": rng.integers(0, 5, size=n).astype(np.int32),
+        },
+    )
+
+
+# A point cloud as the pcd/xyz readers and subsample_points produce it: one ``vertex``
+# block, normals, colours and scalar point data.
+point_cloud_mesh = _point_cloud()
+
 line_mesh = meshioplusplus.Mesh(
     [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
     [("line", [[0, 1], [0, 2], [0, 3], [1, 2], [2, 3]])],

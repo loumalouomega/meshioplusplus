@@ -69,6 +69,10 @@ def _sniff_format_py(path) -> str:
         return "ply"
     if stripped.startswith((b"OFF", b"COFF", b"NOFF", b"STOFF")):
         return "off"
+    if stripped.startswith(b"# .PCD") or (
+        stripped.startswith(b"VERSION") and b"\nFIELDS" in head
+    ):
+        return "pcd"
     if stripped.startswith(b"solid "):
         return "stl"
     upper = stripped[:8].upper()

@@ -30,6 +30,7 @@ from . import (
     obj,
     off,
     openfoam,
+    pcd,
     permas,
     ply,
     pmsh,
@@ -56,6 +57,7 @@ from . import (
     vtu,
     wkt,
     xdmf,
+    xyz,
     zarr,
 )
 from .__about__ import __version__
@@ -216,6 +218,7 @@ __all__ = [
     "obj",
     "off",
     "openfoam",
+    "pcd",
     "permas",
     "ply",
     "pmsh",
@@ -242,6 +245,7 @@ __all__ = [
     "vtu",
     "wkt",
     "xdmf",
+    "xyz",
     "zarr",
     "_cli",
     "read",
