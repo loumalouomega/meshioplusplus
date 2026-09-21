@@ -122,7 +122,7 @@ No reader in this library retains any slot a provenance-bearing writer uses. The
 
 | Tier | Meaning | Formats |
 |---|---|---|
-| `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, exodus, flac3d, flux, mphtxt, nastran, netgen, obj, off, permas, ply, tetgen, triangle, vti, vtp, vtu |
+| `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, exodus, flac3d, flux, lsdyna, mphtxt, nastran, netgen, obj, off, permas, ply, tetgen, triangle, vti, vtp, vtu |
 | `SingleLine` | Exactly one line | ansys, tecplot, vtk/vtk42/vtk51 |
 | `Bounded` | One line, hard byte cap | ensight, openfoam, stl (binary only) |
 | `None` | No slot at all | every format `doc/formats.md`'s table marks "—" |

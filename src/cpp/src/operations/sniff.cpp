@@ -141,6 +141,27 @@ std::string sniff_format(const std::string& rPath) {
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";
+    // LS-DYNA keyword decks open with "*KEYWORD" after any `$` comment lines; this
+    // runs before the Abaqus rule so a deck that opens with a keyword line other
+    // than *NODE is never mistaken for one.
+    {
+        std::size_t pos = 0;
+        while (pos < stripped.size()) {
+            std::size_t eol = stripped.find('\n', pos);
+            if (eol == std::string::npos)
+                eol = stripped.size();
+            const std::string line = stripped.substr(pos, eol - pos);
+            pos = eol + 1;
+            if (line.empty() || line[0] == '$' || line[0] == '\r')
+                continue;
+            std::string upper = line.substr(0, 8);
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            if (sniff_starts_with(upper, "*KEYWORD"))
+                return "lsdyna";
+            break;
+        }
+    }
     // Abaqus input decks start with a keyword line "*Heading"/"*Node"/"*NODE".
     {
         std::string upper = stripped.substr(0, 8);

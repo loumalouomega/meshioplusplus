@@ -73,6 +73,21 @@ MATRIX = [
         id="abaqus",
     ),
     pytest.param(
+        "lsdyna",
+        ".k",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "*SET_NODE / *SET_SOLID|SHELL|BEAM / *SET_SEGMENT map onto the three "
+        "kinds, and a cell region that carries a dimension (here `solid`) is "
+        "written as a `*PART`, its tag becoming the `pid`. Set ids are "
+        "assigned when a region has no positive tag, so `tag` is only "
+        "carried for parts, which this table does not assert. A segment set "
+        "is matched back to a (cell, facet) by its corner nodes, so a facet "
+        "on a cell that shares the face with a lower-numbered one comes back "
+        "on that cell.",
+        id="lsdyna",
+    ),
+    pytest.param(
         "gmsh22",
         ".msh",
         {"point": False, "cell": True, "side": False},
@@ -236,13 +251,13 @@ def test_no_regions_writes_the_same_bytes(
 
 
 def test_side_regions_are_the_new_capability():
-    """No format could express a side set before; Abaqus and OpenFOAM now can.
+    """No format could express a side set before; Abaqus, LS-DYNA and OpenFOAM now can.
 
     Spelled out separately because it is the one kind with no `point_sets` /
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus", "openfoam"]
+    assert side_capable == ["abaqus", "lsdyna", "openfoam"]
 
 
 # --------------------------------------------------------------------------- #

@@ -53,6 +53,8 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {"<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\">", "vtu"},
         {"<?xml version=\"1.0\"?>\n<VTKFile type=\"PolyData\">", "vtp"},
         {"*Heading\n test\n*Node\n", "abaqus"},
+        {"*KEYWORD\n*NODE\n", "lsdyna"},
+        {"$ a comment\n*keyword long=y\n*NODE\n", "lsdyna"},
     };
     for (const Case& c : cases) {
         const std::string path = write_temp(c.contents, ".dat");

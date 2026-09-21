@@ -1268,7 +1268,7 @@ meshioplusplus binary [options] INFILE
 
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
-`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`, `xyz`
+`abaqus`, `ansys`, `avsucd`, `cgns`, `dolfin-xml`, `exodus`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `lsdyna`, `mdpa`, `med`, `medit`, `nastran`, `netgen`, `obj`, `off`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`, `xyz`
 
 ## Selective reads and fast summaries
 

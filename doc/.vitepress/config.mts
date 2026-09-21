@@ -263,6 +263,7 @@ export default defineConfig({
           { text: "h5m", link: "/formats/h5m" },
           { text: "hmf", link: "/formats/hmf" },
           { text: "ip", link: "/formats/ip" },
+          { text: "lsdyna", link: "/formats/lsdyna" },
           { text: "mdpa", link: "/formats/mdpa" },
           { text: "med", link: "/formats/med" },
           { text: "medit", link: "/formats/medit" },

@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -88,6 +89,7 @@ namespace meshioplusplus {
 const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
+        {"lsdyna", meshioplusplus::read_lsdyna},
         {"ansys", meshioplusplus::read_ansys},
         {"avsucd", meshioplusplus::read_avsucd},
         {"dolfin", meshioplusplus::read_dolfin},
@@ -198,6 +200,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
 const std::map<std::string, WriteFn>& registry_writers() {
     static const std::map<std::string, WriteFn> m = {
         {"abaqus", meshioplusplus::write_abaqus},
+        {"lsdyna", meshioplusplus::write_lsdyna},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
@@ -413,6 +416,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".k", "lsdyna"},
+        {".key", "lsdyna"},
+        {".dyn", "lsdyna"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},

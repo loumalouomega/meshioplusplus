@@ -16,6 +16,8 @@ from meshioplusplus._sniff import _sniff_format_py
         (b'<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid">', "vtu"),
         (b'<?xml version="1.0"?>\n<VTKFile type="PolyData">', "vtp"),
         (b"*Heading\n test\n*Node\n", "abaqus"),
+        (b"*KEYWORD\n*NODE\n", "lsdyna"),
+        (b"$ a comment\n$ another\n*keyword long=y\n*NODE\n", "lsdyna"),
         (b"GiD Post Results File 1.2\n", "gid"),
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
     ],

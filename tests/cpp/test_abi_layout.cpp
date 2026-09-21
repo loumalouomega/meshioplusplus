@@ -64,6 +64,7 @@
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -281,6 +282,15 @@ static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
               "enumerators is safe and expected; changing the underlying type is a "
               "Tier A break (doc/abi.md).");
 
+// The keyword-card tokenizer types (v15.2.0, additions, ABI unchanged). CardField is a `char`
+// and an `int` (8 bytes, 4-aligned); CardMode is an `int`-sized scoped enum, so appending a
+// mode is fine and changing its width is not.
+MIO_ABI_LAYOUT(meshioplusplus::detail::CardField, 8, 4);
+static_assert(sizeof(meshioplusplus::detail::CardMode) == sizeof(int),
+              "meshio++ ABI: CardMode's underlying type changed width. Appending "
+              "enumerators is safe and expected; changing the underlying type is a "
+              "Tier A break (doc/abi.md).");
+
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
 // deliberately not caught here); widening the underlying type is not.
@@ -345,6 +355,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::PcdReadOptions>("PcdReadOptions");
     report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
+    report<meshioplusplus::detail::CardField>("CardField");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

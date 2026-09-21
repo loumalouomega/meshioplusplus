@@ -39,6 +39,9 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     // Ambiguous extensions get the repo's import-order default.
     EXPECT_EQ(resolve_format("mesh.msh", ""), "gmsh");
     EXPECT_EQ(resolve_format("mesh.inp", ""), "abaqus");
+    EXPECT_EQ(resolve_format("deck.k", ""), "lsdyna");
+    EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
+    EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
 }
 
 TEST(Registry, ResolveFormatNodeElePairStayTetgen) {
