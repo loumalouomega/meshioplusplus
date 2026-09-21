@@ -1210,7 +1210,7 @@ The verb exists in **both** CLIs. The Python CLI runs the pure-Python engine (an
 
 ## meshioplusplus compress
 
-Compress the data in a mesh file (formats that support compression, e.g. VTU).
+Compress the data in a mesh file (formats that support compression, e.g. VTU). A `.pcd` file is rewritten in place as `DATA binary_compressed` (LZF) at the file's own coordinate precision; `decompress` turns it back into `DATA binary`, and `ascii`/`binary` rewrite it as those encodings, in both CLIs.
 
 ```
 meshioplusplus compress [options] INFILE

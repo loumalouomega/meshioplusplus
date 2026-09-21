@@ -109,6 +109,7 @@
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/svg.hpp"
@@ -297,6 +298,14 @@ bool write_binary_variant(const std::string& rPath, const Mesh& rMesh, const std
         return false;
     meshioplusplus::registry_write_ex(rPath, rMesh, rFormat, opts);
     return true;
+}
+
+/// Rewrite a PCD file in place with the `data` encoding, at the mesh's own coordinate precision:
+/// the in-place verbs (`ascii`, `binary`, `compress`, `decompress`) must not narrow a float64
+/// cloud, unlike `convert`, whose default is PCL's float32.
+void write_pcd_in_place(const std::string& rPath, const Mesh& rMesh, meshioplusplus::PcdData data) {
+    meshioplusplus::write_pcd(rPath, rMesh, data,
+                              rMesh.Points().Dtype() == meshioplusplus::DType::Float64);
 }
 
 /// The formats `--color-by` applies to. Everything else errors rather than
@@ -945,7 +954,11 @@ int cmd_ascii_binary(const std::vector<std::string>& rArgs, bool binary) {
     std::cout << "File size before: " << file_size_mb(infile) << "\n";
     Mesh mesh = read_mesh_cli(infile, opt_value(p, "input-format"));
     std::string fmt = meshioplusplus::resolve_format(infile, opt_value(p, "input-format"));
-    if (!write_binary_variant(infile, mesh, fmt, binary, ""))
+    if (fmt == "pcd")
+        write_pcd_in_place(
+            infile, mesh,
+            binary ? meshioplusplus::PcdData::Binary : meshioplusplus::PcdData::Ascii);
+    else if (!write_binary_variant(infile, mesh, fmt, binary, ""))
         throw std::runtime_error("don't know how to write '" + fmt + "' as " +
                                  (binary ? "binary" : "ASCII"));
     std::cout << "File size after: " << file_size_mb(infile) << "\n";
@@ -987,6 +1000,9 @@ int cmd_compress(const std::vector<std::string>& rArgs) {
 
     if (fmt == "ansys" || fmt == "gmsh" || fmt == "ply" || fmt == "stl" || fmt == "vtk") {
         write_binary_variant(infile, mesh, fmt, /*binary=*/true, "");
+    } else if (fmt == "pcd") {
+        // LZF over the struct-of-arrays layout: the one compression PCD defines.
+        write_pcd_in_place(infile, mesh, meshioplusplus::PcdData::BinaryCompressed);
     } else if (fmt == "vtu" || fmt == "vtp") {
         meshioplusplus::detail::VtkCodec codec = meshioplusplus::detail::VtkCodec::Zlib;
         if (has_codec)
@@ -1022,7 +1038,9 @@ int cmd_decompress(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(infile, opt_value(p, "input-format"));
     std::string fmt = meshioplusplus::resolve_format(infile, opt_value(p, "input-format"));
 
-    if (fmt == "vtu") {
+    if (fmt == "pcd") {
+        write_pcd_in_place(infile, mesh, meshioplusplus::PcdData::Binary);
+    } else if (fmt == "vtu") {
         meshioplusplus::write_vtu(infile, mesh, /*binary=*/true, /*zlib=*/false);
     } else if (fmt == "xdmf") {
         meshioplusplus::write_xdmf(infile, mesh, "HDF", /*gzip_level=*/-1);

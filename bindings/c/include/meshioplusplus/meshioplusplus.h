@@ -540,7 +540,7 @@ typedef struct mio_write_opts {
     int codec;         /**< a mio_write_codec value; vti/vtu/vtp only */
     /** printf-style float format for the ASCII writers that take one (e.g.
      *  ".16e"). NULL or empty keeps the writer's own default. Copied during
-     *  the call. Currently honoured by flac3d. */
+     *  the call. Currently honoured by flac3d and xyz. */
     const char* float_format;
     int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_write_opts;
