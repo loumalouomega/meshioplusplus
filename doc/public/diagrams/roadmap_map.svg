@@ -10,87 +10,100 @@
 <rect x="24" y="100" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
 <text x="30" y="117" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">glTF export</text>
 <text x="30" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
-<text x="392" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§2 quality</text>
+<text x="392" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§2 Spack package upkeep</text>
 <rect x="392" y="50" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="398" y="67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">sanitizer CI leg</text>
+<text x="398" y="67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">recipes stop at 9.10.0</text>
 <text x="398" y="81" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
-<rect x="392" y="100" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="398" y="117" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">fuzzing the 43 readers</text>
-<text x="398" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<rect x="392" y="100" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="398" y="117" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">variants vs CMake options</text>
+<text x="398" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="392" y="150" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="398" y="167" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">format conformance matrix</text>
+<text x="398" y="167" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">install matrix · spack style</text>
 <text x="398" y="181" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="392" y="200" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="398" y="217" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Hypothesis · benchmark CI</text>
-<text x="398" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<line x1="556" y1="90" x2="556" y2="100" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
-<text x="760" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§3 performance</text>
+<rect x="392" y="200" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="398" y="217" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">bump as a release step</text>
+<text x="398" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<text x="760" y="40" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§3 quality</text>
 <rect x="760" y="50" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="766" y="67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">measured regressions</text>
+<text x="766" y="67" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">sanitizer CI leg</text>
 <text x="766" y="81" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="760" y="100" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="766" y="117" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">text tokenizer · dtype switch</text>
+<text x="766" y="117" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">fuzzing the 43 readers</text>
 <text x="766" y="131" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="760" y="150" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="766" y="167" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">VTU base64 · copy chain</text>
+<text x="766" y="167" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">format conformance matrix</text>
 <text x="766" y="181" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="760" y="200" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="766" y="217" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">shared facet table · welds</text>
-<text x="766" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<text x="24" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§4 core parity across surfaces</text>
-<rect x="24" y="300" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">MDPA tables · geometries</text>
-<text x="30" y="331" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<rect x="760" y="200" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
+<text x="766" y="217" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Hypothesis · benchmark CI</text>
+<text x="766" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<line x1="924" y1="90" x2="924" y2="100" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
+<text x="24" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§4 performance</text>
+<rect x="24" y="300" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="30" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">measured regressions</text>
+<text x="30" y="331" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="24" y="350" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">gmsh periodic · VTK pieces</text>
+<text x="30" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">text tokenizer · dtype switch</text>
 <text x="30" y="381" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="24" y="400" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Exodus sets · sets → regions</text>
+<text x="30" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">VTU base64 · copy chain</text>
 <text x="30" y="431" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="24" y="450" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">side regions · ABI report</text>
-<text x="30" y="481" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<text x="392" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§5 operations</text>
-<rect x="392" y="300" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="398" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">box · sphere · cylinder · disk</text>
-<text x="398" y="331" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<rect x="24" y="450" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
+<text x="30" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">shared facet table · welds</text>
+<text x="30" y="481" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
+<text x="392" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§5 core parity across surfaces</text>
+<rect x="392" y="300" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
+<text x="398" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">MDPA tables · geometries</text>
+<text x="398" y="331" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="392" y="350" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="398" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">extrude · revolve</text>
+<text x="398" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">gmsh periodic · VTK pieces</text>
 <text x="398" y="381" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="392" y="400" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="398" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">normals · edges · Hausdorff</text>
-<text x="398" y="431" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<rect x="392" y="400" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
+<text x="398" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Exodus sets · sets → regions</text>
+<text x="398" y="431" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="392" y="450" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="398" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">quality gate · check · --json</text>
+<text x="398" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">side regions · ABI report</text>
 <text x="398" y="481" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<line x1="556" y1="340" x2="556" y2="350" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
-<text x="760" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§6 ecosystem reach</text>
+<text x="760" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§6 operations</text>
 <rect x="760" y="300" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="766" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">registries (calendar-bound)</text>
+<text x="766" y="317" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">box · sphere · cylinder · disk</text>
 <text x="766" y="331" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="760" y="350" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="766" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Rust bindings over the C API</text>
+<text x="766" y="367" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">extrude · revolve</text>
 <text x="766" y="381" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="760" y="400" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="766" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">interop phase 2 (Open3D, GPU)</text>
+<text x="766" y="417" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">normals · edges · Hausdorff</text>
 <text x="766" y="431" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="760" y="450" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="766" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">CLI chatbot over MCP tools</text>
+<text x="766" y="467" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">quality gate · check · --json</text>
 <text x="766" y="481" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<text x="24" y="540" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§7 long run (spike first)</text>
-<rect x="24" y="550" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2" stroke-dasharray="5 3"/>
-<text x="30" y="567" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">spike: can the model stretch?</text>
-<text x="30" y="581" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="24" y="600" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="30" y="617" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">read-only CAD ingestion</text>
-<text x="30" y="631" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<rect x="24" y="650" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="30" y="667" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">streaming writes of one mesh</text>
-<text x="30" y="681" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<rect x="24" y="700" width="176" height="40" rx="5" fill="#0d366b" fill-opacity="0.9" stroke="#0d366b" stroke-width="1.2"/>
-<text x="30" y="717" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">out-of-core operations</text>
-<text x="30" y="731" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">XL</text>
-<line x1="188" y1="590" x2="188" y2="600" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
+<line x1="924" y1="340" x2="924" y2="350" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
+<text x="24" y="540" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§7 ecosystem reach</text>
+<rect x="24" y="550" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="30" y="567" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">registries (calendar-bound)</text>
+<text x="30" y="581" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<rect x="24" y="600" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
+<text x="30" y="617" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">Rust bindings over the C API</text>
+<text x="30" y="631" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<rect x="24" y="650" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="30" y="667" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">interop phase 2 (Open3D, GPU)</text>
+<text x="30" y="681" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<rect x="24" y="700" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
+<text x="30" y="717" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">CLI chatbot over MCP tools</text>
+<text x="30" y="731" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<text x="392" y="540" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#0b0b0b">§8 long run (spike first)</text>
+<rect x="392" y="550" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="398" y="567" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">spike: can the model stretch?</text>
+<text x="398" y="581" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<rect x="392" y="600" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
+<text x="398" y="617" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">read-only CAD ingestion</text>
+<text x="398" y="631" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
+<rect x="392" y="650" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
+<text x="398" y="667" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">streaming writes of one mesh</text>
+<text x="398" y="681" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
+<rect x="392" y="700" width="176" height="40" rx="5" fill="#0d366b" fill-opacity="0.9" stroke="#0d366b" stroke-width="1.2"/>
+<text x="398" y="717" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">out-of-core operations</text>
+<text x="398" y="731" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">XL</text>
+<line x1="556" y1="590" x2="556" y2="600" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
 <rect x="24" y="766" width="12" height="12" rx="2" fill="#86b6ef" fill-opacity="0.36" stroke="#86b6ef" stroke-width="1"/>
 <text x="41" y="776" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" fill="#52514e">S: days</text>
 <rect x="102.12" y="766" width="12" height="12" rx="2" fill="#3987e5" fill-opacity="0.36" stroke="#3987e5" stroke-width="1"/>

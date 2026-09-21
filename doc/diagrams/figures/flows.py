@@ -946,7 +946,17 @@ def roadmap_map():
             [],
         ),
         (
-            "§2 quality",
+            "§2 Spack package upkeep",
+            [
+                ("recipes stop at 9.10.0", "S"),
+                ("variants vs CMake options", "S"),
+                ("install matrix · spack style", "M"),
+                ("bump as a release step", "S"),
+            ],
+            [],
+        ),
+        (
+            "§3 quality",
             [
                 ("sanitizer CI leg", "S"),
                 ("fuzzing the 43 readers", "M"),
@@ -956,7 +966,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§3 performance",
+            "§4 performance",
             [
                 ("measured regressions", "S"),
                 ("text tokenizer · dtype switch", "M"),
@@ -966,7 +976,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§4 core parity across surfaces",
+            "§5 core parity across surfaces",
             [
                 ("MDPA tables · geometries", "M"),
                 ("gmsh periodic · VTK pieces", "M"),
@@ -976,7 +986,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§5 operations",
+            "§6 operations",
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
@@ -986,7 +996,7 @@ def roadmap_map():
             [(0, 1)],
         ),
         (
-            "§6 ecosystem reach",
+            "§7 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -996,7 +1006,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§7 long run (spike first)",
+            "§8 long run (spike first)",
             [
                 ("spike: can the model stretch?", "M"),
                 ("read-only CAD ingestion", "L"),
