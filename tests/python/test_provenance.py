@@ -76,6 +76,7 @@ def _cases():
     from meshioplusplus.exodus import _exodus as py_exodus
     from meshioplusplus.flac3d import _flac3d as py_flac3d
     from meshioplusplus.flux import _flux as py_flux
+    from meshioplusplus.lsdyna import _lsdyna as py_lsdyna
     from meshioplusplus.mphtxt import _mphtxt as py_mphtxt
     from meshioplusplus.nastran import _nastran as py_nastran
     from meshioplusplus.netgen import _netgen as py_netgen
@@ -111,6 +112,7 @@ def _cases():
         "tetgen": (TET, ".node", _core.tetgen_write, py_tetgen.write),
         "triangle": (TRI_2D, ".node", _core.triangle_write, py_triangle.write),
         "abaqus": (TRI, ".inp", _core.abaqus_write, py_abaqus.write),
+        "lsdyna": (TRI, ".k", _core.lsdyna_write, py_lsdyna.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

@@ -75,6 +75,14 @@ def _sniff_format_py(path) -> str:
         return "pcd"
     if stripped.startswith(b"solid "):
         return "stl"
+    # LS-DYNA decks open with "*KEYWORD" after any `$` comment lines; checked before
+    # the Abaqus rule, as in the C++ twin.
+    for line in stripped.split(b"\n"):
+        if not line or line[:1] in (b"$", b"\r"):
+            continue
+        if line[:8].upper().startswith(b"*KEYWORD"):
+            return "lsdyna"
+        break
     upper = stripped[:8].upper()
     if upper.startswith((b"*HEADING", b"*NODE")):
         return "abaqus"

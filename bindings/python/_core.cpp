@@ -30,6 +30,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -2736,6 +2737,15 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("abaqus_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus(path));
+    });
+
+    // LS-DYNA keyword deck writer / reader (.k / .key / .dyn).
+    m.def("lsdyna_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_lsdyna(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("lsdyna_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
     });
 
     // AVS-UCD writer / reader (.avs).

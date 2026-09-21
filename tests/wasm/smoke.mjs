@@ -2292,6 +2292,8 @@ step('availableFormats reports what this build can read and write', () => {
     // Point-cloud files (roadmap section 1.1, v15.1.0): PCL's .pcd and headerless .xyz.
     for (const fmt of ['pcd', 'xyz'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
+    // LS-DYNA keyword decks (roadmap section 1.1, v15.2.0): .k, .key and .dyn.
+    assert.ok(readers.includes('lsdyna') && writers.includes('lsdyna'));
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2402,6 +2404,47 @@ step('.xyz reads its column layouts and refuses chemistry XYZ by name', () => {
     };
     m.writeMesh('/out.xyz', cloud);
     assert.deepEqual(Array.from(m.readMesh('/out.xyz').points), [0.5, 1, -2]);
+});
+
+step('.k reads a keyword deck with parts, sets and an *INCLUDE, and writes one back', () => {
+    const pad = (v, w) => String(v).padStart(w, ' ');
+    const node = (id, x, y, z) => pad(id, 8) + pad(x, 16) + pad(y, 16) + pad(z, 16);
+    m.FS.writeFile(
+        '/nodes.k',
+        '*NODE\n' +
+            [[1, 0, 0, 0], [2, 1, 0, 0], [3, 1, 1, 0], [4, 0, 1, 0], [5, 0.5, 0.5, 1]]
+                .map(([i, x, y, z]) => node(i, x.toFixed(1), y.toFixed(1), z.toFixed(1)))
+                .join('\n') +
+            '\n',
+    );
+    m.FS.writeFile(
+        '/deck.k',
+        '*KEYWORD\n*INCLUDE\nnodes.k\n*ELEMENT_SOLID\n' +
+            [1, 1, 1, 2, 3, 4, 5, 5, 5, 5].map((v) => pad(v, 8)).join('') +
+            '\n*PART\nblock\n' +
+            [7, 1, 1].map((v) => pad(v, 10)).join('') +
+            '\n*SET_NODE_LIST_TITLE\nbase\n' +
+            pad(3, 10) +
+            '\n' +
+            [1, 2, 3, 4].map((v) => pad(v, 10)).join('') +
+            '\n*END\n',
+    );
+    const mesh = m.readMesh('/deck.k');
+    // A hexahedron with n5..n8 repeated is a pyramid.
+    assert.deepEqual(mesh.cells.map((c) => c.type), ['pyramid']);
+    assert.equal(mesh.points.length, 15);
+    const byName = Object.fromEntries(mesh.regions.map((r) => [r.name, r]));
+    assert.equal(byName.block.kind, 'cell');
+    assert.equal(byName.block.tag, 7);
+    assert.equal(byName.base.kind, 'point');
+    assert.deepEqual(Array.from(byName.base.entries), [0, 1, 2, 3]);
+    m.writeMesh('/out.k', mesh);
+    const back = m.readMesh('/out.k');
+    assert.deepEqual(back.cells.map((c) => c.type), ['pyramid']);
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['base', 'block']);
+    // A deck with no nodes for its elements is refused, not half-read.
+    m.FS.writeFile('/bad.k', '*ELEMENT_SHELL\n' + [1, 1, 1, 2, 3, 4].map((v) => pad(v, 8)).join('') + '\n');
+    assert.throws(() => m.readMesh('/bad.k'), /undefined node/);
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {

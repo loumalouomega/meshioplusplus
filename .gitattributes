@@ -64,3 +64,7 @@ tests/python/meshes/gid/** -filter -diff -merge text
 # (collapse it in diffs); the generator itself is this project's own Python, so it is
 # deliberately NOT marked vendored the way the TikZ sources under doc/icons and doc/logo are.
 doc/public/diagrams/*.svg linguist-generated=true
+
+# LS-DYNA fixtures are tiny, hand-checked text decks; LFS would only add a
+# pointer-file failure mode to a checkout without it.
+tests/python/meshes/lsdyna/** -filter -diff -merge text

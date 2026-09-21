@@ -24,6 +24,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
 | [`ip`](./formats/ip.md) | `.ip` | ✓ | ✓ | — |
+| [`lsdyna`](./formats/lsdyna.md) | `.k`, `.key`, `.dyn` | ✓ | ✓ | — |
 | [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
 | [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
 | [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — |
@@ -69,6 +70,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on directory formats:** `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a target with no extension needs an explicit `file_format=`, and none of the three can be read from or written to a buffer. A glob over such a set — `read_sequence("out_*.pmsh")` — matches them, which an ordinary file glob would not.
 
 **Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**. They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
+
+**Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
 
 **Note on the point-cloud formats (`pcd`, `xyz`)** (v15.1.0): both map to the points plus one `vertex` block, exactly what [`subsample_points`](./point_budgets.md) emits, so `.pcd` → `subsample` → `proximity-graph` → `.vtu` runs from the CLI with no intermediate format. `pcd` is PCL's v0.7 layout in all three `DATA` modes (`ascii`, `binary`, `binary_compressed`), with `rgb`/`rgba` unpacked by bit-cast and `normal_x/y/z` gathered into `normals`; `xyz` is a headerless convention, so its columns are resolved from a `columns=` list, a header comment, the column count and extension, or the value ranges, and an ambiguous file is an error rather than a guess. Chemistry XYZ (atom count, comment, `element x y z`) shares the extension and is refused by name. `.txt` and `.asc` now resolve to `xyz`. LAS/LAZ and E57 are out of scope.
 
@@ -144,6 +147,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `h5m` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
 | `hmf` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
 | `ip` | None (fixed positional numeric layout) | n/a | — |
+| `lsdyna` | `$` prefix | Anywhere; the writer puts it after `*KEYWORD` | Yes |
 | `mdpa` | `//` prefix (Kratos/C++ style) | Anywhere | — |
 | `med` | HDF5 `DES` mesh-description field (user-overridable via `MedInfo.description`, not a provenance slot) | n/a | — (see the `med.md` note below) |
 | `medit` | `#` prefix | Anywhere | — |
@@ -449,6 +453,10 @@ meshioplusplus.flac3d.write(filename, mesh,
 Abaqus is one of the three Phase-1 [named region](./regions.md) formats (with gmsh and MED), and the only one that can express a **side set**: `*NSET` → point regions, `*ELSET` → cell regions and `*SURFACE, TYPE=ELEMENT` → side regions, in both the C++ core and the Python reference. Abaqus names its groups but has no integer id for them, so a region's `tag` is not preserved. Face identifiers (`S1`..`S6`) are remapped to meshio++'s own facet numbering — the two differ, and the per-type table is spelled out in [Named regions](./regions.md#abaqus-face-identifiers).
 
 `meshioplusplus.abaqus.write(filename, mesh)` — no extra options.
+
+### LS-DYNA (`.k`, `.key`, `.dyn`)
+
+`meshioplusplus.lsdyna.write(filename, mesh)` — no extra options. Cell regions with a dimension become `*PART` cards (the tag is the `pid`), every other region becomes a `*SET_*_LIST`, and each part gets placeholder section and material ids; see [`lsdyna.md`](./formats/lsdyna.md#writing).
 
 ### DOLFIN-XML (`.xml`)
 
