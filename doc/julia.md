@@ -216,6 +216,10 @@ MESHIOPLUSPLUS_LIB=/opt/meshioplusplus/lib/libmeshioplusplus.so \
 
 The suite uses the same deliberately non-square fixture as [`tests/fortran/test_fortran_api.f90`](https://github.com/loumalouomega/meshioplusplus/blob/master/tests/fortran/test_fortran_api.f90) — 5 points × 3 dims, 2 tetrahedra × 4 nodes, 3-component vector data — so a transposed mapping or a missed shift cannot cancel out and pass anyway. It pins the column-major identity, the 1-based/0-based accessor pair, the borrow window, regions, and every operation.
 
+## v15.4.0 additions
+
+- `compute_normals(mesh; point_normals=true, cell_normals=false, weight=:angle, split_angle=nothing, record_parent_ids=false, region="") -> (; mesh, quality, num_isolated, num_undefined, num_degenerate, num_split_points, num_added_points)` — point and cell normals of a surface, written as `normals` (`(n, 3)` point data; `(cells, 3)` cell data with `cell_normals`). `split_angle=nothing` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Never reorients: check `quality.inconsistent_pairs`. See [normals](/normals).
+
 ## v10.9.0 additions
 
 - `hessian(mesh, array; method=:green_gauss, location=:cell, output="", overwrite=false) -> (; mesh, num_skipped, num_fallback)` — the Hessian (second derivative) of a **scalar point-data** field, [`gradient`](@ref)'s companion one order further. A composition of TWO `gradient` calls, not a new numerical kernel: the field is differentiated once (point location), then that `(n, 3)` gradient is differentiated again with the default `:gradient` operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is forwarded to BOTH internal passes. See [`doc/hessian.md`](hessian.md).

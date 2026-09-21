@@ -105,6 +105,7 @@
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -3124,6 +3125,38 @@ val quality_to_val(const meshioplusplus::SurfaceQuality& rQuality) {
 }
 
 /**
+ * @brief Point and cell normals of a surface, optionally splitting vertices at
+ * creases. A negative `splitAngle` means "no split"; otherwise it is the
+ * largest dihedral angle in degrees still treated as smooth. The copies a split
+ * makes are appended after the original points. See operations/normals.hpp.
+ */
+val compute_normals_js(const val& rMeshObj, bool pointNormals, bool cellNormals,
+                       const std::string& rWeight, double splitAngle, bool recordParentIds,
+                       const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::NormalsOptions options;
+        options.mPointNormals = pointNormals;
+        options.mCellNormals = cellNormals;
+        options.mWeight = meshioplusplus::sdf_weight_from_name(rWeight);
+        options.mSplit = splitAngle >= 0.0;
+        options.mSplitAngle = options.mSplit ? splitAngle : 30.0;
+        options.mRecordParentIds = recordParentIds;
+        options.mRegion = rRegion;
+        meshioplusplus::NormalsResult r =
+            meshioplusplus::compute_normals(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numIsolated", static_cast<double>(r.mNumIsolated));
+        out.set("numUndefined", static_cast<double>(r.mNumUndefined));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("numSplitPoints", static_cast<double>(r.mNumSplitPoints));
+        out.set("numAddedPoints", static_cast<double>(r.mNumAddedPoints));
+        out.set("quality", quality_to_val(r.mQuality));
+        return out;
+    });
+}
+
+/**
  * @brief Surface repair: orientation by the topological half-edge rule,
  * fan-filled holes wound to agree with the surrounding surface, and bowtie
  * splitting. See operations/repair.hpp.
@@ -4373,6 +4406,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);
     emscripten::function("computeCurvature", &compute_curvature_js);
+    emscripten::function("computeNormals", &compute_normals_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);

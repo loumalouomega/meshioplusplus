@@ -43,7 +43,7 @@ constexpr double kCurvPi = 3.141592653589793238462643383279;
 ///
 /// Both come from the same `(cross, dot)` pair, which is what keeps them
 /// consistent. The angle is `atan2(|cross|, dot)` rather than `acos` of a
-/// clamped ratio: `detail::sd_corner_angle` takes the `acos` route because a
+/// clamped ratio: `detail::corner_angle` takes the `acos` route because a
 /// pseudonormal weight does not care about the last few digits, but an angle
 /// DEFECT is a sum of angles minus `2*pi`, so the digits are exactly what
 /// survives -- do not unify the two.

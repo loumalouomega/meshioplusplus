@@ -143,6 +143,7 @@ from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import CellBlock, Mesh, topological_dimension
 from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
+from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._pipeline import run_pipeline
@@ -264,6 +265,7 @@ __all__ = [
     "extract_surface",
     "compute_quality",
     "compute_curvature",
+    "compute_normals",
     "attach_quality",
     "sniff_format",
     "reorder",

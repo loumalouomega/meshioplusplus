@@ -42,6 +42,7 @@ from ._gradient import gradient
 from ._helpers import _filetypes_from_path, read, write
 from ._hessian import hessian
 from ._isosurface import isosurface
+from ._normals import compute_normals
 from ._optimize_volume import optimize_volume
 from ._partition import partition_labels
 from ._provenance import add_operation as _prov_add_operation
@@ -122,6 +123,14 @@ _OP_TABLE = {
         "IncludeBoundary",
         "RecordArea",
         "RecordPrincipal",
+        "Region",
+    ),
+    "Normals": (
+        "PointNormals",
+        "CellNormals",
+        "Weight",
+        "SplitAngle",
+        "RecordParentIds",
         "Region",
     ),
     "Repair": (
@@ -606,6 +615,31 @@ def _apply_step(mesh, step, steps, warnings):
                 f"curvature: {report['quality']['inconsistent_pairs']} edge "
                 "pair(s) wind the same way, so the sign of 'curvature:mean' is "
                 "not trustworthy"
+            )
+    elif op == "Normals":
+        # An absent SplitAngle means one smooth normal per point; a number is
+        # the crease angle in degrees, and the split appends points.
+        split = _number(step, "SplitAngle", 30.0) if "SplitAngle" in step else None
+        mesh, report = compute_normals(
+            mesh,
+            point_normals=_flag(step, "PointNormals", True),
+            cell_normals=_flag(step, "CellNormals", False),
+            weight=_text(step, "Weight", "angle"),
+            split_angle=split,
+            region=_text(step, "Region", ""),
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+            return_report=True,
+        )
+        entry["NumIsolated"] = report["num_isolated"]
+        entry["NumUndefined"] = report["num_undefined"]
+        entry["NumDegenerate"] = report["num_degenerate"]
+        entry["NumSplitPoints"] = report["num_split_points"]
+        entry["NumAddedPoints"] = report["num_added_points"]
+        if report["quality"]["inconsistent_pairs"] > 0 and split is None:
+            warnings.append(
+                f"normals: {report['quality']['inconsistent_pairs']} edge pair(s) "
+                "wind the same way, so the normals there average faces that "
+                "disagree about which side is out"
             )
     elif op == "Repair":
         mesh, report = repair(

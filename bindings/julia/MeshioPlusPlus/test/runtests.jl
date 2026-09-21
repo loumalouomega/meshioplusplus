@@ -1149,6 +1149,35 @@ end
     close(cube)
 end
 
+@testset "operations: compute_normals" begin
+    # The unit cube surface (12 triangles, consistently wound): one smooth
+    # normal per point, or 24 points once split at a 30 degree crease.
+    conn = Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                 3 4 6 7 2 6 3 7 4 8 1 5;
+                 2 3 7 8 6 5 7 6 8 7 5 8]
+    cube = Mesh()
+    set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])
+    add_cell_block!(cube, "triangle", conn)
+
+    smooth = compute_normals(cube)
+    @test num_points(smooth.mesh) == 8
+    @test smooth.num_added_points == 0
+    @test smooth.quality.watertight
+    close(smooth.mesh)
+
+    split = compute_normals(cube; split_angle=30, cell_normals=true,
+                            record_parent_ids=true)
+    @test num_points(split.mesh) == 24
+    @test split.num_added_points == 16
+    @test split.num_split_points == 8
+    @test num_point_data(split.mesh) >= 2
+    close(split.mesh)
+
+    @test_throws ArgumentError compute_normals(cube; weight=:bogus)
+    @test_throws MeshioError compute_normals(cube; split_angle=270)
+    close(cube)
+end
+
 @testset "operations: repair, shrinkwrap, sobolev_deform" begin
     # The unit cube surface with two facets flipped: repair rewinds exactly
     # those and reports a watertight output; minus one facet, the hole is

@@ -1004,6 +1004,55 @@ mio_compute_curvature <- function(mesh, mean = TRUE, gaussian = TRUE,
   )
 }
 
+#' Point and cell normals of a surface mesh, optionally split at creases
+#'
+#' A vertex normal is a property of a smooth patch, not of a position: at the
+#' edge of a cube the one position has three normals. With `split_angle = NULL`
+#' this returns one normal per point, the angle- (or area-) weighted mean of
+#' the incident faces. With a `split_angle` the corners around a vertex are
+#' grouped into smooth fans and every fan beyond the first gets its own copy of
+#' the point, so each point carries exactly one normal -- what a renderer or a
+#' glTF export needs.
+#'
+#' Writes `normals` as point data (an `(n, 3)` matrix) and, with
+#' `cell_normals`, as cell data. The copies made by a split are appended after
+#' the original points, cells keep their numbering, `point_data` is gathered by
+#' row and a copy joins its source's point regions; `record_parent_ids` adds
+#' `normals:parent_point`. Triangles come from the same fan
+#' `convert_cells(simplexify)` uses; a volume or polyhedron block is refused by
+#' name pointing at `extract_surface`, a higher-order one pointing at
+#' `linearize`.
+#'
+#' This never reorients: a nonzero `quality$inconsistent_pairs` means some
+#' normals average faces that disagree about which side is out, and a split
+#' always cuts at such an edge. Run `mio_repair()` first.
+#'
+#' @param mesh A `mio_mesh` (surface only).
+#' @param point_normals Attach the point normals (`TRUE` by default).
+#' @param cell_normals Also attach the unit vector area of each cell.
+#' @param weight `"angle"` (default) weights each incident face by the angle it
+#'   subtends at the vertex; `"area"` by its area.
+#' @param split_angle `NULL` (default) for one smooth normal per point, or the
+#'   largest dihedral angle in degrees, in `[0, 180]`, still treated as smooth.
+#' @param record_parent_ids Also attach `normals:parent_point`.
+#' @param region Restrict to this named cell region; `""` (default) takes
+#'   every surface cell.
+#' @return A list of `mesh`, `quality` (a list of `boundary_edges`,
+#'   `non_manifold_edges`, `inconsistent_pairs`, `degenerate_triangles`,
+#'   `watertight`), `num_isolated`, `num_undefined`, `num_degenerate`,
+#'   `num_split_points` and `num_added_points`.
+#' @export
+mio_compute_normals <- function(mesh, point_normals = TRUE, cell_normals = FALSE,
+                                weight = "angle", split_angle = NULL,
+                                record_parent_ids = FALSE, region = "") {
+  .Call(
+    R_mio_compute_normals, mesh, isTRUE(point_normals), isTRUE(cell_normals),
+    as.character(weight),
+    if (is.null(split_angle)) NULL else as.numeric(split_angle),
+    isTRUE(record_parent_ids), as.character(region)
+  )
+}
+
 #' Repair a surface mesh's orientation, holes and pinched vertices
 #'
 #' Surface repair beyond `mio_clean()`: weld (opt-in) -> triangulate (blocks

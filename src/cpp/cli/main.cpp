@@ -95,6 +95,7 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -445,6 +446,7 @@ void print_usage(std::ostream& os) {
           "  decompress              Decompress a mesh file (in place)\n"
           "  quality (q)             Print mesh quality metrics\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
+          "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
           "  shrinkwrap              Project a mesh's points onto a target surface\n"
           "  sobolev-deform          Filter a displacement field and apply it\n"
@@ -1154,6 +1156,56 @@ int cmd_curvature(const std::vector<std::string>& rArgs) {
                       << " non-manifold / " << r.mQuality.mInconsistentPairs
                       << " inconsistent edge(s)\n";
         std::cout.unsetf(std::ios::floatfield);
+    }
+
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_normals(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"cell", {}, false},
+                                  {"no-point", {}, false},
+                                  {"weight", {}, true},
+                                  {"split-angle", {}, true},
+                                  {"record-parent-ids", {}, false},
+                                  {"region", {}, true},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("normals requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::NormalsOptions options;
+    options.mPointNormals = !has_flag(p, "no-point");
+    options.mCellNormals = has_flag(p, "cell");
+    const std::string weight = opt_value(p, "weight");
+    options.mWeight = meshioplusplus::sdf_weight_from_name(weight.empty() ? "angle" : weight);
+    if (has_opt(p, "split-angle")) {
+        options.mSplit = true;
+        options.mSplitAngle = meshioplusplus::detail::stod_c(opt_value(p, "split-angle"));
+    }
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    options.mRegion = opt_value(p, "region");
+
+    meshioplusplus::NormalsResult r = meshioplusplus::compute_normals(mesh, options);
+
+    if (!has_flag(p, "quiet")) {
+        std::cout << "normals (" << (weight.empty() ? "angle" : weight) << ")\n";
+        std::cout << "  points added by the split: " << r.mNumAddedPoints << "\n";
+        std::cout << "  points split:              " << r.mNumSplitPoints << "\n";
+        std::cout << "  isolated points (NaN):     " << r.mNumIsolated << "\n";
+        std::cout << "  undefined points (NaN):    " << r.mNumUndefined << "\n";
+        std::cout << "  degenerate triangles:      " << r.mNumDegenerate << "\n";
+        std::cout << "  surface: ";
+        if (r.mQuality.mWatertight)
+            std::cout << "watertight\n";
+        else
+            std::cout << r.mQuality.mBoundaryEdges << " boundary / " << r.mQuality.mNonManifoldEdges
+                      << " non-manifold / " << r.mQuality.mInconsistentPairs
+                      << " inconsistent edge(s)\n";
     }
 
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -3570,6 +3622,8 @@ int main(int argc, char** argv) {
             return cmd_sobolev_deform(rest);
         if (cmd == "curvature")
             return cmd_curvature(rest);
+        if (cmd == "normals")
+            return cmd_normals(rest);
         if (cmd == "extract-surface" || cmd == "surface")
             return cmd_extract_surface(rest);
         if (cmd == "reorder")

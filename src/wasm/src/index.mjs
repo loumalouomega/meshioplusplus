@@ -249,6 +249,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   remeshVolume: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, maxCells?: number, maxTets?: number, warpFraction?: number, sign?: string, watertightCheck?: string) => {mesh: Mesh, numTets: number, numVerticesWarped: number, numTetsRejected: number, numNonManifoldEdges: number},
  *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numVerticesMoved: number, numTets: number, minQualityBefore: number, minQualityAfter: number},
  *   computeCurvature: (mesh: Mesh, mean?: boolean, gaussian?: boolean, dualArea?: string, includeBoundary?: boolean, recordArea?: boolean, recordPrincipal?: boolean, region?: string) => {mesh: Mesh, numBoundary: number, numIsolated: number, numDegenerate: number, totalAngleDefect: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
+ *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
@@ -762,6 +763,17 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
         ) =>
             Module.computeCurvature(mesh, mean, gaussian, dualArea, includeBoundary,
                 recordArea, recordPrincipal, region),
+        computeNormals: (
+            mesh,
+            pointNormals = true,
+            cellNormals = false,
+            weight = 'angle',
+            splitAngle = -1,
+            recordParentIds = false,
+            region = '',
+        ) =>
+            Module.computeNormals(mesh, pointNormals, cellNormals, weight, splitAngle,
+                recordParentIds, region),
         repair: (
             mesh,
             fixOrientation = true,

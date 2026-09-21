@@ -103,7 +103,7 @@ export remesh
 export remesh_volume
 export grid, voxelize
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
-export compute_curvature
+export compute_curvature, compute_normals
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels

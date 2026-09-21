@@ -127,6 +127,34 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_normals_opts`. Field order and types are ABI
+    !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved` is padding for additive growth and must stay zero.
+    !> The defaults mirror `mio_normals_opts_init`, which is called anyway --
+    !> an all-zero struct is NOT the default.
+    type, bind(c) :: mio_normals_opts_t
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int32_t) :: point_normals = 1
+        integer(c_int32_t) :: cell_normals = 0
+        integer(c_int32_t) :: weight = 0
+        integer(c_int32_t) :: split = 0
+        real(c_double) :: split_angle = 30.0_c_double
+        integer(c_int32_t) :: record_parent_ids = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_normals_report`. Field order/types are ABI.
+    type, bind(c) :: mio_normals_report_t
+        type(mio_surface_quality) :: quality
+        integer(c_int64_t) :: num_isolated = 0
+        integer(c_int64_t) :: num_undefined = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: num_split_points = 0
+        integer(c_int64_t) :: num_added_points = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_repair_opts`. Field order/types are ABI; the
     !> defaults mirror `mio_repair_opts_init` (every pass on), which is called
     !> anyway -- an all-zero struct is NOT the default.
@@ -613,6 +641,7 @@ module meshioplusplus
         procedure :: estimate_error => mesh_estimate_error
         procedure :: remesh => mesh_remesh
         procedure :: curvature => mesh_curvature
+        procedure :: normals => mesh_normals
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: remesh_volume => mesh_remesh_volume
@@ -1334,6 +1363,20 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_curvature_opts_t), intent(in) :: opts
             type(mio_curvature_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_normals_opts_init(opts) bind(c, name="mio_normals_opts_init")
+            import :: mio_normals_opts_t
+            type(mio_normals_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_compute_normals(h, opts, report) &
+                bind(c, name="mio_compute_normals") result(r)
+            import :: c_ptr, mio_normals_opts_t, mio_normals_report_t
+            type(c_ptr), value :: h
+            type(mio_normals_opts_t), intent(in) :: opts
+            type(mio_normals_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -3796,6 +3839,98 @@ contains
         if (present(num_degenerate)) num_degenerate = int(report%num_degenerate, int64)
         if (present(total_angle_defect)) &
             total_angle_defect = real(report%total_angle_defect, real64)
+        if (present(boundary_edges)) &
+            boundary_edges = int(report%quality%boundary_edges, int64)
+        if (present(non_manifold_edges)) &
+            non_manifold_edges = int(report%quality%non_manifold_edges, int64)
+        if (present(inconsistent_pairs)) &
+            inconsistent_pairs = int(report%quality%inconsistent_pairs, int64)
+        if (present(degenerate_triangles)) &
+            degenerate_triangles = int(report%quality%degenerate_triangles, int64)
+        if (present(watertight)) watertight = (report%quality%watertight /= 0)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Point and/or cell normals of this surface, optionally splitting
+    !> vertices at creases so every point carries exactly one normal.
+    !>
+    !> Writes `normals` as point data (n, 3) and, with `cell_normals`, as
+    !> cell data. With `split_angle` present the surface is split wherever it
+    !> creases by more than that many degrees (in [0, 180]): the copies are
+    !> appended after the original points, cells keep their numbering, and
+    !> `record_parent_ids` adds `normals:parent_point`. `weight` is 'angle'
+    !> (default) or 'area'.
+    !>
+    !> Never reorients: a nonzero `inconsistent_pairs` means some normals
+    !> average faces that disagree about which side is out. A volume block is
+    !> refused by name pointing at `extract_surface`.
+    function mesh_normals(self, point_normals, cell_normals, weight, split_angle, &
+                          record_parent_ids, region, num_isolated, num_undefined, &
+                          num_degenerate, num_split_points, num_added_points, &
+                          boundary_edges, non_manifold_edges, inconsistent_pairs, &
+                          degenerate_triangles, watertight, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: point_normals, cell_normals, record_parent_ids
+        character(*), intent(in), optional :: weight, region
+        real(real64), intent(in), optional :: split_angle
+        integer(int64), intent(out), optional :: num_isolated, num_undefined
+        integer(int64), intent(out), optional :: num_degenerate, num_split_points
+        integer(int64), intent(out), optional :: num_added_points
+        integer(int64), intent(out), optional :: boundary_edges, non_manifold_edges
+        integer(int64), intent(out), optional :: inconsistent_pairs, degenerate_triangles
+        logical, intent(out), optional :: watertight
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_normals_opts_t) :: opts
+        type(mio_normals_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+
+        call c_mio_normals_opts_init(opts)
+        if (present(point_normals)) then
+            if (.not. point_normals) opts%point_normals = 0
+        end if
+        if (present(cell_normals)) then
+            if (cell_normals) opts%cell_normals = 1
+        end if
+        if (present(weight)) then
+            if (trim(weight) == 'area') then
+                opts%weight = 1
+            else if (trim(weight) == 'angle') then
+                opts%weight = 0
+            else
+                call handle_failure('normals', &
+                    "meshio++: normals: unknown weight '"//trim(weight)// &
+                    "' (expected 'angle' or 'area')", stat, errmsg)
+                return
+            end if
+        end if
+        if (present(split_angle)) then
+            opts%split = 1
+            opts%split_angle = real(split_angle, c_double)
+        end if
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) opts%record_parent_ids = 1
+        end if
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+
+        res = c_mio_compute_normals(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('normals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_isolated)) num_isolated = int(report%num_isolated, int64)
+        if (present(num_undefined)) num_undefined = int(report%num_undefined, int64)
+        if (present(num_degenerate)) num_degenerate = int(report%num_degenerate, int64)
+        if (present(num_split_points)) &
+            num_split_points = int(report%num_split_points, int64)
+        if (present(num_added_points)) &
+            num_added_points = int(report%num_added_points, int64)
         if (present(boundary_edges)) &
             boundary_edges = int(report%quality%boundary_edges, int64)
         if (present(non_manifold_edges)) &

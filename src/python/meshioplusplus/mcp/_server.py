@@ -976,6 +976,56 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def normals(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        point_normals: bool = True,
+        cell_normals: bool = False,
+        weight: str = "angle",
+        split_angle: Optional[float] = None,
+        record_parent_ids: bool = False,
+        region: str = "",
+    ) -> dict:
+        """Point and cell normals of a surface mesh, optionally splitting
+        vertices at creases so every point carries exactly one normal.
+
+        A vertex normal is a property of a smooth patch, not of a position: at
+        the edge of a cube the one position has three normals. With
+        split_angle unset the result is one smooth normal per point -- the
+        angle- (weight "angle", default) or area- (weight "area") weighted
+        mean of the incident faces. With split_angle set to a number of degrees
+        in [0, 180] the corners around a vertex are grouped into smooth fans
+        and every fan beyond the first gets its own copy of the point,
+        appended after the original points; cells keep their numbering,
+        point_data is gathered by row and a copy joins its source's point
+        regions. Writes `normals` as point data (n, 3) and, with cell_normals,
+        as cell data; record_parent_ids adds normals:parent_point. A `.pcd` or
+        `.xyz` output then carries the normal columns. Triangles come from the
+        same fan convert_cells(simplexify) uses; a volume or polyhedron block
+        is refused by name pointing at extract_surface and a higher-order one
+        pointing at linearize. Never reorients: a nonzero
+        quality.inconsistent_pairs means some normals average faces that
+        disagree about which side is out, and a split always cuts at such an
+        edge; run repair first. Reports num_added_points, num_split_points,
+        num_isolated / num_undefined (points whose normal is NaN) and
+        num_degenerate."""
+        return _guard(
+            _tools.tool_normals,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            point_normals=point_normals,
+            cell_normals=cell_normals,
+            weight=weight,
+            split_angle=split_angle,
+            record_parent_ids=record_parent_ids,
+            region=region,
+        )
+
+    @server.tool()
     def repair(
         input_path: str,
         output_path: str,

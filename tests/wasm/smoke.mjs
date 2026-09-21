@@ -1305,6 +1305,25 @@ step('computeCurvature satisfies Gauss-Bonnet on a closed surface', () => {
     assert.throws(() => m.computeCurvature(skin, true, true, 'nope'));
 });
 
+step('computeNormals splits a closed surface at its creases', () => {
+    // The cube's boundary skin: 8 corners smooth, 24 once split at 30 degrees,
+    // and every split normal is axis-aligned.
+    const skin = m.extractSurface(cube);
+    const smooth = m.computeNormals(skin);
+    assert.equal(smooth.mesh.points.length, skin.points.length);
+    assert.equal(smooth.numAddedPoints, 0);
+    assert.equal(smooth.quality.watertight, true);
+    const split = m.computeNormals(skin, true, true, 'angle', 30, true);
+    assert.equal(split.mesh.points.length, 24);
+    assert.equal(split.numAddedPoints, 16);
+    assert.equal(split.numSplitPoints, 8);
+    assert.ok(split.mesh.point_data['normals']);
+    assert.ok(split.mesh.point_data['normals:parent_point']);
+    // An unknown weight and an out-of-range angle are refused by name.
+    assert.throws(() => m.computeNormals(skin, true, false, 'nope'));
+    assert.throws(() => m.computeNormals(skin, true, false, 'angle', 270));
+});
+
 step('computeCurvature is reachable as a convertSurfaceOps pipeline step', () => {
     const skin = m.extractSurface(cube);
     m.writeMesh('/curv.vtu', skin);

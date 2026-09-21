@@ -210,6 +210,7 @@ export default defineConfig({
           { text: "Point-cloud budgets", link: "/point_budgets" },
           { text: "Proximity graphs", link: "/proximity_graphs" },
           { text: "Curvature (mean / Gaussian)", link: "/curvature" },
+          { text: "Normals", link: "/normals" },
           { text: "Surface repair", link: "/repair" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },

@@ -446,7 +446,6 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 
 **Analysis and editing.**
 
-- **`compute_normals`** as attachable point and cell data. Angle-weighted pseudonormals are already computed inside `distance_to_surface` and never exposed; a public op is the prerequisite for glTF export ([§1](#_1-format-reach)) and for shading in the viewers. **S**
 - **Feature edges as a line mesh.** The feature-angle crease test exists three times (`decimate`, `smooth`, `remesh` each carry `mFeatureAngleDeg`) and only ever pins nodes; one public op emitting `line` cells serves inspection, boundary-condition picking and those three in one place. **S**
 - **Hausdorff distance** between two meshes — a symmetric max-reduction over the shipped `distance_to_surface`, returning the scalar the remesh/decimate tests and the conformance matrix want to assert on. **S**
 - **Periodic node-pair matching** — given two boundary regions and a transform, return the matched node pairs. `$Periodic` already round-trips as metadata and `proximity_graph` already does minimum-image search; Kratos periodic conditions are the consumer. **S–M**

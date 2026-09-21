@@ -45,6 +45,7 @@ from .. import (
     clean,
     compute_bandwidth,
     compute_curvature,
+    compute_normals,
     compute_quality,
     compute_sdf,
     compute_stats,
@@ -1345,6 +1346,46 @@ def tool_curvature(
         num_isolated=int(report["num_isolated"]),
         num_degenerate=int(report["num_degenerate"]),
         total_angle_defect=float(report["total_angle_defect"]),
+        quality=report["quality"],
+    )
+
+
+def tool_normals(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    point_normals=True,
+    cell_normals=False,
+    weight="angle",
+    split_angle=None,
+    record_parent_ids=False,
+    region="",
+):
+    """Point and cell normals of a surface, optionally splitting vertices at
+    creases so every point carries exactly one normal (what a renderer or a
+    glTF export needs). Reports the points the split added and the input's
+    surface quality; inconsistent_pairs is nonzero when some normals average
+    faces that disagree about which side is out. Never reorients."""
+    mesh = _load(input_path, input_format)
+    out, report = compute_normals(
+        mesh,
+        point_normals=point_normals,
+        cell_normals=cell_normals,
+        weight=weight,
+        split_angle=split_angle,
+        region=region,
+        record_parent_ids=record_parent_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_isolated=int(report["num_isolated"]),
+        num_undefined=int(report["num_undefined"]),
+        num_degenerate=int(report["num_degenerate"]),
+        num_split_points=int(report["num_split_points"]),
+        num_added_points=int(report["num_added_points"]),
         quality=report["quality"],
     )
 
@@ -3214,6 +3255,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "curvature",
             {"fn": tool_curvature, "wraps": ("compute_curvature",), "gated": None},
+        ),
+        (
+            "normals",
+            {"fn": tool_normals, "wraps": ("compute_normals",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

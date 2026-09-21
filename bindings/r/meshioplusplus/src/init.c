@@ -72,6 +72,7 @@ extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_estimate_error(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_remesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_curvature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_compute_normals(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_shrinkwrap(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sobolev_deform(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -206,6 +207,7 @@ static const R_CallMethodDef CallEntries[] = {
     CALLDEF(R_mio_estimate_error, 8),
     CALLDEF(R_mio_remesh, 11),
     CALLDEF(R_mio_compute_curvature, 8),
+    CALLDEF(R_mio_compute_normals, 7),
     CALLDEF(R_mio_repair, 8),
     CALLDEF(R_mio_shrinkwrap, 9),
     CALLDEF(R_mio_sobolev_deform, 8),

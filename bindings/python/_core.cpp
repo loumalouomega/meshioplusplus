@@ -95,6 +95,7 @@
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -1806,6 +1807,44 @@ PYBIND11_MODULE(_core, m) {
         py::arg("dual_area") = "mixed-voronoi", py::arg("include_boundary") = false,
         py::arg("record_area") = false, py::arg("record_principal") = false,
         py::arg("region") = "");
+
+    // Point and cell normals of a surface, optionally splitting vertices at
+    // creases. See operations/normals.hpp.
+    m.def(
+        "compute_normals",
+        [](py::object pymesh, bool point_normals, bool cell_normals, const std::string& weight,
+           bool split, double split_angle, bool record_parent_ids, const std::string& region) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::NormalsOptions options;
+            options.mPointNormals = point_normals;
+            options.mCellNormals = cell_normals;
+            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mSplit = split;
+            options.mSplitAngle = split_angle;
+            options.mRecordParentIds = record_parent_ids;
+            options.mRegion = region;
+            meshioplusplus::NormalsResult r = meshioplusplus::compute_normals(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_isolated"] = r.mNumIsolated;
+            out["num_undefined"] = r.mNumUndefined;
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["num_split_points"] = r.mNumSplitPoints;
+            out["num_added_points"] = r.mNumAddedPoints;
+            py::dict q;
+            q["boundary_edges"] = r.mQuality.mBoundaryEdges;
+            q["non_manifold_edges"] = r.mQuality.mNonManifoldEdges;
+            q["inconsistent_pairs"] = r.mQuality.mInconsistentPairs;
+            q["degenerate_triangles"] = r.mQuality.mDegenerateTriangles;
+            q["watertight"] = r.mQuality.mWatertight;
+            out["quality"] = q;
+            return out;
+        },
+        py::arg("mesh"), py::arg("point_normals") = true, py::arg("cell_normals") = false,
+        py::arg("weight") = "angle", py::arg("split") = false, py::arg("split_angle") = 30.0,
+        py::arg("record_parent_ids") = false, py::arg("region") = "");
 
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.

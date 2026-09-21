@@ -378,6 +378,47 @@ SEXP R_mio_compute_curvature(SEXP mesh, SEXP mean, SEXP gaussian, SEXP dual_area
     return res;
 }
 
+SEXP R_mio_compute_normals(SEXP mesh, SEXP point_normals, SEXP cell_normals, SEXP weight,
+                           SEXP split_angle, SEXP record_parent_ids, SEXP region) {
+    mio_normals_opts opts;
+    mio_normals_report report;
+    mio_mesh *out;
+
+    mio_normals_opts_init(&opts);
+    opts.point_normals = mio_r_bool(point_normals, "point_normals") ? 1 : 0;
+    opts.cell_normals = mio_r_bool(cell_normals, "cell_normals") ? 1 : 0;
+    const char *w = mio_r_opt_string(weight);
+    if (w != NULL && strcmp(w, "area") == 0) {
+        opts.weight = MIO_SDF_WEIGHT_AREA;
+    } else if (w != NULL && strcmp(w, "angle") != 0) {
+        Rf_error("meshio++: normals: unknown weight '%s' (expected 'angle' or 'area')", w);
+    }
+    /* NULL means "no split"; a number is the crease angle in degrees. */
+    if (split_angle != R_NilValue) {
+        opts.split = 1;
+        opts.split_angle = mio_r_double(split_angle, "split_angle");
+    }
+    opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids") ? 1 : 0;
+    opts.region = mio_r_opt_string(region);
+
+    out = mio_compute_normals(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("normals");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP q = PROTECT(quality_list(&report.quality));
+    /* R has no native int64, so the counters come back as doubles. */
+    SEXP ni = PROTECT(Rf_ScalarReal((double)report.num_isolated));
+    SEXP nu = PROTECT(Rf_ScalarReal((double)report.num_undefined));
+    SEXP nd = PROTECT(Rf_ScalarReal((double)report.num_degenerate));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_split_points));
+    SEXP na = PROTECT(Rf_ScalarReal((double)report.num_added_points));
+    const char *names[] = {"mesh", "quality", "num_isolated", "num_undefined",
+                           "num_degenerate", "num_split_points", "num_added_points"};
+    SEXP values[] = {mo, q, ni, nu, nd, ns, na};
+    SEXP res = PROTECT(mio_r_named_list(7, names, values));
+    UNPROTECT(8);
+    return res;
+}
+
 SEXP R_mio_repair(SEXP mesh, SEXP fix_orientation, SEXP orient_outward, SEXP fill_holes,
                   SEXP split_non_manifold, SEXP max_hole_edges, SEXP weld_tolerance,
                   SEXP record_provenance) {

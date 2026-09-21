@@ -762,6 +762,37 @@ meshioplusplus optimize-volume volume.vtu optimized.vtu --max-iterations 20
 
 ---
 
+## meshioplusplus normals
+
+Attach the point and cell normals of a surface, optionally splitting vertices at creases so every point carries exactly one normal (see [normals](/normals)).
+
+```
+meshioplusplus normals [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--cell` | Also attach the cell normals |
+| `--no-point` | Do not attach the point normals |
+| `--weight angle\|area` | How incident faces are weighted into a point normal (default `angle`) |
+| `--split-angle DEG` | Duplicate points where the surface creases by more than `DEG` degrees, `0` to `180` (default: no split) |
+| `--record-parent-ids` | Attach `normals:parent_point`, the input point each output point came from |
+| `--region NAME` | Restrict to this named cell region (default: every surface cell) |
+| `--quiet` (`-q`) | Suppress the summary output |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The arrays are named `normals`, so writing to `.pcd` or `.xyz` emits the normal columns. Points added by a split are appended after the original points and cells keep their numbering. The operation never reorients: the summary reports the input's edge defects, and a nonzero inconsistent-edge count means some normals average faces that disagree about which side is out — run `repair` first. A volume block is refused by name pointing at `extract-surface`.
+
+**Examples:**
+
+```sh
+meshioplusplus normals scan.stl scan_n.vtu
+meshioplusplus normals part.vtu part_split.vtu --split-angle 30 --cell
+meshioplusplus normals part.vtu cloud.xyz --record-parent-ids
+```
+
+---
+
 ## meshioplusplus repair
 
 Fix a surface's orientation, holes and pinched vertices — the three defects `clean` does not touch (see [surface repair](/repair)).

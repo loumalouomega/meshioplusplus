@@ -3936,6 +3936,59 @@ TEST(CApi, SobolevDeformFiltersADisplacementAndPinsByArray) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, ComputeNormalsSplitsACubeAtItsCreases) {
+    // A unit cube of six outward-wound quads: 8 points smooth, 24 once split at
+    // a 30 degree crease, with every corner of the original on three faces.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> quads = {0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4,
+                                             3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 6, 4, MIO_INT64, quads.data()), MIO_OK);
+
+    mio_normals_opts opts;
+    mio_normals_opts_init(&opts);
+    EXPECT_EQ(opts.point_normals, 1);  // ON by default -- an all-zero struct is NOT the default
+    EXPECT_EQ(opts.split, 0);
+    EXPECT_DOUBLE_EQ(opts.split_angle, 30.0);
+    EXPECT_EQ(opts.weight, MIO_SDF_WEIGHT_ANGLE);
+
+    mio_normals_report report;
+    mio_mesh* smooth = mio_compute_normals(m, &opts, &report);
+    ASSERT_NE(smooth, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(smooth), 8);
+    EXPECT_EQ(report.num_added_points, 0);
+    EXPECT_NE(report.quality.watertight, 0);
+    mio_mesh_free(smooth);
+
+    opts.split = 1;
+    opts.cell_normals = 1;
+    opts.record_parent_ids = 1;
+    mio_mesh* split = mio_compute_normals(m, &opts, &report);
+    ASSERT_NE(split, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(split), 24);
+    EXPECT_EQ(report.num_added_points, 16);
+    EXPECT_EQ(report.num_split_points, 8);
+    EXPECT_EQ(report.num_isolated, 0);
+    mio_mesh_free(split);
+
+    // NULL options means every default, and a NULL report is not written.
+    mio_mesh* plain = mio_compute_normals(m, nullptr, nullptr);
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    mio_mesh_free(plain);
+
+    // An out-of-range weight or split angle is refused, never clamped, and no
+    // exception crosses the ABI.
+    opts.weight = 9;
+    EXPECT_EQ(mio_compute_normals(m, &opts, nullptr), nullptr);
+    opts.weight = MIO_SDF_WEIGHT_AREA;
+    opts.split_angle = 270.0;
+    EXPECT_EQ(mio_compute_normals(m, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_compute_normals(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, ComputeCurvatureSatisfiesGaussBonnet) {
     // The tessellation-independent oracle: on a closed surface the angle
     // defects sum to 2*pi*chi, which is 4*pi for anything sphere-like. It is

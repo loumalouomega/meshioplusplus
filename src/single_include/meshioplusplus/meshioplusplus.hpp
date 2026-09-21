@@ -11549,6 +11549,109 @@ MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/surface_normals.hpp =====
+/**
+ * @file detail/surface_normals.hpp
+ * @brief Vertex normals of a triangle soup, with the option to split a vertex
+ * into one normal group per smooth patch.
+ *
+ * Two consumers share this kernel and must not disagree: the signed-distance
+ * pseudonormal table in `surface_distance.cpp`, which needs one angle-weighted
+ * normal per welded vertex, and `compute_normals` / the glTF writer, which need
+ * per-*corner* normals because a crease has two normals at one position.
+ *
+ * ### Why the split is a graph problem, not a per-vertex loop
+ *
+ * A vertex is split by grouping the triangle corners around it into smooth
+ * fans. Two corners of the same vertex belong to one fan when the triangles
+ * that own them are joined along an edge through that vertex. An edge joins
+ * its two triangles only when the pair is a *proper* manifold pair -- exactly
+ * two users, walked in opposite directions -- and the dihedral angle between
+ * their face normals is within the split angle. Boundary edges, non-manifold
+ * edges and wound-the-same-way pairs therefore always cut. Triangles fanned
+ * from the same polygon are joined unconditionally, so a non-planar polygon
+ * never splits along its own diagonals.
+ *
+ * The joins are resolved with a union-find whose root is always the smallest
+ * corner index in the set, and the groups are numbered by ascending root, so
+ * the partition and its numbering depend only on the soup and the angle -- not
+ * on the order the edges happened to be visited in. The numpy twin
+ * (`_normals.py`) reproduces the same numbering.
+ *
+ * Normals are accumulated by a **serial** scatter in ascending
+ * (triangle, corner) order: the order in which unit normals are summed changes
+ * the last bits, and the SDF sign test can flip on a last-bit change.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The angle triangle (a, b, c) subtends at corner @p rA, in radians.
+ *
+ * 0 when either edge is degenerate. Used as a positive weight on a unit normal.
+ */
+MESHIOPLUSPLUS_API double corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC);
+
+/// Per triangle, the unnormalized normal `cross(b - a, c - a)`. Parallel; each
+/// entry is independent.
+MESHIOPLUSPLUS_API std::vector<Vec3> soup_face_normals(const TriangleSoup& rSoup);
+
+/**
+ * @brief The weighted sum of incident unit face normals at every soup point.
+ *
+ * @param rSoup the soup; the result is indexed by the soup's own point ids.
+ * @param rFaceNormal `soup_face_normals(rSoup)`.
+ * @param Weight `Angle` weights each incident face by the corner angle, `Area`
+ *        by `|cross|`. Degenerate triangles contribute nothing.
+ * @return one unnormalized sum per entry of `rSoup.mPoints`.
+ */
+MESHIOPLUSPLUS_API std::vector<Vec3> accumulate_vertex_normals(const TriangleSoup& rSoup,
+                                                               const std::vector<Vec3>& rFaceNormal,
+                                                               SdfPseudonormalWeight Weight);
+
+/// The corner groups of a soup and one unit normal per group.
+struct VertexNormalGroups {
+    /// Per triangle corner (`3 * triangle + corner`), the group it belongs to.
+    std::vector<std::int64_t> mCornerGroup;
+    /// Per group, the soup point id every corner of the group sits on.
+    std::vector<std::int64_t> mGroupPoint;
+    /// Per group, its smallest corner index. Groups are numbered by this.
+    std::vector<std::int64_t> mGroupRoot;
+    /// Per group, the unit normal, or {0, 0, 0} when the incident faces sum to
+    /// nothing (only degenerate triangles, or an exactly cancelling pair).
+    std::vector<Vec3> mGroupNormal;
+    /// Triangles whose normal has no direction.
+    std::int64_t mNumDegenerate = 0;
+
+    std::size_t NumGroups() const { return mGroupPoint.size(); }
+};
+
+/**
+ * @brief Group the corners of @p rSoup into smooth fans and compute a unit
+ * normal for each.
+ *
+ * @param SplitAngleDeg an edge joins its two triangles only when the angle
+ *        between their face normals does not exceed this. A negative value
+ *        disables splitting: every corner of a vertex is one group, so the
+ *        result is one normal per touched point. Values of 180 and above keep
+ *        every proper manifold pair joined, so only boundary, non-manifold and
+ *        inconsistently wound edges still cut.
+ */
+MESHIOPLUSPLUS_API VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup,
+                                                           SdfPseudonormalWeight Weight,
+                                                           double SplitAngleDeg);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/surface_normals.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
 /**
  * @file detail/tri_box.hpp
@@ -22134,6 +22237,117 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/normals.hpp =====
+/**
+ * @file operations/normals.hpp
+ * @brief Point and cell normals of a surface mesh, optionally splitting
+ * vertices at creases.
+ *
+ * A *vertex* normal is a property of a smooth patch, not of a position: at the
+ * edge of a cube the one position has three normals. With `mSplit` off the
+ * operation returns one normal per point, the angle- (or area-) weighted mean of
+ * the incident faces, and smooths the crease over. With `mSplit` on it does what
+ * a renderer needs: the corners around a vertex are grouped into smooth fans
+ * (see `detail/surface_normals.hpp` for how) and every fan beyond the first gets
+ * its own copy of the point, so each point carries exactly one normal.
+ *
+ * The split layout is the one `repair` uses for its bowtie copies: the original
+ * points keep their indices and the copies are appended, so
+ * `point_data` gathers by row and `normals:parent_point` (opt-in) names each
+ * copy's source. A copy joins its source's Point regions. Cell numbering is
+ * untouched, so Cell and Side regions and cell data ride through verbatim.
+ *
+ * ### What it will not do
+ *
+ * It **never reorients**. Two triangles that disagree about which side is out
+ * cannot both be right, and averaging them gives a wrong normal that looks
+ * plausible. `mQuality.mInconsistentPairs` reports the count, a split always
+ * cuts at such an edge, and the fix is `repair(mesh, {.mFixOrientation = true})`
+ * first -- the same contract `compute_curvature` has.
+ *
+ * It works on a *surface*. A volume block is refused by name, pointing at
+ * `extract_surface`, rather than being silently reduced to its skin.
+ *
+ * ### The output name
+ *
+ * The arrays are called `normals` -- the name the PCD and XYZ readers and
+ * writers already use -- so `compute_normals` followed by a write to `.pcd` or
+ * `.xyz` emits the normal columns with no further step. An existing array of
+ * that name is replaced.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data `(n, 3)` and cell data `(cells, 3)`: the unit normals, Float64.
+inline constexpr const char* kNormalsName = "normals";
+/// Point data: for each output point, the input point it came from. Opt-in.
+inline constexpr const char* kNormalsParentPointName = "normals:parent_point";
+
+/// What `compute_normals` should compute and attach.
+struct NormalsOptions {
+    /// Attach point normals.
+    bool mPointNormals = true;
+    /// Attach cell normals (the unit vector area of each cell).
+    bool mCellNormals = false;
+    /// How incident faces are weighted into a point normal. Cell normals do not
+    /// depend on it.
+    SdfPseudonormalWeight mWeight = SdfPseudonormalWeight::Angle;
+    /// Duplicate points where the surface creases by more than `mSplitAngle`.
+    bool mSplit = false;
+    /// The largest dihedral angle, in degrees, still treated as smooth. Used
+    /// only when `mSplit` is set; must lie in `[0, 180]`.
+    double mSplitAngle = 30.0;
+    /// Attach `normals:parent_point`.
+    bool mRecordParentIds = false;
+    /// Restrict to this named `Cell` region; empty takes every surface cell.
+    std::string mRegion;
+};
+
+/// What `compute_normals` computed, and what it found on the way.
+struct NormalsResult {
+    /// The input with the requested arrays attached (and, with `mSplit`, the
+    /// split points appended).
+    Mesh mMesh;
+    /// The INPUT surface's defect counts. `mInconsistentPairs != 0` means some
+    /// normals are averaged across faces that disagree about "out".
+    SurfaceQuality mQuality;
+    /// Points no selected surface triangle touches; their normal is NaN.
+    std::int64_t mNumIsolated = 0;
+    /// Touched points whose incident faces sum to nothing; their normal is NaN.
+    std::int64_t mNumUndefined = 0;
+    /// Triangles with no area, which contribute no direction.
+    std::int64_t mNumDegenerate = 0;
+    /// Input points that received at least one copy.
+    std::int64_t mNumSplitPoints = 0;
+    /// Points appended to the mesh.
+    std::int64_t mNumAddedPoints = 0;
+};
+
+/**
+ * @brief Point and/or cell normals of a surface mesh.
+ *
+ * Triangles come from `detail::build_triangle_soup`, so quads and polygons are
+ * fanned on the diagonal `convert_cells(Simplexify)` uses; a polygon's cell
+ * normal is the sum of its fan (Newell's normal), which does not depend on which
+ * corner the fan starts from. Lines and vertices are ignored and get NaN.
+ *
+ * @param rMesh a surface mesh (2-D cells in 2-D or 3-D space, or a mix with
+ *        lines and vertices).
+ * @param rOptions what to compute; see `NormalsOptions`.
+ * @throws std::invalid_argument on a volume or higher-order block, an unknown
+ *         region name, or a split angle outside `[0, 180]`.
+ */
+MESHIOPLUSPLUS_API NormalsResult compute_normals(const Mesh& rMesh,
+                                                 const NormalsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/normals.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/optimize_volume.hpp =====
 /**
  * @file optimize_volume.hpp
@@ -47196,22 +47410,6 @@ std::vector<char> sd_region_mask(const Mesh& rMesh, const std::string& rRegion) 
     return mask;
 }
 
-// The angle triangle (a, b, c) subtends at corner a. Used only as a positive
-// weight on a unit normal, so its last-ulp behaviour cannot change a sign
-// except where the distance is already zero to within rounding -- see
-// doc/sdf.md on the one place the numpy twin excludes.
-double sd_corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const Vec3 u = vec3_sub(rB, rA);
-    const Vec3 v = vec3_sub(rC, rA);
-    const double nu = vec3_norm(u);
-    const double nv = vec3_norm(v);
-    if (!(nu > 0.0) || !(nv > 0.0))
-        return 0.0;
-    double c = vec3_dot(u, v) / (nu * nv);
-    c = c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
-    return std::acos(c);
-}
-
 }  // namespace
 
 TriangleSoup build_triangle_soup(const Mesh& rSurface, const std::string& rRegion) {
@@ -47346,7 +47544,6 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
 
     DistanceQuery q;
     q.mpSoup = &rSoup;
-    q.mFaceNormal.resize(ntri);
 
     // Bucket size. It affects only how many candidates each query examines --
     // never the answer, because every comparison below is totally ordered -- so
@@ -47416,13 +47613,8 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     // and in ascending (triangle, corner) order: summing unit normals in a
     // different order changes the last bits, and a last-bit change can flip the
     // sign of a query point sitting almost exactly on the surface.
-    q.mVertexNormal.assign(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < ntri; ++t) {
-        const Vec3& a = rSoup.mCorners[t * 3 + 0];
-        const Vec3& b = rSoup.mCorners[t * 3 + 1];
-        const Vec3& c = rSoup.mCorners[t * 3 + 2];
-        q.mFaceNormal[t] = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
-    }
+    q.mFaceNormal = soup_face_normals(rSoup);
+    q.mVertexNormal = accumulate_vertex_normals(rSoup, q.mFaceNormal, rOptions.mWeight);
     for (std::size_t t = 0; t < ntri; ++t) {
         const Vec3 n = q.mFaceNormal[t];
         const double len = vec3_norm(n);
@@ -47430,15 +47622,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
             continue;  // degenerate: no direction to contribute
         const Vec3 unit = vec3_scale(n, 1.0 / len);
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        const Vec3* corner = &rSoup.mCorners[t * 3];
         for (std::size_t i = 0; i < 3; ++i) {
-            const double w =
-                rOptions.mWeight == SdfPseudonormalWeight::Angle
-                    ? sd_corner_angle(corner[i], corner[(i + 1) % 3], corner[(i + 2) % 3])
-                    : len;  // area weighting: |cross| is twice the area, a positive scale
-            Vec3& acc = q.mVertexNormal[static_cast<std::size_t>(v[i])];
-            acc = vec3_add(acc, vec3_scale(unit, w));
-
             const std::int64_t p = v[i];
             const std::int64_t r = v[(i + 1) % 3];
             const SurfaceEdgeKey key{p < r ? p : r, p < r ? r : p};
@@ -47698,6 +47882,244 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_distance.cpp =====
+// ===== begin src/cpp/src/detail/surface_normals.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <numeric>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kSnPi = 3.14159265358979323846;
+
+// One edge use of one triangle: the sorted endpoint pair, the triangle, the
+// corner index (3 * triangle + corner) of each endpoint, and whether the
+// triangle walks it low -> high.
+struct SnEdgeUse {
+    std::int64_t mLo;
+    std::int64_t mHi;
+    std::int64_t mTri;
+    std::int64_t mCornerLo;
+    std::int64_t mCornerHi;
+    bool mForward;
+};
+
+bool sn_edge_use_less(const SnEdgeUse& rA, const SnEdgeUse& rB) {
+    if (rA.mLo != rB.mLo)
+        return rA.mLo < rB.mLo;
+    if (rA.mHi != rB.mHi)
+        return rA.mHi < rB.mHi;
+    if (rA.mTri != rB.mTri)
+        return rA.mTri < rB.mTri;
+    return rA.mCornerLo < rB.mCornerLo;
+}
+
+// Union-find whose root is always the smallest index of its set. That is what
+// makes the partition, and the group numbering derived from it, independent of
+// the order the joins are applied in.
+class SnUnionFind {
+public:
+    explicit SnUnionFind(std::size_t N) : mParent(N) {
+        std::iota(mParent.begin(), mParent.end(), std::int64_t{0});
+    }
+    std::int64_t Find(std::int64_t X) {
+        while (mParent[static_cast<std::size_t>(X)] != X) {
+            std::int64_t& p = mParent[static_cast<std::size_t>(X)];
+            p = mParent[static_cast<std::size_t>(p)];
+            X = p;
+        }
+        return X;
+    }
+    void Unite(std::int64_t A, std::int64_t B) {
+        const std::int64_t ra = Find(A);
+        const std::int64_t rb = Find(B);
+        if (ra == rb)
+            return;
+        if (ra < rb)
+            mParent[static_cast<std::size_t>(rb)] = ra;
+        else
+            mParent[static_cast<std::size_t>(ra)] = rb;
+    }
+
+private:
+    std::vector<std::int64_t> mParent;
+};
+
+double sn_corner_weight(const TriangleSoup& rSoup, std::size_t Tri, std::size_t Corner, double Len,
+                        SdfPseudonormalWeight Weight) {
+    if (Weight != SdfPseudonormalWeight::Angle)
+        return Len;  // area weighting: |cross| is twice the area, a positive scale
+    const Vec3* pCorner = &rSoup.mCorners[Tri * 3];
+    return corner_angle(pCorner[Corner], pCorner[(Corner + 1) % 3], pCorner[(Corner + 2) % 3]);
+}
+
+}  // namespace
+
+double corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    const Vec3 u = vec3_sub(rB, rA);
+    const Vec3 v = vec3_sub(rC, rA);
+    const double nu = vec3_norm(u);
+    const double nv = vec3_norm(v);
+    if (!(nu > 0.0) || !(nv > 0.0))
+        return 0.0;
+    double c = vec3_dot(u, v) / (nu * nv);
+    c = c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
+    return std::acos(c);
+}
+
+std::vector<Vec3> soup_face_normals(const TriangleSoup& rSoup) {
+    std::vector<Vec3> normals(rSoup.NumTriangles());
+    parallel_for(normals.size(), [&](std::size_t t) {
+        const Vec3& a = rSoup.mCorners[t * 3 + 0];
+        const Vec3& b = rSoup.mCorners[t * 3 + 1];
+        const Vec3& c = rSoup.mCorners[t * 3 + 2];
+        normals[t] = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+    });
+    return normals;
+}
+
+std::vector<Vec3> accumulate_vertex_normals(const TriangleSoup& rSoup,
+                                            const std::vector<Vec3>& rFaceNormal,
+                                            SdfPseudonormalWeight Weight) {
+    std::vector<Vec3> sums(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t) {
+        const Vec3& n = rFaceNormal[t];
+        const double len = vec3_norm(n);
+        if (!(len > 0.0))
+            continue;  // degenerate: no direction to contribute
+        const Vec3 unit = vec3_scale(n, 1.0 / len);
+        const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+        for (std::size_t i = 0; i < 3; ++i) {
+            Vec3& acc = sums[static_cast<std::size_t>(v[i])];
+            acc = vec3_add(acc, vec3_scale(unit, sn_corner_weight(rSoup, t, i, len, Weight)));
+        }
+    }
+    return sums;
+}
+
+VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonormalWeight Weight,
+                                        double SplitAngleDeg) {
+    const std::size_t ntri = rSoup.NumTriangles();
+    const std::size_t ncorner = ntri * 3;
+    const std::vector<Vec3> face = soup_face_normals(rSoup);
+
+    std::vector<double> length(ntri, 0.0);
+    std::vector<Vec3> unit(ntri, Vec3{0.0, 0.0, 0.0});
+    VertexNormalGroups out;
+    for (std::size_t t = 0; t < ntri; ++t) {
+        length[t] = vec3_norm(face[t]);
+        if (length[t] > 0.0)
+            unit[t] = vec3_scale(face[t], 1.0 / length[t]);
+        else
+            ++out.mNumDegenerate;
+    }
+
+    SnUnionFind sets(ncorner);
+    if (SplitAngleDeg < 0.0) {
+        // No split: every corner of a vertex is one group.
+        std::vector<std::int64_t> first(rSoup.mPoints.size(), -1);
+        for (std::size_t c = 0; c < ncorner; ++c) {
+            const std::size_t p = static_cast<std::size_t>(rSoup.mVertices[c / 3][c % 3]);
+            if (first[p] < 0)
+                first[p] = static_cast<std::int64_t>(c);
+            else
+                sets.Unite(first[p], static_cast<std::int64_t>(c));
+        }
+    } else {
+        const bool always = SplitAngleDeg >= 180.0;
+        const double cos_threshold = std::cos(SplitAngleDeg * (kSnPi / 180.0));
+
+        std::vector<SnEdgeUse> uses;
+        uses.reserve(ncorner);
+        for (std::size_t t = 0; t < ntri; ++t) {
+            const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
+            for (std::size_t i = 0; i < 3; ++i) {
+                const std::size_t j = (i + 1) % 3;
+                const std::int64_t u = v[i];
+                const std::int64_t w = v[j];
+                if (u == w)
+                    continue;  // a collapsed edge joins nothing
+                const std::int64_t ci = static_cast<std::int64_t>(t * 3 + i);
+                const std::int64_t cj = static_cast<std::int64_t>(t * 3 + j);
+                if (u < w)
+                    uses.push_back({u, w, static_cast<std::int64_t>(t), ci, cj, true});
+                else
+                    uses.push_back({w, u, static_cast<std::int64_t>(t), cj, ci, false});
+            }
+        }
+        std::sort(uses.begin(), uses.end(), sn_edge_use_less);
+
+        for (std::size_t b = 0; b < uses.size();) {
+            std::size_t e = b + 1;
+            while (e < uses.size() && uses[e].mLo == uses[b].mLo && uses[e].mHi == uses[b].mHi)
+                ++e;
+            const bool proper_pair = e - b == 2;
+            for (std::size_t x = b; x < e; ++x) {
+                for (std::size_t y = x + 1; y < e; ++y) {
+                    const SnEdgeUse& ux = uses[x];
+                    const SnEdgeUse& uy = uses[y];
+                    if (ux.mTri == uy.mTri)
+                        continue;
+                    const std::size_t tx = static_cast<std::size_t>(ux.mTri);
+                    const std::size_t ty = static_cast<std::size_t>(uy.mTri);
+                    bool join = rSoup.mSourceCell[tx] == rSoup.mSourceCell[ty];
+                    if (!join && proper_pair && ux.mForward != uy.mForward && length[tx] > 0.0 &&
+                        length[ty] > 0.0)
+                        join = always || vec3_dot(unit[tx], unit[ty]) >= cos_threshold;
+                    if (join) {
+                        sets.Unite(ux.mCornerLo, uy.mCornerLo);
+                        sets.Unite(ux.mCornerHi, uy.mCornerHi);
+                    }
+                }
+            }
+            b = e;
+        }
+    }
+
+    // Number the groups by ascending root. A root is the smallest corner of its
+    // set, so it has always been numbered by the time a later corner asks.
+    std::vector<std::int64_t> root(ncorner);
+    std::vector<std::int64_t> id(ncorner, -1);
+    out.mCornerGroup.assign(ncorner, 0);
+    for (std::size_t c = 0; c < ncorner; ++c) {
+        root[c] = sets.Find(static_cast<std::int64_t>(c));
+        if (root[c] == static_cast<std::int64_t>(c)) {
+            id[c] = static_cast<std::int64_t>(out.mGroupPoint.size());
+            out.mGroupRoot.push_back(static_cast<std::int64_t>(c));
+            out.mGroupPoint.push_back(rSoup.mVertices[c / 3][c % 3]);
+        }
+        out.mCornerGroup[c] = id[static_cast<std::size_t>(root[c])];
+    }
+
+    // Serial scatter in ascending (triangle, corner) order, then normalise.
+    out.mGroupNormal.assign(out.NumGroups(), Vec3{0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t < ntri; ++t) {
+        if (!(length[t] > 0.0))
+            continue;
+        for (std::size_t i = 0; i < 3; ++i) {
+            Vec3& acc = out.mGroupNormal[static_cast<std::size_t>(out.mCornerGroup[t * 3 + i])];
+            acc = vec3_add(acc,
+                           vec3_scale(unit[t], sn_corner_weight(rSoup, t, i, length[t], Weight)));
+        }
+    }
+    for (Vec3& n : out.mGroupNormal) {
+        const double len = vec3_norm(n);
+        n = len > 0.0 ? vec3_scale(n, 1.0 / len) : Vec3{0.0, 0.0, 0.0};
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_normals.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <map>
@@ -89429,7 +89851,7 @@ constexpr double kCurvPi = 3.141592653589793238462643383279;
 ///
 /// Both come from the same `(cross, dot)` pair, which is what keeps them
 /// consistent. The angle is `atan2(|cross|, dot)` rather than `acos` of a
-/// clamped ratio: `detail::sd_corner_angle` takes the `acos` route because a
+/// clamped ratio: `detail::corner_angle` takes the `acos` route because a
 /// pseudonormal weight does not care about the last few digits, but an angle
 /// DEFECT is a sum of angles minus `2*pi`, so the digits are exactly what
 /// survives -- do not unify the two.
@@ -96655,6 +97077,312 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/normals.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+using detail::Vec3;
+
+constexpr const char* kNrmPrefix = "meshio++: normals: ";
+
+// Refuse what a normal is not defined on, naming the fix. build_triangle_soup
+// refuses the same blocks, but with a message about distances.
+void nrm_check_surface(const Mesh& rMesh, const std::string& rRegion) {
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        if (cb.IsPolyhedron() || cell_type_dimension(ct) == 3)
+            throw std::invalid_argument(std::string(kNrmPrefix) + "cell block '" + type +
+                                        "' is a volume; normals are defined on a surface (run "
+                                        "extract_surface first)");
+        const bool polygon = type.rfind("polygon", 0) == 0;
+        if (!polygon && cell_type_dimension(ct) == 2 && ct != CellType::Triangle &&
+            ct != CellType::Quad)
+            throw std::invalid_argument(std::string(kNrmPrefix) + "cell block '" + type +
+                                        "' is a higher-order surface cell (run linearize first)");
+    }
+    if (!rRegion.empty() && rMesh.FindRegion(rRegion, RegionKind::Cell) == Mesh::npos) {
+        std::string names;
+        for (const std::string& n : rMesh.RegionNames())
+            names += (names.empty() ? "" : ", ") + n;
+        throw std::invalid_argument(std::string(kNrmPrefix) + "no cell region named '" + rRegion +
+                                    "' (available: " + (names.empty() ? "none" : names) + ")");
+    }
+}
+
+// The point data of the input, gathered onto the split layout: originals
+// verbatim, each copy from its parent's row.
+NDArray nrm_gather_rows(const NDArray& rArray, std::size_t N, std::size_t NOut,
+                        const std::vector<std::int64_t>& rParentOfNew) {
+    std::vector<std::size_t> shape = rArray.Shape();
+    shape[0] = NOut;
+    NDArray out = NDArray::Uninit(rArray.Dtype(), std::move(shape));
+    std::memcpy(out.Data(), rArray.Data(), rArray.Nbytes());
+    const std::size_t row_bytes = rArray.Nbytes() / N;
+    for (std::size_t k = 0; k < rParentOfNew.size(); ++k)
+        std::memcpy(out.Data() + (N + k) * row_bytes,
+                    rArray.Data() + static_cast<std::size_t>(rParentOfNew[k]) * row_bytes,
+                    row_bytes);
+    return out;
+}
+
+}  // namespace
+
+NormalsResult compute_normals(const Mesh& rMesh, const NormalsOptions& rOptions) {
+    if (rOptions.mSplit && !(rOptions.mSplitAngle >= 0.0 && rOptions.mSplitAngle <= 180.0))
+        throw std::invalid_argument(std::string(kNrmPrefix) +
+                                    "the split angle must lie in [0, 180] degrees");
+    nrm_check_surface(rMesh, rOptions.mRegion);
+
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
+    NormalsResult result;
+    result.mQuality = detail::soup_quality(soup);
+
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t ntri = soup.NumTriangles();
+    const detail::VertexNormalGroups groups = detail::vertex_normal_groups(
+        soup, rOptions.mWeight, rOptions.mSplit ? rOptions.mSplitAngle : -1.0);
+    result.mNumDegenerate = groups.mNumDegenerate;
+
+    // A group with no direction (only degenerate triangles) cannot be given a
+    // normal, so it is not worth a copy of its point: it folds into the point's
+    // primary group, the first defined one.
+    const std::size_t ngroups = groups.NumGroups();
+    auto defined = [&](std::size_t g) {
+        const Vec3& v = groups.mGroupNormal[g];
+        return v[0] != 0.0 || v[1] != 0.0 || v[2] != 0.0;
+    };
+    std::vector<std::int64_t> primary(n, -1);
+    for (std::size_t g = 0; g < ngroups; ++g) {
+        std::int64_t& slot = primary[static_cast<std::size_t>(groups.mGroupPoint[g])];
+        if (slot < 0 && defined(g))
+            slot = static_cast<std::int64_t>(g);
+    }
+    for (std::size_t g = 0; g < ngroups; ++g) {
+        std::int64_t& slot = primary[static_cast<std::size_t>(groups.mGroupPoint[g])];
+        if (slot < 0)
+            slot = static_cast<std::int64_t>(g);
+    }
+
+    // Output index of every group: its own point for the primary group (and for
+    // an undefined one), a new appended point for any other defined group.
+    std::vector<std::int64_t> group_point(ngroups);
+    std::vector<std::int64_t> parent_of_new;
+    std::vector<char> has_copy(n, 0);
+    for (std::size_t g = 0; g < ngroups; ++g) {
+        const std::int64_t p = groups.mGroupPoint[g];
+        if (static_cast<std::int64_t>(g) == primary[static_cast<std::size_t>(p)] || !defined(g)) {
+            group_point[g] = p;
+        } else {
+            group_point[g] = static_cast<std::int64_t>(n + parent_of_new.size());
+            parent_of_new.push_back(p);
+            has_copy[static_cast<std::size_t>(p)] = 1;
+        }
+    }
+    const std::size_t n_added = parent_of_new.size();
+    const std::size_t n_out = n + n_added;
+    result.mNumAddedPoints = static_cast<std::int64_t>(n_added);
+    result.mNumSplitPoints =
+        static_cast<std::int64_t>(std::count(has_copy.begin(), has_copy.end(), char{1}));
+
+    // The point normals.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    NDArray point_normals(DType::Float64, {n_out, std::size_t{3}});
+    double* pn = point_normals.As<double>();
+    for (std::size_t i = 0; i < n_out * 3; ++i)
+        pn[i] = nan;
+    for (std::size_t g = 0; g < ngroups; ++g) {
+        const std::int64_t p = groups.mGroupPoint[g];
+        const bool is_primary =
+            static_cast<std::int64_t>(g) == primary[static_cast<std::size_t>(p)];
+        if (!is_primary && group_point[g] == p)
+            continue;  // an undefined group folded into the primary one
+        if (!defined(g))
+            continue;  // stays NaN
+        const std::size_t row = static_cast<std::size_t>(group_point[g]);
+        for (std::size_t k = 0; k < 3; ++k)
+            pn[row * 3 + k] = groups.mGroupNormal[g][k];
+    }
+    for (std::size_t p = 0; p < n; ++p) {
+        if (primary[p] < 0)
+            ++result.mNumIsolated;
+        else if (!defined(static_cast<std::size_t>(primary[p])))
+            ++result.mNumUndefined;
+    }
+
+    // Cell normals: the sum of each cell's fan crosses (Newell), normalised.
+    std::vector<Vec3> cell_sum;
+    std::vector<std::int64_t> first_tri;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t ncells_total = static_cast<std::size_t>(detail::total_cells(bases));
+    if (rOptions.mCellNormals || n_added > 0) {
+        first_tri.assign(ncells_total, -1);
+        cell_sum.assign(ncells_total, Vec3{0.0, 0.0, 0.0});
+        const std::vector<Vec3> face = detail::soup_face_normals(soup);
+        for (std::size_t t = 0; t < ntri; ++t) {
+            const std::size_t c = static_cast<std::size_t>(soup.mSourceCell[t]);
+            if (first_tri[c] < 0)
+                first_tri[c] = static_cast<std::int64_t>(t);
+            cell_sum[c] = detail::vec3_add(cell_sum[c], face[t]);
+        }
+    }
+
+    if (n_added == 0) {
+        result.mMesh = detail::clone_mesh(rMesh);
+    } else {
+        // Rebuild with the corners of every selected cell pointed at their
+        // group's point. Cells the soup did not take (lines, vertices, other
+        // regions, degenerate rows) keep their original ids.
+        Mesh out;
+        const NDArray& pts = rMesh.Points();
+        const std::size_t dim = rMesh.PointDim();
+        NDArray new_pts = NDArray::Uninit(pts.Dtype(), {n_out, dim});
+        std::memcpy(new_pts.Data(), pts.Data(), pts.Nbytes());
+        const std::size_t row_bytes = pts.Nbytes() / n;
+        for (std::size_t k = 0; k < n_added; ++k)
+            std::memcpy(new_pts.Data() + (n + k) * row_bytes,
+                        pts.Data() + static_cast<std::size_t>(parent_of_new[k]) * row_bytes,
+                        row_bytes);
+        out.AssignPoints(std::move(new_pts));
+
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::int64_t base = bases[bi++];
+            const std::size_t ncells = cb.NumCells();
+            auto corner_point = [&](std::size_t t, std::size_t i) {
+                return group_point[static_cast<std::size_t>(groups.mCornerGroup[t * 3 + i])];
+            };
+            // The rewritten ids of one cell, given its original ids.
+            auto rewrite = [&](std::size_t c, std::vector<std::int64_t>& rIds) {
+                const std::int64_t t0 = first_tri[static_cast<std::size_t>(base) + c];
+                if (t0 < 0 || rIds.size() < 3)
+                    return;
+                const std::size_t t = static_cast<std::size_t>(t0);
+                const std::size_t nv = rIds.size();
+                rIds[0] = corner_point(t, 0);
+                for (std::size_t k = 1; k + 1 < nv; ++k)
+                    rIds[k] = corner_point(t + k - 1, 1);
+                rIds[nv - 1] = corner_point(t + nv - 3, 2);
+            };
+            if (cb.IsRagged()) {
+                std::vector<std::vector<std::int64_t>> rows(ncells);
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    rows[c].assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+                    rewrite(c, rows[c]);
+                }
+                out.AddPolygonBlock(std::string(cb.Type()), std::move(rows));
+            } else {
+                const NDArray& conn = cb.Conn();
+                const std::size_t npc = cb.NodesPerCell();
+                NDArray new_conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+                std::vector<std::int64_t> ids(npc);
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    for (std::size_t i = 0; i < npc; ++i)
+                        ids[i] = detail::read_int(conn, c * npc + i);
+                    rewrite(c, ids);
+                    for (std::size_t i = 0; i < npc; ++i)
+                        detail::write_int(new_conn, c * npc + i, ids[i]);
+                }
+                out.AddCellBlock(std::string(cb.Type()), std::move(new_conn));
+            }
+        }
+
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const NDArray& a = rMesh.PointData(name);
+            out.AddPointData(name, (detail::rows(a) == n && n > 0)
+                                       ? nrm_gather_rows(a, n, n_out, parent_of_new)
+                                       : detail::data_owned_copy(a));
+        }
+        for (const std::string& name : rMesh.CellDataNames()) {
+            std::vector<NDArray> blocks;
+            for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+                blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
+            out.AddCellData(name, std::move(blocks));
+        }
+        for (const std::string& name : rMesh.FieldDataNames())
+            out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+        // Regions: cell numbering is untouched, so everything rides through,
+        // and a copy joins its source's Point regions.
+        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+            const meshioplusplus::Region& r = rMesh.Region(i);
+            if (r.mKind != RegionKind::Point) {
+                out.AddRegion(r);
+                continue;
+            }
+            std::vector<std::int64_t> entries(r.mEntries.Size());
+            for (std::size_t e = 0; e < entries.size(); ++e)
+                entries[e] = detail::read_int(r.mEntries, e);
+            const std::size_t original = entries.size();
+            for (std::size_t k = 0; k < n_added; ++k)
+                if (std::binary_search(entries.begin(), entries.begin() + original,
+                                       parent_of_new[k]))
+                    entries.push_back(static_cast<std::int64_t>(n + k));
+            meshioplusplus::Region nr = r;
+            nr.mEntries = NDArray::Uninit(DType::Int64, {entries.size()});
+            std::memcpy(nr.mEntries.Data(), entries.data(), entries.size() * sizeof(std::int64_t));
+            out.AddRegion(std::move(nr));
+        }
+        for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+            out.AddPropertySet(rMesh.GetPropertySet(i));
+        result.mMesh = std::move(out);
+    }
+
+    if (rOptions.mPointNormals)
+        result.mMesh.AddPointData(kNormalsName, std::move(point_normals));
+
+    if (rOptions.mCellNormals) {
+        std::vector<NDArray> blocks;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t bi = blocks.size();
+            const std::size_t ncells = cb.NumCells();
+            NDArray a(DType::Float64, {ncells, std::size_t{3}});
+            double* d = a.As<double>();
+            for (std::size_t c = 0; c < ncells; ++c) {
+                const std::size_t global = static_cast<std::size_t>(bases[bi]) + c;
+                const Vec3& s = cell_sum[global];
+                const double len = detail::vec3_norm(s);
+                for (std::size_t k = 0; k < 3; ++k)
+                    d[c * 3 + k] = (first_tri[global] >= 0 && len > 0.0) ? s[k] * (1.0 / len) : nan;
+            }
+            blocks.push_back(std::move(a));
+        }
+        result.mMesh.AddCellData(kNormalsName, std::move(blocks));
+    }
+
+    if (rOptions.mRecordParentIds) {
+        NDArray parent = NDArray::Uninit(DType::Int64, {n_out});
+        std::int64_t* dst = parent.As<std::int64_t>();
+        for (std::size_t i = 0; i < n; ++i)
+            dst[i] = static_cast<std::int64_t>(i);
+        for (std::size_t k = 0; k < n_added; ++k)
+            dst[n + k] = parent_of_new[k];
+        result.mMesh.AddPointData(kNormalsParentPointName, std::move(parent));
+    }
+
+    if (result.mQuality.mInconsistentPairs != 0 && !rOptions.mSplit)
+        log::warn(
+            "normals: {} edge pair(s) wind the same way, so the normals there average faces "
+            "that disagree about which side is out; run repair(mesh, {{.mFixOrientation = true}}) "
+            "first",
+            result.mQuality.mInconsistentPairs);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/normals.cpp =====
 // ===== begin src/cpp/src/operations/optimize_volume.cpp =====
 #include <algorithm>
 #include <array>
@@ -98149,6 +98877,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Curvature",
          {"Mean", "Gaussian", "DualArea", "IncludeBoundary", "RecordArea", "RecordPrincipal",
           "Region"}},
+        {"Normals",
+         {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -98615,6 +99345,33 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 " edge pair(s) wind the same way, so the sign of 'curvature:mean' is not "
                 "trustworthy");
         return std::move(cr.mMesh);
+    }
+    if (op == "Normals") {
+        // An absent SplitAngle means one smooth normal per point; a number is
+        // the crease angle in degrees, and the split appends points.
+        NormalsOptions opts;
+        opts.mPointNormals = pipe_flag(rStep, "PointNormals", true);
+        opts.mCellNormals = pipe_flag(rStep, "CellNormals", false);
+        opts.mWeight = sdf_weight_from_name(pipe_text(rStep, "Weight", "angle"));
+        if (pipe_find(rStep, "SplitAngle")) {
+            opts.mSplit = true;
+            opts.mSplitAngle = pipe_number(rStep, "SplitAngle", 30.0);
+        }
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        NormalsResult nr = compute_normals(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumIsolated", static_cast<double>(nr.mNumIsolated)},
+                        {"NumUndefined", static_cast<double>(nr.mNumUndefined)},
+                        {"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
+                        {"NumSplitPoints", static_cast<double>(nr.mNumSplitPoints)},
+                        {"NumAddedPoints", static_cast<double>(nr.mNumAddedPoints)}});
+        if (nr.mQuality.mInconsistentPairs > 0 && !opts.mSplit)
+            rReport.mWarnings.push_back(
+                "normals: " + std::to_string(nr.mQuality.mInconsistentPairs) +
+                " edge pair(s) wind the same way, so the normals there average faces that "
+                "disagree about which side is out");
+        return std::move(nr.mMesh);
     }
     if (op == "Repair") {
         RepairOptions opts;

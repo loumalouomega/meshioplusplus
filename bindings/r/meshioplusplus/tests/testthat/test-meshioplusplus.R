@@ -1089,6 +1089,39 @@ test_that("remesh_volume retetrahedralizes by isosurface stuffing", {
   expect_error(mio_remesh_volume(cube))
 })
 
+test_that("compute_normals gives smooth or split normals", {
+  # The unit cube surface (12 consistently wound triangles): one smooth normal
+  # per point, or 24 points once split at a 30 degree crease.
+  conn <- matrix(c(
+    1, 3, 2, 1, 4, 3, 5, 6, 7, 5, 7, 8,
+    1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6,
+    3, 4, 8, 3, 8, 7, 4, 1, 5, 4, 5, 8
+  ), nrow = 3)
+  m <- mio_mesh()
+  on.exit(mio_release(m))
+  mio_set_points(m, matrix(c(
+    0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1
+  ), nrow = 3))
+  mio_add_cell_block(m, "triangle", conn)
+
+  smooth <- mio_compute_normals(m)
+  on.exit(mio_release(smooth$mesh), add = TRUE)
+  expect_equal(mio_num_points(smooth$mesh), 8)
+  expect_equal(smooth$num_added_points, 0)
+  expect_true(smooth$quality$watertight)
+
+  split <- mio_compute_normals(m, split_angle = 30, cell_normals = TRUE,
+                               record_parent_ids = TRUE)
+  on.exit(mio_release(split$mesh), add = TRUE)
+  expect_equal(mio_num_points(split$mesh), 24)
+  expect_equal(split$num_added_points, 16)
+  expect_equal(split$num_split_points, 8)
+
+  expect_error(mio_compute_normals(m, weight = "bogus"), "unknown weight")
+  expect_error(mio_compute_normals(m, split_angle = 270))
+})
+
 test_that("repair rewinds, fills and splits a surface", {
   # The cube surface with two facets flipped: exactly those two are rewound
   # and the output is watertight with no point added.
