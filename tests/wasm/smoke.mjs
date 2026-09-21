@@ -1336,7 +1336,7 @@ step('computeNormals splits a closed surface at its creases', () => {
     assert.equal(smooth.numAddedPoints, 0);
     assert.equal(smooth.quality.watertight, true);
     const split = m.computeNormals(skin, true, true, 'angle', 30, true);
-    assert.equal(split.mesh.points.length, 24);
+    assert.equal(split.mesh.points.length / 3, 24); // `points` is flat: 3 numbers per point
     assert.equal(split.numAddedPoints, 16);
     assert.equal(split.numSplitPoints, 8);
     assert.ok(split.mesh.point_data['normals']);
