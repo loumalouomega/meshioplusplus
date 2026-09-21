@@ -599,6 +599,55 @@ def tool_convert(
     return _result(resolved, mesh, output_format=out_fmt)
 
 
+def tool_export_gltf(
+    input_path,
+    output_path,
+    input_format=None,
+    split_angle=30.0,
+    normal_weight="angle",
+    normals=True,
+    fields=True,
+    color_by=None,
+    component=None,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    nan_color="#808080",
+    unlit=True,
+    up_axis="auto",
+    recenter=True,
+    scale=1.0,
+    by_region=True,
+    container="auto",
+):
+    """Export a mesh's surface as glTF 2.0 (.glb, or .gltf plus a .bin beside
+    it), for the web, three.js, Blender and dashboards. `convert` writes the
+    same format with the defaults; this exposes the options."""
+    mesh = _load(input_path, input_format)
+    resolved = _store(
+        mesh,
+        output_path,
+        "gltf",
+        split_angle=split_angle,
+        normal_weight=normal_weight,
+        normals=normals,
+        fields=fields,
+        color_by=color_by,
+        component=component,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        nan_color=nan_color,
+        unlit=unlit,
+        up_axis=up_axis,
+        recenter=recenter,
+        scale=scale,
+        by_region=by_region,
+        container=container,
+    )
+    return _result(resolved, mesh, colored=bool(color_by))
+
+
 def _resolve_pattern(pattern):
     """Resolve a glob pattern inside the sandbox and return its matched files.
 
@@ -3218,6 +3267,10 @@ TOOL_REGISTRY = OrderedDict(
         ("data_preview", {"fn": tool_data_preview, "wraps": (), "gated": None}),
         ("diff", {"fn": tool_diff, "wraps": ("diff", "meshes_equal"), "gated": None}),
         ("convert", {"fn": tool_convert, "wraps": ("read", "write"), "gated": None}),
+        (
+            "export_gltf",
+            {"fn": tool_export_gltf, "wraps": ("write",), "gated": None},
+        ),
         (
             "pipeline",
             {"fn": tool_pipeline, "wraps": ("run_pipeline",), "gated": None},

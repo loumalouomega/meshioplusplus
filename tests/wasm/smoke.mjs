@@ -1305,6 +1305,28 @@ step('computeCurvature satisfies Gauss-Bonnet on a closed surface', () => {
     assert.throws(() => m.computeCurvature(skin, true, true, 'nope'));
 });
 
+step('gltf is a write-only format that writes a valid GLB header', () => {
+    const skin = m.extractSurface(cube);
+    // The suffix picks the binary container; there is no reader.
+    m.writeMesh('/cube.glb', skin);
+    const bytes = m.FS.readFile('/cube.glb');
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    assert.equal(view.getUint32(0, true), 0x46546C67); // 'glTF'
+    assert.equal(view.getUint32(4, true), 2);
+    assert.equal(view.getUint32(8, true), bytes.byteLength);
+    assert.equal(view.getUint32(16, true), 0x4E4F534A); // the JSON chunk first
+    const jsonLength = view.getUint32(12, true);
+    const json = JSON.parse(Buffer.from(bytes.subarray(20, 20 + jsonLength)).toString('utf8'));
+    assert.ok(json.asset.generator.startsWith('Written by meshio++'));
+    assert.equal(json.meshes[0].primitives[0].mode, 4);
+    const formats = m.availableFormats ? m.availableFormats() : null;
+    if (formats) {
+        assert.ok(formats.writers.includes('gltf'));
+        assert.ok(!formats.readers.includes('gltf'));
+    }
+    assert.throws(() => m.readMesh('/cube.glb'));
+});
+
 step('computeNormals splits a closed surface at its creases', () => {
     // The cube's boundary skin: 8 corners smooth, 24 once split at 30 degrees,
     // and every split normal is axis-aligned.

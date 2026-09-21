@@ -1089,6 +1089,45 @@ jobs:
         run: python -m pytest tests/python/test_pmsh.py tests/python/test_zarr.py tests/python/test_cae.py tests/python/test_usd.py -v
 
   # --------------------------------------------------------------------------
+  # glTF output against the Khronos glTF-Validator (the `gltf-validator` npm
+  # package, a JS build of the reference validator) and against trimesh, an
+  # independent loader. The default `test` matrix runs test_gltf.py's decoding
+  # and byte-parity halves; this job adds the validator half, and
+  # MESHIOPLUSPLUS_REQUIRE_GLTF_VALIDATOR turns "the validator is not here" from
+  # a skip into a failure, so the check cannot rot quietly.
+  # --------------------------------------------------------------------------
+  gltf-validator:
+    name: glTF (Khronos validator, trimesh)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install the glTF-Validator
+        run: npm install --prefix "$RUNNER_TEMP/gltf-validator" gltf-validator@2.0.0-dev.3.10
+
+      - name: Install meshio++ and trimesh
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[interop]" trimesh pytest
+
+      - name: glTF tests, validator required
+        env:
+          MESHIOPLUSPLUS_GLTF_VALIDATOR: ${{ runner.temp }}/gltf-validator
+          MESHIOPLUSPLUS_REQUIRE_GLTF_VALIDATOR: "1"
+        run: python -m pytest tests/python/test_gltf.py -v
+
+  # --------------------------------------------------------------------------
   # The MCP server with its extra installed. The default `test` matrix keeps
   # exercising test_mcp.py's pure half (the payload layer, the sandbox, the
   # parity guard) with the `mcp` SDK absent -- that split is the point; this

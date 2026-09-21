@@ -38,7 +38,6 @@
 #include "meshioplusplus/detail/surface_normals.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 

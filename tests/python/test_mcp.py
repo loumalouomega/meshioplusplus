@@ -608,6 +608,33 @@ def test_normals(mesh_file, tmp_path):
         _tools.tool_normals(mesh_file, str(tmp_path / "x.vtu"))
 
 
+def test_export_gltf(tmp_path):
+    src = str(tmp_path / "in.vtu")
+    meshioplusplus.write(
+        src,
+        meshioplusplus.Mesh(
+            np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float),
+            [("tetra", np.array([[0, 1, 2, 3]]))],
+            point_data={"t": np.linspace(0.0, 1.0, 4)},
+        ),
+    )
+    out = _dump(_tools.tool_export_gltf(src, str(tmp_path / "out.glb"), color_by="t"))
+    assert out["colored"] is True
+    data = (tmp_path / "out.glb").read_bytes()
+    assert data[:4] == b"glTF"
+
+    plain = _dump(_tools.tool_export_gltf(src, str(tmp_path / "plain.gltf")))
+    assert plain["colored"] is False
+    assert (tmp_path / "plain.bin").exists()
+
+    # `convert` reaches the same writer with the defaults
+    _dump(_tools.tool_convert(src, str(tmp_path / "conv.glb")))
+    assert (tmp_path / "conv.glb").read_bytes()[:4] == b"glTF"
+
+    with pytest.raises(ValueError, match="split_angle"):
+        _tools.tool_export_gltf(src, str(tmp_path / "bad.glb"), split_angle=400)
+
+
 def test_data_condition(mesh_file, tmp_path):
     out_path = str(tmp_path / "cond.vtu")
     _dump(

@@ -113,6 +113,7 @@
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/formats/vtk.hpp"
@@ -312,7 +313,7 @@ void write_pcd_in_place(const std::string& rPath, const Mesh& rMesh, meshioplusp
 /// The formats `--color-by` applies to. Everything else errors rather than
 /// silently ignoring the flags.
 bool cli_is_colorable_format(const std::string& rFormat) {
-    return rFormat == "svg" || rFormat == "tikz";
+    return rFormat == "svg" || rFormat == "tikz" || rFormat == "gltf";
 }
 
 /// Write `rMesh` as a data-coloured SVG/TikZ figure, bypassing the registry
@@ -612,6 +613,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"vmax", {}, true},
                                   {"nan-color", {}, true},
                                   {"colorbar", {}, false},
+                                  {"split-angle", {}, true},
+                                  {"up-axis", {}, true},
                                   {"input", {}, true},
                                   {"times", {}, true},
                                   {"time-from", {}, true},
@@ -686,9 +689,17 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         return convert_sequence(p, infile, outfile, in_fmt, out_fmt, opts, ascii, float_fmt,
                                 extra_inputs);
 
-    // Data-driven colouring (svg/tikz only). Validated before the read so a bad
-    // flag combination fails immediately rather than after loading a big mesh.
+    // Data-driven colouring (svg/tikz/gltf) and the glTF-only options. Validated
+    // before the read so a bad flag combination fails immediately rather than
+    // after loading a big mesh.
     const bool color = has_opt(p, "color-by");
+    const bool gltf_flags = has_opt(p, "split-angle") || has_opt(p, "up-axis");
+    std::string target_fmt;
+    if (color || gltf_flags)
+        target_fmt = meshioplusplus::resolve_format(outfile, out_fmt);
+    if (gltf_flags && target_fmt != "gltf")
+        throw std::runtime_error("--split-angle/--up-axis only apply to glTF output, not '" +
+                                 target_fmt + "'");
     if (!color) {
         for (const char* flag : {"component", "cmap", "vmin", "vmax", "nan-color"})
             if (has_opt(p, flag))
@@ -696,30 +707,49 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
         if (has_flag(p, "colorbar"))
             throw std::runtime_error("--colorbar requires --color-by");
     } else {
-        const std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
-        if (!cli_is_colorable_format(fmt))
-            throw std::runtime_error("--color-by is only supported for svg/tikz output, not '" +
-                                     fmt + "'");
+        if (!cli_is_colorable_format(target_fmt))
+            throw std::runtime_error(
+                "--color-by is only supported for svg/tikz/gltf output, not '" + target_fmt + "'");
         if (ascii)
-            throw std::runtime_error("--ascii has no meaning for " + fmt + " output");
+            throw std::runtime_error("--ascii has no meaning for " + target_fmt + " output");
+        if (target_fmt == "gltf" && has_flag(p, "colorbar"))
+            throw std::runtime_error("--colorbar has no meaning for gltf output (svg/tikz only)");
     }
 
     Mesh mesh = read_mesh_cli(infile, in_fmt, opts);
 
+    std::optional<int> component;
+    std::optional<double> vmin;
+    std::optional<double> vmax;
     if (color) {
-        const std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
-        std::optional<int> component;
         if (has_opt(p, "component"))
             component = std::stoi(opt_value(p, "component"));
-        std::optional<double> vmin;
         if (has_opt(p, "vmin"))
             vmin = meshioplusplus::detail::stod_c(opt_value(p, "vmin"));
-        std::optional<double> vmax;
         if (has_opt(p, "vmax"))
             vmax = meshioplusplus::detail::stod_c(opt_value(p, "vmax"));
-        const std::string cmap = has_opt(p, "cmap") ? opt_value(p, "cmap") : "viridis";
-        write_colored_variant(outfile, mesh, fmt, opt_value(p, "color-by"), component, cmap, vmin,
-                              vmax, opt_value(p, "nan-color"), has_flag(p, "colorbar"));
+    }
+    const std::string cmap = has_opt(p, "cmap") ? opt_value(p, "cmap") : "viridis";
+
+    if (target_fmt == "gltf" && (color || gltf_flags)) {
+        meshioplusplus::GltfWriteOptions gltf;
+        if (has_opt(p, "split-angle"))
+            gltf.mSplitAngle = meshioplusplus::detail::stod_c(opt_value(p, "split-angle"));
+        if (has_opt(p, "up-axis"))
+            gltf.mUpAxis = meshioplusplus::gltf_up_axis_from_name(opt_value(p, "up-axis"));
+        if (color) {
+            gltf.mColorBy = opt_value(p, "color-by");
+            gltf.mComponent = component;
+            gltf.mCmap = cmap;
+            gltf.mVMin = vmin;
+            gltf.mVMax = vmax;
+            if (has_opt(p, "nan-color"))
+                gltf.mNanColor = opt_value(p, "nan-color");
+        }
+        meshioplusplus::write_gltf(outfile, mesh, gltf);
+    } else if (color) {
+        write_colored_variant(outfile, mesh, target_fmt, opt_value(p, "color-by"), component, cmap,
+                              vmin, vmax, opt_value(p, "nan-color"), has_flag(p, "colorbar"));
     } else if (ascii) {
         std::string fmt = meshioplusplus::resolve_format(outfile, out_fmt);
         if (!write_binary_variant(outfile, mesh, fmt, /*binary=*/false, float_fmt))

@@ -49,7 +49,7 @@ meshioplusplus convert a.vtu --input b.vtu out.xdmf     # pre-expanded argv
 
 Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step input aimed at a single-step output is an **error** naming `{step}` and `--time-step`, never a silent write of step 0 — pass `--time-step=N` when you genuinely want one step.
 
-**Data-driven colouring** (SVG/TikZ output only):
+**Data-driven colouring** (SVG/TikZ/glTF output only):
 
 | Option | Description |
 |--------|-------------|
@@ -58,9 +58,16 @@ Ordering is natural-numeric, so `out_10.vtu` follows `out_9.vtu`. A multi-step i
 | `--cmap NAME` | `viridis` (default), `coolwarm` or `turbo` |
 | `--vmin V` / `--vmax V` | Colour range (default: the drawn faces' finite range) |
 | `--nan-color C` | Colour for NaN/infinite values (default: `#808080` / `gray`) |
-| `--colorbar` | Append a gradient bar with min/max labels |
+| `--colorbar` | Append a gradient bar with min/max labels (SVG/TikZ only) |
 
-Point data colours a face by the mean of its corner values, cell data by its owning cell's value — for a volume mesh, found through the skin's `surface:parent_cell` provenance. `--color-by` with any other output format is an error, as is any of the modifier flags without `--color-by`. See the [SVG](./formats/svg.md#data-driven-colouring) and [TikZ](./formats/tikz.md) format pages for the full semantics.
+Point data colours a face by the mean of its corner values, cell data by its owning cell's value — for a volume mesh, found through the skin's `surface:parent_cell` provenance. For glTF output the array is baked into the linear `COLOR_0` vertex colour of the exported surface — point data per vertex, cell data per triangle — and the material becomes unlit; see [glTF](./formats/gltf.md). `--color-by` with any other output format is an error, as is any of the modifier flags without `--color-by`. See the [SVG](./formats/svg.md#data-driven-colouring) and [TikZ](./formats/tikz.md) format pages for the full semantics.
+
+**glTF output options** (`.glb`/`.gltf` only; either is an error for any other output format):
+
+| Option | Description |
+|--------|-------------|
+| `--split-angle DEG` | Duplicate vertices where the surface creases by more than `DEG` degrees, `0` to `180` (default `30`) |
+| `--up-axis {auto,x,y,z}` | The source axis that points up (default `auto`: `y` for a flat mesh, else `z`) |
 
 **Examples:**
 
@@ -75,9 +82,13 @@ meshioplusplus convert mesh.msh skin.stl   # volume mesh -> boundary-skin STL
 meshioplusplus convert mesh.vtu figure.svg --color-by temperature --colorbar
 meshioplusplus convert mesh.vtu figure.tikz --color-by damage --cmap coolwarm \
     --vmin 0 --vmax 1
+
+# a web-native surface (glTF), coloured by a field
+meshioplusplus convert result.vtu result.glb --color-by temperature --cmap turbo
+meshioplusplus convert part.vtu part.glb --split-angle 45 --up-axis z
 ```
 
-Converting a 3D volume mesh to STL or PLY writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
+Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
 ---
 

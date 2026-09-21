@@ -1247,7 +1247,7 @@ export interface MeshioPlusPlusModule {
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
    * "convert to" menu: the two lists genuinely differ (`openfoam` is
-   * read-only, `svg` and `tikz` are write-only), and the set depends on how
+   * read-only, `svg`, `tikz` and `gltf` are write-only), and the set depends on how
    * the artifact was built -- an official build carries the HDF5/netCDF-backed
    * formats, one built with `--without-hdf5` does not.
    */

@@ -37,3 +37,7 @@ Float64 points plus one `vertex` block — what [`subsample_points`](../point_bu
 ## Notes
 
 - The C++ core and the Python reference are byte-identical (same header comment, same float formatting).
+
+## Web output
+
+An XYZ cloud is a `vertex` block (or no cells at all), which the [glTF writer](./gltf.md) turns into a `POINTS` primitive, keeping the `normals` point data as `NORMAL` and every other point array as a raw `_NAME` attribute: `meshioplusplus convert cloud.xyz cloud.glb` puts a scanned cloud on the web. Run [`compute_normals`](../normals.md) first when the cloud has none.

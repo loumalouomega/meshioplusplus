@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -767,6 +768,8 @@ TEST(CApi, ErrorPaths) {
     // are write-only, so pick the mirror case -- a read-only key no longer
     // exists in the registry at all.
     EXPECT_EQ(mio_read("mesh.svg", "svg"), nullptr);
+    // glTF is write-only too: it writes a binary container, and cannot be read back.
+    EXPECT_EQ(mio_read("mesh.glb", "gltf"), nullptr);
 
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
     // Compiled-out formats name the missing dependency.
@@ -776,6 +779,31 @@ TEST(CApi, ErrorPaths) {
 
     mio_mesh_free(m);
     mio_mesh_free(nullptr);  // NULL-safe
+}
+
+TEST(CApi, WritesGltfThroughTheRegistry) {
+    mio_mesh* m = build_tet_mesh();
+    const std::string glb = std::string(::testing::TempDir()) + "capi_mesh.glb";
+    ASSERT_EQ(mio_write(glb.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    std::FILE* f = std::fopen(glb.c_str(), "rb");
+    ASSERT_NE(f, nullptr);
+    char magic[4] = {0, 0, 0, 0};
+    ASSERT_EQ(std::fread(magic, 1, 4, f), 4u);
+    std::fclose(f);
+    EXPECT_EQ(std::string(magic, 4), "glTF");
+    // The suffix picks the container: a .gltf is JSON, with the .bin beside it.
+    const std::string gltf = std::string(::testing::TempDir()) + "capi_mesh.gltf";
+    ASSERT_EQ(mio_write(gltf.c_str(), m, "gltf"), MIO_OK) << mio_last_error();
+    f = std::fopen(gltf.c_str(), "rb");
+    ASSERT_NE(f, nullptr);
+    char brace = 0;
+    ASSERT_EQ(std::fread(&brace, 1, 1, f), 1u);
+    std::fclose(f);
+    EXPECT_EQ(brace, '{');
+    std::remove(glb.c_str());
+    std::remove(gltf.c_str());
+    std::remove((std::string(::testing::TempDir()) + "capi_mesh.bin").c_str());
+    mio_mesh_free(m);
 }
 
 TEST(CApi, StringBufferProtocol) {

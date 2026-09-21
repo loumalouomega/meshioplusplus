@@ -248,6 +248,74 @@ def _register_conversion(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def export_gltf(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        split_angle: float = 30.0,
+        normal_weight: str = "angle",
+        normals: bool = True,
+        fields: bool = True,
+        color_by: Optional[str] = None,
+        component: Optional[int] = None,
+        cmap: str = "viridis",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        nan_color: str = "#808080",
+        unlit: bool = True,
+        up_axis: str = "auto",
+        recenter: bool = True,
+        scale: float = 1.0,
+        by_region: bool = True,
+        container: str = "auto",
+    ) -> dict:
+        """Export the surface of a mesh as glTF 2.0 -- a web-native format
+        three.js, Blender, model viewers and dashboards load directly. A .glb
+        output_path writes the binary container; .gltf writes JSON with a .bin
+        beside it (container overrides the suffix).
+
+        The skin of volume cells, 2-D cells, line cells (LINES) and vertex
+        cells or a cell-less point cloud (POINTS) are exported, one named node
+        per cell region. glTF normals are per vertex, so points are duplicated
+        where the surface creases by more than split_angle degrees (0-180;
+        normal_weight angle|area; normals=false writes none). Every one-to-four
+        component point_data array is exported raw as a custom attribute
+        (temperature -> _TEMPERATURE); fields=false skips them. color_by names
+        a point_data or cell_data array to bake into COLOR_0 through cmap
+        (viridis|coolwarm|turbo) over vmin..vmax (default: the finite range of
+        what is exported), with an unlit material unless unlit=false;
+        multi-component arrays reduce to component or their magnitude and
+        non-finite values take nan_color (#rrggbb). The output is Y-up,
+        right-handed, float32: up_axis (auto|x|y|z) names the source axis that
+        points up (auto is y for a flat mesh, else z), and that rotation, scale
+        (source unit to metres) and the bounding-box centre recenter subtracts
+        all live on the root node, not in the coordinates, so the transform is
+        exactly reversible. Write-only; a valid glTF-Validator pass with zero
+        errors and warnings is part of the test suite."""
+        return _guard(
+            _tools.tool_export_gltf,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            split_angle=split_angle,
+            normal_weight=normal_weight,
+            normals=normals,
+            fields=fields,
+            color_by=color_by,
+            component=component,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            nan_color=nan_color,
+            unlit=unlit,
+            up_axis=up_axis,
+            recenter=recenter,
+            scale=scale,
+            by_region=by_region,
+            container=container,
+        )
+
+    @server.tool()
     def pipeline(
         settings_path: str,
         input_path: Optional[str] = None,

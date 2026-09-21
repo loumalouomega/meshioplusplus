@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
@@ -262,6 +263,9 @@ const std::map<std::string, WriteFn>& registry_writers() {
         // svg/tikz are write-only 2D-visualization formats; the flat bindings
         // emit them with the fixed default styling (per-call overrides are out
         // of scope for v1, per registry.hpp).
+        // glTF is write-only too; .glb/.gltf are told apart by the writer, so the
+        // flat bindings write the container the suffix names with the defaults.
+        {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
         {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
         {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
         {"tecplot", meshioplusplus::write_tecplot},
@@ -461,6 +465,8 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".ply", "ply"},
         {".stl", "stl"},
         {".su2", "su2"},
+        {".glb", "gltf"},
+        {".gltf", "gltf"},
         {".svg", "svg"},
         {".tikz", "tikz"},
         // .node/.ele stay with tetgen for backward compatibility (3D pairs
