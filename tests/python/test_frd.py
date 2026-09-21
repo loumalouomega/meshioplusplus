@@ -485,7 +485,9 @@ def edit(tmp_path, transform, source="c3d8"):
 
 class TestNumberSpellings:
     def test_crlf_files_read_like_lf_ones(self, engine, tmp_path):
-        text = (FIXTURES / "mixed.frd").read_bytes().replace(b"\n", b"\r\n")
+        # a Windows checkout may already hold CRLF fixtures: normalise, then convert
+        raw = (FIXTURES / "mixed.frd").read_bytes().replace(b"\r\n", b"\n")
+        text = raw.replace(b"\n", b"\r\n")
         path = tmp_path / "crlf.frd"
         path.write_bytes(text)
         for step in (0, 1):
@@ -494,6 +496,12 @@ class TestNumberSpellings:
             assert canon(a) == canon(b)
             for key in b.point_data:
                 np.testing.assert_array_equal(a.point_data[key], b.point_data[key])
+
+    def test_doubled_carriage_returns_are_not_blank_lines(self, engine, tmp_path):
+        raw = (FIXTURES / "mixed.frd").read_bytes().replace(b"\r\n", b"\n")
+        path = tmp_path / "cr.frd"
+        path.write_bytes(raw.replace(b"\n", b"\r\r\n"))
+        assert canon(engine(str(path))) == canon(engine(path_of("mixed")))
 
     def test_fortran_exponents_and_special_values(self, engine, tmp_path):
         def spell(t):

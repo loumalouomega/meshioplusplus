@@ -378,8 +378,9 @@ def _decode(source):
             data = data.decode("utf-8", errors="replace")
         return data
     try:
-        with open(source, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
+        # binary, so no newline translation: a stray "\r\r\n" must not become a blank line
+        with open(source, "rb") as f:
+            return f.read().decode("utf-8", errors="replace")
     except OSError as exc:
         raise _err(f"could not read {source}: {exc}") from None
 
