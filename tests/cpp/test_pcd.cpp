@@ -24,6 +24,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 
@@ -86,7 +87,12 @@ TEST(Pcd, EveryDataModeRoundTrips) {
         EXPECT_TRUE(back.HasPointData("normals"));
         EXPECT_TRUE(back.HasPointData("rgb"));
         EXPECT_TRUE(back.HasPointData("intensity"));
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_MESHIO)
         EXPECT_EQ(back.PointData("rgb").Dtype(), meshioplusplus::DType::UInt8);
+#else
+        // NATIVE and KRATOS widen every integer array to Int64 on ingest: assert the kind.
+        EXPECT_FALSE(meshioplusplus::detail::is_float_dtype(back.PointData("rgb").Dtype()));
+#endif
         std::error_code ec;
         std::filesystem::remove(path, ec);
     }
@@ -160,7 +166,8 @@ TEST(Pcd, ViewpointIsRecordedNeverApplied) {
                    "DATA ascii\n"
                    "1 2 3\n");
     const meshioplusplus::Mesh back = meshioplusplus::read_pcd(path);
-    EXPECT_EQ(back.Points().As<float>()[0], 1.0f);
+    // read_double, not As<float>: NATIVE and KRATOS store the points as double.
+    EXPECT_EQ(meshioplusplus::detail::read_double(back.Points(), 0), 1.0);
     EXPECT_TRUE(back.HasFieldData("pcd:viewpoint"));
     std::error_code ec;
     std::filesystem::remove(path, ec);

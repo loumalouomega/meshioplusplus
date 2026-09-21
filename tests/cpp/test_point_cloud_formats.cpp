@@ -140,7 +140,13 @@ TEST(PcdIo, WritesFloat32ByDefaultAndFloat64OnRequest) {
     meshioplusplus::write_pcd(b, cloud(), PcdData::Binary, true);
     EXPECT_NE(slurp(a).find("SIZE 4 4 4"), std::string::npos);
     EXPECT_NE(slurp(b).find("SIZE 8 8 8"), std::string::npos);
-    EXPECT_EQ(meshioplusplus::read_pcd(a).Points().Dtype(), DType::Float32);
+    const NDArray points = meshioplusplus::read_pcd(a).Points();
+    EXPECT_TRUE(meshioplusplus::detail::is_float_dtype(points.Dtype()));
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_MESHIO)
+    // The file's SIZE 4 is kept as float32 only where the backend keeps the dtype: NATIVE and
+    // KRATOS widen every float array to double on ingest.
+    EXPECT_EQ(points.Dtype(), DType::Float32);
+#endif
     std::remove(a.c_str());
     std::remove(b.c_str());
 }
