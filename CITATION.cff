@@ -22,6 +22,15 @@ license: MIT
 # notice and licence text alongside it. BSD-3-Clause is permissive and imposes
 # no obligation on the rest of this repository. See that directory's README.md.
 #
+# Third-party test data: tests/python/meshes/pcd/*.pcd are files from the Point Cloud
+# Library's own test corpus (https://github.com/PointCloudLibrary/pcl, test/),
+# Copyright (c) 2009-2012 Willow Garage, Inc. and (c) 2012- Open Perception, Inc.,
+# redistributed unmodified under the BSD-3-Clause licence, whose text sits beside them as
+# LICENSE.PCL. BSD-3-Clause is permissive and imposes no obligation on the rest of this
+# repository. The `pcd` reader/writer (src/cpp/src/formats/pcd.cpp, src/python/
+# meshioplusplus/pcd/) implements the published PCD v0.7 layout; its LZF codec is an
+# independent implementation of the liblzf stream format, and no liblzf code is copied.
+#
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/
 # sell it, but distributing it or a modified version must stay GPL-3.0 with

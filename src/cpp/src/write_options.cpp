@@ -31,6 +31,7 @@
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/vti.hpp"
@@ -38,6 +39,7 @@
 #include "meshioplusplus/formats/vtp.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/formats/xdmf.hpp"
+#include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 
@@ -48,9 +50,9 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "ply" ||
-           rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" ||
-           rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "pcd" ||
+           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
+           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -70,7 +72,7 @@ bool wopt_has_codec(const std::string& rFormat) {
 
 /// Formats whose ASCII writer takes a float format string.
 bool wopt_has_float_format(const std::string& rFormat) {
-    return rFormat == "flac3d";
+    return rFormat == "flac3d" || rFormat == "xyz";
 }
 
 }  // namespace
@@ -129,6 +131,8 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_flac3d(rPath, rMesh, r_ff, binary);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
+    } else if (fmt == "pcd") {
+        write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
     } else if (fmt == "ply") {
         write_ply(rPath, rMesh, binary, /*skin=*/true);
     } else if (fmt == "stl") {
@@ -154,6 +158,8 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_vtp_codec(rPath, rMesh, binary, codec);
     } else if (fmt == "xdmf") {
         write_xdmf(rPath, rMesh, binary ? "HDF" : "XML");
+    } else if (fmt == "xyz") {
+        write_xyz(rPath, rMesh, rOptions.mFloatFormat);
     } else if (wopt_is_text_only(fmt)) {
         if (binary)
             throw WriteError("meshio++: format '" + fmt +

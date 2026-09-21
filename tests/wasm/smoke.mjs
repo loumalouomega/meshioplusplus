@@ -2289,6 +2289,9 @@ step('availableFormats reports what this build can read and write', () => {
     // .vtm (VTK XML MultiBlock), same tier, part 3 of 3: an index plus one
     // .vtu piece per cell block. Both directions.
     assert.ok(readers.includes('vtm') && writers.includes('vtm'));
+    // Point-cloud files (roadmap section 1.1, v15.1.0): PCL's .pcd and headerless .xyz.
+    for (const fmt of ['pcd', 'xyz'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {
@@ -2358,6 +2361,47 @@ step('.vtm writes an index plus one .vtu piece per cell block, and reads two blo
     const piece0 = m.readMesh('/blocks/blocks_0.vtu');
     const piece1 = m.readMesh('/blocks/blocks_1.vtu');
     assert.deepEqual([piece0.cells[0].type, piece1.cells[0].type], ['tetra', 'triangle']);
+});
+
+step('.pcd round-trips a point cloud through MEMFS and the format is picked by extension', () => {
+    // Every value is exactly representable in float32, the precision the PCD
+    // writer defaults to (PCL's typed loaders accept nothing else).
+    const cloud = {
+        points: new Float64Array([0.5, 1, -2, 3, 4, 5]),
+        dim: 3,
+        cells: [{ type: 'vertex', data: [0, 1], nodesPerCell: 1 }],
+        point_data: { intensity: new Float64Array([0.25, 0.75]) },
+    };
+    m.writeMesh('/cloud.pcd', cloud);
+    const back = m.readMesh('/cloud.pcd');
+    assert.equal(back.cells.length, 1);
+    assert.equal(back.cells[0].type, 'vertex');
+    assert.deepEqual(Array.from(back.points), [0.5, 1, -2, 3, 4, 5]);
+    assert.deepEqual(Array.from(back.point_data.intensity), [0.25, 0.75]);
+    // ...and a hand-written ASCII file.
+    m.FS.writeFile(
+        '/hand.pcd',
+        'VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 2\n' +
+            'HEIGHT 1\nPOINTS 2\nDATA ascii\n1 2 3\n4 5 6\n',
+    );
+    assert.deepEqual(Array.from(m.readMesh('/hand.pcd').points), [1, 2, 3, 4, 5, 6]);
+    assert.throws(() => m.readMesh('/nonexistent.pcd'));
+});
+
+step('.xyz reads its column layouts and refuses chemistry XYZ by name', () => {
+    m.FS.writeFile('/cloud.xyz', '# x y z\n1 2 3\n4 5 6\n');
+    assert.deepEqual(Array.from(m.readMesh('/cloud.xyz').points), [1, 2, 3, 4, 5, 6]);
+    m.FS.writeFile('/counted.pts', '2\n1 2 3\n4 5 6\n');
+    assert.equal(m.readMesh('/counted.pts').cells[0].data.length, 2);
+    m.FS.writeFile('/water.xyz', '3\nwater\nO 0 0 0\nH 0.7 0 0.7\nH -0.7 0 0.7\n');
+    assert.throws(() => m.readMesh('/water.xyz'), /chemistry/);
+    const cloud = {
+        points: new Float64Array([0.5, 1, -2]),
+        dim: 3,
+        cells: [{ type: 'vertex', data: [0], nodesPerCell: 1 }],
+    };
+    m.writeMesh('/out.xyz', cloud);
+    assert.deepEqual(Array.from(m.readMesh('/out.xyz').points), [0.5, 1, -2]);
 });
 
 step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => {

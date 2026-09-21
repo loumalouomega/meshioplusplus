@@ -940,7 +940,6 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                (".xyz · .pcd point clouds", "S"),
                 ("LS-DYNA .k · CalculiX .frd", "M"),
                 ("glTF export", "S"),
             ],

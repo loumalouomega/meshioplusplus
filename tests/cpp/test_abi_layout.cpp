@@ -67,8 +67,10 @@
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
+#include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -269,6 +271,16 @@ MIO_ABI_LAYOUT(meshioplusplus::SobolevOptions, 112, 8);
 // struct above: it embeds a `Mesh`, whose size is per-backend.
 MIO_ABI_LAYOUT(meshioplusplus::SmoothOptions, 80, 8);
 
+// The point-cloud option structs (v15.1.0, additions, ABI unchanged). PcdReadOptions is one
+// bool; XyzReadOptions is a `std::vector<std::string>` plus a `std::string`. PcdData is an
+// `int`-sized scoped enum: appending an enumerator is fine, changing its width is not.
+MIO_ABI_LAYOUT(meshioplusplus::PcdReadOptions, 1, 1);
+MIO_ABI_LAYOUT(meshioplusplus::XyzReadOptions, 56, 8);
+static_assert(sizeof(meshioplusplus::PcdData) == sizeof(int),
+              "meshio++ ABI: PcdData's underlying type changed width. Appending "
+              "enumerators is safe and expected; changing the underlying type is a "
+              "Tier A break (doc/abi.md).");
+
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
 // its width is structural, not cosmetic. Appending an enumerator is fine (and
 // deliberately not caught here); widening the underlying type is not.
@@ -331,6 +343,8 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
+    report<meshioplusplus::PcdReadOptions>("PcdReadOptions");
+    report<meshioplusplus::XyzReadOptions>("XyzReadOptions");
     report<meshioplusplus::PipelineStep>("PipelineStep");
     report<meshioplusplus::PipelineInput>("PipelineInput");
     report<meshioplusplus::PipelineOutput>("PipelineOutput");

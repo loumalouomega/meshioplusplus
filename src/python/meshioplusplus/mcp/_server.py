@@ -230,7 +230,8 @@ def _register_conversion(server: FastMCP) -> None:
         or one part of a .pvd step) instead of the merged mesh; ghosts=drop
         removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd. mode selects ascii|binary output where the format
         supports it; compression selects zlib|lz4|zstd|lzma (VTU/VTP block
-        codecs), gzip (CGNS/H5M/VTKHDF/XDMF) or 'none' to decompress."""
+        codecs), gzip (CGNS/H5M/VTKHDF/XDMF), lzf (PCD binary_compressed) or
+        'none' to decompress."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,

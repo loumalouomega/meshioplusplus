@@ -458,6 +458,7 @@ _ASCII_VARIANT = {
     "flac3d": {"binary": False},
     "gmsh": {"binary": False},
     "mdpa": {"binary": False},
+    "pcd": {"binary": False},
     "ply": {"binary": False},
     "stl": {"binary": False},
     "vtk": {"binary": False},
@@ -469,6 +470,7 @@ _BINARY_VARIANT = {
     "flac3d": {"binary": True},
     "gmsh": {"binary": True},
     "mdpa": {"binary": True},
+    "pcd": {"binary": True},
     "ply": {"binary": True},
     "stl": {"binary": True},
     "vtk": {"binary": True},
@@ -516,6 +518,12 @@ def _variant_kwargs(out_fmt, mode, compression):
                 "block codec and only vti/vts/vtr/vtm/vtu/vtp/pvd/pvtu/pvtp have one"
             )
         kwargs.update({"binary": True, "compression": compression})
+    elif compression == "lzf":
+        if out_fmt != "pcd":
+            raise ValueError(
+                f"meshio++: mcp: lzf compression applies to pcd, not '{out_fmt}'"
+            )
+        kwargs.update({"data": "binary_compressed"})
     elif compression == "gzip":
         if out_fmt in ("cgns", "h5m", "vtkhdf"):
             kwargs.update({"compression": "gzip", "compression_opts": 4})
@@ -543,7 +551,7 @@ def _variant_kwargs(out_fmt, mode, compression):
     else:
         raise ValueError(
             f"meshio++: mcp: unknown compression '{compression}' (expected one of "
-            f"{list(_BLOCK_CODECS)}, 'gzip' or 'none')"
+            f"{list(_BLOCK_CODECS)}, 'gzip', 'lzf' or 'none')"
         )
     return kwargs
 

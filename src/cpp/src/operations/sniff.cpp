@@ -133,6 +133,11 @@ std::string sniff_format(const std::string& rPath) {
     if (sniff_starts_with(stripped, "OFF") || sniff_starts_with(stripped, "COFF") ||
         sniff_starts_with(stripped, "NOFF") || sniff_starts_with(stripped, "STOFF"))
         return "off";
+    // PCL point clouds: the writer's first line is "# .PCD v0.7 - ...", and a header with
+    // its comments stripped opens on VERSION.
+    if (sniff_starts_with(stripped, "# .PCD") ||
+        (sniff_starts_with(stripped, "VERSION") && sniff_contains(head, "\nFIELDS")))
+        return "pcd";
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";

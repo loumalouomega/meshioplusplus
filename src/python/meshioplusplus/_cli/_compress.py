@@ -1,7 +1,7 @@
 import os
 import pathlib
 
-from .. import ansys, cgns, gmsh, h5m, mdpa, ply, stl, vtk, vtp, vtu, xdmf
+from .. import ansys, cgns, gmsh, h5m, mdpa, pcd, ply, stl, vtk, vtp, vtu, xdmf
 from .._common import error
 from .._helpers import _filetypes_from_path, read, reader_map
 
@@ -77,6 +77,9 @@ def compress(args):
         )
     elif fmt == "mdpa":
         mdpa.write(args.infile, mesh, binary=True)
+    elif fmt == "pcd":
+        # LZF over the struct-of-arrays layout, the one compression PCD defines.
+        pcd.write(args.infile, mesh, data="binary_compressed", point_dtype="keep")
     elif fmt == "ply":
         ply.write(args.infile, mesh, binary=True)
     elif fmt == "stl":

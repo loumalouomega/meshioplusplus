@@ -25,6 +25,8 @@ import pytest
 import meshioplusplus
 from meshioplusplus.mcp import TOOL_REGISTRY, _tools
 
+from . import helpers
+
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                    #
 # --------------------------------------------------------------------------- #
@@ -220,6 +222,26 @@ def test_convert_variant_errors(mesh_file, tmp_path):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtk"), compression="zstd")
     with pytest.raises(ValueError, match="unknown mode"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.vtu"), mode="fast")
+
+
+def test_convert_pcd_variants(tmp_path):
+    src = str(tmp_path / "in.pcd")
+    meshioplusplus.write(src, helpers.point_cloud_mesh)
+    for kwargs, marker in (
+        ({"mode": "ascii"}, b"DATA ascii"),
+        ({"mode": "binary"}, b"DATA binary\n"),
+        ({"compression": "lzf"}, b"DATA binary_compressed"),
+    ):
+        out = _dump(_tools.tool_convert(src, str(tmp_path / "out.pcd"), **kwargs))
+        with open(out["output_path"], "rb") as f:
+            assert marker in f.read()
+        assert out["num_points"] == 40
+    with pytest.raises(ValueError, match="lzf compression applies to pcd"):
+        _tools.tool_convert(src, str(tmp_path / "a.vtu"), compression="lzf")
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _tools.tool_convert(
+            src, str(tmp_path / "a.pcd"), mode="ascii", compression="lzf"
+        )
 
 
 def _has_vtkhdf():

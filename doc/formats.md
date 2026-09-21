@@ -36,6 +36,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
 | [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — |
+| [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — |
@@ -62,11 +63,14 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
+| [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — |
 | [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) |
 
 **Note on directory formats:** `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a target with no extension needs an explicit `file_format=`, and none of the three can be read from or written to a buffer. A glob over such a set — `read_sequence("out_*.pmsh")` — matches them, which an ordinary file glob would not.
 
 **Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**. They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
+
+**Note on the point-cloud formats (`pcd`, `xyz`)** (v15.1.0): both map to the points plus one `vertex` block, exactly what [`subsample_points`](./point_budgets.md) emits, so `.pcd` → `subsample` → `proximity-graph` → `.vtu` runs from the CLI with no intermediate format. `pcd` is PCL's v0.7 layout in all three `DATA` modes (`ascii`, `binary`, `binary_compressed`), with `rgb`/`rgba` unpacked by bit-cast and `normal_x/y/z` gathered into `normals`; `xyz` is a headerless convention, so its columns are resolved from a `columns=` list, a header comment, the column count and extension, or the value ranges, and an ambiguous file is an error rather than a guess. Chemistry XYZ (atom count, comment, `element x y z`) shares the extension and is refused by name. `.txt` and `.asc` now resolve to `xyz`. LAS/LAZ and E57 are out of scope.
 
 **Note on `.msh`:** `ansys`, `freefem`, and `gmsh` all use `.msh`. When writing without an explicit `file_format`, meshio++ picks `gmsh` if the mesh carries gmsh-native tags (`gmsh:physical`/`gmsh:geometrical`/`gmsh:dim_tags`) or MED-derived tags (`cell_tags`/`point_tags`/`med:*`), else falls back to the first registered candidate (`ansys`). When reading, meshio++ tries the registered formats in order and uses the first that parses the file. Specify `file_format` explicitly (e.g. `file_format="freefem"`) to avoid ambiguity either way.
 
@@ -152,6 +156,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `obj` | `#` prefix | Top of file | Yes |
 | `off` | `#` prefix | After the `OFF` magic line | Yes |
 | `openfoam` | C-style `/* ... */`; the `FoamFile` banner's fixed-width credit cell is this writer's own convention | Top of file, inside the banner box | Yes (C++ writer only — no Python twin) |
+| `pcd` | `#` prefix (the header's own comment syntax) | After the `# .PCD v0.7` first line, before `VERSION` | Yes |
 | `permas` | `!` prefix | Top of file | Yes |
 | `ply` | `comment ` prefix (the format's own keyword) | Anywhere in the header, before `end_header` | Yes |
 | `pmsh` | None — a memmap directory has no free-text field, and a sidecar would add a file upstream's own loader never wrote | n/a | — |
@@ -176,6 +181,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `vtu` | XML `<!-- -->` | Anywhere in the document | Yes |
 | `wkt` | None (the OGC WKT grammar has no comment token) | n/a | — |
 | `xdmf` | XML `<!-- -->` | Anywhere in the document | — |
+| `xyz` | `#` prefix | Top of file, before the `# x y z ...` column header | Yes |
 | `zarr` | The root group's `meshioplusplus:provenance` attribute (plain JSON) | Store metadata; recovered without importing zarr | Yes |
 
 Two formats carry a related but **structurally distinct** record that this table does not count as "the tag": `med`'s `DES` mesh-description field defaults to `"Mesh created with meshio++"` (both engines agree; user-overridable, so it is data, not a fixed credit) and `unv`'s dataset-2414 field-header records always read `meshioplusplus` on five fixed ID lines (a label field the format requires, not a comment).
@@ -380,6 +386,26 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 ### OpenFOAM (`.foam`)
 
 `meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh)` — no extra options. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer).
+
+### PCD (`.pcd`)
+
+```python
+meshioplusplus.pcd.write(filename, mesh,
+    data=None,             # "ascii", "binary" (default) or "binary_compressed"
+    point_dtype="float32", # "float32" (PCL's), "float64" or "keep"
+    binary=True,           # picks binary/ascii when data is omitted
+)
+meshioplusplus.pcd.read(filename, drop_invalid=False)  # drop the points with a non-finite coordinate
+```
+
+### XYZ (`.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt`)
+
+```python
+meshioplusplus.xyz.write(filename, mesh,
+    float_fmt=None,   # e.g. ".16e"; default ".9g" for float32 columns, ".17g" otherwise
+)
+meshioplusplus.xyz.read(filename, columns=None, delimiter=None)  # columns: ["x", "y", "z", "nx", ...]
+```
 
 ### CGNS (`.cgns`)
 
