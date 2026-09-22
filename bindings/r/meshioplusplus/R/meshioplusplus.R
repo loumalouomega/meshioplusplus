@@ -1447,6 +1447,9 @@ mio_partition_labels <- function(mesh, nparts, method = "auto", imbalance = 0.03
 #' @param nan_policy `"ignore"`, `"replace"` or `"fail"`. Non-finite values are
 #'   always excluded from reductions regardless.
 #' @param nan_replacement Used when `nan_policy` is `"replace"`.
+#' @param outputs Any of `"mises"`, `"principal"`, `"hydrostatic"`,
+#'   `"deviatoric"`; `NULL` or `character(0)` means all four.
+#' @param prefix Prepended to every output array's name.
 #' @return A new `mio_mesh`, except `mio_data_info()`, which returns a list of
 #'   per-array summaries.
 #' @export
@@ -1536,6 +1539,30 @@ mio_data_condition <- function(mesh, location, names = NULL, cond_mode = "clamp"
 #' @rdname mio_data_drop
 #' @export
 mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
+
+#' @rdname mio_data_drop
+#' @export
+mio_tensor_invariants <- function(mesh, location, names = NULL, outputs = NULL,
+                                  prefix = NULL, suffix = NULL, overwrite = TRUE) {
+  flags <- c(mises = 1L, principal = 2L, hydrostatic = 4L, deviatoric = 8L)
+  mask <- if (is.null(outputs) || length(outputs) == 0) {
+    15L
+  } else {
+    unmatched <- setdiff(outputs, names(flags))
+    if (length(unmatched) > 0) {
+      stop(
+        "`outputs` entries must be \"mises\", \"principal\", \"hydrostatic\" or ",
+        "\"deviatoric\", got \"", unmatched[1], "\""
+      )
+    }
+    Reduce(bitwOr, flags[outputs])
+  }
+  .Call(
+    R_mio_tensor_invariants, mesh, .mio_location(location),
+    if (is.null(names)) NULL else as.character(names), as.integer(mask),
+    prefix, suffix, isTRUE(overwrite)
+  )
+}
 
 #' Cell-measure-weighted field integration
 #'

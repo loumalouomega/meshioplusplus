@@ -22,7 +22,7 @@ program test_fortran_api
     integer(int64), allocatable :: node_perm(:)
     logical :: perm_ok, eq
     integer :: verdict
-    real(real64) :: points(3, 5), vec(3, 5)
+    real(real64) :: points(3, 5), vec(3, 5), sarr(6, 5)
     real(real64), allocatable :: rpoints(:, :), rdata(:), rvec(:, :)
     real(real64), pointer :: pview(:, :)
     integer(int64) :: conn(4, 2)
@@ -282,6 +282,35 @@ program test_fortran_api
             end if
         end do
         call check(saw, 'data_info named the temperature array')
+    end block
+
+    ! tensor invariants (adds 'stress' to m; later counts below use m%num_point_data() only via '>')
+    block
+        real(real64), allocatable :: mises(:), hydro(:)
+        do j = 1, 5
+            sarr(:, j) = [1.0_real64, 2.0_real64, 3.0_real64, 0.5_real64, 0.6_real64, 0.7_real64]
+        end do
+        call m%add_point_data('stress', sarr)
+
+        d = m%tensor_invariants(MIO_DATA_POINT, ['stress'], &
+                                outputs=ior(MIO_TINV_MISES, MIO_TINV_HYDROSTATIC), stat=ierr)
+        call check(ierr == 0, 'tensor_invariants succeeds')
+        call d%get_point_data('stress_mises', mises)
+        call check(abs(mises(1) - sqrt(0.5_real64*((1.0_real64 - 2.0_real64)**2 + &
+                                                    (2.0_real64 - 3.0_real64)**2 + &
+                                                    (3.0_real64 - 1.0_real64)**2 + &
+                                                    6.0_real64*(0.5_real64**2 + 0.6_real64**2 + &
+                                                                0.7_real64**2)))) < 1.0e-10_real64, &
+                   'tensor_invariants mises matches the closed form')
+        call d%get_point_data('stress_hydrostatic', hydro)
+        call check(abs(hydro(1) - 2.0_real64) < 1.0e-12_real64, &
+                   'tensor_invariants hydrostatic is the mean diagonal')
+        call d%free()
+
+        ierr = 0
+        d = m%tensor_invariants(MIO_DATA_FIELD, stat=ierr, errmsg=msg)
+        call check(ierr /= 0, 'tensor_invariants rejects field_data')
+        call check(len(msg) > 0, 'tensor_invariants failure sets errmsg')
     end block
 
     ! field integration -- gradient's counterpart (total/mean over cells)

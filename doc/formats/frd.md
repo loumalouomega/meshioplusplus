@@ -90,7 +90,7 @@ Increments are told apart by their frame id as well as their value, because the 
 | `<NAME>_mises` | `sqrt(½((xx−yy)² + (yy−zz)² + (zz−xx)²) + 3(xy² + yz² + zx²))`, the formula of [ccx2paraview](https://github.com/calculix/ccx2paraview), also for strains |
 | `<NAME>_principal` | `(n, 3)`, the eigenvalues in ascending order (min, mid, max) |
 
-Both are NaN where any of the six components is. `derived` is an argument of the format's own reader (`meshioplusplus.frd.read`, `_core.frd_read`, `read_frd(path, options, FrdReadOptions{})` in C++): the generic `read`, the CLIs, the MCP server and the C, Fortran, Julia, R and WASM surfaces do not carry it. Where it is needed there, read the tensor and derive with your own tool for now.
+Both are NaN where any of the six components is. `derived` is an argument of the format's own reader (`meshioplusplus.frd.read`, `_core.frd_read`, `read_frd(path, options, FrdReadOptions{})` in C++) and calls the shared [`tensor_invariants`](../tensor_invariants.md) operation internally, keeping these two output names for backward compatibility; the generic `read`, the CLIs, the MCP server and the C, Fortran, Julia, R and WASM surfaces do not carry the `derived` flag itself, but `tensor_invariants` reaches every one of them and also adds `hydrostatic` and `deviatoric`. Where `derived` is not available, read the raw tensor and run `tensor_invariants` on it.
 
 ## Record layout
 

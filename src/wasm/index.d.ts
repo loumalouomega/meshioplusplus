@@ -634,6 +634,9 @@ export type CellPointWeight = 'uniform' | 'measure';
  *  excluded from reductions regardless of this setting. */
 export type NanPolicy = 'ignore' | 'replace' | 'fail';
 
+/** `tensorInvariants`' selectable outputs. See doc/tensor_invariants.md. */
+export type TensorInvariantOutput = 'mises' | 'principal' | 'hydrostatic' | 'deviatoric';
+
 /** Cell-keeping rule for the crop operations: every node inside, or any. */
 export type CropMode = 'all' | 'any';
 
@@ -2320,6 +2323,23 @@ export interface MeshioPlusPlusModule {
     nanPolicy?: NanPolicy,
     nanReplacement?: number,
     suffix?: string,
+  ): Mesh;
+
+  /**
+   * von Mises / principal / hydrostatic / deviatoric fields of a symmetric
+   * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component,
+   * row-major) tensor array. `mises`/`principal` use the symmetric part of a
+   * 9-component input. `names` empty processes every 6- or 9-component array
+   * at `location` (`'field'` throws). `outputs` empty means all four.
+   */
+  tensorInvariants(
+    mesh: Mesh,
+    location: DataLocation,
+    names?: string[],
+    outputs?: TensorInvariantOutput[],
+    prefix?: string,
+    suffix?: string,
+    overwrite?: boolean,
   ): Mesh;
 
   /** Read-only per-array summary of every data array the mesh carries. */

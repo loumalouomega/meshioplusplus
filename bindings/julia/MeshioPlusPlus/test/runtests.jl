@@ -902,6 +902,29 @@ end
     close(m)
 end
 
+@testset "tensor invariants" begin
+    m = fixture()
+    add_point_data!(m, "stress",
+                    Float64[1.0 1.0 1.0 1.0 1.0
+                            2.0 2.0 2.0 2.0 2.0
+                            3.0 3.0 3.0 3.0 3.0
+                            0.5 0.5 0.5 0.5 0.5
+                            0.6 0.6 0.6 0.6 0.6
+                            0.7 0.7 0.7 0.7 0.7])
+
+    inv = tensor_invariants(m, :point, ["stress"]; outputs=[:mises, :hydrostatic])
+    mises = point_data(inv, "stress_mises")
+    expect = sqrt(0.5 * ((1.0 - 2.0)^2 + (2.0 - 3.0)^2 + (3.0 - 1.0)^2 +
+                         6.0 * (0.5^2 + 0.6^2 + 0.7^2)))
+    @test mises[1] ≈ expect
+    @test point_data(inv, "stress_hydrostatic")[1] ≈ 2.0
+    @test !("stress_principal" in point_data_names(inv))
+    close(inv)
+
+    @test_throws Exception tensor_invariants(m, :field)
+    close(m)
+end
+
 @testset "field integration (data_integrate)" begin
     m = fixture()
     add_region!(m, "solid", :cell, [1]; dim=3, tag=17)

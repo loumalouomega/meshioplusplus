@@ -21,6 +21,8 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError
 from .._mesh import Mesh
+from .._tensor_invariants import _mises as _ti_mises
+from .._tensor_invariants import _principal as _ti_principal
 
 TIME_KEY = "meshio:time"
 
@@ -343,32 +345,12 @@ class _Frd:
         return values[:, 0] if nc == 1 else values
 
 
-def _mises(t):
-    xx, yy, zz, xy, yz, xz = (t[:, k] for k in range(6))
-    return np.sqrt(
-        0.5
-        * (
-            (xx - yy) ** 2
-            + (yy - zz) ** 2
-            + (zz - xx) ** 2
-            + 6.0 * (xy**2 + yz**2 + xz**2)
-        )
-    )
-
-
-def _principal(t):
-    """Eigenvalues of the symmetric tensors, ascending (min, mid, max)."""
-    out = np.full((len(t), 3), np.nan)
-    ok = np.isfinite(t).all(axis=1)
-    if ok.any():
-        s = t[ok]
-        m = np.empty((len(s), 3, 3))
-        m[:, 0, 0], m[:, 1, 1], m[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
-        m[:, 0, 1] = m[:, 1, 0] = s[:, 3]
-        m[:, 1, 2] = m[:, 2, 1] = s[:, 4]
-        m[:, 0, 2] = m[:, 2, 0] = s[:, 5]
-        out[ok] = np.linalg.eigvalsh(m)
-    return out
+# The eigensolver used to live here as private `_mises`/`_principal`; it now
+# backs the public `tensor_invariants` operation as well, so both callers
+# share `meshioplusplus._tensor_invariants` instead of drifting apart. The
+# names stay as thin aliases so the call sites below read unchanged.
+_mises = _ti_mises
+_principal = _ti_principal
 
 
 def _decode(source):

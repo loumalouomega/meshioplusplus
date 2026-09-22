@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -2654,6 +2655,24 @@ mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location location,
         opts.nan_replacement = nan_replacement;
         opts.suffix = suffix ? suffix : "";
         return new mio_mesh{meshioplusplus::data_condition(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_tensor_invariants(const mio_mesh* mesh, mio_data_location location,
+                                const char* const* names, int64_t count, int outputs,
+                                const char* prefix, const char* suffix, int overwrite) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::TensorInvariantsOptions opts;
+        opts.location = data_location_of(location);
+        opts.names = data_name_list(names, count);
+        opts.outputs = static_cast<meshioplusplus::TensorInvariant>(outputs == 0 ? MIO_TINV_ALL
+                                                                                 : outputs);
+        opts.prefix = prefix ? prefix : "";
+        opts.suffix = suffix ? suffix : "";
+        opts.overwrite = overwrite != 0;
+        return new mio_mesh{meshioplusplus::tensor_invariants(mesh->mMesh, opts)};
     });
 }
 

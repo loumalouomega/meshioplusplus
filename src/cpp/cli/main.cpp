@@ -69,6 +69,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/region.hpp"
@@ -3032,6 +3033,48 @@ int cmd_data_condition_impl(const std::vector<std::string>& rArgs, bool clamp) {
     return 0;
 }
 
+// `data invariants` derives von Mises / principal / hydrostatic / deviatoric
+// fields from a symmetric (6-component) or general 3x3 (9-component) tensor
+// array. See doc/tensor_invariants.md.
+int cmd_data_invariants(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"point", {}, true});
+    specs.push_back({"cell", {}, true});
+    specs.push_back({"outputs", {}, true});
+    specs.push_back({"prefix", {}, true});
+    specs.push_back({"suffix", {}, true});
+    specs.push_back({"no-overwrite", {}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data invariants requires exactly INFILE and OUTFILE");
+    if (has_opt(p, "point") == has_opt(p, "cell"))
+        throw std::runtime_error("data invariants requires exactly one of --point NAMES or --cell NAMES");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::TensorInvariantsOptions opts;
+    const bool cell = has_opt(p, "cell");
+    opts.location = cell ? meshioplusplus::DataLocation::Cell : meshioplusplus::DataLocation::Point;
+    opts.names = data_split_names(opt_value(p, cell ? "cell" : "point"));
+    opts.outputs = has_opt(p, "outputs") ? meshioplusplus::tensor_invariant_from_name(opt_value(p, "outputs"))
+                                         : meshioplusplus::TensorInvariant::All;
+    opts.prefix = opt_value(p, "prefix");
+    opts.suffix = opt_value(p, "suffix");
+    opts.overwrite = !has_flag(p, "no-overwrite");
+
+    mesh = meshioplusplus::tensor_invariants(mesh, opts);
+    std::cout << "computed invariants for " << meshioplusplus::data_location_name(opts.location)
+              << " ";
+    if (opts.names.empty()) {
+        std::cout << "(all tensor-shaped)";
+    } else {
+        for (std::size_t k = 0; k < opts.names.size(); ++k)
+            std::cout << (k ? ", " : "") << opts.names[k];
+    }
+    std::cout << "\n";
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_data_clamp(const std::vector<std::string>& rArgs) {
     return cmd_data_condition_impl(rArgs, /*clamp=*/true);
 }
@@ -3391,6 +3434,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_clamp(rest);
     if (sub == "normalize")
         return cmd_data_normalize(rest);
+    if (sub == "invariants")
+        return cmd_data_invariants(rest);
     if (sub == "gradient")
         return cmd_data_gradient(rest);
     if (sub == "hessian")

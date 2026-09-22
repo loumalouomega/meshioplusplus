@@ -164,6 +164,7 @@ export default defineConfig({
           { text: "Location averaging", link: "/data_average" },
           { text: "Expressions (calc)", link: "/data_calc" },
           { text: "Value conditioning", link: "/data_condition" },
+          { text: "Tensor invariants", link: "/tensor_invariants" },
           { text: "Data summary", link: "/data_info" },
         ],
       },

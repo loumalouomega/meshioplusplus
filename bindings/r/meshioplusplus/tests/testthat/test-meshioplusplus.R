@@ -780,6 +780,25 @@ test_that("data operations never touch geometry", {
   expect_equal(temp$num_nan, 0)
 })
 
+test_that("mio_tensor_invariants: von Mises / principal / hydrostatic / deviatoric", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  # xx yy zz xy yz zx, repeated once per point (5 points).
+  stress <- matrix(rep(c(1, 2, 3, 0.5, 0.6, 0.7), 5), nrow = 6)
+  mio_add_point_data(m, "stress", stress)
+
+  inv <- mio_tensor_invariants(m, "point", "stress", outputs = c("mises", "hydrostatic"))
+  on.exit(mio_release(inv), add = TRUE)
+  expect_equal(
+    as.vector(mio_point_data(inv, "stress_mises"))[1],
+    sqrt(0.5 * ((1 - 2)^2 + (2 - 3)^2 + (3 - 1)^2 + 6 * (0.5^2 + 0.6^2 + 0.7^2)))
+  )
+  expect_equal(as.vector(mio_point_data(inv, "stress_hydrostatic"))[1], 2)
+  expect_false("stress_principal" %in% mio_point_data_names(inv))
+
+  expect_error(mio_tensor_invariants(m, "field"), "field_data")
+})
+
 test_that("field integration (mio_data_integrate) totals/means over cells", {
   m <- fixture()
   on.exit(mio_release(m))

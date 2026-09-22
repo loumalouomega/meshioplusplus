@@ -77,6 +77,7 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 | `DataRename` | `Point`/`Cell`/`Field`, entries `"OLD:NEW"` (split on the **last** colon — names carry colons: `gmsh:physical`) | |
 | `DataCalc` | `Expr` (`"NAME = EXPRESSION"`, split on the **first** `=`), `Location` ("point"), `Overwrite` (false) | |
 | `DataCondition` | `Mode` ("clamp" \| "normalize" \| "standardize"), `Location` ("point"), `Names`, `Scope` ("component" \| "magnitude"), `Lo` (0), `Hi` (1), `NanPolicy` ("ignore"), `NanReplacement` (0), `Suffix` | |
+| `TensorInvariants` | `Location` ("point"), `Names` (every 6- or 9-component array by default), `Outputs` ("mises,principal,hydrostatic,deviatoric" by default), `Prefix`, `Suffix`, `Overwrite` (true) | |
 | `ToCell` / `ToPoint` | `Names`; `ToPoint` also `Weight` ("uniform" \| "measure") | |
 
 ## Sequences (transient / multi-file runs)

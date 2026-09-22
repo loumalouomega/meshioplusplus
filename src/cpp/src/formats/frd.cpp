@@ -32,6 +32,7 @@
 // Project includes
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -437,50 +438,6 @@ private:
     }
 };
 
-double frd_mises(const double* pT) {
-    const double xx = pT[0], yy = pT[1], zz = pT[2], xy = pT[3], yz = pT[4], xz = pT[5];
-    return std::sqrt(0.5 * ((xx - yy) * (xx - yy) + (yy - zz) * (yy - zz) + (zz - xx) * (zz - xx) +
-                            6.0 * (xy * xy + yz * yz + xz * xz)));
-}
-
-/// Eigenvalues of the symmetric tensor (xx yy zz xy yz zx), ascending, by cyclic Jacobi.
-void frd_principal(const double* pT, double* pOut) {
-    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
-    for (int sweep = 0; sweep < 60; ++sweep) {
-        const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
-        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
-        if (off <= 1e-17 * diag || off == 0.0)
-            break;
-        for (int p = 0; p < 2; ++p) {
-            for (int q = p + 1; q < 3; ++q) {
-                if (a[p][q] == 0.0)
-                    continue;
-                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0);
-                const double s = t * c;
-                for (int k = 0; k < 3; ++k) {
-                    const double akp = a[k][p];
-                    const double akq = a[k][q];
-                    a[k][p] = c * akp - s * akq;
-                    a[k][q] = s * akp + c * akq;
-                }
-                for (int k = 0; k < 3; ++k) {
-                    const double apk = a[p][k];
-                    const double aqk = a[q][k];
-                    a[p][k] = c * apk - s * aqk;
-                    a[q][k] = s * apk + c * aqk;
-                }
-            }
-        }
-    }
-    pOut[0] = a[0][0];
-    pOut[1] = a[1][1];
-    pOut[2] = a[2][2];
-    std::sort(pOut, pOut + 3);
-}
-
 NDArray frd_scalar_array(DType Type, double Value) {
     NDArray out(Type, {std::size_t{1}});
     if (Type == DType::Float64)
@@ -607,7 +564,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
             NDArray data(DType::Float64, {npts});
             double* out = data.As<double>();
             for (std::size_t i = 0; i < npts; ++i)
-                out[i] = frd_mises(values.data() + i * 6);
+                out[i] = detail::sym3_mises(values.data() + i * 6);
             mesh.AddPointData(name + "_mises", std::move(data));
         }
         if (want_principal) {
@@ -619,7 +576,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
                 for (int k = 0; k < 6; ++k)
                     finite = finite && std::isfinite(t[k]);
                 if (finite)
-                    frd_principal(t, out + i * 3);
+                    detail::sym3_principal(t, out + i * 3);
                 else
                     std::fill(out + i * 3, out + i * 3 + 3,
                               std::numeric_limits<double>::quiet_NaN());

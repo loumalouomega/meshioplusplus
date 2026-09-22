@@ -2005,6 +2005,36 @@ def _register_data(server: FastMCP) -> None:
             preserve_dtype=preserve_dtype,
         )
 
+    @server.tool()
+    def tensor_invariants(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        location: str = "point",
+        arrays: Optional[List[str]] = None,
+        outputs: Optional[List[str]] = None,
+        prefix: str = "",
+        suffix: str = "",
+        overwrite: bool = True,
+    ) -> dict:
+        """von Mises / principal / hydrostatic / deviatoric of a symmetric
+        (6-component) or general 3x3 (9-component) tensor array. outputs: any
+        of mises | principal | hydrostatic | deviatoric (default: all four)."""
+        return _guard(
+            _tools.tool_tensor_invariants,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            location=location,
+            arrays=arrays,
+            outputs=outputs,
+            prefix=prefix,
+            suffix=suffix,
+            overwrite=overwrite,
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Dataset manifests (doc/datasets.md)                                         #

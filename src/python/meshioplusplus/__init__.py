@@ -185,6 +185,7 @@ from ._split import split
 from ._stats import compute_stats
 from ._subdivide import subdivide
 from ._surface import extract_surface
+from ._tensor_invariants import tensor_invariants
 from ._tessellation import Tessellation, tessellate
 from ._transform import transform
 from ._undo_green import undo_green
@@ -327,6 +328,7 @@ __all__ = [
     "data_calc",
     "data_condition",
     "data_info",
+    "tensor_invariants",
     "view",
     "screenshot",
     "has_viewer",

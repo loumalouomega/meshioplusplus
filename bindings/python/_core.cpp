@@ -107,6 +107,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -2430,6 +2431,30 @@ PYBIND11_MODULE(_core, m) {
         py::arg("scope") = "component", py::arg("lo") = 0.0, py::arg("hi") = 1.0,
         py::arg("nan_policy") = "ignore", py::arg("nan_replacement") = 0.0, py::arg("suffix") = "",
         py::arg("preserve_dtype") = true);
+
+    // von Mises / principal / hydrostatic / deviatoric of a tensor array.
+    // See operations/tensor_invariants.hpp.
+    m.def(
+        "tensor_invariants",
+        [](py::object pymesh, const std::string& location, const std::vector<std::string>& names,
+           const std::string& outputs, const std::string& prefix, const std::string& suffix,
+           bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::TensorInvariantsOptions opts;
+            opts.location = meshioplusplus::data_location_from_name(location);
+            opts.names = names;
+            opts.outputs = outputs.empty() ? meshioplusplus::TensorInvariant::All
+                                           : meshioplusplus::tensor_invariant_from_name(outputs);
+            opts.prefix = prefix;
+            opts.suffix = suffix;
+            opts.overwrite = overwrite;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::tensor_invariants(cpp, opts));
+        },
+        py::arg("mesh"), py::arg("location") = "point",
+        py::arg("names") = std::vector<std::string>{}, py::arg("outputs") = "",
+        py::arg("prefix") = "", py::arg("suffix") = "", py::arg("overwrite") = true);
 
     // Read-only per-array data summary. Returns a list of dicts, one per array.
     // See operations/data_info.hpp.

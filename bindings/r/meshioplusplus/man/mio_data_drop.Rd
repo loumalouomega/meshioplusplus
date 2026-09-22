@@ -9,6 +9,7 @@
 \alias{mio_data_calc}
 \alias{mio_data_condition}
 \alias{mio_data_info}
+\alias{mio_tensor_invariants}
 \title{Data operations}
 \usage{
 mio_data_drop(mesh, location, names, ignore_missing = FALSE)
@@ -43,6 +44,16 @@ mio_data_condition(
 )
 
 mio_data_info(mesh)
+
+mio_tensor_invariants(
+  mesh,
+  location,
+  names = NULL,
+  outputs = NULL,
+  prefix = NULL,
+  suffix = NULL,
+  overwrite = TRUE
+)
 }
 \arguments{
 \item{mesh}{A \code{mio_mesh} object.}
@@ -81,6 +92,11 @@ Nothing else is evaluated: there is no arbitrary-code path.}
 always excluded from reductions regardless.}
 
 \item{nan_replacement}{Used when \code{nan_policy} is \code{"replace"}.}
+
+\item{outputs}{Any of \code{"mises"}, \code{"principal"}, \code{"hydrostatic"},
+\code{"deviatoric"}; \code{NULL} or \code{character(0)} means all four.}
+
+\item{prefix}{Prepended to every output array's name.}
 }
 \value{
 A new \code{mio_mesh}, except \code{mio_data_info()}, which returns a list of

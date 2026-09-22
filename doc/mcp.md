@@ -112,6 +112,7 @@ By default paths are unrestricted — the server runs locally under your own acc
 | `data_convert` | average between locations (`direction: point_to_cell \| cell_to_point`) |
 | `data_calc` | expression evaluator; accepts the CLI's `"NAME = EXPR"` spelling |
 | `data_condition` | clamp / normalize / standardize |
+| `tensor_invariants` | von Mises / principal / hydrostatic / deviatoric of a symmetric (6-component) or general 3x3 (9-component) tensor array; `outputs` selects any of `mises`/`principal`/`hydrostatic`/`deviatoric` (default: all four) |
 
 ### Dataset manifests
 

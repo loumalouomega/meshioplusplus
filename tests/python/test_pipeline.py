@@ -485,6 +485,29 @@ def test_data_ops(settings_env):
     assert "doubled" in out.cell_data
 
 
+def test_tensor_invariants_pipeline_step(settings_env):
+    mesh = meshioplusplus.read(settings_env["in"])
+    n = len(mesh.points)
+    mesh.point_data["stress"] = np.tile([1.0, 2.0, 3.0, 0.5, 0.6, 0.7], (n, 1))
+    meshioplusplus.write(settings_env["in"], mesh, compression=None)
+    meshioplusplus.run_pipeline(
+        make_settings(
+            settings_env,
+            [
+                {
+                    "Op": "TensorInvariants",
+                    "Names": ["stress"],
+                    "Outputs": "mises,hydrostatic",
+                }
+            ],
+        )
+    )
+    out = meshioplusplus.read(settings_env["out"])
+    assert "stress_mises" in out.point_data
+    assert "stress_hydrostatic" in out.point_data
+    assert "stress_principal" not in out.point_data
+
+
 def test_output_encoding_and_codec(settings_env):
     settings = make_settings(settings_env, [])
     settings["Output"]["Encoding"] = "binary"

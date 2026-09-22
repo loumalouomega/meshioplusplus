@@ -651,6 +651,26 @@ def test_data_condition(mesh_file, tmp_path):
     assert np.isclose(reread.point_data["t"].max(), 10.0)
 
 
+def test_tensor_invariants(tmp_path):
+    mesh = _mixed_mesh()
+    mesh.point_data["stress"] = np.tile([1.0, 2.0, 3.0, 0.5, 0.6, 0.7], (5, 1))
+    in_path = str(tmp_path / "in.vtu")
+    meshioplusplus.write(in_path, mesh)
+    out_path = str(tmp_path / "invariants.vtu")
+    _dump(
+        _tools.tool_tensor_invariants(
+            output_path=out_path,
+            input_path=in_path,
+            arrays=["stress"],
+            outputs=["mises", "hydrostatic"],
+        )
+    )
+    reread = meshioplusplus.read(out_path)
+    assert "stress_mises" in reread.point_data
+    assert "stress_hydrostatic" in reread.point_data
+    assert "stress_principal" not in reread.point_data
+
+
 # --------------------------------------------------------------------------- #
 # Parity guard: every public operation must be claimed by a tool              #
 # --------------------------------------------------------------------------- #

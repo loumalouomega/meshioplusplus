@@ -352,6 +352,9 @@ module meshioplusplus
     integer(c_int), parameter :: MIO_COND_STANDARDIZE = 2
     integer(c_int), parameter :: MIO_SCOPE_COMPONENT = 0, MIO_SCOPE_MAGNITUDE = 1
     integer(c_int), parameter :: MIO_NAN_IGNORE = 0, MIO_NAN_REPLACE = 1, MIO_NAN_FAIL = 2
+    integer(c_int), parameter :: MIO_TINV_MISES = 1, MIO_TINV_PRINCIPAL = 2
+    integer(c_int), parameter :: MIO_TINV_HYDROSTATIC = 4, MIO_TINV_DEVIATORIC = 8
+    integer(c_int), parameter :: MIO_TINV_ALL = 15
 
     ! Region kinds (must match the C enum mio_region_kind).
     integer(c_int), parameter :: MIO_REGION_POINT = 0, MIO_REGION_CELL = 1
@@ -675,6 +678,7 @@ module meshioplusplus
         procedure :: data_cell_to_point => mesh_data_cell_to_point
         procedure :: data_calc => mesh_data_calc
         procedure :: data_condition => mesh_data_condition
+        procedure :: tensor_invariants => mesh_tensor_invariants
         procedure :: data_info => mesh_data_info
         procedure :: data_integrate => mesh_data_integrate
         procedure :: data_integrate_region => mesh_data_integrate_region
@@ -1897,6 +1901,17 @@ module meshioplusplus
             integer(c_int64_t), value :: count
             real(c_double), value :: lo, hi, nan_replacement
             character(kind=c_char), dimension(*), intent(in) :: suffix
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_tensor_invariants(h, location, names, count, outputs, prefix, suffix, &
+                                         overwrite) &
+                bind(c, name="mio_tensor_invariants") result(m)
+            import :: c_ptr, c_int, c_int64_t, c_char
+            type(c_ptr), value :: h, names
+            integer(c_int), value :: location, outputs, overwrite
+            integer(c_int64_t), value :: count
+            character(kind=c_char), dimension(*), intent(in) :: prefix, suffix
             type(c_ptr) :: m
         end function
 
@@ -5541,6 +5556,52 @@ contains
                                           cscope, cnan, crep, c_str(sfx))
         if (.not. c_associated(out%handle)) then
             call handle_failure('data_condition', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> von Mises / principal / hydrostatic / deviatoric fields of a symmetric
+    !> (6-component) or general 3x3 (9-component) tensor array. `names` empty
+    !> processes every 6- or 9-component array at `location` (field_data is
+    !> rejected). `outputs` is a bitwise OR of MIO_TINV_* (default MIO_TINV_ALL).
+    function mesh_tensor_invariants(self, location, names, outputs, prefix, suffix, &
+                                    overwrite, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(c_int), intent(in) :: location
+        character(*), intent(in), optional :: names(:)
+        integer(c_int), intent(in), optional :: outputs
+        character(*), intent(in), optional :: prefix, suffix
+        logical, intent(in), optional :: overwrite
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        integer(c_int) :: couts, cover
+        character(:), allocatable :: pfx, sfx
+        character(len=1) :: empty(0)
+        couts = MIO_TINV_ALL
+        if (present(outputs)) couts = outputs
+        cover = 1
+        if (present(overwrite)) then
+            if (.not. overwrite) cover = 0
+        end if
+        pfx = ''
+        if (present(prefix)) pfx = prefix
+        sfx = ''
+        if (present(suffix)) sfx = suffix
+        if (present(names)) then
+            call c_str_array(names, storage, cptrs, arr, count)
+        else
+            call c_str_array(empty, storage, cptrs, arr, count)
+        end if
+        out%handle = c_mio_tensor_invariants(self%handle, location, arr, count, couts, &
+                                             c_str(pfx), c_str(sfx), cover)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('tensor_invariants', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

@@ -51,6 +51,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
@@ -299,6 +300,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
           "Suffix"}},
+        {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
         {"ToCell", {"Names"}},
         {"ToPoint", {"Names", "Weight"}},
     };
@@ -1111,6 +1113,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.nan_replacement = pipe_number(rStep, "NanReplacement", 0.0);
         opts.suffix = pipe_text(rStep, "Suffix", "");
         Mesh out = data_condition(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "TensorInvariants") {
+        TensorInvariantsOptions opts;
+        opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
+        opts.names = pipe_svec(rStep, "Names");
+        const std::string outputs_str = pipe_text(rStep, "Outputs", "");
+        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.prefix = pipe_text(rStep, "Prefix", "");
+        opts.suffix = pipe_text(rStep, "Suffix", "");
+        opts.overwrite = pipe_flag(rStep, "Overwrite", true);
+        Mesh out = tensor_invariants(mesh, opts);
         pipe_push_step(rReport, rStep);
         return out;
     }
