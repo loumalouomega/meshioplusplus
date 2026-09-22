@@ -15,10 +15,8 @@ from . import helpers
         # helpers.empty_mesh,
         helpers.tri_mesh,
         helpers.quad_mesh,
-        # Those two tests suddenly started failing on gh-actions. No idea why.
-        # TODO reinstate
-        # helpers.tet_mesh,
-        # helpers.hex_mesh
+        helpers.tet_mesh,
+        helpers.hex_mesh,
     ],
 )
 def test(mesh, tmp_path):
