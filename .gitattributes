@@ -72,3 +72,7 @@ tests/python/meshes/lsdyna/** -filter -diff -merge text
 # CalculiX .frd fixtures are ccx output (or hand-written text), a few KB each; LFS would
 # only add a pointer-file failure mode to a checkout without it.
 tests/python/meshes/frd/** -filter -diff -merge text
+# ...except the binary-layout (*NODE OUTPUT/*ELEMENT OUTPUT) fixtures: real binary
+# bytes with embedded 0x0A, which a text checkout (CRLF-normalizing Windows clone)
+# would silently corrupt.
+tests/python/meshes/frd/*_bin.frd binary

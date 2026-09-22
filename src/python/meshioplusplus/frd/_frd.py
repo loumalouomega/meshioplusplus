@@ -4,17 +4,32 @@ Reader for CalculiX result files (``.frd``), the ASCII format ``ccx`` writes and
 
 A ``.frd`` is a stream of fixed-column records keyed by their first columns: ``1C``/
 ``1U`` header, ``2C`` node block, ``3C`` element block, then one ``100C`` block per
-result per increment and ``9999`` to end. Data lines are ``-1`` (first line), ``-2``
-(continuation) and ``-3`` (end of block); ``-4`` names a result and ``-5`` names each
-of its components. Values are ``E12.5`` with *no separator* (``7-1.18144E-06`` is two
-numbers), so every field is sliced by column. Node and element ids are ``I5`` in the
-short format (flag 0) and ``I10`` in the long one (flag 1); flag 2 is binary and is
-not read. The C++ twin is ``formats/frd.cpp``.
+result per increment and ``9999`` to end. In the ASCII layout, data lines are ``-1``
+(first line), ``-2`` (continuation) and ``-3`` (end of block); ``-4`` names a result
+and ``-5`` names each of its components. Values are ``E12.5`` with *no separator*
+(``7-1.18144E-06`` is two numbers), so every field is sliced by column. Node and
+element ids are ``I5`` in the short format (flag 0) and ``I10`` in the long one
+(flag 1).
+
+The binary layout ccx writes for ``*NODE OUTPUT``/``*ELEMENT OUTPUT`` keeps the same
+ASCII header lines (banner, ``2C``, ``3C``, ``1PSTEP``, ``100CL``, ``-4``, ``-5``) but
+replaces the ``-1``/``-2``/``-3`` data lines with a raw little-endian blob: one
+fixed-size ``[int32 id][reals]`` record per node/element/result entry, back to back,
+with the record count read from the header's own count field (there is no terminator
+to scan for). Reals are ``float32`` (flag 2) or ``float64`` (flag 3) per each block's
+*own* flag -- ccx writes node coordinates as flag 3 and result values as flag 2 by
+default, so the flag is re-read per header, never assumed constant for the file. This
+means raw bytes, not decoded text, so ``_load``/``_decode`` keep the file as ``bytes``
+until the ASCII-vs-binary branch. The C++ twin is ``formats/frd.cpp``.
 
 Increments become the steps of the sequence engine: the mesh is read once and only the
 requested step's result blocks are parsed. CalculiX expands shells and beams into
 solids before it writes, so the mesh here is not the ``.inp`` mesh.
 """
+
+import pathlib
+import re
+import struct
 
 import numpy as np
 
@@ -91,15 +106,45 @@ def _flag(line, default):
 
 
 def _width(flag):
-    if flag == 2:
-        raise _err("binary .frd files are not supported")
+    """ASCII id column width: I5 (flag 0) or I10 (flag 1). Never called for a binary
+    flag (2 or 3) -- binary detection happens before this is reached."""
     return 5 if flag == 0 else 10
 
 
-class _Block:
-    """One ``100C`` result block: where its lines are and what they hold."""
+def _detect_binary(raw):
+    """Whether ``raw`` (the file's bytes) is the binary layout: the flag on its
+    ``2C`` header line is 2 or 3 rather than 0 or 1. Scans only the always-ASCII
+    banner that precedes ``2C``, which is safe even before binary detection."""
+    start = 0
+    while start < len(raw):
+        stop = raw.find(b"\n", start)
+        end = len(raw) if stop == -1 else stop
+        line = raw[start:end].rstrip(b"\r").decode("ascii", errors="replace")
+        if line.startswith("    2C"):
+            return _flag(line, 1) >= 2
+        if stop == -1:
+            break
+        start = stop + 1
+    return False
 
-    __slots__ = ("name", "ncomps", "data_ncomps", "irtype", "first", "last", "width")
+
+class _Block:
+    """One ``100C`` result block: where its lines (ASCII) or raw bytes (binary) are,
+    and what they hold."""
+
+    __slots__ = (
+        "name",
+        "ncomps",
+        "data_ncomps",
+        "irtype",
+        "first",
+        "last",
+        "width",
+        "binary",
+        "byte_offset",
+        "real_bytes",
+        "num_entries",
+    )
 
     def __init__(self, name, ncomps, irtype, width):
         self.name = name
@@ -109,6 +154,10 @@ class _Block:
         self.width = width
         self.first = 0
         self.last = 0
+        self.binary = False
+        self.byte_offset = 0
+        self.real_bytes = 8
+        self.num_entries = 0
 
 
 class _Frame:
@@ -123,14 +172,22 @@ class _Frame:
 
 
 class _Frd:
-    def __init__(self, text):
-        self.lines = text.replace("\r", "").split("\n")
+    def __init__(self, raw):
         self.node_ids = []
         self.coords = None
         self.elements = []  # (type, group, material, [file node ids])
         self.frames = []
         self.skipped_types = set()
-        self._parse()
+        self.binary = _detect_binary(raw)
+        if self.binary:
+            self.raw = raw
+            self.lines = []
+            self._parse_binary()
+        else:
+            self.raw = None
+            text = raw.decode("utf-8", errors="replace")
+            self.lines = text.replace("\r", "").split("\n")
+            self._parse()
 
     def _parse(self):
         lines = self.lines
@@ -266,6 +323,132 @@ class _Frd:
                 break
         return pos
 
+    # -- binary layout -------------------------------------------------------------
+    #
+    # Header lines stay plain ASCII text terminated by b"\n"; a raw little-endian
+    # record blob immediately follows a "2C"/"3C" header or a "100C" frame's last
+    # "-5" line, with no "-1"/"-2"/"-3" markers and no line boundaries of its own (a
+    # record's bytes may well contain 0x0A). The record count comes from the header's
+    # own count field. See the module docstring and doc/formats/frd.md.
+
+    def _binary_line(self, pos):
+        """One header line starting at byte ``pos``, decoded and stripped of a
+        trailing ``\\r``; returns ``(line, next_pos)``, ``next_pos`` past its
+        ``\\n`` (or end of file if there is none)."""
+        raw = self.raw
+        stop = raw.find(b"\n", pos)
+        end = len(raw) if stop == -1 else stop
+        line = raw[pos:end].decode("ascii", errors="replace").rstrip("\r")
+        return line, (len(raw) if stop == -1 else stop + 1)
+
+    def _binary_require(self, end, what):
+        if end > len(self.raw):
+            raise _err(f"binary {what} runs past the end of the file")
+
+    def _parse_binary(self):
+        pos = 0
+        flag = 1
+        seen_nodes = seen_elements = False
+        frame_of = {}
+        n = len(self.raw)
+        while pos < n:
+            line, next_pos = self._binary_line(pos)
+            if line.startswith("    2C"):
+                flag = _flag(line, flag)
+                count = _int(line[6:36], "a 2C record")
+                real_bytes = 8 if flag == 3 else 4
+                rec = 4 + 3 * real_bytes
+                self._binary_require(next_pos + count * rec, "node block")
+                if seen_nodes:
+                    warn("CalculiX FRD: a second node block was ignored")
+                else:
+                    self._read_nodes_binary(next_pos, count, real_bytes)
+                seen_nodes = True
+                pos = next_pos + count * rec
+            elif line.startswith("    3C"):
+                flag = _flag(line, flag)
+                count = _int(line[6:36], "a 3C record")
+                pos = self._read_elements_binary(
+                    next_pos, count, keep=not seen_elements
+                )
+                if seen_elements:
+                    warn("CalculiX FRD: a second element block was ignored")
+                seen_elements = True
+            elif line.startswith("  100C"):
+                pos = self._read_frame_binary(next_pos, line, flag, frame_of)
+            elif line.startswith(("9999", " 9999", "  9999")):
+                break
+            else:
+                pos = next_pos
+        if not seen_nodes:
+            raise _err("no node block (2C record): not a CalculiX result file")
+
+    def _read_nodes_binary(self, pos, count, real_bytes):
+        rec = 4 + 3 * real_bytes
+        blob = self.raw[pos : pos + count * rec]
+        ids = np.frombuffer(
+            blob, dtype=np.dtype(f"<i4, ({3},)f{real_bytes}"), count=count
+        )
+        self.node_ids = ids["f0"].tolist()
+        self.coords = ids["f1"].astype(np.float64)
+
+    def _read_elements_binary(self, pos, count, keep):
+        raw = self.raw
+        for _ in range(count):
+            self._binary_require(pos + 16, "element header")
+            etype, group, material = struct.unpack_from("<3i", raw, pos + 4)
+            spec = _TYPES.get(etype)
+            if spec is None:
+                raise _err(f"unknown FRD element type {etype}")
+            _, node_count, _ = spec
+            pos += 16
+            self._binary_require(pos + node_count * 4, "element node list")
+            if keep:
+                nodes = list(struct.unpack_from(f"<{node_count}i", raw, pos))
+                self.elements.append((etype, group, material, nodes))
+            pos += node_count * 4
+        return pos
+
+    def _read_frame_binary(self, pos, header, flag, frame_of):
+        key = header[6:12]
+        value_text = header[12:24]
+        frame_flag = flag
+        if len(header) >= 75:
+            frame_flag = _int(header[73:75], "a 100C record")
+        real_bytes = 8 if frame_flag == 3 else 4
+        numnod = _int(header[24:36], "a 100C record")
+        analysis = _int(header[56:58], "a 100C record")
+        step = _int(header[58:63], "a 100C record")
+        ident = (key, value_text)
+        frame = frame_of.get(ident)
+        if frame is None:
+            frame = _Frame(key, _real(value_text, "a 100C record"), analysis, step)
+            frame_of[ident] = frame
+            self.frames.append(frame)
+        line, next_pos = self._binary_line(pos)
+        if not line.startswith(" -4"):
+            return next_pos
+        ncomps = _int(line[13:18], "a -4 record")
+        calculated = 0
+        after = next_pos
+        while True:
+            l2, peek = self._binary_line(after)
+            if not l2.startswith(" -5"):
+                break
+            if _int(l2[33:38], "a -5 record") == 1:
+                calculated += 1
+            after = peek
+        block = _Block(line[5:13].strip(), ncomps, _int(line[18:23], "a -4 record"), 0)
+        block.data_ncomps = ncomps - calculated
+        block.binary = True
+        block.real_bytes = real_bytes
+        block.num_entries = numnod
+        block.byte_offset = after
+        rec = 4 + block.data_ncomps * real_bytes
+        self._binary_require(after + numnod * rec, "result block")
+        frame.blocks.append(block)
+        return after + numnod * rec
+
     # -- mesh --------------------------------------------------------------------
     def build_cells(self):
         index = {nid: i for i, nid in enumerate(self.node_ids)}
@@ -311,6 +494,8 @@ class _Frd:
 
     # -- results -----------------------------------------------------------------
     def read_block(self, block, index):
+        if block.binary:
+            return self._read_block_binary(block, index)
         lines = self.lines
         w = block.width
         nc = block.data_ncomps
@@ -344,6 +529,27 @@ class _Frd:
                 pos += 1
         return values[:, 0] if nc == 1 else values
 
+    def _read_block_binary(self, block, index):
+        """Binary twin of ``read_block``: raw ``[int32 id][data_ncomps reals]``
+        records, one per entry, no line markers."""
+        nc = block.data_ncomps
+        rec_size = 4 + nc * block.real_bytes
+        start = block.byte_offset
+        blob = self.raw[start : start + block.num_entries * rec_size]
+        values = np.full((len(self.node_ids), nc), np.nan)
+        real_dtype = f"<f{block.real_bytes}"
+        for i in range(block.num_entries):
+            base = i * rec_size
+            node = struct.unpack_from("<i", blob, base)[0]
+            row = index.get(node)
+            if row is None:
+                raise _err(f"result for {block.name} refers to undefined node {node}")
+            if nc:
+                values[row] = np.frombuffer(
+                    blob, dtype=real_dtype, count=nc, offset=base + 4
+                )
+        return values[:, 0] if nc == 1 else values
+
 
 # The eigensolver used to live here as private `_mises`/`_principal`; it now
 # backs the public `tensor_invariants` operation as well, so both callers
@@ -354,15 +560,16 @@ _principal = _ti_principal
 
 
 def _decode(source):
+    """Returns the file's raw bytes -- decoding as text (only for the ASCII layout,
+    and only after the binary-vs-ASCII branch) happens in ``_Frd.__init__``, since a
+    genuinely binary file must never go through a UTF-8 decode."""
     if hasattr(source, "read"):
         data = source.read()
-        if isinstance(data, bytes):
-            data = data.decode("utf-8", errors="replace")
+        if isinstance(data, str):
+            data = data.encode("utf-8")
         return data
     try:
-        # binary, so no newline translation: a stray "\r\r\n" must not become a blank line
-        with open(source, "rb") as f:
-            return f.read().decode("utf-8", errors="replace")
+        return pathlib.Path(source).read_bytes()
     except OSError as exc:
         raise _err(f"could not read {source}: {exc}") from None
 
@@ -443,3 +650,109 @@ def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
 def time_values(filename):
     """The value of every increment, in file order (the sequence engine's steps)."""
     return [frame.value for frame in _load(filename).frames]
+
+
+# -- .dat: the ccx tabular print, a companion file with no mesh in it ----------------
+#
+# *NODE PRINT and *EL PRINT write whitespace-separated, free-format tables (unlike
+# .frd, there is no glued-column layout to slice), one section per print request per
+# increment, framed by "S T E P n" / "INCREMENT n" banners. Each section's own
+# description line names its columns in parentheses, e.g.
+# "stresses (elem, integ.pnt.,sxx,syy,szz,sxy,sxz,syz) for set E and time  ...": an
+# element/integration-point section always leads with "elem, integ.pnt." (two id
+# columns instead of node print's one), and the *value* column order is the file's
+# own -- sxx syy szz sxy sxz syz, NOT .frd's xx yy zz xy yz zx. There is no geometry
+# here, so this returns plain tables, not a Mesh, and it is Python-only: a native
+# reader would need the same free-format tokenizer detail/fast_number.hpp does not
+# provide, and .dat already belongs to Tecplot in the format registry, so this is
+# never registered as one.
+
+_DAT_STEP_RE = re.compile(r"\s*S\s+T\s+E\s+P\s+(\d+)")
+_DAT_INCREMENT_RE = re.compile(r"\s*INCREMENT\s+(\d+)")
+_DAT_SECTION_RE = re.compile(
+    r"\s*(\S.*?)\s*\(([^)]*)\)\s+for set\s+(\S+)\s+and time\s+([-+0-9.EeDd]+)\s*$"
+)
+
+
+def read_dat(filename):
+    """Parses a ccx ``.dat`` tabular print (``*NODE PRINT``/``*EL PRINT``) into a list
+    of tables -- there is no mesh in this file, so this returns plain data, not a
+    :class:`~meshioplusplus.Mesh`.
+
+    Each table is a dict:
+
+    - ``step``, ``increment``: the ``S T E P`` / ``INCREMENT`` banner values.
+    - ``time``: the section's own time value.
+    - ``kind``: ``"node"`` or ``"element"``.
+    - ``quantity``: the description before the parenthesised column list
+      (``"displacements"``, ``"stresses"``, ...).
+    - ``set``: the ``NSET``/``ELSET`` name the print request named.
+    - ``ids``: point/node ids (``kind="node"``) or element ids (``kind="element"``).
+    - ``int_points``: integration-point indices, only present when ``kind="element"``.
+    - ``components``: the column names, in the file's own order -- for stress/strain
+      this is ``sxx syy szz sxy sxz syz``, not ``.frd``'s ``xx yy zz xy yz zx``.
+    - ``values``: ``(len(ids), len(components))`` float64 array.
+
+    :raises ReadError: if the file cannot be read or is not a recognisable ``.dat``.
+    """
+    raw = _decode(filename)
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.replace("\r", "").split("\n")
+    tables = []
+    step = increment = None
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        m = _DAT_STEP_RE.match(line)
+        if m:
+            step = _int(m.group(1), "a S T E P banner")
+            i += 1
+            continue
+        m = _DAT_INCREMENT_RE.match(line)
+        if m:
+            increment = _int(m.group(1), "an INCREMENT banner")
+            i += 1
+            continue
+        m = _DAT_SECTION_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        quantity, cols_text, set_name, time_text = m.groups()
+        cols = [c.strip() for c in cols_text.split(",")]
+        kind = "element" if cols[:2] == ["elem", "integ.pnt."] else "node"
+        components = cols[2:] if kind == "element" else cols
+        time_value = _real(time_text, "a .dat section header")
+        i += 1
+        while i < n and not lines[i].strip():
+            i += 1
+        ids = []
+        int_points = [] if kind == "element" else None
+        rows = []
+        while i < n and lines[i].strip():
+            parts = lines[i].split()
+            skip = 2 if kind == "element" else 1
+            ids.append(_int(parts[0], "a .dat data row"))
+            if kind == "element":
+                int_points.append(_int(parts[1], "a .dat data row"))
+            rows.append([_real(v, "a .dat data row") for v in parts[skip:]])
+            i += 1
+        table = {
+            "step": step,
+            "increment": increment,
+            "time": time_value,
+            "kind": kind,
+            "quantity": quantity,
+            "set": set_name,
+            "ids": np.asarray(ids, dtype=np.int64),
+            "components": components,
+            "values": np.asarray(rows, dtype=np.float64).reshape(
+                len(ids), len(components)
+            ),
+        }
+        if kind == "element":
+            table["int_points"] = np.asarray(int_points, dtype=np.int64)
+        tables.append(table)
+    if not tables:
+        raise _err(f"no recognisable *NODE PRINT/*EL PRINT section in {filename}")
+    return tables

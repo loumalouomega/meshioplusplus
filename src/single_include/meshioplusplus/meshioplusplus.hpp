@@ -11661,6 +11661,43 @@ MESHIOPLUSPLUS_API VertexNormalGroups vertex_normal_groups(const TriangleSoup& r
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/surface_normals.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
+/**
+ * @file detail/sym3_eigen.hpp
+ * @brief Invariants of a symmetric 3x3 tensor stored as six components in the
+ * `xx yy zz xy yz zx` order used throughout this codebase (see
+ * `doc/mesh_data_model.md`).
+ *
+ * This was originally private to the CalculiX `.frd` reader's `derived=`
+ * option; it now backs `operations/tensor_invariants.hpp` as well, so both
+ * callers share one eigensolver instead of two copies drifting apart.
+ */
+
+// System includes
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The von Mises equivalent of a symmetric tensor.
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @return `sqrt(0.5*((xx-yy)^2+(yy-zz)^2+(zz-xx)^2+6*(xy^2+yz^2+zx^2)))`.
+ */
+MESHIOPLUSPLUS_API double sym3_mises(const double* pT);
+
+/**
+ * @brief Eigenvalues of a symmetric tensor, ascending, by cyclic Jacobi.
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @param pOut the three eigenvalues, ascending.
+ */
+MESHIOPLUSPLUS_API void sym3_principal(const double* pT, double* pOut);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
 /**
  * @file detail/tri_box.hpp
@@ -13754,11 +13791,15 @@ MESHIOPLUSPLUS_API Mesh read_flux(const std::string& rPath);
  * @file frd.hpp
  * @brief CalculiX result file (`.frd`) C++ reader.
  *
- * The ASCII file `ccx` writes and `cgx` reads: fixed-column records keyed by their
- * first columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per
- * result per increment, `9999`). Values are `E12.5` with no separator, so every field
- * is sliced by column. The short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
- * layouts are read; the binary layout (flag 2) is refused.
+ * The file `ccx` writes and `cgx` reads: fixed-column records keyed by their first
+ * columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per result
+ * per increment, `9999`). ASCII values are `E12.5` with no separator, so every field
+ * is sliced by column; the short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
+ * layouts are both read. The binary layout ccx writes for `*NODE OUTPUT`/`*ELEMENT
+ * OUTPUT` (mixed ASCII headers and raw little-endian records, `int32` ids, `float32`
+ * or `float64` reals per the block's own flag: 2 or 3) is also read, host byte order
+ * assumed little-endian like every other binary format here. See doc/formats/frd.md
+ * for the binary record layout.
  *
  *  - The mesh is the one `ccx` wrote, not the `.inp` mesh: shells and beams are
  *    expanded into solids. The twelve cgx element types map to `hexahedron`, `wedge`,
@@ -13800,7 +13841,7 @@ struct FrdReadOptions {
  * @param rOpts `mTimeStep` selects the increment (`ResolveTimeStep`); `mPointsOnly` and
  *        `mDataArrays` narrow the result blocks that are parsed
  * @return the mesh, with the selected increment's results as point data
- * @throws ReadError if the file can't be read, is binary, a field is malformed, an
+ * @throws ReadError if the file can't be read, a field is malformed, an
  *         element or a result refers to an undefined node, or the step is out of range
  */
 MESHIOPLUSPLUS_API Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts = {});
@@ -25545,6 +25586,130 @@ MESHIOPLUSPLUS_API Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, b
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/surface.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/tensor_invariants.hpp =====
+/**
+ * @file operations/tensor_invariants.hpp
+ * @brief `tensor_invariants`: von Mises, principal values, and the hydrostatic
+ * / deviatoric split of a symmetric-tensor data array.
+ *
+ * Every format that stores a stress, strain or other rank-2 tensor field
+ * needs these; before this operation the only route was the CalculiX `.frd`
+ * reader's format-specific `derived=` option (`formats/frd.hpp`), which
+ * neither the generic `read`, the CLIs, MCP nor the flat bindings carried.
+ * `.frd`'s `derived=` now calls this operation internally and keeps its
+ * existing output names; see `doc/formats/frd.md`.
+ *
+ * ### Input layout
+ *
+ * An array is treated as one tensor per row, selected by its trailing
+ * component count:
+ *
+ *  - **6 components**: a symmetric tensor `xx yy zz xy yz zx`, the order used
+ *    throughout this codebase (`doc/mesh_data_model.md`).
+ *  - **9 components**: a general 3x3 tensor, row-major (`xx xy xz yx yy yz zx
+ *    zy zz`), the layout `operations/gradient.hpp` and `operations/hessian.hpp`
+ *    produce. `Mises` and `Principal` are only defined for a symmetric tensor,
+ *    so both are computed from the symmetric part `0.5*(T + T^T)`.
+ *
+ * Any other component count is a `std::invalid_argument`.
+ *
+ * ### Outputs
+ *
+ * Requested through the `mOutputs` bitmask, each written as `rOpts.prefix +
+ * name + suffix`:
+ *
+ *  - `Mises`: `sqrt(0.5*((xx-yy)^2+(yy-zz)^2+(zz-xx)^2+6*(xy^2+yz^2+zx^2)))`,
+ *    using the symmetric part for a 9-component input. Shape `(n,)`.
+ *  - `Principal`: eigenvalues of the symmetric part, ascending. Shape `(n, 3)`.
+ *  - `Hydrostatic`: `(xx+yy+zz)/3`, the mean of the tensor's own diagonal
+ *    (unsymmetrized). Shape `(n,)`.
+ *  - `Deviatoric`: the input with `Hydrostatic` subtracted from its three
+ *    diagonal entries, off-diagonal entries unchanged; same shape and
+ *    component count as the input.
+ *
+ * A row with any non-finite input component produces NaN in every output for
+ * that row rather than throwing (mirrors `.frd`'s `derived=` and the general
+ * "non-finite in, non-finite out" rule of `operations/data_common.hpp`, except
+ * that here there is no reduction to exclude the value from).
+ *
+ * Points, connectivity and block order are left bit-identical — this is a
+ * data-only operation and reuses `detail/clone_mesh`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which invariants to compute; combine with `|`.
+enum class TensorInvariant : unsigned {
+    Mises = 1u << 0,
+    Principal = 1u << 1,
+    Hydrostatic = 1u << 2,
+    Deviatoric = 1u << 3,
+    All = Mises | Principal | Hydrostatic | Deviatoric,
+};
+
+/// `a | b` for `TensorInvariant` flags.
+inline TensorInvariant operator|(TensorInvariant a, TensorInvariant b) {
+    return static_cast<TensorInvariant>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+/// `a & b` for `TensorInvariant` flags, as a plain bitmask (not a `TensorInvariant`
+/// itself, so it can be tested with `!= 0` without another cast).
+inline unsigned operator&(TensorInvariant a, TensorInvariant b) {
+    return static_cast<unsigned>(a) & static_cast<unsigned>(b);
+}
+
+/// Options for `tensor_invariants`.
+struct TensorInvariantsOptions {
+    /// Which data map the array lives in. `Field` is rejected (no per-row
+    /// tensor to reduce).
+    DataLocation location = DataLocation::Point;
+    /// Names to process; empty means every 6- or 9-component array at
+    /// `location` (arrays with another component count are skipped, not an
+    /// error, when the list is empty).
+    std::vector<std::string> names;
+    /// Which invariants to compute.
+    TensorInvariant outputs = TensorInvariant::All;
+    /// Prefix prepended to every output array's name.
+    std::string prefix;
+    /// Suffix appended after the invariant's own name segment
+    /// (`prefix + name + "_mises" + suffix`, etc.).
+    std::string suffix;
+    /// Throw instead of silently overwriting an existing array of the target name.
+    bool overwrite = true;
+};
+
+/**
+ * @brief Computes von Mises, principal, hydrostatic and/or deviatoric fields
+ * for the selected tensor arrays.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOpts which arrays, which outputs, and how to name them.
+ * @return a new mesh with the source data plus the requested invariant arrays;
+ *         geometry is bit-identical to @p rMesh.
+ * @throws std::invalid_argument on an unknown name, `location ==
+ *         DataLocation::Field`, an array whose trailing component count is
+ *         neither 6 nor 9 when named explicitly, a `cell_data` array whose
+ *         block count disagrees with the mesh, or a name collision when
+ *         `overwrite` is `false`.
+ */
+MESHIOPLUSPLUS_API Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts);
+
+/**
+ * @brief Parses a comma-separated list of invariant names into a bitmask.
+ * @param rName one or more of `mises`, `principal`, `hydrostatic`,
+ *        `deviatoric`, `all`, separated by commas.
+ * @return the matching `TensorInvariant` bitmask.
+ * @throws std::invalid_argument on an unknown name or an empty list.
+ */
+MESHIOPLUSPLUS_API TensorInvariant tensor_invariant_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/tensor_invariants.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/transform.hpp =====
 /**
  * @file operations/transform.hpp
@@ -48297,6 +48462,61 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_normals.cpp =====
+// ===== begin src/cpp/src/detail/sym3_eigen.cpp =====
+#include <algorithm>
+#include <cmath>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+double sym3_mises(const double* pT) {
+    const double xx = pT[0], yy = pT[1], zz = pT[2], xy = pT[3], yz = pT[4], xz = pT[5];
+    return std::sqrt(0.5 * ((xx - yy) * (xx - yy) + (yy - zz) * (yy - zz) + (zz - xx) * (zz - xx) +
+                            6.0 * (xy * xy + yz * yz + xz * xz)));
+}
+
+void sym3_principal(const double* pT, double* pOut) {
+    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
+    for (int sweep = 0; sweep < 60; ++sweep) {
+        const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
+        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
+        if (off <= 1e-17 * diag || off == 0.0)
+            break;
+        for (int p = 0; p < 2; ++p) {
+            for (int q = p + 1; q < 3; ++q) {
+                if (a[p][q] == 0.0)
+                    continue;
+                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
+                                 (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+                const double c = 1.0 / std::sqrt(t * t + 1.0);
+                const double s = t * c;
+                for (int k = 0; k < 3; ++k) {
+                    const double akp = a[k][p];
+                    const double akq = a[k][q];
+                    a[k][p] = c * akp - s * akq;
+                    a[k][q] = s * akp + c * akq;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const double apk = a[p][k];
+                    const double aqk = a[q][k];
+                    a[p][k] = c * apk - s * aqk;
+                    a[q][k] = s * apk + c * aqk;
+                }
+            }
+        }
+    }
+    pOut[0] = a[0][0];
+    pOut[1] = a[1][1];
+    pOut[2] = a[2][2];
+    std::sort(pOut, pOut + 3);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sym3_eigen.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <map>
@@ -58375,6 +58595,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <ios>
 #include <limits>
@@ -58520,18 +58741,44 @@ int frd_flag(std::string_view Line, int Default) {
     return Default;
 }
 
+/// ASCII id column width: I5 (flag 0, short) or I10 (flag 1, long). Never called for a
+/// binary flag (2 or 3) -- binary detection happens before this is reached.
 std::size_t frd_width(int Flag) {
-    if (Flag == 2)
-        frd_fail("binary .frd files are not supported");
     return Flag == 0 ? 5 : 10;
+}
+
+/// Whether @p Text is the binary layout: the flag on its "2C" (node) header line is 2
+/// or 3 rather than 0 or 1. Scans only the always-ASCII banner that precedes "2C" --
+/// safe to do with plain line splitting even before binary detection has run.
+bool frd_detect_binary(std::string_view Text) {
+    std::size_t start = 0;
+    while (start < Text.size()) {
+        std::size_t stop = Text.find('\n', start);
+        std::string_view line = Text.substr(start, (stop == std::string_view::npos
+                                                         ? Text.size()
+                                                         : stop) -
+                                                        start);
+        while (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        if (frd_starts_with(line, "    2C"))
+            return frd_flag(line, 1) >= 2;
+        if (stop == std::string_view::npos)
+            break;
+        start = stop + 1;
+    }
+    return false;
 }
 
 struct FrdBlock {
     std::string mName;
     std::size_t mDataComps = 0;
-    std::size_t mWidth = 10;
-    std::size_t mFirst = 0;
-    std::size_t mLast = 0;
+    std::size_t mWidth = 10;    // ASCII only.
+    std::size_t mFirst = 0;     // ASCII: a line index into FrdFile::mLines.
+    std::size_t mLast = 0;      // ASCII: a line index into FrdFile::mLines.
+    bool mBinary = false;
+    std::size_t mByteOffset = 0;  // Binary: a byte offset into FrdFile::mText.
+    std::size_t mRealBytes = 8;   // Binary: 4 (float32) or 8 (float64) per the block's flag.
+    std::size_t mNumEntries = 0;  // Binary: the 100C header's own node/record count.
 };
 
 struct FrdFrame {
@@ -58563,8 +58810,15 @@ public:
         mText.resize(size > 0 ? static_cast<std::size_t>(size) : 0);
         if (!mText.empty())
             in.read(mText.data(), static_cast<std::streamsize>(mText.size()));
-        IndexLines();
-        Parse();
+        // The binary layout embeds raw \n bytes inside its records, so it cannot go
+        // through IndexLines()'s whole-file line split; detect it from the always-ASCII
+        // header that precedes the first "2C" line and take a wholly separate path.
+        if (frd_detect_binary(mText)) {
+            ParseBinary();
+        } else {
+            IndexLines();
+            Parse();
+        }
     }
 
     std::vector<std::int64_t> mNodeIds;
@@ -58587,6 +58841,10 @@ public:
                    std::vector<double>& rOut) const {
         const std::size_t nc = rBlock.mDataComps;
         rOut.assign(mNodeIds.size() * nc, std::numeric_limits<double>::quiet_NaN());
+        if (rBlock.mBinary) {
+            ReadBlockBinary(rBlock, rIndex, rOut);
+            return;
+        }
         const std::size_t end = 3 + rBlock.mWidth;
         std::size_t pos = rBlock.mFirst;
         while (pos < rBlock.mLast) {
@@ -58635,6 +58893,222 @@ private:
                 line.remove_suffix(1);
             mLines.push_back(line);
             start = stop + 1;
+        }
+    }
+
+    // --- Binary layout ---------------------------------------------------------
+    //
+    // Header lines (banner, "2C", "3C", "1PSTEP", "100CL", "-4", "-5") stay plain
+    // ASCII text terminated by '\n'; a raw little-endian record blob immediately
+    // follows a "2C"/"3C" header or a "100C" frame's last "-5" line, one fixed-size
+    // record per node/element/result entry, with NO "-1"/"-2"/"-3" line markers and
+    // no line boundaries of its own (a record's bytes may well contain 0x0A). The
+    // record count comes from the header's own count field -- there is nothing else
+    // to scan for. Reals are float32 (flag 2) or float64 (flag 3) per each block's
+    // OWN flag: ccx writes node coordinates as flag 3 (double) and result values as
+    // flag 2 (float) by default, so the flag is read fresh per header, never assumed
+    // constant for the whole file. Integers (ids, element type/group/material) are
+    // always 4 bytes. Verified against real ccx 2.23 `*NODE OUTPUT`/`*ELEMENT OUTPUT`
+    // output; see doc/formats/frd.md.
+
+    /// One header line starting at byte @p Pos, stripped of a trailing '\r'; returns
+    /// the byte position right after its '\n' (or end of file if there is none).
+    std::size_t BinaryLine(std::size_t Pos, std::string_view& rLine) const {
+        const std::string_view all(mText);
+        std::size_t stop = all.find('\n', Pos);
+        const std::size_t end = stop == std::string_view::npos ? all.size() : stop;
+        rLine = all.substr(Pos, end - Pos);
+        while (!rLine.empty() && rLine.back() == '\r')
+            rLine.remove_suffix(1);
+        return stop == std::string_view::npos ? all.size() : stop + 1;
+    }
+
+    /// Fails cleanly instead of reading past the buffer -- the guard a corrupt or
+    /// mislabelled ("claims binary but is really ASCII text") file needs, since
+    /// nothing else bounds-checks a raw byte record.
+    void BinaryRequire(std::size_t End, const char* pWhat) const {
+        if (End > mText.size())
+            frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
+    }
+
+    static std::int32_t BinaryReadInt32(const char* pAt) {
+        std::int32_t v;
+        std::memcpy(&v, pAt, sizeof(v));
+        return v;
+    }
+
+    static double BinaryReadReal(const char* pAt, std::size_t RealBytes) {
+        if (RealBytes == 8) {
+            double v;
+            std::memcpy(&v, pAt, sizeof(v));
+            return v;
+        }
+        float v;
+        std::memcpy(&v, pAt, sizeof(v));
+        return v;
+    }
+
+    void ParseBinary() {
+        std::size_t pos = 0;
+        int flag = 1;
+        bool seen_nodes = false;
+        bool seen_elements = false;
+        while (pos < mText.size()) {
+            std::string_view line;
+            const std::size_t next = BinaryLine(pos, line);
+            if (frd_starts_with(line, "    2C")) {
+                flag = frd_flag(line, flag);
+                const std::size_t count =
+                    static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 2C record"));
+                const std::size_t real_bytes = flag == 3 ? 8 : 4;
+                const std::size_t rec = 4 + 3 * real_bytes;
+                BinaryRequire(next + count * rec, "node block");
+                if (seen_nodes)
+                    log::warn("{}", "CalculiX FRD: a second node block was ignored");
+                else
+                    ReadNodesBinary(next, count, real_bytes);
+                seen_nodes = true;
+                pos = next + count * rec;
+            } else if (frd_starts_with(line, "    3C")) {
+                flag = frd_flag(line, flag);
+                const std::size_t count =
+                    static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 3C record"));
+                pos = ReadElementsBinary(next, count, !seen_elements);
+                if (seen_elements)
+                    log::warn("{}", "CalculiX FRD: a second element block was ignored");
+                seen_elements = true;
+            } else if (frd_starts_with(line, "  100C")) {
+                pos = ReadFrameBinary(next, line, flag);
+            } else if (frd_starts_with(line, "9999") || frd_starts_with(line, " 9999") ||
+                       frd_starts_with(line, "  9999")) {
+                break;
+            } else {
+                pos = next;
+            }
+        }
+        if (!seen_nodes)
+            frd_fail("no node block (2C record): not a CalculiX result file");
+    }
+
+    void ReadNodesBinary(std::size_t Pos, std::size_t Count, std::size_t RealBytes) {
+        const std::size_t rec = 4 + 3 * RealBytes;
+        mNodeIds.reserve(Count);
+        mCoords.reserve(Count * 3);
+        for (std::size_t i = 0; i < Count; ++i) {
+            const char* base = mText.data() + Pos + i * rec;
+            mNodeIds.push_back(BinaryReadInt32(base));
+            for (std::size_t k = 0; k < 3; ++k)
+                mCoords.push_back(BinaryReadReal(base + 4 + k * RealBytes, RealBytes));
+        }
+    }
+
+    /// Parses @p Count elements starting at byte @p Pos; keeps them (into mElements /
+    /// mElementNodes) only when @p Keep, but always advances past every one of them,
+    /// since a binary file has no terminator to fall back on for a skipped block.
+    std::size_t ReadElementsBinary(std::size_t Pos, std::size_t Count, bool Keep) {
+        for (std::size_t i = 0; i < Count; ++i) {
+            BinaryRequire(Pos + 16, "element header");
+            const char* h = mText.data() + Pos;
+            const int type = static_cast<int>(BinaryReadInt32(h + 4));
+            const FrdTypeSpec* spec = frd_type_spec(type);
+            if (spec == nullptr)
+                frd_fail("unknown FRD element type " + std::to_string(type));
+            Pos += 16;
+            BinaryRequire(Pos + spec->mNodes * 4, "element node list");
+            if (Keep) {
+                FrdElement el;
+                el.mType = type;
+                el.mGroup = BinaryReadInt32(h + 8);
+                el.mMaterial = BinaryReadInt32(h + 12);
+                el.mFirstNode = mElementNodes.size();
+                el.mNumNodes = spec->mNodes;
+                mElements.push_back(el);
+                for (std::size_t k = 0; k < spec->mNodes; ++k)
+                    mElementNodes.push_back(BinaryReadInt32(mText.data() + Pos + k * 4));
+            }
+            Pos += spec->mNodes * 4;
+        }
+        return Pos;
+    }
+
+    /// Parses one `100C` frame: the header line, then every `-4`/`-5` descriptor
+    /// group (still ASCII) with its raw data blob (not). ccx writes exactly one `-4`
+    /// block per `100C` occurrence, so this reads one and returns -- mirroring
+    /// ReadFrame's own ASCII loop, which relies on the same convention.
+    std::size_t ReadFrameBinary(std::size_t Pos, std::string_view Header, int Flag) {
+        int frame_flag = Flag;
+        if (Header.size() >= 75)
+            frame_flag = static_cast<int>(frd_int(frd_field(Header, 73, 2), "a 100C record"));
+        const std::size_t real_bytes = frame_flag == 3 ? 8 : 4;
+        const std::size_t numnod =
+            static_cast<std::size_t>(frd_int(frd_field(Header, 24, 12), "a 100C record"));
+        const std::string key(frd_field(Header, 6, 6));
+        const std::string value_text(frd_field(Header, 12, 12));
+        FrdFrame* frame = nullptr;
+        for (FrdFrame& f : mFrames)
+            if (f.mKey == key && f.mValueText == value_text) {
+                frame = &f;
+                break;
+            }
+        if (frame == nullptr) {
+            FrdFrame f;
+            f.mKey = key;
+            f.mValueText = value_text;
+            f.mValue = frd_real(value_text, "a 100C record");
+            f.mAnalysis = frd_int(frd_field(Header, 56, 2), "a 100C record");
+            f.mStep = frd_int(frd_field(Header, 58, 5), "a 100C record");
+            mFrames.push_back(std::move(f));
+            frame = &mFrames.back();
+        }
+        std::string_view line;
+        std::size_t next = BinaryLine(Pos, line);
+        if (frd_starts_with(line, " -4")) {
+            FrdBlock block;
+            block.mName = std::string(frd_strip(frd_field(line, 5, 8)));
+            const std::int64_t ncomps = frd_int(frd_field(line, 13, 5), "a -4 record");
+            std::int64_t calculated = 0;
+            std::size_t after = next;
+            while (true) {
+                std::string_view l2;
+                const std::size_t peek = BinaryLine(after, l2);
+                if (!frd_starts_with(l2, " -5"))
+                    break;
+                if (frd_int(frd_field(l2, 33, 5), "a -5 record") == 1)
+                    ++calculated;
+                after = peek;
+            }
+            block.mDataComps =
+                static_cast<std::size_t>(std::max<std::int64_t>(ncomps - calculated, 0));
+            block.mBinary = true;
+            block.mRealBytes = real_bytes;
+            block.mNumEntries = numnod;
+            block.mByteOffset = after;
+            const std::size_t rec = 4 + block.mDataComps * real_bytes;
+            BinaryRequire(after + numnod * rec, "result block");
+            frame->mBlocks.push_back(std::move(block));
+            return after + numnod * rec;
+        }
+        return next;
+    }
+
+    /// Binary twin of ReadBlock: raw `[int32 id][DataComps reals]` records, one per
+    /// entry, no line markers.
+    void ReadBlockBinary(const FrdBlock& rBlock,
+                         const std::unordered_map<std::int64_t, std::int64_t>& rIndex,
+                         std::vector<double>& rOut) const {
+        const std::size_t nc = rBlock.mDataComps;
+        const std::size_t rec = 4 + nc * rBlock.mRealBytes;
+        const char* base = mText.data() + rBlock.mByteOffset;
+        for (std::size_t i = 0; i < rBlock.mNumEntries; ++i) {
+            const char* r = base + i * rec;
+            const std::int64_t node = BinaryReadInt32(r);
+            const auto it = rIndex.find(node);
+            if (it == rIndex.end())
+                frd_fail("result for " + rBlock.mName + " refers to undefined node " +
+                         std::to_string(node));
+            double* row = rOut.data() + static_cast<std::size_t>(it->second) * nc;
+            for (std::size_t k = 0; k < nc; ++k)
+                row[k] = BinaryReadReal(r + 4 + k * rBlock.mRealBytes, rBlock.mRealBytes);
         }
     }
 
@@ -58784,50 +59258,6 @@ private:
     }
 };
 
-double frd_mises(const double* pT) {
-    const double xx = pT[0], yy = pT[1], zz = pT[2], xy = pT[3], yz = pT[4], xz = pT[5];
-    return std::sqrt(0.5 * ((xx - yy) * (xx - yy) + (yy - zz) * (yy - zz) + (zz - xx) * (zz - xx) +
-                            6.0 * (xy * xy + yz * yz + xz * xz)));
-}
-
-/// Eigenvalues of the symmetric tensor (xx yy zz xy yz zx), ascending, by cyclic Jacobi.
-void frd_principal(const double* pT, double* pOut) {
-    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
-    for (int sweep = 0; sweep < 60; ++sweep) {
-        const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
-        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
-        if (off <= 1e-17 * diag || off == 0.0)
-            break;
-        for (int p = 0; p < 2; ++p) {
-            for (int q = p + 1; q < 3; ++q) {
-                if (a[p][q] == 0.0)
-                    continue;
-                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0);
-                const double s = t * c;
-                for (int k = 0; k < 3; ++k) {
-                    const double akp = a[k][p];
-                    const double akq = a[k][q];
-                    a[k][p] = c * akp - s * akq;
-                    a[k][q] = s * akp + c * akq;
-                }
-                for (int k = 0; k < 3; ++k) {
-                    const double apk = a[p][k];
-                    const double aqk = a[q][k];
-                    a[p][k] = c * apk - s * aqk;
-                    a[q][k] = s * apk + c * aqk;
-                }
-            }
-        }
-    }
-    pOut[0] = a[0][0];
-    pOut[1] = a[1][1];
-    pOut[2] = a[2][2];
-    std::sort(pOut, pOut + 3);
-}
-
 NDArray frd_scalar_array(DType Type, double Value) {
     NDArray out(Type, {std::size_t{1}});
     if (Type == DType::Float64)
@@ -58954,7 +59384,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
             NDArray data(DType::Float64, {npts});
             double* out = data.As<double>();
             for (std::size_t i = 0; i < npts; ++i)
-                out[i] = frd_mises(values.data() + i * 6);
+                out[i] = detail::sym3_mises(values.data() + i * 6);
             mesh.AddPointData(name + "_mises", std::move(data));
         }
         if (want_principal) {
@@ -58966,7 +59396,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
                 for (int k = 0; k < 6; ++k)
                     finite = finite && std::isfinite(t[k]);
                 if (finite)
-                    frd_principal(t, out + i * 3);
+                    detail::sym3_principal(t, out + i * 3);
                 else
                     std::fill(out + i * 3, out + i * 3 + 3,
                               std::numeric_limits<double>::quiet_NaN());
@@ -100529,6 +100959,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
           "Suffix"}},
+        {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
         {"ToCell", {"Names"}},
         {"ToPoint", {"Names", "Weight"}},
     };
@@ -101341,6 +101772,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.nan_replacement = pipe_number(rStep, "NanReplacement", 0.0);
         opts.suffix = pipe_text(rStep, "Suffix", "");
         Mesh out = data_condition(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "TensorInvariants") {
+        TensorInvariantsOptions opts;
+        opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
+        opts.names = pipe_svec(rStep, "Names");
+        const std::string outputs_str = pipe_text(rStep, "Outputs", "");
+        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.prefix = pipe_text(rStep, "Prefix", "");
+        opts.suffix = pipe_text(rStep, "Suffix", "");
+        opts.overwrite = pipe_flag(rStep, "Overwrite", true);
+        Mesh out = tensor_invariants(mesh, opts);
         pipe_push_step(rReport, rStep);
         return out;
     }
@@ -112226,6 +112670,249 @@ void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/surface.cpp =====
+// ===== begin src/cpp/src/operations/tensor_invariants.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Reads row @p r (0-based) of a 6- or 9-component array into the
+/// `xx yy zz xy yz zx` order `detail::sym3_*` expects, symmetrizing the
+/// off-diagonal terms for a 9-component input. Returns false (sym left
+/// untouched) when any source component is non-finite.
+bool tinv_read_symmetric(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pSym) {
+    double t[9];
+    for (std::size_t k = 0; k < Ncomp; ++k)
+        t[k] = detail::read_double(rArray, r * Ncomp + k);
+    for (std::size_t k = 0; k < Ncomp; ++k)
+        if (!std::isfinite(t[k]))
+            return false;
+    if (Ncomp == 6) {
+        for (int k = 0; k < 6; ++k)
+            pSym[k] = t[k];
+        return true;
+    }
+    // 9-component row-major: xx xy xz yx yy yz zx zy zz.
+    pSym[0] = t[0];
+    pSym[1] = t[4];
+    pSym[2] = t[8];
+    pSym[3] = 0.5 * (t[1] + t[3]);
+    pSym[4] = 0.5 * (t[5] + t[7]);
+    pSym[5] = 0.5 * (t[2] + t[6]);
+    return true;
+}
+
+/// The (unsymmetrized) hydrostatic mean of the tensor's own diagonal.
+double tinv_hydrostatic(const NDArray& rArray, std::size_t Ncomp, std::size_t r) {
+    const double xx = detail::read_double(rArray, r * Ncomp + 0);
+    const double yy = detail::read_double(rArray, r * Ncomp + (Ncomp == 6 ? 1 : 4));
+    const double zz = detail::read_double(rArray, r * Ncomp + (Ncomp == 6 ? 2 : 8));
+    if (!std::isfinite(xx) || !std::isfinite(yy) || !std::isfinite(zz))
+        return std::numeric_limits<double>::quiet_NaN();
+    return (xx + yy + zz) / 3.0;
+}
+
+/// Number of rows of a Ncomp-wide array.
+std::size_t tinv_nrows(const NDArray& rArray, std::size_t Ncomp) {
+    return Ncomp > 0 ? rArray.Size() / Ncomp : 0;
+}
+
+NDArray tinv_mises(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        out[r] = tinv_read_symmetric(rSrc, Ncomp, r, sym)
+                     ? detail::sym3_mises(sym)
+                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_principal(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{3}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        if (tinv_read_symmetric(rSrc, Ncomp, r, sym))
+            detail::sym3_principal(sym, out + r * 3);
+        else
+            for (int k = 0; k < 3; ++k)
+                out[r * 3 + k] = std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_hydrostatic_array(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) { out[r] = tinv_hydrostatic(rSrc, Ncomp, r); });
+    return dst;
+}
+
+NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst = NDArray::Uninit(DType::Float64, rSrc.Shape());
+    double* out = dst.As<double>();
+    const std::size_t yy_idx = Ncomp == 6 ? 1 : 4;
+    const std::size_t zz_idx = Ncomp == 6 ? 2 : 8;
+    parallel_for(nrows, [&](std::size_t r) {
+        const double h = tinv_hydrostatic(rSrc, Ncomp, r);
+        for (std::size_t k = 0; k < Ncomp; ++k) {
+            const double v = detail::read_double(rSrc, r * Ncomp + k);
+            const bool diag = (k == 0 || k == yy_idx || k == zz_idx);
+            out[r * Ncomp + k] = (diag && std::isfinite(v) && std::isfinite(h)) ? v - h : v;
+        }
+    });
+    return dst;
+}
+
+/// Whether an array's trailing component count is one `tensor_invariants` can
+/// process.
+bool tinv_is_tensor_shaped(const NDArray& rArray) {
+    const std::size_t nc = data_num_components(rArray);
+    return nc == 6 || nc == 9;
+}
+
+}  // namespace
+
+TensorInvariant tensor_invariant_from_name(const std::string& rName) {
+    unsigned mask = 0;
+    std::size_t start = 0;
+    bool any = false;
+    while (start <= rName.size()) {
+        const std::size_t comma = rName.find(',', start);
+        const std::string tok = rName.substr(start, comma == std::string::npos ? std::string::npos
+                                                                                : comma - start);
+        if (tok == "mises")
+            mask |= static_cast<unsigned>(TensorInvariant::Mises);
+        else if (tok == "principal")
+            mask |= static_cast<unsigned>(TensorInvariant::Principal);
+        else if (tok == "hydrostatic")
+            mask |= static_cast<unsigned>(TensorInvariant::Hydrostatic);
+        else if (tok == "deviatoric")
+            mask |= static_cast<unsigned>(TensorInvariant::Deviatoric);
+        else if (tok == "all")
+            mask |= static_cast<unsigned>(TensorInvariant::All);
+        else
+            throw std::invalid_argument(
+                "meshio++: unknown tensor invariant '" + tok +
+                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric' or 'all')");
+        any = true;
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    if (!any)
+        throw std::invalid_argument("meshio++: tensor_invariant_from_name: empty list");
+    return static_cast<TensorInvariant>(mask);
+}
+
+Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) {
+    if (rOpts.location == DataLocation::Field)
+        throw std::invalid_argument(
+            "meshio++: tensor_invariants: field_data has no per-row tensor to reduce");
+
+    std::vector<std::string> names = rOpts.names;
+    if (names.empty()) {
+        for (const std::string& n : data_names(rMesh, rOpts.location)) {
+            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
+                                                                        : rMesh.CellData(n, 0);
+            if (rOpts.location == DataLocation::Cell && rMesh.CellDataNumBlocks(n) == 0)
+                continue;
+            if (tinv_is_tensor_shaped(src))
+                names.push_back(n);
+        }
+    } else {
+        for (const std::string& n : names) {
+            if (!data_has(rMesh, rOpts.location, n))
+                throw std::invalid_argument(data_unknown_key_message(rMesh, rOpts.location, n));
+            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
+                                                                        : rMesh.CellData(n, 0);
+            if (!tinv_is_tensor_shaped(src))
+                throw std::invalid_argument(
+                    "meshio++: tensor_invariants: '" + n + "' has " +
+                    std::to_string(data_num_components(src)) +
+                    " component(s); expected 6 (symmetric) or 9 (general 3x3)");
+        }
+    }
+
+    // Only ever called for the Point branch below (Field is rejected up front,
+    // Cell has its own per-block helper), so it only needs AddPointData.
+    auto add_point = [&](Mesh& rOut, const std::string& rTarget, NDArray Value) {
+        if (!rOpts.overwrite && data_has(rOut, DataLocation::Point, rTarget))
+            throw std::invalid_argument("meshio++: tensor_invariants: '" + rTarget +
+                                        "' already exists (overwrite=false)");
+        rOut.AddPointData(rTarget, std::move(Value));
+    };
+
+    Mesh out = detail::clone_mesh(rMesh);
+
+    for (const std::string& name : names) {
+        const std::string base = rOpts.prefix + name;
+
+        if (rOpts.location == DataLocation::Cell) {
+            const std::size_t nblocks = rMesh.NumCellBlocks();
+            if (rMesh.CellDataNumBlocks(name) != nblocks)
+                throw std::invalid_argument(
+                    "meshio++: tensor_invariants: cell_data '" + name + "' has " +
+                    std::to_string(rMesh.CellDataNumBlocks(name)) + " block(s) but the mesh has " +
+                    std::to_string(nblocks) + " cell block(s)");
+            if (nblocks == 0)
+                continue;
+            const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
+
+            auto add_cell = [&](const std::string& rSuffix,
+                                NDArray (*pFn)(const NDArray&, std::size_t)) {
+                const std::string target = base + rSuffix + rOpts.suffix;
+                if (!rOpts.overwrite && data_has(out, DataLocation::Cell, target))
+                    throw std::invalid_argument("meshio++: tensor_invariants: '" + target +
+                                                "' already exists (overwrite=false)");
+                std::vector<NDArray> blocks;
+                blocks.reserve(nblocks);
+                for (std::size_t b = 0; b < nblocks; ++b)
+                    blocks.push_back(pFn(rMesh.CellData(name, b), ncomp));
+                out.AddCellData(target, std::move(blocks));
+            };
+            if ((rOpts.outputs & TensorInvariant::Mises) != 0)
+                add_cell("_mises", tinv_mises);
+            if ((rOpts.outputs & TensorInvariant::Principal) != 0)
+                add_cell("_principal", tinv_principal);
+            if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
+                add_cell("_hydrostatic", tinv_hydrostatic_array);
+            if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
+                add_cell("_deviatoric", tinv_deviatoric);
+            continue;
+        }
+
+        const NDArray& src = rMesh.PointData(name);
+        const std::size_t ncomp = data_num_components(src);
+        if ((rOpts.outputs & TensorInvariant::Mises) != 0)
+            add_point(out, base + "_mises" + rOpts.suffix, tinv_mises(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Principal) != 0)
+            add_point(out, base + "_principal" + rOpts.suffix, tinv_principal(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
+            add_point(out, base + "_hydrostatic" + rOpts.suffix, tinv_hydrostatic_array(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
+            add_point(out, base + "_deviatoric" + rOpts.suffix, tinv_deviatoric(src, ncomp));
+    }
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/tensor_invariants.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>

@@ -140,8 +140,12 @@ def single_element_deck(name):
         "S, E",
         "*NODE PRINT, NSET=LOAD",
         "U",
-        "*END STEP",
     ]
+    if name in SOLIDS:
+        # Integration-point stresses in the .dat print: a different tensor order
+        # (sxx syy szz sxy sxz syz) and per-Gauss-point rather than nodal.
+        lines += ["*EL PRINT, ELSET=E", "S"]
+    lines.append("*END STEP")
     return "\n".join(lines) + "\n"
 
 
@@ -357,6 +361,23 @@ def cgx_short():
     return "\n".join(out) + "\n"
 
 
+# Decks that also get a binary (*NODE OUTPUT / *ELEMENT OUTPUT) variant: a linear
+# hex (c3d8, cross-checked byte-for-byte against its ASCII sibling), a quadratic hex
+# (c3d20, so the element-record node-count skip is exercised beyond the simplest
+# case) and the real multi-element cantilever (more than one node/element record, a
+# non-trivial numnod). *NODE OUTPUT/*ELEMENT OUTPUT mirror *NODE FILE/*EL FILE's own
+# syntax -- verified against ccx 2.23 -- except the keyword is "*ELEMENT OUTPUT", not
+# "*EL OUTPUT" (ccx 2.23 does not recognise that spelling and silently drops the
+# card with only a warning, not a refusal).
+BINARY_DECKS = ("c3d8", "c3d20", "cantilever_static")
+
+
+def _binary_variant(text):
+    return text.replace("*NODE FILE\n", "*NODE OUTPUT\n").replace(
+        "*EL FILE\n", "*ELEMENT OUTPUT\n"
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ccx", default=shutil.which("ccx"), help="path to the ccx solver")
@@ -369,6 +390,8 @@ def main():
     named["cantilever_modes"] = cantilever_deck("modes")
     for name, text in named.items():
         (decks / f"{name}.inp").write_text(text)
+    for name in BINARY_DECKS:
+        (decks / f"{name}_bin.inp").write_text(_binary_variant(named[name]))
     (OUT / "cgx_short.frd").write_text(cgx_short())
     if not args.ccx:
         print("ccx not found: decks and cgx_short.frd written, results not regenerated")
@@ -390,6 +413,19 @@ def main():
                 shutil.copy(dat, OUT / f"{name}.dat")
             elif (OUT / f"{name}.dat").exists():
                 (OUT / f"{name}.dat").unlink()
+    for name in BINARY_DECKS:
+        bname = f"{name}_bin"
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copy(decks / f"{bname}.inp", tmp)
+            run = subprocess.run(
+                [args.ccx, bname], cwd=tmp, capture_output=True, text=True
+            )
+            frd = pathlib.Path(tmp) / f"{bname}.frd"
+            if run.returncode != 0 or not frd.exists():
+                raise SystemExit(
+                    f"ccx failed on {bname}:\n{run.stdout[-800:]}{run.stderr[-800:]}"
+                )
+            shutil.copy(frd, OUT / f"{bname}.frd")
 
 
 if __name__ == "__main__":

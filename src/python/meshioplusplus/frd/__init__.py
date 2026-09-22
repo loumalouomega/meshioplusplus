@@ -3,6 +3,7 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from ._frd import read as _py_read
+from ._frd import read_dat
 
 
 def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
@@ -41,4 +42,4 @@ def read(filename, points_only=False, arrays=None, time_step=0, derived=False):
 
 register_format("frd", [".frd"], read, {})
 
-__all__ = ["read"]
+__all__ = ["read", "read_dat"]
