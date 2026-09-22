@@ -61,6 +61,7 @@
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
+#include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -3180,6 +3181,16 @@ finalizes.
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("time_step") = 0, py::arg("piece") = py::none(), py::arg("lenient") = false);
+    // MSC Nastran HDF5 results (.h5): read-only. `time_step` selects the result
+    // domain; `arrays`/`points_only` skip the result tables not asked for.
+    m.def(
+        "nastran_h5_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_h5(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
 
     // Transient (time-series) VTKHDF -- the C++ `VtkhdfTimeSeriesWriter`, exposed
     // explicitly like `XdmfTimeSeriesWriter` above (no shim swap under the Python

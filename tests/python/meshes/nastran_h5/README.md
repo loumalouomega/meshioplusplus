@@ -14,7 +14,7 @@ They come unmodified from the [pyNastran](https://github.com/SteveDoyle2/pyNastr
 | `buckling_solid_shell_bar.h5` | `models/sol_101_elements/buckling_solid_shell_bar.h5` | 105 | tables covering different domain sets (static + buckling) |
 | `time_thermal_elements.h5` | `models/elements/time_thermal_elements.h5` | 159 | scalar `TEMPERATURE`, a card with no cell type (`CHBDYE`) |
 
-The eigenvectors and displacements were checked against pyNastran 1.4.1's own `.h5` reader (`pyNastran/dev/h5`): identical, bit for bit, on every GRID of every domain. The `.op2` files next to them upstream come from a 2017 run of a different model revision, so they are *not* a reference for these files.
+The eigenvectors and displacements were checked against pyNastran 1.4.1's own `.h5` reader (`pyNastran/dev/h5`): identical, bit for bit, on every GRID of every domain. `pynastran_reference.npz` freezes that reading (node ids and six components per nodal vector table and domain, 38 tables), so `test_nastran_h5.py` repeats the check without pyNastran installed; `tools/gen_nastran_h5_reference.py` regenerates it. The `.op2` files next to them upstream come from a 2017 run of a different model revision, so they are *not* a reference for these files.
 
 ## pyNastran licence
 

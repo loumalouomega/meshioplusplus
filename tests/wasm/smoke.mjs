@@ -2370,6 +2370,17 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('lsdyna') && writers.includes('lsdyna'));
     // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
     assert.ok(readers.includes('frd') && !writers.includes('frd'));
+    // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
+    assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
+});
+
+step('.h5 is MSC Nastran HDF5: another HDF5 file under that name is refused, not misread', () => {
+    // A real MSC file would be a Git-LFS fixture (see the HDF5 section above), so
+    // this proves the dispatch and the schema check: a VTKHDF file renamed .h5
+    // reaches the Nastran reader, which names what it expected.
+    m.writeMesh('/not-nastran.vtkhdf', m.readMesh('/tri.obj'), 'vtkhdf');
+    m.FS.writeFile('/not-nastran.h5', m.FS.readFile('/not-nastran.vtkhdf'));
+    assert.throws(() => m.readMesh('/not-nastran.h5'), /MSC Nastran HDF5/);
 });
 
 step('.vti round-trips a lattice through MEMFS', () => {

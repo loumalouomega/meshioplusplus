@@ -31,6 +31,14 @@ license: MIT
 # meshioplusplus/pcd/) implements the published PCD v0.7 layout; its LZF codec is an
 # independent implementation of the liblzf stream format, and no liblzf code is copied.
 #
+# Third-party test data: tests/python/meshes/nastran_h5/*.h5 are MSC Nastran 2020 result
+# files from the pyNastran repository (https://github.com/SteveDoyle2/pyNastran, models/),
+# Copyright (c) 2011-2026 Steven Doyle, redistributed unmodified under the BSD-3-Clause
+# licence, whose text sits beside them in that directory's README.md. pynastran_reference.npz
+# there is pyNastran's own reading of them, frozen by tools/gen_nastran_h5_reference.py.
+# BSD-3-Clause is permissive and imposes no obligation on the rest of this repository. The
+# `nastran_h5` reader reads the published MSC schema; no pyNastran code is copied.
+#
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/
 # sell it, but distributing it or a modified version must stay GPL-3.0 with

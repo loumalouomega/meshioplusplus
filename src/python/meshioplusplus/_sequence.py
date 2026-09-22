@@ -115,6 +115,11 @@ _SERIES_WRITERS = ("xdmf", "gid", "usd", "vtkhdf", "pvd")
 # **`unv` joined in v15.6.0.** Its steps are the (analysis, step, value) keys of
 # its 2414/55/56 results and the abscissa samples of its 58 functions; like
 # `frd`, the C++ metadata reader parses the whole file.
+#
+# **`nastran_h5` joined in v15.7.0.** Its steps are the result domains that the
+# INDEX tables of its nodal and element results reference; the C++ metadata
+# reader reads the model and the first domain, and the Python twin attaches
+# `mesh.time_values` the same way.
 _TIME_CAPABLE_READERS = (
     "xdmf",
     "exodus",
@@ -128,6 +133,7 @@ _TIME_CAPABLE_READERS = (
     "openfoam",
     "vtkhdf",
     "pvd",
+    "nastran_h5",
     "frd",
     "unv",
 )
