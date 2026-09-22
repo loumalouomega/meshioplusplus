@@ -26,6 +26,7 @@ from . import (
     _interpolate,
     _isosurface,
     _merge,
+    _normals,
     _optimize_volume,
     _partition,
     _pipeline,
@@ -108,6 +109,13 @@ def main(argv=None):
     )
     _curvature.add_args(parser)
     parser.set_defaults(func=_curvature.curvature_cmd)
+
+    parser = subparsers.add_parser(
+        "normals",
+        help="Point and cell normals of a surface, optionally split at creases",
+    )
+    _normals.add_args(parser)
+    parser.set_defaults(func=_normals.normals_cmd)
 
     parser = subparsers.add_parser(
         "repair",

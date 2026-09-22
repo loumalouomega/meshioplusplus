@@ -1684,6 +1684,59 @@ function compute_curvature(m::Mesh; mean::Bool=true, gaussian::Bool=true,
      total_angle_defect=Float64(rep.total_angle_defect))
 end
 
+const _NORMALS_WEIGHTS = Dict(:angle => Int32(0), :area => Int32(1))
+
+"""
+    compute_normals(m; point_normals=true, cell_normals=false, weight=:angle,
+                    split_angle=nothing, record_parent_ids=false, region="")
+        -> (; mesh, quality, num_isolated, num_undefined, num_degenerate,
+             num_split_points, num_added_points)
+
+Point and/or cell normals of a surface mesh, optionally splitting vertices at
+creases so every point carries exactly one normal.
+
+Writes `normals` as point data `(n, 3)` and, with `cell_normals`, as cell data.
+`split_angle=nothing` gives one smooth normal per point; a number of degrees in
+`[0, 180]` duplicates points wherever the surface creases by more than that,
+appending the copies after the original points (cells keep their numbering).
+`record_parent_ids` adds `normals:parent_point`. `weight` is `:angle` (default)
+or `:area`.
+
+Never reorients: check `quality.inconsistent_pairs` before trusting a normal; a
+nonzero count means some normals average faces that disagree about which side is
+out. A volume block is refused by name pointing at `extract_surface`, a
+higher-order one pointing at `convert_cells`' `:linearize`.
+"""
+function compute_normals(m::Mesh; point_normals::Bool=true, cell_normals::Bool=false,
+                         weight::Symbol=:angle,
+                         split_angle::Union{Nothing,Real}=nothing,
+                         record_parent_ids::Bool=false, region::AbstractString="")
+    haskey(_NORMALS_WEIGHTS, weight) ||
+        throw(ArgumentError("meshio++: normals: unknown weight '$(weight)' " *
+                            "(expected :angle or :area)"))
+    report = Ref{_CNormalsReport}()
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    ptr = GC.@preserve region_c begin
+        opts = _CNormalsOpts(Cstring(pointer(region_c)),
+                             point_normals ? Int32(1) : Int32(0),
+                             cell_normals ? Int32(1) : Int32(0),
+                             _NORMALS_WEIGHTS[weight],
+                             split_angle === nothing ? Int32(0) : Int32(1),
+                             split_angle === nothing ? 30.0 : Float64(split_angle),
+                             record_parent_ids ? Int32(1) : Int32(0), Int32(0),
+                             (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_compute_normals), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CNormalsOpts}, Ptr{_CNormalsReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), quality=_quality_tuple(rep.quality),
+     num_isolated=Int(rep.num_isolated), num_undefined=Int(rep.num_undefined),
+     num_degenerate=Int(rep.num_degenerate), num_split_points=Int(rep.num_split_points),
+     num_added_points=Int(rep.num_added_points))
+end
+
 _quality_tuple(q::_CSurfaceQuality) =
     (boundary_edges=Int(q.boundary_edges), non_manifold_edges=Int(q.non_manifold_edges),
      inconsistent_pairs=Int(q.inconsistent_pairs),

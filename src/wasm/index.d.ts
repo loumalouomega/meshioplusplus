@@ -1247,7 +1247,7 @@ export interface MeshioPlusPlusModule {
    *
    * Prefer this over a hardcoded table when building a file-picker filter or a
    * "convert to" menu: the two lists genuinely differ (`openfoam` is
-   * read-only, `svg` and `tikz` are write-only), and the set depends on how
+   * read-only, `svg`, `tikz` and `gltf` are write-only), and the set depends on how
    * the artifact was built -- an official build carries the HDF5/netCDF-backed
    * formats, one built with `--without-hdf5` does not.
    */
@@ -1905,6 +1905,38 @@ export interface MeshioPlusPlusModule {
       degenerateTriangles: number;
       watertight: boolean;
     };
+  };
+
+  /**
+   * Point and cell normals of a surface mesh, optionally splitting vertices at
+   * creases so every point carries exactly one normal. Writes `normals` as
+   * point data `(n, 3)` and, with `cellNormals`, as cell data. A negative
+   * `splitAngle` (the default) gives one smooth normal per point; a value in
+   * `[0, 180]` duplicates points wherever the surface creases by more than that
+   * many degrees, appending the copies after the original points (cells keep
+   * their numbering). `weight` is `'angle'` or `'area'`. Never reorients: check
+   * `quality.inconsistentPairs`. A volume block is refused naming
+   * `extractSurface`, a higher-order one naming `convertCells`. See
+   * doc/normals.md.
+   * @throws {Error} on a non-surface input, an unknown region or weight, or a
+   *   split angle above 180.
+   */
+  computeNormals(
+    mesh: Mesh,
+    pointNormals?: boolean,
+    cellNormals?: boolean,
+    weight?: 'angle' | 'area',
+    splitAngle?: number,
+    recordParentIds?: boolean,
+    region?: string,
+  ): {
+    mesh: Mesh;
+    numIsolated: number;
+    numUndefined: number;
+    numDegenerate: number;
+    numSplitPoints: number;
+    numAddedPoints: number;
+    quality: SurfaceQualityInfo;
   };
 
   /**

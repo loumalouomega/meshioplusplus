@@ -21,6 +21,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 |
+| [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | — | ✓ | — |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` |
 | [`hmf`](./formats/hmf.md) | `.hmf` | ✓ | ✓ | `h5py` |
@@ -106,6 +107,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `stl` / `ply` and volume meshes:** both writers extract and write the boundary **skin** of a 3D volume mesh by default (`skin=True` — see [Skin extraction](./extract_skin.md); STL additionally triangulates quads, PLY compacts the vertex table). Pass `skin=False` for the legacy behavior (volume cells dropped with a warning).
 
+**Note on `gltf`** (v15.4.0): Write-only. The **surface** of the mesh as glTF 2.0 for the web, three.js and Blender — the skin of volume cells, 2-D cells, `line` cells as `LINES` and `vertex` cells or a cell-less point cloud as `POINTS`, one named node per cell region. `.glb` writes the binary container, `.gltf` JSON with a `.bin` beside it. Normals are per vertex, so points are duplicated at creases (`split_angle`, sharing the smooth-fan kernel of [`compute_normals`](./normals.md)); every one-to-four component `point_data` array is exported raw as `_NAME`; `color_by` bakes a field through a colormap into linear `COLOR_0` with an unlit material. Y-up, `float32`; the axis change, unit scale and recentring offset live on the root node, not in the coordinates. The C++ core and the Python reference write identical bytes and the output passes the Khronos glTF-Validator with zero errors and warnings; see [glTF](./formats/gltf.md).
+
 **Note on `svg`:** Write-only. Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin (see [Skin extraction](./extract_skin.md)) through an orthographic camera (`azimuth`/`elevation`/`roll`, default the CAD isometric view) with painter's-algorithm depth ordering. C++ core with a Python fallback.
 
 **Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
@@ -146,6 +149,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `flux` | None named — an unlabeled free-text line the reader skips (keyed lookup, not positional) | Top of file | Yes |
 | `freefem` | None (fixed positional numeric header) | n/a | — |
 | `gid` | `# Name: value` "user attribute" lines (ascii/binary); an HDF5 group attribute (`hdf5` flavour) | One per mesh/result "block", via `GiD_fWriteMeshUserAttribute`/`GiD_fWriteResultUserAttribute` | Yes (ascii confirmed; the `hdf5` flavour's result-side attribute placement is not independently verified — see `gid.md`) |
+| `gltf` | `asset.generator` (the tag) and, with a scope open, `asset.extras["meshioplusplus:provenance"]` (the full block) | The `asset` object | — |
 | `gmsh` / `gmsh22` | `$Comments`/`$EndComments` section (spec-legal; our reader skips it, neither writer emits one) | Anywhere between sections | — |
 | `h5m` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
 | `hmf` | None (HDF5 container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
@@ -393,6 +397,24 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 ### OpenFOAM (`.foam`)
 
 `meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh)` — no extra options. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer).
+
+### glTF (`.glb`, `.gltf`)
+
+```python
+meshioplusplus.gltf.write(filename, mesh,
+    split_angle=30.0,       # degrees in [0, 180]: crease angle above which points are duplicated
+    normal_weight="angle",  # "angle" or "area"
+    normals=True,           # False: no NORMAL, shared vertices
+    fields=True,            # point_data (1-4 components) as raw _NAME attributes
+    color_by=None,          # point_data / cell_data array baked into COLOR_0 (linear, unlit material)
+    component=None, cmap="viridis", vmin=None, vmax=None, nan_color="#808080", unlit=True,
+    up_axis="auto",         # "auto", "x", "y", "z": the source axis that points up
+    recenter=True,          # subtract the bounding-box centre (carried in the root node)
+    scale=1.0,              # source unit -> metres (root node scale)
+    by_region=True,         # one node per cell region
+    container="auto",       # "auto" (suffix), "glb" or "gltf"
+)
+```
 
 ### PCD (`.pcd`)
 

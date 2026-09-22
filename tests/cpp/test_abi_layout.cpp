@@ -78,7 +78,9 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -244,6 +246,15 @@ MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 40, 8);
 // unpinned "looks free" to grow, then does). CurvatureResult is deliberately
 // NOT pinned, embedding a `Mesh` like every other *Result.
 MIO_ABI_LAYOUT(meshioplusplus::CurvatureOptions, 40, 8);
+
+// NormalsOptions is passed by const-ref through the exported
+// `compute_normals()`, pinned from the release that introduces it for the same
+// reason. NormalsResult is deliberately NOT pinned, embedding a `Mesh`.
+MIO_ABI_LAYOUT(meshioplusplus::NormalsOptions, 64, 8);
+
+// GltfWriteOptions is passed by const-ref through the exported `write_gltf()`,
+// pinned from the release that introduces it (the "pin in advance" lesson).
+MIO_ABI_LAYOUT(meshioplusplus::GltfWriteOptions, 168, 8);
 
 // The v10.38.0 trio, pinned from the release that introduces them for the
 // same reason. RepairOptions: five bools, an int64 and a double (24/8).

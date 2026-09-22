@@ -199,6 +199,10 @@ R CMD check --as-cran meshioplusplus_*.tar.gz
 
 with `PKG_CONFIG_PATH` and `LD_LIBRARY_PATH` pointed at the install prefix. The `testthat` suite mirrors the Julia one on the same deliberately non-square fixture, so a transposed mapping or a missed shift cannot cancel out.
 
+## v15.4.0 additions
+
+- `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).
+
 ## v10.9.0 additions
 
 - `mio_hessian(mesh, array, method = "green-gauss", location = "cell", output = "", overwrite = FALSE)` — the Hessian (second derivative) of a **scalar point-data** field, `mio_gradient()`'s companion one order further. A composition of TWO `mio_gradient()` calls, not a new numerical kernel: the field is differentiated once (point location), then that `(n, 3)` gradient is differentiated again with the default `"gradient"` operator, producing `(n, 9)` — the flattened row-major 3x3 Hessian, `H[i,j]` at index `i*3+j`. `method` is forwarded to BOTH internal passes. Returns a list of `mesh`, `num_skipped` and `num_fallback`. See [`doc/hessian.md`](hessian.md).

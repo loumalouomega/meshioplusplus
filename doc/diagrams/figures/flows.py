@@ -940,7 +940,9 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("glTF export", "S"),
+                ("half-gaps of shipped formats", "S"),
+                ("UNV · .mail · OptiStruct", "S"),
+                ("Nastran .h5 · COMSOL · Elmer", "M"),
             ],
             [],
         ),
@@ -989,7 +991,7 @@ def roadmap_map():
             [
                 ("box · sphere · cylinder · disk", "S"),
                 ("extrude · revolve", "M"),
-                ("normals · edges · Hausdorff", "S"),
+                ("feature edges · Hausdorff", "S"),
                 ("quality gate · check · --json", "M"),
             ],
             [(0, 1)],

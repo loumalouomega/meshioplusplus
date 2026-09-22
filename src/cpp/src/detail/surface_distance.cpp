@@ -32,6 +32,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
+#include "meshioplusplus/detail/surface_normals.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
@@ -66,22 +67,6 @@ std::vector<char> sd_region_mask(const Mesh& rMesh, const std::string& rRegion) 
             mask[static_cast<std::size_t>(g)] = 1;
     }
     return mask;
-}
-
-// The angle triangle (a, b, c) subtends at corner a. Used only as a positive
-// weight on a unit normal, so its last-ulp behaviour cannot change a sign
-// except where the distance is already zero to within rounding -- see
-// doc/sdf.md on the one place the numpy twin excludes.
-double sd_corner_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const Vec3 u = vec3_sub(rB, rA);
-    const Vec3 v = vec3_sub(rC, rA);
-    const double nu = vec3_norm(u);
-    const double nv = vec3_norm(v);
-    if (!(nu > 0.0) || !(nv > 0.0))
-        return 0.0;
-    double c = vec3_dot(u, v) / (nu * nv);
-    c = c < -1.0 ? -1.0 : (c > 1.0 ? 1.0 : c);
-    return std::acos(c);
 }
 
 }  // namespace
@@ -218,7 +203,6 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
 
     DistanceQuery q;
     q.mpSoup = &rSoup;
-    q.mFaceNormal.resize(ntri);
 
     // Bucket size. It affects only how many candidates each query examines --
     // never the answer, because every comparison below is totally ordered -- so
@@ -288,13 +272,8 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
     // and in ascending (triangle, corner) order: summing unit normals in a
     // different order changes the last bits, and a last-bit change can flip the
     // sign of a query point sitting almost exactly on the surface.
-    q.mVertexNormal.assign(rSoup.mPoints.size(), Vec3{0.0, 0.0, 0.0});
-    for (std::size_t t = 0; t < ntri; ++t) {
-        const Vec3& a = rSoup.mCorners[t * 3 + 0];
-        const Vec3& b = rSoup.mCorners[t * 3 + 1];
-        const Vec3& c = rSoup.mCorners[t * 3 + 2];
-        q.mFaceNormal[t] = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
-    }
+    q.mFaceNormal = soup_face_normals(rSoup);
+    q.mVertexNormal = accumulate_vertex_normals(rSoup, q.mFaceNormal, rOptions.mWeight);
     for (std::size_t t = 0; t < ntri; ++t) {
         const Vec3 n = q.mFaceNormal[t];
         const double len = vec3_norm(n);
@@ -302,15 +281,7 @@ DistanceQuery build_distance_query(const TriangleSoup& rSoup,
             continue;  // degenerate: no direction to contribute
         const Vec3 unit = vec3_scale(n, 1.0 / len);
         const std::array<std::int64_t, 3>& v = rSoup.mVertices[t];
-        const Vec3* corner = &rSoup.mCorners[t * 3];
         for (std::size_t i = 0; i < 3; ++i) {
-            const double w =
-                rOptions.mWeight == SdfPseudonormalWeight::Angle
-                    ? sd_corner_angle(corner[i], corner[(i + 1) % 3], corner[(i + 2) % 3])
-                    : len;  // area weighting: |cross| is twice the area, a positive scale
-            Vec3& acc = q.mVertexNormal[static_cast<std::size_t>(v[i])];
-            acc = vec3_add(acc, vec3_scale(unit, w));
-
             const std::int64_t p = v[i];
             const std::int64_t r = v[(i + 1) % 3];
             const SurfaceEdgeKey key{p < r ? p : r, p < r ? r : p};

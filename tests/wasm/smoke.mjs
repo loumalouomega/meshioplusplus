@@ -1305,6 +1305,47 @@ step('computeCurvature satisfies Gauss-Bonnet on a closed surface', () => {
     assert.throws(() => m.computeCurvature(skin, true, true, 'nope'));
 });
 
+step('gltf is a write-only format that writes a valid GLB header', () => {
+    const skin = m.extractSurface(cube);
+    // The suffix picks the binary container; there is no reader.
+    m.writeMesh('/cube.glb', skin);
+    const bytes = m.FS.readFile('/cube.glb');
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    assert.equal(view.getUint32(0, true), 0x46546C67); // 'glTF'
+    assert.equal(view.getUint32(4, true), 2);
+    assert.equal(view.getUint32(8, true), bytes.byteLength);
+    assert.equal(view.getUint32(16, true), 0x4E4F534A); // the JSON chunk first
+    const jsonLength = view.getUint32(12, true);
+    const json = JSON.parse(Buffer.from(bytes.subarray(20, 20 + jsonLength)).toString('utf8'));
+    assert.ok(json.asset.generator.startsWith('Written by meshio++'));
+    assert.equal(json.meshes[0].primitives[0].mode, 4);
+    const formats = m.availableFormats ? m.availableFormats() : null;
+    if (formats) {
+        assert.ok(formats.writers.includes('gltf'));
+        assert.ok(!formats.readers.includes('gltf'));
+    }
+    assert.throws(() => m.readMesh('/cube.glb'));
+});
+
+step('computeNormals splits a closed surface at its creases', () => {
+    // The cube's boundary skin: 8 corners smooth, 24 once split at 30 degrees,
+    // and every split normal is axis-aligned.
+    const skin = m.extractSurface(cube);
+    const smooth = m.computeNormals(skin);
+    assert.equal(smooth.mesh.points.length, skin.points.length);
+    assert.equal(smooth.numAddedPoints, 0);
+    assert.equal(smooth.quality.watertight, true);
+    const split = m.computeNormals(skin, true, true, 'angle', 30, true);
+    assert.equal(split.mesh.points.length / 3, 24); // `points` is flat: 3 numbers per point
+    assert.equal(split.numAddedPoints, 16);
+    assert.equal(split.numSplitPoints, 8);
+    assert.ok(split.mesh.point_data['normals']);
+    assert.ok(split.mesh.point_data['normals:parent_point']);
+    // An unknown weight and an out-of-range angle are refused by name.
+    assert.throws(() => m.computeNormals(skin, true, false, 'nope'));
+    assert.throws(() => m.computeNormals(skin, true, false, 'angle', 270));
+});
+
 step('computeCurvature is reachable as a convertSurfaceOps pipeline step', () => {
     const skin = m.extractSurface(cube);
     m.writeMesh('/curv.vtu', skin);

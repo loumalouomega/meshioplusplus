@@ -43,6 +43,7 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -256,6 +257,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Curvature",
          {"Mean", "Gaussian", "DualArea", "IncludeBoundary", "RecordArea", "RecordPrincipal",
           "Region"}},
+        {"Normals",
+         {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -722,6 +725,33 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
                 " edge pair(s) wind the same way, so the sign of 'curvature:mean' is not "
                 "trustworthy");
         return std::move(cr.mMesh);
+    }
+    if (op == "Normals") {
+        // An absent SplitAngle means one smooth normal per point; a number is
+        // the crease angle in degrees, and the split appends points.
+        NormalsOptions opts;
+        opts.mPointNormals = pipe_flag(rStep, "PointNormals", true);
+        opts.mCellNormals = pipe_flag(rStep, "CellNormals", false);
+        opts.mWeight = sdf_weight_from_name(pipe_text(rStep, "Weight", "angle"));
+        if (pipe_find(rStep, "SplitAngle")) {
+            opts.mSplit = true;
+            opts.mSplitAngle = pipe_number(rStep, "SplitAngle", 30.0);
+        }
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        NormalsResult nr = compute_normals(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumIsolated", static_cast<double>(nr.mNumIsolated)},
+                        {"NumUndefined", static_cast<double>(nr.mNumUndefined)},
+                        {"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
+                        {"NumSplitPoints", static_cast<double>(nr.mNumSplitPoints)},
+                        {"NumAddedPoints", static_cast<double>(nr.mNumAddedPoints)}});
+        if (nr.mQuality.mInconsistentPairs > 0 && !opts.mSplit)
+            rReport.mWarnings.push_back(
+                "normals: " + std::to_string(nr.mQuality.mInconsistentPairs) +
+                " edge pair(s) wind the same way, so the normals there average faces that "
+                "disagree about which side is out");
+        return std::move(nr.mMesh);
     }
     if (op == "Repair") {
         RepairOptions opts;

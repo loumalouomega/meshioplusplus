@@ -69,6 +69,7 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/su2.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/tetgen.hpp"
@@ -95,6 +96,7 @@
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -1807,6 +1809,44 @@ PYBIND11_MODULE(_core, m) {
         py::arg("record_area") = false, py::arg("record_principal") = false,
         py::arg("region") = "");
 
+    // Point and cell normals of a surface, optionally splitting vertices at
+    // creases. See operations/normals.hpp.
+    m.def(
+        "compute_normals",
+        [](py::object pymesh, bool point_normals, bool cell_normals, const std::string& weight,
+           bool split, double split_angle, bool record_parent_ids, const std::string& region) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::NormalsOptions options;
+            options.mPointNormals = point_normals;
+            options.mCellNormals = cell_normals;
+            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            options.mSplit = split;
+            options.mSplitAngle = split_angle;
+            options.mRecordParentIds = record_parent_ids;
+            options.mRegion = region;
+            meshioplusplus::NormalsResult r = meshioplusplus::compute_normals(cpp, options);
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_isolated"] = r.mNumIsolated;
+            out["num_undefined"] = r.mNumUndefined;
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["num_split_points"] = r.mNumSplitPoints;
+            out["num_added_points"] = r.mNumAddedPoints;
+            py::dict q;
+            q["boundary_edges"] = r.mQuality.mBoundaryEdges;
+            q["non_manifold_edges"] = r.mQuality.mNonManifoldEdges;
+            q["inconsistent_pairs"] = r.mQuality.mInconsistentPairs;
+            q["degenerate_triangles"] = r.mQuality.mDegenerateTriangles;
+            q["watertight"] = r.mQuality.mWatertight;
+            out["quality"] = q;
+            return out;
+        },
+        py::arg("mesh"), py::arg("point_normals") = true, py::arg("cell_normals") = false,
+        py::arg("weight") = "angle", py::arg("split") = false, py::arg("split_angle") = 30.0,
+        py::arg("record_parent_ids") = false, py::arg("region") = "");
+
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.
     m.def(
@@ -3442,6 +3482,55 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         },
         py::arg("name"));
     m.def("colormap_names", []() { return meshioplusplus::detail::colormap_names(); });
+
+    // The inverse sRGB transfer function of every byte, as float32 bit patterns
+    // (what a colormap byte becomes in glTF's linear COLOR_0), exported so
+    // test_colormap.py can pin it against _colormap.SRGB_TO_LINEAR_BITS.
+    m.def("srgb_to_linear_table", []() {
+        const std::uint32_t* bits = meshioplusplus::detail::srgb_to_linear_bits();
+        return std::vector<std::uint32_t>(bits, bits + meshioplusplus::detail::kColormapSize);
+    });
+
+    // glTF 2.0 writer (write-only; .glb binary or .gltf + .bin, chosen by the
+    // suffix unless `container` says otherwise). Every option is passed by
+    // keyword from gltf/__init__.py; see formats/gltf.hpp.
+    m.def(
+        "gltf_write",
+        [](const std::string& path, py::object pymesh, const std::string& container,
+           const std::string& up_axis, const std::string& normal_weight, bool normals,
+           bool fields, bool recenter, bool by_region, bool unlit, double split_angle,
+           double scale, const std::string& color_by, const std::optional<int>& component,
+           const std::string& cmap, const std::optional<double>& vmin,
+           const std::optional<double>& vmax, const std::string& nan_color) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::GltfWriteOptions options;
+            options.mContainer = meshioplusplus::gltf_container_from_name(container);
+            options.mUpAxis = meshioplusplus::gltf_up_axis_from_name(up_axis);
+            options.mNormalWeight = meshioplusplus::sdf_weight_from_name(normal_weight);
+            options.mNormals = normals;
+            options.mFields = fields;
+            options.mRecenter = recenter;
+            options.mByRegion = by_region;
+            options.mUnlit = unlit;
+            options.mSplitAngle = split_angle;
+            options.mScale = scale;
+            options.mColorBy = color_by;
+            options.mComponent = component;
+            options.mCmap = cmap;
+            options.mVMin = vmin;
+            options.mVMax = vmax;
+            options.mNanColor = nan_color;
+            meshioplusplus::write_gltf(path, cpp, options);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("container") = "auto",
+        py::arg("up_axis") = "auto", py::arg("normal_weight") = "angle",
+        py::arg("normals") = true, py::arg("fields") = true, py::arg("recenter") = true,
+        py::arg("by_region") = true, py::arg("unlit") = true, py::arg("split_angle") = 30.0,
+        py::arg("scale") = 1.0, py::arg("color_by") = "", py::arg("component") = std::nullopt,
+        py::arg("cmap") = "viridis", py::arg("vmin") = std::nullopt, py::arg("vmax") = std::nullopt,
+        py::arg("nan_color") = "#808080");
 
     // SVG writer (write-only visualization; 3D input renders the projected
     // skin — camera args appended AFTER the existing ones, the Python shim

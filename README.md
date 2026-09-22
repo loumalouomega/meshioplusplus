@@ -46,6 +46,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
 > [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#File-formats) (format versions 2.2, 4.0, and 4.1, `.msh`),
+> [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) (output only; the surface with per-vertex normals, fields as `_NAME` attributes, `color_by` into `COLOR_0`) (`.glb`, `.gltf`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
@@ -125,6 +126,7 @@ meshioplusplus smooth     in.vtu out.vtu --method odt        # ODT smoothing, te
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
 meshioplusplus slice      in.vtu out.vtu --normal 0,0,1      # planar cross-section
 meshioplusplus curvature  in.vtu out.vtu                     # per-vertex mean/Gaussian curvature
+meshioplusplus normals    in.vtu out.vtu --split-angle 30    # point/cell normals, split at creases
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
 meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
 meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement
@@ -250,6 +252,23 @@ meshioplusplus convert mesh.vtu figure.svg --color-by temperature --colorbar
 ```
 
 Colouring is available from Python, from C++ directly, and from both CLIs; the flat C/Fortran/WebAssembly bindings reach these writers through the shared registry and always emit the default styling.
+
+#### glTF export
+
+`meshioplusplus.write("model.glb", mesh)` writes the surface of a mesh as [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html), which three.js, Blender and every web dashboard load directly: the skin of volume cells, 2-D cells, lines and point clouds, one named node per cell region, with normals split at creases and every point field exported raw as an `_NAME` attribute. `color_by` also bakes a field through a colormap into `COLOR_0` with an unlit material. The output is Y-up and `float32`; the axis change, unit scale and recentring offset live on the root node rather than in the coordinates. See [glTF](https://loumalouomega.github.io/meshioplusplus/formats/gltf.html).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+meshioplusplus.write("model.glb", mesh)                                  # defaults
+meshioplusplus.write("result.glb", mesh, color_by="temperature", cmap="turbo", scale=0.001)
+```
+
+<!--pytest-codeblocks:skip-->
+
+```sh
+meshioplusplus convert result.vtu result.glb --color-by temperature --split-angle 45
+```
 
 #### Surface extraction
 
@@ -589,7 +608,7 @@ g.point_data["gradT"] = np.sqrt((grad**2).sum(axis=1))
 shells = meshioplusplus.isosurface(g, "gradT", [2.0])          # contour where T changes fastest
 ```
 
-These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus tessellate`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus remesh`, `meshioplusplus remesh-volume`, `meshioplusplus optimize-volume`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, `meshioplusplus isosurface`, `meshioplusplus curvature`, `meshioplusplus repair`, `meshioplusplus shrinkwrap` and `meshioplusplus sobolev-deform` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
+These operations are exposed across every binding surface (Python, C API, Fortran, WASM) and as the CLI verbs `meshioplusplus quality`, `meshioplusplus extract-surface`, `meshioplusplus reorder`, `meshioplusplus diff`, `meshioplusplus merge`, `meshioplusplus transform`, `meshioplusplus clean`, `meshioplusplus crop`, `meshioplusplus slice`, `meshioplusplus split`, `meshioplusplus stats`, `meshioplusplus convert-cells`, `meshioplusplus tessellate`, `meshioplusplus subdivide`, `meshioplusplus agglomerate`, `meshioplusplus refine`, `meshioplusplus undo-green`, `meshioplusplus partition`, `meshioplusplus remesh`, `meshioplusplus remesh-volume`, `meshioplusplus optimize-volume`, `meshioplusplus smooth`, `meshioplusplus interpolate`, `meshioplusplus conservative-interpolate`, `meshioplusplus isosurface`, `meshioplusplus curvature`, `meshioplusplus normals`, `meshioplusplus repair`, `meshioplusplus shrinkwrap` and `meshioplusplus sobolev-deform` (plus `meshioplusplus data gradient`, `meshioplusplus data hessian`, `meshioplusplus data estimate-error` and `meshioplusplus data integrate`, mesh operations grouped under `data` because that is where a user looks for them).
 
 #### Second derivatives (Hessian)
 
@@ -1011,7 +1030,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 15.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 15.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

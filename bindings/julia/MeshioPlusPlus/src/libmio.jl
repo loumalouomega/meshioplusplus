@@ -397,6 +397,36 @@ struct _CCurvatureReport
 end
 
 """
+Mirror of C `mio_normals_opts`. Field order, types and the trailing
+`reserved` padding are ABI: they must match `meshioplusplus.h` exactly. Always
+build one through [`compute_normals`](@ref) rather than by hand --
+`point_normals` defaults ON and `split_angle` to 30, so an all-zero struct is
+NOT the default.
+"""
+struct _CNormalsOpts
+    region::Cstring
+    point_normals::Int32
+    cell_normals::Int32
+    weight::Int32
+    split::Int32
+    split_angle::Cdouble
+    record_parent_ids::Int32
+    reserved_pad::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_normals_report`."""
+struct _CNormalsReport
+    quality::_CSurfaceQuality
+    num_isolated::Int64
+    num_undefined::Int64
+    num_degenerate::Int64
+    num_split_points::Int64
+    num_added_points::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""
 Mirror of C `mio_repair_opts`. Field order, types and the trailing `reserved`
 padding are ABI. Every pass defaults ON, so an all-zero struct is NOT the
 default; build one through [`repair`](@ref).
@@ -554,6 +584,10 @@ function _check_abi_layout()
         error("meshio++: mio_curvature_opts layout mismatch ($(sizeof(_CCurvatureOpts)) bytes)")
     sizeof(_CCurvatureReport) == 136 ||
         error("meshio++: mio_curvature_report layout mismatch ($(sizeof(_CCurvatureReport)) bytes)")
+    sizeof(_CNormalsOpts) == 88 ||
+        error("meshio++: mio_normals_opts layout mismatch ($(sizeof(_CNormalsOpts)) bytes)")
+    sizeof(_CNormalsReport) == 144 ||
+        error("meshio++: mio_normals_report layout mismatch ($(sizeof(_CNormalsReport)) bytes)")
     sizeof(_CRepairOpts) == 80 ||
         error("meshio++: mio_repair_opts layout mismatch ($(sizeof(_CRepairOpts)) bytes)")
     sizeof(_CRepairReport) == 272 ||

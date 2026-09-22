@@ -54,3 +54,7 @@ DATA ascii | binary | binary_compressed
 
 - `tests/python/meshes/pcd/` — PCL's own test corpus (BSD-3, see `LICENSE.PCL` there): `bun0.pcd` (ascii, normals + curvature), `colored_cloud.pcd` (binary, organised, uint `rgb`), `pcl_logo.pcd` (binary_compressed, float-slot `rgb`, non-identity viewpoint), `milk_color.pcd` (binary_compressed, `rgba`).
 - The C++ core handles all three `DATA` modes. Its LZF codec is an independent implementation of the liblzf stream format (no liblzf code is copied), and the Python reference writes byte-identical files. The CLI verbs `ascii`, `binary`, `compress` (`binary_compressed`) and `decompress` rewrite a `.pcd` in place, and the MCP `convert` tool takes `mode` and `compression: lzf`. The flat bindings (C, Fortran, Julia, R, WASM) read every mode and write `ascii`/`binary`; `binary_compressed` writing is on the [roadmap](../roadmap.md).
+
+## Web output
+
+A PCD cloud is a `vertex` block (or no cells at all), which the [glTF writer](./gltf.md) turns into a `POINTS` primitive, keeping the `normals` point data as `NORMAL` and every other point array as a raw `_NAME` attribute: `meshioplusplus convert cloud.pcd cloud.glb` puts a scanned cloud on the web. Run [`compute_normals`](../normals.md) first when the cloud has none.

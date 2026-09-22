@@ -63,6 +63,7 @@
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
+#include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/shrinkwrap.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -4488,6 +4489,55 @@ mio_mesh* mio_compute_curvature(const mio_mesh* mesh, const mio_curvature_opts* 
             report->num_isolated = r.mNumIsolated;
             report->num_degenerate = r.mNumDegenerate;
             report->total_angle_defect = r.mTotalAngleDefect;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_normals_opts) == 88, "mio_normals_opts grew outside its reserved tail");
+static_assert(sizeof(mio_normals_report) == 144,
+              "mio_normals_report grew outside its reserved tail");
+
+void mio_normals_opts_init(mio_normals_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_normals_opts{};
+    opts->point_normals = 1;
+    opts->weight = MIO_SDF_WEIGHT_ANGLE;
+    opts->split_angle = 30.0;
+}
+
+mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_opts* opts,
+                              mio_normals_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::NormalsOptions options;
+        if (opts) {
+            options.mPointNormals = opts->point_normals != 0;
+            options.mCellNormals = opts->cell_normals != 0;
+            if (opts->weight != MIO_SDF_WEIGHT_ANGLE && opts->weight != MIO_SDF_WEIGHT_AREA)
+                throw std::invalid_argument(
+                    "meshio++: normals: weight must be MIO_SDF_WEIGHT_ANGLE or "
+                    "MIO_SDF_WEIGHT_AREA");
+            options.mWeight = opts->weight == MIO_SDF_WEIGHT_AREA
+                                  ? meshioplusplus::SdfPseudonormalWeight::Area
+                                  : meshioplusplus::SdfPseudonormalWeight::Angle;
+            options.mSplit = opts->split != 0;
+            options.mSplitAngle = opts->split_angle;
+            options.mRecordParentIds = opts->record_parent_ids != 0;
+            if (opts->region)
+                options.mRegion = opts->region;
+        }
+        meshioplusplus::NormalsResult r = meshioplusplus::compute_normals(mesh->mMesh, options);
+        if (report) {
+            *report = mio_normals_report{};
+            capi_fill_quality(r.mQuality, &report->quality);
+            report->num_isolated = r.mNumIsolated;
+            report->num_undefined = r.mNumUndefined;
+            report->num_degenerate = r.mNumDegenerate;
+            report->num_split_points = r.mNumSplitPoints;
+            report->num_added_points = r.mNumAddedPoints;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

@@ -1267,6 +1267,7 @@ program test_fortran_api
 
     ! ---- per-vertex curvature --------------------------------------------
     call check_curvature()
+    call check_normals()
     call check_repair_shrinkwrap_sobolev()
 
     if (fails /= 0) then
@@ -1530,6 +1531,57 @@ contains
         bad = oct%curvature(dual_area='nope', stat=ierr)
         call check(ierr /= 0, 'curvature rejects an unknown dual area')
         call oct%free()
+    end subroutine
+
+    subroutine check_normals()
+        type(mio_mesh) :: sq, out, bad
+        integer(int64) :: nadd, nsplit, niso
+        integer :: ierr
+        real(real64) :: cube_points(3, 8)
+        integer(int64) :: cube_conn(4, 6)
+
+        ! A unit cube of six outward-wound quads over 8 points.
+        cube_points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 0.0_real64, 0.0_real64, &
+                               1.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 1.0_real64, 0.0_real64, &
+                               0.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 0.0_real64, 1.0_real64, &
+                               1.0_real64, 1.0_real64, 1.0_real64, &
+                               0.0_real64, 1.0_real64, 1.0_real64], [3, 8])
+        cube_conn = reshape([1_int64, 4_int64, 3_int64, 2_int64, &
+                             5_int64, 6_int64, 7_int64, 8_int64, &
+                             1_int64, 2_int64, 6_int64, 5_int64, &
+                             4_int64, 8_int64, 7_int64, 3_int64, &
+                             1_int64, 5_int64, 8_int64, 4_int64, &
+                             2_int64, 3_int64, 7_int64, 6_int64], [4, 6])
+        call sq%create()
+        call sq%set_points(cube_points)
+        call sq%add_cell_block('quad', cube_conn)
+
+        ! No split: one smooth normal per point, the cube unchanged.
+        out = sq%normals(stat=ierr)
+        call check(ierr == 0, 'normals succeeded')
+        call check(out%num_points() == 8_int64, 'unsplit normals add no points')
+        call out%free()
+
+        ! Split at 30 degrees: 8 points become 24, every one on a face.
+        out = sq%normals(split_angle=30.0_real64, num_added_points=nadd, &
+                         num_split_points=nsplit, num_isolated=niso, stat=ierr)
+        call check(ierr == 0, 'split normals succeeded')
+        call check(out%num_points() == 24_int64, 'a split cube has 24 points')
+        call check(nadd == 16_int64, 'a split cube adds 16 points')
+        call check(nsplit == 8_int64, 'every cube corner was split')
+        call check(niso == 0_int64, 'no isolated points')
+        call check(out%num_point_data() >= 1_int64, 'normals attached')
+        call out%free()
+
+        ! Unknown weight and out-of-range split angle are refused.
+        bad = sq%normals(weight='nope', stat=ierr)
+        call check(ierr /= 0, 'normals rejects an unknown weight')
+        bad = sq%normals(split_angle=270.0_real64, stat=ierr)
+        call check(ierr /= 0, 'normals rejects a split angle above 180')
+        call sq%free()
     end subroutine
 
     subroutine check_repair_shrinkwrap_sobolev()

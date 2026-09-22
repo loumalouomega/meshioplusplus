@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -767,6 +768,8 @@ TEST(CApi, ErrorPaths) {
     // are write-only, so pick the mirror case -- a read-only key no longer
     // exists in the registry at all.
     EXPECT_EQ(mio_read("mesh.svg", "svg"), nullptr);
+    // glTF is write-only too: it writes a binary container, and cannot be read back.
+    EXPECT_EQ(mio_read("mesh.glb", "gltf"), nullptr);
 
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
     // Compiled-out formats name the missing dependency.
@@ -776,6 +779,31 @@ TEST(CApi, ErrorPaths) {
 
     mio_mesh_free(m);
     mio_mesh_free(nullptr);  // NULL-safe
+}
+
+TEST(CApi, WritesGltfThroughTheRegistry) {
+    mio_mesh* m = build_tet_mesh();
+    const std::string glb = std::string(::testing::TempDir()) + "capi_mesh.glb";
+    ASSERT_EQ(mio_write(glb.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    std::FILE* f = std::fopen(glb.c_str(), "rb");
+    ASSERT_NE(f, nullptr);
+    char magic[4] = {0, 0, 0, 0};
+    ASSERT_EQ(std::fread(magic, 1, 4, f), 4u);
+    std::fclose(f);
+    EXPECT_EQ(std::string(magic, 4), "glTF");
+    // The suffix picks the container: a .gltf is JSON, with the .bin beside it.
+    const std::string gltf = std::string(::testing::TempDir()) + "capi_mesh.gltf";
+    ASSERT_EQ(mio_write(gltf.c_str(), m, "gltf"), MIO_OK) << mio_last_error();
+    f = std::fopen(gltf.c_str(), "rb");
+    ASSERT_NE(f, nullptr);
+    char brace = 0;
+    ASSERT_EQ(std::fread(&brace, 1, 1, f), 1u);
+    std::fclose(f);
+    EXPECT_EQ(brace, '{');
+    std::remove(glb.c_str());
+    std::remove(gltf.c_str());
+    std::remove((std::string(::testing::TempDir()) + "capi_mesh.bin").c_str());
+    mio_mesh_free(m);
 }
 
 TEST(CApi, StringBufferProtocol) {
@@ -3933,6 +3961,59 @@ TEST(CApi, SobolevDeformFiltersADisplacementAndPinsByArray) {
     for (int k = 0; k < 16; ++k)
         EXPECT_DOUBLE_EQ(p[k * 3 + 1], pts[k * 3 + 1] + 0.4);
     mio_mesh_free(moved);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ComputeNormalsSplitsACubeAtItsCreases) {
+    // A unit cube of six outward-wound quads: 8 points smooth, 24 once split at
+    // a 30 degree crease, with every corner of the original on three faces.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                     0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::vector<std::int64_t> quads = {0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4,
+                                             3, 7, 6, 2, 0, 4, 7, 3, 1, 2, 6, 5};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 6, 4, MIO_INT64, quads.data()), MIO_OK);
+
+    mio_normals_opts opts;
+    mio_normals_opts_init(&opts);
+    EXPECT_EQ(opts.point_normals, 1);  // ON by default -- an all-zero struct is NOT the default
+    EXPECT_EQ(opts.split, 0);
+    EXPECT_DOUBLE_EQ(opts.split_angle, 30.0);
+    EXPECT_EQ(opts.weight, MIO_SDF_WEIGHT_ANGLE);
+
+    mio_normals_report report;
+    mio_mesh* smooth = mio_compute_normals(m, &opts, &report);
+    ASSERT_NE(smooth, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(smooth), 8);
+    EXPECT_EQ(report.num_added_points, 0);
+    EXPECT_NE(report.quality.watertight, 0);
+    mio_mesh_free(smooth);
+
+    opts.split = 1;
+    opts.cell_normals = 1;
+    opts.record_parent_ids = 1;
+    mio_mesh* split = mio_compute_normals(m, &opts, &report);
+    ASSERT_NE(split, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(split), 24);
+    EXPECT_EQ(report.num_added_points, 16);
+    EXPECT_EQ(report.num_split_points, 8);
+    EXPECT_EQ(report.num_isolated, 0);
+    mio_mesh_free(split);
+
+    // NULL options means every default, and a NULL report is not written.
+    mio_mesh* plain = mio_compute_normals(m, nullptr, nullptr);
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    mio_mesh_free(plain);
+
+    // An out-of-range weight or split angle is refused, never clamped, and no
+    // exception crosses the ABI.
+    opts.weight = 9;
+    EXPECT_EQ(mio_compute_normals(m, &opts, nullptr), nullptr);
+    opts.weight = MIO_SDF_WEIGHT_AREA;
+    opts.split_angle = 270.0;
+    EXPECT_EQ(mio_compute_normals(m, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_compute_normals(nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
 }
 

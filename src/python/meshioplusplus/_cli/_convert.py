@@ -8,7 +8,10 @@ from .._helpers import _writer_map, read, reader_map, write
 # Colouring reaches the writer as keyword arguments, and only the SVG and TikZ
 # writers accept them -- every other writer would raise on the unexpected kwarg,
 # so the flags are validated against the resolved output format up front.
-_COLOR_FORMATS = ("svg", "tikz")
+_COLOR_FORMATS = ("svg", "tikz", "gltf")
+
+# The format a suffix names, where it is not the suffix itself.
+_SUFFIX_FORMAT = {"glb": "gltf"}
 
 
 def add_args(parser):
@@ -160,8 +163,9 @@ def add_args(parser):
         ),
     )
     color = parser.add_argument_group(
-        "data-driven colouring (svg/tikz output only)",
-        "Colour the drawn faces by a data array instead of a flat fill.",
+        "data-driven colouring (svg/tikz/gltf output only)",
+        "Colour the drawn faces by a data array instead of a flat fill. For glTF "
+        "the array is baked into COLOR_0 and the material becomes unlit.",
     )
     color.add_argument(
         "--color-by",
@@ -170,7 +174,8 @@ def add_args(parser):
         metavar="NAME",
         help=(
             "point_data or cell_data array to colour by. Point data uses the "
-            "mean of a face's corner values; cell data its owning cell's value."
+            "mean of a face's corner values (per vertex in glTF); cell data its "
+            "owning cell's value."
         ),
     )
     color.add_argument(
@@ -211,8 +216,31 @@ def add_args(parser):
     color.add_argument(
         "--colorbar",
         action="store_true",
-        help="append a gradient bar with min/max labels",
+        help="append a gradient bar with min/max labels (svg/tikz only)",
     )
+    gltf = parser.add_argument_group("glTF output options (.glb/.gltf only)")
+    gltf.add_argument(
+        "--split-angle",
+        type=float,
+        default=None,
+        metavar="DEG",
+        help=(
+            "duplicate vertices where the surface creases by more than DEG "
+            "degrees, 0-180 (default: 30)"
+        ),
+    )
+    gltf.add_argument(
+        "--up-axis",
+        type=str,
+        choices=["auto", "x", "y", "z"],
+        default=None,
+        help="the source axis that points up (default: auto -- y for a flat mesh, else z)",
+    )
+
+
+def _output_format(args):
+    fmt = args.output_format or pathlib.Path(args.outfile).suffix.lstrip(".").lower()
+    return _SUFFIX_FORMAT.get(fmt, fmt)
 
 
 def _color_kwargs(args):
@@ -220,8 +248,25 @@ def _color_kwargs(args):
 
     Returns an empty dict when no colouring was requested. The modifier flags
     are meaningless without ``--color-by``, and the whole group is meaningless
-    for any writer but SVG/TikZ, so both are errors rather than silent no-ops.
+    for any writer but SVG/TikZ/glTF, so both are errors rather than silent
+    no-ops. The glTF-only flags are likewise refused for any other format.
     """
+    fmt = _output_format(args)
+    gltf_flags = {
+        "--split-angle": args.split_angle is not None,
+        "--up-axis": args.up_axis is not None,
+    }
+    gltf_kwargs = {}
+    used_gltf = [flag for flag, given in gltf_flags.items() if given]
+    if used_gltf and fmt != "gltf":
+        raise ValueError(
+            f"{', '.join(used_gltf)} only apply(ies) to glTF output, not '{fmt}'"
+        )
+    if args.split_angle is not None:
+        gltf_kwargs["split_angle"] = args.split_angle
+    if args.up_axis is not None:
+        gltf_kwargs["up_axis"] = args.up_axis
+
     modifiers = {
         "--component": args.component is not None,
         "--cmap": args.cmap != "viridis",
@@ -234,9 +279,8 @@ def _color_kwargs(args):
         used = [flag for flag, given in modifiers.items() if given]
         if used:
             raise ValueError(f"{', '.join(used)} require(s) --color-by")
-        return {}
+        return gltf_kwargs
 
-    fmt = args.output_format or pathlib.Path(args.outfile).suffix.lstrip(".").lower()
     if fmt not in _COLOR_FORMATS:
         raise ValueError(
             f"--color-by is only supported for {'/'.join(_COLOR_FORMATS)} output, "
@@ -244,6 +288,8 @@ def _color_kwargs(args):
         )
     if args.ascii:
         raise ValueError(f"--ascii has no meaning for {fmt} output")
+    if args.colorbar and fmt == "gltf":
+        raise ValueError("--colorbar has no meaning for gltf output (svg/tikz only)")
 
     kwargs = {
         "color_by": args.color_by,
@@ -251,11 +297,13 @@ def _color_kwargs(args):
         "cmap": args.cmap,
         "vmin": args.vmin,
         "vmax": args.vmax,
-        "colorbar": args.colorbar,
     }
+    if fmt != "gltf":
+        kwargs["colorbar"] = args.colorbar
     # Leave nan_color unset so each writer keeps its own format-native default.
     if args.nan_color is not None:
         kwargs["nan_color"] = args.nan_color
+    kwargs.update(gltf_kwargs)
     return kwargs
 
 

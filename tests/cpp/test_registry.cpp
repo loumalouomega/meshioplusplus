@@ -25,6 +25,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "mesh_fixtures.hpp"
 
 using namespace meshioplusplus;
@@ -43,6 +44,19 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
     EXPECT_EQ(resolve_format("results.frd", ""), "frd");
+    // glTF is one format with two suffixes; the writer tells the containers apart.
+    EXPECT_EQ(resolve_format("model.glb", ""), "gltf");
+    EXPECT_EQ(resolve_format("model.gltf", ""), "gltf");
+}
+
+TEST(Registry, GltfIsWriteOnly) {
+    EXPECT_EQ(registry_writers().count("gltf"), 1u);
+    EXPECT_EQ(registry_readers().count("gltf"), 0u);
+    // The suffix decides the container, so an encoding request is refused by name.
+    WriteOptions options;
+    options.mEncoding = WriteEncoding::Binary;
+    Mesh m;
+    EXPECT_THROW(registry_write_ex("x.glb", m, "gltf", options), WriteError);
 }
 
 TEST(Registry, ResolveFormatNodeElePairStayTetgen) {

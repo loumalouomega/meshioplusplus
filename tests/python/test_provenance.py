@@ -76,6 +76,7 @@ def _cases():
     from meshioplusplus.exodus import _exodus as py_exodus
     from meshioplusplus.flac3d import _flac3d as py_flac3d
     from meshioplusplus.flux import _flux as py_flux
+    from meshioplusplus.gltf import _gltf as py_gltf
     from meshioplusplus.lsdyna import _lsdyna as py_lsdyna
     from meshioplusplus.mphtxt import _mphtxt as py_mphtxt
     from meshioplusplus.nastran import _nastran as py_nastran
@@ -97,6 +98,7 @@ def _cases():
     from meshioplusplus.xyz import _xyz as py_xyz
 
     cases = {
+        "gltf": (TRI, ".glb", _core.gltf_write, py_gltf.write),
         "obj": (TRI, ".obj", _core.obj_write, py_obj.write),
         "off": (TRI, ".off", _core.off_write, py_off.write),
         "pcd": (TRI, ".pcd", _core.pcd_write, py_pcd.write),

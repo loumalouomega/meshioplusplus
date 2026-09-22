@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 15
-#define MIO_VERSION_MINOR 3
+#define MIO_VERSION_MINOR 4
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -2640,6 +2640,70 @@ typedef struct mio_curvature_report {
  */
 MIO_API mio_mesh* mio_compute_curvature(const mio_mesh* mesh, const mio_curvature_opts* opts,
                                         mio_curvature_report* report);
+
+/**
+ * Options for mio_compute_normals.
+ *
+ * ABI NOTE: this struct is part of the installed library's permanent ABI. New
+ * fields may only be appended, replacing `reserved` capacity; never reorder,
+ * resize or repurpose an existing field. Always initialize through
+ * mio_normals_opts_init() rather than by hand -- `point_normals` defaults to ON
+ * and `split_angle` to 30, so an all-zero struct is NOT the default here.
+ */
+typedef struct mio_normals_opts {
+    /** Restrict to this named cell region; NULL or "" takes every surface cell. */
+    const char* region;
+    int32_t point_normals; /**< nonzero (the default) attaches the point normals */
+    int32_t cell_normals;  /**< nonzero attaches the cell normals */
+    int32_t weight;        /**< a mio_sdf_weight; MIO_SDF_WEIGHT_ANGLE by default */
+    int32_t split;         /**< nonzero duplicates points where the surface creases */
+    /** With `split`: the largest dihedral angle, in degrees, still treated as
+     *  smooth. Must lie in [0, 180]. Default 30. */
+    double split_angle;
+    int32_t record_parent_ids; /**< nonzero attaches normals:parent_point */
+    int32_t reserved_pad;      /**< must be zero; keeps the int64 tail aligned */
+    int64_t reserved[6];       /**< must be zero; room for additive growth */
+} mio_normals_opts;
+
+/**
+ * Initialize normals options to their defaults: point normals ON, cell normals
+ * off, angle weighting, no split (the split angle preset to 30 degrees), no
+ * parent ids and no region restriction.
+ */
+MIO_API void mio_normals_opts_init(mio_normals_opts* opts);
+
+/** What mio_compute_normals computed, and what it found on the way. */
+typedef struct mio_normals_report {
+    /** The verdict for the INPUT surface. A nonzero `inconsistent_pairs` means
+     *  some normals average faces that disagree about which side is out. This
+     *  never repairs its input. */
+    mio_surface_quality quality;
+    int64_t num_isolated;     /**< points no surface triangle touches; normal is NaN */
+    int64_t num_undefined;    /**< touched points whose faces sum to nothing; normal is NaN */
+    int64_t num_degenerate;   /**< triangles with no area */
+    int64_t num_split_points; /**< input points that received at least one copy */
+    int64_t num_added_points; /**< points appended to the mesh */
+    int64_t reserved[4];      /**< must be zero; room for additive growth */
+} mio_normals_report;
+
+/**
+ * Point and/or cell normals of a surface mesh, optionally splitting vertices
+ * at creases so every point carries exactly one normal.
+ *
+ * The arrays are named "normals" (Float64, (n, 3) and (cells, 3)). With `split`
+ * the copies are appended after the original points and the numbering of cells
+ * is untouched. Never reorients. A volume or polyhedron block is refused by name
+ * pointing at extract_surface, a higher-order one pointing at linearize. See
+ * doc/normals.md.
+ *
+ * @param mesh   a surface mesh.
+ * @param opts   options; NULL means every mio_normals_opts_init() default.
+ * @param report optional out: the counters and the input surface's verdict.
+ * @return the mesh with the normals attached (free with mio_mesh_free), or NULL
+ *         on failure.
+ */
+MIO_API mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_opts* opts,
+                                      mio_normals_report* report);
 
 /**
  * Options for mio_repair.
