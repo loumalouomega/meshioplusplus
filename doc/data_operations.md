@@ -9,8 +9,9 @@ meshio++ carries three kinds of data alongside a mesh's geometry: `point_data` (
 | `data_calc` | Derive a new array from an elementwise expression | [Expressions](/data_calc) |
 | `data_condition` | Clamp, normalize or standardize values | [Value conditioning](/data_condition) |
 | `data_info` | Read-only per-array summary | [Data summary](/data_info) |
+| `tensor_invariants` | von Mises, principal, hydrostatic and deviatoric fields of a symmetric or general 3x3 tensor array | [Tensor invariants](/tensor_invariants) |
 
-They are mesh **operations** (like [quality metrics](/mesh_quality) or [geometric statistics](/stats)), not file formats, and use only standard C++/numpy, so they run under every mesh backend and are reachable from every binding surface. All nine CLI verbs live under the `meshioplusplus data` group — see the [CLI reference](/cli#meshioplusplus-data).
+They are mesh **operations** (like [quality metrics](/mesh_quality) or [geometric statistics](/stats)), not file formats, and use only standard C++/numpy, so they run under every mesh backend and are reachable from every binding surface. All ten CLI verbs live under the `meshioplusplus data` group — see the [CLI reference](/cli#meshioplusplus-data).
 
 ::: tip Near neighbours that are *not* one of these
 [`gradient`](/gradient), its companion [`hessian`](/hessian) one order further, and [`data_integrate`](/field_integration) also consume and produce data arrays, and are reachable as `meshioplusplus data gradient` / `meshioplusplus data hessian` / `meshioplusplus data integrate` — but they **read geometry and topology** (face areas, cell volumes, cell adjacency), so they are mesh operations and none of the rules on this page (the NaN policy, the dtype table) describe them. They are grouped under `data` in the CLI because that is where a user looks for them.
@@ -30,7 +31,7 @@ Every data operation follows one rule for `NaN` and `±inf`:
 
 ## Locations
 
-![Point data, cell data and field data beside the geometry they never modify, and the five data operations that act on them](/diagrams/data_locations.svg)
+![Point data, cell data and field data beside the geometry they never modify, and the six data operations that act on them](/diagrams/data_locations.svg)
 
 Everywhere a location is named, these spellings are accepted:
 
@@ -53,6 +54,7 @@ Everywhere a location is named, these spellings are accepted:
 | `data_calc` | Arithmetic is always performed in `double`; the result is stored as `float64`. |
 | `data_condition` | `clamp` preserves the input dtype (unless `preserve_dtype=False`); `normalize` and `standardize` always produce `float64`. |
 | `data_info` | Read-only; reports the dtype as stored. |
+| `tensor_invariants` | Always `float64`. |
 
 ::: tip
 The `NATIVE` and `KRATOS` mesh backends canonicalize integer widths on ingest (`int32` → `int64`), so tests should assert the dtype *kind* rather than an exact width. Only the Python path, which is pinned to the `MESHIO` backend, sees the original width.

@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 15
-#define MIO_VERSION_MINOR 4
+#define MIO_VERSION_MINOR 5
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -3004,6 +3004,34 @@ MIO_API mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location loc
                                      mio_condition_mode mode, double lo, double hi,
                                      mio_condition_scope scope, mio_nan_policy nan_policy,
                                      double nan_replacement, const char* suffix);
+
+/** Which invariant(s) mio_tensor_invariants computes; OR together. */
+typedef enum mio_tensor_invariant {
+    MIO_TINV_MISES = 1,        /**< von Mises equivalent */
+    MIO_TINV_PRINCIPAL = 2,    /**< eigenvalues, ascending */
+    MIO_TINV_HYDROSTATIC = 4,  /**< mean of the diagonal */
+    MIO_TINV_DEVIATORIC = 8,   /**< input minus hydrostatic on the diagonal */
+    MIO_TINV_ALL = 15          /**< every invariant above (also 0 defaults to this) */
+} mio_tensor_invariant;
+
+/**
+ * von Mises / principal / hydrostatic / deviatoric fields of a symmetric
+ * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component, row-major)
+ * tensor array. `mises`/`principal` use the symmetric part of a 9-component
+ * input. `count == 0` processes every 6- or 9-component array at `location`
+ * (field_data is rejected: it has no per-row tensor to reduce).
+ * @param outputs    a bitwise OR of mio_tensor_invariant flags, or 0 for
+ *                   MIO_TINV_ALL.
+ * @param prefix     NULL or "" for none; prepended to every output name.
+ * @param suffix     NULL or "" for none; appended after the invariant's own
+ *                   name segment (`prefix + name + "_mises" + suffix`, etc.).
+ * @param overwrite  non-zero to allow replacing an existing array of the
+ *                   target name; zero fails instead.
+ * @return a new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_tensor_invariants(const mio_mesh* mesh, mio_data_location location,
+                                        const char* const* names, int64_t count, int outputs,
+                                        const char* prefix, const char* suffix, int overwrite);
 
 /** Opaque per-array data summary. Destroy with mio_data_info_free(). */
 typedef struct mio_data_info mio_data_info;

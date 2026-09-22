@@ -6,7 +6,7 @@ A reader and writer for [OpenFOAM](https://www.openfoam.com/)'s native `polyMesh
 |---|---|
 | **Format name** | `openfoam` |
 | **Extensions** | `.foam` |
-| **Read / Write** | ✓ / ✓ (ASCII) |
+| **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
 ## Reading & writing
@@ -22,6 +22,7 @@ mesh = meshioplusplus.openfoam.read("/path/to/constant/polyMesh")  # or polyMesh
 ```python
 meshioplusplus.write("out/case.foam", mesh)              # infers the format from `.foam`
 meshioplusplus.openfoam.write("/path/to/case", mesh)     # a case root (no extension)
+meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True)  # v15.5.0 -- see "Binary write"
 ```
 
 `read(filename)` takes no keyword arguments; the `polyMesh` directory is located from whichever of the three input forms above is given (`_resolve_polymesh`): a `.foam` suffix looks for `<parent>/constant/polyMesh`; a directory literally named `polyMesh` is used as-is; any other directory is checked for `constant/polyMesh` then `polyMesh` as subdirectories. A `FileNotFoundError` is raised if none match.
@@ -44,10 +45,11 @@ FoamFile
 )
 ```
 
-- **Header detection** (`_detect_format`) scans line-by-line for a `format ...;` line and an `arch "...";` line, extracting `label=` / `scalar=` byte widths; defaults to ascii/8-byte if absent.
+- **Header detection** (`_detect_format`) scans line-by-line for a `format ...;` line and an `arch "...";` line, extracting `label=` / `scalar=` byte widths; defaults to ascii/8-byte if absent. A non-`LSB` `arch` (a big-endian source) is refused by name, not silently misread — binary bytes this reader decodes are always little-endian.
 - **Binary `points`** (`vectorField`): `N (` followed directly by `N*3*scalar_bytes` raw floats, no per-row framing — read via a single `np.frombuffer`.
 - **Binary `owner`/`neighbour`** (`labelList`): `N (` followed by `N*label_bytes` raw ints, same direct-buffer read.
-- **Binary `faces`** (`faceList`, non-contiguous): each face is its own `labelList` — `<count> ( <count*label_bytes bytes> )` repeated `N` times. Read in two passes: a sequential ASCII scan locating each face's byte offset and node count (cheap, since `find(b"(")` only ever scans the short ASCII gap between faces, never binary data that might coincidentally equal `'('`), then a single vectorized gather of every face's binary blob via a cumulative byte mask — bounded peak memory even for tens of millions of faces (see `_RaggedArray`, a CSR-style `(conn, offsets)` pair standing in for a `list[list[int]]`).
+- **Binary `faces`** (`faceList`, non-contiguous): each face is its own `labelList` — `<count> ( <count*label_bytes bytes> )` repeated `N` times, **not** `CompactListList`/`faceCompactList` (the offsets-plus-flat-data encoding some other OpenFOAM tooling uses for a compact binary face list). Read in two passes: a sequential ASCII scan locating each face's byte offset and node count (cheap, since `find(b"(")` only ever scans the short ASCII gap between faces, never binary data that might coincidentally equal `'('`), then a single vectorized gather of every face's binary blob via a cumulative byte mask — bounded peak memory even for tens of millions of faces (see `_RaggedArray`, a CSR-style `(conn, offsets)` pair standing in for a `list[list[int]]`). [Binary write](#binary-write) emits exactly this per-face shape, matching the reader it must round-trip through.
+- **Binary `cellZones`/`faceZones`/`pointZones`**: the same per-zone `name { type ...; <key> List<label> N(...); }` dict structure as ASCII, with the `List<label>` payload as raw bytes. The dict structure around it (names, braces, the `type`/keyword text) stays plain text even in a binary file, and a raw little-endian id can easily contain a byte equal to `{`, `}` or `/` (a small id's low byte routinely does), so the C++ reader parses this directly off the raw file bytes rather than through the shared comment-stripping pass every other file body goes through — see `parse_zone_file_binary`'s own doc comment in `formats/openfoam.cpp`.
 - **ASCII** variants use simple regex/line-based parsing (`_parse_points_ascii`, `_parse_faces_ascii`, `_parse_int_list_ascii`) after comment-stripping (`/* */` and `//`) and header-skipping.
 - **`boundary`**: a dict of `patch_name → {type, nFaces, startFace}`, parsed via a brace-matching regex over the whole (header/comment-stripped) text.
 - **Cell reconstruction**: cell↔face topology is built once as a CSR `_RaggedArray` (`_cell_faces_csr`, vectorized via `argsort`+`bincount`) from `owner`/`neighbour`; per cell, each face is oriented outward (reversed if the cell is that face's neighbour, since the stored normal points owner→neighbour) and classified by `(n_faces, n_points)`: `(4,4)→tetra`, `(5,5)→pyramid`, `(5,6)→wedge`, `(6,8)→hexahedron`, anything else → a general `polyhedron` (kept as outward-oriented face lists). Each of the 4 named types has a dedicated orientation-fixing builder (`_build_tetra`/`_build_pyramid`/`_build_wedge`/`_build_hexahedron`) that computes a scalar triple product and flips the node order if it comes out negative, guaranteeing positive-volume connectivity regardless of the source mesh's face-normal convention.
@@ -122,17 +124,32 @@ meta["time_values"]  # sorted values of the numeric-named time directories that 
 - `read_metadata(...)["time_values"]` is a real, cheap native path (a directory listing, no field parsing); everything else in that summary comes from a full read, same as Exodus/EnSight.
 - **C++ core only**: the pure-Python fallback reader (`_openfoam.py`) reads no fields at all, matching the zones/multi-region/decomposed-case precedent above.
 
+## Binary write
+
+Since v15.5.0 (roadmap §1.1), `write`/`write_openfoam` can write a binary `polyMesh`, at any of the four `label`/`scalar` width combinations the reader already accepted:
+
+```python
+meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True)
+meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True, label_bits=64, scalar_bits=32)
+```
+
+- `binary` (default `False`) selects the encoding; `label_bits`/`scalar_bits` (32 or 64, default 32/64 — OpenFOAM's own default build) are only meaningful together with `binary=True`. Both are **Python and C++ only** (`OpenFoamWriteOptions`) — the registry's generic `--binary`/`--ascii` (both CLIs, `mio_write_ex`, WASM's `writeMesh(..., {encoding})`) always use the 32/64 default; changing the width needs the Python or C++ API directly.
+- `points`/`owner`/`neighbour` and zone `List<label>` payloads are raw little-endian bytes (count, `(`, bytes, `)`); `faces` is the same length-prefixed-per-face shape as ASCII, in binary — see "Binary `faces`" above. `boundary` stays plain text regardless of `binary` (a handful of small per-patch scalars are never worth binary-encoding, the same reasoning `uniform` field values use).
+- The header's `format`/`arch` lines record the encoding and widths (`arch "LSB;label=32;scalar=64";`), exactly what the reader's `detect_format` needs to parse the file back; a `boundary` file (still plain text) gets the same header regardless.
+- A binary request on a big-endian host raises by name rather than writing bytes that host's own reader could not parse back: OpenFOAM binary files are little-endian only, and this writer never byte-swaps.
+- Validated against [foamlib](https://github.com/gerlero/foamlib) (a real, independent OpenFOAM file parser — `tests/python/test_openfoam.py`, skipped when the package is absent) for `points`/`owner`/`neighbour` at the default width; foamlib has no `faceCompactList`/per-face-list reader of its own, so `faces` is cross-checked only against this project's own two engines (C++ and Python reading each other's output, and each reading its own).
+
 ## Quirks & limitations
 
 - **The only meshio++ writer that creates a directory.** `write` resolves its path exactly as `read` does and creates `<case>/constant/polyMesh/` as needed; a `.foam` target also gets its (empty) marker file written, which is what makes the case openable by ParaView. Because a case *directory* has no extension, that form needs an explicit `file_format="openfoam"` — `resolve_format` is a pure string function and deliberately does not stat the filesystem.
-- **Write is ASCII only.** A binary polyMesh is a documented follow-up, so an explicit binary request fails by name rather than silently writing ASCII.
+- **Binary write is single-region and non-transient only**, the same scope the ASCII writer already had — a multi-region or decomposed-case *write* is a documented follow-up regardless of encoding.
 - **There is no Python fallback writer.** A twin would have to re-implement the per-cell winding repair — a discrete branch on the sign of an enclosed volume — and two implementations of such a branch can land on opposite sides for a near-degenerate cell, the same reasoning that keeps `smooth`'s inversion guard out of its numpy fallback. It would also be dead code: `openfoam_write` needs no optional dependency, so it ships in every wheel. The writer is registered only when the compiled core provides it.
 - **Face ids are not preserved by a round trip.** They come from meshio++'s own cell-major deduplication, not from the source file's face order. The invariant the writer guarantees is topological (the ordering contract below), not byte-level.
 - **A patch's `type` is downgraded when it needs companion entries meshio++ does not carry** (`cyclic`, `cyclicAMI`, `processor`, `mapped*`, …): those declare keys like `neighbourPatch` or `myProcNo`, and OpenFOAM refuses to *load* a case whose patch declares such a type without them. A downgraded case loads and solves with boundary conditions you can see and fix. An unknown type is written as `patch`, never `wall` — `wall` selects wall functions, so guessing it would silently change a solve's physics.
 - **A boundary cell coinciding with an *internal* face is dropped with a warning.** OpenFOAM cannot put a face shared by two cells on a patch, so writing it would produce a case that does not load.
 - Degenerate volume cells that match a named type's `(n_faces, n_points)` signature but whose topology doesn't resolve cleanly (`_match_top` finds more or less than one vertical neighbour per base node) are **silently skipped** and logged as a warning count, rather than falling back to a general polyhedron.
 - Boundary patches are tagged by **patch index**, not patch identity across face-size groups — if one named patch contributes both triangles and quads, its triangle `CellBlock` and quad `CellBlock` get the *same* `cell_tags` id (assigned once per patch, reused across whichever size-buckets that patch's faces fall into), but two *different* named patches always get distinct ids.
-- All binary reads assume little-endian (`LSB`) — the format's own `arch` string is trusted for label/scalar width but not for byte order.
+- All binary reads assume little-endian (`LSB`) — the format's own `arch` string is trusted for label/scalar width; a declared `BSB` (big-endian) `arch` is refused by name (v15.5.0, roadmap §1.1) rather than silently misread, since neither engine byte-swaps.
 - Read goes through the C++ core (`meshioplusplus._core.openfoam_read`, using `std::filesystem` for the polyMesh directory), with the Python reference as an automatic fallback. General polyhedra cross the C++↔Python boundary via the ragged `polyhedron<N>` cell representation (a copied list of face arrays); boundary patch names travel through an `OpenFoamInfo` side-channel struct as `mesh.cell_tags`. On WASM, `readMeshSelective(path, {format: 'openfoam', info: true}).info.patches` reshapes the same `OpenFoamInfo` as `[{familyId, names, type?}]`; `writeMesh(path, mesh, 'openfoam', {info})` writes it back. See [doc/wasm.md](../wasm.md)'s "Side channel (info)" section.
 
 ## The ordering contract (write)

@@ -239,6 +239,7 @@ def _data_cli_mesh():
         ]
     )
     m.cell_data["mat"] = [np.array([1.0, 2.0]), np.array([3.0])]
+    m.point_data["stress"] = np.tile([1.0, 2.0, 3.0, 0.5, 0.6, 0.7], (6, 1))
     return m
 
 
@@ -366,6 +367,69 @@ def test_data_normalize_zero_mean(data_infile, tmp_path):
     mesh = meshioplusplus.read(out)
     assert mesh.point_data["T"].mean() == pytest.approx(0.0, abs=1e-12)
     assert mesh.point_data["T"].std() == pytest.approx(1.0)
+
+
+def test_data_invariants(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "invariants",
+            str(data_infile),
+            str(out),
+            "--point",
+            "stress",
+            "--outputs",
+            "mises,hydrostatic",
+        ]
+    )
+    assert rc == 0
+    mesh = meshioplusplus.read(out)
+    assert "stress_mises" in mesh.point_data
+    assert "stress_hydrostatic" in mesh.point_data
+    assert "stress_principal" not in mesh.point_data
+    xx, yy, zz, xy, yz, zx = 1.0, 2.0, 3.0, 0.5, 0.6, 0.7
+    expect = np.sqrt(
+        0.5
+        * (
+            (xx - yy) ** 2
+            + (yy - zz) ** 2
+            + (zz - xx) ** 2
+            + 6.0 * (xy**2 + yz**2 + zx**2)
+        )
+    )
+    assert mesh.point_data["stress_mises"][0] == pytest.approx(expect)
+
+
+def test_data_invariants_no_overwrite_fails_on_collision(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "invariants",
+            str(data_infile),
+            str(out),
+            "--point",
+            "stress",
+            "--outputs",
+            "mises",
+        ]
+    )
+    assert rc == 0
+    with pytest.raises(ValueError):
+        meshioplusplus._cli.main(
+            [
+                "data",
+                "invariants",
+                str(out),
+                str(out),
+                "--point",
+                "stress",
+                "--outputs",
+                "mises",
+                "--no-overwrite",
+            ]
+        )
 
 
 def test_data_rename(data_infile, tmp_path):

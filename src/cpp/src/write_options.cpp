@@ -31,6 +31,7 @@
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
+#include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/formats/pcd.hpp"
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/formats/stl.hpp"
@@ -50,9 +51,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "pcd" ||
-           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
-           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" ||
+           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
+           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
+           rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -131,6 +133,14 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_flac3d(rPath, rMesh, r_ff, binary);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
+    } else if (fmt == "openfoam") {
+        // Label/scalar width is Python/C++-only (OpenFoamWriteOptions), not
+        // reachable from the generic ASCII/binary switch every other format
+        // shares here -- see doc/formats/openfoam.md.
+        OpenFoamInfo info;
+        OpenFoamWriteOptions wopts;
+        wopts.mBinary = binary;
+        write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
         write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
     } else if (fmt == "ply") {

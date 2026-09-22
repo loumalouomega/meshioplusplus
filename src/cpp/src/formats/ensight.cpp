@@ -40,6 +40,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
@@ -386,6 +387,7 @@ struct EnsightCaseInfo {
     long mFileNameStart = 0;
     long mFileNameIncrement = 1;
     std::vector<EnsightVariableEntry> mVariables;
+    std::vector<std::pair<std::string, double>> mConstants;  // "constant per case:" entries
 };
 
 /// Splits a whitespace-separated record and drops its leading run of pure
@@ -440,9 +442,21 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             format_type = ensight_trim(line.substr(5));
         } else if (section == "GEOMETRY" && ensight_starts_with(line, "model:")) {
             model_value = ensight_trim(line.substr(6));
+        } else if (section == "VARIABLE" && ensight_starts_with(line, "constant per case:")) {
+            // Inline, not a file reference: `[ts] [fs] <name> <value>`.
+            const std::vector<std::string> toks =
+                ensight_tokens_after_leading_ints(line.substr(std::strlen("constant per case:")));
+            if (toks.size() < 2)
+                throw ReadError("EnSight: malformed 'constant per case' line: " + line);
+            std::string joined;
+            for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                joined += (i ? " " : "") + toks[i];
+            info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
-            static const char* kKinds[] = {"scalar per node:", "vector per node:",
-                                           "scalar per element:", "vector per element:"};
+            static const char* kKinds[] = {
+                "scalar per node:",       "vector per node:",       "tensor symm per node:",
+                "tensor asym per node:",  "scalar per element:",    "vector per element:",
+                "tensor symm per element:", "tensor asym per element:"};
             for (const char* kind : kKinds) {
                 if (!ensight_starts_with(line, kind))
                     continue;
@@ -937,6 +951,38 @@ void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
                                pCellOut);
 }
 
+/// Component count for a `.case` `VARIABLE` kind: 1 scalar, 3 vector, 6
+/// tensor symm, 9 tensor asym.
+std::size_t ensight_variable_ncomp(const std::string& rKind) {
+    if (ensight_starts_with(rKind, "vector"))
+        return 3;
+    if (ensight_starts_with(rKind, "tensor symm"))
+        return 6;
+    if (ensight_starts_with(rKind, "tensor asym"))
+        return 9;
+    return 1;
+}
+
+/**
+ * @brief Reorders a `tensor symm` array's last two components in place.
+ *
+ * EnSight Gold's own file order for `tensor symm` is `11 22 33 12 13 23`
+ * (xx, yy, zz, xy, xz, yz); meshio++'s six-component symmetric-tensor
+ * convention (see `doc/mesh_data_model.md`) is `xx yy zz xy yz zx` -- the
+ * same six values, with the last two swapped (`zx` and `xz` are the same
+ * component of a symmetric tensor). Verified empirically against
+ * ParaView's own EnSight Gold reader (see `doc/formats/ensight.md`); VTK's
+ * internal tensor6 order is `xx yy zz xy yz xz`, so `vtkEnSightGoldReader`
+ * performs the identical swap on its own read. The swap is its own
+ * inverse, so this one function serves both read and write.
+ * @param pData Row-major `(Rows, 6)` buffer, reordered in place.
+ * @param Rows Number of tensor entries (points or cells).
+ */
+void ensight_swap_tensor_symm_last_two(double* pData, std::size_t Rows) {
+    for (std::size_t r = 0; r < Rows; ++r)
+        std::swap(pData[r * 6 + 4], pData[r * 6 + 5]);
+}
+
 }  // namespace
 
 Mesh read_ensight(const std::string& rPath) {
@@ -968,7 +1014,18 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         mesh = ensight_parse_geo(cur, &layout);
     }
 
-    if (!have_case || case_info.mVariables.empty() || !rOptions.WantsAnyData())
+    if (!have_case || !rOptions.WantsAnyData() ||
+        (case_info.mVariables.empty() && case_info.mConstants.empty()))
+        return mesh;
+
+    for (const auto& [name, value] : case_info.mConstants) {
+        if (!rOptions.WantsArray(name))
+            continue;
+        NDArray arr(DType::Float64, {std::size_t{1}});
+        *arr.As<double>() = value;
+        mesh.AddFieldData(name, std::move(arr));
+    }
+    if (case_info.mVariables.empty())
         return mesh;
 
     // Which step's variable files to read. A file with no TIME section (the
@@ -994,7 +1051,8 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         const bool per_element = var.mKind.find("per element") != std::string::npos;
         if (!per_node && !per_element)
             continue;  // a kind this reader does not (yet) understand
-        const std::size_t ncomp = ensight_starts_with(var.mKind, "vector") ? 3 : 1;
+        const std::size_t ncomp = ensight_variable_ncomp(var.mKind);
+        const bool tensor_symm = ensight_starts_with(var.mKind, "tensor symm");
         const std::string resolved = var.mFilePattern.find('*') != std::string::npos
                                          ? ensight_resolve_wildcard(var.mFilePattern, file_number)
                                          : var.mFilePattern;
@@ -1004,10 +1062,16 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
             NDArray arr;
             ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
                                             nullptr);
+            if (tensor_symm)
+                ensight_swap_tensor_symm_last_two(arr.As<double>(), mesh.NumPoints());
             mesh.AddPointData(var.mName, std::move(arr));
         } else {
             std::vector<NDArray> blocks(mesh.NumCellBlocks());
             ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            if (tensor_symm)
+                for (NDArray& blk : blocks)
+                    if (blk.Size() > 0)
+                        ensight_swap_tensor_symm_last_two(blk.As<double>(), blk.Shape()[0]);
             mesh.AddCellData(var.mName, std::move(blocks));
         }
     }
@@ -1267,6 +1331,208 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
+// ---------------------------------------------------------------------------
+// VARIABLE section writing
+// ---------------------------------------------------------------------------
+
+// One point_data/cell_data array this write collected. `mNumComponents` is
+// the *written* component count (2 pads to 3, matching the geometry writer's
+// own 2D-coordinate padding); `mKind` is the exact `VARIABLE` line keyword.
+struct EnsightVariableToWrite {
+    std::string mName;
+    std::string mKind;  // "scalar", "vector", "tensor symm" or "tensor asym"
+    std::size_t mNumComponents;
+    bool mPerNode;
+};
+
+// EnSight's kind word and written component count for a data array's actual
+// component count; `false` when the count has no EnSight representation.
+bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind,
+                            std::size_t& rWritten) {
+    switch (NumComponents) {
+        case 1:
+            rKind = "scalar";
+            rWritten = 1;
+            return true;
+        case 2:
+        case 3:
+            rKind = "vector";
+            rWritten = 3;
+            return true;
+        case 6:
+            rKind = "tensor symm";
+            rWritten = 6;
+            return true;
+        case 9:
+            rKind = "tensor asym";
+            rWritten = 9;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The variable-file extension this write uses for a kind/location pair --
+// arbitrary (the `.case` file's own declared kind is what the reader goes
+// by, not the extension), but kept distinct per kind for readability on
+// disk.
+std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
+    std::string ext = "scl";
+    if (rKind == "vector")
+        ext = "vec";
+    else if (rKind == "tensor symm")
+        ext = "tsym";
+    else if (rKind == "tensor asym")
+        ext = "tasym";
+    return PerNode ? ext : ("e" + ext);
+}
+
+/**
+ * @brief One written component's values, in EnSight file order.
+ *
+ * `tensor symm`'s last two components are transposed relative to meshio++'s
+ * own `xx yy zz xy yz zx` convention -- `ensight_swap_tensor_symm_last_two`
+ * documents why, and undoes the same transposition on read; a missing
+ * trailing component (the vector-padding case) reads as `0.0`.
+ * @param rMesh The mesh being written.
+ * @param rVar Which array, kind and location.
+ * @param Comp 0-based component index, in EnSight file order.
+ * @param BlockIndex Cell block index; ignored when `rVar.mPerNode`.
+ * @return One value per point (or per cell of that block).
+ */
+std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
+                                            std::size_t Comp, std::size_t BlockIndex) {
+    const std::size_t mio_comp = (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5))
+                                     ? (Comp == 4 ? 5 : 4)
+                                     : Comp;
+    const NDArray& arr =
+        rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
+    const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+    const std::size_t n =
+        rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    std::vector<double> col(n);
+    for (std::size_t i = 0; i < n; ++i)
+        col[i] =
+            mio_comp < stored_ncomp ? detail::read_double(arr, i * stored_ncomp + mio_comp) : 0.0;
+    return col;
+}
+
+void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
+                                  const std::vector<const EnsightTypeEntry*>& rEntries,
+                                  const EnsightVariableToWrite& rVar) {
+    std::string out;
+    out += "variable\n";  // description line; not re-read
+    out += "part\n";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
+    out += buf;
+
+    auto write_col = [&](const std::vector<double>& col) {
+        for (double v : col) {
+            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
+            out += buf;
+        }
+    };
+
+    if (rVar.mPerNode) {
+        out += "coordinates\n";
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            write_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            out += rEntries[bi]->mKeyword;
+            out += "\n";
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                write_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
+                                   const std::vector<const EnsightTypeEntry*>& rEntries,
+                                   const EnsightVariableToWrite& rVar) {
+    std::vector<char> out;
+    ensight_append_str80(out, "C Binary");
+    ensight_append_str80(out, "variable");
+    ensight_append_str80(out, "part");
+    ensight_append_i32(out, 1);
+
+    auto append_col = [&](const std::vector<double>& col) {
+        std::vector<float> f(col.size());
+        for (std::size_t i = 0; i < col.size(); ++i)
+            f[i] = static_cast<float>(col[i]);
+        const char* p = reinterpret_cast<const char*>(f.data());
+        out.insert(out.end(), p, p + f.size() * sizeof(float));
+    };
+
+    if (rVar.mPerNode) {
+        ensight_append_str80(out, "coordinates");
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            append_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            ensight_append_str80(out, rEntries[bi]->mKeyword);
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                append_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+/// Scans `rMesh`'s data maps for what this writer can express: `point_data`
+/// and `cell_data` arrays of 1, 2, 3, 6 or 9 components (anything else is
+/// skipped with a warning; a `cell_data` array missing from any cell block
+/// is skipped too, since a variable file must cover every block the
+/// geometry file does), and single-scalar `field_data` as `constant per
+/// case` entries (anything else skipped with a warning).
+void ensight_collect_variables(const Mesh& rMesh, std::vector<EnsightVariableToWrite>& rVars,
+                               std::vector<std::pair<std::string, double>>& rConstants) {
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        const std::size_t ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping point data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, true});
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+            log::warn("EnSight: skipping cell data '{}': not present on every cell block", name);
+            continue;
+        }
+        const NDArray& first = rMesh.CellData(name, 0);
+        const std::size_t ncomp = first.Shape().size() >= 2 ? first.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping cell data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, false});
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& arr = rMesh.FieldData(name);
+        if (arr.Size() != 1) {
+            log::warn(
+                "EnSight: skipping field data '{}': only a single scalar can become a "
+                "'constant per case'",
+                name);
+            continue;
+        }
+        rConstants.emplace_back(name, detail::read_double(arr, 0));
+    }
+}
+
 }  // namespace
 
 void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -1276,10 +1542,16 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("EnSight: must specify a .case or .geo file");
     const std::string& case_path = paths.first;
     const std::string& geo_path = paths.second;
+    const std::string base = ensight_basename(geo_path);
+    const std::string dir = ensight_dirname(geo_path);
 
     if (rMesh.PointDim() > 3)
         throw WriteError("EnSight: points must have at most three components");
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
+
+    std::vector<EnsightVariableToWrite> vars;
+    std::vector<std::pair<std::string, double>> constants;
+    ensight_collect_variables(rMesh, vars, constants);
 
     {
         auto cf = detail::make_classic_ofstream(case_path, std::ios::binary);
@@ -1290,7 +1562,21 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         out += "type: ensight gold\n";
         out += "\n";
         out += "GEOMETRY\n";
-        out += "model: " + ensight_basename(geo_path) + "\n";
+        out += "model: " + base + "\n";
+        if (!vars.empty() || !constants.empty()) {
+            out += "\n";
+            out += "VARIABLE\n";
+            for (const EnsightVariableToWrite& v : vars) {
+                const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+                out += v.mKind + " per " + (v.mPerNode ? "node" : "element") + ": " + v.mName +
+                       " " + v.mName + "." + ext + "\n";
+            }
+            for (const auto& [name, value] : constants) {
+                char buf[40];
+                detail::snprintf_c(buf, sizeof(buf), "%.17g", value);
+                out += "constant per case: " + name + " " + buf + "\n";
+            }
+        }
         cf.write(out.data(), static_cast<std::streamsize>(out.size()));
     }
 
@@ -1301,6 +1587,18 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         ensight_write_geo_binary(gf, rMesh, entries);
     else
         ensight_write_geo_ascii(gf, rMesh, entries);
+
+    for (const EnsightVariableToWrite& v : vars) {
+        const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+        const std::string var_path = dir + v.mName + "." + ext;
+        auto vf = detail::make_classic_ofstream(var_path, std::ios::binary);
+        if (!vf)
+            throw WriteError("Could not open file for writing: " + var_path);
+        if (binary)
+            ensight_write_variable_binary(vf, rMesh, entries, v);
+        else
+            ensight_write_variable_ascii(vf, rMesh, entries, v);
+    }
 }
 
 }  // namespace meshioplusplus

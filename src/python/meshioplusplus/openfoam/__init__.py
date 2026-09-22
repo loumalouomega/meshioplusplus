@@ -41,7 +41,7 @@ def read(filename, region="", points_only=False, arrays=None, time_step=0):
     return _py_read(filename)
 
 
-def write(filename, mesh):
+def write(filename, mesh, binary=False, label_bits=32, scalar_bits=64):
     """Write an OpenFOAM polyMesh case.
 
     ``filename`` may be a ``.foam`` marker file, a directory named ``polyMesh``,
@@ -53,6 +53,15 @@ def write(filename, mesh):
     ``mesh.openfoam_patch_types`` when present (both are set by :func:`read`); a
     mesh carrying neither -- anything converted from another format -- gets a
     single ``defaultFaces`` patch, which is what ``blockMesh`` itself produces.
+
+    ``binary`` (v15.5.0, roadmap §1.1) writes ``points``/``owner``/``neighbour``/
+    zone label lists as raw little-endian bytes and ``faces`` the same
+    length-prefixed-per-face way the reader already understood; ASCII (the
+    default) is unchanged. ``label_bits``/``scalar_bits`` (32 or 64) set the
+    integer/floating-point width and are only meaningful with ``binary=True`` --
+    reachable from Python and C++ only, not from the flat bindings or either
+    CLI's ``--binary``/``--ascii`` (which always use the 32/64 default). A
+    binary request on a big-endian host raises by name.
 
     Note there is deliberately no Python fallback: a swallowed write error would
     mean a different implementation silently produced a different case.
@@ -68,6 +77,9 @@ def write(filename, mesh):
         mesh,
         getattr(mesh, "cell_tags", None) or {},
         getattr(mesh, "openfoam_patch_types", None) or {},
+        binary,
+        label_bits,
+        scalar_bits,
     )
 
 

@@ -114,6 +114,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -3829,6 +3830,37 @@ val data_condition_js(const val& rMeshObj, const std::string& rLocation, const v
     });
 }
 
+/** @brief von Mises / principal / hydrostatic / deviatoric fields of a
+ *  symmetric (6-component) or general 3x3 (9-component) tensor array.
+ *  `outputs` is a JS array of any of "mises"/"principal"/"hydrostatic"/
+ *  "deviatoric"; empty means all four. `mises`/`principal` use the symmetric
+ *  part of a 9-component input. */
+val tensor_invariants_js(const val& rMeshObj, const std::string& rLocation, const val& rNames,
+                         const val& rOutputs, const std::string& rPrefix,
+                         const std::string& rSuffix, bool overwrite) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TensorInvariantsOptions opts;
+        opts.location = meshioplusplus::data_location_from_name(rLocation);
+        opts.names = val_to_string_vector(rNames);
+        const std::vector<std::string> outputs = val_to_string_vector(rOutputs);
+        if (outputs.empty()) {
+            opts.outputs = meshioplusplus::TensorInvariant::All;
+        } else {
+            std::string joined;
+            for (std::size_t i = 0; i < outputs.size(); ++i) {
+                if (i)
+                    joined += ",";
+                joined += outputs[i];
+            }
+            opts.outputs = meshioplusplus::tensor_invariant_from_name(joined);
+        }
+        opts.prefix = rPrefix;
+        opts.suffix = rSuffix;
+        opts.overwrite = overwrite;
+        return mesh_to_val(meshioplusplus::tensor_invariants(val_to_mesh(rMeshObj), opts));
+    });
+}
+
 /** @brief Read-only per-array data summary. Returns a JS array of objects with
  *  `location`, `name`, `dtype`, `shape`, `numBlocks`, `numEntries`,
  *  `numComponents`, `numValues`, `min`, `max`, `mean`, the three
@@ -4436,6 +4468,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("dataCellToPoint", &data_cell_to_point_js);
     emscripten::function("dataCalc", &data_calc_js);
     emscripten::function("dataCondition", &data_condition_js);
+    emscripten::function("tensorInvariants", &tensor_invariants_js);
     emscripten::function("dataInfo", &data_info_js);
     emscripten::function("dataIntegrate", &data_integrate_js);
     // Transient XDMF: the one stateful surface -- an opaque handle plus these

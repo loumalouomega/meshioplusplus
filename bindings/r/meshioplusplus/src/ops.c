@@ -1233,6 +1233,20 @@ SEXP R_mio_data_condition(SEXP mesh, SEXP location, SEXP names, SEXP mode, SEXP 
     return mio_r_wrap_mesh(out);
 }
 
+SEXP R_mio_tensor_invariants(SEXP mesh, SEXP location, SEXP names, SEXP outputs, SEXP prefix,
+                             SEXP suffix, SEXP overwrite) {
+    SEXP shelter;
+    int64_t count = 0;
+    const char *const *nm = mio_r_names(names, &count, &shelter);
+    mio_mesh *out = mio_tensor_invariants(
+        mio_r_mesh(mesh), (mio_data_location)mio_r_int(location, "location"), nm, count,
+        mio_r_int(outputs, "outputs"), mio_r_opt_string(prefix), mio_r_opt_string(suffix),
+        mio_r_bool(overwrite, "overwrite"));
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("tensor_invariants");
+    return mio_r_wrap_mesh(out);
+}
+
 typedef struct {
     const mio_data_info *info;
     int64_t index;

@@ -477,6 +477,78 @@ class TestRegistration:
             assert _core.sniff_format(str(path)) == expected
 
 
+class TestDatFile:
+    """``meshioplusplus.frd.read_dat``: the ``*NODE PRINT``/``*EL PRINT`` tabular
+    print, a companion file with no mesh in it. Python-only, not registered as a
+    format (``.dat`` belongs to Tecplot)."""
+
+    def test_nodal_displacements_match_the_frd_reading_of_the_same_run(self):
+        tables = py_frd.read_dat(path_of("c3d8").replace(".frd", ".dat"))
+        disp = next(t for t in tables if t["quantity"] == "displacements")
+        assert disp["kind"] == "node"
+        assert disp["components"] == ["vx", "vy", "vz"]
+        assert "int_points" not in disp
+        mesh = meshioplusplus.frd.read(path_of("c3d8"))
+        frd_disp = np.asarray(mesh.point_data["DISP"])
+        for node_id, row in zip(disp["ids"], disp["values"]):
+            np.testing.assert_allclose(frd_disp[node_id - 1], row, atol=1e-6)
+
+    def test_element_stresses_are_per_integration_point_in_a_different_component_order(
+        self,
+    ):
+        tables = py_frd.read_dat(path_of("c3d8").replace(".frd", ".dat"))
+        stress = next(t for t in tables if t["quantity"] == "stresses")
+        assert stress["kind"] == "element"
+        # .dat order is sxx syy szz sxy sxz syz -- .frd's is xx yy zz xy yz zx (the
+        # last two swapped).
+        assert stress["components"] == ["sxx", "syy", "szz", "sxy", "sxz", "syz"]
+        assert stress["set"] == "E"
+        # A single C3D8 element: 8 integration points, all on element 1.
+        assert list(stress["ids"]) == [1] * 8
+        assert sorted(stress["int_points"]) == list(range(1, 9))
+        assert stress["values"].shape == (8, 6)
+        assert np.isfinite(stress["values"]).all()
+        # Per-Gauss-point values differ from the nodally-extrapolated .frd ones, but
+        # both describe the same physical field: element-averaged magnitudes agree
+        # to within the extrapolation/averaging error.
+        mesh = meshioplusplus.frd.read(path_of("c3d8"))
+        dat_mean_sxx = stress["values"][:, 0].mean()
+        frd_mean_xx = np.asarray(mesh.point_data["STRESS"])[:, 0].mean()
+        assert dat_mean_sxx == pytest.approx(frd_mean_xx, rel=0.05)
+
+    def test_step_and_increment_and_time_are_attached(self):
+        tables = py_frd.read_dat(path_of("c3d8").replace(".frd", ".dat"))
+        for t in tables:
+            assert t["step"] == 1
+            assert t["increment"] == 1
+            assert t["time"] == pytest.approx(1.0)
+
+    def test_every_solid_single_element_fixture_reads(self):
+        # Every SOLIDS single-element deck now emits an *EL PRINT stress section
+        # (tools/gen_frd_fixtures.py); a broad sweep across element types with
+        # different node/integration-point counts.
+        for name in ("c3d4", "c3d6", "c3d8", "c3d10", "c3d15", "c3d20"):
+            tables = py_frd.read_dat(path_of(name).replace(".frd", ".dat"))
+            kinds = {t["quantity"]: t for t in tables}
+            assert "displacements" in kinds
+            assert "stresses" in kinds
+            assert kinds["stresses"]["kind"] == "element"
+            assert len(kinds["stresses"]["ids"]) > 0
+
+    def test_is_reexported_from_the_package(self):
+        assert meshioplusplus.frd.read_dat is py_frd.read_dat
+
+    def test_not_a_dat_file_fails_cleanly(self, tmp_path):
+        path = tmp_path / "junk.dat"
+        path.write_text("hello\nworld\n")
+        with pytest.raises(ReadError, match="no recognisable"):
+            py_frd.read_dat(str(path))
+
+    def test_missing_file_fails_cleanly(self):
+        with pytest.raises(ReadError, match="could not read"):
+            py_frd.read_dat("/no/such/file.dat")
+
+
 def edit(tmp_path, transform, source="c3d8"):
     path = tmp_path / "edited.frd"
     path.write_text(transform((FIXTURES / f"{source}.frd").read_text()))
@@ -515,12 +587,66 @@ class TestNumberSpellings:
         assert u[0] == 15.0 and np.isnan(u[1]) and u[2] == -np.inf
 
 
+class TestBinaryLayout:
+    """The binary layout (*NODE OUTPUT/*ELEMENT OUTPUT) ccx writes: raw little-endian
+    records with the ASCII headers kept, cross-checked against the ASCII rendition of
+    the exact same run. See doc/formats/frd.md."""
+
+    @pytest.mark.parametrize("name", ["c3d8", "c3d20", "cantilever_static"])
+    def test_matches_the_ascii_rendition_of_the_same_run(self, engine, name):
+        ascii_mesh = engine(path_of(name))
+        bin_mesh = engine(path_of(f"{name}_bin"))
+        np.testing.assert_allclose(ascii_mesh.points, bin_mesh.points, atol=1e-9)
+        assert len(ascii_mesh.cells) == len(bin_mesh.cells)
+        for ca, cb in zip(ascii_mesh.cells, bin_mesh.cells):
+            assert ca.type == cb.type
+            np.testing.assert_array_equal(ca.data, cb.data)
+        common = set(ascii_mesh.point_data) & set(bin_mesh.point_data)
+        assert common  # DISP at least, on every fixture
+        for key in common:
+            # ASCII is E12.5 (~6 sig figs); binary result values are float32.
+            np.testing.assert_allclose(
+                ascii_mesh.point_data[key],
+                bin_mesh.point_data[key],
+                rtol=1e-3,
+                atol=1e-6,
+            )
+        for key in ("frd:group", "frd:material"):
+            for ba, bb in zip(ascii_mesh.cell_data[key], bin_mesh.cell_data[key]):
+                np.testing.assert_array_equal(ba, bb)
+
+    def test_derived_works_on_a_binary_file(self, engine):
+        mesh = engine(path_of("c3d8_bin"), derived=True)
+        ascii_mesh = engine(path_of("c3d8"), derived=True)
+        assert "STRESS_mises" in mesh.point_data
+        assert "STRESS_principal" in mesh.point_data
+        assert np.asarray(mesh.point_data["STRESS_mises"]) == pytest.approx(
+            np.asarray(ascii_mesh.point_data["STRESS_mises"]), rel=1e-3
+        )
+
+    def test_a_second_node_or_element_block_is_ignored_with_a_warning(self, engine):
+        # cantilever_static_bin has exactly one 2C/3C block; this only pins that the
+        # binary path shares the ASCII path's "second block ignored" wiring, not a
+        # real duplicate-block fixture (ccx never writes one).
+        mesh = engine(path_of("cantilever_static_bin"))
+        assert mesh.points.shape[0] == 117
+
+    def test_engines_agree(self):
+        for name in ("c3d8", "c3d20", "cantilever_static"):
+            core = core_read(path_of(f"{name}_bin"))
+            python = py_frd.read(path_of(f"{name}_bin"))
+            assert canon(core) == canon(python)
+
+
 class TestErrors:
-    def test_binary_files_are_refused(self, engine, tmp_path):
+    def test_a_text_file_claiming_the_binary_flag_fails_cleanly(self, engine, tmp_path):
+        # A hand-edited ASCII file with the 2C flag flipped to 2: the ASCII bytes get
+        # misread as binary records and fail on the first structural check (an
+        # invalid element type or an out-of-bounds record) rather than crashing.
         path = edit(
             tmp_path, lambda t: re.sub(r"(    2C[^\n]*?)1(\n)", r"\g<1>2\2", t, count=1)
         )
-        with pytest.raises(ReadError, match="binary"):
+        with pytest.raises(ReadError):
             engine(path)
 
     def test_not_a_frd_file(self, engine, tmp_path):

@@ -107,6 +107,7 @@
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -2431,6 +2432,30 @@ PYBIND11_MODULE(_core, m) {
         py::arg("nan_policy") = "ignore", py::arg("nan_replacement") = 0.0, py::arg("suffix") = "",
         py::arg("preserve_dtype") = true);
 
+    // von Mises / principal / hydrostatic / deviatoric of a tensor array.
+    // See operations/tensor_invariants.hpp.
+    m.def(
+        "tensor_invariants",
+        [](py::object pymesh, const std::string& location, const std::vector<std::string>& names,
+           const std::string& outputs, const std::string& prefix, const std::string& suffix,
+           bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::TensorInvariantsOptions opts;
+            opts.location = meshioplusplus::data_location_from_name(location);
+            opts.names = names;
+            opts.outputs = outputs.empty() ? meshioplusplus::TensorInvariant::All
+                                           : meshioplusplus::tensor_invariant_from_name(outputs);
+            opts.prefix = prefix;
+            opts.suffix = suffix;
+            opts.overwrite = overwrite;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::tensor_invariants(cpp, opts));
+        },
+        py::arg("mesh"), py::arg("location") = "point",
+        py::arg("names") = std::vector<std::string>{}, py::arg("outputs") = "",
+        py::arg("prefix") = "", py::arg("suffix") = "", py::arg("overwrite") = true);
+
     // Read-only per-array data summary. Returns a list of dicts, one per array.
     // See operations/data_info.hpp.
     m.def(
@@ -3442,7 +3467,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // round-trip write would otherwise throw on our own output.
     m.def(
         "openfoam_write",
-        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types) {
+        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types,
+           bool binary, int label_bits, int scalar_bits) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3456,10 +3482,15 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             for (auto item : patch_types)
                 info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
                     py::cast<std::string>(item.second);
-            meshioplusplus::write_openfoam(path, cpp, info);
+            meshioplusplus::OpenFoamWriteOptions wopts;
+            wopts.mBinary = binary;
+            wopts.mLabelBits = label_bits;
+            wopts.mScalarBits = scalar_bits;
+            meshioplusplus::write_openfoam(path, cpp, info, wopts);
         },
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
-        py::arg("patch_types") = py::dict());
+        py::arg("patch_types") = py::dict(), py::arg("binary") = false,
+        py::arg("label_bits") = 32, py::arg("scalar_bits") = 64);
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

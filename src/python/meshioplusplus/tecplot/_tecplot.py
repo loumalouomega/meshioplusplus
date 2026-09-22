@@ -11,6 +11,7 @@ from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
+from .._regions import block_bases
 
 zone_key_to_type = {
     "T": str,
@@ -74,27 +75,6 @@ meshio_to_tecplot_order = {
     "pyramid": [0, 1, 2, 3, 4, 4, 4, 4],
     "wedge": [0, 1, 4, 3, 2, 2, 5, 5],
     "hexahedron": [0, 1, 2, 3, 4, 5, 6, 7],
-}
-
-
-meshio_to_tecplot_order_2 = {
-    "triangle": [0, 1, 2, 2],
-    "quad": [0, 1, 2, 3],
-    "tetra": [0, 1, 2, 2, 3, 3, 3, 3],
-    "pyramid": [0, 1, 2, 3, 4, 4, 4, 4],
-    "wedge": [0, 1, 4, 3, 2, 2, 5, 5],
-    "hexahedron": [0, 1, 2, 3, 4, 5, 6, 7],
-}
-
-
-meshio_type_to_ndim = {
-    "line": 1,
-    "triangle": 2,
-    "quad": 2,
-    "tetra": 3,
-    "pyramid": 3,
-    "wedge": 3,
-    "hexahedron": 3,
 }
 
 
@@ -289,7 +269,16 @@ def _read_zone(line):
             value = line[i + 1].replace("=", "")
             i += 1
 
-        zone[key] = zone_key_to_type[key](value)
+        type_fn = zone_key_to_type.get(key)
+        if type_fn is None:
+            # Fields this reference reader doesn't understand (SOLUTIONTIME,
+            # STRANDID, VARSHARELIST, PASSIVEVARLIST, CONNECTIVITYSHAREZONE,
+            # ...) are warned about and dropped rather than raising KeyError
+            # -- the C++ core is the one that reads multizone files fully;
+            # this fallback stays single-zone, geometry-only.
+            warn(f"Tecplot: ignoring unrecognized zone field '{key}'")
+        else:
+            zone[key] = type_fn(value)
         i += 1
 
     # Add zone title to zone dict
@@ -375,125 +364,123 @@ def _read_zone_data(f, num_data, num_cells, zone_format):
     return data, np.concatenate(cells)
 
 
+def _zone_title(mesh, bases, block):
+    """An exactly-matching Cell region's name, else ``block_<block>``.
+
+    Mirrors the C++ writer: a region counts only when its (sorted, canonical)
+    entries are precisely the global cell-index range of this block.
+    """
+    lo, hi = bases[block], bases[block + 1]
+    for region in mesh.regions:
+        if region.kind != "cell" or len(region.entries) == 0:
+            continue
+        if len(region.entries) != hi - lo:
+            continue
+        if region.entries[0] == lo and region.entries[-1] == hi - 1:
+            return region.name
+    return f"block_{block}"
+
+
 def write(filename, mesh):
-    # Check cell types
-    cell_types = []
+    # One Tecplot ZONE per cell block -- no single-type restriction, no
+    # 2D/3D padding hack. Zone 1 carries the coordinates and nodal fields;
+    # later zones reuse them through VARSHARELIST rather than duplicating
+    # the (unwelded, shared) point array. A cell-data array is expected one
+    # entry per cell block (the meshio convention); a block outside
+    # ``cell_blocks`` (an unsupported type) simply never claims it.
     cell_blocks = []
     for ic, c in enumerate(mesh.cells):
         if c.type in meshio_only:
-            cell_types.append(c.type)
             cell_blocks.append(ic)
         else:
             warn(
-                (
-                    "Tecplot does not support cell type '{}'. "
-                    "Skipping cell block {}."
-                ).format(c.type, ic)
+                f"Tecplot does not support cell type '{c.type}'. Skipping cell block {ic}."
             )
-
-    # Define cells and zone type
-    cell_types = np.unique(cell_types)
-    if len(cell_types) == 0:
+    if not cell_blocks:
         raise WriteError("No cell type supported by Tecplot in mesh")
-    elif len(cell_types) == 1:
-        # Nothing much to do except converting pyramids and wedges to hexahedra
-        zone_type = meshio_to_tecplot_type[cell_types[0]]
-        cells = np.concatenate(
-            [
-                mesh.cells[ic].data[:, meshio_to_tecplot_order[mesh.cells[ic].type]]
-                for ic in cell_blocks
-            ]
-        )
-    else:
-        # Check if the mesh contains 2D and 3D cells
-        num_dims = [meshio_type_to_ndim[mesh.cells[ic].type] for ic in cell_blocks]
 
-        # Skip 2D cells if it does
-        if len(np.unique(num_dims)) == 2:
-            warn("Mesh contains 2D and 3D cells. Skipping 2D cells.")
-            cell_blocks = [ic for ic, ndim in zip(cell_blocks, num_dims) if ndim == 3]
+    num_nodes = len(mesh.points)
+    dim = mesh.points.shape[1]
 
-        # Convert 2D cells to quads / 3D cells to hexahedra
-        zone_type = "FEQUADRILATERAL" if num_dims[0] == 2 else "FEBRICK"
-        cells = np.concatenate(
-            [
-                mesh.cells[ic].data[:, meshio_to_tecplot_order_2[mesh.cells[ic].type]]
-                for ic in cell_blocks
-            ]
-        )
-
-    # Define variables
     variables = ["X", "Y"]
-    data = [mesh.points[:, 0], mesh.points[:, 1]]
-    varrange = [3, 0]
-
-    if mesh.points.shape[1] == 3:
-        variables += ["Z"]
-        data += [mesh.points[:, 2]]
-        varrange[0] += 1
+    shared_data = [mesh.points[:, 0], mesh.points[:, 1]]
+    if dim == 3:
+        variables.append("Z")
+        shared_data.append(mesh.points[:, 2])
 
     for k, v in mesh.point_data.items():
-        if k not in {"X", "Y", "Z", "x", "y", "z"}:
-            if v.ndim == 1:
-                variables += [k]
-                data += [v]
-                varrange[0] += 1
-            elif v.ndim == 2:
-                for i, vv in enumerate(v.T):
-                    variables += [f"{k}_{i}"]
-                    data += [vv]
-                    varrange[0] += 1
-        else:
+        if k in {"X", "Y", "Z", "x", "y", "z"}:
             warn(f"Skipping point data '{k}'.")
+            continue
+        if v.ndim == 1:
+            variables.append(k)
+            shared_data.append(v)
+        elif v.ndim == 2:
+            for i, vv in enumerate(v.T):
+                variables.append(f"{k}_{i}")
+                shared_data.append(vv)
+    num_shared = len(variables)
 
-    if mesh.cell_data:
-        varrange[1] = varrange[0] - 1
-        for k, v in mesh.cell_data.items():
-            if k not in {"X", "Y", "Z", "x", "y", "z"}:
-                v = np.concatenate([v[ic] for ic in cell_blocks])
-                if v.ndim == 1:
-                    variables += [k]
-                    data += [v]
-                    varrange[1] += 1
-                elif v.ndim == 2:
-                    for i, vv in enumerate(v.T):
-                        variables += [f"{k}_{i}"]
-                        data += [vv]
-                        varrange[1] += 1
-            else:
-                warn(f"Skipping cell data '{k}'.")
+    # Cell-centred variables, component-expanded: `cell_var_blocks[j]` maps
+    # block index -> that component's 1-D array, for variable `num_shared+j`.
+    cell_var_blocks = []
+    for k, v in mesh.cell_data.items():
+        if k in {"X", "Y", "Z", "x", "y", "z"}:
+            warn(f"Skipping cell data '{k}'.")
+            continue
+        first = next((np.asarray(v[ic]) for ic in cell_blocks if ic < len(v)), None)
+        if first is None:
+            continue
+        ncomp = first.shape[1] if first.ndim == 2 else 1
+        for c in range(ncomp):
+            variables.append(k if ncomp == 1 else f"{k}_{c}")
+            per_block = {}
+            for ic in cell_blocks:
+                if ic >= len(v):
+                    continue
+                arr = np.asarray(v[ic])
+                per_block[ic] = arr[:, c] if arr.ndim == 2 else arr
+            cell_var_blocks.append(per_block)
+
+    bases = block_bases(mesh.cells)
 
     with open_file(filename, "w") as f:
-        # Title
         f.write(f'TITLE = "{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}"\n')
-
-        # Variables
         variables_str = ", ".join(f'"{var}"' for var in variables)
         f.write(f"VARIABLES = {variables_str}\n")
 
-        # Zone record
-        num_nodes = len(mesh.points)
-        num_cells = sum(len(mesh.cells[ic].data) for ic in cell_blocks)
-        f.write(f"ZONE NODES = {num_nodes}, ELEMENTS = {num_cells},\n")
-        f.write(f"DATAPACKING = BLOCK, ZONETYPE = {zone_type}")
-        if varrange[0] <= varrange[1]:
-            f.write(",\n")
-            varlocation_str = (
-                f"{varrange[0]}"
-                if varrange[0] == varrange[1]
-                else f"{varrange[0]}-{varrange[1]}"
+        for bi, ic in enumerate(cell_blocks):
+            cell = mesh.cells[ic]
+            zone_type = meshio_to_tecplot_type[cell.type]
+            order = meshio_to_tecplot_order[cell.type]
+            num_cells = len(cell.data)
+            title = _zone_title(mesh, bases, ic)
+
+            present = [j for j, pb in enumerate(cell_var_blocks) if ic in pb]
+            passive = [j for j, pb in enumerate(cell_var_blocks) if ic not in pb]
+
+            f.write(
+                f'ZONE T = "{title}", NODES = {num_nodes}, ELEMENTS = {num_cells},\n'
             )
-            f.write(f"VARLOCATION = ([{varlocation_str}] = CELLCENTERED)\n")
-        else:
+            f.write(f"DATAPACKING = BLOCK, ZONETYPE = {zone_type}")
+            if bi > 0:
+                f.write(f",\nVARSHARELIST = ([1-{num_shared}] = 1)")
+            if present:
+                rng = ",".join(str(num_shared + j + 1) for j in present)
+                f.write(f",\nVARLOCATION = ([{rng}] = CELLCENTERED)")
+            if passive:
+                rng = ",".join(str(num_shared + j + 1) for j in passive)
+                f.write(f",\nPASSIVEVARLIST = ([{rng}])")
             f.write("\n")
 
-        # Zone data
-        for arr in data:
-            _write_table(f, arr)
+            if bi == 0:
+                for arr in shared_data:
+                    _write_table(f, arr)
+            for j in present:
+                _write_table(f, cell_var_blocks[j][ic])
 
-        # CellBlock
-        for cell in cells:
-            f.write(" ".join(str(c) for c in cell + 1) + "\n")
+            for row in cell.data[:, order]:
+                f.write(" ".join(str(c) for c in row + 1) + "\n")
 
 
 def _write_table(f, data, ncol=20):

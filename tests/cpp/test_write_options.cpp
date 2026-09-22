@@ -24,7 +24,9 @@
  */
 
 // System includes
+#include <atomic>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -85,6 +87,41 @@ TEST(WriteOptions, EncodingSelectsAsciiOrBinary) {
     EXPECT_EQ(meshioplusplus::registry_read(b, "vtu", {}).NumPoints(), m.NumPoints());
     std::remove(a.c_str());
     std::remove(b.c_str());
+}
+
+TEST(WriteOptions, OpenfoamEncodingReachesTheBinaryWriter) {
+    // roadmap §1.1: openfoam joined the formats with an ASCII/binary variant.
+    // Each case gets its own directory: unlike every other format here,
+    // openfoam resolves `<parent>/constant/polyMesh` from a `.foam` path, so
+    // two cases sharing one parent would collide on the same polyMesh dir.
+    static std::atomic<unsigned> counter{0};
+    const std::filesystem::path dir_a =
+        std::filesystem::temp_directory_path() / ("meshio_wo_a_" + std::to_string(counter++));
+    const std::filesystem::path dir_b =
+        std::filesystem::temp_directory_path() / ("meshio_wo_b_" + std::to_string(counter++));
+    const std::string a = (dir_a / "case.foam").string();
+    const std::string b = (dir_b / "case.foam").string();
+
+    const Mesh m = mt::tet_mesh();
+    WriteOptions ascii;
+    ascii.mEncoding = WriteEncoding::Ascii;
+    WriteOptions binary;
+    binary.mEncoding = WriteEncoding::Binary;
+    registry_write_ex(a, m, "openfoam", ascii);
+    registry_write_ex(b, m, "openfoam", binary);
+
+    const std::string a_points = read_all((dir_a / "constant" / "polyMesh" / "points").string());
+    const std::string b_points = read_all((dir_b / "constant" / "polyMesh" / "points").string());
+    EXPECT_NE(a_points.find("format      ascii;"), std::string::npos);
+    EXPECT_NE(b_points.find("format      binary;"), std::string::npos);
+    EXPECT_NE(a_points, b_points);
+
+    EXPECT_EQ(meshioplusplus::registry_read(a, "openfoam", {}).NumPoints(), m.NumPoints());
+    EXPECT_EQ(meshioplusplus::registry_read(b, "openfoam", {}).NumPoints(), m.NumPoints());
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir_a, ec);
+    std::filesystem::remove_all(dir_b, ec);
 }
 
 TEST(WriteOptions, UnsupportedOptionIsAnErrorNotSilentlyIgnored) {

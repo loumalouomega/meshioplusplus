@@ -9497,6 +9497,61 @@ MESHIOPLUSPLUS_API Mesh marching_cut(const MarchingInput& rInput, const std::vec
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/marching.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/mesh_carve.hpp =====
+/**
+ * @file detail/mesh_carve.hpp
+ * @brief The shared "split a mesh into named cell-index parts" helper used by every
+ * composite/multi-part writer (VTKHDF's composite types, EnSight Gold's multi-`part`
+ * geometry).
+ *
+ * A part is a name plus a sorted list of global (block-major) cell indices. When a
+ * mesh's Cell regions exactly partition every cell -- no overlap, no gap -- each
+ * region becomes one part, in `(tag, name)` order, which is also the mesh's own
+ * region storage order. Otherwise the mesh falls back to one part per cell block,
+ * named `block_<i>`, with a `log::warn` naming the reason.
+ */
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One named part: a sorted list of global (block-major) cell indices.
+struct MeshPart {
+    std::string mName;
+    std::vector<std::size_t> mCells;
+};
+
+/**
+ * @brief Splits @p rMesh's cells into named parts, preferring its Cell regions.
+ *
+ * @param rMesh The mesh to carve. Must have at least one cell (`WriteError` otherwise,
+ *        naming @p rCaller).
+ * @param rCaller Short name of the calling format (`"vtkhdf"`, `"ensight"`, ...), used
+ *        in every exception/warning message.
+ * @param StrictNames When `true`, a region-name collision (or, with @p RejectSlash, a
+ *        `/` in a name) is a `WriteError` naming @p rCaller (VTKHDF's own composite
+ *        blocks need this: a soft fallback would silently rename the caller's Assembly
+ *        links). When `false` (the default), it is a `log::warn` and a fallback to one
+ *        part per cell block, the same fallback used when the regions do not exactly
+ *        partition the mesh either way.
+ * @param RejectSlash When `true`, a part name containing `/` is a `WriteError` (only
+ *        meaningful together with @p StrictNames; VTKHDF's Assembly links are a path
+ *        hierarchy where `/` would be misread as a separator).
+ * @return One part per Cell region when they exactly partition every cell (an empty
+ *         region becomes an empty part), else one part per cell block.
+ */
+MESHIOPLUSPLUS_API std::vector<MeshPart> carve_by_region(const Mesh& rMesh,
+                                                         const std::string& rCaller,
+                                                         bool StrictNames = false,
+                                                         bool RejectSlash = false);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/mesh_carve.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
 /**
  * @file node_adjacency.hpp
@@ -9848,7 +9903,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 15
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 4
+#define MESHIOPLUSPLUS_VERSION_MINOR 5
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9858,7 +9913,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "15.4.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "15.5.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -11661,6 +11716,43 @@ MESHIOPLUSPLUS_API VertexNormalGroups vertex_normal_groups(const TriangleSoup& r
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/surface_normals.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
+/**
+ * @file detail/sym3_eigen.hpp
+ * @brief Invariants of a symmetric 3x3 tensor stored as six components in the
+ * `xx yy zz xy yz zx` order used throughout this codebase (see
+ * `doc/mesh_data_model.md`).
+ *
+ * This was originally private to the CalculiX `.frd` reader's `derived=`
+ * option; it now backs `operations/tensor_invariants.hpp` as well, so both
+ * callers share one eigensolver instead of two copies drifting apart.
+ */
+
+// System includes
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The von Mises equivalent of a symmetric tensor.
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @return `sqrt(0.5*((xx-yy)^2+(yy-zz)^2+(zz-xx)^2+6*(xy^2+yz^2+zx^2)))`.
+ */
+MESHIOPLUSPLUS_API double sym3_mises(const double* pT);
+
+/**
+ * @brief Eigenvalues of a symmetric tensor, ascending, by cyclic Jacobi.
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @param pOut the three eigenvalues, ascending.
+ */
+MESHIOPLUSPLUS_API void sym3_principal(const double* pT, double* pOut);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/tri_box.hpp =====
 /**
  * @file detail/tri_box.hpp
@@ -13754,11 +13846,15 @@ MESHIOPLUSPLUS_API Mesh read_flux(const std::string& rPath);
  * @file frd.hpp
  * @brief CalculiX result file (`.frd`) C++ reader.
  *
- * The ASCII file `ccx` writes and `cgx` reads: fixed-column records keyed by their
- * first columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per
- * result per increment, `9999`). Values are `E12.5` with no separator, so every field
- * is sliced by column. The short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
- * layouts are read; the binary layout (flag 2) is refused.
+ * The file `ccx` writes and `cgx` reads: fixed-column records keyed by their first
+ * columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per result
+ * per increment, `9999`). ASCII values are `E12.5` with no separator, so every field
+ * is sliced by column; the short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
+ * layouts are both read. The binary layout ccx writes for `*NODE OUTPUT`/`*ELEMENT
+ * OUTPUT` (mixed ASCII headers and raw little-endian records, `int32` ids, `float32`
+ * or `float64` reals per the block's own flag: 2 or 3) is also read, host byte order
+ * assumed little-endian like every other binary format here. See doc/formats/frd.md
+ * for the binary record layout.
  *
  *  - The mesh is the one `ccx` wrote, not the `.inp` mesh: shells and beams are
  *    expanded into solids. The twelve cgx element types map to `hexahedron`, `wedge`,
@@ -13800,7 +13896,7 @@ struct FrdReadOptions {
  * @param rOpts `mTimeStep` selects the increment (`ResolveTimeStep`); `mPointsOnly` and
  *        `mDataArrays` narrow the result blocks that are parsed
  * @return the mesh, with the selected increment's results as point data
- * @throws ReadError if the file can't be read, is binary, a field is malformed, an
+ * @throws ReadError if the file can't be read, a field is malformed, an
  *         element or a result refers to an undefined node, or the step is out of range
  */
 MESHIOPLUSPLUS_API Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts = {});
@@ -16055,7 +16151,11 @@ MESHIOPLUSPLUS_API Mesh read_obj(const std::string& rPath);
  * meshio++ that takes a directory path** — it creates
  * `<case>/constant/polyMesh/` and writes all five files. It goes through
  * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
- * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ * `NFACE_n` writer uses. Since v15.5.0 (roadmap §1.1) an `OpenFoamWriteOptions`
+ * overload writes binary too, little-endian only, at the same `label=32/64`,
+ * `scalar=32/64` widths the reader already accepts; a big-endian host refuses
+ * a binary request by name rather than writing bytes the reader could not
+ * read back on its own machine.
  *
  * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
  * `T`, …) under a case's time directories are never touched by this module,
@@ -16130,6 +16230,21 @@ struct OpenFoamInfo {
      * documented follow-up.
      */
     std::string mRegion;
+};
+
+/**
+ * @brief Write-side format options for `write_openfoam` (v15.5.0, roadmap
+ * §1.1) — a pure addition, kept separate from #OpenFoamInfo so that
+ * struct's ABI pin (128 bytes) is untouched.
+ */
+struct OpenFoamWriteOptions {
+    /// `false` (default) writes ASCII, matching every earlier release.
+    bool mBinary = false;
+    /// Label (integer) width in bits: 32 or 64. Only meaningful when
+    /// #mBinary is `true` — ASCII numbers carry no width of their own.
+    int mLabelBits = 32;
+    /// Scalar (floating-point) width in bits: 32 or 64.
+    int mScalarBits = 64;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -16259,6 +16374,28 @@ MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
                                        const OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write an OpenFOAM polyMesh case with explicit format options.
+ *
+ * Identical to the three-argument overload, plus @p rOptions. `rOptions.mBinary`
+ * writes `points`/`owner`/`neighbour`/zone label lists as raw little-endian
+ * bytes (count, `(`, bytes, `)`) and `faces` the same length-prefixed-per-face
+ * way the reader already expects (see "Binary write" in `doc/formats/openfoam.md`) —
+ * not `CompactListList`, which this reader does not read. The header's
+ * `format`/`arch` lines record the encoding and widths, exactly as the reader
+ * requires to parse it back (see `read_openfoam`'s `detect_format`).
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write
+ * @param rInfo patch names and types, as the three-argument overload
+ * @param rOptions binary flag and label/scalar widths (see #OpenFoamWriteOptions)
+ * @throws WriteError for the same reasons as the three-argument overload,
+ *         plus a binary request on a big-endian host
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo,
+                                       const OpenFoamWriteOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
@@ -25545,6 +25682,130 @@ MESHIOPLUSPLUS_API Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, b
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/surface.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/tensor_invariants.hpp =====
+/**
+ * @file operations/tensor_invariants.hpp
+ * @brief `tensor_invariants`: von Mises, principal values, and the hydrostatic
+ * / deviatoric split of a symmetric-tensor data array.
+ *
+ * Every format that stores a stress, strain or other rank-2 tensor field
+ * needs these; before this operation the only route was the CalculiX `.frd`
+ * reader's format-specific `derived=` option (`formats/frd.hpp`), which
+ * neither the generic `read`, the CLIs, MCP nor the flat bindings carried.
+ * `.frd`'s `derived=` now calls this operation internally and keeps its
+ * existing output names; see `doc/formats/frd.md`.
+ *
+ * ### Input layout
+ *
+ * An array is treated as one tensor per row, selected by its trailing
+ * component count:
+ *
+ *  - **6 components**: a symmetric tensor `xx yy zz xy yz zx`, the order used
+ *    throughout this codebase (`doc/mesh_data_model.md`).
+ *  - **9 components**: a general 3x3 tensor, row-major (`xx xy xz yx yy yz zx
+ *    zy zz`), the layout `operations/gradient.hpp` and `operations/hessian.hpp`
+ *    produce. `Mises` and `Principal` are only defined for a symmetric tensor,
+ *    so both are computed from the symmetric part `0.5*(T + T^T)`.
+ *
+ * Any other component count is a `std::invalid_argument`.
+ *
+ * ### Outputs
+ *
+ * Requested through the `mOutputs` bitmask, each written as `rOpts.prefix +
+ * name + suffix`:
+ *
+ *  - `Mises`: `sqrt(0.5*((xx-yy)^2+(yy-zz)^2+(zz-xx)^2+6*(xy^2+yz^2+zx^2)))`,
+ *    using the symmetric part for a 9-component input. Shape `(n,)`.
+ *  - `Principal`: eigenvalues of the symmetric part, ascending. Shape `(n, 3)`.
+ *  - `Hydrostatic`: `(xx+yy+zz)/3`, the mean of the tensor's own diagonal
+ *    (unsymmetrized). Shape `(n,)`.
+ *  - `Deviatoric`: the input with `Hydrostatic` subtracted from its three
+ *    diagonal entries, off-diagonal entries unchanged; same shape and
+ *    component count as the input.
+ *
+ * A row with any non-finite input component produces NaN in every output for
+ * that row rather than throwing (mirrors `.frd`'s `derived=` and the general
+ * "non-finite in, non-finite out" rule of `operations/data_common.hpp`, except
+ * that here there is no reduction to exclude the value from).
+ *
+ * Points, connectivity and block order are left bit-identical — this is a
+ * data-only operation and reuses `detail/clone_mesh`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which invariants to compute; combine with `|`.
+enum class TensorInvariant : unsigned {
+    Mises = 1u << 0,
+    Principal = 1u << 1,
+    Hydrostatic = 1u << 2,
+    Deviatoric = 1u << 3,
+    All = Mises | Principal | Hydrostatic | Deviatoric,
+};
+
+/// `a | b` for `TensorInvariant` flags.
+inline TensorInvariant operator|(TensorInvariant a, TensorInvariant b) {
+    return static_cast<TensorInvariant>(static_cast<unsigned>(a) | static_cast<unsigned>(b));
+}
+
+/// `a & b` for `TensorInvariant` flags, as a plain bitmask (not a `TensorInvariant`
+/// itself, so it can be tested with `!= 0` without another cast).
+inline unsigned operator&(TensorInvariant a, TensorInvariant b) {
+    return static_cast<unsigned>(a) & static_cast<unsigned>(b);
+}
+
+/// Options for `tensor_invariants`.
+struct TensorInvariantsOptions {
+    /// Which data map the array lives in. `Field` is rejected (no per-row
+    /// tensor to reduce).
+    DataLocation location = DataLocation::Point;
+    /// Names to process; empty means every 6- or 9-component array at
+    /// `location` (arrays with another component count are skipped, not an
+    /// error, when the list is empty).
+    std::vector<std::string> names;
+    /// Which invariants to compute.
+    TensorInvariant outputs = TensorInvariant::All;
+    /// Prefix prepended to every output array's name.
+    std::string prefix;
+    /// Suffix appended after the invariant's own name segment
+    /// (`prefix + name + "_mises" + suffix`, etc.).
+    std::string suffix;
+    /// Throw instead of silently overwriting an existing array of the target name.
+    bool overwrite = true;
+};
+
+/**
+ * @brief Computes von Mises, principal, hydrostatic and/or deviatoric fields
+ * for the selected tensor arrays.
+ * @param rMesh the source mesh (unmodified).
+ * @param rOpts which arrays, which outputs, and how to name them.
+ * @return a new mesh with the source data plus the requested invariant arrays;
+ *         geometry is bit-identical to @p rMesh.
+ * @throws std::invalid_argument on an unknown name, `location ==
+ *         DataLocation::Field`, an array whose trailing component count is
+ *         neither 6 nor 9 when named explicitly, a `cell_data` array whose
+ *         block count disagrees with the mesh, or a name collision when
+ *         `overwrite` is `false`.
+ */
+MESHIOPLUSPLUS_API Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts);
+
+/**
+ * @brief Parses a comma-separated list of invariant names into a bitmask.
+ * @param rName one or more of `mises`, `principal`, `hydrostatic`,
+ *        `deviatoric`, `all`, separated by commas.
+ * @return the matching `TensorInvariant` bitmask.
+ * @throws std::invalid_argument on an unknown name or an empty list.
+ */
+MESHIOPLUSPLUS_API TensorInvariant tensor_invariant_from_name(const std::string& rName);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/tensor_invariants.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/transform.hpp =====
 /**
  * @file operations/transform.hpp
@@ -45521,6 +45782,104 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/marching.cpp =====
+// ===== begin src/cpp/src/detail/mesh_carve.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+std::vector<MeshPart> carve_by_region(const Mesh& rMesh, const std::string& rCaller,
+                                      bool StrictNames, bool RejectSlash) {
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    const std::size_t total = static_cast<std::size_t>(bases.back());
+    if (total == 0)
+        throw WriteError("meshio++: " + rCaller +
+                         ": a multi-part write needs at least one cell to carve into parts");
+
+    std::vector<const meshioplusplus::Region*> regions;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Cell)
+            regions.push_back(&rMesh.Region(i));
+    // Parts are written in (tag, name) order -- the mesh's own region storage order.
+    std::stable_sort(regions.begin(), regions.end(),
+                     [](const meshioplusplus::Region* a, const meshioplusplus::Region* b) {
+                         return std::tie(a->mTag, a->mName) < std::tie(b->mTag, b->mName);
+                     });
+    if (!regions.empty()) {
+        std::vector<char> hit(total, 0);
+        std::size_t covered = 0;
+        bool ok = true;
+        for (const auto* r : regions)
+            for (std::size_t i = 0; i < r->NumEntries(); ++i) {
+                const std::int64_t g = r->Entries()[i];
+                if (g < 0 || static_cast<std::size_t>(g) >= total ||
+                    hit[static_cast<std::size_t>(g)]) {
+                    ok = false;
+                    continue;
+                }
+                hit[static_cast<std::size_t>(g)] = 1;
+                ++covered;
+            }
+        bool names_ok = true;
+        if (ok && covered == total) {
+            std::vector<MeshPart> parts;
+            std::set<std::string> names;
+            for (std::size_t i = 0; i < regions.size(); ++i) {
+                MeshPart p;
+                p.mName =
+                    regions[i]->mName.empty() ? "block_" + std::to_string(i) : regions[i]->mName;
+                const bool has_slash = RejectSlash && p.mName.find('/') != std::string::npos;
+                if (has_slash || !names.insert(p.mName).second) {
+                    if (StrictNames)
+                        throw WriteError("meshio++: " + rCaller +
+                                         ": cell region names must be unique" +
+                                         (RejectSlash ? " and free of '/'" : "") +
+                                         " to name parts");
+                    names_ok = false;
+                    break;
+                }
+                for (std::size_t e = 0; e < regions[i]->NumEntries(); ++e)
+                    p.mCells.push_back(static_cast<std::size_t>(regions[i]->Entries()[e]));
+                std::sort(p.mCells.begin(), p.mCells.end());
+                parts.push_back(std::move(p));
+            }
+            if (names_ok)
+                return parts;
+            log::warn(
+                "meshio++: {}: cell regions do not have unique names; writing one part per "
+                "cell block instead.",
+                rCaller);
+        } else {
+            log::warn(
+                "meshio++: {}: cell regions overlap or do not cover every cell; writing one "
+                "part per cell block instead.",
+                rCaller);
+        }
+    }
+
+    std::vector<MeshPart> parts;
+    for (std::size_t bi = 0; bi + 1 < bases.size(); ++bi) {
+        if (bases[bi + 1] == bases[bi])
+            continue;
+        MeshPart p;
+        p.mName = "block_" + std::to_string(bi);
+        for (std::int64_t g = bases[bi]; g < bases[bi + 1]; ++g)
+            p.mCells.push_back(static_cast<std::size_t>(g));
+        parts.push_back(std::move(p));
+    }
+    return parts;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_carve.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <utility>
@@ -48297,6 +48656,61 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_normals.cpp =====
+// ===== begin src/cpp/src/detail/sym3_eigen.cpp =====
+#include <algorithm>
+#include <cmath>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+double sym3_mises(const double* pT) {
+    const double xx = pT[0], yy = pT[1], zz = pT[2], xy = pT[3], yz = pT[4], xz = pT[5];
+    return std::sqrt(0.5 * ((xx - yy) * (xx - yy) + (yy - zz) * (yy - zz) + (zz - xx) * (zz - xx) +
+                            6.0 * (xy * xy + yz * yz + xz * xz)));
+}
+
+void sym3_principal(const double* pT, double* pOut) {
+    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
+    for (int sweep = 0; sweep < 60; ++sweep) {
+        const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
+        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
+        if (off <= 1e-17 * diag || off == 0.0)
+            break;
+        for (int p = 0; p < 2; ++p) {
+            for (int q = p + 1; q < 3; ++q) {
+                if (a[p][q] == 0.0)
+                    continue;
+                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
+                                 (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+                const double c = 1.0 / std::sqrt(t * t + 1.0);
+                const double s = t * c;
+                for (int k = 0; k < 3; ++k) {
+                    const double akp = a[k][p];
+                    const double akq = a[k][q];
+                    a[k][p] = c * akp - s * akq;
+                    a[k][q] = s * akp + c * akq;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const double apk = a[p][k];
+                    const double aqk = a[q][k];
+                    a[p][k] = c * apk - s * aqk;
+                    a[q][k] = s * apk + c * aqk;
+                }
+            }
+        }
+    }
+    pOut[0] = a[0][0];
+    pOut[1] = a[1][1];
+    pOut[2] = a[2][2];
+    std::sort(pOut, pOut + 3);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sym3_eigen.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <map>
@@ -55183,6 +55597,7 @@ struct EnsightCaseInfo {
     long mFileNameStart = 0;
     long mFileNameIncrement = 1;
     std::vector<EnsightVariableEntry> mVariables;
+    std::vector<std::pair<std::string, double>> mConstants;  // "constant per case:" entries
 };
 
 /// Splits a whitespace-separated record and drops its leading run of pure
@@ -55237,9 +55652,21 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             format_type = ensight_trim(line.substr(5));
         } else if (section == "GEOMETRY" && ensight_starts_with(line, "model:")) {
             model_value = ensight_trim(line.substr(6));
+        } else if (section == "VARIABLE" && ensight_starts_with(line, "constant per case:")) {
+            // Inline, not a file reference: `[ts] [fs] <name> <value>`.
+            const std::vector<std::string> toks =
+                ensight_tokens_after_leading_ints(line.substr(std::strlen("constant per case:")));
+            if (toks.size() < 2)
+                throw ReadError("EnSight: malformed 'constant per case' line: " + line);
+            std::string joined;
+            for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                joined += (i ? " " : "") + toks[i];
+            info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
-            static const char* kKinds[] = {"scalar per node:", "vector per node:",
-                                           "scalar per element:", "vector per element:"};
+            static const char* kKinds[] = {
+                "scalar per node:",       "vector per node:",       "tensor symm per node:",
+                "tensor asym per node:",  "scalar per element:",    "vector per element:",
+                "tensor symm per element:", "tensor asym per element:"};
             for (const char* kind : kKinds) {
                 if (!ensight_starts_with(line, kind))
                     continue;
@@ -55734,6 +56161,38 @@ void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
                                pCellOut);
 }
 
+/// Component count for a `.case` `VARIABLE` kind: 1 scalar, 3 vector, 6
+/// tensor symm, 9 tensor asym.
+std::size_t ensight_variable_ncomp(const std::string& rKind) {
+    if (ensight_starts_with(rKind, "vector"))
+        return 3;
+    if (ensight_starts_with(rKind, "tensor symm"))
+        return 6;
+    if (ensight_starts_with(rKind, "tensor asym"))
+        return 9;
+    return 1;
+}
+
+/**
+ * @brief Reorders a `tensor symm` array's last two components in place.
+ *
+ * EnSight Gold's own file order for `tensor symm` is `11 22 33 12 13 23`
+ * (xx, yy, zz, xy, xz, yz); meshio++'s six-component symmetric-tensor
+ * convention (see `doc/mesh_data_model.md`) is `xx yy zz xy yz zx` -- the
+ * same six values, with the last two swapped (`zx` and `xz` are the same
+ * component of a symmetric tensor). Verified empirically against
+ * ParaView's own EnSight Gold reader (see `doc/formats/ensight.md`); VTK's
+ * internal tensor6 order is `xx yy zz xy yz xz`, so `vtkEnSightGoldReader`
+ * performs the identical swap on its own read. The swap is its own
+ * inverse, so this one function serves both read and write.
+ * @param pData Row-major `(Rows, 6)` buffer, reordered in place.
+ * @param Rows Number of tensor entries (points or cells).
+ */
+void ensight_swap_tensor_symm_last_two(double* pData, std::size_t Rows) {
+    for (std::size_t r = 0; r < Rows; ++r)
+        std::swap(pData[r * 6 + 4], pData[r * 6 + 5]);
+}
+
 }  // namespace
 
 Mesh read_ensight(const std::string& rPath) {
@@ -55765,7 +56224,18 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         mesh = ensight_parse_geo(cur, &layout);
     }
 
-    if (!have_case || case_info.mVariables.empty() || !rOptions.WantsAnyData())
+    if (!have_case || !rOptions.WantsAnyData() ||
+        (case_info.mVariables.empty() && case_info.mConstants.empty()))
+        return mesh;
+
+    for (const auto& [name, value] : case_info.mConstants) {
+        if (!rOptions.WantsArray(name))
+            continue;
+        NDArray arr(DType::Float64, {std::size_t{1}});
+        *arr.As<double>() = value;
+        mesh.AddFieldData(name, std::move(arr));
+    }
+    if (case_info.mVariables.empty())
         return mesh;
 
     // Which step's variable files to read. A file with no TIME section (the
@@ -55791,7 +56261,8 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         const bool per_element = var.mKind.find("per element") != std::string::npos;
         if (!per_node && !per_element)
             continue;  // a kind this reader does not (yet) understand
-        const std::size_t ncomp = ensight_starts_with(var.mKind, "vector") ? 3 : 1;
+        const std::size_t ncomp = ensight_variable_ncomp(var.mKind);
+        const bool tensor_symm = ensight_starts_with(var.mKind, "tensor symm");
         const std::string resolved = var.mFilePattern.find('*') != std::string::npos
                                          ? ensight_resolve_wildcard(var.mFilePattern, file_number)
                                          : var.mFilePattern;
@@ -55801,10 +56272,16 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
             NDArray arr;
             ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
                                             nullptr);
+            if (tensor_symm)
+                ensight_swap_tensor_symm_last_two(arr.As<double>(), mesh.NumPoints());
             mesh.AddPointData(var.mName, std::move(arr));
         } else {
             std::vector<NDArray> blocks(mesh.NumCellBlocks());
             ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            if (tensor_symm)
+                for (NDArray& blk : blocks)
+                    if (blk.Size() > 0)
+                        ensight_swap_tensor_symm_last_two(blk.As<double>(), blk.Shape()[0]);
             mesh.AddCellData(var.mName, std::move(blocks));
         }
     }
@@ -56064,6 +56541,208 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
+// ---------------------------------------------------------------------------
+// VARIABLE section writing
+// ---------------------------------------------------------------------------
+
+// One point_data/cell_data array this write collected. `mNumComponents` is
+// the *written* component count (2 pads to 3, matching the geometry writer's
+// own 2D-coordinate padding); `mKind` is the exact `VARIABLE` line keyword.
+struct EnsightVariableToWrite {
+    std::string mName;
+    std::string mKind;  // "scalar", "vector", "tensor symm" or "tensor asym"
+    std::size_t mNumComponents;
+    bool mPerNode;
+};
+
+// EnSight's kind word and written component count for a data array's actual
+// component count; `false` when the count has no EnSight representation.
+bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind,
+                            std::size_t& rWritten) {
+    switch (NumComponents) {
+        case 1:
+            rKind = "scalar";
+            rWritten = 1;
+            return true;
+        case 2:
+        case 3:
+            rKind = "vector";
+            rWritten = 3;
+            return true;
+        case 6:
+            rKind = "tensor symm";
+            rWritten = 6;
+            return true;
+        case 9:
+            rKind = "tensor asym";
+            rWritten = 9;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The variable-file extension this write uses for a kind/location pair --
+// arbitrary (the `.case` file's own declared kind is what the reader goes
+// by, not the extension), but kept distinct per kind for readability on
+// disk.
+std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
+    std::string ext = "scl";
+    if (rKind == "vector")
+        ext = "vec";
+    else if (rKind == "tensor symm")
+        ext = "tsym";
+    else if (rKind == "tensor asym")
+        ext = "tasym";
+    return PerNode ? ext : ("e" + ext);
+}
+
+/**
+ * @brief One written component's values, in EnSight file order.
+ *
+ * `tensor symm`'s last two components are transposed relative to meshio++'s
+ * own `xx yy zz xy yz zx` convention -- `ensight_swap_tensor_symm_last_two`
+ * documents why, and undoes the same transposition on read; a missing
+ * trailing component (the vector-padding case) reads as `0.0`.
+ * @param rMesh The mesh being written.
+ * @param rVar Which array, kind and location.
+ * @param Comp 0-based component index, in EnSight file order.
+ * @param BlockIndex Cell block index; ignored when `rVar.mPerNode`.
+ * @return One value per point (or per cell of that block).
+ */
+std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
+                                            std::size_t Comp, std::size_t BlockIndex) {
+    const std::size_t mio_comp = (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5))
+                                     ? (Comp == 4 ? 5 : 4)
+                                     : Comp;
+    const NDArray& arr =
+        rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
+    const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+    const std::size_t n =
+        rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    std::vector<double> col(n);
+    for (std::size_t i = 0; i < n; ++i)
+        col[i] =
+            mio_comp < stored_ncomp ? detail::read_double(arr, i * stored_ncomp + mio_comp) : 0.0;
+    return col;
+}
+
+void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
+                                  const std::vector<const EnsightTypeEntry*>& rEntries,
+                                  const EnsightVariableToWrite& rVar) {
+    std::string out;
+    out += "variable\n";  // description line; not re-read
+    out += "part\n";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
+    out += buf;
+
+    auto write_col = [&](const std::vector<double>& col) {
+        for (double v : col) {
+            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
+            out += buf;
+        }
+    };
+
+    if (rVar.mPerNode) {
+        out += "coordinates\n";
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            write_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            out += rEntries[bi]->mKeyword;
+            out += "\n";
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                write_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
+                                   const std::vector<const EnsightTypeEntry*>& rEntries,
+                                   const EnsightVariableToWrite& rVar) {
+    std::vector<char> out;
+    ensight_append_str80(out, "C Binary");
+    ensight_append_str80(out, "variable");
+    ensight_append_str80(out, "part");
+    ensight_append_i32(out, 1);
+
+    auto append_col = [&](const std::vector<double>& col) {
+        std::vector<float> f(col.size());
+        for (std::size_t i = 0; i < col.size(); ++i)
+            f[i] = static_cast<float>(col[i]);
+        const char* p = reinterpret_cast<const char*>(f.data());
+        out.insert(out.end(), p, p + f.size() * sizeof(float));
+    };
+
+    if (rVar.mPerNode) {
+        ensight_append_str80(out, "coordinates");
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            append_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            ensight_append_str80(out, rEntries[bi]->mKeyword);
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                append_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+/// Scans `rMesh`'s data maps for what this writer can express: `point_data`
+/// and `cell_data` arrays of 1, 2, 3, 6 or 9 components (anything else is
+/// skipped with a warning; a `cell_data` array missing from any cell block
+/// is skipped too, since a variable file must cover every block the
+/// geometry file does), and single-scalar `field_data` as `constant per
+/// case` entries (anything else skipped with a warning).
+void ensight_collect_variables(const Mesh& rMesh, std::vector<EnsightVariableToWrite>& rVars,
+                               std::vector<std::pair<std::string, double>>& rConstants) {
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        const std::size_t ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping point data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, true});
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+            log::warn("EnSight: skipping cell data '{}': not present on every cell block", name);
+            continue;
+        }
+        const NDArray& first = rMesh.CellData(name, 0);
+        const std::size_t ncomp = first.Shape().size() >= 2 ? first.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping cell data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, false});
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& arr = rMesh.FieldData(name);
+        if (arr.Size() != 1) {
+            log::warn(
+                "EnSight: skipping field data '{}': only a single scalar can become a "
+                "'constant per case'",
+                name);
+            continue;
+        }
+        rConstants.emplace_back(name, detail::read_double(arr, 0));
+    }
+}
+
 }  // namespace
 
 void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -56073,10 +56752,16 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("EnSight: must specify a .case or .geo file");
     const std::string& case_path = paths.first;
     const std::string& geo_path = paths.second;
+    const std::string base = ensight_basename(geo_path);
+    const std::string dir = ensight_dirname(geo_path);
 
     if (rMesh.PointDim() > 3)
         throw WriteError("EnSight: points must have at most three components");
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
+
+    std::vector<EnsightVariableToWrite> vars;
+    std::vector<std::pair<std::string, double>> constants;
+    ensight_collect_variables(rMesh, vars, constants);
 
     {
         auto cf = detail::make_classic_ofstream(case_path, std::ios::binary);
@@ -56087,7 +56772,21 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         out += "type: ensight gold\n";
         out += "\n";
         out += "GEOMETRY\n";
-        out += "model: " + ensight_basename(geo_path) + "\n";
+        out += "model: " + base + "\n";
+        if (!vars.empty() || !constants.empty()) {
+            out += "\n";
+            out += "VARIABLE\n";
+            for (const EnsightVariableToWrite& v : vars) {
+                const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+                out += v.mKind + " per " + (v.mPerNode ? "node" : "element") + ": " + v.mName +
+                       " " + v.mName + "." + ext + "\n";
+            }
+            for (const auto& [name, value] : constants) {
+                char buf[40];
+                detail::snprintf_c(buf, sizeof(buf), "%.17g", value);
+                out += "constant per case: " + name + " " + buf + "\n";
+            }
+        }
         cf.write(out.data(), static_cast<std::streamsize>(out.size()));
     }
 
@@ -56098,6 +56797,18 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         ensight_write_geo_binary(gf, rMesh, entries);
     else
         ensight_write_geo_ascii(gf, rMesh, entries);
+
+    for (const EnsightVariableToWrite& v : vars) {
+        const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+        const std::string var_path = dir + v.mName + "." + ext;
+        auto vf = detail::make_classic_ofstream(var_path, std::ios::binary);
+        if (!vf)
+            throw WriteError("Could not open file for writing: " + var_path);
+        if (binary)
+            ensight_write_variable_binary(vf, rMesh, entries, v);
+        else
+            ensight_write_variable_ascii(vf, rMesh, entries, v);
+    }
 }
 
 }  // namespace meshioplusplus
@@ -58375,6 +59086,7 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <ios>
 #include <limits>
@@ -58520,18 +59232,44 @@ int frd_flag(std::string_view Line, int Default) {
     return Default;
 }
 
+/// ASCII id column width: I5 (flag 0, short) or I10 (flag 1, long). Never called for a
+/// binary flag (2 or 3) -- binary detection happens before this is reached.
 std::size_t frd_width(int Flag) {
-    if (Flag == 2)
-        frd_fail("binary .frd files are not supported");
     return Flag == 0 ? 5 : 10;
+}
+
+/// Whether @p Text is the binary layout: the flag on its "2C" (node) header line is 2
+/// or 3 rather than 0 or 1. Scans only the always-ASCII banner that precedes "2C" --
+/// safe to do with plain line splitting even before binary detection has run.
+bool frd_detect_binary(std::string_view Text) {
+    std::size_t start = 0;
+    while (start < Text.size()) {
+        std::size_t stop = Text.find('\n', start);
+        std::string_view line = Text.substr(start, (stop == std::string_view::npos
+                                                         ? Text.size()
+                                                         : stop) -
+                                                        start);
+        while (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        if (frd_starts_with(line, "    2C"))
+            return frd_flag(line, 1) >= 2;
+        if (stop == std::string_view::npos)
+            break;
+        start = stop + 1;
+    }
+    return false;
 }
 
 struct FrdBlock {
     std::string mName;
     std::size_t mDataComps = 0;
-    std::size_t mWidth = 10;
-    std::size_t mFirst = 0;
-    std::size_t mLast = 0;
+    std::size_t mWidth = 10;    // ASCII only.
+    std::size_t mFirst = 0;     // ASCII: a line index into FrdFile::mLines.
+    std::size_t mLast = 0;      // ASCII: a line index into FrdFile::mLines.
+    bool mBinary = false;
+    std::size_t mByteOffset = 0;  // Binary: a byte offset into FrdFile::mText.
+    std::size_t mRealBytes = 8;   // Binary: 4 (float32) or 8 (float64) per the block's flag.
+    std::size_t mNumEntries = 0;  // Binary: the 100C header's own node/record count.
 };
 
 struct FrdFrame {
@@ -58563,8 +59301,15 @@ public:
         mText.resize(size > 0 ? static_cast<std::size_t>(size) : 0);
         if (!mText.empty())
             in.read(mText.data(), static_cast<std::streamsize>(mText.size()));
-        IndexLines();
-        Parse();
+        // The binary layout embeds raw \n bytes inside its records, so it cannot go
+        // through IndexLines()'s whole-file line split; detect it from the always-ASCII
+        // header that precedes the first "2C" line and take a wholly separate path.
+        if (frd_detect_binary(mText)) {
+            ParseBinary();
+        } else {
+            IndexLines();
+            Parse();
+        }
     }
 
     std::vector<std::int64_t> mNodeIds;
@@ -58587,6 +59332,10 @@ public:
                    std::vector<double>& rOut) const {
         const std::size_t nc = rBlock.mDataComps;
         rOut.assign(mNodeIds.size() * nc, std::numeric_limits<double>::quiet_NaN());
+        if (rBlock.mBinary) {
+            ReadBlockBinary(rBlock, rIndex, rOut);
+            return;
+        }
         const std::size_t end = 3 + rBlock.mWidth;
         std::size_t pos = rBlock.mFirst;
         while (pos < rBlock.mLast) {
@@ -58635,6 +59384,222 @@ private:
                 line.remove_suffix(1);
             mLines.push_back(line);
             start = stop + 1;
+        }
+    }
+
+    // --- Binary layout ---------------------------------------------------------
+    //
+    // Header lines (banner, "2C", "3C", "1PSTEP", "100CL", "-4", "-5") stay plain
+    // ASCII text terminated by '\n'; a raw little-endian record blob immediately
+    // follows a "2C"/"3C" header or a "100C" frame's last "-5" line, one fixed-size
+    // record per node/element/result entry, with NO "-1"/"-2"/"-3" line markers and
+    // no line boundaries of its own (a record's bytes may well contain 0x0A). The
+    // record count comes from the header's own count field -- there is nothing else
+    // to scan for. Reals are float32 (flag 2) or float64 (flag 3) per each block's
+    // OWN flag: ccx writes node coordinates as flag 3 (double) and result values as
+    // flag 2 (float) by default, so the flag is read fresh per header, never assumed
+    // constant for the whole file. Integers (ids, element type/group/material) are
+    // always 4 bytes. Verified against real ccx 2.23 `*NODE OUTPUT`/`*ELEMENT OUTPUT`
+    // output; see doc/formats/frd.md.
+
+    /// One header line starting at byte @p Pos, stripped of a trailing '\r'; returns
+    /// the byte position right after its '\n' (or end of file if there is none).
+    std::size_t BinaryLine(std::size_t Pos, std::string_view& rLine) const {
+        const std::string_view all(mText);
+        std::size_t stop = all.find('\n', Pos);
+        const std::size_t end = stop == std::string_view::npos ? all.size() : stop;
+        rLine = all.substr(Pos, end - Pos);
+        while (!rLine.empty() && rLine.back() == '\r')
+            rLine.remove_suffix(1);
+        return stop == std::string_view::npos ? all.size() : stop + 1;
+    }
+
+    /// Fails cleanly instead of reading past the buffer -- the guard a corrupt or
+    /// mislabelled ("claims binary but is really ASCII text") file needs, since
+    /// nothing else bounds-checks a raw byte record.
+    void BinaryRequire(std::size_t End, const char* pWhat) const {
+        if (End > mText.size())
+            frd_fail(std::string("binary ") + pWhat + " runs past the end of the file");
+    }
+
+    static std::int32_t BinaryReadInt32(const char* pAt) {
+        std::int32_t v;
+        std::memcpy(&v, pAt, sizeof(v));
+        return v;
+    }
+
+    static double BinaryReadReal(const char* pAt, std::size_t RealBytes) {
+        if (RealBytes == 8) {
+            double v;
+            std::memcpy(&v, pAt, sizeof(v));
+            return v;
+        }
+        float v;
+        std::memcpy(&v, pAt, sizeof(v));
+        return v;
+    }
+
+    void ParseBinary() {
+        std::size_t pos = 0;
+        int flag = 1;
+        bool seen_nodes = false;
+        bool seen_elements = false;
+        while (pos < mText.size()) {
+            std::string_view line;
+            const std::size_t next = BinaryLine(pos, line);
+            if (frd_starts_with(line, "    2C")) {
+                flag = frd_flag(line, flag);
+                const std::size_t count =
+                    static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 2C record"));
+                const std::size_t real_bytes = flag == 3 ? 8 : 4;
+                const std::size_t rec = 4 + 3 * real_bytes;
+                BinaryRequire(next + count * rec, "node block");
+                if (seen_nodes)
+                    log::warn("{}", "CalculiX FRD: a second node block was ignored");
+                else
+                    ReadNodesBinary(next, count, real_bytes);
+                seen_nodes = true;
+                pos = next + count * rec;
+            } else if (frd_starts_with(line, "    3C")) {
+                flag = frd_flag(line, flag);
+                const std::size_t count =
+                    static_cast<std::size_t>(frd_int(frd_field(line, 6, 30), "a 3C record"));
+                pos = ReadElementsBinary(next, count, !seen_elements);
+                if (seen_elements)
+                    log::warn("{}", "CalculiX FRD: a second element block was ignored");
+                seen_elements = true;
+            } else if (frd_starts_with(line, "  100C")) {
+                pos = ReadFrameBinary(next, line, flag);
+            } else if (frd_starts_with(line, "9999") || frd_starts_with(line, " 9999") ||
+                       frd_starts_with(line, "  9999")) {
+                break;
+            } else {
+                pos = next;
+            }
+        }
+        if (!seen_nodes)
+            frd_fail("no node block (2C record): not a CalculiX result file");
+    }
+
+    void ReadNodesBinary(std::size_t Pos, std::size_t Count, std::size_t RealBytes) {
+        const std::size_t rec = 4 + 3 * RealBytes;
+        mNodeIds.reserve(Count);
+        mCoords.reserve(Count * 3);
+        for (std::size_t i = 0; i < Count; ++i) {
+            const char* base = mText.data() + Pos + i * rec;
+            mNodeIds.push_back(BinaryReadInt32(base));
+            for (std::size_t k = 0; k < 3; ++k)
+                mCoords.push_back(BinaryReadReal(base + 4 + k * RealBytes, RealBytes));
+        }
+    }
+
+    /// Parses @p Count elements starting at byte @p Pos; keeps them (into mElements /
+    /// mElementNodes) only when @p Keep, but always advances past every one of them,
+    /// since a binary file has no terminator to fall back on for a skipped block.
+    std::size_t ReadElementsBinary(std::size_t Pos, std::size_t Count, bool Keep) {
+        for (std::size_t i = 0; i < Count; ++i) {
+            BinaryRequire(Pos + 16, "element header");
+            const char* h = mText.data() + Pos;
+            const int type = static_cast<int>(BinaryReadInt32(h + 4));
+            const FrdTypeSpec* spec = frd_type_spec(type);
+            if (spec == nullptr)
+                frd_fail("unknown FRD element type " + std::to_string(type));
+            Pos += 16;
+            BinaryRequire(Pos + spec->mNodes * 4, "element node list");
+            if (Keep) {
+                FrdElement el;
+                el.mType = type;
+                el.mGroup = BinaryReadInt32(h + 8);
+                el.mMaterial = BinaryReadInt32(h + 12);
+                el.mFirstNode = mElementNodes.size();
+                el.mNumNodes = spec->mNodes;
+                mElements.push_back(el);
+                for (std::size_t k = 0; k < spec->mNodes; ++k)
+                    mElementNodes.push_back(BinaryReadInt32(mText.data() + Pos + k * 4));
+            }
+            Pos += spec->mNodes * 4;
+        }
+        return Pos;
+    }
+
+    /// Parses one `100C` frame: the header line, then every `-4`/`-5` descriptor
+    /// group (still ASCII) with its raw data blob (not). ccx writes exactly one `-4`
+    /// block per `100C` occurrence, so this reads one and returns -- mirroring
+    /// ReadFrame's own ASCII loop, which relies on the same convention.
+    std::size_t ReadFrameBinary(std::size_t Pos, std::string_view Header, int Flag) {
+        int frame_flag = Flag;
+        if (Header.size() >= 75)
+            frame_flag = static_cast<int>(frd_int(frd_field(Header, 73, 2), "a 100C record"));
+        const std::size_t real_bytes = frame_flag == 3 ? 8 : 4;
+        const std::size_t numnod =
+            static_cast<std::size_t>(frd_int(frd_field(Header, 24, 12), "a 100C record"));
+        const std::string key(frd_field(Header, 6, 6));
+        const std::string value_text(frd_field(Header, 12, 12));
+        FrdFrame* frame = nullptr;
+        for (FrdFrame& f : mFrames)
+            if (f.mKey == key && f.mValueText == value_text) {
+                frame = &f;
+                break;
+            }
+        if (frame == nullptr) {
+            FrdFrame f;
+            f.mKey = key;
+            f.mValueText = value_text;
+            f.mValue = frd_real(value_text, "a 100C record");
+            f.mAnalysis = frd_int(frd_field(Header, 56, 2), "a 100C record");
+            f.mStep = frd_int(frd_field(Header, 58, 5), "a 100C record");
+            mFrames.push_back(std::move(f));
+            frame = &mFrames.back();
+        }
+        std::string_view line;
+        std::size_t next = BinaryLine(Pos, line);
+        if (frd_starts_with(line, " -4")) {
+            FrdBlock block;
+            block.mName = std::string(frd_strip(frd_field(line, 5, 8)));
+            const std::int64_t ncomps = frd_int(frd_field(line, 13, 5), "a -4 record");
+            std::int64_t calculated = 0;
+            std::size_t after = next;
+            while (true) {
+                std::string_view l2;
+                const std::size_t peek = BinaryLine(after, l2);
+                if (!frd_starts_with(l2, " -5"))
+                    break;
+                if (frd_int(frd_field(l2, 33, 5), "a -5 record") == 1)
+                    ++calculated;
+                after = peek;
+            }
+            block.mDataComps =
+                static_cast<std::size_t>(std::max<std::int64_t>(ncomps - calculated, 0));
+            block.mBinary = true;
+            block.mRealBytes = real_bytes;
+            block.mNumEntries = numnod;
+            block.mByteOffset = after;
+            const std::size_t rec = 4 + block.mDataComps * real_bytes;
+            BinaryRequire(after + numnod * rec, "result block");
+            frame->mBlocks.push_back(std::move(block));
+            return after + numnod * rec;
+        }
+        return next;
+    }
+
+    /// Binary twin of ReadBlock: raw `[int32 id][DataComps reals]` records, one per
+    /// entry, no line markers.
+    void ReadBlockBinary(const FrdBlock& rBlock,
+                         const std::unordered_map<std::int64_t, std::int64_t>& rIndex,
+                         std::vector<double>& rOut) const {
+        const std::size_t nc = rBlock.mDataComps;
+        const std::size_t rec = 4 + nc * rBlock.mRealBytes;
+        const char* base = mText.data() + rBlock.mByteOffset;
+        for (std::size_t i = 0; i < rBlock.mNumEntries; ++i) {
+            const char* r = base + i * rec;
+            const std::int64_t node = BinaryReadInt32(r);
+            const auto it = rIndex.find(node);
+            if (it == rIndex.end())
+                frd_fail("result for " + rBlock.mName + " refers to undefined node " +
+                         std::to_string(node));
+            double* row = rOut.data() + static_cast<std::size_t>(it->second) * nc;
+            for (std::size_t k = 0; k < nc; ++k)
+                row[k] = BinaryReadReal(r + 4 + k * rBlock.mRealBytes, rBlock.mRealBytes);
         }
     }
 
@@ -58784,50 +59749,6 @@ private:
     }
 };
 
-double frd_mises(const double* pT) {
-    const double xx = pT[0], yy = pT[1], zz = pT[2], xy = pT[3], yz = pT[4], xz = pT[5];
-    return std::sqrt(0.5 * ((xx - yy) * (xx - yy) + (yy - zz) * (yy - zz) + (zz - xx) * (zz - xx) +
-                            6.0 * (xy * xy + yz * yz + xz * xz)));
-}
-
-/// Eigenvalues of the symmetric tensor (xx yy zz xy yz zx), ascending, by cyclic Jacobi.
-void frd_principal(const double* pT, double* pOut) {
-    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
-    for (int sweep = 0; sweep < 60; ++sweep) {
-        const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
-        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
-        if (off <= 1e-17 * diag || off == 0.0)
-            break;
-        for (int p = 0; p < 2; ++p) {
-            for (int q = p + 1; q < 3; ++q) {
-                if (a[p][q] == 0.0)
-                    continue;
-                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0);
-                const double s = t * c;
-                for (int k = 0; k < 3; ++k) {
-                    const double akp = a[k][p];
-                    const double akq = a[k][q];
-                    a[k][p] = c * akp - s * akq;
-                    a[k][q] = s * akp + c * akq;
-                }
-                for (int k = 0; k < 3; ++k) {
-                    const double apk = a[p][k];
-                    const double aqk = a[q][k];
-                    a[p][k] = c * apk - s * aqk;
-                    a[q][k] = s * apk + c * aqk;
-                }
-            }
-        }
-    }
-    pOut[0] = a[0][0];
-    pOut[1] = a[1][1];
-    pOut[2] = a[2][2];
-    std::sort(pOut, pOut + 3);
-}
-
 NDArray frd_scalar_array(DType Type, double Value) {
     NDArray out(Type, {std::size_t{1}});
     if (Type == DType::Float64)
@@ -58954,7 +59875,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
             NDArray data(DType::Float64, {npts});
             double* out = data.As<double>();
             for (std::size_t i = 0; i < npts; ++i)
-                out[i] = frd_mises(values.data() + i * 6);
+                out[i] = detail::sym3_mises(values.data() + i * 6);
             mesh.AddPointData(name + "_mises", std::move(data));
         }
         if (want_principal) {
@@ -58966,7 +59887,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
                 for (int k = 0; k < 6; ++k)
                     finite = finite && std::isfinite(t[k]);
                 if (finite)
-                    frd_principal(t, out + i * 3);
+                    detail::sym3_principal(t, out + i * 3);
                 else
                     std::fill(out + i * 3, out + i * 3 + 3,
                               std::numeric_limits<double>::quiet_NaN());
@@ -72787,6 +73708,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/openfoam.cpp =====
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -72867,6 +73789,15 @@ FoamFormat detect_format(const std::string& rPath) {
                 fmt.mBinary = false;
         }
         if (s.rfind("arch", 0) == 0) {
+            // OpenFOAM's own arch strings are "LSB;label=32;scalar=64" (the
+            // "BSB" spelling is what a big-endian host's files would carry).
+            // Binary bytes this reader decodes are always little-endian, so a
+            // file naming anything else is refused by name rather than
+            // silently misread.
+            if (s.find("BSB") != std::string::npos)
+                throw ReadError(
+                    "OpenFOAM: big-endian ('BSB') binary files are not supported, only "
+                    "little-endian ('LSB')");
             std::size_t lp = s.find("label=");
             if (lp != std::string::npos) {
                 int bits = std::atoi(s.c_str() + lp + 6);
@@ -73191,9 +74122,11 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
     return out;
 }
 
-/// Parse a `cellZones`/`faceZones`/`pointZones` file body (ASCII only -- a
-/// binary zone file is a documented follow-up, matching the writer's own
-/// ASCII-only scope).
+/// Parse an **ASCII** `cellZones`/`faceZones`/`pointZones` file body (the
+/// comment-and-header-stripped text). `parse_zone_file_binary`, further
+/// down, is the binary counterpart -- it cannot reuse this one, since
+/// `strip_comments_and_header`'s comment-removal pass is unsafe to run over
+/// a binary body.
 std::vector<Zone> parse_zone_file(const std::string& rBody, const char* pLabelKey) {
     std::vector<Zone> zones;
     for (const auto& [name, block] : foam_named_blocks(rBody))
@@ -73287,6 +74220,80 @@ std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
         p = blob + static_cast<std::size_t>(count) * static_cast<std::size_t>(label_bytes) + 1;
     }
     return faces;
+}
+
+/**
+ * @brief Binary counterpart of `parse_zone_file`.
+ *
+ * A zone file's *structure* (zone count, names, `{`/`}`, the `type ...;`
+ * line, the `List<label>` keyword and its own decimal count) stays plain
+ * text even under `format binary;` -- only each zone's id payload is raw
+ * bytes. That payload can legitimately contain a byte equal to `{`, `}` or
+ * `/` (a small id's low byte routinely does, e.g. `123` as little-endian
+ * `int32` starts with `0x7B` == `{`), so this walks the text directly on
+ * the **raw, unstripped** file bytes -- never through `strip_comments_and_header`,
+ * whose comment-removal pass scans the whole body and would desync on
+ * exactly those bytes -- and explicitly skips `count * LabelBytes` bytes as
+ * one opaque unit wherever it recognizes @p pLabelKey, instead of ever
+ * scanning byte-by-byte across a blob for a delimiter.
+ */
+std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLabelKey,
+                                         int LabelBytes) {
+    std::vector<Zone> zones;
+    auto [nzones, pos] = data_start(rRaw);
+    std::size_t p = pos;
+    for (std::int64_t z = 0; z < nzones; ++z) {
+        while (p < rRaw.size() && std::isspace(static_cast<unsigned char>(rRaw[p])))
+            ++p;
+        const std::size_t name_start = p;
+        while (p < rRaw.size() && !std::isspace(static_cast<unsigned char>(rRaw[p])))
+            ++p;
+        const std::string name(rRaw.substr(name_start, p - name_start));
+
+        const std::size_t brace = rRaw.find('{', p);
+        if (brace == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no opening '{'");
+        const std::size_t key_pos = rRaw.find(pLabelKey, brace + 1);
+        if (key_pos == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no '" + pLabelKey + "'");
+        const std::size_t lparen = rRaw.find('(', key_pos);
+        if (lparen == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no '(' after '" + pLabelKey + "'");
+
+        std::int64_t count = 0;
+        bool found = false;
+        for (std::size_t i = key_pos; i < lparen; ++i)
+            if (std::isdigit(static_cast<unsigned char>(rRaw[i]))) {
+                std::int64_t v = 0;
+                while (i < lparen && std::isdigit(static_cast<unsigned char>(rRaw[i])))
+                    v = v * 10 + (rRaw[i++] - '0');
+                count = v;
+                found = true;
+            }
+        if (!found)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no count before '('");
+
+        std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
+        const char* base = rRaw.data() + lparen + 1;
+        for (std::int64_t i = 0; i < count; ++i) {
+            const std::size_t off = static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
+            ids[static_cast<std::size_t>(i)] =
+                LabelBytes == 4 ? static_cast<std::int64_t>(read_le<std::int32_t>(base + off))
+                                : read_le<std::int64_t>(base + off);
+        }
+        zones.push_back({name, std::move(ids)});
+
+        // Resume the text scan only *after* the raw blob -- everything from
+        // here to this zone's own closing '}' (its `);` terminator, the
+        // closing brace) is plain text again.
+        const std::size_t blob_end =
+            lparen + 1 + static_cast<std::size_t>(count) * static_cast<std::size_t>(LabelBytes);
+        const std::size_t zone_close = rRaw.find('}', blob_end);
+        if (zone_close == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no closing '}'");
+        p = zone_close + 1;
+    }
+    return zones;
 }
 
 // ---- dispatch readers ----
@@ -74199,9 +75206,20 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
 
         auto read_zone_file = [&](const char* pFile, const char* pKey) {
             std::vector<Zone> zones;
-            if (fs::exists(poly / pFile))
+            const fs::path zone_path = poly / pFile;
+            if (!fs::exists(zone_path))
+                return zones;
+            const FoamFormat zone_fmt = detect_format(zone_path.string());
+            if (zone_fmt.mBinary) {
+                // strip_comments_and_header's comment-removal pass scans the
+                // whole body and is unsafe over raw id bytes -- see
+                // parse_zone_file_binary's own doc comment.
+                const detail::FileSource source = read_whole(zone_path.string());
+                zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
+            } else {
                 zones = parse_zone_file(
-                    strip_comments_and_header(read_whole((poly / pFile).string()).View()), pKey);
+                    strip_comments_and_header(read_whole(zone_path.string()).View()), pKey);
+            }
             return zones;
         };
 
@@ -74476,7 +75494,8 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
-void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject,
+                       const OpenFoamWriteOptions& rOpts) {
     // The credit cell is fixed-width (48 chars before the closing box edge) so
     // the banner stays aligned regardless of how long the release string is.
     std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
@@ -74494,8 +75513,12 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
            "FoamFile\n"
            "{\n"
            "    version     2.0;\n"
-           "    format      ascii;\n"
-           "    class       "
+           "    format      "
+        << (rOpts.mBinary ? "binary" : "ascii") << ";\n";
+    if (rOpts.mBinary)
+        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits
+            << ";scalar=" << rOpts.mScalarBits << "\";\n";
+    rOs << "    class       "
         << rClass
         << ";\n"
            "    location    \"constant/polyMesh\";\n"
@@ -74504,6 +75527,30 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
         << ";\n"
            "}\n"
            "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n";
+}
+
+// ---- binary body writers ----
+// Raw little-endian bytes, matching read_binary_points/read_binary_labels/
+// read_binary_faces's own expectations exactly (this file's read side, not
+// invented independently) -- see foam_write_header's arch line for the
+// widths a reader needs to parse these back.
+
+void foam_write_binary_label(std::ostream& rOs, std::int64_t v, int LabelBits) {
+    if (LabelBits == 32) {
+        const std::int32_t v32 = static_cast<std::int32_t>(v);
+        rOs.write(reinterpret_cast<const char*>(&v32), sizeof(v32));
+    } else {
+        rOs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    }
+}
+
+void foam_write_binary_scalar(std::ostream& rOs, double v, int ScalarBits) {
+    if (ScalarBits == 32) {
+        const float f = static_cast<float>(v);
+        rOs.write(reinterpret_cast<const char*>(&f), sizeof(f));
+    } else {
+        rOs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    }
 }
 
 /**
@@ -74834,17 +75881,25 @@ using FoamZoneOut = std::pair<std::string, std::vector<std::int64_t>>;
 
 void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char* pObject,
                           const char* pZoneType, const char* pLabelKey,
-                          const std::vector<FoamZoneOut>& rZones) {
+                          const std::vector<FoamZoneOut>& rZones,
+                          const OpenFoamWriteOptions& rOpts) {
     auto f = foam_open(rPath);
-    foam_write_header(f, pClass, pObject);
+    foam_write_header(f, pClass, pObject, rOpts);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
         f << name << "\n{\n";
         f << "    type " << pZoneType << ";\n";
-        f << "    " << pLabelKey << " List<label>\n    " << ids.size() << "\n    (\n";
-        for (std::int64_t id : ids)
-            f << "    " << id << "\n";
-        f << "    );\n";
+        f << "    " << pLabelKey << " List<label>\n    " << ids.size() << "\n    (";
+        if (rOpts.mBinary) {
+            for (std::int64_t id : ids)
+                foam_write_binary_label(f, id, rOpts.mLabelBits);
+            f << ");\n";
+        } else {
+            f << "\n";
+            for (std::int64_t id : ids)
+                f << "    " << id << "\n";
+            f << "    );\n";
+        }
         f << "}\n";
     }
     f << ")\n";
@@ -74937,7 +75992,18 @@ std::vector<FoamZoneOut> foam_collect_face_zones(
 
 }  // namespace
 
-void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo,
+                    const OpenFoamWriteOptions& rOpts) {
+    if (rOpts.mBinary && std::endian::native == std::endian::big)
+        throw WriteError(
+            "OpenFOAM: binary write requested on a big-endian host; OpenFOAM binary files are "
+            "little-endian only, and writing big-endian bytes under a 'LSB' arch header would "
+            "silently corrupt every value read back");
+    if (rOpts.mBinary && rOpts.mLabelBits != 32 && rOpts.mLabelBits != 64)
+        throw WriteError("OpenFOAM: label_bits must be 32 or 64");
+    if (rOpts.mBinary && rOpts.mScalarBits != 32 && rOpts.mScalarBits != 64)
+        throw WriteError("OpenFOAM: scalar_bits must be 32 or 64");
+
     const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
 
     if (faces.NumCells() == 0)
@@ -75027,38 +76093,71 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
     {
         auto f = foam_open(poly / "points");
-        foam_write_header(f, "vectorField", "points");
+        foam_write_header(f, "vectorField", "points", rOpts);
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
         // be read as data and the list would come back EMPTY, not as an error.
-        f << np << "\n(\n";
-        f << std::setprecision(16);
-        for (std::size_t i = 0; i < np; ++i) {
-            const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
-            f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+        if (rOpts.mBinary) {
+            f << np << "\n(";
+            for (std::size_t i = 0; i < np; ++i) {
+                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                for (double c : p)
+                    foam_write_binary_scalar(f, c, rOpts.mScalarBits);
+            }
+            f << ")\n";
+        } else {
+            f << np << "\n(\n";
+            f << std::setprecision(16);
+            for (std::size_t i = 0; i < np; ++i) {
+                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+            }
+            f << ")\n";
         }
-        f << ")\n";
     }
     {
         auto f = foam_open(poly / "faces");
-        foam_write_header(f, "faceList", "faces");
-        f << order.mNewToOld.size() << "\n(\n";
-        for (std::int64_t old : order.mNewToOld) {
-            const std::size_t fi = static_cast<std::size_t>(old);
-            f << faces.FaceSize(fi) << "(";
-            for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
-                f << (k ? " " : "") << faces.Face(fi)[k];
+        foam_write_header(f, "faceList", "faces", rOpts);
+        // Non-contiguous, so each face is its own length-prefixed labelList,
+        // in binary exactly as in ASCII -- the same shape read_binary_faces
+        // (this file's own reader) expects, not CompactListList.
+        if (rOpts.mBinary) {
+            f << order.mNewToOld.size() << "\n(";
+            for (std::int64_t old : order.mNewToOld) {
+                const std::size_t fi = static_cast<std::size_t>(old);
+                f << faces.FaceSize(fi) << "(";
+                for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                    foam_write_binary_label(f, faces.Face(fi)[k], rOpts.mLabelBits);
+                f << ")";
+            }
+            f << ")\n";
+        } else {
+            f << order.mNewToOld.size() << "\n(\n";
+            for (std::int64_t old : order.mNewToOld) {
+                const std::size_t fi = static_cast<std::size_t>(old);
+                f << faces.FaceSize(fi) << "(";
+                for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                    f << (k ? " " : "") << faces.Face(fi)[k];
+                f << ")\n";
+            }
             f << ")\n";
         }
-        f << ")\n";
     }
     {
         auto f = foam_open(poly / "owner");
-        foam_write_header(f, "labelList", "owner");
-        f << order.mNewToOld.size() << "\n(\n";
-        for (std::int64_t old : order.mNewToOld)
-            f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
-        f << ")\n";
+        foam_write_header(f, "labelList", "owner", rOpts);
+        if (rOpts.mBinary) {
+            f << order.mNewToOld.size() << "\n(";
+            for (std::int64_t old : order.mNewToOld)
+                foam_write_binary_label(f, faces.mOwner[static_cast<std::size_t>(old)],
+                                        rOpts.mLabelBits);
+            f << ")\n";
+        } else {
+            f << order.mNewToOld.size() << "\n(\n";
+            for (std::int64_t old : order.mNewToOld)
+                f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
+            f << ")\n";
+        }
     }
     {
         // Always written, even with zero entries: a stale `neighbour` left from
@@ -75067,17 +76166,28 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
         auto f = foam_open(poly / "neighbour");
-        foam_write_header(f, "labelList", "neighbour");
-        f << order.mNumInternal << "\n(\n";
-        for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-            f << faces.mNeighbour[static_cast<std::size_t>(
-                     order.mNewToOld[static_cast<std::size_t>(i)])]
-              << "\n";
-        f << ")\n";
+        foam_write_header(f, "labelList", "neighbour", rOpts);
+        if (rOpts.mBinary) {
+            f << order.mNumInternal << "\n(";
+            for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+                foam_write_binary_label(
+                    f,
+                    faces.mNeighbour[static_cast<std::size_t>(
+                        order.mNewToOld[static_cast<std::size_t>(i)])],
+                    rOpts.mLabelBits);
+            f << ")\n";
+        } else {
+            f << order.mNumInternal << "\n(\n";
+            for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+                f << faces.mNeighbour[static_cast<std::size_t>(
+                         order.mNewToOld[static_cast<std::size_t>(i)])]
+                  << "\n";
+            f << ")\n";
+        }
     }
     {
         auto f = foam_open(poly / "boundary");
-        foam_write_header(f, "polyBoundaryMesh", "boundary");
+        foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {
             f << "    " << p.mName << "\n    {\n";
@@ -75107,7 +76217,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
                     log::info("OpenFOAM: removed stale {}", pFile);
                 return;
             }
-            foam_write_zone_file(poly / pFile, pClass, pFile, pZoneType, pLabelKey, rZones);
+            foam_write_zone_file(poly / pFile, pClass, pFile, pZoneType, pLabelKey, rZones, rOpts);
         };
 
         write_or_remove("cellZones", foam_collect_cell_zones(rMesh, global_to_compact),
@@ -75121,6 +76231,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
               faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
+}
+
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+    write_openfoam(rPath, rMesh, rInfo, OpenFoamWriteOptions{});
 }
 
 }  // namespace meshioplusplus
@@ -77956,6 +79070,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -78044,14 +79159,15 @@ struct Blk {
     int mN = 0;
     std::vector<std::int64_t> mConn;
     std::vector<std::int32_t> mTag;
+    std::vector<std::int32_t> mZone;  // which IZONE this row came from (0 for a single-zone file)
     std::size_t mCount = 0;
 };
 
 // Parse `count` element lines (each "vtk_type n0 n1 ... [extra]") into type-
 // grouped blocks (sorted by vtk type code, matching numpy.unique), all with
-// the given tag.
+// the given tag and zone.
 void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, std::size_t count,
-                     std::int32_t tag, std::vector<Blk>& rOut) {
+                     std::int32_t tag, std::int32_t zone, std::vector<Blk>& rOut) {
     std::vector<std::pair<int, std::vector<std::int64_t>>> elems;
     std::set<int> types;
     for (std::size_t e = 0; e < count; ++e) {
@@ -78075,9 +79191,124 @@ void read_elem_block(const std::vector<std::string>& rLines, std::size_t& rLi, s
                 continue;
             b.mConn.insert(b.mConn.end(), e.second.begin(), e.second.end());
             b.mTag.push_back(tag);
+            b.mZone.push_back(zone);
             ++b.mCount;
         }
         rOut.push_back(std::move(b));
+    }
+}
+
+/// One zone's own NDIME/NPOIN/NELEM/NMARK/MARKER_* body, everything a
+/// standalone (single-zone) SU2 file also has.
+struct Su2ZoneBody {
+    int mDim = 0;
+    NDArray mPoints;
+    std::vector<Blk> mBlocks;
+    // marker tag -> its string name, only for markers whose MARKER_TAG was
+    // non-numeric (a plain integer tag needs no name to preserve).
+    std::map<std::int32_t, std::string> mMarkerNames;
+};
+
+/// Parses one zone body starting at `*pLi`, advancing it past everything
+/// consumed. Stops at the next "IZONE=" (the next zone) or end of file --
+/// shared by the single-zone and multizone read paths, so both go through
+/// exactly the same per-record logic.
+Su2ZoneBody read_su2_zone_body(const std::vector<std::string>& rLines, std::size_t& rLi,
+                               std::int32_t zone) {
+    Su2ZoneBody zoneBody;
+    std::int32_t next_tag_id = 0;
+    std::int32_t current_tag = 0;
+    std::string current_tag_name;  // empty when the marker's own tag is numeric
+
+    while (rLi < rLines.size()) {
+        std::string line = su2_strip(rLines[rLi]);
+        if (line.empty() || line[0] == '%') {
+            ++rLi;
+            continue;
+        }
+        std::size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            ++rLi;
+            continue;
+        }
+        std::string name = su2_strip(line.substr(0, eq));
+        if (name == "IZONE")
+            break;  // the next zone: let the caller consume it
+        std::string rest = su2_strip(line.substr(eq + 1));
+        ++rLi;
+
+        if (name == "NDIME") {
+            zoneBody.mDim = std::stoi(rest);
+            if (zoneBody.mDim != 2 && zoneBody.mDim != 3)
+                throw ReadError("SU2: invalid NDIME");
+        } else if (name == "NPOIN") {
+            std::size_t npoin = static_cast<std::size_t>(std::stoll(su2_tokens(rest)[0]));
+            NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(zoneBody.mDim)});
+            double* pp = pts.As<double>();
+            for (std::size_t i = 0; i < npoin; ++i) {
+                auto t = su2_tokens(rLines.at(rLi++));
+                for (int c = 0; c < zoneBody.mDim; ++c)
+                    pp[i * static_cast<std::size_t>(zoneBody.mDim) + static_cast<std::size_t>(c)] =
+                        detail::parse_double(t[static_cast<std::size_t>(c)]);
+            }
+            zoneBody.mPoints = std::move(pts);
+        } else if (name == "NELEM") {
+            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            read_elem_block(rLines, rLi, ne, 0, zone, zoneBody.mBlocks);
+        } else if (name == "NMARK") {
+            // handled implicitly via MARKER_TAG/MARKER_ELEMS
+        } else if (name == "MARKER_TAG") {
+            try {
+                std::size_t pos;
+                int v = std::stoi(rest, &pos);
+                if (pos == rest.size()) {
+                    current_tag = v;
+                    current_tag_name.clear();
+                } else {
+                    current_tag = ++next_tag_id;
+                    current_tag_name = rest;
+                }
+            } catch (...) {
+                current_tag = ++next_tag_id;
+                current_tag_name = rest;
+            }
+            if (!current_tag_name.empty())
+                zoneBody.mMarkerNames[current_tag] = current_tag_name;
+        } else if (name == "MARKER_ELEMS") {
+            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
+            read_elem_block(rLines, rLi, ne, current_tag, zone, zoneBody.mBlocks);
+        }
+    }
+    return zoneBody;
+}
+
+/// Merges same-type blocks (across every zone, volume or boundary alike)
+/// into one block per type -- a straight generalization of the single-zone
+/// reader's own "merge same-type boundary blocks" pass, which becomes a
+/// no-op there (a single NELEM/MARKER_ELEMS call already groups by type).
+void su2_merge_by_type(std::vector<Blk>& rBlocks) {
+    std::vector<std::string> types;
+    for (const Blk& b : rBlocks)
+        if (std::find(types.begin(), types.end(), b.mType) == types.end())
+            types.push_back(b.mType);
+    for (const std::string& ty : types) {
+        int first = -1;
+        for (std::size_t i = 0; i < rBlocks.size(); ++i) {
+            if (rBlocks[i].mType != ty)
+                continue;
+            if (first < 0) {
+                first = static_cast<int>(i);
+                continue;
+            }
+            Blk& dst = rBlocks[static_cast<std::size_t>(first)];
+            Blk& src = rBlocks[i];
+            dst.mConn.insert(dst.mConn.end(), src.mConn.begin(), src.mConn.end());
+            dst.mTag.insert(dst.mTag.end(), src.mTag.begin(), src.mTag.end());
+            dst.mZone.insert(dst.mZone.end(), src.mZone.begin(), src.mZone.end());
+            dst.mCount += src.mCount;
+            src.mCount = 0;  // mark for removal
+            src.mConn.clear();
+        }
     }
 }
 
@@ -78092,87 +79323,94 @@ Mesh read_su2(const std::string& rPath) {
     while (std::getline(in, l))
         lines.push_back(l);
 
-    int dim = 0;
-    Mesh mesh;
-    std::vector<Blk> blocks;
-    std::int32_t next_tag_id = 0;
+    // NZONE= (if present) is always the first key: a single-file multizone
+    // mesh's own header, before the first (implicit) IZONE= 1.
+    std::size_t nzone = 1;
+    bool multizone = false;
+    {
+        std::size_t li = 0;
+        while (li < lines.size()) {
+            std::string line = su2_strip(lines[li]);
+            if (line.empty() || line[0] == '%') {
+                ++li;
+                continue;
+            }
+            std::size_t eq = line.find('=');
+            if (eq == std::string::npos)
+                break;
+            if (su2_strip(line.substr(0, eq)) == "NZONE") {
+                nzone = static_cast<std::size_t>(std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0]));
+                multizone = true;
+            }
+            break;
+        }
+    }
 
+    std::vector<Su2ZoneBody> zones;
     std::size_t li = 0;
-    while (li < lines.size()) {
-        std::string line = su2_strip(lines[li]);
-        if (line.empty() || line[0] == '%') {
-            ++li;
-            continue;
-        }
-        std::size_t eq = line.find('=');
-        if (eq == std::string::npos) {
-            ++li;
-            continue;
-        }
-        std::string name = su2_strip(line.substr(0, eq));
-        std::string rest = su2_strip(line.substr(eq + 1));
-        ++li;
-
-        if (name == "NDIME") {
-            dim = std::stoi(rest);
-            if (dim != 2 && dim != 3)
-                throw ReadError("SU2: invalid NDIME");
-        } else if (name == "NPOIN") {
-            std::size_t npoin = static_cast<std::size_t>(std::stoll(su2_tokens(rest)[0]));
-            NDArray pts(DType::Float64, {npoin, static_cast<std::size_t>(dim)});
-            double* pp = pts.As<double>();
-            for (std::size_t i = 0; i < npoin; ++i) {
-                auto t = su2_tokens(lines.at(li++));
-                for (int c = 0; c < dim; ++c)
-                    pp[i * dim + c] = detail::parse_double(t[c]);
-            }
-            mesh.AssignPoints(std::move(pts));
-        } else if (name == "NELEM") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
-            read_elem_block(lines, li, ne, 0, blocks);
-        } else if (name == "NMARK") {
-            // handled implicitly via MARKER_TAG/MARKER_ELEMS
-        } else if (name == "MARKER_TAG") {
-            try {
-                std::size_t pos;
-                int v = std::stoi(rest, &pos);
-                if (pos == rest.size())
-                    next_tag_id = v;
-                else {
-                    ++next_tag_id;
-                }
-            } catch (...) {
-                ++next_tag_id;
-            }
-        } else if (name == "MARKER_ELEMS") {
-            std::size_t ne = static_cast<std::size_t>(std::stoll(rest));
-            read_elem_block(lines, li, ne, next_tag_id, blocks);
-        }
-    }
-
-    // Merge boundary blocks of the same type (lines in 2D; tris/quads in 3D).
-    std::vector<std::string> btypes = (dim == 2) ? std::vector<std::string>{"line"}
-                                                 : std::vector<std::string>{"triangle", "quad"};
-    for (const auto& bt : btypes) {
-        int first = -1;
-        for (std::size_t i = 0; i < blocks.size(); ++i) {
-            if (blocks[i].mType != bt)
-                continue;
-            if (first < 0) {
-                first = static_cast<int>(i);
+    for (std::size_t z = 0; z < nzone; ++z) {
+        // Skip blank/comment lines and (for a multizone file) the NZONE=/IZONE=
+        // markers themselves; the shared body parser starts at NDIME.
+        while (li < lines.size()) {
+            std::string line = su2_strip(lines[li]);
+            if (line.empty() || line[0] == '%') {
+                ++li;
                 continue;
             }
-            Blk& dst = blocks[first];
-            Blk& src = blocks[i];
-            dst.mConn.insert(dst.mConn.end(), src.mConn.begin(), src.mConn.end());
-            dst.mTag.insert(dst.mTag.end(), src.mTag.begin(), src.mTag.end());
-            dst.mCount += src.mCount;
-            src.mCount = 0;  // mark for removal
-            src.mConn.clear();
+            std::size_t eq = line.find('=');
+            if (eq == std::string::npos)
+                break;
+            std::string name = su2_strip(line.substr(0, eq));
+            if (name == "NZONE" || name == "IZONE") {
+                if (name == "IZONE" &&
+                    static_cast<std::size_t>(
+                        std::stoll(su2_tokens(su2_strip(line.substr(eq + 1)))[0])) != z + 1)
+                    throw ReadError("SU2: IZONE out of order (expected " + std::to_string(z + 1) +
+                                    ")");
+                ++li;
+                continue;
+            }
+            break;
         }
+        zones.push_back(read_su2_zone_body(lines, li, static_cast<std::int32_t>(z)));
     }
+    if (multizone && zones.size() != nzone)
+        throw ReadError("SU2: NZONE=" + std::to_string(nzone) + " but found " +
+                        std::to_string(zones.size()) + " IZONE section(s)");
+
+    Mesh mesh;
+    const int dim = zones.empty() ? 0 : zones.front().mDim;
+    {
+        // Concatenate zone points, offsetting each zone's connectivity by the
+        // running point count -- zones are independent meshes, never welded.
+        std::size_t total_points = 0;
+        for (const Su2ZoneBody& z : zones)
+            total_points += z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
+        NDArray pts(DType::Float64, {total_points, static_cast<std::size_t>(dim)});
+        double* pp = pts.As<double>();
+        std::size_t offset = 0;
+        for (Su2ZoneBody& z : zones) {
+            const std::size_t n = z.mPoints.Shape().empty() ? 0 : z.mPoints.Shape()[0];
+            if (n)
+                std::memcpy(pp + offset * static_cast<std::size_t>(dim), z.mPoints.Data(),
+                           z.mPoints.Nbytes());
+            for (Blk& b : z.mBlocks)
+                for (std::int64_t& id : b.mConn)
+                    id += static_cast<std::int64_t>(offset);
+            offset += n;
+        }
+        mesh.AssignPoints(std::move(pts));
+    }
+
+    std::vector<Blk> blocks;
+    for (Su2ZoneBody& z : zones)
+        for (Blk& b : z.mBlocks)
+            blocks.push_back(std::move(b));
+    su2_merge_by_type(blocks);
 
     std::vector<NDArray> tags;
+    std::vector<NDArray> zone_ids;
+    std::vector<Blk*> kept;  // in AddCellBlock order, for the region pass below
     for (auto& b : blocks) {
         if (b.mCount == 0)
             continue;  // merged-away or empty
@@ -78182,120 +79420,255 @@ Mesh read_su2(const std::string& rPath) {
         NDArray tg(DType::Int32, {b.mCount});
         std::memcpy(tg.Data(), b.mTag.data(), b.mTag.size() * sizeof(std::int32_t));
         tags.push_back(std::move(tg));
+        if (multizone) {
+            NDArray zn(DType::Int32, {b.mCount});
+            std::memcpy(zn.Data(), b.mZone.data(), b.mZone.size() * sizeof(std::int32_t));
+            zone_ids.push_back(std::move(zn));
+        }
+        kept.push_back(&b);
     }
     mesh.AddCellData("su2:tag", std::move(tags));
+    if (multizone)
+        mesh.AddCellData("su2:zone", std::move(zone_ids));
+
+    // Regions: one "zone_<i>" per zone (multizone only) and one per named
+    // marker -- "zone_<i>/<name>" when multizone, "<name>" for a single-zone
+    // file, so a marker's own string name survives instead of collapsing to
+    // an anonymous auto-incremented su2:tag. A purely numeric marker gets no
+    // region: su2:tag already carries it losslessly.
+    const std::vector<std::int64_t> bases = detail::block_bases(mesh);
+    std::map<std::int32_t, std::vector<std::int64_t>> zone_cells;
+    std::map<std::pair<std::int32_t, std::int32_t>, std::vector<std::int64_t>> marker_cells;
+    for (std::size_t bi = 0; bi < kept.size(); ++bi) {
+        const Blk& b = *kept[bi];
+        for (std::size_t r = 0; r < b.mCount; ++r) {
+            const std::int64_t global = detail::block_row_to_global(bases, bi, static_cast<std::int64_t>(r));
+            zone_cells[b.mZone[r]].push_back(global);
+            marker_cells[{b.mZone[r], b.mTag[r]}].push_back(global);
+        }
+    }
+    if (multizone)
+        for (const auto& [zone, cells] : zone_cells) {
+            NDArray entries(DType::Int64, {cells.size()});
+            std::memcpy(entries.Data(), cells.data(), cells.size() * sizeof(std::int64_t));
+            // -1: a zone region spans both volume and boundary cells, so it has
+            // no single topological dimension to declare.
+            mesh.AddRegion(Region("zone_" + std::to_string(zone), RegionKind::Cell, -1,
+                                  static_cast<std::int64_t>(zone), std::move(entries)));
+        }
+    for (const auto& [key, cells] : marker_cells) {
+        const auto& [zone, tag] = key;
+        const auto it = zones[static_cast<std::size_t>(zone)].mMarkerNames.find(tag);
+        if (it == zones[static_cast<std::size_t>(zone)].mMarkerNames.end())
+            continue;  // a numeric marker: su2:tag already carries it
+        const std::string name =
+            multizone ? "zone_" + std::to_string(zone) + "/" + it->second : it->second;
+        NDArray entries(DType::Int64, {cells.size()});
+        std::memcpy(entries.Data(), cells.data(), cells.size() * sizeof(std::int64_t));
+        mesh.AddRegion(Region(name, RegionKind::Cell, dim - 1, tag, std::move(entries)));
+    }
     return mesh;
 }
+
+namespace {
+
+std::vector<std::string> su2_vtypes(std::size_t dim) {
+    return dim == 2 ? std::vector<std::string>{"triangle", "quad"}
+                    : std::vector<std::string>{"tetra", "hexahedron", "wedge", "pyramid"};
+}
+std::vector<std::string> su2_btypes(std::size_t dim) {
+    return dim == 2 ? std::vector<std::string>{"line"} : std::vector<std::string>{"triangle", "quad"};
+}
+bool su2_in(const std::vector<std::string>& rV, const std::string& rT) {
+    return std::find(rV.begin(), rV.end(), rT) != rV.end();
+}
+
+/// Which int cell_data array drives markers: the first one found, matching
+/// the read side and the "first-int-array" convention several other formats
+/// share.
+std::string su2_tag_key(const Mesh& rMesh) {
+    for (const auto& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) == 0)
+            continue;
+        DType t = rMesh.CellData(name, 0).Dtype();
+        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
+            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64)
+            return name;
+    }
+    return "";
+}
+
+/// Writes one zone's own NDIME/NPOIN/NELEM/NMARK/MARKER_* body -- everything a
+/// standalone (single-zone) file also has -- restricted to the cells named by
+/// their (block, row) in `rCells`. `Subset`: when false (a whole-mesh,
+/// single-zone write), every point is written in its original order and
+/// connectivity is untouched, exactly like a pre-multizone write. When true
+/// (one zone of a multizone write), points are remapped to a dense, zone-local
+/// 0-based numbering in first-appearance order, so a multizone write never
+/// shares a point index between zones (SU2 zones are independent meshes).
+/// `rMarkerNames` resolves a marker's SU2 text: `zone_<i>/<name>` (or, for a
+/// single-zone write, plain `<name>`) when the region carrying that name
+/// exists, else the bare integer tag.
+void write_su2_zone_body(std::ostream& rOs, const Mesh& rMesh, std::size_t Dim,
+                         const std::vector<std::pair<std::size_t, std::int64_t>>& rCells,
+                         const std::string& rTagKey,
+                         const std::map<std::int64_t, std::string>& rMarkerNames, bool Subset) {
+    const std::vector<std::string> vtypes = su2_vtypes(Dim);
+    const std::vector<std::string> btypes = su2_btypes(Dim);
+    const NDArray& points = rMesh.Points();
+
+    // Point remap: identity (whole mesh, original order) unless Subset, in
+    // which case only the cells in rCells' own points are written, renumbered
+    // by first appearance.
+    std::unordered_map<std::int64_t, std::int64_t> remap;
+    std::vector<std::int64_t> old_ids;
+    auto remap_of = [&](std::int64_t old_id) {
+        if (!Subset)
+            return old_id;
+        const auto [it, inserted] = remap.try_emplace(old_id, static_cast<std::int64_t>(old_ids.size()));
+        if (inserted)
+            old_ids.push_back(old_id);
+        return it->second;
+    };
+    if (Subset) {
+        for (const auto& [block, row] : rCells) {
+            const auto cb = rMesh.Cells(block);
+            const NDArray& conn = cb.Conn();
+            const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+            for (std::size_t j = 0; j < k; ++j)
+                remap_of(detail::read_int(conn, static_cast<std::size_t>(row) * k + j));
+        }
+    } else {
+        old_ids.resize(rMesh.NumPoints());
+        for (std::size_t i = 0; i < old_ids.size(); ++i)
+            old_ids[i] = static_cast<std::int64_t>(i);
+    }
+
+    rOs << "NDIME= " << Dim << "\n";
+    rOs << "NPOIN= " << old_ids.size() << "\n";
+    for (std::int64_t old_id : old_ids) {
+        for (std::size_t c = 0; c < Dim; ++c) {
+            char buf[64];
+            detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                               detail::read_double(points, static_cast<std::size_t>(old_id) * Dim + c));
+            rOs << buf << (c + 1 == Dim ? '\n' : ' ');
+        }
+    }
+
+    auto write_cell = [&](std::size_t block, std::int64_t row) {
+        const auto cb = rMesh.Cells(block);
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        rOs << meshio_to_su2(cb.Type());
+        for (std::size_t j = 0; j < k; ++j)
+            rOs << " " << remap_of(detail::read_int(conn, static_cast<std::size_t>(row) * k + j));
+        rOs << "\n";
+    };
+    auto tag_of = [&](std::size_t block, std::int64_t row) -> std::int64_t {
+        if (rTagKey.empty())
+            return 1;
+        return detail::read_int(rMesh.CellData(rTagKey, block), static_cast<std::size_t>(row));
+    };
+
+    std::size_t nelem = 0;
+    for (const auto& [block, row] : rCells)
+        if (su2_in(vtypes, rMesh.Cells(block).Type()))
+            ++nelem;
+    rOs << "NELEM= " << nelem << "\n";
+    for (const auto& [block, row] : rCells)
+        if (su2_in(vtypes, rMesh.Cells(block).Type()))
+            write_cell(block, row);
+
+    std::map<std::int64_t, std::size_t> tag_counts;
+    for (const auto& [block, row] : rCells)
+        if (su2_in(btypes, rMesh.Cells(block).Type()))
+            ++tag_counts[tag_of(block, row)];
+
+    rOs << "NMARK= " << tag_counts.size() << "\n";
+    for (const auto& [tag, count] : tag_counts) {
+        const auto name_it = rMarkerNames.find(tag);
+        rOs << "MARKER_TAG= " << (name_it != rMarkerNames.end() ? name_it->second : std::to_string(tag))
+            << "\n";
+        rOs << "MARKER_ELEMS= " << count << "\n";
+        for (const auto& [block, row] : rCells)
+            if (su2_in(btypes, rMesh.Cells(block).Type()) && tag_of(block, row) == tag)
+                write_cell(block, row);
+    }
+}
+
+}  // namespace
 
 void write_su2(const std::string& rPath, const Mesh& rMesh) {
     auto os = detail::make_classic_ofstream(rPath);
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
-    const std::size_t npoin = rMesh.NumPoints();
+    const std::string tag_key = su2_tag_key(rMesh);
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
 
-    os << "NDIME= " << dim << "\n";
-    os << "NPOIN= " << npoin << "\n";
-    {
-        // Format point rows in parallel (snprintf per row, bytes unchanged),
-        // then stream sequentially.
-        std::vector<std::string> rows(npoin);
-        parallel_for(npoin, [&](std::size_t i) {
-            char buf[64];
-            std::string& row = rows[i];
-            for (std::size_t c = 0; c < dim; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), "%.16e",
-                                   detail::read_double(points, i * dim + c));
-                row += buf;
-                row += (c + 1 == dim ? '\n' : ' ');
-            }
-        });
-        for (const auto& row : rows)
-            os << row;
-    }
-
-    std::vector<std::string> vtypes =
-        (dim == 2) ? std::vector<std::string>{"triangle", "quad"}
-                   : std::vector<std::string>{"tetra", "hexahedron", "wedge", "pyramid"};
-    std::vector<std::string> btypes = (dim == 2) ? std::vector<std::string>{"line"}
-                                                 : std::vector<std::string>{"triangle", "quad"};
-    auto in = [](const std::vector<std::string>& v, const std::string& t) {
-        return std::find(v.begin(), v.end(), t) != v.end();
-    };
-
-    // Volume cells.
-    std::size_t nelem = 0;
-    for (const auto cb : rMesh.CellRange())
-        if (in(vtypes, cb.Type()))
-            nelem += cb.NumCells();
-    os << "NELEM= " << nelem << "\n";
-    for (const auto cb : rMesh.CellRange()) {
-        if (!in(vtypes, cb.Type()))
-            continue;
-        int st = meshio_to_su2(cb.Type());
-        const NDArray& conn = cb.Conn();
-        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            os << st;
-            for (std::size_t j = 0; j < k; ++j)
-                os << " " << detail::read_int(conn, r * k + j);
-            os << "\n";
-        }
-    }
-
-    // Boundary markers from su2:tag (first int cell_data).
-    std::string tag_key;
-    for (const auto& name : rMesh.CellDataNames()) {
-        if (rMesh.CellDataNumBlocks(name) == 0)
-            continue;
-        DType t = rMesh.CellData(name, 0).Dtype();
-        if (t == DType::Int8 || t == DType::Int16 || t == DType::Int32 || t == DType::Int64 ||
-            t == DType::UInt8 || t == DType::UInt16 || t == DType::UInt32 || t == DType::UInt64) {
-            tag_key = name;
-            break;
-        }
-    }
-
-    // Collect unique tags (with total counts) over boundary cell blocks.
-    std::map<std::int64_t, std::size_t> tag_counts;
+    // Multizone iff su2:zone exists and carries more than one distinct value;
+    // a region "zone_<i>/<name>" (or, single-zone, "<name>") supplies a
+    // marker's text where the mesh has one -- see write_su2_zone_body.
+    std::map<std::int32_t, std::vector<std::pair<std::size_t, std::int64_t>>> by_zone;
+    bool has_zone_data = rMesh.HasCellData("su2:zone");
     for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
         const auto cb = rMesh.Cells(bi);
-        if (!in(btypes, cb.Type()))
-            continue;
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            std::int64_t tg = 1;
-            if (!tag_key.empty())
-                tg = detail::read_int(rMesh.CellData(tag_key, bi), r);
-            ++tag_counts[tg];
+            const std::int32_t zone = has_zone_data
+                                          ? static_cast<std::int32_t>(detail::read_int(
+                                                rMesh.CellData("su2:zone", bi), r))
+                                          : 0;
+            by_zone[zone].emplace_back(bi, static_cast<std::int64_t>(r));
         }
     }
+    const bool multizone = by_zone.size() > 1;
 
-    os << "NMARK= " << tag_counts.size() << "\n";
-    for (const auto& tc : tag_counts) {
-        std::int64_t tag = tc.first;
-        os << "MARKER_TAG= " << tag << "\n";
-        os << "MARKER_ELEMS= " << tc.second << "\n";
-        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-            const auto cb = rMesh.Cells(bi);
-            if (!in(btypes, cb.Type()))
-                continue;
-            int st = meshio_to_su2(cb.Type());
-            const NDArray& conn = cb.Conn();
-            std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
-            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-                std::int64_t tg = 1;
-                if (!tag_key.empty())
-                    tg = detail::read_int(rMesh.CellData(tag_key, bi), r);
-                if (tg != tag)
-                    continue;
-                os << st;
-                for (std::size_t j = 0; j < k; ++j)
-                    os << " " << detail::read_int(conn, r * k + j);
-                os << "\n";
-            }
-        }
+    std::map<std::int32_t, std::map<std::int64_t, std::string>> marker_names;  // zone -> tag -> name
+    for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
+        const Region& region = rMesh.Region(ri);
+        if (region.mKind != RegionKind::Cell || region.NumEntries() == 0)
+            continue;
+        const auto [block, row] = detail::global_to_block_row(bases, region.Entries()[0]);
+        if (block == static_cast<std::size_t>(-1))
+            continue;
+        const std::int32_t zone = has_zone_data
+                                      ? static_cast<std::int32_t>(
+                                            detail::read_int(rMesh.CellData("su2:zone", block),
+                                                             static_cast<std::size_t>(row)))
+                                      : 0;
+        const std::int64_t tag = tag_key.empty()
+                                     ? 1
+                                     : detail::read_int(rMesh.CellData(tag_key, block),
+                                                        static_cast<std::size_t>(row));
+        std::string name = region.mName;
+        const std::string prefix = "zone_" + std::to_string(zone) + "/";
+        if (multizone && name.rfind(prefix, 0) == 0)
+            name = name.substr(prefix.size());
+        else if (multizone)
+            continue;  // a "zone_<i>" region itself, or one from another zone's write
+        marker_names[zone][tag] = name;
+    }
+
+    if (!multizone) {
+        std::vector<std::pair<std::size_t, std::int64_t>> all;
+        for (auto& [zone, cells] : by_zone)
+            all.insert(all.end(), cells.begin(), cells.end());
+        write_su2_zone_body(os, rMesh, dim, all, tag_key,
+                            marker_names.count(0) ? marker_names[0]
+                                                  : std::map<std::int64_t, std::string>{},
+                            /*Subset=*/false);
+        return;
+    }
+
+    os << "NZONE= " << by_zone.size() << "\n";
+    std::int32_t ordinal = 1;
+    for (auto& [zone, cells] : by_zone) {
+        os << "\nIZONE= " << ordinal++ << "\n";
+        write_su2_zone_body(os, rMesh, dim, cells, tag_key,
+                            marker_names.count(zone) ? marker_names[zone]
+                                                     : std::map<std::int64_t, std::string>{},
+                            /*Subset=*/true);
     }
 }
 
@@ -78661,6 +80034,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -78700,6 +80074,105 @@ bool is_float_token(const std::string& rS) {
     const char* endp = nullptr;
     detail::parse_double(rS.c_str(), endp);
     return endp == rS.c_str() + rS.size();
+}
+
+/// Splits a joined header (e.g. `ZONE T = "VARLOCATION" N=4 ...`) into tokens,
+/// keeping a quoted `"..."` span or a parenthesized `(...)` span as one
+/// token (quotes/parens included) rather than letting their commas, `=` or
+/// spaces fall through to the general splitter -- a title can legitimately
+/// contain any of those (a real adversarial fixture: `T = "VARLOCATION"`,
+/// where a naive substring search for the VARLOCATION *field* would instead
+/// find this title). `=` becomes its own one-character token; everything
+/// else splits on whitespace/commas exactly like tecplot_tokens.
+std::vector<std::string> tecplot_header_tokens(const std::string& rS) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    const std::size_t n = rS.size();
+    while (i < n) {
+        const char c = rS[i];
+        if (c == ' ' || c == '\t' || c == ',') {
+            ++i;
+        } else if (c == '=') {
+            out.emplace_back("=");
+            ++i;
+        } else if (c == '"') {
+            std::size_t j = rS.find('"', i + 1);
+            if (j == std::string::npos)
+                j = n - 1;
+            out.push_back(rS.substr(i, j - i + 1));
+            i = j + 1;
+        } else if (c == '(') {
+            std::size_t j = rS.find(')', i + 1);
+            if (j == std::string::npos)
+                j = n - 1;
+            out.push_back(rS.substr(i, j - i + 1));
+            i = j + 1;
+        } else {
+            std::size_t j = i;
+            while (j < n && rS[j] != ' ' && rS[j] != '\t' && rS[j] != ',' && rS[j] != '=' &&
+                  rS[j] != '"' && rS[j] != '(')
+                ++j;
+            out.push_back(rS.substr(i, j - i));
+            i = j;
+        }
+    }
+    return out;
+}
+
+/// Strips the surrounding quotes of a token tecplot_header_tokens quoted
+/// (a no-op on a token that was never quoted).
+std::string tecplot_unquote(const std::string& rTok) {
+    if (rTok.size() >= 2 && rTok.front() == '"' && rTok.back() == '"')
+        return rTok.substr(1, rTok.size() - 2);
+    return rTok;
+}
+
+/// Splits `rInner` on commas that are not inside a `[...]` range, so
+/// `"[1,2]=1,[4-6]=2"` splits into `{"[1,2]=1", "[4-6]=2"}` rather than
+/// breaking the first range apart. Used for VARLOCATION/VARSHARELIST's
+/// `([range]=target, ...)` value and for PASSIVEVARLIST's `([range])`.
+std::vector<std::string> tecplot_split_entries(const std::string& rInner) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    for (char c : rInner) {
+        if (c == '[')
+            ++depth;
+        else if (c == ']')
+            --depth;
+        if (c == ',' && depth == 0) {
+            out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty())
+        out.push_back(cur);
+    return out;
+}
+
+/// Expands a `[a,b,c-d,...]` (or bare, bracket-less) range spec into 0-based
+/// indices. Tecplot variable/zone numbers are 1-based in the file.
+std::vector<std::size_t> tecplot_parse_ranges(std::string rSpec) {
+    if (!rSpec.empty() && rSpec.front() == '[')
+        rSpec = rSpec.substr(1);
+    if (!rSpec.empty() && rSpec.back() == ']')
+        rSpec.pop_back();
+    std::vector<std::size_t> out;
+    for (const std::string& part : tecplot_split_entries(rSpec)) {
+        const std::size_t dash = part.find('-');
+        if (dash == std::string::npos) {
+            if (!part.empty())
+                out.push_back(static_cast<std::size_t>(std::stoul(part) - 1));
+        } else {
+            const int a = std::stoi(part.substr(0, dash));
+            const int b = std::stoi(part.substr(dash + 1));
+            for (int k = a; k <= b; ++k)
+                out.push_back(static_cast<std::size_t>(k - 1));
+        }
+    }
+    return out;
 }
 
 std::string tecplot_to_meshio(const std::string& rZ) {
@@ -78757,6 +80230,7 @@ namespace {
 struct TecplotZoneHeader {
     std::map<std::string, std::string> mFields;  // NODES/N/ELEMENTS/E/DATAPACKING/ZONETYPE/F/ET/NV
     std::string mVarloc;
+    std::string mTitle;  // T="...", unquoted; empty if not given
     bool mHasSolutionTime = false;
     double mSolutionTime = 0.0;
     bool mHasStrandId = false;
@@ -78764,6 +80238,14 @@ struct TecplotZoneHeader {
     std::size_t mDataStart = 0;
     std::size_t mNumNodes = 0;
     std::size_t mNumCells = 0;
+    // Variable index (0-based) -> the 1-based zone number it is shared from
+    // (VARSHARELIST=([m,n]=z)): that variable has no data of its own here.
+    std::map<std::size_t, std::size_t> mVarShareZone;
+    // Variable indices with no data anywhere for this zone (PASSIVEVARLIST).
+    std::set<std::size_t> mPassiveVars;
+    // 1-based zone number this zone's connectivity is shared from
+    // (CONNECTIVITYSHAREZONE=z), or 0 for its own.
+    std::size_t mConnShareZone = 0;
 };
 
 std::string tecplot_zone_field(const TecplotZoneHeader& rZ, const char* pA, const char* pB) {
@@ -78797,49 +80279,38 @@ void tecplot_zone_format(const TecplotZoneHeader& rZ, std::size_t NumVariables, 
         for (std::size_t k = static_cast<std::size_t>(nv); k < NumVariables; ++k)
             rCellCentered[k] = 1;
     } else if (!rZ.mVarloc.empty()) {
-        std::string vc = rZ.mVarloc.substr(1, rZ.mVarloc.size() - 2);  // strip ()
-        std::vector<std::string> entries;
-        std::string cur;
-        for (char c : vc) {
-            if (c == ',') {
-                entries.push_back(cur);
-                cur.clear();
-            } else {
-                cur += c;
-            }
-        }
-        if (!cur.empty())
-            entries.push_back(cur);
-        for (const auto& entry : entries) {
-            std::size_t eq = entry.find('=');
+        std::string vc = rZ.mVarloc.substr(1, rZ.mVarloc.size() - 2);  // strip outer ()
+        for (const std::string& entry : tecplot_split_entries(vc)) {
+            const std::size_t eq = entry.find('=');
             if (eq == std::string::npos)
                 continue;
-            std::string rng = entry.substr(0, eq), loc = tecplot_upper(entry.substr(eq + 1));
+            const std::string rng = entry.substr(0, eq);
+            const std::string loc = tecplot_upper(entry.substr(eq + 1));
             if (loc != "CELLCENTERED")
                 continue;
-            rng = rng.substr(1, rng.size() - 2);  // strip []
-            std::size_t dash = rng.find('-');
-            if (dash == std::string::npos) {
-                rCellCentered[static_cast<std::size_t>(std::stoi(rng) - 1)] = 1;
-            } else {
-                int a = std::stoi(rng.substr(0, dash)), b = std::stoi(rng.substr(dash + 1));
-                for (int k = a; k <= b; ++k)
-                    rCellCentered[static_cast<std::size_t>(k - 1)] = 1;
-            }
+            for (std::size_t idx : tecplot_parse_ranges(rng))
+                if (idx < NumVariables)
+                    rCellCentered[idx] = 1;
         }
     }
 }
 
 // How many numeric tokens this zone's data block holds, in file order --
-// FEBLOCK is one run per variable (cell-centered ones NumCells long, the
-// rest NumNodes long); POINT/FEPOINT is NumNodes rows of NumVariables each.
+// FEBLOCK is one run per *owned, active* variable (cell-centered ones
+// NumCells long, the rest NumNodes long); a variable this zone shares from an
+// earlier one (VARSHARELIST) or carries nowhere (PASSIVEVARLIST) has no data
+// here at all, so it contributes nothing to the budget. POINT/FEPOINT has no
+// such sharing (it is NumNodes rows of NumVariables each, always).
 std::size_t tecplot_zone_data_token_count(const TecplotZoneHeader& rZ, std::size_t NumVariables,
                                           bool Feblock, const std::vector<int>& rCellCentered) {
     if (!Feblock)
         return rZ.mNumNodes * NumVariables;
     std::size_t total = 0;
-    for (std::size_t k = 0; k < NumVariables; ++k)
+    for (std::size_t k = 0; k < NumVariables; ++k) {
+        if (rZ.mVarShareZone.count(k) || rZ.mPassiveVars.count(k))
+            continue;
         total += rCellCentered[k] ? rZ.mNumCells : rZ.mNumNodes;
+    }
     return total;
 }
 
@@ -78886,33 +80357,51 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
             joined += " " + rLines[++i];
         z.mDataStart = i + 1;
 
-        std::string ju = joined;
-        std::size_t vp = tecplot_upper(ju).find("VARLOCATION");
-        if (vp != std::string::npos) {
-            std::size_t p1 = ju.find('(', vp), p2 = ju.find(')', p1);
-            z.mVarloc = ju.substr(p1, p2 - p1 + 1);
-            z.mVarloc.erase(std::remove(z.mVarloc.begin(), z.mVarloc.end(), ' '), z.mVarloc.end());
-            ju = ju.substr(0, vp) + ju.substr(p2 + 1);
-        }
-        std::string body = ju.substr(4);
-        for (auto& c : body)
-            if (c == ',' || c == '=')
-                c = ' ';
-        auto tk = tecplot_tokens(body);
-        for (std::size_t k = 0; k + 1 < tk.size(); ++k) {
-            std::string key = tecplot_upper(tk[k]);
+        // tk[0] is the "ZONE" keyword itself; the rest is KEY = VALUE triples,
+        // where a quoted or parenthesized VALUE is already one token (so a
+        // title like T = "VARLOCATION" cannot be mistaken for the field of
+        // the same name).
+        const std::vector<std::string> tk = tecplot_header_tokens(joined);
+        for (std::size_t k = 1; k + 2 < tk.size(); k += 3) {
+            if (tk[k + 1] != "=") {
+                ++k;  // resync: not a KEY = VALUE triple after all
+                continue;
+            }
+            const std::string key = tecplot_upper(tk[k]);
+            const std::string& val = tk[k + 2];
             if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
                 key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
                 key == "NV") {
-                z.mFields[key] = tk[k + 1];
-            } else if (key == "SOLUTIONTIME" || key == "STRANDID") {
-                if (key == "SOLUTIONTIME") {
-                    z.mSolutionTime = detail::parse_double(tk[k + 1]);
-                    z.mHasSolutionTime = true;
-                } else {
-                    z.mStrandId = std::stoi(tk[k + 1]);
-                    z.mHasStrandId = true;
+                z.mFields[key] = val;
+            } else if (key == "T") {
+                z.mTitle = tecplot_unquote(val);
+            } else if (key == "SOLUTIONTIME") {
+                z.mSolutionTime = detail::parse_double(val);
+                z.mHasSolutionTime = true;
+            } else if (key == "STRANDID") {
+                z.mStrandId = std::stoi(val);
+                z.mHasStrandId = true;
+            } else if (key == "VARLOCATION") {
+                z.mVarloc = val;
+                z.mVarloc.erase(std::remove(z.mVarloc.begin(), z.mVarloc.end(), ' '),
+                                z.mVarloc.end());
+            } else if (key == "VARSHARELIST") {
+                std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
+                for (const std::string& entry : tecplot_split_entries(inner)) {
+                    const std::size_t eq = entry.find('=');
+                    if (eq == std::string::npos)
+                        continue;
+                    const std::size_t zoneno =
+                        static_cast<std::size_t>(std::stoul(entry.substr(eq + 1)));
+                    for (std::size_t idx : tecplot_parse_ranges(entry.substr(0, eq)))
+                        z.mVarShareZone[idx] = zoneno;
                 }
+            } else if (key == "PASSIVEVARLIST") {
+                std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
+                for (std::size_t idx : tecplot_parse_ranges(inner))
+                    z.mPassiveVars.insert(idx);
+            } else if (key == "CONNECTIVITYSHAREZONE") {
+                z.mConnShareZone = static_cast<std::size_t>(std::stoul(val));
             }
         }
         z.mNumNodes = std::stoull(tecplot_zone_field(z, "NODES", "N"));
@@ -78930,7 +80419,8 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
             got += tecplot_tokens(rLines[li]).size();
             ++li;
         }
-        li += z.mNumCells;  // one connectivity line per cell
+        if (z.mConnShareZone == 0)
+            li += z.mNumCells;  // one connectivity line per cell -- none if shared
         zones.push_back(z);
         i = li - 1;  // the for-loop's ++i resumes scanning right after
     }
@@ -78941,34 +80431,324 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
     return zones;
 }
 
-// The zones read_tecplot/read_tecplot_metadata treat as one timeline: those
-// sharing rZones[0]'s STRANDID when any zone carries one (SOLUTIONTIME with
-// no STRANDID at all groups every zone together), sorted by SOLUTIONTIME.
-// Zones with no SOLUTIONTIME at all are not a timeline -- multiple such
-// zones is the "several static zones" case roadmap §1 owns, not this one;
-// only the first is read here, with a warning if there is more than one.
-std::vector<std::size_t> tecplot_timeline(const std::vector<TecplotZoneHeader>& rZones) {
+// One entry per step, each the zone indices (file order preserved) that make
+// up that step's mesh: several parts at once, exactly like read_tecplot's
+// eventual Mesh. A non-transient file (no zone carries SOLUTIONTIME) is a
+// single "step" listing every zone -- the several-static-parts case. A
+// transient file's steps are its distinct SOLUTIONTIME values, ascending,
+// each grouping every zone at that time sharing zones[0]'s STRANDID when any
+// zone carries one (SOLUTIONTIME with no STRANDID at all groups every zone
+// together); a zone with no SOLUTIONTIME in an otherwise transient file
+// belongs to no step and is dropped.
+std::vector<std::vector<std::size_t>> tecplot_timeline(
+    const std::vector<TecplotZoneHeader>& rZones) {
     if (!rZones[0].mHasSolutionTime) {
-        if (rZones.size() > 1)
-            log::warn(
-                "Tecplot: {} zones with no SOLUTIONTIME; reading the first only (multiple "
-                "non-transient zones are not yet concatenated)",
-                rZones.size());
-        return {0};
+        std::vector<std::size_t> all(rZones.size());
+        for (std::size_t k = 0; k < rZones.size(); ++k)
+            all[k] = k;
+        return {std::move(all)};
     }
-    std::vector<std::size_t> idx;
+    std::map<double, std::vector<std::size_t>> by_time;
     for (std::size_t k = 0; k < rZones.size(); ++k) {
         if (!rZones[k].mHasSolutionTime)
             continue;
         if (rZones[0].mHasStrandId && rZones[k].mHasStrandId &&
             rZones[k].mStrandId != rZones[0].mStrandId)
             continue;
-        idx.push_back(k);
+        by_time[rZones[k].mSolutionTime].push_back(k);
     }
-    std::sort(idx.begin(), idx.end(), [&](std::size_t a, std::size_t b) {
-        return rZones[a].mSolutionTime < rZones[b].mSolutionTime;
-    });
-    return idx;
+    std::vector<std::vector<std::size_t>> steps;
+    steps.reserve(by_time.size());
+    for (auto& [time, idxs] : by_time)  // std::map is sorted by key (time)
+        steps.push_back(std::move(idxs));
+    return steps;
+}
+
+/// One zone's decoded data columns, connectivity and topology -- shared by
+/// every step that references it (a zone can be VARSHARELIST'd or
+/// CONNECTIVITYSHAREZONE'd from more than one later zone), so it is decoded
+/// once and cached.
+struct TecplotDecodedZone {
+    std::vector<std::vector<double>> mCols;  // per-variable; length NumNodes or NumCells
+    std::vector<int> mCellCentered;
+    std::string mMeshioType;
+    NDArray mConn;  // (NumCells, NodesPerCell) int64, 0-based
+    std::size_t mNumNodes = 0;
+    std::size_t mNumCells = 0;
+};
+
+/// Decodes zone `ZoneIdx`, resolving VARSHARELIST/CONNECTIVITYSHAREZONE by
+/// recursively decoding (and caching) whichever earlier zone they name.
+const TecplotDecodedZone& tecplot_decode_zone(std::size_t ZoneIdx,
+                                              const std::vector<TecplotZoneHeader>& rZones,
+                                              const std::vector<std::string>& rVariables,
+                                              const std::vector<std::string>& rLines,
+                                              std::map<std::size_t, TecplotDecodedZone>& rCache) {
+    const auto found = rCache.find(ZoneIdx);
+    if (found != rCache.end())
+        return found->second;
+
+    const TecplotZoneHeader& z = rZones[ZoneIdx];
+    bool feblock = false;
+    std::string ztype;
+    std::vector<int> cell_centered;
+    tecplot_zone_format(z, rVariables.size(), feblock, ztype, cell_centered);
+    const std::string mtype = tecplot_to_meshio(ztype);
+    if (mtype.empty())
+        throw ReadError("Tecplot: unsupported zone type " + ztype);
+
+    std::vector<std::size_t> ndata(rVariables.size());
+    for (std::size_t k = 0; k < rVariables.size(); ++k)
+        ndata[k] = cell_centered[k] ? z.mNumCells : z.mNumNodes;
+    const std::size_t want =
+        tecplot_zone_data_token_count(z, rVariables.size(), feblock, cell_centered);
+    const std::size_t want_full = feblock ? want : z.mNumNodes * rVariables.size();
+
+    std::vector<double> flat;
+    flat.reserve(want_full);
+    std::size_t li = z.mDataStart;
+    while (flat.size() < want_full && li < rLines.size()) {
+        for (const auto& t : tecplot_tokens(rLines[li]))
+            flat.push_back(detail::parse_double(t));
+        ++li;
+    }
+
+    std::vector<std::vector<double>> cols(rVariables.size());
+    if (feblock) {
+        std::size_t off = 0;
+        for (std::size_t k = 0; k < rVariables.size(); ++k) {
+            const auto share = z.mVarShareZone.find(k);
+            if (share != z.mVarShareZone.end()) {
+                const TecplotDecodedZone& src =
+                    tecplot_decode_zone(share->second - 1, rZones, rVariables, rLines, rCache);
+                cols[k] = src.mCols[k];
+            } else if (z.mPassiveVars.count(k)) {
+                cols[k].assign(ndata[k], std::numeric_limits<double>::quiet_NaN());
+            } else {
+                cols[k].assign(flat.begin() + static_cast<std::ptrdiff_t>(off),
+                               flat.begin() + static_cast<std::ptrdiff_t>(off + ndata[k]));
+                off += ndata[k];
+            }
+        }
+    } else {
+        const std::size_t nv = rVariables.size();
+        for (std::size_t k = 0; k < nv; ++k)
+            cols[k].resize(z.mNumNodes);
+        for (std::size_t r = 0; r < z.mNumNodes; ++r)
+            for (std::size_t k = 0; k < nv; ++k)
+                cols[k][r] = flat[r * nv + k];
+    }
+
+    std::size_t nn;
+    if (mtype == "line")
+        nn = 2;
+    else if (mtype == "triangle")
+        nn = 3;
+    else if (mtype == "quad" || mtype == "tetra")
+        nn = 4;
+    else
+        nn = 8;
+
+    NDArray conn;
+    if (z.mConnShareZone != 0) {
+        const TecplotDecodedZone& src =
+            tecplot_decode_zone(z.mConnShareZone - 1, rZones, rVariables, rLines, rCache);
+        conn = src.mConn;
+    } else {
+        conn = NDArray(DType::Int64, {z.mNumCells, nn});
+        std::int64_t* cp = conn.As<std::int64_t>();
+        for (std::size_t c = 0; c < z.mNumCells; ++c) {
+            auto t = tecplot_tokens(rLines.at(li++));
+            for (std::size_t j = 0; j < nn; ++j)
+                cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
+        }
+    }
+
+    TecplotDecodedZone result;
+    result.mCols = std::move(cols);
+    result.mCellCentered = std::move(cell_centered);
+    result.mMeshioType = mtype;
+    result.mConn = std::move(conn);
+    result.mNumNodes = z.mNumNodes;
+    result.mNumCells = z.mNumCells;
+    const auto [inserted, _] = rCache.emplace(ZoneIdx, std::move(result));
+    return inserted->second;
+}
+
+/// Resolves the zone whose data literally *is* `ZoneIdx`'s point set: itself,
+/// unless X (and Y, and Z when 3-D) are all VARSHARELIST'd from the very same
+/// earlier zone, in which case the chain is followed to that zone's own
+/// origin. A zone that shares only some of its coordinate variables, or
+/// shares them from different zones, is not literally the same point set --
+/// it owns its own (possibly duplicated) points, same as no sharing at all.
+/// Tecplot itself requires VARSHARELIST partners to agree on NODES, so this
+/// only matters for zones that concatenate several element-type zones over
+/// one shared point cloud (a common hybrid-mesh export shape), not for the
+/// zones-as-a-timeline case, where sharing spans different steps.
+std::size_t tecplot_points_origin_zone(std::size_t ZoneIdx,
+                                       const std::vector<TecplotZoneHeader>& rZones, int Xi,
+                                       int Yi, int Zi) {
+    std::set<std::size_t> seen;
+    std::size_t cur = ZoneIdx;
+    while (seen.insert(cur).second) {
+        const TecplotZoneHeader& z = rZones[cur];
+        const auto it_x = z.mVarShareZone.find(static_cast<std::size_t>(Xi));
+        if (it_x == z.mVarShareZone.end())
+            return cur;
+        const auto it_y = z.mVarShareZone.find(static_cast<std::size_t>(Yi));
+        if (it_y == z.mVarShareZone.end() || it_y->second != it_x->second)
+            return cur;
+        if (Zi >= 0) {
+            const auto it_z = z.mVarShareZone.find(static_cast<std::size_t>(Zi));
+            if (it_z == z.mVarShareZone.end() || it_z->second != it_x->second)
+                return cur;
+        }
+        cur = it_x->second - 1;
+    }
+    return ZoneIdx;  // cycle guard: fall back to owning its own points
+}
+
+/// The 0-based (X, Y, Z) variable indices, Z absent (-1) for a 2D file. The
+/// same three variables for every zone in the file: VARIABLES is per-file.
+void tecplot_xyz_indices(const std::vector<std::string>& rVariables, int& rXi, int& rYi, int& rZi) {
+    rXi = rYi = rZi = -1;
+    for (std::size_t k = 0; k < rVariables.size(); ++k) {
+        const std::string v = tecplot_upper(rVariables[k]);
+        if (v == "X")
+            rXi = static_cast<int>(k);
+        else if (v == "Y")
+            rYi = static_cast<int>(k);
+        else if (v == "Z")
+            rZi = static_cast<int>(k);
+    }
+}
+
+/// Builds one step's Mesh by concatenating every zone in `rZoneIdxs`: one
+/// cell block per zone (never merged by type -- each zone is its own named
+/// part), points offset per zone (zones are not welded), point/cell data
+/// concatenated per variable (a PASSIVEVARLIST zone already decoded to NaN
+/// for that variable, so every zone contributes a value), `tecplot:zone`
+/// naming each cell's zone, and one Cell region per zone (named by its own
+/// title when it has one, de-duplicated, else `zone_<i>`).
+Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
+                             const std::vector<TecplotZoneHeader>& rZones,
+                             const std::vector<std::string>& rVariables,
+                             const std::vector<std::string>& rLines,
+                             std::map<std::size_t, TecplotDecodedZone>& rCache) {
+    int xi = -1, yi = -1, zi = -1;
+    tecplot_xyz_indices(rVariables, xi, yi, zi);
+    const std::size_t ndim = (zi >= 0) ? 3 : 2;
+
+    std::vector<const TecplotDecodedZone*> decoded;
+    decoded.reserve(rZoneIdxs.size());
+    for (std::size_t idx : rZoneIdxs) {
+        const TecplotDecodedZone& d =
+            tecplot_decode_zone(idx, rZones, rVariables, rLines, rCache);
+        decoded.push_back(&d);
+    }
+
+    // A zone whose X (and Y, Z) are all VARSHARELIST'd from an earlier zone
+    // in this same step literally reuses that zone's points -- it gets no
+    // new point block and its connectivity is offset the same as its
+    // origin's, instead of being appended and offset as an independent part.
+    std::map<std::size_t, std::size_t> idx_to_pos;
+    for (std::size_t k = 0; k < rZoneIdxs.size(); ++k)
+        idx_to_pos.emplace(rZoneIdxs[k], k);
+    std::vector<std::size_t> point_offset(decoded.size());
+    std::vector<bool> owns_points(decoded.size());
+    std::size_t total_points = 0;
+    for (std::size_t k = 0; k < decoded.size(); ++k) {
+        const std::size_t origin = tecplot_points_origin_zone(rZoneIdxs[k], rZones, xi, yi, zi);
+        const auto it = idx_to_pos.find(origin);
+        if (origin != rZoneIdxs[k] && it != idx_to_pos.end() && it->second < k) {
+            point_offset[k] = point_offset[it->second];
+            owns_points[k] = false;
+        } else {
+            point_offset[k] = total_points;
+            owns_points[k] = true;
+            total_points += decoded[k]->mNumNodes;
+        }
+    }
+
+    Mesh mesh;
+    NDArray pts(DType::Float64, {total_points, ndim});
+    double* pp = pts.As<double>();
+    for (std::size_t k = 0; k < decoded.size(); ++k) {
+        if (!owns_points[k])
+            continue;
+        const TecplotDecodedZone& d = *decoded[k];
+        const std::size_t poff = point_offset[k];
+        for (std::size_t r = 0; r < d.mNumNodes; ++r) {
+            pp[(poff + r) * ndim + 0] = d.mCols[static_cast<std::size_t>(xi)][r];
+            pp[(poff + r) * ndim + 1] = d.mCols[static_cast<std::size_t>(yi)][r];
+            if (zi >= 0)
+                pp[(poff + r) * ndim + 2] = d.mCols[static_cast<std::size_t>(zi)][r];
+        }
+    }
+    mesh.AssignPoints(std::move(pts));
+
+    for (std::size_t k = 0; k < decoded.size(); ++k) {
+        const TecplotDecodedZone& d = *decoded[k];
+        NDArray conn = d.mConn;  // deep copy: offset in place below
+        std::int64_t* cp = conn.As<std::int64_t>();
+        for (std::size_t j = 0; j < conn.Size(); ++j)
+            cp[j] += static_cast<std::int64_t>(point_offset[k]);
+        mesh.AddCellBlock(d.mMeshioType, std::move(conn));
+    }
+
+    for (std::size_t k = 0; k < rVariables.size(); ++k) {
+        if (static_cast<int>(k) == xi || static_cast<int>(k) == yi || static_cast<int>(k) == zi)
+            continue;
+        if (decoded[0]->mCellCentered[k]) {
+            std::vector<NDArray> blk;
+            blk.reserve(decoded.size());
+            for (const TecplotDecodedZone* d : decoded) {
+                NDArray arr(DType::Float64, {d->mCols[k].size()});
+                std::memcpy(arr.Data(), d->mCols[k].data(), d->mCols[k].size() * sizeof(double));
+                blk.push_back(std::move(arr));
+            }
+            mesh.AddCellData(rVariables[k], std::move(blk));
+        } else {
+            std::vector<double> col;
+            for (const TecplotDecodedZone* d : decoded)
+                col.insert(col.end(), d->mCols[k].begin(), d->mCols[k].end());
+            NDArray arr(DType::Float64, {col.size()});
+            std::memcpy(arr.Data(), col.data(), col.size() * sizeof(double));
+            mesh.AddPointData(rVariables[k], std::move(arr));
+        }
+    }
+
+    std::vector<NDArray> zone_ids;
+    zone_ids.reserve(decoded.size());
+    for (std::size_t k = 0; k < decoded.size(); ++k) {
+        NDArray zn(DType::Int64, {decoded[k]->mNumCells});
+        std::int64_t* zp = zn.As<std::int64_t>();
+        std::fill(zp, zp + decoded[k]->mNumCells, static_cast<std::int64_t>(rZoneIdxs[k]));
+        zone_ids.push_back(std::move(zn));
+    }
+    mesh.AddCellData("tecplot:zone", std::move(zone_ids));
+
+    const std::vector<std::int64_t> bases = detail::block_bases(mesh);
+    std::vector<std::string> used_names;
+    for (std::size_t k = 0; k < rZoneIdxs.size(); ++k) {
+        std::string name = rZones[rZoneIdxs[k]].mTitle;
+        if (name.empty())
+            name = "zone_" + std::to_string(k);
+        std::string unique = name;
+        for (int suffix = 2; std::find(used_names.begin(), used_names.end(), unique) !=
+                             used_names.end();
+            ++suffix)
+            unique = name + "_" + std::to_string(suffix);
+        used_names.push_back(unique);
+
+        NDArray entries(DType::Int64, {decoded[k]->mNumCells});
+        std::int64_t* ep = entries.As<std::int64_t>();
+        for (std::size_t r = 0; r < decoded[k]->mNumCells; ++r)
+            ep[r] = detail::block_row_to_global(bases, k, static_cast<std::int64_t>(r));
+        mesh.AddRegion(Region(unique, RegionKind::Cell, -1, static_cast<std::int64_t>(rZoneIdxs[k]),
+                              std::move(entries)));
+    }
+    return mesh;
 }
 
 }  // namespace
@@ -78988,24 +80768,39 @@ MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& 
 
     std::vector<std::string> variables;
     const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
-    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
+    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(zones);
 
     MeshMetadata meta;
     meta.mFormat = "tecplot";
-    const TecplotZoneHeader& first = zones[timeline[0]];
-    meta.mNumPoints = first.mNumNodes;
+    const std::vector<std::size_t>& first_step = timeline[0];
+    int xi = -1, yi = -1, zi = -1;
+    tecplot_xyz_indices(variables, xi, yi, zi);
+    std::map<std::size_t, std::size_t> idx_to_pos;
+    for (std::size_t k = 0; k < first_step.size(); ++k)
+        idx_to_pos.emplace(first_step[k], k);
+    std::size_t total_points = 0;
+    for (std::size_t k = 0; k < first_step.size(); ++k) {
+        const std::size_t idx = first_step[k];
+        const std::size_t origin = tecplot_points_origin_zone(idx, zones, xi, yi, zi);
+        const auto it = idx_to_pos.find(origin);
+        const bool shares_earlier =
+            origin != idx && it != idx_to_pos.end() && it->second < k;
+        if (!shares_earlier)
+            total_points += zones[idx].mNumNodes;
+        bool feblock = false;
+        std::string ztype;
+        std::vector<int> cell_centered;
+        tecplot_zone_format(zones[idx], variables.size(), feblock, ztype, cell_centered);
+        CellBlockInfo block;
+        block.mType = tecplot_to_meshio(ztype);
+        block.mNumCells = zones[idx].mNumCells;
+        meta.mCellBlocks.push_back(std::move(block));
+    }
+    meta.mNumPoints = total_points;
     meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
-    CellBlockInfo block;
-    bool feblock = false;
-    std::string ztype;
-    std::vector<int> cell_centered;
-    tecplot_zone_format(first, variables.size(), feblock, ztype, cell_centered);
-    block.mType = tecplot_to_meshio(ztype);
-    block.mNumCells = first.mNumCells;
-    meta.mCellBlocks.push_back(std::move(block));
-    if (first.mHasSolutionTime)
-        for (std::size_t idx : timeline)
-            meta.mTimeValues.push_back(zones[idx].mSolutionTime);
+    if (zones[0].mHasSolutionTime)
+        for (const std::vector<std::size_t>& step : timeline)
+            meta.mTimeValues.push_back(zones[step[0]].mSolutionTime);
     return meta;
 }
 
@@ -79024,133 +80819,32 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
 
     std::vector<std::string> variables;
     const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
-    const std::vector<std::size_t> timeline = tecplot_timeline(zones);
+    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(zones);
     const std::size_t step = rOptions.ResolveTimeStep(timeline.size());
-    const TecplotZoneHeader& zone_hdr = zones[timeline[step]];
-    const std::size_t data_start = zone_hdr.mDataStart;
-    const std::size_t num_nodes = zone_hdr.mNumNodes;
-    const std::size_t num_cells = zone_hdr.mNumCells;
-
-    bool feblock = false;
-    std::string ztype;
-    std::vector<int> cell_centered;
-    tecplot_zone_format(zone_hdr, variables.size(), feblock, ztype, cell_centered);
-
-    // Read data values.
-    std::vector<std::size_t> ndata(variables.size());
-    std::size_t total = 0;
-    for (std::size_t k = 0; k < variables.size(); ++k) {
-        ndata[k] = cell_centered[k] ? num_cells : num_nodes;
-        total += ndata[k];
-    }
-    std::size_t want = feblock ? total : num_nodes * variables.size();
-
-    std::vector<double> flat;
-    flat.reserve(want);
-    std::size_t li = data_start;
-    while (flat.size() < want && li < lines.size()) {
-        for (const auto& t : tecplot_tokens(lines[li]))
-            flat.push_back(detail::parse_double(t));
-        ++li;
-    }
-
-    // Per-variable columns.
-    std::vector<std::vector<double>> cols(variables.size());
-    if (feblock) {
-        std::size_t off = 0;
-        for (std::size_t k = 0; k < variables.size(); ++k) {
-            cols[k].assign(flat.begin() + off, flat.begin() + off + ndata[k]);
-            off += ndata[k];
-        }
-    } else {
-        std::size_t nv = variables.size();
-        for (std::size_t k = 0; k < nv; ++k)
-            cols[k].resize(num_nodes);
-        for (std::size_t r = 0; r < num_nodes; ++r)
-            for (std::size_t k = 0; k < nv; ++k)
-                cols[k][r] = flat[r * nv + k];
-    }
-
-    // Cells.
-    std::string mtype = tecplot_to_meshio(ztype);
-    if (mtype.empty())
-        throw ReadError("Tecplot: unsupported zone type " + ztype);
-    std::size_t nn;
-    if (mtype == "line")
-        nn = 2;
-    else if (mtype == "triangle")
-        nn = 3;
-    else if (mtype == "quad" || mtype == "tetra")
-        nn = 4;
-    else
-        nn = 8;
-    NDArray celldata(DType::Int64, {num_cells, nn});
-    std::int64_t* cp = celldata.As<std::int64_t>();
-    for (std::size_t c = 0; c < num_cells; ++c) {
-        auto t = tecplot_tokens(lines.at(li++));
-        for (std::size_t j = 0; j < nn; ++j)
-            cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
-    }
-
-    // Assemble.
-    Mesh mesh;
-    int xi = -1, yi = -1, zi = -1;
-    for (std::size_t k = 0; k < variables.size(); ++k) {
-        std::string v = tecplot_upper(variables[k]);
-        if (v == "X")
-            xi = (int)k;
-        else if (v == "Y")
-            yi = (int)k;
-        else if (v == "Z")
-            zi = (int)k;
-    }
-    std::size_t ndim = (zi >= 0) ? 3 : 2;
-    NDArray pts(DType::Float64, {num_nodes, ndim});
-    double* pp = pts.As<double>();
-    for (std::size_t r = 0; r < num_nodes; ++r) {
-        pp[r * ndim + 0] = cols[xi][r];
-        pp[r * ndim + 1] = cols[yi][r];
-        if (zi >= 0)
-            pp[r * ndim + 2] = cols[zi][r];
-    }
-    mesh.AssignPoints(std::move(pts));
-    for (std::size_t k = 0; k < variables.size(); ++k) {
-        if ((int)k == xi || (int)k == yi || (int)k == zi)
-            continue;
-        NDArray arr(DType::Float64, {cols[k].size()});
-        std::memcpy(arr.Data(), cols[k].data(), cols[k].size() * sizeof(double));
-        if (cell_centered[k]) {
-            std::vector<NDArray> blk;
-            blk.push_back(std::move(arr));
-            mesh.AddCellData(variables[k], std::move(blk));
-        } else {
-            mesh.AddPointData(variables[k], std::move(arr));
-        }
-    }
-    mesh.AddCellBlock(mtype, std::move(celldata));
-    return mesh;
+    std::map<std::size_t, TecplotDecodedZone> cache;
+    return tecplot_build_step_mesh(timeline[step], zones, variables, lines, cache);
 }
 
 Mesh read_tecplot(const std::string& rPath) {
     return read_tecplot(rPath, ReadOptions{});
 }
 
+// Writes one Tecplot ZONE per cell block (no single-type restriction). Zone
+// 1 carries the coordinates and every nodal field; later zones reuse them
+// through VARSHARELIST rather than duplicating the (unwelded, shared) point
+// array. Cell-centred variables are per-block: a zone that owns no values
+// for a given variable declares it PASSIVEVARLIST instead of writing zeros.
 void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
-    // Gather supported cell blocks; require a single unique type.
     std::vector<std::size_t> blocks;
-    std::set<std::string> types;
     for (std::size_t i = 0; i < rMesh.NumCellBlocks(); ++i) {
         const auto cb = rMesh.Cells(i);
-        if (!meshio_to_tecplot(cb.Type()).empty()) {
+        if (!meshio_to_tecplot(cb.Type()).empty())
             blocks.push_back(i);
-            types.insert(cb.Type());
-        }
+        else
+            log::warn("tecplot: skipping unsupported cell type '{}'", cb.Type());
     }
-    if (types.size() != 1)
-        throw WriteError("C++ Tecplot writer supports a single cell type");
-    std::string mtype = *types.begin();
-    std::string ztype = meshio_to_tecplot(mtype);
-    const std::vector<int>& order = tecplot_order(mtype);
+    if (blocks.empty())
+        throw WriteError("Tecplot writer found no supported cell blocks");
 
     auto os = detail::make_classic_ofstream(rPath);
     if (!os)
@@ -79158,29 +80852,23 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
 
     const std::size_t dim = rMesh.PointDim();
     const std::size_t num_nodes = rMesh.NumPoints();
-    std::size_t num_cells = 0;
-    for (std::size_t b : blocks)
-        num_cells += rMesh.Cells(b).NumCells();
-
-    // Variables + data columns.
     const NDArray& points = rMesh.Points();
+
+    // Shared (nodal) variables: X, Y, (Z), then every point-data variable.
     std::vector<std::string> variables = {"X", "Y"};
-    std::vector<std::vector<double>> data;
+    if (dim == 3)
+        variables.push_back("Z");
+    std::vector<std::vector<double>> shared_data;
     auto push_point_col = [&](std::size_t comp) {
         std::vector<double> col(num_nodes);
         for (std::size_t r = 0; r < num_nodes; ++r)
             col[r] = detail::read_double(points, r * dim + comp);
-        data.push_back(std::move(col));
+        shared_data.push_back(std::move(col));
     };
     push_point_col(0);
     push_point_col(1);
-    int varrange0 = 3, varrange1 = 0;
-    if (dim == 3) {
-        variables.push_back("Z");
+    if (dim == 3)
         push_point_col(2);
-        varrange0 += 1;
-    }
-
     for (const auto& k : rMesh.PointDataNames()) {
         std::string ku = tecplot_upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z")
@@ -79192,32 +80880,36 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             std::vector<double> col(num_nodes);
             for (std::size_t r = 0; r < num_nodes; ++r)
                 col[r] = detail::read_double(v, r * ncomp + c);
-            data.push_back(std::move(col));
-            varrange0 += 1;
+            shared_data.push_back(std::move(col));
         }
     }
-    bool have_cell_data = false;
-    varrange1 = varrange0 - 1;
+    const std::size_t num_shared = variables.size();
+
+    // Cell-centred variables (component-expanded); `mKey`/`mComp`/`mNumComp`
+    // let each zone look its own values up (or find them absent) later.
+    struct CellVarComp {
+        std::string mKey;
+        std::size_t mComp;
+        std::size_t mNumComp;
+    };
+    std::vector<CellVarComp> cell_vars;
     for (const auto& k : rMesh.CellDataNames()) {
         std::string ku = tecplot_upper(k);
         if (ku == "X" || ku == "Y" || ku == "Z")
             continue;
         if (rMesh.CellDataNumBlocks(k) == 0)
             continue;
-        // concatenate the (single-type) blocks
-        const NDArray& first = rMesh.CellData(k, 0);
-        std::size_t ncomp = first.Shape().size() >= 2 ? first.Shape()[1] : 1;
+        std::size_t ncomp = 1;
+        for (std::size_t b : blocks) {
+            if (b < rMesh.CellDataNumBlocks(k)) {
+                const NDArray& vv = rMesh.CellData(k, b);
+                ncomp = vv.Shape().size() >= 2 ? vv.Shape()[1] : 1;
+                break;
+            }
+        }
         for (std::size_t c = 0; c < ncomp; ++c) {
             variables.push_back(ncomp == 1 ? k : k + "_" + std::to_string(c));
-            std::vector<double> col;
-            for (std::size_t b : blocks) {
-                const NDArray& vv = rMesh.CellData(k, b);
-                for (std::size_t r = 0; r < vv.Shape()[0]; ++r)
-                    col.push_back(detail::read_double(vv, r * ncomp + c));
-            }
-            data.push_back(std::move(col));
-            varrange1 += 1;
-            have_cell_data = true;
+            cell_vars.push_back({k, c, ncomp});
         }
     }
 
@@ -79226,33 +80918,84 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
     for (std::size_t k = 0; k < variables.size(); ++k)
         os << (k ? ", " : "") << "\"" << variables[k] << "\"";
     os << "\n";
-    os << "ZONE NODES = " << num_nodes << ", ELEMENTS = " << num_cells << ",\n";
-    os << "DATAPACKING = BLOCK, ZONETYPE = " << ztype;
-    if (have_cell_data && varrange0 <= varrange1) {
-        os << ",\n";
-        std::string r = (varrange0 == varrange1)
-                            ? std::to_string(varrange0)
-                            : std::to_string(varrange0) + "-" + std::to_string(varrange1);
-        os << "VARLOCATION = ([" << r << "] = CELLCENTERED)\n";
-    } else {
-        os << "\n";
-    }
 
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     char buf[40];
-    for (const auto& col : data) {
+    auto write_column = [&](const std::vector<double>& col) {
         for (std::size_t i = 0; i < col.size(); ++i) {
             detail::snprintf_c(buf, sizeof(buf), "%.17g", col[i]);
             os << buf << ((i + 1) % 20 == 0 || i + 1 == col.size() ? '\n' : ' ');
         }
         if (col.empty())
             os << "\n";
-    }
+    };
 
-    for (std::size_t b : blocks) {
-        const auto cb = rMesh.Cells(b);
+    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+        const std::size_t block = blocks[bi];
+        const auto cb = rMesh.Cells(block);
+        const std::string ztype = meshio_to_tecplot(cb.Type());
+        const std::vector<int>& order = tecplot_order(cb.Type());
+        const std::size_t num_cells = cb.NumCells();
+
+        // Zone title: an exactly-matching Cell region's name, else block_<i>.
+        std::string title = "block_" + std::to_string(block);
+        for (std::size_t ri = 0; ri < rMesh.NumRegions(); ++ri) {
+            const meshioplusplus::Region& reg = rMesh.Region(ri);
+            if (reg.mKind != RegionKind::Cell || reg.NumEntries() == 0)
+                continue;
+            if (reg.NumEntries() !=
+                static_cast<std::size_t>(bases[block + 1] - bases[block]))
+                continue;
+            const std::int64_t* e = reg.Entries();
+            if (e[0] == bases[block] && e[reg.NumEntries() - 1] == bases[block + 1] - 1) {
+                title = reg.mName;
+                break;
+            }
+        }
+
+        // Which cell variables this zone owns vs. leaves passive.
+        std::vector<std::size_t> present, passive;
+        for (std::size_t j = 0; j < cell_vars.size(); ++j) {
+            if (block < rMesh.CellDataNumBlocks(cell_vars[j].mKey))
+                present.push_back(j);
+            else
+                passive.push_back(j);
+        }
+
+        os << "ZONE T = \"" << title << "\", NODES = " << num_nodes
+           << ", ELEMENTS = " << num_cells << ",\n";
+        os << "DATAPACKING = BLOCK, ZONETYPE = " << ztype;
+        if (bi > 0)
+            os << ",\nVARSHARELIST = ([1-" << num_shared << "] = 1)";
+        if (!present.empty()) {
+            os << ",\nVARLOCATION = ([";
+            for (std::size_t i = 0; i < present.size(); ++i)
+                os << (i ? "," : "") << (num_shared + present[i] + 1);
+            os << "] = CELLCENTERED)";
+        }
+        if (!passive.empty()) {
+            os << ",\nPASSIVEVARLIST = ([";
+            for (std::size_t i = 0; i < passive.size(); ++i)
+                os << (i ? "," : "") << (num_shared + passive[i] + 1);
+            os << "])";
+        }
+        os << "\n";
+
+        if (bi == 0)
+            for (const auto& col : shared_data)
+                write_column(col);
+        for (std::size_t j : present) {
+            const CellVarComp& cv = cell_vars[j];
+            const NDArray& vv = rMesh.CellData(cv.mKey, block);
+            std::vector<double> col(vv.Shape()[0]);
+            for (std::size_t r = 0; r < vv.Shape()[0]; ++r)
+                col[r] = detail::read_double(vv, r * cv.mNumComp + cv.mComp);
+            write_column(col);
+        }
+
         const NDArray& conn = cb.Conn();
-        std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+        const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
+        for (std::size_t r = 0; r < num_cells; ++r) {
             for (std::size_t j = 0; j < order.size(); ++j) {
                 std::size_t src = static_cast<std::size_t>(order[j]);
                 if (src >= k)
@@ -82799,7 +84542,6 @@ Mesh read_vtk(const std::string& rPath) {
 #include <map>
 #include <optional>
 #include <set>
-#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -84226,74 +85968,16 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
     vtkhdf_write_data_groups(Grp, rMesh, cells, bases, nullptr, Gzip);
 }
 
-struct VtkhdfPiece {
-    std::string mName;
-    std::vector<std::size_t> mCells;  ///< sorted global cell indices
-};
+// VTKHDF's composite carving is now the shared detail::carve_by_region (roadmap
+// §1.1, adopted so EnSight Gold's multi-part writer does not reimplement the same
+// region-vs-block fallback). `detail::MeshPart` is VTKHDF's own former `VtkhdfPiece`
+// under a shared name; `StrictNames=true, RejectSlash=true` reproduce this format's
+// original behaviour exactly -- a name collision or a `/` in a region name is a
+// `WriteError`, never a silent rename of an Assembly link.
+using VtkhdfPiece = detail::MeshPart;
 
 std::vector<VtkhdfPiece> vtkhdf_carve(const Mesh& rMesh) {
-    const std::vector<std::size_t> bases = vtkhdf_block_bases(rMesh);
-    const std::size_t total = bases.back();
-    if (total == 0)
-        throw WriteError(
-            "meshio++: vtkhdf: a composite dataset needs at least one cell to carve into blocks");
-    std::vector<const meshioplusplus::Region*> regions;
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        if (rMesh.Region(i).mKind == RegionKind::Cell)
-            regions.push_back(&rMesh.Region(i));
-    // Blocks are written in (tag, name) order -- see the Python twin.
-    std::stable_sort(regions.begin(), regions.end(),
-                     [](const meshioplusplus::Region* a, const meshioplusplus::Region* b) {
-                         return std::tie(a->mTag, a->mName) < std::tie(b->mTag, b->mName);
-                     });
-    if (!regions.empty()) {
-        std::vector<char> hit(total, 0);
-        std::size_t covered = 0;
-        bool ok = true;
-        for (const auto* r : regions)
-            for (std::size_t i = 0; i < r->NumEntries(); ++i) {
-                const I64 g = r->Entries()[i];
-                if (g < 0 || static_cast<std::size_t>(g) >= total ||
-                    hit[static_cast<std::size_t>(g)]) {
-                    ok = false;
-                    continue;
-                }
-                hit[static_cast<std::size_t>(g)] = 1;
-                ++covered;
-            }
-        if (ok && covered == total) {
-            std::vector<VtkhdfPiece> pieces;
-            std::set<std::string> names;
-            for (std::size_t i = 0; i < regions.size(); ++i) {
-                VtkhdfPiece p;
-                p.mName =
-                    regions[i]->mName.empty() ? "block_" + std::to_string(i) : regions[i]->mName;
-                if (p.mName.find('/') != std::string::npos || !names.insert(p.mName).second)
-                    throw WriteError(
-                        "meshio++: vtkhdf: cell region names must be unique and free of "
-                        "'/' to name composite blocks");
-                for (std::size_t e = 0; e < regions[i]->NumEntries(); ++e)
-                    p.mCells.push_back(static_cast<std::size_t>(regions[i]->Entries()[e]));
-                std::sort(p.mCells.begin(), p.mCells.end());
-                pieces.push_back(std::move(p));
-            }
-            return pieces;
-        }
-        log::warn(
-            "meshio++: vtkhdf: cell regions overlap or do not cover every cell; writing one "
-            "block per cell block instead.");
-    }
-    std::vector<VtkhdfPiece> pieces;
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        if (bases[bi + 1] == bases[bi])
-            continue;
-        VtkhdfPiece p;
-        p.mName = "block_" + std::to_string(bi);
-        for (std::size_t g = bases[bi]; g < bases[bi + 1]; ++g)
-            p.mCells.push_back(g);
-        pieces.push_back(std::move(p));
-    }
-    return pieces;
+    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/true);
 }
 
 std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType Type, bool HasPoly) {
@@ -100529,6 +102213,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"DataCondition",
          {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
           "Suffix"}},
+        {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
         {"ToCell", {"Names"}},
         {"ToPoint", {"Names", "Weight"}},
     };
@@ -101341,6 +103026,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.nan_replacement = pipe_number(rStep, "NanReplacement", 0.0);
         opts.suffix = pipe_text(rStep, "Suffix", "");
         Mesh out = data_condition(mesh, opts);
+        pipe_push_step(rReport, rStep);
+        return out;
+    }
+    if (op == "TensorInvariants") {
+        TensorInvariantsOptions opts;
+        opts.location = data_location_from_name(pipe_text(rStep, "Location", "point"));
+        opts.names = pipe_svec(rStep, "Names");
+        const std::string outputs_str = pipe_text(rStep, "Outputs", "");
+        opts.outputs = outputs_str.empty() ? TensorInvariant::All : tensor_invariant_from_name(outputs_str);
+        opts.prefix = pipe_text(rStep, "Prefix", "");
+        opts.suffix = pipe_text(rStep, "Suffix", "");
+        opts.overwrite = pipe_flag(rStep, "Overwrite", true);
+        Mesh out = tensor_invariants(mesh, opts);
         pipe_push_step(rReport, rStep);
         return out;
     }
@@ -112226,6 +113924,249 @@ void gather_cell_data_onto_surface(const Mesh& rSource, Mesh& rSurface) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/surface.cpp =====
+// ===== begin src/cpp/src/operations/tensor_invariants.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Reads row @p r (0-based) of a 6- or 9-component array into the
+/// `xx yy zz xy yz zx` order `detail::sym3_*` expects, symmetrizing the
+/// off-diagonal terms for a 9-component input. Returns false (sym left
+/// untouched) when any source component is non-finite.
+bool tinv_read_symmetric(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pSym) {
+    double t[9];
+    for (std::size_t k = 0; k < Ncomp; ++k)
+        t[k] = detail::read_double(rArray, r * Ncomp + k);
+    for (std::size_t k = 0; k < Ncomp; ++k)
+        if (!std::isfinite(t[k]))
+            return false;
+    if (Ncomp == 6) {
+        for (int k = 0; k < 6; ++k)
+            pSym[k] = t[k];
+        return true;
+    }
+    // 9-component row-major: xx xy xz yx yy yz zx zy zz.
+    pSym[0] = t[0];
+    pSym[1] = t[4];
+    pSym[2] = t[8];
+    pSym[3] = 0.5 * (t[1] + t[3]);
+    pSym[4] = 0.5 * (t[5] + t[7]);
+    pSym[5] = 0.5 * (t[2] + t[6]);
+    return true;
+}
+
+/// The (unsymmetrized) hydrostatic mean of the tensor's own diagonal.
+double tinv_hydrostatic(const NDArray& rArray, std::size_t Ncomp, std::size_t r) {
+    const double xx = detail::read_double(rArray, r * Ncomp + 0);
+    const double yy = detail::read_double(rArray, r * Ncomp + (Ncomp == 6 ? 1 : 4));
+    const double zz = detail::read_double(rArray, r * Ncomp + (Ncomp == 6 ? 2 : 8));
+    if (!std::isfinite(xx) || !std::isfinite(yy) || !std::isfinite(zz))
+        return std::numeric_limits<double>::quiet_NaN();
+    return (xx + yy + zz) / 3.0;
+}
+
+/// Number of rows of a Ncomp-wide array.
+std::size_t tinv_nrows(const NDArray& rArray, std::size_t Ncomp) {
+    return Ncomp > 0 ? rArray.Size() / Ncomp : 0;
+}
+
+NDArray tinv_mises(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        out[r] = tinv_read_symmetric(rSrc, Ncomp, r, sym)
+                     ? detail::sym3_mises(sym)
+                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_principal(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{3}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        if (tinv_read_symmetric(rSrc, Ncomp, r, sym))
+            detail::sym3_principal(sym, out + r * 3);
+        else
+            for (int k = 0; k < 3; ++k)
+                out[r * 3 + k] = std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_hydrostatic_array(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) { out[r] = tinv_hydrostatic(rSrc, Ncomp, r); });
+    return dst;
+}
+
+NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst = NDArray::Uninit(DType::Float64, rSrc.Shape());
+    double* out = dst.As<double>();
+    const std::size_t yy_idx = Ncomp == 6 ? 1 : 4;
+    const std::size_t zz_idx = Ncomp == 6 ? 2 : 8;
+    parallel_for(nrows, [&](std::size_t r) {
+        const double h = tinv_hydrostatic(rSrc, Ncomp, r);
+        for (std::size_t k = 0; k < Ncomp; ++k) {
+            const double v = detail::read_double(rSrc, r * Ncomp + k);
+            const bool diag = (k == 0 || k == yy_idx || k == zz_idx);
+            out[r * Ncomp + k] = (diag && std::isfinite(v) && std::isfinite(h)) ? v - h : v;
+        }
+    });
+    return dst;
+}
+
+/// Whether an array's trailing component count is one `tensor_invariants` can
+/// process.
+bool tinv_is_tensor_shaped(const NDArray& rArray) {
+    const std::size_t nc = data_num_components(rArray);
+    return nc == 6 || nc == 9;
+}
+
+}  // namespace
+
+TensorInvariant tensor_invariant_from_name(const std::string& rName) {
+    unsigned mask = 0;
+    std::size_t start = 0;
+    bool any = false;
+    while (start <= rName.size()) {
+        const std::size_t comma = rName.find(',', start);
+        const std::string tok = rName.substr(start, comma == std::string::npos ? std::string::npos
+                                                                                : comma - start);
+        if (tok == "mises")
+            mask |= static_cast<unsigned>(TensorInvariant::Mises);
+        else if (tok == "principal")
+            mask |= static_cast<unsigned>(TensorInvariant::Principal);
+        else if (tok == "hydrostatic")
+            mask |= static_cast<unsigned>(TensorInvariant::Hydrostatic);
+        else if (tok == "deviatoric")
+            mask |= static_cast<unsigned>(TensorInvariant::Deviatoric);
+        else if (tok == "all")
+            mask |= static_cast<unsigned>(TensorInvariant::All);
+        else
+            throw std::invalid_argument(
+                "meshio++: unknown tensor invariant '" + tok +
+                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric' or 'all')");
+        any = true;
+        if (comma == std::string::npos)
+            break;
+        start = comma + 1;
+    }
+    if (!any)
+        throw std::invalid_argument("meshio++: tensor_invariant_from_name: empty list");
+    return static_cast<TensorInvariant>(mask);
+}
+
+Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) {
+    if (rOpts.location == DataLocation::Field)
+        throw std::invalid_argument(
+            "meshio++: tensor_invariants: field_data has no per-row tensor to reduce");
+
+    std::vector<std::string> names = rOpts.names;
+    if (names.empty()) {
+        for (const std::string& n : data_names(rMesh, rOpts.location)) {
+            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
+                                                                        : rMesh.CellData(n, 0);
+            if (rOpts.location == DataLocation::Cell && rMesh.CellDataNumBlocks(n) == 0)
+                continue;
+            if (tinv_is_tensor_shaped(src))
+                names.push_back(n);
+        }
+    } else {
+        for (const std::string& n : names) {
+            if (!data_has(rMesh, rOpts.location, n))
+                throw std::invalid_argument(data_unknown_key_message(rMesh, rOpts.location, n));
+            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
+                                                                        : rMesh.CellData(n, 0);
+            if (!tinv_is_tensor_shaped(src))
+                throw std::invalid_argument(
+                    "meshio++: tensor_invariants: '" + n + "' has " +
+                    std::to_string(data_num_components(src)) +
+                    " component(s); expected 6 (symmetric) or 9 (general 3x3)");
+        }
+    }
+
+    // Only ever called for the Point branch below (Field is rejected up front,
+    // Cell has its own per-block helper), so it only needs AddPointData.
+    auto add_point = [&](Mesh& rOut, const std::string& rTarget, NDArray Value) {
+        if (!rOpts.overwrite && data_has(rOut, DataLocation::Point, rTarget))
+            throw std::invalid_argument("meshio++: tensor_invariants: '" + rTarget +
+                                        "' already exists (overwrite=false)");
+        rOut.AddPointData(rTarget, std::move(Value));
+    };
+
+    Mesh out = detail::clone_mesh(rMesh);
+
+    for (const std::string& name : names) {
+        const std::string base = rOpts.prefix + name;
+
+        if (rOpts.location == DataLocation::Cell) {
+            const std::size_t nblocks = rMesh.NumCellBlocks();
+            if (rMesh.CellDataNumBlocks(name) != nblocks)
+                throw std::invalid_argument(
+                    "meshio++: tensor_invariants: cell_data '" + name + "' has " +
+                    std::to_string(rMesh.CellDataNumBlocks(name)) + " block(s) but the mesh has " +
+                    std::to_string(nblocks) + " cell block(s)");
+            if (nblocks == 0)
+                continue;
+            const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
+
+            auto add_cell = [&](const std::string& rSuffix,
+                                NDArray (*pFn)(const NDArray&, std::size_t)) {
+                const std::string target = base + rSuffix + rOpts.suffix;
+                if (!rOpts.overwrite && data_has(out, DataLocation::Cell, target))
+                    throw std::invalid_argument("meshio++: tensor_invariants: '" + target +
+                                                "' already exists (overwrite=false)");
+                std::vector<NDArray> blocks;
+                blocks.reserve(nblocks);
+                for (std::size_t b = 0; b < nblocks; ++b)
+                    blocks.push_back(pFn(rMesh.CellData(name, b), ncomp));
+                out.AddCellData(target, std::move(blocks));
+            };
+            if ((rOpts.outputs & TensorInvariant::Mises) != 0)
+                add_cell("_mises", tinv_mises);
+            if ((rOpts.outputs & TensorInvariant::Principal) != 0)
+                add_cell("_principal", tinv_principal);
+            if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
+                add_cell("_hydrostatic", tinv_hydrostatic_array);
+            if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
+                add_cell("_deviatoric", tinv_deviatoric);
+            continue;
+        }
+
+        const NDArray& src = rMesh.PointData(name);
+        const std::size_t ncomp = data_num_components(src);
+        if ((rOpts.outputs & TensorInvariant::Mises) != 0)
+            add_point(out, base + "_mises" + rOpts.suffix, tinv_mises(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Principal) != 0)
+            add_point(out, base + "_principal" + rOpts.suffix, tinv_principal(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
+            add_point(out, base + "_hydrostatic" + rOpts.suffix, tinv_hydrostatic_array(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
+            add_point(out, base + "_deviatoric" + rOpts.suffix, tinv_deviatoric(src, ncomp));
+    }
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/tensor_invariants.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>
@@ -114107,9 +116048,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "pcd" ||
-           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
-           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" ||
+           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
+           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
+           rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -114188,6 +116130,14 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_flac3d(rPath, rMesh, r_ff, binary);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
+    } else if (fmt == "openfoam") {
+        // Label/scalar width is Python/C++-only (OpenFoamWriteOptions), not
+        // reachable from the generic ASCII/binary switch every other format
+        // shares here -- see doc/formats/openfoam.md.
+        OpenFoamInfo info;
+        OpenFoamWriteOptions wopts;
+        wopts.mBinary = binary;
+        write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
         write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
     } else if (fmt == "ply") {

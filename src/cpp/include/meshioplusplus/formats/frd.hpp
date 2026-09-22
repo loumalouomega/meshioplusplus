@@ -20,11 +20,15 @@
  * @file frd.hpp
  * @brief CalculiX result file (`.frd`) C++ reader.
  *
- * The ASCII file `ccx` writes and `cgx` reads: fixed-column records keyed by their
- * first columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per
- * result per increment, `9999`). Values are `E12.5` with no separator, so every field
- * is sliced by column. The short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
- * layouts are read; the binary layout (flag 2) is refused.
+ * The file `ccx` writes and `cgx` reads: fixed-column records keyed by their first
+ * columns (`1C`/`1U` header, `2C` nodes, `3C` elements, one `100C` block per result
+ * per increment, `9999`). ASCII values are `E12.5` with no separator, so every field
+ * is sliced by column; the short (`I5` ids, flag 0) and long (`I10` ids, flag 1)
+ * layouts are both read. The binary layout ccx writes for `*NODE OUTPUT`/`*ELEMENT
+ * OUTPUT` (mixed ASCII headers and raw little-endian records, `int32` ids, `float32`
+ * or `float64` reals per the block's own flag: 2 or 3) is also read, host byte order
+ * assumed little-endian like every other binary format here. See doc/formats/frd.md
+ * for the binary record layout.
  *
  *  - The mesh is the one `ccx` wrote, not the `.inp` mesh: shells and beams are
  *    expanded into solids. The twelve cgx element types map to `hexahedron`, `wedge`,
@@ -69,7 +73,7 @@ struct FrdReadOptions {
  * @param rOpts `mTimeStep` selects the increment (`ResolveTimeStep`); `mPointsOnly` and
  *        `mDataArrays` narrow the result blocks that are parsed
  * @return the mesh, with the selected increment's results as point data
- * @throws ReadError if the file can't be read, is binary, a field is malformed, an
+ * @throws ReadError if the file can't be read, a field is malformed, an
  *         element or a result refers to an undefined node, or the step is out of range
  */
 MESHIOPLUSPLUS_API Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts = {});

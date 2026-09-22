@@ -228,6 +228,18 @@ def test_convert_ascii_variant(mesh_file, tmp_path):
         assert b"ascii" in f.read()
 
 
+def test_convert_openfoam_binary_variant(mesh_file, tmp_path):
+    # roadmap §1.1: openfoam joined the ascii/binary variant table. The
+    # header is text but the data past it is raw bytes, so this reads bytes
+    # rather than text (a binary points file is not valid UTF-8).
+    out = _dump(
+        _tools.tool_convert(mesh_file, str(tmp_path / "case.foam"), mode="binary")
+    )
+    points = (tmp_path / "constant" / "polyMesh" / "points").read_bytes()
+    assert b"format      binary;" in points
+    assert out["output_format"] == "openfoam"
+
+
 def test_convert_variant_errors(mesh_file, tmp_path):
     with pytest.raises(ValueError, match="has no ascii variant"):
         _tools.tool_convert(mesh_file, str(tmp_path / "a.obj"), mode="ascii")
@@ -649,6 +661,26 @@ def test_data_condition(mesh_file, tmp_path):
     )
     reread = meshioplusplus.read(out_path)
     assert np.isclose(reread.point_data["t"].max(), 10.0)
+
+
+def test_tensor_invariants(tmp_path):
+    mesh = _mixed_mesh()
+    mesh.point_data["stress"] = np.tile([1.0, 2.0, 3.0, 0.5, 0.6, 0.7], (5, 1))
+    in_path = str(tmp_path / "in.vtu")
+    meshioplusplus.write(in_path, mesh)
+    out_path = str(tmp_path / "invariants.vtu")
+    _dump(
+        _tools.tool_tensor_invariants(
+            output_path=out_path,
+            input_path=in_path,
+            arrays=["stress"],
+            outputs=["mises", "hydrostatic"],
+        )
+    )
+    reread = meshioplusplus.read(out_path)
+    assert "stress_mises" in reread.point_data
+    assert "stress_hydrostatic" in reread.point_data
+    assert "stress_principal" not in reread.point_data
 
 
 # --------------------------------------------------------------------------- #

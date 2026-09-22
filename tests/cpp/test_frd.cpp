@@ -148,6 +148,91 @@ private:
     }
 };
 
+/// Appends the raw little-endian bytes of @p Value to @p rOut.
+template <class T>
+void append_raw(std::string& rOut, T Value) {
+    rOut.append(reinterpret_cast<const char*>(&Value), sizeof(Value));
+}
+
+/// Builds the binary `.frd` layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) by hand,
+/// mirroring FrdText's column layout exactly (see doc/formats/frd.md and the real
+/// ccx 2.23 output this was verified against). No test-data path: everything is
+/// built here, like FrdText.
+class FrdBinaryText {
+public:
+    FrdBinaryText& Nodes(const std::vector<std::array<double, 3>>& rNodes,
+                         std::size_t RealBytes = 8) {
+        mText += "    2C" + ipad(static_cast<std::int64_t>(rNodes.size()), 30) +
+                 std::string(37, ' ') + (RealBytes == 8 ? "3" : "2") + "\n";
+        for (std::size_t i = 0; i < rNodes.size(); ++i) {
+            append_raw(mText, static_cast<std::int32_t>(i + 1));
+            for (int k = 0; k < 3; ++k)
+                AppendReal(rNodes[i][static_cast<std::size_t>(k)], RealBytes);
+        }
+        return *this;
+    }
+
+    FrdBinaryText& Elements(const std::vector<std::pair<int, std::vector<std::int64_t>>>& rElements) {
+        mText += "    3C" + ipad(static_cast<std::int64_t>(rElements.size()), 30) +
+                 std::string(37, ' ') + "2\n";
+        std::int32_t eid = 1;
+        for (const auto& [type, nodes] : rElements) {
+            append_raw(mText, eid++);
+            append_raw(mText, static_cast<std::int32_t>(type));
+            append_raw(mText, static_cast<std::int32_t>(0));  // group
+            append_raw(mText, static_cast<std::int32_t>(1));  // material
+            for (std::int64_t n : nodes)
+                append_raw(mText, static_cast<std::int32_t>(n));
+        }
+        return *this;
+    }
+
+    /// One `100C` header and result block, values in a single `-4` block (no `-2`
+    /// continuation needed: the binary layout has no line wrapping at all).
+    FrdBinaryText& Result(double value, int analysis, int stepNumber, const std::string& rName,
+                          const std::vector<std::string>& rComponents,
+                          const std::vector<std::pair<std::int64_t, std::vector<double>>>& rRows,
+                          std::size_t RealBytes = 4, bool withCalculated = false) {
+        mText += "    1PSTEP" + std::string(25, ' ') + "1           1           1          \n";
+        char head[64];
+        std::snprintf(head, sizeof(head), "%12.9f", value);
+        mText += "  100CL " + ipad(100 + stepNumber, 4) + head +
+                 ipad(static_cast<std::int64_t>(rRows.size()), 12) + std::string(20, ' ') +
+                 ipad(analysis, 2) + ipad(stepNumber, 5) + std::string(10, ' ') +
+                 ipad(RealBytes == 8 ? 3 : 2, 2) + "\n";
+        const std::size_t declared = rComponents.size() + (withCalculated ? 1 : 0);
+        mText += " -4  " + Left(rName) + ipad(static_cast<std::int64_t>(declared), 5) + ipad(1, 5) +
+                 "\n";
+        for (std::size_t c = 0; c < rComponents.size(); ++c)
+            mText += " -5  " + Left(rComponents[c]) + ipad(1, 5) + ipad(1, 5) +
+                     ipad(static_cast<std::int64_t>(c) + 1, 5) + ipad(0, 5) + ipad(0, 5) + "\n";
+        if (withCalculated)
+            mText += " -5  " + Left("ALL") + ipad(1, 5) + ipad(2, 5) + ipad(0, 5) + ipad(0, 5) +
+                     ipad(1, 5) + "ALL\n";
+        for (const auto& [node, values] : rRows) {
+            append_raw(mText, static_cast<std::int32_t>(node));
+            for (double v : values)
+                AppendReal(v, RealBytes);
+        }
+        return *this;
+    }
+
+    std::string Finish() const { return mText + " 9999\n"; }
+
+private:
+    std::string mText;
+
+    void AppendReal(double Value, std::size_t RealBytes) {
+        if (RealBytes == 8)
+            append_raw(mText, Value);
+        else
+            append_raw(mText, static_cast<float>(Value));
+    }
+    static std::string Left(const std::string& rText) {
+        return rText + std::string(rText.size() < 8 ? 8 - rText.size() : 0, ' ');
+    }
+};
+
 std::string write_frd(const std::string& rText) {
     const std::string path = mt::temp_path(".frd");
     std::ofstream out(path, std::ios::binary);
@@ -264,6 +349,84 @@ TEST(FrdRead, ShortAndLongFormatsAgree) {
         EXPECT_EQ(at(meshes[0].PointData("DISP"), k), at(meshes[1].PointData("DISP"), k));
     EXPECT_EQ(meshes[0].PointData("DISP").Shape(), (std::vector<std::size_t>{8, 3}));
     EXPECT_DOUBLE_EQ(at(meshes[0].PointData("DISP"), 3), -1.5e-7);
+}
+
+TEST(FrdRead, BinaryLayoutMatchesTheAsciiRenditionOfTheSameRun) {
+    const V hex = iota(8);
+    const std::vector<std::pair<std::int64_t, std::vector<double>>> disp = {
+        {1, {0.1, -0.2, 0.3}}, {2, {-1.5e-7, 2.0, -3.0}},
+        {3, {0, 0, 0}},        {4, {1, 2, 3}},
+        {5, {4, 5, 6}},        {6, {7, 8, 9}},
+        {7, {1, 1, 1}},        {8, {-1, -1, -1}}};
+    const std::vector<std::pair<std::int64_t, std::vector<double>>> stress = {
+        {1, {1, 2, 3, 4, 5, 6}}, {2, {6, 5, 4, 3, 2, 1}}, {3, {0, 0, 0, 0, 0, 0}},
+        {4, {1, 1, 1, 1, 1, 1}}, {5, {2, 3, 4, 5, 6, 7}}, {6, {-1, -2, -3, -4, -5, -6}},
+        {7, {10, 20, 30, 40, 50, 60}}, {8, {-10, -20, -30, -40, -50, -60}}};
+
+    Temp ascii_t(FrdText()
+                     .Nodes(numbered_nodes(8))
+                     .Elements({{1, hex}})
+                     .Result(0.5, 0, 1, "DISP", {"D1", "D2", "D3"}, disp, true)
+                     .Result(0.5, 0, 1, "STRESS", {"SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"},
+                             stress)
+                     .Finish());
+    Temp bin_t(FrdBinaryText()
+                   .Nodes(numbered_nodes(8), /*RealBytes=*/8)
+                   .Elements({{1, hex}})
+                   .Result(0.5, 0, 1, "DISP", {"D1", "D2", "D3"}, disp, /*RealBytes=*/4, true)
+                   .Result(0.5, 0, 1, "STRESS", {"SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"}, stress,
+                           /*RealBytes=*/4)
+                   .Finish());
+
+    const Mesh ascii_mesh = meshioplusplus::read_frd(ascii_t.mPath);
+    const Mesh bin_mesh = meshioplusplus::read_frd(bin_t.mPath);
+    mt::expect_same_geometry(ascii_mesh, bin_mesh);
+    for (const char* name : {"DISP", "STRESS"}) {
+        const auto& a = ascii_mesh.PointData(name);
+        const auto& b = bin_mesh.PointData(name);
+        ASSERT_EQ(a.Shape(), b.Shape());
+        for (std::size_t k = 0; k < a.Size(); ++k)
+            EXPECT_NEAR(at(a, k), at(b, k), 1e-4) << name << " index " << k;
+    }
+    // ASCII derives group/material from its own -1 header line, binary from its own
+    // packed header quad -- confirm both paths agree.
+    EXPECT_EQ(meshioplusplus::detail::read_int(ascii_mesh.CellData("frd:material", 0), 0),
+             meshioplusplus::detail::read_int(bin_mesh.CellData("frd:material", 0), 0));
+}
+
+TEST(FrdRead, BinaryDerivedInvariantsMatchAscii) {
+    const V hex = iota(8);
+    const std::vector<std::pair<std::int64_t, std::vector<double>>> stress = {
+        {1, {1, 2, 3, 0.5, 0.6, 0.7}}, {2, {6, 5, 4, 0.1, 0.2, 0.3}},
+        {3, {0, 0, 0, 0, 0, 0}},       {4, {1, 1, 1, 1, 1, 1}},
+        {5, {2, 3, 4, 5, 6, 7}},       {6, {-1, -2, -3, -4, -5, -6}},
+        {7, {10, 20, 30, 40, 50, 60}}, {8, {-10, -20, -30, -40, -50, -60}}};
+    Temp t(FrdBinaryText()
+               .Nodes(numbered_nodes(8), 8)
+               .Elements({{1, hex}})
+               .Result(0.5, 0, 1, "STRESS", {"SXX", "SYY", "SZZ", "SXY", "SYZ", "SZX"}, stress, 4)
+               .Finish());
+    FrdReadOptions opts;
+    opts.mDerived = true;
+    const Mesh mesh = meshioplusplus::read_frd(t.mPath, ReadOptions{}, opts);
+    ASSERT_TRUE(mesh.HasPointData("STRESS_mises"));
+    ASSERT_TRUE(mesh.HasPointData("STRESS_principal"));
+    // Node 1: xx=1 yy=2 zz=3 xy=0.5 yz=0.6 zx=0.7.
+    const double expect =
+        std::sqrt(0.5 * ((1 - 2) * (1 - 2) + (2 - 3) * (2 - 3) + (3 - 1) * (3 - 1) +
+                         6.0 * (0.5 * 0.5 + 0.6 * 0.6 + 0.7 * 0.7)));
+    EXPECT_NEAR(at(mesh.PointData("STRESS_mises"), 0), expect, 1e-4);
+}
+
+TEST(FrdRead, BinaryClaimOnAsciiTextFailsCleanly) {
+    // A hand-edited ASCII file with the 2C flag flipped to a binary one: the ASCII
+    // bytes get misread as binary records and must fail on a structural check
+    // (an invalid element type or an out-of-bounds record), never crash.
+    std::string text = FrdText().Nodes(numbered_nodes(4)).Elements({{3, iota(4)}}).Finish();
+    const std::size_t at2c = text.find("    2C");
+    text[text.find('\n', at2c) - 1] = '2';
+    Temp t(text);
+    EXPECT_THROW(meshioplusplus::read_frd(t.mPath), ReadError);
 }
 
 TEST(FrdRead, GluedNegativeValuesAreSlicedByColumn) {
@@ -410,14 +573,8 @@ TEST(FrdRead, GroupAndMaterialAreCellData) {
 
 TEST(FrdRead, ErrorsAreReadErrors) {
     const std::string good = FrdText().Nodes(numbered_nodes(4)).Elements({{3, iota(4)}}).Finish();
-    // binary flag on the node header
-    {
-        std::string text = good;
-        const std::size_t at = text.find("    2C");
-        text[text.find('\n', at) - 1] = '2';
-        Temp t(text);
-        EXPECT_THROW(meshioplusplus::read_frd(t.mPath), ReadError);
-    }
+    // A binary flag on an otherwise-ASCII node header is covered by its own
+    // BinaryClaimOnAsciiTextFailsCleanly test.
     {
         Temp t("hello\nworld\n");
         EXPECT_THROW(meshioplusplus::read_frd(t.mPath), ReadError);

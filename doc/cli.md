@@ -1009,7 +1009,7 @@ meshioplusplus partition domain.msh domain.pvtu -n 4 --ghost-layers 1   # one in
 
 ## meshioplusplus data
 
-A nested group of ten verbs operating on a mesh's `point_data` / `cell_data` / `field_data` arrays (see [data operations](/data_operations)). **The geometry is never modified** by any of them — points, connectivity, block order and block types come through bit-identical.
+A nested group of eleven verbs operating on a mesh's `point_data` / `cell_data` / `field_data` arrays (see [data operations](/data_operations)). **The geometry is never modified** by any of them — points, connectivity, block order and block types come through bit-identical.
 
 ```
 meshioplusplus data <subcommand> [options]
@@ -1026,6 +1026,7 @@ meshioplusplus data <subcommand> [options]
 | `calc` | Derive an array from an expression (see [expressions](/data_calc)) |
 | `clamp` | Clamp values into a range (see [conditioning](/data_condition)) |
 | `normalize` | Rescale values to a target range |
+| `invariants` | von Mises / principal / hydrostatic / deviatoric of a tensor array (see [tensor invariants](/tensor_invariants)) |
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
@@ -1109,6 +1110,16 @@ The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric lite
 | `--nan` | `ignore` (default), `replace` or `fail` |
 | `--nan-value` | Replacement used with `--nan replace` |
 | `--suffix` | Store as `NAME+SUFFIX` instead of replacing in place |
+
+### data invariants
+
+| Option | Description |
+|--------|-------------|
+| `--point`, `--cell` | Comma-separated names (default: every 6- or 9-component array at that location); exactly one of the two is required |
+| `--outputs` | Comma-separated `mises`/`principal`/`hydrostatic`/`deviatoric` (default: all four) |
+| `--prefix` | Prepended to every output array's name |
+| `--suffix` | Appended after the invariant's own name segment |
+| `--no-overwrite` | Fail instead of silently overwriting an existing array of the target name |
 
 ### data gradient
 

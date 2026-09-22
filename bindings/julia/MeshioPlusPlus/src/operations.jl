@@ -1369,6 +1369,37 @@ function data_condition(m::Mesh, location::Symbol, names=String[]; mode::Symbol=
 end
 
 """
+    tensor_invariants(mesh, location, names=String[]; outputs=Symbol[], prefix="",
+                      suffix="", overwrite=true) -> Mesh
+
+von Mises, principal, hydrostatic and deviatoric fields of a symmetric
+(6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component, row-major)
+tensor array. `mises`/`principal` use the symmetric part of a 9-component
+input. An empty `names` processes every 6- or 9-component array at `location`
+(`:field` is rejected). `outputs` is any of `:mises`, `:principal`,
+`:hydrostatic`, `:deviatoric`; an empty vector means all four. Results are
+stored as `prefix * name * "_" * output * suffix`. See
+`doc/tensor_invariants.md`.
+"""
+function tensor_invariants(m::Mesh, location::Symbol, names=String[]; outputs=Symbol[],
+                           prefix::AbstractString="", suffix::AbstractString="",
+                           overwrite::Bool=true)
+    flags = Dict(:mises => 1, :principal => 2, :hydrostatic => 4, :deviatoric => 8)
+    mask = isempty(outputs) ? 15 :
+           reduce(|, (get(flags, o) do
+                          throw(ArgumentError("outputs entries must be :mises, :principal, " *
+                                              ":hydrostatic or :deviatoric, got :$o"))
+                      end for o in outputs))
+    h = _handle(m); loc = _location(location)
+    ptr = _with_names(names) do p, c
+        ccall(_sym(:mio_tensor_invariants), Ptr{Cvoid},
+              (Ptr{Cvoid}, Cint, Ptr{Cstring}, Int64, Cint, Cstring, Cstring, Cint),
+              h, loc, p, c, Cint(mask), prefix, suffix, overwrite ? Cint(1) : Cint(0))
+    end
+    Mesh(_check_ptr(ptr))
+end
+
+"""
     data_info(mesh) -> Vector{NamedTuple}
 
 Summarize every data array the mesh carries: location, name, dtype, shape,

@@ -642,7 +642,7 @@ report[0]["domain"]["total_per_component"]   # sum(value * |measure|) -- total m
 report[0]["regions"]                         # the same, independently, per named Cell region
 ```
 
-#### Data operations (rename / average / calc / condition / summarize)
+#### Data operations (rename / average / calc / condition / invariants / summarize)
 
 A second bundle operates on the **data arrays** a mesh carries (`point_data` / `cell_data` / `field_data`) rather than on its geometry, which none of them ever modifies:
 
@@ -650,6 +650,7 @@ A second bundle operates on the **data arrays** a mesh carries (`point_data` / `
 - **`meshioplusplus.point_data_to_cell_data` / `cell_data_to_point_data`** — move data between locations by averaging, optionally weighted by cell area/volume. See `doc/data_average.md`.
 - **`meshioplusplus.data_calc`** — derive a new array from an elementwise expression (`+ - * /`, parentheses, `abs`/`sqrt`/`min`/`max`/`norm`) evaluated by a hand-written parser — no external parser library, no arbitrary-code path. See `doc/data_calc.md`.
 - **`meshioplusplus.data_condition`** — clamp, normalize to a target range, or standardize to zero mean / unit standard deviation, per component or by row magnitude. See `doc/data_condition.md`.
+- **`meshioplusplus.tensor_invariants`** — von Mises, principal, hydrostatic and deviatoric fields of a symmetric or general 3x3 tensor array. See `doc/tensor_invariants.md`.
 - **`meshioplusplus.data_info`** — a read-only per-array summary (dtype, shape, components, min/max/mean, NaN/inf counts) — the data-side complement to `info` and `compute_stats`. See `doc/data_info.md`.
 
 <!--pytest-codeblocks:skip-->
@@ -662,7 +663,7 @@ out = meshioplusplus.data_rename(out, "point", "T", "temperature")
 arrays = meshioplusplus.data_info(out)                     # list of per-array dicts
 ```
 
-These are likewise exposed across every binding surface, and as the nine CLI verbs under the `meshioplusplus data` group (`info`, `rename`, `drop`, `keep`, `to-cell`, `to-point`, `calc`, `clamp`, `normalize`). See `doc/data_operations.md`. A second nested group, `meshioplusplus dataset` (`add`, `list`, `split`, `tag`, `annotate`), curates the hand-editable [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections (Python CLI only, like `data export`).
+These are likewise exposed across every binding surface, and as the ten CLI verbs under the `meshioplusplus data` group (`info`, `rename`, `drop`, `keep`, `to-cell`, `to-point`, `calc`, `clamp`, `normalize`, `invariants`). See `doc/data_operations.md`. A second nested group, `meshioplusplus dataset` (`add`, `list`, `split`, `tag`, `annotate`), curates the hand-editable [dataset manifests](https://loumalouomega.github.io/meshioplusplus/datasets.html) used for ML training collections (Python CLI only, like `data export`).
 
 </details>
 
@@ -1030,7 +1031,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 15.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 15.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

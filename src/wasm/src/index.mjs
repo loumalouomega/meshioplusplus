@@ -278,6 +278,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   dataCellToPoint: (mesh: Mesh, names?: string[], weight?: string, suffix?: string) => Mesh,
  *   dataCalc: (mesh: Mesh, expression: string, location: string, outputName: string, overwrite?: boolean) => Mesh,
  *   dataCondition: (mesh: Mesh, location: string, names?: string[], mode?: string, lo?: number, hi?: number, scope?: string, nanPolicy?: string, nanReplacement?: number, suffix?: string) => Mesh,
+ *   tensorInvariants: (mesh: Mesh, location: string, names?: string[], outputs?: string[], prefix?: string, suffix?: string, overwrite?: boolean) => Mesh,
  *   dataInfo: (mesh: Mesh) => object[],
  *   dataIntegrate: (mesh: Mesh, arrays?: string[]) => object[],
  *   createXdmfTimeSeriesWriter: (path: string, options?: {dataFormat?: string, gzipLevel?: number, mode?: 'truncate'|'append', autoFlush?: boolean}) => XdmfTimeSeriesWriter,
@@ -978,6 +979,15 @@ export async function loadMeshioPlusPlus(moduleOverrides = {}, { variant = 'auto
             Module.dataCondition(
                 mesh, location, names, mode, lo, hi, scope, nanPolicy, nanReplacement, suffix,
             ),
+        tensorInvariants: (
+            mesh,
+            location,
+            names = [],
+            outputs = [],
+            prefix = '',
+            suffix = '',
+            overwrite = true,
+        ) => Module.tensorInvariants(mesh, location, names, outputs, prefix, suffix, overwrite),
         dataInfo: (mesh) => Module.dataInfo(mesh),
         dataIntegrate: (mesh, arrays = []) => Module.dataIntegrate(mesh, arrays),
         // Transient (time-series) XDMF -- the one *stateful* thing in this API.

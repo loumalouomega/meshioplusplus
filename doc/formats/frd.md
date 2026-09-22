@@ -28,7 +28,7 @@ mesh.point_data["STRESS_mises"], mesh.point_data["STRESS_principal"]
 meshioplusplus.write("beam.vtu", mesh)                # or: meshioplusplus convert beam.frd beam.vtu
 ```
 
-Both engines (the C++ core and the Python reference) read the whole format. Buffers are read by the Python reader. `.frd` is read-only: `meshioplusplus.write(..., file_format="frd")` is an error.
+Both engines (the C++ core and the Python reference) read the whole format, including its binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`, auto-detected — no separate call needed). Buffers are read by the Python reader. `.frd` is read-only: `meshioplusplus.write(..., file_format="frd")` is an error.
 
 ## What is read
 
@@ -90,7 +90,7 @@ Increments are told apart by their frame id as well as their value, because the 
 | `<NAME>_mises` | `sqrt(½((xx−yy)² + (yy−zz)² + (zz−xx)²) + 3(xy² + yz² + zx²))`, the formula of [ccx2paraview](https://github.com/calculix/ccx2paraview), also for strains |
 | `<NAME>_principal` | `(n, 3)`, the eigenvalues in ascending order (min, mid, max) |
 
-Both are NaN where any of the six components is. `derived` is an argument of the format's own reader (`meshioplusplus.frd.read`, `_core.frd_read`, `read_frd(path, options, FrdReadOptions{})` in C++): the generic `read`, the CLIs, the MCP server and the C, Fortran, Julia, R and WASM surfaces do not carry it. Where it is needed there, read the tensor and derive with your own tool for now.
+Both are NaN where any of the six components is. `derived` is an argument of the format's own reader (`meshioplusplus.frd.read`, `_core.frd_read`, `read_frd(path, options, FrdReadOptions{})` in C++) and calls the shared [`tensor_invariants`](../tensor_invariants.md) operation internally, keeping these two output names for backward compatibility; the generic `read`, the CLIs, the MCP server and the C, Fortran, Julia, R and WASM surfaces do not carry the `derived` flag itself, but `tensor_invariants` reaches every one of them and also adds `hydrostatic` and `deviatoric`. Where `derived` is not available, read the raw tensor and run `tensor_invariants` on it.
 
 ## Record layout
 
@@ -104,12 +104,39 @@ A `.frd` is a stream of fixed-column records keyed by their first columns:
 | `100C` | one result block: the frame id, the value, the node count, the analysis type, the step counter and the format flag; then `-4` (name, component count, type), one `-5` per component, `-1` rows and `-3` |
 | `9999` | end |
 
-The format flag is 0 for the **short** layout (`I5` ids), 1 for the **long** one (`I10` ids) and 2 for binary. `ccx` writes the long layout. **Values are `E12.5` with no separator**, so negatives run together (`7-1.18144E-06` is a node id and a value) and every field is sliced by column. A result with more than six components continues on `-2` lines with a blank node field.
+The format flag is 0 for the **short** ASCII layout (`I5` ids), 1 for the **long** one (`I10` ids), 2 for binary with `float32` reals and 3 for binary with `float64` reals; each header line carries its own flag, since `ccx` writes node coordinates as flag 3 and result values as flag 2 by default. `ccx` writes the long ASCII layout for `*NODE FILE`/`*EL FILE` and the binary layout for `*NODE OUTPUT`/`*ELEMENT OUTPUT`. **ASCII values are `E12.5` with no separator**, so negatives run together (`7-1.18144E-06` is a node id and a value) and every field is sliced by column. A result with more than six components continues on `-2` lines with a blank node field.
+
+### Binary layout
+
+`*NODE OUTPUT`/`*ELEMENT OUTPUT` (mirroring `*NODE FILE`/`*EL FILE`'s own syntax, but note the keyword is `*ELEMENT OUTPUT`, not `*EL OUTPUT`) write a file whose header lines (`1C`/`1U`, `2C`, `3C`, `1PSTEP`, `100CL`, `-4`, `-5`) stay plain ASCII text, each terminated by `\n`. Immediately after a `2C`/`3C` header, or after a `100C` frame's last `-5` line, comes a **raw little-endian record blob**: one fixed-size record per node, element or result entry, back to back, with **no `-1`/`-2`/`-3` line markers and no line boundaries of its own** — a record's bytes may well contain `0x0A`. The record count is read from the header's own count field (`2C`/`3C` columns 7-36; a `100C` header's "numnod" field, columns 25-36, shared by ASCII and binary but only the binary reader needs it, since ASCII instead scans to the next `-3`).
+
+| Block | Record |
+|---|---|
+| `2C` (nodes) | `int32` node id, then `PointDim` reals (always `float64` / flag 3 from `ccx`) |
+| `3C` (elements) | `int32` element id, `int32` FRD type, `int32` group, `int32` material, then `nodesPerType` `int32` node ids — the same four-field header and node list as the ASCII long format's `-1`/`-2` lines, concatenated with no markers |
+| `100C` (results) | `int32` node id, then `DataComps` reals (`float32` / flag 2 from `ccx` by default) — `DataComps` is `ncomps` minus any component the `-5` lines mark calculated, exactly as in ASCII |
+
+Verified against real `ccx` 2.23 output (`tests/python/meshes/frd/*_bin.frd`, generated by `tools/gen_frd_fixtures.py`): every value matches the ASCII rendition of the same run to float32 precision. The host is assumed little-endian, like every other binary format in this codebase.
+
+## The `.dat` tabular print
+
+`*NODE PRINT` and `*EL PRINT` write a companion `jobname.dat` file: whitespace-separated tables, **no mesh** and no fixed-column layout to slice — `meshioplusplus.frd.read_dat(path)` parses it into plain tables, not a `Mesh`. Python-only: `.dat` needs the same free-format tokenizer `detail/fast_number.hpp` does not provide, and the extension already belongs to [Tecplot](./tecplot.md), so this is never registered as a format.
+
+```python
+import meshioplusplus
+
+tables = meshioplusplus.frd.read_dat("beam.dat")
+for t in tables:
+    print(t["quantity"], t["kind"], t["set"], t["components"])
+    # "displacements" "node" "LOAD" ["vx", "vy", "vz"]
+    # "stresses" "element" "E" ["sxx", "syy", "szz", "sxy", "sxz", "syz"]
+```
+
+Each table is a dict with `step`, `increment`, `time`, `kind` (`"node"` or `"element"`), `quantity`, `set`, `ids`, `components` and a `(len(ids), len(components))` `values` array; an element table also carries `int_points`, the integration-point index of each row. **The tensor component order is the file's own `sxx syy szz sxy sxz syz`, not `.frd`'s `xx yy zz xy yz zx`** (the last two are swapped) — and `*EL PRINT` values are per integration point, not nodally averaged the way `.frd`'s `STRESS` is, so the two do not compare row for row, only in aggregate (see `tests/python/test_frd.py::TestDatFile`).
 
 ## Quirks & limitations
 
-- **Binary `.frd` (flag 2) is not read.** It is an error that says so.
-- **The `.dat` tabular file is not read.** It orders tensor components differently (`sxx syy szz sxy sxz syz`) and holds integration-point values rather than nodal ones.
+- **The cgx shell types 7-10** and the derived fields are checked against a hand-written file and NumPy/[ccx2paraview](https://github.com/calculix/ccx2paraview)'s own formula respectively — `cgx` itself is not in the test environment.
 - **A second `2C` or `3C` block** (some post-processor exports repeat them) is ignored with a warning; the first wins.
 - **The whole file is parsed before a step is chosen**, and `read_metadata` reads it in full (`fell_back_to_full_read` is true): there is no header-only path.
 - **No node ids are kept.** Points are numbered in the order of the node block; results are matched by id.

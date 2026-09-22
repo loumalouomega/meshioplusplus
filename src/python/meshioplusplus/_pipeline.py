@@ -61,6 +61,7 @@ from ._smooth import smooth
 from ._sobolev_deform import sobolev_deform
 from ._subdivide import subdivide
 from ._surface import extract_surface
+from ._tensor_invariants import tensor_invariants
 from ._transform import transform
 from ._voxelize import voxelize
 
@@ -250,6 +251,14 @@ _OP_TABLE = {
         "NanPolicy",
         "NanReplacement",
         "Suffix",
+    ),
+    "TensorInvariants": (
+        "Location",
+        "Names",
+        "Outputs",
+        "Prefix",
+        "Suffix",
+        "Overwrite",
     ),
     "ToCell": ("Names",),
     "ToPoint": ("Names", "Weight"),
@@ -951,6 +960,17 @@ def _apply_step(mesh, step, steps, warnings):
             nan_policy=_text(step, "NanPolicy", "ignore"),
             nan_replacement=_number(step, "NanReplacement", 0.0),
             suffix=_text(step, "Suffix", ""),
+        )
+    elif op == "TensorInvariants":
+        outputs_str = _text(step, "Outputs", "")
+        mesh = tensor_invariants(
+            mesh,
+            location=_text(step, "Location", "point"),
+            keys=_svec(step, "Names"),
+            outputs=outputs_str.split(",") if outputs_str else None,
+            prefix=_text(step, "Prefix", ""),
+            suffix=_text(step, "Suffix", ""),
+            overwrite=_flag(step, "Overwrite", True),
         )
     elif op == "ToCell":
         mesh = point_data_to_cell_data(mesh, keys=_svec(step, "Names"))

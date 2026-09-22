@@ -45,7 +45,11 @@
  * meshio++ that takes a directory path** — it creates
  * `<case>/constant/polyMesh/` and writes all five files. It goes through
  * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
- * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ * `NFACE_n` writer uses. Since v15.5.0 (roadmap §1.1) an `OpenFoamWriteOptions`
+ * overload writes binary too, little-endian only, at the same `label=32/64`,
+ * `scalar=32/64` widths the reader already accepts; a big-endian host refuses
+ * a binary request by name rather than writing bytes the reader could not
+ * read back on its own machine.
  *
  * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
  * `T`, …) under a case's time directories are never touched by this module,
@@ -123,6 +127,21 @@ struct OpenFoamInfo {
      * documented follow-up.
      */
     std::string mRegion;
+};
+
+/**
+ * @brief Write-side format options for `write_openfoam` (v15.5.0, roadmap
+ * §1.1) — a pure addition, kept separate from #OpenFoamInfo so that
+ * struct's ABI pin (128 bytes) is untouched.
+ */
+struct OpenFoamWriteOptions {
+    /// `false` (default) writes ASCII, matching every earlier release.
+    bool mBinary = false;
+    /// Label (integer) width in bits: 32 or 64. Only meaningful when
+    /// #mBinary is `true` — ASCII numbers carry no width of their own.
+    int mLabelBits = 32;
+    /// Scalar (floating-point) width in bits: 32 or 64.
+    int mScalarBits = 64;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -252,5 +271,27 @@ MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
                                        const OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write an OpenFOAM polyMesh case with explicit format options.
+ *
+ * Identical to the three-argument overload, plus @p rOptions. `rOptions.mBinary`
+ * writes `points`/`owner`/`neighbour`/zone label lists as raw little-endian
+ * bytes (count, `(`, bytes, `)`) and `faces` the same length-prefixed-per-face
+ * way the reader already expects (see "Binary write" in `doc/formats/openfoam.md`) —
+ * not `CompactListList`, which this reader does not read. The header's
+ * `format`/`arch` lines record the encoding and widths, exactly as the reader
+ * requires to parse it back (see `read_openfoam`'s `detect_format`).
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write
+ * @param rInfo patch names and types, as the three-argument overload
+ * @param rOptions binary flag and label/scalar widths (see #OpenFoamWriteOptions)
+ * @throws WriteError for the same reasons as the three-argument overload,
+ *         plus a binary request on a big-endian host
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo,
+                                       const OpenFoamWriteOptions& rOptions);
 
 }  // namespace meshioplusplus

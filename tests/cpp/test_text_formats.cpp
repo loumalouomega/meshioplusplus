@@ -19,8 +19,10 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 // Project includes
 #include "mesh_fixtures.hpp"
@@ -250,10 +252,10 @@ TEST(Tecplot, TransientReadSelectsOneZoneBySolutionTime) {
     std::filesystem::remove(path, ec);
 }
 
-TEST(Tecplot, NonTransientMultiZoneWarnsAndReadsTheFirst) {
+TEST(Tecplot, NonTransientMultiZoneConcatenatesAllZones) {
     // No SOLUTIONTIME anywhere: the "several static zones" case is not a
-    // timeline (roadmap §7 owns concatenating them); only the first zone is
-    // read, as before -- now with a warning rather than silent truncation.
+    // timeline, so every zone becomes one step with one cell block (and one
+    // Cell region) per zone, points offset (not welded).
     const std::string contents =
         "VARIABLES = \"X\" \"Y\"\n"
         "ZONE N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE\n"
@@ -267,12 +269,114 @@ TEST(Tecplot, NonTransientMultiZoneWarnsAndReadsTheFirst) {
     std::string path = write_temp(".dat", contents);
 
     const mt::Mesh out = meshioplusplus::read_tecplot(path);
-    EXPECT_EQ(out.NumPoints(), 3u);
+    EXPECT_EQ(out.NumPoints(), 6u);
+    std::size_t num_blocks = 0;
+    for (const auto cb : out.CellRange())
+        ++num_blocks;
+    EXPECT_EQ(num_blocks, 2u);
     EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out.Points(), 0), 0.0);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(out.Points(), 3 * 2), 2.0);
+    ASSERT_TRUE(out.HasCellData("tecplot:zone"));
+    EXPECT_EQ(out.CellData("tecplot:zone", 0).As<std::int64_t>()[0], 0);
+    EXPECT_EQ(out.CellData("tecplot:zone", 1).As<std::int64_t>()[0], 1);
+    ASSERT_EQ(out.NumRegions(), 2u);
+    EXPECT_EQ(out.Region(0).mName, "zone_0");
+    EXPECT_EQ(out.Region(1).mName, "zone_1");
 
     meshioplusplus::ReadOptions opts;
     const meshioplusplus::MeshMetadata meta = meshioplusplus::read_tecplot_metadata(path, opts);
     EXPECT_TRUE(meta.mTimeValues.empty());
+    EXPECT_EQ(meta.mNumPoints, 6u);
+    EXPECT_EQ(meta.mCellBlocks.size(), 2u);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, MultiTypeWriteRoundTrips) {
+    // write_tecplot no longer restricts to one cell type: one zone per
+    // block, sharing points/nodal fields through VARSHARELIST.
+    SIMPLE_RT(meshioplusplus::write_tecplot, meshioplusplus::read_tecplot, mt::tri_quad_mesh(),
+              ".dat", 1e-12);
+}
+
+TEST(Tecplot, MultiTypeWriteSharesPointsAndTagsEachZoneWithARegion) {
+    mt::Mesh in = mt::tri_quad_mesh();
+    std::string path = mt::temp_path(".dat");
+    meshioplusplus::write_tecplot(path, in);
+
+    // Every zone after the first must VARSHARELIST its coordinates rather
+    // than duplicating NumPoints() per zone in the raw text.
+    std::ifstream f(path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const std::string text = ss.str();
+    EXPECT_NE(text.find("VARSHARELIST"), std::string::npos);
+
+    const mt::Mesh out = meshioplusplus::read_tecplot(path);
+    EXPECT_EQ(out.NumPoints(), in.NumPoints());  // not duplicated per zone
+    ASSERT_EQ(out.NumCellBlocks(), 3u);
+    EXPECT_EQ(out.NumRegions(), 3u);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, MultiTypeWritePutsCellDataOnItsOwningZoneAndPassivesElsewhere) {
+    // Only the first (triangle) block gets "material": CellDataNumBlocks()
+    // stays below NumCellBlocks(), so the other two zones must declare it
+    // PASSIVEVARLIST rather than inventing values for cells that have none.
+    mt::Mesh in = mt::tri_quad_mesh();
+    std::vector<meshioplusplus::NDArray> mat;
+    mat.push_back(mt::data_array({10.0, 11.0}));
+    in.AddCellData("material", std::move(mat));
+
+    std::string path = mt::temp_path(".dat");
+    meshioplusplus::write_tecplot(path, in);
+    std::ifstream f(path);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    EXPECT_NE(ss.str().find("PASSIVEVARLIST"), std::string::npos);
+
+    const mt::Mesh out = meshioplusplus::read_tecplot(path);
+    ASSERT_TRUE(out.HasCellData("material"));
+    EXPECT_DOUBLE_EQ(out.CellData("material", 0).As<double>()[0], 10.0);
+    EXPECT_DOUBLE_EQ(out.CellData("material", 0).As<double>()[1], 11.0);
+    // The other two zones declared "material" PASSIVEVARLIST: they read back
+    // as NaN rather than inventing (or dropping) values for those cells.
+    EXPECT_TRUE(std::isnan(out.CellData("material", 1).As<double>()[0]));
+    EXPECT_TRUE(std::isnan(out.CellData("material", 2).As<double>()[0]));
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+TEST(Tecplot, ConnectivityShareZoneReusesAnEarlierZonesConnectivity) {
+    // Two zones with identical connectivity: the second points its
+    // CONNECTIVITYSHAREZONE back at the first instead of repeating it.
+    const std::string contents =
+        "VARIABLES = \"X\" \"Y\" \"u\" \"v\"\n"
+        "ZONE T=\"a\" N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE "
+        "VARLOCATION=([4]=CELLCENTERED)\n"
+        "0.0 1.0 0.0\n"
+        "0.0 0.0 1.0\n"
+        "1.0 2.0 3.0\n"
+        "5.0\n"
+        "1 2 3\n"
+        "ZONE T=\"b\" N=3 E=1 DATAPACKING=BLOCK ZONETYPE=FETRIANGLE "
+        "VARSHARELIST=([1-3]=1) CONNECTIVITYSHAREZONE=1 VARLOCATION=([4]=CELLCENTERED)\n"
+        "6.0\n";
+    std::string path = write_temp(".dat", contents);
+
+    const mt::Mesh out = meshioplusplus::read_tecplot(path);
+    EXPECT_EQ(out.NumPoints(), 3u);  // shared, not duplicated
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    EXPECT_EQ(out.Cells(0).NumCells(), 1u);
+    EXPECT_EQ(out.Cells(1).NumCells(), 1u);
+    ASSERT_TRUE(out.HasCellData("v"));
+    EXPECT_DOUBLE_EQ(out.CellData("v", 0).As<double>()[0], 5.0);
+    EXPECT_DOUBLE_EQ(out.CellData("v", 1).As<double>()[0], 6.0);
+    // Both blocks reference the same 3 shared points, 0-based.
+    EXPECT_EQ(out.Cells(0).Conn().As<std::int64_t>()[0],
+              out.Cells(1).Conn().As<std::int64_t>()[0]);
 
     std::error_code ec;
     std::filesystem::remove(path, ec);

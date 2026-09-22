@@ -75,7 +75,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
 
-**Note on CalculiX results (`frd`)** (v15.3.0): the ASCII result file of `ccx`, **read-only** — it is what a solver writes, so there is nothing to write back. Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) layouts are read, the binary one is refused. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor. See [CalculiX results](./formats/frd.md).
+**Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, **read-only** — it is what a solver writes, so there is nothing to write back. Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
 
 **Note on the point-cloud formats (`pcd`, `xyz`)** (v15.1.0): both map to the points plus one `vertex` block, exactly what [`subsample_points`](./point_budgets.md) emits, so `.pcd` → `subsample` → `proximity-graph` → `.vtu` runs from the CLI with no intermediate format. `pcd` is PCL's v0.7 layout in all three `DATA` modes (`ascii`, `binary`, `binary_compressed`), with `rgb`/`rgba` unpacked by bit-cast and `normal_x/y/z` gathered into `normals`; `xyz` is a headerless convention, so its columns are resolved from a `columns=` list, a header comment, the column count and extension, or the value ranges, and an ambiguous file is an error rather than a guess. Chemistry XYZ (atom count, comment, `element x y z`) shares the extension and is refused by name. `.txt` and `.asc` now resolve to `xyz`. LAS/LAZ and E57 are out of scope.
 
@@ -89,7 +89,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `triangle` vs `tetgen` (`.node`/`.ele`):** both formats use `.node`/`.ele`; `tetgen` is registered first, so plain extension dispatch resolves to it. When *reading*, a 2D pair makes tetgen raise and the dispatcher falls through to `triangle` automatically; when *writing*, pass `file_format="triangle"` (or use a `.poly` path, which defaults to `triangle`). Like tetgen, the format spans multiple files and cannot use buffers.
 
-**Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`, one step selected by `time_step`); writing them is still out of scope. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
+**Note on `ensight`:** EnSight Gold (`.case` + `.geo` sibling pair, ASCII and C-binary with byte-order auto-detection). Multi-part files concatenate into one point array with the owning part recorded as `cell_data["ensight:part"]`. Since v11.3.0 a `.case` file's `TIME`/`VARIABLE` sections are read (`point_data`/`cell_data`/tensors, one step selected by `time_step`); since v15.5.0 they are written too (scalar/vector/tensor symm/tensor asym plus `field_data` as `constant per case`), single-part and non-transient only. Cannot use buffers. The `.geo` extension is also used by Gmsh *script* files, which meshio++ never claimed.
 
 **Note on `vti`:** VTK XML ImageData is a **regular lattice**: its geometry is the `Origin`/`Spacing`/`WholeExtent` attributes rather than a point array. Reading expands the extent into explicit `hexahedron` cells; writing therefore *requires* a lattice, and a mesh that is not one — including a **partial** grid (`voxelize`'s `surface`/`inside` fills, or `compute_sdf`'s octree, whose holes ImageData cannot express) — raises `WriteError` by name. It is the only format that round-trips a generated grid's geometry, which is why [`compute_sdf`](./sdf.md) points at it.
 
@@ -113,7 +113,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
-**Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII only on write (binary is a follow-up). Polyhedral cells are native here.
+**Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII by default; `binary=True` (v15.5.0) writes little-endian binary at a chosen `label_bits`/`scalar_bits` width, Python/C++ only. Polyhedral cells are native here.
 
 **Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
 
@@ -396,7 +396,7 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 
 ### OpenFOAM (`.foam`)
 
-`meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh)` — no extra options. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer).
+`meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh, binary=False, label_bits=32, scalar_bits=64)`. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer). See [OpenFOAM](formats/openfoam.md#binary-write).
 
 ### glTF (`.glb`, `.gltf`)
 
@@ -467,7 +467,7 @@ meshioplusplus.flac3d.write(filename, mesh,
 
 ### SU2 (`.su2`)
 
-`meshioplusplus.su2.write(filename, mesh)` — no extra options.
+`meshioplusplus.su2.write(filename, mesh)` — no extra options. A mesh whose `cell_data["su2:zone"]` carries more than one distinct value writes a single-file [multizone](./formats/su2.md#multizone-nzone) mesh (`NZONE=`/`IZONE=`, v15.5.0); a named boundary marker round-trips as a [region](./regions.md) instead of collapsing into a bare `su2:tag` id.
 
 ### AVS-UCD (`.avs`)
 

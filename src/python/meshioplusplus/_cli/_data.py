@@ -1,9 +1,10 @@
 """The nested ``meshioplusplus data <verb>`` command group.
 
-Nine of the fifteen verbs are thin front-ends over the five data operations:
+Ten of the sixteen verbs are thin front-ends over the six data operations:
 ``rename``/``drop``/``keep`` call ``data_manage``, ``to-cell``/``to-point``
 call the two averaging entry points, ``clamp``/``normalize`` call
-``data_condition`` with a preset mode, and ``calc``/``info`` map one-to-one.
+``data_condition`` with a preset mode, ``calc``/``info`` map one-to-one, and
+``invariants`` calls ``tensor_invariants``.
 ``export``/``export-dataset`` write the arrays to Parquet/zarr/hdf5 through
 :mod:`meshioplusplus._interop`/:mod:`meshioplusplus._ml` — **tabular data
 exports for analytics, not mesh formats**: neither round-trips geometry, and
@@ -44,6 +45,7 @@ from .._error import estimate_error
 from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
 from .._hessian import hessian
+from .._tensor_invariants import tensor_invariants
 
 _LOCATION_FLAGS = ("point", "cell", "field")
 
@@ -965,6 +967,72 @@ def estimate_error_cmd(args):
     return 0
 
 
+# --- data invariants ---------------------------------------------------------
+
+
+def add_invariants_args(parser):
+    _add_io_args(parser)
+    parser.add_argument(
+        "--point",
+        type=str,
+        default=None,
+        metavar="A,B",
+        help="comma-separated point_data names (default: every 6- or 9-component array)",
+    )
+    parser.add_argument(
+        "--cell",
+        type=str,
+        default=None,
+        metavar="A,B",
+        help="comma-separated cell_data names (default: every 6- or 9-component array)",
+    )
+    parser.add_argument(
+        "--outputs",
+        type=str,
+        default=None,
+        metavar="mises,principal,hydrostatic,deviatoric",
+        help="comma-separated invariants to compute (default: all four)",
+    )
+    parser.add_argument(
+        "--prefix", type=str, default="", help="prepended to every output array's name"
+    )
+    parser.add_argument(
+        "--suffix",
+        type=str,
+        default="",
+        help="appended after the invariant's own name segment",
+    )
+    parser.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="fail instead of silently overwriting an existing array of the target name",
+    )
+
+
+def invariants_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    if (args.point is None) == (args.cell is None):
+        raise ValueError(
+            "data invariants requires exactly one of --point NAMES or --cell NAMES"
+        )
+    location = "point" if args.point is not None else "cell"
+    names = _split_names(args.point if args.point is not None else args.cell)
+    outputs = _split_names(args.outputs) if args.outputs else None
+    mesh = tensor_invariants(
+        mesh,
+        location=location,
+        keys=names,
+        outputs=outputs,
+        prefix=args.prefix,
+        suffix=args.suffix,
+        overwrite=not args.no_overwrite,
+    )
+    label = ", ".join(names) if names else "(all tensor-shaped)"
+    print(f"computed invariants for {location}_data {label}")
+    write(args.outfile, mesh, file_format=args.output_format)
+    return 0
+
+
 # --- group wiring ----------------------------------------------------------
 
 _VERBS = (
@@ -1018,6 +1086,12 @@ _VERBS = (
         "Rescale values to a target range (or zero mean / unit std)",
         add_normalize_args,
         normalize_cmd,
+    ),
+    (
+        "invariants",
+        "von Mises / principal / hydrostatic / deviatoric of a tensor array",
+        add_invariants_args,
+        invariants_cmd,
     ),
     (
         "export",

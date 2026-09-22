@@ -100,6 +100,7 @@ from .. import (
     subdivide,
     subsample_points,
     surface_watertight_check,
+    tensor_invariants,
     tessellate,
     transform,
     undo_green,
@@ -459,6 +460,7 @@ _ASCII_VARIANT = {
     "flac3d": {"binary": False},
     "gmsh": {"binary": False},
     "mdpa": {"binary": False},
+    "openfoam": {"binary": False},
     "pcd": {"binary": False},
     "ply": {"binary": False},
     "stl": {"binary": False},
@@ -471,6 +473,7 @@ _BINARY_VARIANT = {
     "flac3d": {"binary": True},
     "gmsh": {"binary": True},
     "mdpa": {"binary": True},
+    "openfoam": {"binary": True},
     "pcd": {"binary": True},
     "ply": {"binary": True},
     "stl": {"binary": True},
@@ -2274,6 +2277,32 @@ def tool_data_condition(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_tensor_invariants(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    location="point",
+    arrays=None,
+    outputs=None,
+    prefix="",
+    suffix="",
+    overwrite=True,
+):
+    """von Mises / principal / hydrostatic / deviatoric of a tensor array."""
+    mesh = _load(input_path, input_format)
+    out = tensor_invariants(
+        mesh,
+        location=location,
+        keys=arrays,
+        outputs=outputs,
+        prefix=prefix,
+        suffix=suffix,
+        overwrite=overwrite,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
 # --------------------------------------------------------------------------- #
 # Dataset manifests (doc/datasets.md) — pure stdlib, ungated                  #
 # --------------------------------------------------------------------------- #
@@ -3456,6 +3485,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "data_condition",
             {"fn": tool_data_condition, "wraps": ("data_condition",), "gated": None},
+        ),
+        (
+            "tensor_invariants",
+            {
+                "fn": tool_tensor_invariants,
+                "wraps": ("tensor_invariants",),
+                "gated": None,
+            },
         ),
         (
             "dataset_add",

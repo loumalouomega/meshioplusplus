@@ -587,6 +587,38 @@ step('dataCondition normalizes to [0, 1]', () => {
     assert.ok(Math.abs(t[3] - 1) < 1e-12);
 });
 
+step('tensorInvariants: mises, principal, hydrostatic, deviatoric', () => {
+    const stressed = {
+        points: tetv.points,
+        dim: 3,
+        cells: tetv.cells,
+        point_data: {
+            // xx yy zz xy yz zx, repeated once per point (4 points).
+            stress: new Float64Array([
+                1, 2, 3, 0.5, 0.6, 0.7,
+                1, 2, 3, 0.5, 0.6, 0.7,
+                1, 2, 3, 0.5, 0.6, 0.7,
+                1, 2, 3, 0.5, 0.6, 0.7,
+            ]),
+        },
+        point_data_components: { stress: 6 },
+        cell_data: {},
+        field_data: {},
+    };
+    const out = m.tensorInvariants(stressed, 'point', ['stress'], ['mises', 'hydrostatic']);
+    const expect = Math.sqrt(
+        0.5 * ((1 - 2) ** 2 + (2 - 3) ** 2 + (3 - 1) ** 2 + 6 * (0.5 ** 2 + 0.6 ** 2 + 0.7 ** 2)),
+    );
+    assert.ok(Math.abs(out.point_data.stress_mises[0] - expect) < 1e-12);
+    assert.ok(Math.abs(out.point_data.stress_hydrostatic[0] - 2) < 1e-12);
+    assert.ok(!('stress_principal' in out.point_data));
+
+    assert.throws(
+        () => m.tensorInvariants(stressed, 'field'),
+        (err) => err instanceof Error && err.message.length > 0,
+    );
+});
+
 
 // ---------------------------------------------------------------------------
 // Selective reads, file summaries, and the codec build profile
@@ -2209,6 +2241,7 @@ step('every binding is reachable through the wrapper', () => {
         'dataCellToPoint',
         'dataCalc',
         'dataCondition',
+        'tensorInvariants',
         'dataInfo',
         'dataIntegrate',
         'extractSurface',

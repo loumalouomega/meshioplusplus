@@ -201,3 +201,46 @@ def test_read_metadata_and_time_step_reads_a_transient_case(tmp_path):
 
     with pytest.raises(meshioplusplus.ReadError):
         meshioplusplus.ensight.read(path, time_step=5)
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_variable_write_round_trips_scalar_vector_tensor_and_constant(binary, tmp_path):
+    """roadmap §1.1: write_ensight now writes a VARIABLE section -- scalar,
+    vector (2-component padded to 3) and tensor symm point_data, tensor
+    asym cell_data, and a field_data scalar as 'constant per case'."""
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["temp"] = np.array([1.0, 2.0, 3.0, 4.0])
+    mesh.point_data["vel2d"] = np.array(
+        [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0], [4.0, 40.0]]
+    )
+    mesh.point_data["sig"] = np.arange(24, dtype="f8").reshape(4, 6)
+    mesh.cell_data["eps"] = [np.arange(18, dtype="f8").reshape(2, 9)]
+    mesh.field_data["gravity"] = np.array([9.81])
+
+    path = tmp_path / "vars.case"
+    meshioplusplus.ensight.write(path, mesh, binary=binary)
+    out = meshioplusplus.ensight.read(path)
+
+    atol = 1.0e-6 if binary else 1.0e-5
+    assert np.allclose(out.point_data["temp"], mesh.point_data["temp"], atol=atol)
+    assert out.point_data["vel2d"].shape == (4, 3)
+    assert np.allclose(
+        out.point_data["vel2d"][:, :2], mesh.point_data["vel2d"], atol=atol
+    )
+    assert np.allclose(out.point_data["vel2d"][:, 2], 0.0, atol=atol)
+    assert np.allclose(out.point_data["sig"], mesh.point_data["sig"], atol=atol)
+    assert np.allclose(out.cell_data["eps"][0], mesh.cell_data["eps"][0], atol=atol)
+    assert out.field_data["gravity"][0] == pytest.approx(9.81, abs=atol)
+
+
+def test_variable_write_skips_unsupported_component_counts(tmp_path):
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    mesh.point_data["weird"] = np.arange(20, dtype="f8").reshape(4, 5)
+    mesh.point_data["ok"] = np.array([1.0, 2.0, 3.0, 4.0])
+
+    path = tmp_path / "skip.case"
+    meshioplusplus.ensight.write(path, mesh, binary=False)
+    out = meshioplusplus.ensight.read(path)
+
+    assert "weird" not in out.point_data
+    assert np.allclose(out.point_data["ok"], mesh.point_data["ok"])
