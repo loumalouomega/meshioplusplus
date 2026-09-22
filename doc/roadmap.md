@@ -307,7 +307,6 @@ Revisit any of them when a consumer asks with a file in hand — a real deck or 
 
 ### Open verification items before coding
 
-- EnSight Gold symmetric-tensor component order (§1.1).
 - UNV quadratic node ordering against Salome, Code_Aster and pyuff samples (§1.2).
 - Marc element numbers other than 7, and their node orderings, against Volume B (§1.16).
 - Every link marked †.

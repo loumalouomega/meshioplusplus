@@ -9497,6 +9497,61 @@ MESHIOPLUSPLUS_API Mesh marching_cut(const MarchingInput& rInput, const std::vec
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/marching.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/mesh_carve.hpp =====
+/**
+ * @file detail/mesh_carve.hpp
+ * @brief The shared "split a mesh into named cell-index parts" helper used by every
+ * composite/multi-part writer (VTKHDF's composite types, EnSight Gold's multi-`part`
+ * geometry).
+ *
+ * A part is a name plus a sorted list of global (block-major) cell indices. When a
+ * mesh's Cell regions exactly partition every cell -- no overlap, no gap -- each
+ * region becomes one part, in `(tag, name)` order, which is also the mesh's own
+ * region storage order. Otherwise the mesh falls back to one part per cell block,
+ * named `block_<i>`, with a `log::warn` naming the reason.
+ */
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One named part: a sorted list of global (block-major) cell indices.
+struct MeshPart {
+    std::string mName;
+    std::vector<std::size_t> mCells;
+};
+
+/**
+ * @brief Splits @p rMesh's cells into named parts, preferring its Cell regions.
+ *
+ * @param rMesh The mesh to carve. Must have at least one cell (`WriteError` otherwise,
+ *        naming @p rCaller).
+ * @param rCaller Short name of the calling format (`"vtkhdf"`, `"ensight"`, ...), used
+ *        in every exception/warning message.
+ * @param StrictNames When `true`, a region-name collision (or, with @p RejectSlash, a
+ *        `/` in a name) is a `WriteError` naming @p rCaller (VTKHDF's own composite
+ *        blocks need this: a soft fallback would silently rename the caller's Assembly
+ *        links). When `false` (the default), it is a `log::warn` and a fallback to one
+ *        part per cell block, the same fallback used when the regions do not exactly
+ *        partition the mesh either way.
+ * @param RejectSlash When `true`, a part name containing `/` is a `WriteError` (only
+ *        meaningful together with @p StrictNames; VTKHDF's Assembly links are a path
+ *        hierarchy where `/` would be misread as a separator).
+ * @return One part per Cell region when they exactly partition every cell (an empty
+ *         region becomes an empty part), else one part per cell block.
+ */
+MESHIOPLUSPLUS_API std::vector<MeshPart> carve_by_region(const Mesh& rMesh,
+                                                         const std::string& rCaller,
+                                                         bool StrictNames = false,
+                                                         bool RejectSlash = false);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/mesh_carve.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
 /**
  * @file node_adjacency.hpp
@@ -45686,6 +45741,104 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/marching.cpp =====
+// ===== begin src/cpp/src/detail/mesh_carve.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <set>
+#include <string>
+#include <tuple>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+std::vector<MeshPart> carve_by_region(const Mesh& rMesh, const std::string& rCaller,
+                                      bool StrictNames, bool RejectSlash) {
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    const std::size_t total = static_cast<std::size_t>(bases.back());
+    if (total == 0)
+        throw WriteError("meshio++: " + rCaller +
+                         ": a multi-part write needs at least one cell to carve into parts");
+
+    std::vector<const meshioplusplus::Region*> regions;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        if (rMesh.Region(i).mKind == RegionKind::Cell)
+            regions.push_back(&rMesh.Region(i));
+    // Parts are written in (tag, name) order -- the mesh's own region storage order.
+    std::stable_sort(regions.begin(), regions.end(),
+                     [](const meshioplusplus::Region* a, const meshioplusplus::Region* b) {
+                         return std::tie(a->mTag, a->mName) < std::tie(b->mTag, b->mName);
+                     });
+    if (!regions.empty()) {
+        std::vector<char> hit(total, 0);
+        std::size_t covered = 0;
+        bool ok = true;
+        for (const auto* r : regions)
+            for (std::size_t i = 0; i < r->NumEntries(); ++i) {
+                const std::int64_t g = r->Entries()[i];
+                if (g < 0 || static_cast<std::size_t>(g) >= total ||
+                    hit[static_cast<std::size_t>(g)]) {
+                    ok = false;
+                    continue;
+                }
+                hit[static_cast<std::size_t>(g)] = 1;
+                ++covered;
+            }
+        bool names_ok = true;
+        if (ok && covered == total) {
+            std::vector<MeshPart> parts;
+            std::set<std::string> names;
+            for (std::size_t i = 0; i < regions.size(); ++i) {
+                MeshPart p;
+                p.mName =
+                    regions[i]->mName.empty() ? "block_" + std::to_string(i) : regions[i]->mName;
+                const bool has_slash = RejectSlash && p.mName.find('/') != std::string::npos;
+                if (has_slash || !names.insert(p.mName).second) {
+                    if (StrictNames)
+                        throw WriteError("meshio++: " + rCaller +
+                                         ": cell region names must be unique" +
+                                         (RejectSlash ? " and free of '/'" : "") +
+                                         " to name parts");
+                    names_ok = false;
+                    break;
+                }
+                for (std::size_t e = 0; e < regions[i]->NumEntries(); ++e)
+                    p.mCells.push_back(static_cast<std::size_t>(regions[i]->Entries()[e]));
+                std::sort(p.mCells.begin(), p.mCells.end());
+                parts.push_back(std::move(p));
+            }
+            if (names_ok)
+                return parts;
+            log::warn(
+                "meshio++: {}: cell regions do not have unique names; writing one part per "
+                "cell block instead.",
+                rCaller);
+        } else {
+            log::warn(
+                "meshio++: {}: cell regions overlap or do not cover every cell; writing one "
+                "part per cell block instead.",
+                rCaller);
+        }
+    }
+
+    std::vector<MeshPart> parts;
+    for (std::size_t bi = 0; bi + 1 < bases.size(); ++bi) {
+        if (bases[bi + 1] == bases[bi])
+            continue;
+        MeshPart p;
+        p.mName = "block_" + std::to_string(bi);
+        for (std::int64_t g = bases[bi]; g < bases[bi + 1]; ++g)
+            p.mCells.push_back(static_cast<std::size_t>(g));
+        parts.push_back(std::move(p));
+    }
+    return parts;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_carve.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <utility>
@@ -55403,6 +55556,7 @@ struct EnsightCaseInfo {
     long mFileNameStart = 0;
     long mFileNameIncrement = 1;
     std::vector<EnsightVariableEntry> mVariables;
+    std::vector<std::pair<std::string, double>> mConstants;  // "constant per case:" entries
 };
 
 /// Splits a whitespace-separated record and drops its leading run of pure
@@ -55457,9 +55611,21 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
             format_type = ensight_trim(line.substr(5));
         } else if (section == "GEOMETRY" && ensight_starts_with(line, "model:")) {
             model_value = ensight_trim(line.substr(6));
+        } else if (section == "VARIABLE" && ensight_starts_with(line, "constant per case:")) {
+            // Inline, not a file reference: `[ts] [fs] <name> <value>`.
+            const std::vector<std::string> toks =
+                ensight_tokens_after_leading_ints(line.substr(std::strlen("constant per case:")));
+            if (toks.size() < 2)
+                throw ReadError("EnSight: malformed 'constant per case' line: " + line);
+            std::string joined;
+            for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                joined += (i ? " " : "") + toks[i];
+            info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
-            static const char* kKinds[] = {"scalar per node:", "vector per node:",
-                                           "scalar per element:", "vector per element:"};
+            static const char* kKinds[] = {
+                "scalar per node:",       "vector per node:",       "tensor symm per node:",
+                "tensor asym per node:",  "scalar per element:",    "vector per element:",
+                "tensor symm per element:", "tensor asym per element:"};
             for (const char* kind : kKinds) {
                 if (!ensight_starts_with(line, kind))
                     continue;
@@ -55954,6 +56120,38 @@ void ensight_read_variable_file_auto(const std::string& rPath, bool PerNode,
                                pCellOut);
 }
 
+/// Component count for a `.case` `VARIABLE` kind: 1 scalar, 3 vector, 6
+/// tensor symm, 9 tensor asym.
+std::size_t ensight_variable_ncomp(const std::string& rKind) {
+    if (ensight_starts_with(rKind, "vector"))
+        return 3;
+    if (ensight_starts_with(rKind, "tensor symm"))
+        return 6;
+    if (ensight_starts_with(rKind, "tensor asym"))
+        return 9;
+    return 1;
+}
+
+/**
+ * @brief Reorders a `tensor symm` array's last two components in place.
+ *
+ * EnSight Gold's own file order for `tensor symm` is `11 22 33 12 13 23`
+ * (xx, yy, zz, xy, xz, yz); meshio++'s six-component symmetric-tensor
+ * convention (see `doc/mesh_data_model.md`) is `xx yy zz xy yz zx` -- the
+ * same six values, with the last two swapped (`zx` and `xz` are the same
+ * component of a symmetric tensor). Verified empirically against
+ * ParaView's own EnSight Gold reader (see `doc/formats/ensight.md`); VTK's
+ * internal tensor6 order is `xx yy zz xy yz xz`, so `vtkEnSightGoldReader`
+ * performs the identical swap on its own read. The swap is its own
+ * inverse, so this one function serves both read and write.
+ * @param pData Row-major `(Rows, 6)` buffer, reordered in place.
+ * @param Rows Number of tensor entries (points or cells).
+ */
+void ensight_swap_tensor_symm_last_two(double* pData, std::size_t Rows) {
+    for (std::size_t r = 0; r < Rows; ++r)
+        std::swap(pData[r * 6 + 4], pData[r * 6 + 5]);
+}
+
 }  // namespace
 
 Mesh read_ensight(const std::string& rPath) {
@@ -55985,7 +56183,18 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         mesh = ensight_parse_geo(cur, &layout);
     }
 
-    if (!have_case || case_info.mVariables.empty() || !rOptions.WantsAnyData())
+    if (!have_case || !rOptions.WantsAnyData() ||
+        (case_info.mVariables.empty() && case_info.mConstants.empty()))
+        return mesh;
+
+    for (const auto& [name, value] : case_info.mConstants) {
+        if (!rOptions.WantsArray(name))
+            continue;
+        NDArray arr(DType::Float64, {std::size_t{1}});
+        *arr.As<double>() = value;
+        mesh.AddFieldData(name, std::move(arr));
+    }
+    if (case_info.mVariables.empty())
         return mesh;
 
     // Which step's variable files to read. A file with no TIME section (the
@@ -56011,7 +56220,8 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         const bool per_element = var.mKind.find("per element") != std::string::npos;
         if (!per_node && !per_element)
             continue;  // a kind this reader does not (yet) understand
-        const std::size_t ncomp = ensight_starts_with(var.mKind, "vector") ? 3 : 1;
+        const std::size_t ncomp = ensight_variable_ncomp(var.mKind);
+        const bool tensor_symm = ensight_starts_with(var.mKind, "tensor symm");
         const std::string resolved = var.mFilePattern.find('*') != std::string::npos
                                          ? ensight_resolve_wildcard(var.mFilePattern, file_number)
                                          : var.mFilePattern;
@@ -56021,10 +56231,16 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
             NDArray arr;
             ensight_read_variable_file_auto(var_path, true, ncomp, layout, mesh.NumPoints(), &arr,
                                             nullptr);
+            if (tensor_symm)
+                ensight_swap_tensor_symm_last_two(arr.As<double>(), mesh.NumPoints());
             mesh.AddPointData(var.mName, std::move(arr));
         } else {
             std::vector<NDArray> blocks(mesh.NumCellBlocks());
             ensight_read_variable_file_auto(var_path, false, ncomp, layout, 0, nullptr, &blocks);
+            if (tensor_symm)
+                for (NDArray& blk : blocks)
+                    if (blk.Size() > 0)
+                        ensight_swap_tensor_symm_last_two(blk.As<double>(), blk.Shape()[0]);
             mesh.AddCellData(var.mName, std::move(blocks));
         }
     }
@@ -56284,6 +56500,208 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
 }
 
+// ---------------------------------------------------------------------------
+// VARIABLE section writing
+// ---------------------------------------------------------------------------
+
+// One point_data/cell_data array this write collected. `mNumComponents` is
+// the *written* component count (2 pads to 3, matching the geometry writer's
+// own 2D-coordinate padding); `mKind` is the exact `VARIABLE` line keyword.
+struct EnsightVariableToWrite {
+    std::string mName;
+    std::string mKind;  // "scalar", "vector", "tensor symm" or "tensor asym"
+    std::size_t mNumComponents;
+    bool mPerNode;
+};
+
+// EnSight's kind word and written component count for a data array's actual
+// component count; `false` when the count has no EnSight representation.
+bool ensight_kind_for_ncomp(std::size_t NumComponents, std::string& rKind,
+                            std::size_t& rWritten) {
+    switch (NumComponents) {
+        case 1:
+            rKind = "scalar";
+            rWritten = 1;
+            return true;
+        case 2:
+        case 3:
+            rKind = "vector";
+            rWritten = 3;
+            return true;
+        case 6:
+            rKind = "tensor symm";
+            rWritten = 6;
+            return true;
+        case 9:
+            rKind = "tensor asym";
+            rWritten = 9;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The variable-file extension this write uses for a kind/location pair --
+// arbitrary (the `.case` file's own declared kind is what the reader goes
+// by, not the extension), but kept distinct per kind for readability on
+// disk.
+std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
+    std::string ext = "scl";
+    if (rKind == "vector")
+        ext = "vec";
+    else if (rKind == "tensor symm")
+        ext = "tsym";
+    else if (rKind == "tensor asym")
+        ext = "tasym";
+    return PerNode ? ext : ("e" + ext);
+}
+
+/**
+ * @brief One written component's values, in EnSight file order.
+ *
+ * `tensor symm`'s last two components are transposed relative to meshio++'s
+ * own `xx yy zz xy yz zx` convention -- `ensight_swap_tensor_symm_last_two`
+ * documents why, and undoes the same transposition on read; a missing
+ * trailing component (the vector-padding case) reads as `0.0`.
+ * @param rMesh The mesh being written.
+ * @param rVar Which array, kind and location.
+ * @param Comp 0-based component index, in EnSight file order.
+ * @param BlockIndex Cell block index; ignored when `rVar.mPerNode`.
+ * @return One value per point (or per cell of that block).
+ */
+std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
+                                            std::size_t Comp, std::size_t BlockIndex) {
+    const std::size_t mio_comp = (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5))
+                                     ? (Comp == 4 ? 5 : 4)
+                                     : Comp;
+    const NDArray& arr =
+        rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
+    const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+    const std::size_t n =
+        rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    std::vector<double> col(n);
+    for (std::size_t i = 0; i < n; ++i)
+        col[i] =
+            mio_comp < stored_ncomp ? detail::read_double(arr, i * stored_ncomp + mio_comp) : 0.0;
+    return col;
+}
+
+void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
+                                  const std::vector<const EnsightTypeEntry*>& rEntries,
+                                  const EnsightVariableToWrite& rVar) {
+    std::string out;
+    out += "variable\n";  // description line; not re-read
+    out += "part\n";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
+    out += buf;
+
+    auto write_col = [&](const std::vector<double>& col) {
+        for (double v : col) {
+            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
+            out += buf;
+        }
+    };
+
+    if (rVar.mPerNode) {
+        out += "coordinates\n";
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            write_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            out += rEntries[bi]->mKeyword;
+            out += "\n";
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                write_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
+                                   const std::vector<const EnsightTypeEntry*>& rEntries,
+                                   const EnsightVariableToWrite& rVar) {
+    std::vector<char> out;
+    ensight_append_str80(out, "C Binary");
+    ensight_append_str80(out, "variable");
+    ensight_append_str80(out, "part");
+    ensight_append_i32(out, 1);
+
+    auto append_col = [&](const std::vector<double>& col) {
+        std::vector<float> f(col.size());
+        for (std::size_t i = 0; i < col.size(); ++i)
+            f[i] = static_cast<float>(col[i]);
+        const char* p = reinterpret_cast<const char*>(f.data());
+        out.insert(out.end(), p, p + f.size() * sizeof(float));
+    };
+
+    if (rVar.mPerNode) {
+        ensight_append_str80(out, "coordinates");
+        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+            append_col(ensight_variable_column(rMesh, rVar, c, 0));
+    } else {
+        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
+            ensight_append_str80(out, rEntries[bi]->mKeyword);
+            for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                append_col(ensight_variable_column(rMesh, rVar, c, bi));
+        }
+    }
+    rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
+}
+
+/// Scans `rMesh`'s data maps for what this writer can express: `point_data`
+/// and `cell_data` arrays of 1, 2, 3, 6 or 9 components (anything else is
+/// skipped with a warning; a `cell_data` array missing from any cell block
+/// is skipped too, since a variable file must cover every block the
+/// geometry file does), and single-scalar `field_data` as `constant per
+/// case` entries (anything else skipped with a warning).
+void ensight_collect_variables(const Mesh& rMesh, std::vector<EnsightVariableToWrite>& rVars,
+                               std::vector<std::pair<std::string, double>>& rConstants) {
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        const std::size_t ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping point data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, true});
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks()) {
+            log::warn("EnSight: skipping cell data '{}': not present on every cell block", name);
+            continue;
+        }
+        const NDArray& first = rMesh.CellData(name, 0);
+        const std::size_t ncomp = first.Shape().size() >= 2 ? first.Shape()[1] : 1;
+        std::string kind;
+        std::size_t written = 0;
+        if (!ensight_kind_for_ncomp(ncomp, kind, written)) {
+            log::warn(
+                "EnSight: skipping cell data '{}' with {} components (1, 2, 3, 6 or 9 are "
+                "supported)",
+                name, ncomp);
+            continue;
+        }
+        rVars.push_back({name, kind, written, false});
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& arr = rMesh.FieldData(name);
+        if (arr.Size() != 1) {
+            log::warn(
+                "EnSight: skipping field data '{}': only a single scalar can become a "
+                "'constant per case'",
+                name);
+            continue;
+        }
+        rConstants.emplace_back(name, detail::read_double(arr, 0));
+    }
+}
+
 }  // namespace
 
 void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -56293,10 +56711,16 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         throw WriteError("EnSight: must specify a .case or .geo file");
     const std::string& case_path = paths.first;
     const std::string& geo_path = paths.second;
+    const std::string base = ensight_basename(geo_path);
+    const std::string dir = ensight_dirname(geo_path);
 
     if (rMesh.PointDim() > 3)
         throw WriteError("EnSight: points must have at most three components");
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
+
+    std::vector<EnsightVariableToWrite> vars;
+    std::vector<std::pair<std::string, double>> constants;
+    ensight_collect_variables(rMesh, vars, constants);
 
     {
         auto cf = detail::make_classic_ofstream(case_path, std::ios::binary);
@@ -56307,7 +56731,21 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         out += "type: ensight gold\n";
         out += "\n";
         out += "GEOMETRY\n";
-        out += "model: " + ensight_basename(geo_path) + "\n";
+        out += "model: " + base + "\n";
+        if (!vars.empty() || !constants.empty()) {
+            out += "\n";
+            out += "VARIABLE\n";
+            for (const EnsightVariableToWrite& v : vars) {
+                const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+                out += v.mKind + " per " + (v.mPerNode ? "node" : "element") + ": " + v.mName +
+                       " " + v.mName + "." + ext + "\n";
+            }
+            for (const auto& [name, value] : constants) {
+                char buf[40];
+                detail::snprintf_c(buf, sizeof(buf), "%.17g", value);
+                out += "constant per case: " + name + " " + buf + "\n";
+            }
+        }
         cf.write(out.data(), static_cast<std::streamsize>(out.size()));
     }
 
@@ -56318,6 +56756,18 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary) {
         ensight_write_geo_binary(gf, rMesh, entries);
     else
         ensight_write_geo_ascii(gf, rMesh, entries);
+
+    for (const EnsightVariableToWrite& v : vars) {
+        const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+        const std::string var_path = dir + v.mName + "." + ext;
+        auto vf = detail::make_classic_ofstream(var_path, std::ios::binary);
+        if (!vf)
+            throw WriteError("Could not open file for writing: " + var_path);
+        if (binary)
+            ensight_write_variable_binary(vf, rMesh, entries, v);
+        else
+            ensight_write_variable_ascii(vf, rMesh, entries, v);
+    }
 }
 
 }  // namespace meshioplusplus
@@ -83858,7 +84308,6 @@ Mesh read_vtk(const std::string& rPath) {
 #include <map>
 #include <optional>
 #include <set>
-#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -85285,74 +85734,16 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
     vtkhdf_write_data_groups(Grp, rMesh, cells, bases, nullptr, Gzip);
 }
 
-struct VtkhdfPiece {
-    std::string mName;
-    std::vector<std::size_t> mCells;  ///< sorted global cell indices
-};
+// VTKHDF's composite carving is now the shared detail::carve_by_region (roadmap
+// §1.1, adopted so EnSight Gold's multi-part writer does not reimplement the same
+// region-vs-block fallback). `detail::MeshPart` is VTKHDF's own former `VtkhdfPiece`
+// under a shared name; `StrictNames=true, RejectSlash=true` reproduce this format's
+// original behaviour exactly -- a name collision or a `/` in a region name is a
+// `WriteError`, never a silent rename of an Assembly link.
+using VtkhdfPiece = detail::MeshPart;
 
 std::vector<VtkhdfPiece> vtkhdf_carve(const Mesh& rMesh) {
-    const std::vector<std::size_t> bases = vtkhdf_block_bases(rMesh);
-    const std::size_t total = bases.back();
-    if (total == 0)
-        throw WriteError(
-            "meshio++: vtkhdf: a composite dataset needs at least one cell to carve into blocks");
-    std::vector<const meshioplusplus::Region*> regions;
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        if (rMesh.Region(i).mKind == RegionKind::Cell)
-            regions.push_back(&rMesh.Region(i));
-    // Blocks are written in (tag, name) order -- see the Python twin.
-    std::stable_sort(regions.begin(), regions.end(),
-                     [](const meshioplusplus::Region* a, const meshioplusplus::Region* b) {
-                         return std::tie(a->mTag, a->mName) < std::tie(b->mTag, b->mName);
-                     });
-    if (!regions.empty()) {
-        std::vector<char> hit(total, 0);
-        std::size_t covered = 0;
-        bool ok = true;
-        for (const auto* r : regions)
-            for (std::size_t i = 0; i < r->NumEntries(); ++i) {
-                const I64 g = r->Entries()[i];
-                if (g < 0 || static_cast<std::size_t>(g) >= total ||
-                    hit[static_cast<std::size_t>(g)]) {
-                    ok = false;
-                    continue;
-                }
-                hit[static_cast<std::size_t>(g)] = 1;
-                ++covered;
-            }
-        if (ok && covered == total) {
-            std::vector<VtkhdfPiece> pieces;
-            std::set<std::string> names;
-            for (std::size_t i = 0; i < regions.size(); ++i) {
-                VtkhdfPiece p;
-                p.mName =
-                    regions[i]->mName.empty() ? "block_" + std::to_string(i) : regions[i]->mName;
-                if (p.mName.find('/') != std::string::npos || !names.insert(p.mName).second)
-                    throw WriteError(
-                        "meshio++: vtkhdf: cell region names must be unique and free of "
-                        "'/' to name composite blocks");
-                for (std::size_t e = 0; e < regions[i]->NumEntries(); ++e)
-                    p.mCells.push_back(static_cast<std::size_t>(regions[i]->Entries()[e]));
-                std::sort(p.mCells.begin(), p.mCells.end());
-                pieces.push_back(std::move(p));
-            }
-            return pieces;
-        }
-        log::warn(
-            "meshio++: vtkhdf: cell regions overlap or do not cover every cell; writing one "
-            "block per cell block instead.");
-    }
-    std::vector<VtkhdfPiece> pieces;
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        if (bases[bi + 1] == bases[bi])
-            continue;
-        VtkhdfPiece p;
-        p.mName = "block_" + std::to_string(bi);
-        for (std::size_t g = bases[bi]; g < bases[bi + 1]; ++g)
-            p.mCells.push_back(g);
-        pieces.push_back(std::move(p));
-    }
-    return pieces;
+    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/true);
 }
 
 std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType Type, bool HasPoly) {

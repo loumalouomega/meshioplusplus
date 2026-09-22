@@ -26,7 +26,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -36,6 +35,7 @@
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/formats/vtkhdf_time_series.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/mesh_carve.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
@@ -1466,74 +1466,16 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
     vtkhdf_write_data_groups(Grp, rMesh, cells, bases, nullptr, Gzip);
 }
 
-struct VtkhdfPiece {
-    std::string mName;
-    std::vector<std::size_t> mCells;  ///< sorted global cell indices
-};
+// VTKHDF's composite carving is now the shared detail::carve_by_region (roadmap
+// §1.1, adopted so EnSight Gold's multi-part writer does not reimplement the same
+// region-vs-block fallback). `detail::MeshPart` is VTKHDF's own former `VtkhdfPiece`
+// under a shared name; `StrictNames=true, RejectSlash=true` reproduce this format's
+// original behaviour exactly -- a name collision or a `/` in a region name is a
+// `WriteError`, never a silent rename of an Assembly link.
+using VtkhdfPiece = detail::MeshPart;
 
 std::vector<VtkhdfPiece> vtkhdf_carve(const Mesh& rMesh) {
-    const std::vector<std::size_t> bases = vtkhdf_block_bases(rMesh);
-    const std::size_t total = bases.back();
-    if (total == 0)
-        throw WriteError(
-            "meshio++: vtkhdf: a composite dataset needs at least one cell to carve into blocks");
-    std::vector<const meshioplusplus::Region*> regions;
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        if (rMesh.Region(i).mKind == RegionKind::Cell)
-            regions.push_back(&rMesh.Region(i));
-    // Blocks are written in (tag, name) order -- see the Python twin.
-    std::stable_sort(regions.begin(), regions.end(),
-                     [](const meshioplusplus::Region* a, const meshioplusplus::Region* b) {
-                         return std::tie(a->mTag, a->mName) < std::tie(b->mTag, b->mName);
-                     });
-    if (!regions.empty()) {
-        std::vector<char> hit(total, 0);
-        std::size_t covered = 0;
-        bool ok = true;
-        for (const auto* r : regions)
-            for (std::size_t i = 0; i < r->NumEntries(); ++i) {
-                const I64 g = r->Entries()[i];
-                if (g < 0 || static_cast<std::size_t>(g) >= total ||
-                    hit[static_cast<std::size_t>(g)]) {
-                    ok = false;
-                    continue;
-                }
-                hit[static_cast<std::size_t>(g)] = 1;
-                ++covered;
-            }
-        if (ok && covered == total) {
-            std::vector<VtkhdfPiece> pieces;
-            std::set<std::string> names;
-            for (std::size_t i = 0; i < regions.size(); ++i) {
-                VtkhdfPiece p;
-                p.mName =
-                    regions[i]->mName.empty() ? "block_" + std::to_string(i) : regions[i]->mName;
-                if (p.mName.find('/') != std::string::npos || !names.insert(p.mName).second)
-                    throw WriteError(
-                        "meshio++: vtkhdf: cell region names must be unique and free of "
-                        "'/' to name composite blocks");
-                for (std::size_t e = 0; e < regions[i]->NumEntries(); ++e)
-                    p.mCells.push_back(static_cast<std::size_t>(regions[i]->Entries()[e]));
-                std::sort(p.mCells.begin(), p.mCells.end());
-                pieces.push_back(std::move(p));
-            }
-            return pieces;
-        }
-        log::warn(
-            "meshio++: vtkhdf: cell regions overlap or do not cover every cell; writing one "
-            "block per cell block instead.");
-    }
-    std::vector<VtkhdfPiece> pieces;
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        if (bases[bi + 1] == bases[bi])
-            continue;
-        VtkhdfPiece p;
-        p.mName = "block_" + std::to_string(bi);
-        for (std::size_t g = bases[bi]; g < bases[bi + 1]; ++g)
-            p.mCells.push_back(g);
-        pieces.push_back(std::move(p));
-    }
-    return pieces;
+    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/true);
 }
 
 std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType Type, bool HasPoly) {

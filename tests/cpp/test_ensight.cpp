@@ -283,3 +283,172 @@ TEST(Ensight, TransientVariablesReadPerNodeAndPerElement) {
     std::filesystem::remove(dir + "density.0000.escl", ec);
     std::filesystem::remove(dir + "density.0001.escl", ec);
 }
+
+TEST(Ensight, TensorVariablesReadSwapsSymmLastTwoComponents) {
+    // roadmap §1.1: EnSight Gold's own file order for `tensor symm` is
+    // `11 22 33 12 13 23` (xx yy zz xy xz yz) -- confirmed empirically
+    // against ParaView's vtkEnSightGoldReader (see doc/formats/ensight.md).
+    // meshio++'s own convention is `xx yy zz xy yz zx`, the same six values
+    // with the last two swapped. `tensor asym` (9 comp, row-major) needs no
+    // such swap -- also confirmed against pvpython.
+    mt::Mesh m = mt::tri_mesh();
+    const std::string path = mt::temp_path("_tensor.case");
+    meshioplusplus::write_ensight(path, m, /*binary=*/false);
+    const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+
+    {
+        std::ofstream cf(path, std::ios::app);
+        cf << "VARIABLE\n"
+           << "tensor symm per node:    1  sig  sig.sig\n"
+           << "tensor asym per element: 1  g    g.tasym\n";
+    }
+
+    // Per-node tensor symm, mt::tri_mesh() has 4 points; file order is
+    // component-major (every comp1, then every comp2, ...). Node 0's file
+    // components are 100..600 (xx=100, yy=200, zz=300, xy=400, xz=500,
+    // yz=600); expected meshio order after the swap is
+    // [100,200,300,400,600,500].
+    {
+        std::ofstream vf(dir + "sig.sig");
+        vf << "per-node tensor\n";
+        vf << "part\n";
+        vf << "         1\n";
+        vf << "coordinates\n";
+        for (int comp = 1; comp <= 6; ++comp)
+            for (int node = 0; node < 4; ++node)
+                vf << (comp * 100 + node) << "\n";
+    }
+    // Per-element tensor asym, one triangle block, 2 cells: cell 0's file
+    // components are 11..19, straight through with no reordering.
+    {
+        std::ofstream ef(dir + "g.tasym");
+        ef << "per-element tensor\n";
+        ef << "part\n";
+        ef << "         1\n";
+        ef << "tria3\n";
+        for (int comp = 1; comp <= 9; ++comp)
+            for (int cell = 0; cell < 2; ++cell)
+                ef << (comp * 10 + cell) << "\n";
+    }
+
+    const mt::Mesh out = meshioplusplus::read_ensight(path);
+    ASSERT_TRUE(out.HasPointData("sig"));
+    const meshioplusplus::NDArray& sig = out.PointData("sig");
+    ASSERT_EQ(sig.Shape().size(), 2u);
+    ASSERT_EQ(sig.Shape()[1], 6u);
+    const double expect_node0[6] = {100, 200, 300, 400, 600, 500};
+    for (int c = 0; c < 6; ++c)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(sig, static_cast<std::size_t>(c)),
+                         expect_node0[c]);
+
+    ASSERT_TRUE(out.HasCellData("g"));
+    ASSERT_EQ(out.CellDataNumBlocks("g"), 1u);
+    const meshioplusplus::NDArray& g = out.CellData("g", 0);
+    ASSERT_EQ(g.Shape()[1], 9u);
+    for (int c = 0; c < 9; ++c)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(g, static_cast<std::size_t>(c)),
+                         (c + 1) * 10);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(geo, ec);
+    std::filesystem::remove(dir + "sig.sig", ec);
+    std::filesystem::remove(dir + "g.tasym", ec);
+}
+
+void run_variable_write_round_trip(bool binary) {
+    // roadmap §1.1: write_ensight now writes a VARIABLE section -- one
+    // scalar, one vector (padded from 2 to 3), one tensor symm point_data;
+    // one tensor asym cell_data; and one field_data scalar as a "constant
+    // per case". mt::tri_mesh() is 4 points, one tria3 block of 2 cells.
+    mt::Mesh m = mt::tri_mesh();
+    m.AddPointData("temp", mt::data_array({1.0, 2.0, 3.0, 4.0}));
+    m.AddPointData("vel2d", mt::data_array({1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0}, 2));
+    m.AddPointData("sig", mt::data_array({11.0, 21.0, 31.0, 41.0, 51.0, 61.0, 12.0, 22.0, 32.0,
+                                          42.0, 52.0, 62.0, 13.0, 23.0, 33.0, 43.0, 53.0, 63.0,
+                                          14.0, 24.0, 34.0, 44.0, 54.0, 64.0},
+                                         6));
+    std::vector<meshioplusplus::NDArray> eps;
+    eps.push_back(mt::data_array(
+        {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0,
+         80.0, 90.0},
+        9));
+    m.AddCellData("eps", std::move(eps));
+    m.AddFieldData("gravity", mt::data_array({9.81}));
+
+    const std::string path = mt::temp_path(binary ? "_wv_bin.case" : "_wv_ascii.case");
+    meshioplusplus::write_ensight(path, m, binary);
+    const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+
+    const mt::Mesh out = meshioplusplus::read_ensight(path);
+    const double atol = binary ? 1e-6 : 1e-5;
+
+    ASSERT_TRUE(out.HasPointData("temp"));
+    for (std::size_t i = 0; i < 4; ++i)
+        EXPECT_NEAR(meshioplusplus::detail::read_double(out.PointData("temp"), i),
+                    static_cast<double>(i + 1), atol);
+
+    ASSERT_TRUE(out.HasPointData("vel2d"));
+    const meshioplusplus::NDArray& vel = out.PointData("vel2d");
+    ASSERT_EQ(vel.Shape()[1], 3u);  // padded from 2 to 3
+    EXPECT_NEAR(meshioplusplus::detail::read_double(vel, 0), 1.0, atol);
+    EXPECT_NEAR(meshioplusplus::detail::read_double(vel, 1), 10.0, atol);
+    EXPECT_NEAR(meshioplusplus::detail::read_double(vel, 2), 0.0, atol);  // padded
+
+    ASSERT_TRUE(out.HasPointData("sig"));
+    const meshioplusplus::NDArray& sig = out.PointData("sig");
+    ASSERT_EQ(sig.Shape()[1], 6u);
+    for (std::size_t r = 0; r < 4; ++r)
+        for (std::size_t c = 0; c < 6; ++c)
+            EXPECT_NEAR(meshioplusplus::detail::read_double(sig, r * 6 + c),
+                        meshioplusplus::detail::read_double(m.PointData("sig"), r * 6 + c), atol);
+
+    ASSERT_TRUE(out.HasCellData("eps"));
+    ASSERT_EQ(out.CellDataNumBlocks("eps"), 1u);
+    const meshioplusplus::NDArray& eps_out = out.CellData("eps", 0);
+    ASSERT_EQ(eps_out.Shape()[1], 9u);
+    for (std::size_t r = 0; r < 2; ++r)
+        for (std::size_t c = 0; c < 9; ++c)
+            EXPECT_NEAR(meshioplusplus::detail::read_double(eps_out, r * 9 + c),
+                        meshioplusplus::detail::read_double(m.CellData("eps", 0), r * 9 + c),
+                        atol);
+
+    ASSERT_TRUE(out.HasFieldData("gravity"));
+    EXPECT_NEAR(meshioplusplus::detail::read_double(out.FieldData("gravity"), 0), 9.81, atol);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(geo, ec);
+    for (const char* name : {"temp.scl", "vel2d.vec", "sig.tsym", "eps.etasym"})
+        std::filesystem::remove(dir + name, ec);
+}
+
+TEST(Ensight, VariableWriteRoundTripsAscii) { run_variable_write_round_trip(false); }
+
+TEST(Ensight, VariableWriteRoundTripsBinary) { run_variable_write_round_trip(true); }
+
+TEST(Ensight, VariableWriteSkipsUnsupportedComponentCountsWithAWarning) {
+    // A 5-component array has no EnSight representation (only 1, 2, 3, 6, 9
+    // are); it is skipped, not an error, and the rest of the write succeeds.
+    mt::Mesh m = mt::tri_mesh();
+    m.AddPointData("weird", mt::data_array({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                                            16, 17, 18, 19, 20},
+                                           5));
+    m.AddPointData("ok", mt::data_array({1.0, 2.0, 3.0, 4.0}));
+
+    const std::string path = mt::temp_path("_skip.case");
+    meshioplusplus::write_ensight(path, m, false);
+    const std::string geo = path.substr(0, path.size() - 5) + ".geo";
+    const std::string dir = path.substr(0, path.find_last_of("/\\") + 1);
+
+    const mt::Mesh out = meshioplusplus::read_ensight(path);
+    EXPECT_FALSE(out.HasPointData("weird"));
+    EXPECT_TRUE(out.HasPointData("ok"));
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(geo, ec);
+    std::filesystem::remove(dir + "ok.scl", ec);
+}
