@@ -1100,7 +1100,10 @@ def write(filename, mesh, code_aster=False, node_dataset=2411):
     pdim = points.shape[1] if points.ndim == 2 else 0
     fd = getattr(mesh, "field_data", None) or {}
 
-    with open_file(filename, "w") as f:
+    # LF only, matching the C++ writer's binary-mode ofstream: on Windows the
+    # default text mode would translate "\n" to "\r\n", and test_unv.py's
+    # test_writers_are_byte_identical pins the two engines against each other.
+    with open_file(filename, "w", newline="\n") as f:
         # 164 units, when the mesh carries them.
         if "unv:units" in fd and "unv:unit_factors" in fd:
             fac = [1.0, 1.0, 1.0, 0.0]

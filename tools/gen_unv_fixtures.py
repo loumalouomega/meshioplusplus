@@ -219,7 +219,7 @@ def write_default():
         ("legacy55.unv", legacy55),
         ("units_cs_legacy.unv", units_cs_legacy),
     ):
-        (OUT / name).write_text("\n".join(fn()) + "\n")
+        (OUT / name).write_text("\n".join(fn()) + "\n", newline="\n")
         print("wrote", OUT / name)
 
 
