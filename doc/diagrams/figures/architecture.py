@@ -539,7 +539,7 @@ def regions():
         ("Exodus", "element block · node set · side set"),
         ("Abaqus", "*NSET · *ELSET · *SURFACE"),
         ("MED", "family + GRO group names"),
-        ("UNV", "group (Phase 2)"),
+        ("UNV", "permanent group (2467)"),
         ("Ansys", "component (Phase 2)"),
         ("OpenFOAM", "boundary patch (Phase 2)"),
         ("Kratos", "SubModelPart"),
