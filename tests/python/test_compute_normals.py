@@ -303,7 +303,11 @@ def test_cli_normals_verb(tmp_path):
 
 def _pipeline_settings(tmp_path, step):
     src = tmp_path / "cube.vtu"
-    mio.write(str(src), cube_quads())
+    # These tests are about the pipeline's Normals step, not codec support, so
+    # write uncompressed -- the same rule test_pipeline.py's settings_env
+    # fixture follows -- to stay independent of whether this build's native
+    # core has zlib (e.g. Windows CI, -DMESHIOPLUSPLUS_WITH_ZLIB=OFF).
+    mio.write(str(src), cube_quads(), compression=None)
     return {
         "Version": 1,
         "Input": {"Path": str(src)},
