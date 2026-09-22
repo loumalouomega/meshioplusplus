@@ -467,7 +467,7 @@ meshioplusplus.flac3d.write(filename, mesh,
 
 ### SU2 (`.su2`)
 
-`meshioplusplus.su2.write(filename, mesh)` — no extra options.
+`meshioplusplus.su2.write(filename, mesh)` — no extra options. A mesh whose `cell_data["su2:zone"]` carries more than one distinct value writes a single-file [multizone](./formats/su2.md#multizone-nzone) mesh (`NZONE=`/`IZONE=`, v15.5.0); a named boundary marker round-trips as a [region](./regions.md) instead of collapsing into a bare `su2:tag` id.
 
 ### AVS-UCD (`.avs`)
 

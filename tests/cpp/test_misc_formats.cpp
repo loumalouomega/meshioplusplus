@@ -40,6 +40,123 @@ TEST(Su2, Basic) {
     mt::roundtrip(w, r, mt::hex_mesh(), ".su2");
 }
 
+const char* const su2_multizone_text =
+    "NZONE= 2\n"
+    "\n"
+    "IZONE= 1\n"
+    "NDIME= 2\n"
+    "NPOIN= 4\n"
+    "0.0 0.0\n"
+    "1.0 0.0\n"
+    "1.0 1.0\n"
+    "0.0 1.0\n"
+    "NELEM= 2\n"
+    "5 0 1 2\n"
+    "5 0 2 3\n"
+    "NMARK= 1\n"
+    "MARKER_TAG= wall\n"
+    "MARKER_ELEMS= 2\n"
+    "3 0 1\n"
+    "3 2 3\n"
+    "\n"
+    "IZONE= 2\n"
+    "NDIME= 2\n"
+    "NPOIN= 4\n"
+    "2.0 0.0\n"
+    "3.0 0.0\n"
+    "3.0 1.0\n"
+    "2.0 1.0\n"
+    "NELEM= 2\n"
+    "5 0 1 2\n"
+    "5 0 2 3\n"
+    "NMARK= 2\n"
+    "MARKER_TAG= wall\n"
+    "MARKER_ELEMS= 1\n"
+    "3 0 1\n"
+    "MARKER_TAG= inlet\n"
+    "MARKER_ELEMS= 1\n"
+    "3 1 2\n";
+
+TEST(Su2, MultizoneReadBuildsZonesAndMarkerRegions) {
+    const std::string path = mt::temp_path(".su2");
+    {
+        std::ofstream f(path);
+        f << su2_multizone_text;
+    }
+    const meshioplusplus::Mesh mesh = meshioplusplus::read_su2(path);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    EXPECT_EQ(mesh.NumPoints(), 8u);  // two disjoint 4-point zones, never welded
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);  // triangle (volume) + line (boundary), merged across zones
+
+    ASSERT_TRUE(mesh.HasCellData("su2:zone"));
+    ASSERT_TRUE(mesh.HasCellData("su2:tag"));
+
+    ASSERT_TRUE(mesh.HasRegion("zone_0", meshioplusplus::RegionKind::Cell));
+    ASSERT_TRUE(mesh.HasRegion("zone_1", meshioplusplus::RegionKind::Cell));
+    ASSERT_TRUE(mesh.HasRegion("zone_0/wall", meshioplusplus::RegionKind::Cell));
+    ASSERT_TRUE(mesh.HasRegion("zone_1/wall", meshioplusplus::RegionKind::Cell));
+    ASSERT_TRUE(mesh.HasRegion("zone_1/inlet", meshioplusplus::RegionKind::Cell));
+
+    // zone_0 covers all 4 of its own cells (2 triangles + 2 boundary lines).
+    const meshioplusplus::Region& zone0 = mesh.Region(mesh.FindRegion("zone_0", meshioplusplus::RegionKind::Cell));
+    EXPECT_EQ(zone0.NumEntries(), 4u);
+    // zone_1/inlet is exactly one boundary line.
+    const meshioplusplus::Region& inlet =
+        mesh.Region(mesh.FindRegion("zone_1/inlet", meshioplusplus::RegionKind::Cell));
+    EXPECT_EQ(inlet.NumEntries(), 1u);
+}
+
+TEST(Su2, MultizoneRoundTrips) {
+    const std::string path = mt::temp_path(".su2");
+    {
+        std::ofstream f(path);
+        f << su2_multizone_text;
+    }
+    const meshioplusplus::Mesh original = meshioplusplus::read_su2(path);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+
+    const std::string out = mt::temp_path(".su2");
+    meshioplusplus::write_su2(out, original);
+    const meshioplusplus::Mesh reread = meshioplusplus::read_su2(out);
+    std::filesystem::remove(out, ec);
+
+    mt::expect_same_geometry(original, reread);
+    ASSERT_EQ(original.NumRegions(), reread.NumRegions());
+    for (std::size_t i = 0; i < original.NumRegions(); ++i) {
+        const meshioplusplus::Region& a = original.Region(i);
+        ASSERT_TRUE(reread.HasRegion(a.mName, a.mKind));
+        const meshioplusplus::Region& b = reread.Region(reread.FindRegion(a.mName, a.mKind));
+        EXPECT_EQ(a.NumEntries(), b.NumEntries());
+        for (std::size_t k = 0; k < a.NumEntries(); ++k)
+            EXPECT_EQ(a.Entries()[k], b.Entries()[k]) << a.mName << " entry " << k;
+    }
+}
+
+TEST(Su2, SingleZoneStringMarkerNamesRoundTripAsRegions) {
+    const std::string path = mt::temp_path(".su2");
+    {
+        std::ofstream f(path);
+        f << "NDIME= 2\nNPOIN= 4\n0 0\n1 0\n1 1\n0 1\nNELEM= 1\n5 0 1 2\nNMARK= 1\n"
+             "MARKER_TAG= inlet\nMARKER_ELEMS= 1\n3 0 1\n";
+    }
+    const meshioplusplus::Mesh mesh = meshioplusplus::read_su2(path);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    ASSERT_TRUE(mesh.HasRegion("inlet", meshioplusplus::RegionKind::Cell));
+    EXPECT_FALSE(mesh.HasRegion("zone_0", meshioplusplus::RegionKind::Cell));  // single-zone: no zone region
+
+    const std::string out = mt::temp_path(".su2");
+    meshioplusplus::write_su2(out, mesh);
+    std::ifstream check(out);
+    std::string text((std::istreambuf_iterator<char>(check)), std::istreambuf_iterator<char>());
+    std::filesystem::remove(out, ec);
+    EXPECT_NE(text.find("MARKER_TAG= inlet"), std::string::npos);
+    EXPECT_EQ(text.find("NZONE"), std::string::npos);  // a single zone never writes NZONE
+}
+
 TEST(Flac3d, AsciiAndBinary) {
     for (bool binary : {false, true}) {
         auto w = [=](const std::string& p, const mt::Mesh& m) {
