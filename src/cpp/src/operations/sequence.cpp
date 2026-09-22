@@ -210,10 +210,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // the index, read without opening a piece.
     // frd joined in v15.3.0: its steps are the distinct `100C` increments.
     // unv joined in v15.6.0: its steps are the analysis steps of its results.
-    return rFormat == "frd" || rFormat == "unv" || rFormat == "xdmf" || rFormat == "exodus" ||
-           rFormat == "gid" || rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" ||
-           rFormat == "gmsh" || rFormat == "ensight" || rFormat == "openfoam" ||
-           rFormat == "vtkhdf" || rFormat == "pvd";
+    // nastran_h5 joined in v15.7.0: its steps are the result domains (subcase,
+    // mode, time or frequency) its INDEX tables reference.
+    return rFormat == "frd" || rFormat == "unv" || rFormat == "nastran_h5" || rFormat == "xdmf" ||
+           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
+           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
+           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

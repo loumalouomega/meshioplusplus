@@ -472,6 +472,46 @@ MESHIOPLUSPLUS_API bool is_soft_link(hid_t loc, const std::string& rName);
 MESHIOPLUSPLUS_API std::string soft_link_target(hid_t loc, const std::string& rName);
 
 /**
+ * @brief One member of a COMPOUND dataset's element type, as `compound_members`
+ * reports it.
+ *
+ * `mNumeric` is true for an integer or floating-point member, or an ARRAY of one
+ * (MSC Nastran's `X` is `double[3]`, a `CHEXA`'s `G` is `int64[20]`); only those
+ * can be read with `read_compound_member`. `mDims` holds the ARRAY dimensions
+ * (empty for a scalar member) and `mDtype` the element type of a numeric member.
+ */
+struct CompoundMember {
+    std::string mName;
+    bool mNumeric = false;
+    DType mDtype = DType::Float64;
+    std::vector<std::size_t> mDims;
+};
+
+/**
+ * @brief The members of a COMPOUND dataset's element type, in declaration order.
+ * @param loc Group or file handle the dataset lives under.
+ * @param rName Dataset name.
+ * @throws ReadError if the dataset is missing or its type is not COMPOUND.
+ */
+MESHIOPLUSPLUS_API std::vector<CompoundMember> compound_members(hid_t loc,
+                                                                const std::string& rName);
+
+/**
+ * @brief Reads one numeric member of rows `[Row0, Row0 + Count)` of a rank-1
+ * COMPOUND dataset, through a hyperslab and a one-member memory type, so HDF5
+ * converts by name and only that member's bytes are kept.
+ *
+ * A scalar member comes back as `(Count,)`, an ARRAY member of dimensions `d...`
+ * as `(Count, d...)`. `pAs`, when given, is the dtype to convert to (HDF5 converts
+ * between numeric types); otherwise the member's own dtype is kept.
+ * @throws ReadError if the dataset is missing, not a rank-1 COMPOUND, has no
+ *         numeric member `rMember`, or the range exceeds its length.
+ */
+MESHIOPLUSPLUS_API NDArray read_compound_member(hid_t loc, const std::string& rName,
+                                                const std::string& rMember, std::size_t Row0,
+                                                std::size_t Count, const DType* pAs = nullptr);
+
+/**
  * @brief RAII guard that silences HDF5's default stderr error-stack printing
  * for its lifetime, restoring the previous handler on destruction.
  *

@@ -56,6 +56,7 @@
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
+#include "meshioplusplus/formats/nastran_h5.hpp"
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -180,6 +181,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"hmf", meshioplusplus::read_hmf},
         // A lambda for the same overload reason as cgns above.
         {"vtkhdf", [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); }},
+        {"nastran_h5",
+         [](const std::string& path) { return meshioplusplus::read_nastran_h5(path); }},
         {"med",
          [](const std::string& path) {
              // The family-id maps/link names/mesh metadata in MedInfo are
@@ -509,6 +512,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".vtkhdf", "vtkhdf"},
         {".hdf", "vtkhdf"},
         {".med", "med"},
+        {".h5", "nastran_h5"},
         {".e", "exodus"},
         {".exo", "exodus"},
         {".ex2", "exodus"},
@@ -612,6 +616,13 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // IWYU pragma: keep
         {"vtkhdf", [](const std::string& path,
                       const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); }},
+        // MSC Nastran HDF5 honours mTimeStep (one result domain) and the
+        // narrowing options, which skip the result tables not asked for.
+        // IWYU pragma: keep
+        {"nastran_h5",
+         [](const std::string& path, const ReadOptions& opts) {
+             return meshioplusplus::read_nastran_h5(path, opts);
+         }},
 #endif
         // OpenFOAM honours mTimeStep (selects a time-directory) AND
         // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
@@ -652,6 +663,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"med", meshioplusplus::read_med_metadata},
         {"cgns", meshioplusplus::read_cgns_metadata},
         {"vtkhdf", meshioplusplus::read_vtkhdf_metadata},
+        {"nastran_h5", meshioplusplus::read_nastran_h5_metadata},
 #endif
         {"vti", meshioplusplus::read_vti_metadata},
         {"vts", meshioplusplus::read_vts_metadata},
@@ -739,7 +751,7 @@ MeshMetadata registry_read_metadata(const std::string& rPath, const std::string&
 const char* registry_compiled_out(const std::string& rFormat) {
 #ifndef MESHIOPLUSPLUS_HAS_HDF5
     if (rFormat == "cgns" || rFormat == "h5m" || rFormat == "hmf" || rFormat == "med" ||
-        rFormat == "vtkhdf")
+        rFormat == "vtkhdf" || rFormat == "nastran_h5")
         return "HDF5";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_NETCDF

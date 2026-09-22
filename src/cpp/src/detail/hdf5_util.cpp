@@ -594,6 +594,95 @@ std::vector<std::string> group_links_crt(hid_t loc) {
     return names;
 }
 
+std::vector<CompoundMember> compound_members(hid_t loc, const std::string& rName) {
+    Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
+    if (!d.Valid())
+        throw ReadError("HDF5: missing dataset '" + rName + "'");
+    Hid dt(H5Dget_type(d), H5Tclose);
+    if (H5Tget_class(dt) != H5T_COMPOUND)
+        throw ReadError("HDF5: dataset '" + rName + "' is not a compound table");
+    const int n = H5Tget_nmembers(dt);
+    std::vector<CompoundMember> out;
+    out.reserve(n > 0 ? static_cast<std::size_t>(n) : 0u);
+    for (int i = 0; i < n; ++i) {
+        CompoundMember m;
+        char* name = H5Tget_member_name(dt, static_cast<unsigned>(i));
+        if (name != nullptr) {
+            m.mName = name;
+            H5free_memory(name);
+        }
+        Hid mt(H5Tget_member_type(dt, static_cast<unsigned>(i)), H5Tclose);
+        Hid base;
+        hid_t elem = mt;
+        if (H5Tget_class(mt) == H5T_ARRAY) {
+            const int arank = H5Tget_array_ndims(mt);
+            std::vector<hsize_t> adims(arank > 0 ? static_cast<std::size_t>(arank) : 0u);
+            if (arank > 0)
+                H5Tget_array_dims2(mt, adims.data());
+            m.mDims.assign(adims.begin(), adims.end());
+            base = Hid(H5Tget_super(mt), H5Tclose);
+            elem = base;
+        }
+        const H5T_class_t cls = H5Tget_class(elem);
+        if (cls == H5T_INTEGER || cls == H5T_FLOAT) {
+            m.mNumeric = true;
+            m.mDtype = dtype_from_h5(elem);
+        }
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+NDArray read_compound_member(hid_t loc, const std::string& rName, const std::string& rMember,
+                             std::size_t Row0, std::size_t Count, const DType* pAs) {
+    const std::vector<CompoundMember> members = compound_members(loc, rName);
+    const CompoundMember* found = nullptr;
+    for (const CompoundMember& m : members)
+        if (m.mName == rMember)
+            found = &m;
+    if (found == nullptr || !found->mNumeric)
+        throw ReadError("HDF5: compound table '" + rName + "' has no numeric member '" + rMember +
+                        "'");
+    Hid d(H5Dopen2(loc, rName.c_str(), H5P_DEFAULT), H5Dclose);
+    Hid space(H5Dget_space(d), H5Sclose);
+    if (H5Sget_simple_extent_ndims(space) != 1)
+        throw ReadError("HDF5: compound table '" + rName + "' is not one-dimensional");
+    hsize_t rows = 0;
+    H5Sget_simple_extent_dims(space, &rows, nullptr);
+    if (Row0 > rows || Count > rows - Row0)
+        throw ReadError("HDF5: rows [" + std::to_string(Row0) + ", " +
+                        std::to_string(Row0 + Count) + ") are outside compound table '" + rName +
+                        "' of " + std::to_string(rows) + " rows");
+
+    std::vector<std::size_t> shape{Count};
+    shape.insert(shape.end(), found->mDims.begin(), found->mDims.end());
+    const DType dt = pAs != nullptr ? *pAs : found->mDtype;
+    NDArray out(dt, shape);
+    if (Count == 0 || out.Size() == 0)
+        return out;
+
+    Hid elem;
+    if (found->mDims.empty()) {
+        elem = Hid(H5Tcopy(native_type(dt)), H5Tclose);
+    } else {
+        std::vector<hsize_t> adims(found->mDims.begin(), found->mDims.end());
+        elem = Hid(
+            H5Tarray_create2(native_type(dt), static_cast<unsigned>(adims.size()), adims.data()),
+            H5Tclose);
+    }
+    Hid mem_type(H5Tcreate(H5T_COMPOUND, H5Tget_size(elem)), H5Tclose);
+    if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, elem) < 0)
+        throw ReadError("HDF5: could not build a memory type for '" + rName + "/" + rMember + "'");
+    const hsize_t start = Row0;
+    const hsize_t count = Count;
+    if (H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr) < 0)
+        throw ReadError("HDF5: could not select rows of compound table '" + rName + "'");
+    Hid mem(H5Screate_simple(1, &count, nullptr), H5Sclose);
+    if (H5Dread(d, mem_type, mem, space, H5P_DEFAULT, out.Data()) < 0)
+        throw ReadError("HDF5: failed reading member '" + rMember + "' of '" + rName + "'");
+    return out;
+}
+
 }  // namespace h5
 }  // namespace meshioplusplus
 
