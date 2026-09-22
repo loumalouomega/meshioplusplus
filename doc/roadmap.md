@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v15.6.0** — 53 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 15).
+Status at time of writing: **v15.7.0** — 54 core formats plus four Python-only physics-ML ones, thirty-nine mesh operations + six data operations, six language surfaces (Python / C / Fortran / Julia / R / WASM), two viewers plus a browser dataset manager, a Blender add-on, a ParaView plugin, an MCP server, a settings-driven pipeline engine, a dataset-manifest layer with a PhysicsNeMo adapter, and a versioned ABI (`MESHIOPLUSPLUS_ABI_VERSION` 15).
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
@@ -34,20 +34,7 @@ Link legend: unmarked links were opened or returned by a search while this secti
 
 Python meshio covers none of §1.1–§1.18 except OptiStruct `.fem` as plain Nastran bulk; these are greenfield. Cross-validation partners are named in each block.
 
-### 1.1 MSC Nastran HDF5 results `.h5` (read) — **S–M**
-
-Result database written by MSC Nastran (since 2016, `MDLPRM,HDF5`); on the other side is Patran or a post script. Self-describing; MSC ships the schema with each release.
-
-- **Why.** HDF5 is already linked; far cheaper than OP2 for the same results.
-- **Scope (read).** Mesh from `/NASTRAN/INPUT`, nodal and element results from `/NASTRAN/RESULT`, subcases/modes/frequencies as a sequence.
-- **Structure.** Compound-type tables: `/NASTRAN/INPUT/NODE/GRID`, `/NASTRAN/INPUT/ELEMENT/*`, `/NASTRAN/RESULT/NODAL/DISPLACEMENT` (and `_CPLX`), `/NASTRAN/RESULT/ELEMENTAL/…`, `/NASTRAN/RESULT/DOMAINS` (subcase, step, mode, frequency…), `/INDEX/…` giving row ranges per domain.
-- **Mapping.** GRID → points; ELEMENT tables → cells, regions by property id; NODAL → point data; ELEMENTAL → cell data; DOMAINS rows → sequence entries; `_CPLX` → real/imaginary pair.
-- **Pitfalls.** Result rows must be joined to DOMAINS through `DOMAIN_ID`/INDEX; other Nastran vendors write *incompatible* HDF5 schemas — detect and refuse rather than misread; schema grows every release.
-- **Out of scope.** OP2/OP4/punch (see §1.17); non-MSC HDF5 dialects until a file is in hand.
-- **Done when.** A SOL 103 `.h5` converts to a `.vtu` sequence with eigenvectors per mode matching pyNastran.
-- **References.** [The Nastran HDF5 result database (Hexagon docs, login may be required)](https://help.hexagonmi.com/bundle/MSC_Nastran_2021/page/Nastran_Combined_Book/refman/interother/TOC.The.Nastran.HDF5.Result.xhtml) · [MSC blog: HDF5 in Nastran and Patran](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) · [pyNastran issue with access pattern](https://github.com/SteveDoyle2/pyNastran/issues/308) · [NASTRAN_CoFE: open-source solver that *writes* MSC-format `.h5` — a licence-free test-file generator](https://github.com/vtpasquale/NASTRAN_CoFE) · [vcti-dataspace-nastran-h5](https://pypi.org/project/vcti-dataspace-nastran-h5/)
-
-### 1.2 Code_Aster `.mail` mesh (read / write) — **S**
+### 1.1 Code_Aster `.mail` mesh (read / write) — **S**
 
 Native Code_Aster ASCII mesh; on the other side is Code_Aster/Salome-Meca.
 
@@ -59,7 +46,7 @@ Native Code_Aster ASCII mesh; on the other side is Code_Aster/Salome-Meca.
 - **Done when.** A `HEXA20` `.mail` round-trips through MED and back with identical connectivity and groups.
 - **References.** [U3.01.00, mesh file description (EN, v14)](https://code-aster.org/V2/doc/v14/en/man_u/u3/u3.01.00.pdf) · [same, v12](https://code-aster.org/doc/v12/en/man_u/u3/u3.01.00.pdf) · [U4.21.01 `LIRE_MAILLAGE`](https://code-aster.org/V2/doc/v12/fr/man_u/u4/u4.21.01.pdf) · [U7.01.21 MED reading, group-name limits](https://code-aster.org/V2/doc/v12/fr/man_u/u7/u7.01.21.pdf) · [U1.03.00 principles (EN)](https://biba1632.gitlab.io/code-aster-manuals/docs/user/u1.03.00.html)
 
-### 1.3 Altair OptiStruct `.fem` (read; Nastran reader extension) — **S**
+### 1.2 Altair OptiStruct `.fem` (read; Nastran reader extension) — **S**
 
 HyperMesh/OptiStruct bulk-data dialect; on the other side is OptiStruct.
 
@@ -70,7 +57,7 @@ HyperMesh/OptiStruct bulk-data dialect; on the other side is OptiStruct.
 - **Done when.** A HyperMesh-exported `.fem` reads with components as named regions and unknown optimization cards skipped.
 - **References.** [OptiStruct help](https://help.altair.com/hwsolvers/os/index.htm) † · [pyNastran (has an OptiStruct mode)](https://github.com/SteveDoyle2/pyNastran)
 
-### 1.4 COMSOL `.mphtxt` / `.mphbin` mesh (read / write) — **M**
+### 1.3 COMSOL `.mphtxt` / `.mphbin` mesh (read / write) — **M**
 
 COMSOL's native mesh exchange; on the other side is COMSOL Multiphysics.
 
@@ -82,7 +69,7 @@ COMSOL's native mesh exchange; on the other side is COMSOL Multiphysics.
 - **Done when.** A mixed tet/prism file with two domains converts to `.vtu` with correct node order and domain ids, and a written file imports into COMSOL.
 - **References.** [File structure (v6.1)](https://doc.comsol.com/6.1/doc/com.comsol.help.comsol/comsol_api_fileformats.53.18.html) · [Serializable classes](https://doc.comsol.com/6.1/doc/com.comsol.help.comsol/comsol_api_fileformats.53.23.html) · [`Mesh` class fields](https://doc.comsol.com/5.6/doc/com.comsol.help.comsol/comsol_api_fileformats.50.30.html) · [`Selection` class](https://doc.comsol.com/6.1/doc/com.comsol.help.comsol/comsol_api_fileformats.53.39.html) · [Mesh Import and Export Guide (PDF)](https://www.comsol.com/model/download/1273541/COMSOL_MeshImportExportGuide.pdf) · [FEconv](https://github.com/victorsndvg/FEconv) † and [ElmerGrid](https://www.nic.funet.fi/index/elmer/doc/ElmerGridManual.pdf) as readers to compare against
 
-### 1.5 FEBio `.feb` input and `.xplt` results (read / write `.feb`; read `.xplt`) — **M**
+### 1.4 FEBio `.feb` input and `.xplt` results (read / write `.feb`; read `.xplt`) — **M**
 
 Biomechanics FEM; on the other side is FEBio / FEBio Studio.
 
@@ -93,7 +80,7 @@ Biomechanics FEM; on the other side is FEBio / FEBio Studio.
 - **Done when.** A `.feb` mesh round-trips and its `.xplt` converts to a `.vtu` sequence matching FEBio Studio.
 - **References.** [FEBio manual: plotfile section](https://help.febio.org/FEBio/FEBio_um_2_9/FEBio_um_2-9-Subsection-3.17.2.html) · [Binary database spec discussion, version 0x0004](https://forums.febio.org/forum/febio-forums/users-forum/1172-xplt-binary-file-spec-log-files) · [Spec PDF location](https://forums.febio.org/forum/febio-forums/users-forum/1102-outputting-custom-variables) · [FEBio Studio (reference `xplt` reader, MIT)](https://github.com/febiosoftware/FEBioStudio) · [FEBio](https://github.com/febiosoftware/FEBio/wiki) · [febio-python](https://github.com/Nobregaigor/febio-python) · [interFEBio](https://github.com/andresutrera/interFEBio)
 
-### 1.6 Elmer mesh directory (read / write) — **S–M**
+### 1.5 Elmer mesh directory (read / write) — **S–M**
 
 ElmerSolver's native mesh; on the other side is Elmer.
 
@@ -104,7 +91,7 @@ ElmerSolver's native mesh; on the other side is Elmer.
 - **Done when.** A quadratic-tet mesh directory round-trips and ElmerSolver runs on the written copy.
 - **References.** [ElmerSolver manual, appendix on mesh file format](https://www.nic.funet.fi/index/elmer/doc/ElmerSolverManual.pdf) · [ElmerGrid manual](https://www.nic.funet.fi/index/elmer/doc/ElmerGridManual.pdf) · [Forum: `mesh.boundary` line layout](https://www.elmerfem.org/forum/viewtopic.php?t=7761) · [elmerfem source](https://github.com/ElmerCSC/elmerfem) †
 
-### 1.7 MSC Patran neutral file `.pat` / `.out` (read / write) — **S–M**
+### 1.6 MSC Patran neutral file `.pat` / `.out` (read / write) — **S–M**
 
 Legacy neutral file still exported by Patran, Cubit and ANSA and imported by Fluent and Feko.
 
@@ -115,7 +102,7 @@ Legacy neutral file still exported by Patran, Cubit and ANSA and imported by Flu
 - **Done when.** A Cubit-exported hex/tet file round-trips with named components as sets.
 - **References.** [Interface to PATRAN 2 Neutral File guide (PDF)](https://help-be.hexagonmi.com/bundle/Patran_2021.1_Interface_to_PATRAN_2_Neutral_File_Preference_Guide/raw/resource/enus/Patran_2021.1_Interface_to_PATRAN_2_Neutral_File_Preference_Guide.pdf) · [Patran reference: the neutral file, packet layout](http://web.mscsoftware.com/training_videos/patran/reverb3/Basic%20Functions/formats_topics.13.3.html) · [Fluent's supported packets](https://www.afs.enea.it/project/neptunius/docs/fluent/html/ug/node176.htm) · [Feko's supported packets](https://help.altair.com/2023/feko/topics/feko/user_guide/appendix/editfeko_cards/geometry/card_in_import_patran_neutral_file_feko_r.htm)
 
-### 1.8 Femap neutral file `.neu` (read; mesh write) — **M**
+### 1.7 Femap neutral file `.neu` (read; mesh write) — **M**
 
 Femap's documented interchange and the only open route to a Femap model.
 
@@ -126,7 +113,7 @@ Femap's documented interchange and the only open route to a Femap model.
 - **Done when.** A brick20 model reads identically from files written by two Femap versions.
 - **References.** [Femap neutral file format (document mirror)](https://vdocuments.mx/femap-neutral-file-format.html) · the authoritative copy is `neutral.pdf` in the Femap installation's `pdf/` folder
 
-### 1.9 MFEM `.mesh` and `.gf` (read / write) — **M**
+### 1.8 MFEM `.mesh` and `.gf` (read / write) — **M**
 
 MFEM/GLVis native mesh and grid functions; on the other side is a high-order research code.
 
@@ -137,7 +124,7 @@ MFEM/GLVis native mesh and grid functions; on the other side is a high-order res
 - **Done when.** An order-2 mesh with a `.gf` field converts to an order-2 Lagrange `.vtu` matching GLVis.
 - **References.** [Mesh formats](https://mfem.org/mesh-formats/) † · [Mesh v1.0 format](https://mfem.org/mesh-format-v1.0/) · [v1.x format discussion](https://github.com/mfem/mfem/issues/205) · [MFEM source and `data/` samples](https://github.com/mfem/mfem) †
 
-### 1.10 libMesh `.xda` / `.xdr` (read) — **S–M**
+### 1.9 libMesh `.xda` / `.xdr` (read) — **S–M**
 
 libMesh/MOOSE-adjacent native mesh. `.xda` is ASCII, `.xdr` the same stream in big-endian XDR. Header: version string, element and node counts, boundary-condition counts, field sizes; element blocks by refinement level; subdomain ids; side/node-set ids and names.
 
@@ -145,14 +132,14 @@ libMesh/MOOSE-adjacent native mesh. `.xda` is ASCII, `.xdr` the same stream in b
 - **Done when.** A `HEX27` file reads with correct ordering and subdomains as regions. MOOSE users are already served by Exodus.
 - **References.** [libMesh source (`XdrIO`)](https://github.com/libMesh/libmesh) † · [libMesh docs](https://libmesh.github.io/) †
 
-### 1.11 Z88 / Z88Aurora (read / write mesh; read results) — **S**
+### 1.10 Z88 / Z88Aurora (read / write mesh; read results) — **S**
 
 Open-source teaching/SME FEM. `z88i1.txt`: line 1 = dimension, nodes, elements, DOF, flags; node lines; two-line element records with Z88 element numbers (e.g. 1 hex8, 10 hex20, 16 tet10, 17 tet4). `z88o2.txt` displacements, `z88o3.txt` stresses.
 
 - **Done when.** A hex20 structure file round-trips and displacements attach as point data.
 - **References.** [Z88 home and manuals](https://z88.de/) †
 
-### 1.12 Abaqus `.fil` results file (read) — **M**
+### 1.11 Abaqus `.fil` results file (read) — **M**
 
 The only route into Abaqus results that needs neither the ODB API nor an Abaqus install; written on request (`*NODE FILE`, `*EL FILE`, …).
 
@@ -163,7 +150,7 @@ The only route into Abaqus results that needs neither the ODB API nor an Abaqus 
 - **Done when.** A Standard static case converts to `.vtu` with `U` and von Mises from `S` matching the `.dat` printout.
 - **References.** [Results file output format, record keys (2016 guide mirror)](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) · [Records written for any file output request (2017 mirror)](https://abaqus-docs.mit.edu/2017/English/SIMACAEOUTRefMap/simaout-c-recordswrittenforanyfileoutputrequest.htm) · [ASCII item encoding](http://abaqusdocs.eait.uq.edu.au/v6.10ef/books/usb/pt02ch04s01aus36.html) · [User post-processing of results files, overview](https://ceae-server.colorado.edu/v2016/books/exa/ch15s01abo02.html) · [FJOIN example: which header records to keep](https://classes.engineering.wustl.edu/2009/spring/mase5513/abaqus/docs/v6.6/books/exa/ch12s01aex131.html)
 
-### 1.13 Radioss / OpenRadioss Starter `_0000.rad` (read) — **S–M**
+### 1.12 Radioss / OpenRadioss Starter `_0000.rad` (read) — **S–M**
 
 A fourth keyword family; on the other side is an open explicit solver. OpenRadioss reads LS-DYNA `.k` natively, and `.k` shipped in v15.2.0, so check whether that already covers the demand; if not, build on the card tokenizer in `detail/keyword_card.hpp`.
 
@@ -173,7 +160,7 @@ A fourth keyword family; on the other side is an open explicit solver. OpenRadio
 - **Done when.** An OpenRadioss example deck reads with parts as regions and correct element totals.
 - **References.** [Radioss reference guide](https://help.altair.com/hwsolvers/rad/index.htm) † · [OpenRadioss](https://github.com/OpenRadioss/OpenRadioss) · [`tools/anim_to_vtk`, `th_to_csv`](https://github.com/OpenRadioss/OpenRadioss/tree/main/tools) · [OpenRadioss Tools repo (converters, GUI)](https://github.com/OpenRadioss/Tools) · [ANIM structure discussion](https://github.com/orgs/OpenRadioss/discussions/552) · [Vortex-Radioss anim → d3plot](https://github.com/Vortex-CAE/Vortex-Radioss) †
 
-### 1.14 MSC Marc input `.dat` (read) and `.t19` (read, later) — **M**
+### 1.13 MSC Marc input `.dat` (read) and `.t19` (read, later) — **M**
 
 Marc's input deck, and the formatted ASCII variant of its post file.
 
@@ -183,7 +170,7 @@ Marc's input deck, and the formatted ASCII variant of its post file.
 - **Done when.** A hex20 deck reads with correct node order and element sets as regions.
 - **References.** [Marc 2024.2 Volume C: Program Input (PDF)](https://documentation-be.hexagon.com/bundle/Marc_2024.2-Volume_C_Program_Input/raw/resource/enus/Marc_2024.2-Volume_C_Program_Input.pdf) · [Volume C, older, with post codes (mirror)](http://www.sd.ruhr-uni-bochum.de/downloads/links/marc_manuals/online_documentation_marc_2005/volc.pdf) · [Volume A: theory and user information (mirror)](http://www.sd.ruhr-uni-bochum.de/downloads/links/marc_manuals/online_documentation_marc_2003/vola.pdf) · Volume B (element library) sits beside them on the same mirror
 
-### 1.15 ANSYS `.cdb` archive (read / write) — **S–M**; `.rst` / `.rth` results (read) — **L**
+### 1.14 ANSYS `.cdb` archive (read / write) — **S–M**; `.rst` / `.rth` results (read) — **L**
 
 `CDWRITE` archives and MAPDL binary results; on the other side is Ansys Mechanical/MAPDL.
 
@@ -194,7 +181,7 @@ Marc's input deck, and the formatted ASCII variant of its post file.
 - **Done when.** A `.cdb` with mixed solids and components round-trips; a modal `.rst` reads mode shapes matching pymapdl-reader.
 - **References.** [Coded database file commands (`NBLOCK`, `EBLOCK`, `CMBLOCK`)](https://ansyshelp.ansys.com/public/Views/Secured/corp/v251/en/ans_prog/Hlp_P_INT3_3.html) · [Guide to Interfacing with ANSYS: format of binary data files (old PDF mirror)](http://www.free-motor.org/DATA/p_int_2188.pdf) · [pymapdl-reader (MIT; C readers built from Ansys headers)](https://github.com/ansys/pymapdl-reader) · [mapdl-archive](https://github.com/akaszynski/mapdl-archive) † · [PyDPF, the vendor route](https://dpf.docs.pyansys.com/) †
 
-### 1.16 LS-DYNA `d3plot` family (read) — **L**
+### 1.15 LS-DYNA `d3plot` family (read) — **L**
 
 The state database behind most public crash datasets; on the other side is LS-PrePost — and physics-ML pipelines that start from d3plot.
 
@@ -205,22 +192,31 @@ The state database behind most public crash datasets; on the other side is LS-Pr
 - **Done when.** A shell + solid family converts to a sequence with displacement, plastic strain and deletion matching lasso-python.
 - **References.** [LS-DYNA Database Binary Output Files (2014 revision)](https://www.dynasupport.com/manuals/additional/ls-dyna-database-manual-2014) · [lasso-python docs](https://open-lasso-python.github.io/lasso-python/dyna/) · [lasso-python source (MIT)](https://github.com/open-lasso-python/lasso-python/releases) · [dynareadout (C, d3plot + binout + key files)](https://github.com/PucklaJ/dynareadout)
 
-### 1.17 Nastran OP2 (read) — **M–L**
+### 1.16 Nastran OP2 (read) — **M–L**
 
-Fortran-record binary of named data blocks (`GEOM1–4`, `EPT`, `MPT`, `OUGV1`, `OES1X`, `OSTR1`, `OEF1X`, `OQG1`, `OGPFB1`, `ONRGY1`…), MSC and NX/Simcenter dialects, 32/64-bit. Only after §1.1 shows demand beyond HDF5.
+Fortran-record binary of named data blocks (`GEOM1–4`, `EPT`, `MPT`, `OUGV1`, `OES1X`, `OSTR1`, `OEF1X`, `OQG1`, `OGPFB1`, `ONRGY1`…), MSC and NX/Simcenter dialects, 32/64-bit. MSC runs that write HDF5 are already read (the `nastran_h5` format, v15.7.0), so this is for the OP2-only pipelines: NX/Simcenter, and MSC decks without `MDLPRM,HDF5`.
 
 - **Mapping.** `OUG*` → point data; `OES`/`OSTR`/`OEF` → cell data; subcases/modes → sequence.
 - **Pitfalls.** The table zoo is enormous — scope to displacements, eigenvectors, solid/shell stress and strain, SPC forces; refuse the rest by name.
 - **Done when.** A SOL 101 file's displacement and stress match pyNastran.
 - **References.** [pyNastran (BSD; the reference implementation)](https://github.com/SteveDoyle2/pyNastran) · [pyNastran docs](https://pynastran-git.readthedocs.io/) †
 
-### 1.18 Tecplot binary `.plt` (read) — **M**
+### 1.17 Tecplot binary `.plt` (read) — **M**
 
 Documented in the Data Format Guide's appendix: magic `#!TDV112`, header (title, variables, zone records marked `299.0`), end-of-header marker `357.0`, then zone data. Reuses the ASCII reader's zone → region/sequence mapping.
 
 - **Out of scope.** `.szplt` — TecIO only (§1.20).
 - **Done when.** An FE `.plt` written by `preplot` from an ASCII file converts identically to that ASCII file.
 - **References.** [Data Format Guide, binary file format appendix](https://tecplot.azureedge.net/products/360/current/360-data-format.html) · [`tecio`, a pure-Python `.plt` reader/writer (GPL — behaviour reference only, do not copy code)](https://pypi.org/project/tecio/) · [Tecplot file types](https://tecplot.com/2016/09/16/tecplot-data-file-types-dat-plt-szplt/)
+
+### 1.18 MSC Nastran HDF5, remaining half: coordinate systems and multi-row tables — **S**
+
+The `nastran_h5` reader (v15.7.0) reads the model, one step per result domain, and every nodal or element table with one row per entity. What it leaves:
+
+- **Coordinate systems.** A GRID with `CP != 0` is read in its local system, with a warning and `point_data["nastran:cp"]`; `CD != 0` results likewise. Apply `/NASTRAN/INPUT/COORDINATE_SYSTEM/TRANSFORMATION` (rectangular, cylindrical, spherical) to both. **Probe:** a model with a `CORD2C` GRID, whose meshio++ coordinates today differ from pyNastran's `get_xyz_in_coord`.
+- **Multi-row tables.** Per-ply `_COMP` stresses, the 11 stations of `BEAM`, the corner values of solids and `_CN` shells beyond the centre, `GRID_FORCE`. They need an array shape (per-ply cell data, or corner values as point data per cell block) before they need code.
+- **Other vendors' HDF5 dialects** — refused today by the `VERSION` check — once a file is in hand.
+- **Done when.** A `CORD2C` model's points match pyNastran's global coordinates, and a composite shell's ply stresses are reachable without a second reader.
 
 ---
 
@@ -237,11 +233,11 @@ Documented in the Data Format Guide's appendix: magic `#!TDV112`, header (title,
 
 For these, the deliverable is a documented, tested route — a script that runs inside the vendor's own Python and writes VTKHDF/XDMF, or a plugin compiled against an SDK the user already owns. meshio++ never redistributes vendor libraries.
 
-- **Abaqus `.odb`.** No public specification; readable only through the ODB API on a licensed install, version-locked (`abaqus upgrade -odb`). Ship an `abaqus python` exporter script (instances → regions, steps/frames → sequence, field outputs by position) and document it; an optional C++ plugin against the ODB API comes only if a user asks. Where no licence is available, §1.12 (`.fil`) is the fallback. — [ODB2VTK (reference exporter)](https://github.com/Arris-Composites/ODB2VTK) · [abqpy](https://github.com/haiiliin/abqpy) †
-- **MSC Marc `.t16`.** Read through PyPost (`py_post`), shipped with Marc/Mentat. Ship an exporter script; §1.14 covers `.t19` natively.
-- **Femap `.modfem`.** COM API on Windows only. The route is "export a neutral file" → §1.8.
-- **Tecplot `.szplt`.** Undocumented; TecIO only. Optional link against a user-installed TecIO, or "re-save as `.plt`" → §1.18. — [TecIO](https://tecplot.com/products/tecio-library/) †
-- **ANSYS results beyond §1.15.** Document the PyDPF export route.
+- **Abaqus `.odb`.** No public specification; readable only through the ODB API on a licensed install, version-locked (`abaqus upgrade -odb`). Ship an `abaqus python` exporter script (instances → regions, steps/frames → sequence, field outputs by position) and document it; an optional C++ plugin against the ODB API comes only if a user asks. Where no licence is available, §1.11 (`.fil`) is the fallback. — [ODB2VTK (reference exporter)](https://github.com/Arris-Composites/ODB2VTK) · [abqpy](https://github.com/haiiliin/abqpy) †
+- **MSC Marc `.t16`.** Read through PyPost (`py_post`), shipped with Marc/Mentat. Ship an exporter script; §1.13 covers `.t19` natively.
+- **Femap `.modfem`.** COM API on Windows only. The route is "export a neutral file" → §1.7.
+- **Tecplot `.szplt`.** Undocumented; TecIO only. Optional link against a user-installed TecIO, or "re-save as `.plt`" → §1.17. — [TecIO](https://tecplot.com/products/tecio-library/) †
+- **ANSYS results beyond §1.14.** Document the PyDPF export route.
 - **Done when.** Each route has a docs page, a script under `contrib/`, and one manual test recorded with the vendor version used.
 
 ---
@@ -251,18 +247,16 @@ For these, the deliverable is a documented, tested route — a script that runs 
 - **Fixed-width card tokenizer, remaining half: format-line parsing.** `detail/keyword_card.hpp` (v15.2.0, built for LS-DYNA) already splits a card into standard, long, I10 and free layouts per line and parses real fields with Fortran spellings; Nastran/OptiStruct, Radioss, Marc, Patran, UNV and ANSYS `.cdb` should adopt it instead of growing their own (the `.frd` reader of v15.3.0 slices its own columns: the layout is fixed by the record key, not by a format line). What it lacks is parsing a Fortran format string such as `(3i9,6e20.13)`, which `.cdb` needs.
 - **Node-ordering permutation registry** keyed by (format, element type), with a self-test that maps a reference element through every table and checks a positive Jacobian — UNV, COMSOL, Femap, Marc, libMesh, MFEM high-order, ANSYS, MED/`.mail`. The `.frd` he20/pe15/be3 tables (v15.3.0) and the UNV sandwich tables (v15.6.0, pinned against gmsh and Salome) are constants inside `formats/frd.cpp`/`formats/unv.cpp` and their Python twins and should move into it.
 - **Fortran unformatted-record reader** with endianness and 4/8-byte marker sniffing — OP2, ANSYS `.rst`, Abaqus `.fil`, EnSight Fortran-binary. (`d3plot` is word-addressed, not record-framed, but shares the sniffing.)
-- **HDF5 schema helper, remaining half: typed compound-table reads** for Nastran `.h5` (§1.1). The rest of it — fixed-length string attributes, integer-array attributes, hyperslab row reads, chunked appendable datasets, creation-ordered groups and soft links — shipped in `detail/hdf5_util.hpp` with VTKHDF.
 - **Directory-as-format support** in the path and CLI layer — Elmer, OpenFOAM, ADIOS2 `.bp`.
 - **Optional-plugin mechanism and a `contrib/` script convention** — §1.19, §1.20.
 
 ### 1.22 Suggested order
 
-1. **First FEM wave (build tokenizer + permutation registry):** §1.2 `.mail` → §1.3 OptiStruct.
-2. **HDF5 results:** §1.1 Nastran `.h5`.
-3. **Second FEM wave:** §1.4 COMSOL → §1.6 Elmer → §1.5 FEBio → §1.15 ANSYS `.cdb`.
-4. **Legacy and research reach:** §1.7 Patran → §1.8 Femap → §1.12 Abaqus `.fil` → §1.9 MFEM → §1.10 libMesh → §1.11 Z88 → §1.13 Radioss → §1.14 Marc.
-5. **Heavy binaries, on demand:** §1.16 d3plot (pull forward if crash-dataset users appear) → §1.15 `.rst` → §1.17 OP2 → §1.18 `.plt`.
-6. **Routes:** §1.20 scripts as users ask; §1.19 when a FEniCSx user asks.
+1. **First FEM wave (build tokenizer + permutation registry):** §1.1 `.mail` → §1.2 OptiStruct.
+2. **Second FEM wave:** §1.3 COMSOL → §1.5 Elmer → §1.4 FEBio → §1.14 ANSYS `.cdb`.
+3. **Legacy and research reach:** §1.6 Patran → §1.7 Femap → §1.11 Abaqus `.fil` → §1.8 MFEM → §1.9 libMesh → §1.10 Z88 → §1.12 Radioss → §1.13 Marc.
+4. **Heavy binaries, on demand:** §1.15 d3plot (pull forward if crash-dataset users appear) → §1.14 `.rst` → §1.16 OP2 → §1.17 `.plt`; §1.18 (Nastran HDF5 coordinate systems and per-ply tables) as soon as a `CP != 0` or composite `.h5` is in hand.
+5. **Routes:** §1.20 scripts as users ask; §1.19 when a FEniCSx user asks.
 
 ### Considered, not queued
 
@@ -278,7 +272,7 @@ Revisit any of them when a consumer asks with a file in hand — a real deck or 
 
 ### Open verification items before coding
 
-- Marc element numbers other than 7, and their node orderings, against Volume B (§1.14).
+- Marc element numbers other than 7, and their node orderings, against Volume B (§1.13).
 - Every link marked †.
 
 ---

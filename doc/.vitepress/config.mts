@@ -275,6 +275,7 @@ export default defineConfig({
           { text: "mfm", link: "/formats/mfm" },
           { text: "mphtxt", link: "/formats/mphtxt" },
           { text: "nastran", link: "/formats/nastran" },
+          { text: "nastran_h5", link: "/formats/nastran_h5" },
           { text: "netgen", link: "/formats/netgen" },
           { text: "neuroglancer", link: "/formats/neuroglancer" },
           { text: "obj", link: "/formats/obj" },
