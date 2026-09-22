@@ -142,6 +142,22 @@ def test_frd_is_readable_not_writable_and_convert_reaches_its_steps(tmp_path):
     assert written.field_data["meshio:time"].tolist() == [2.0]
 
 
+def test_unv_uff_extension_and_convert_reaches_its_steps(tmp_path):
+    import pathlib
+
+    fixtures = pathlib.Path(__file__).parent / "meshes" / "unv"
+    out = _dump(_tools.tool_formats())
+    assert out["extensions"][".uff"] == ["unv"] and "unv" in out["writable"]
+    # transient_2414.unv carries real cells, unlike the test-lab .uff fixtures
+    # (nodes only, no elements), so converting it exercises tool_convert's
+    # time_step reaching UNV's steps without a point-only-mesh round trip.
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(fixtures / "transient_2414.unv"), target, time_step=-1)
+    written = meshioplusplus.read(target)
+    assert "Temperature" in written.point_data
+    assert written.field_data["meshio:time"].tolist() == [1.0]
+
+
 def test_sniff(mesh_file):
     out = _dump(_tools.tool_sniff(mesh_file))
     assert out["format"] == "vtu"

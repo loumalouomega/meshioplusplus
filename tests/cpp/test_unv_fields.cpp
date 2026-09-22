@@ -84,7 +84,7 @@ TEST(UnvField, Dataset2414) {
     std::filesystem::remove(p);
 }
 
-TEST(UnvField, CodeAster5557) {
+TEST(UnvField, CodeAster5556) {
     std::string p = tmp(".unv");
     meshioplusplus::write_unv(p, field_mesh(), /*code_aster=*/true);
     expect_fields(meshioplusplus::read_unv(p));

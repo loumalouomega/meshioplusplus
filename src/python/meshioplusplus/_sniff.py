@@ -10,6 +10,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
+_UNV_IDS = {
+    "15",
+    "18",
+    "55",
+    "56",
+    "57",
+    "58",
+    "82",
+    "151",
+    "164",
+    "780",
+    "781",
+    "2400",
+    "2411",
+    "2412",
+    "2414",
+    "2417",
+    "2420",
+    "2429",
+    "2430",
+    "2432",
+    "2435",
+    "2452",
+    "2467",
+    "2477",
+}
+
 
 def _sniff_format_py(path) -> str:
     try:
@@ -79,6 +107,14 @@ def _sniff_format_py(path) -> str:
         rest = head[6:].lstrip(b" \r")
         if rest.startswith(b"\n") and rest[1:7] in (b"    1U", b"    2C"):
             return "frd"
+    # I-DEAS universal file: a lone "-1" line, then a known dataset number (a trailing
+    # "b" marks a binary dataset such as 58b); see the C++ twin.
+    if stripped.startswith(b"-1"):
+        rest = stripped[2:].lstrip(b" \r")
+        if rest.startswith(b"\n"):
+            first = rest[1:].split(None, 1)[:1]
+            if first and first[0].rstrip(b"bB").decode("latin-1") in _UNV_IDS:
+                return "unv"
     if stripped.startswith(b"solid "):
         return "stl"
     # LS-DYNA decks open with "*KEYWORD" after any `$` comment lines; checked before

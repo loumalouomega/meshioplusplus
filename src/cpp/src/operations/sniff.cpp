@@ -151,6 +151,31 @@ std::string sniff_format(const std::string& rPath) {
                 return "frd";
         }
     }
+    // I-DEAS universal file: a lone "-1" line, then a known dataset number (a trailing
+    // "b" marks a binary dataset such as 58b).
+    if (sniff_starts_with(stripped, "-1")) {
+        std::size_t eol = 2;
+        while (eol < stripped.size() && (stripped[eol] == ' ' || stripped[eol] == '\r'))
+            ++eol;
+        if (eol < stripped.size() && stripped[eol] == '\n') {
+            std::size_t a = eol + 1;
+            while (a < stripped.size() && stripped[a] == ' ')
+                ++a;
+            std::size_t b = a;
+            while (b < stripped.size() && stripped[b] >= '0' && stripped[b] <= '9')
+                ++b;
+            static const char* const kUnvIds[] = {"15",   "18",   "55",   "56",   "57",   "58",
+                                                  "82",   "151",  "164",  "780",  "781",  "2400",
+                                                  "2411", "2412", "2414", "2417", "2420", "2429",
+                                                  "2430", "2432", "2435", "2452", "2467", "2477"};
+            const std::string id = stripped.substr(a, b - a);
+            const bool ends = b >= stripped.size() || stripped[b] == ' ' || stripped[b] == '\r' ||
+                              stripped[b] == '\n' || stripped[b] == 'b' || stripped[b] == 'B';
+            for (const char* known : kUnvIds)
+                if (ends && id == known)
+                    return "unv";
+        }
+    }
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";

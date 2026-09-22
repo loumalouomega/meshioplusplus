@@ -76,3 +76,9 @@ tests/python/meshes/frd/** -filter -diff -merge text
 # bytes with embedded 0x0A, which a text checkout (CRLF-normalizing Windows clone)
 # would silently corrupt.
 tests/python/meshes/frd/*_bin.frd binary
+
+# I-DEAS universal files (gmsh / pyuff output or hand-written text) and the gmsh .msh
+# twins they are checked against; small text, kept out of LFS like the ones above.
+tests/python/meshes/unv/** -filter -diff -merge text
+# ...except the 58b fixture: raw little-endian doubles after its ASCII header.
+tests/python/meshes/unv/*_58b.uff binary

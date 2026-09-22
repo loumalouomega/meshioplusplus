@@ -2756,6 +2756,37 @@ step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
     }
 });
 
+step('.unv/.uff: groups are regions, results are steps (no info needed)', () => {
+    const grouped = {
+        ...tet,
+        regions: [
+            { name: 'fixed', kind: 'point', dim: -1, tag: 5, entries: Int32Array.from([0, 1]) },
+            { name: 'solid', kind: 'cell', dim: 3, tag: 9, entries: Int32Array.from([0]) },
+        ],
+    };
+    m.writeMesh('/g.unv', grouped, 'unv');
+    const back = m.readMesh('/g.unv');
+    const byName = Object.fromEntries(back.regions.map((r) => [`${r.name}:${r.kind}`, r]));
+    assert.deepEqual(Array.from(byName['fixed:point'].entries), [0, 1]);
+    assert.equal(byName['solid:cell'].tag, 9);
+
+    // Two transient steps of one temperature (dataset 2414, analysis type 4).
+    const head = (s, t) =>
+        `    -1\n  2414\n${String(s).padStart(10)}\nT\n         1\nNONE\nNONE\nNONE\nNONE\nNONE\n` +
+        '         1         4         1         5         2         1\n' +
+        `         0         0         0         0         0         0${String(s).padStart(10)}         0\n` +
+        '         0         0\n' +
+        `${t.toExponential(5).toUpperCase().padStart(13)}  0.00000E+00  0.00000E+00  0.00000E+00  0.00000E+00  0.00000E+00\n` +
+        '  0.00000E+00  0.00000E+00  0.00000E+00  0.00000E+00  0.00000E+00  0.00000E+00\n';
+    const nodes = '    -1\n  2411\n         1         1         1        11\n   0.0   0.0   0.0\n    -1\n';
+    const text =
+        nodes + head(1, 0.5) + '         1\n  1.00000E+00\n    -1\n' + head(2, 1.5) + '         1\n  2.00000E+00\n    -1\n';
+    m.FS.writeFile('/t.uff', text);
+    const last = m.readMeshSelective('/t.uff', { timeStep: -1 });
+    assert.equal(last.point_data.T[0], 2);
+    assert.equal(last.field_data['meshio:time'][0], 1.5);
+});
+
 step('info: med meshName/description round-trip', () => {
     m.writeMesh('/mi.med', tet, 'med', { info: { format: 'med', meshName: 'MyMesh', description: 'hi' } });
     const back = m.readMeshSelective('/mi.med', { format: 'med', info: true });

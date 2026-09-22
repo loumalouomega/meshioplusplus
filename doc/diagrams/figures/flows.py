@@ -940,7 +940,7 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("UNV · .mail · OptiStruct", "S"),
+                (".mail · OptiStruct", "S"),
                 ("Nastran .h5 · COMSOL · Elmer", "M"),
             ],
             [],

@@ -35,7 +35,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [H5M](https://www.mcs.anl.gov/~fathom/moab-docs/h5mmain.html) (`.h5m`),
 > [CalculiX](http://www.dhondt.de/) results (`.frd`, read-only; every increment is a step, tensors keep the file order, opt-in von Mises and principal values),
 > [HMF](https://loumalouomega.github.io/meshioplusplus/formats/hmf) (`.hmf`, experimental, meshio++-specific),
-> [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`),
+> [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`, `.uff`),
 > [ANSYS Fluent interpolation](https://github.com/victorsndvg/FEconv) (`.ip`),
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
@@ -1031,7 +1031,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 15.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 15.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

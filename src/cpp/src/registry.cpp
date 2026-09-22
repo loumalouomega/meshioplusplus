@@ -480,6 +480,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
+        {".uff", "unv"},
         {".vti", "vti"},
         {".vtk", "vtk"},
         {".vts", "vts"},
@@ -581,6 +582,10 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                        const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
+        // narrowing options.
+        {"unv", [](const std::string& path,
+                   const ReadOptions& opts) { return meshioplusplus::read_unv(path, opts); }},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
         // instead of deferring the whole file to Python) and `mTimeStep`
@@ -641,6 +646,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
+        {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
         {"med", meshioplusplus::read_med_metadata},

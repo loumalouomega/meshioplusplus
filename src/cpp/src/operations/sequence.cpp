@@ -209,9 +209,11 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // pvd joined in v15.0.0: its steps are the distinct `timestep=` values of
     // the index, read without opening a piece.
     // frd joined in v15.3.0: its steps are the distinct `100C` increments.
-    return rFormat == "frd" || rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" ||
-           rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
-           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
+    // unv joined in v15.6.0: its steps are the analysis steps of its results.
+    return rFormat == "frd" || rFormat == "unv" || rFormat == "xdmf" || rFormat == "exodus" ||
+           rFormat == "gid" || rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" ||
+           rFormat == "gmsh" || rFormat == "ensight" || rFormat == "openfoam" ||
+           rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {
