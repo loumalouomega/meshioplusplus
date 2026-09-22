@@ -286,6 +286,7 @@ program test_fortran_api
 
     ! tensor invariants (adds 'stress' to m; later counts below use m%num_point_data() only via '>')
     block
+        type(mio_mesh) :: d
         real(real64), allocatable :: mises(:), hydro(:)
         do j = 1, 5
             sarr(:, j) = [1.0_real64, 2.0_real64, 3.0_real64, 0.5_real64, 0.6_real64, 0.7_real64]

@@ -85,6 +85,8 @@ module meshioplusplus
     ! Named regions (see doc/regions.md).
     public :: MIO_REGION_POINT, MIO_REGION_CELL, MIO_REGION_SIDE
     public :: mio_region_info
+    public :: MIO_TINV_MISES, MIO_TINV_PRINCIPAL, MIO_TINV_HYDROSTATIC, MIO_TINV_DEVIATORIC
+    public :: MIO_TINV_ALL
 
     ! What is wrong with a surface (bind(c); layout must match
     ! mio_surface_quality in meshioplusplus.h). The four counts are separate
