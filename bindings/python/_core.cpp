@@ -3467,7 +3467,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // round-trip write would otherwise throw on our own output.
     m.def(
         "openfoam_write",
-        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types) {
+        [](const std::string& path, py::object pymesh, py::dict cell_tags, py::dict patch_types,
+           bool binary, int label_bits, int scalar_bits) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3481,10 +3482,15 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             for (auto item : patch_types)
                 info.mPatchTypes[py::cast<std::int64_t>(item.first)] =
                     py::cast<std::string>(item.second);
-            meshioplusplus::write_openfoam(path, cpp, info);
+            meshioplusplus::OpenFoamWriteOptions wopts;
+            wopts.mBinary = binary;
+            wopts.mLabelBits = label_bits;
+            wopts.mScalarBits = scalar_bits;
+            meshioplusplus::write_openfoam(path, cpp, info, wopts);
         },
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
-        py::arg("patch_types") = py::dict());
+        py::arg("patch_types") = py::dict(), py::arg("binary") = false,
+        py::arg("label_bits") = 32, py::arg("scalar_bits") = 64);
 
     // WKT (TIN) writer / reader (.wkt).
     m.def("wkt_write", [](const std::string& path, py::object pymesh) {

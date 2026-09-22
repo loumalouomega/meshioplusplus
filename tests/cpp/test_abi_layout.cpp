@@ -170,6 +170,11 @@ MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceRecord, 272, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamInfo, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GmshInfo, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MdpaInfo, 72, 8);
+// `OpenFoamWriteOptions` (v15.5.0, roadmap §1.1) is a pure addition, pinned
+// from the release that introduces it -- the `PvdSeriesWriter` precedent
+// above. Three POD fields, no pointer/std::string member, so it is 4-aligned
+// rather than the 8 most options structs here get.
+MIO_ABI_LAYOUT(meshioplusplus::OpenFoamWriteOptions, 12, 4);
 
 // `PvdSeriesWriter` (v15.0.0) is a pimpl handle, one pointer, pinned from the
 // release that introduces it -- the `OpenFoamInfo` lesson above.
@@ -366,6 +371,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::PropertySet>("PropertySet");
     report<meshioplusplus::MeshMetadata>("MeshMetadata");
     report<meshioplusplus::OpenFoamInfo>("OpenFoamInfo");
+    report<meshioplusplus::OpenFoamWriteOptions>("OpenFoamWriteOptions");
     report<meshioplusplus::GmshInfo>("GmshInfo");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::PcdReadOptions>("PcdReadOptions");

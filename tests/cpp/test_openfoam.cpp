@@ -852,6 +852,203 @@ TEST(OpenFoamWrite, ZonesRoundTripAsNamedRegions) {
     fs::remove_all(base, ec);
 }
 
+// Roadmap §1.1: binary write, all four label/scalar width combinations.
+// Every combination must bit-exactly round-trip through the reader, which
+// already had binary support for every width (only the writer was missing).
+class OpenFoamBinaryWidths
+    : public ::testing::TestWithParam<std::pair<int, int>> {};
+
+TEST_P(OpenFoamBinaryWidths, RoundTripsBitExactly) {
+    const auto [label_bits, scalar_bits] = GetParam();
+    meshioplusplus::Mesh m = hex_grid(2);  // 8 hex cells, 27 points
+    m.AddRegion(meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({0, 5})));
+
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions wopts;
+    wopts.mBinary = true;
+    wopts.mLabelBits = label_bits;
+    wopts.mScalarBits = scalar_bits;
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, meshioplusplus::OpenFoamInfo{},
+                                   wopts);
+
+    // The header must actually say so, or the round trip below would silently
+    // exercise the ASCII reader path instead of the binary one.
+    {
+        std::ifstream pf(base / "constant" / "polyMesh" / "points");
+        std::string text((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find("format      binary;"), std::string::npos);
+        EXPECT_NE(text.find("label=" + std::to_string(label_bits)), std::string::npos);
+        EXPECT_NE(text.find("scalar=" + std::to_string(scalar_bits)), std::string::npos);
+    }
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), info);
+    EXPECT_EQ(back.NumPoints(), 27u);
+    std::size_t nhex = 0;
+    for (const auto cb : back.CellRange())
+        if (cb.Type() == "hexahedron")
+            nhex += cb.NumCells();
+    EXPECT_EQ(nhex, 8u);
+
+    // Points must match to the written scalar width's own precision -- exact
+    // for 64-bit, float-rounded for 32-bit (hex_grid's coordinates are small
+    // integers, which float32 represents exactly, so this stays an exact
+    // comparison either way rather than needing a tolerance).
+    ASSERT_EQ(back.NumPoints(), m.NumPoints());
+    for (std::size_t i = 0; i < back.NumPoints() * 3; ++i)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(back.Points(), i),
+                         meshioplusplus::detail::read_double(m.Points(), i));
+
+    ASSERT_NE(back.FindRegion("core", meshioplusplus::RegionKind::Cell), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& core =
+        back.Region(back.FindRegion("core", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(core.NumEntries(), 2u);
+    EXPECT_EQ(core.Entries()[0], 0);
+    EXPECT_EQ(core.Entries()[1], 5);
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+INSTANTIATE_TEST_SUITE_P(WidthCombinations, OpenFoamBinaryWidths,
+                        ::testing::Values(std::pair{32, 64}, std::pair{32, 32},
+                                          std::pair{64, 64}, std::pair{64, 32}));
+
+TEST(OpenFoamWrite, BinaryAndAsciiWriteOfTheSameMeshReadToIdenticalMeshes) {
+    meshioplusplus::Mesh m = hex_grid(2);
+    m.AddRegion(meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({0, 5})));
+
+    const fs::path ascii_base = write_case(m);
+    const fs::path binary_base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions wopts;
+    wopts.mBinary = true;
+    meshioplusplus::write_openfoam((binary_base / "case.foam").string(), m,
+                                   meshioplusplus::OpenFoamInfo{}, wopts);
+
+    meshioplusplus::OpenFoamInfo ai, bi;
+    const meshioplusplus::Mesh a =
+        meshioplusplus::read_openfoam((ascii_base / "case.foam").string(), ai);
+    const meshioplusplus::Mesh b =
+        meshioplusplus::read_openfoam((binary_base / "case.foam").string(), bi);
+
+    EXPECT_EQ(a.NumPoints(), b.NumPoints());
+    EXPECT_EQ(a.NumCellBlocks(), b.NumCellBlocks());
+    for (std::size_t i = 0; i < a.NumPoints() * 3; ++i)
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(a.Points(), i),
+                         meshioplusplus::detail::read_double(b.Points(), i));
+    for (std::size_t bi_ = 0; bi_ < a.NumCellBlocks(); ++bi_)
+        for (std::size_t i = 0; i < a.Cells(bi_).Conn().Size(); ++i)
+            EXPECT_EQ(a.Cells(bi_).Conn().As<std::int64_t>()[i],
+                     b.Cells(bi_).Conn().As<std::int64_t>()[i]);
+
+    std::error_code ec;
+    fs::remove_all(ascii_base, ec);
+    fs::remove_all(binary_base, ec);
+}
+
+TEST(OpenFoamWrite, BinaryPolyhedronRoundTrips) {
+    meshioplusplus::Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0},
+                                    {1, 0, 0},
+                                    {1, 1, 0},
+                                    {0, 1, 0},
+                                    {0, 0, 1},
+                                    {1, 0, 1},
+                                    {1, 1, 1},
+                                    {0, 1, 1}}));
+    // A cube with its top face split into two triangles: 7 faces over 8
+    // points, which matches none of the reader's known (n_faces, n_points)
+    // cell signatures (tetra 4/4, pyramid 5/5, wedge 5/6, hexahedron 6/8) --
+    // unlike a plain 6-quad-face cube, which the reader would reclassify
+    // back into a hexahedron. This keeps the ragged nfaced binary path
+    // genuinely exercised end to end, not just decoded and then merged away.
+    m.AddPolyhedronBlock("polyhedron7", {{{0, 3, 2, 1},
+                                          {0, 1, 5, 4},
+                                          {1, 2, 6, 5},
+                                          {2, 3, 7, 6},
+                                          {3, 0, 4, 7},
+                                          {4, 5, 6},
+                                          {4, 6, 7}}});
+
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions wopts;
+    wopts.mBinary = true;
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, meshioplusplus::OpenFoamInfo{},
+                                   wopts);
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), info);
+    EXPECT_EQ(back.NumPoints(), 8u);
+    // With no cell to be a neighbour, all 7 faces are also boundary faces,
+    // so they additionally come back as five one-cell `quad` and two
+    // one-cell `triangle` blocks (the single, untagged `defaultFaces` patch).
+    std::size_t nvol = 0, nquad = 0, ntri = 0;
+    for (const auto cb : back.CellRange()) {
+        if (cb.IsPolyhedron())
+            nvol += cb.NumCells();
+        else if (cb.Type() == "quad")
+            nquad += cb.NumCells();
+        else if (cb.Type() == "triangle")
+            ntri += cb.NumCells();
+    }
+    EXPECT_EQ(nvol, 1u);
+    EXPECT_EQ(nquad, 5u);
+    EXPECT_EQ(ntri, 2u);
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamWrite, BinaryZonesRoundTripAsNamedRegions) {
+    // Same fixture as ZonesRoundTripAsNamedRegions, but binary -- exercises
+    // parse_zone_file_binary specifically (cellZones/pointZones/faceZones'
+    // List<label> payload is raw bytes, everything else around it stays text).
+    meshioplusplus::Mesh m = hex_grid(2);
+    m.AddRegion(meshioplusplus::Region("core", meshioplusplus::RegionKind::Cell, i64({0, 5})));
+    m.AddRegion(meshioplusplus::Region("corners", meshioplusplus::RegionKind::Point, i64({0, 26})));
+    m.AddRegion(
+        meshioplusplus::Region("inlet", meshioplusplus::RegionKind::Side, i64_pairs({0, 0})));
+
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions wopts;
+    wopts.mBinary = true;
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, meshioplusplus::OpenFoamInfo{},
+                                   wopts);
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "cellZones"));
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "pointZones"));
+    EXPECT_TRUE(fs::exists(base / "constant" / "polyMesh" / "faceZones"));
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), info);
+
+    ASSERT_NE(back.FindRegion("core", meshioplusplus::RegionKind::Cell), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& core =
+        back.Region(back.FindRegion("core", meshioplusplus::RegionKind::Cell));
+    ASSERT_EQ(core.NumEntries(), 2u);
+    EXPECT_EQ(core.Entries()[0], 0);
+    EXPECT_EQ(core.Entries()[1], 5);
+
+    ASSERT_NE(back.FindRegion("corners", meshioplusplus::RegionKind::Point),
+             meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& corners =
+        back.Region(back.FindRegion("corners", meshioplusplus::RegionKind::Point));
+    ASSERT_EQ(corners.NumEntries(), 2u);
+    EXPECT_EQ(corners.Entries()[0], 0);
+    EXPECT_EQ(corners.Entries()[1], 26);
+
+    ASSERT_NE(back.FindRegion("inlet", meshioplusplus::RegionKind::Side), meshioplusplus::Mesh::npos);
+    const meshioplusplus::Region& inlet =
+        back.Region(back.FindRegion("inlet", meshioplusplus::RegionKind::Side));
+    ASSERT_EQ(inlet.NumEntries(), 1u);
+    EXPECT_EQ(inlet.Entries()[0], 0);
+
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
 // Roadmap §1 tier B2: reconstructing a decomposed (`processor*/`) case.
 //
 // Two unit hexahedra sharing one face (cube A: x in [0,1], cube B: x in

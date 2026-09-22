@@ -113,7 +113,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `tikz`:** Write-only; emits a standalone (directly `pdflatex`-compilable) LaTeX/TikZ document by default (`standalone=False` for a bare `tikzpicture` snippet). Flat 2D meshes draw directly; genuinely 3D meshes render their boundary skin like the SVG writer (same camera parameters). C++ core (byte-identical to the Python reference, including the 3D path) with a Python fallback.
 
-**Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII only on write (binary is a follow-up). Polyhedral cells are native here.
+**Note on `openfoam`:** A directory-based format (`points`/`faces`/`owner`/`neighbour`/`boundary` under `constant/polyMesh`), not a single file — so it is the only writer that *creates a directory*. Writing takes a `.foam` marker file, a `polyMesh` directory, or a case root; a case *directory* has no extension, so that form needs an explicit `file_format="openfoam"`. ASCII by default; `binary=True` (v15.5.0) writes little-endian binary at a chosen `label_bits`/`scalar_bits` width, Python/C++ only. Polyhedral cells are native here.
 
 **Note on `mfm`:** Single element type per file (non-hybrid), linear elements only.
 
@@ -396,7 +396,7 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 
 ### OpenFOAM (`.foam`)
 
-`meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh)` — no extra options. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer).
+`meshioplusplus.openfoam.read(filename)` / `meshioplusplus.openfoam.write(filename, mesh, binary=False, label_bits=32, scalar_bits=64)`. `write` creates `<case>/constant/polyMesh/`; it is the only meshio++ writer that produces a directory, and needs the compiled core (there is no Python fallback writer). See [OpenFOAM](formats/openfoam.md#binary-write).
 
 ### glTF (`.glb`, `.gltf`)
 

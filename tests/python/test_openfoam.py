@@ -1518,3 +1518,74 @@ class TestWrite:
         )
         with pytest.raises(Exception, match="volume cells"):
             meshioplusplus.openfoam.write(tmp_path / "case.foam", m)
+
+
+class TestBinaryWrite:
+    """roadmap §1.1: OpenFOAM binary write (C++ core only)."""
+
+    @staticmethod
+    def _hex_grid(n):
+        return TestWrite._hex_grid(n)
+
+    @pytest.mark.parametrize(
+        ("label_bits", "scalar_bits"), [(32, 64), (32, 32), (64, 64), (64, 32)]
+    )
+    def test_round_trips_bit_exactly(self, tmp_path, label_bits, scalar_bits):
+        m = self._hex_grid(2)
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(
+            case, m, binary=True, label_bits=label_bits, scalar_bits=scalar_bits
+        )
+
+        header = (tmp_path / "constant" / "polyMesh" / "points").read_bytes()
+        assert b"format      binary;" in header
+        assert f"label={label_bits}".encode() in header
+        assert f"scalar={scalar_bits}".encode() in header
+
+        back = meshioplusplus.openfoam.read(case)
+        assert len(back.points) == 27
+        assert np.allclose(back.points, m.points)
+        nhex = sum(len(c.data) for c in back.cells if c.type == "hexahedron")
+        assert nhex == 8
+
+    def test_binary_and_ascii_write_read_to_identical_meshes(self, tmp_path):
+        m = self._hex_grid(2)
+        ascii_case = tmp_path / "ascii" / "case.foam"
+        binary_case = tmp_path / "binary" / "case.foam"
+        meshioplusplus.openfoam.write(ascii_case, m, binary=False)
+        meshioplusplus.openfoam.write(binary_case, m, binary=True)
+
+        a = meshioplusplus.openfoam.read(ascii_case)
+        b = meshioplusplus.openfoam.read(binary_case)
+        assert len(a.points) == len(b.points)
+        assert np.allclose(a.points, b.points)
+        assert len(a.cells) == len(b.cells)
+        for ca, cb in zip(a.cells, b.cells):
+            assert ca.type == cb.type
+            assert np.array_equal(ca.data, cb.data)
+
+    def test_binary_zones_round_trip_as_named_regions(self, tmp_path):
+        m = self._hex_grid(2)
+        m.regions.append(meshioplusplus.Region("core", "cell", np.array([0, 5])))
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(case, m, binary=True)
+        poly = tmp_path / "constant" / "polyMesh"
+        assert (poly / "cellZones").is_file()
+
+        back = meshioplusplus.openfoam.read(case)
+        core = next(r for r in back.regions if r.name == "core" and r.kind == "cell")
+        assert list(core.entries) == [0, 5]
+
+    def test_foamlib_reads_our_binary_points_and_owner(self, tmp_path):
+        foamlib = pytest.importorskip("foamlib")
+        m = self._hex_grid(2)
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(case, m, binary=True)
+        poly = tmp_path / "constant" / "polyMesh"
+
+        points = foamlib.FoamFile(poly / "points")[None]
+        assert np.allclose(np.asarray(points), m.points)
+
+        owner = foamlib.FoamFile(poly / "owner")[None]
+        # 8 hexahedra on a 2x2x2 grid: 36 total faces, 12 internal.
+        assert len(np.asarray(owner)) == 36

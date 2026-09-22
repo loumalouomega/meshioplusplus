@@ -16151,7 +16151,11 @@ MESHIOPLUSPLUS_API Mesh read_obj(const std::string& rPath);
  * meshio++ that takes a directory path** — it creates
  * `<case>/constant/polyMesh/` and writes all five files. It goes through
  * `detail/face_mesh.hpp`'s global face table, which is also what CGNS's
- * `NFACE_n` writer uses. ASCII only; a binary polyMesh is a follow-up.
+ * `NFACE_n` writer uses. Since v15.5.0 (roadmap §1.1) an `OpenFoamWriteOptions`
+ * overload writes binary too, little-endian only, at the same `label=32/64`,
+ * `scalar=32/64` widths the reader already accepts; a big-endian host refuses
+ * a binary request by name rather than writing bytes the reader could not
+ * read back on its own machine.
  *
  * Only mesh topology is read or written; OpenFOAM field files (`U`, `p`,
  * `T`, …) under a case's time directories are never touched by this module,
@@ -16226,6 +16230,21 @@ struct OpenFoamInfo {
      * documented follow-up.
      */
     std::string mRegion;
+};
+
+/**
+ * @brief Write-side format options for `write_openfoam` (v15.5.0, roadmap
+ * §1.1) — a pure addition, kept separate from #OpenFoamInfo so that
+ * struct's ABI pin (128 bytes) is untouched.
+ */
+struct OpenFoamWriteOptions {
+    /// `false` (default) writes ASCII, matching every earlier release.
+    bool mBinary = false;
+    /// Label (integer) width in bits: 32 or 64. Only meaningful when
+    /// #mBinary is `true` — ASCII numbers carry no width of their own.
+    int mLabelBits = 32;
+    /// Scalar (floating-point) width in bits: 32 or 64.
+    int mScalarBits = 64;
 };
 
 // `path` may be a `.foam` marker file, a case directory, or a polyMesh
@@ -16355,6 +16374,28 @@ MESHIOPLUSPLUS_API MeshMetadata read_openfoam_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
                                        const OpenFoamInfo& rInfo);
+
+/**
+ * @brief Write an OpenFOAM polyMesh case with explicit format options.
+ *
+ * Identical to the three-argument overload, plus @p rOptions. `rOptions.mBinary`
+ * writes `points`/`owner`/`neighbour`/zone label lists as raw little-endian
+ * bytes (count, `(`, bytes, `)`) and `faces` the same length-prefixed-per-face
+ * way the reader already expects (see "Binary write" in `doc/formats/openfoam.md`) —
+ * not `CompactListList`, which this reader does not read. The header's
+ * `format`/`arch` lines record the encoding and widths, exactly as the reader
+ * requires to parse it back (see `read_openfoam`'s `detect_format`).
+ *
+ * @param rPath a `.foam` file, case directory, or polyMesh directory
+ * @param rMesh the mesh to write
+ * @param rInfo patch names and types, as the three-argument overload
+ * @param rOptions binary flag and label/scalar widths (see #OpenFoamWriteOptions)
+ * @throws WriteError for the same reasons as the three-argument overload,
+ *         plus a binary request on a big-endian host
+ */
+MESHIOPLUSPLUS_API void write_openfoam(const std::string& rPath, const Mesh& rMesh,
+                                       const OpenFoamInfo& rInfo,
+                                       const OpenFoamWriteOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/openfoam.hpp =====
@@ -73667,6 +73708,7 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/openfoam.cpp =====
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -73747,6 +73789,15 @@ FoamFormat detect_format(const std::string& rPath) {
                 fmt.mBinary = false;
         }
         if (s.rfind("arch", 0) == 0) {
+            // OpenFOAM's own arch strings are "LSB;label=32;scalar=64" (the
+            // "BSB" spelling is what a big-endian host's files would carry).
+            // Binary bytes this reader decodes are always little-endian, so a
+            // file naming anything else is refused by name rather than
+            // silently misread.
+            if (s.find("BSB") != std::string::npos)
+                throw ReadError(
+                    "OpenFOAM: big-endian ('BSB') binary files are not supported, only "
+                    "little-endian ('LSB')");
             std::size_t lp = s.find("label=");
             if (lp != std::string::npos) {
                 int bits = std::atoi(s.c_str() + lp + 6);
@@ -74071,9 +74122,11 @@ std::vector<std::int64_t> foam_zone_label_list(const std::string& rBlock, const 
     return out;
 }
 
-/// Parse a `cellZones`/`faceZones`/`pointZones` file body (ASCII only -- a
-/// binary zone file is a documented follow-up, matching the writer's own
-/// ASCII-only scope).
+/// Parse an **ASCII** `cellZones`/`faceZones`/`pointZones` file body (the
+/// comment-and-header-stripped text). `parse_zone_file_binary`, further
+/// down, is the binary counterpart -- it cannot reuse this one, since
+/// `strip_comments_and_header`'s comment-removal pass is unsafe to run over
+/// a binary body.
 std::vector<Zone> parse_zone_file(const std::string& rBody, const char* pLabelKey) {
     std::vector<Zone> zones;
     for (const auto& [name, block] : foam_named_blocks(rBody))
@@ -74167,6 +74220,80 @@ std::vector<Face> read_binary_faces(std::string_view rRaw, int label_bytes) {
         p = blob + static_cast<std::size_t>(count) * static_cast<std::size_t>(label_bytes) + 1;
     }
     return faces;
+}
+
+/**
+ * @brief Binary counterpart of `parse_zone_file`.
+ *
+ * A zone file's *structure* (zone count, names, `{`/`}`, the `type ...;`
+ * line, the `List<label>` keyword and its own decimal count) stays plain
+ * text even under `format binary;` -- only each zone's id payload is raw
+ * bytes. That payload can legitimately contain a byte equal to `{`, `}` or
+ * `/` (a small id's low byte routinely does, e.g. `123` as little-endian
+ * `int32` starts with `0x7B` == `{`), so this walks the text directly on
+ * the **raw, unstripped** file bytes -- never through `strip_comments_and_header`,
+ * whose comment-removal pass scans the whole body and would desync on
+ * exactly those bytes -- and explicitly skips `count * LabelBytes` bytes as
+ * one opaque unit wherever it recognizes @p pLabelKey, instead of ever
+ * scanning byte-by-byte across a blob for a delimiter.
+ */
+std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLabelKey,
+                                         int LabelBytes) {
+    std::vector<Zone> zones;
+    auto [nzones, pos] = data_start(rRaw);
+    std::size_t p = pos;
+    for (std::int64_t z = 0; z < nzones; ++z) {
+        while (p < rRaw.size() && std::isspace(static_cast<unsigned char>(rRaw[p])))
+            ++p;
+        const std::size_t name_start = p;
+        while (p < rRaw.size() && !std::isspace(static_cast<unsigned char>(rRaw[p])))
+            ++p;
+        const std::string name(rRaw.substr(name_start, p - name_start));
+
+        const std::size_t brace = rRaw.find('{', p);
+        if (brace == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no opening '{'");
+        const std::size_t key_pos = rRaw.find(pLabelKey, brace + 1);
+        if (key_pos == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no '" + pLabelKey + "'");
+        const std::size_t lparen = rRaw.find('(', key_pos);
+        if (lparen == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no '(' after '" + pLabelKey + "'");
+
+        std::int64_t count = 0;
+        bool found = false;
+        for (std::size_t i = key_pos; i < lparen; ++i)
+            if (std::isdigit(static_cast<unsigned char>(rRaw[i]))) {
+                std::int64_t v = 0;
+                while (i < lparen && std::isdigit(static_cast<unsigned char>(rRaw[i])))
+                    v = v * 10 + (rRaw[i++] - '0');
+                count = v;
+                found = true;
+            }
+        if (!found)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no count before '('");
+
+        std::vector<std::int64_t> ids(static_cast<std::size_t>(count));
+        const char* base = rRaw.data() + lparen + 1;
+        for (std::int64_t i = 0; i < count; ++i) {
+            const std::size_t off = static_cast<std::size_t>(i) * static_cast<std::size_t>(LabelBytes);
+            ids[static_cast<std::size_t>(i)] =
+                LabelBytes == 4 ? static_cast<std::int64_t>(read_le<std::int32_t>(base + off))
+                                : read_le<std::int64_t>(base + off);
+        }
+        zones.push_back({name, std::move(ids)});
+
+        // Resume the text scan only *after* the raw blob -- everything from
+        // here to this zone's own closing '}' (its `);` terminator, the
+        // closing brace) is plain text again.
+        const std::size_t blob_end =
+            lparen + 1 + static_cast<std::size_t>(count) * static_cast<std::size_t>(LabelBytes);
+        const std::size_t zone_close = rRaw.find('}', blob_end);
+        if (zone_close == std::string_view::npos)
+            throw ReadError("OpenFOAM: zone '" + name + "' has no closing '}'");
+        p = zone_close + 1;
+    }
+    return zones;
 }
 
 // ---- dispatch readers ----
@@ -75079,9 +75206,20 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
 
         auto read_zone_file = [&](const char* pFile, const char* pKey) {
             std::vector<Zone> zones;
-            if (fs::exists(poly / pFile))
+            const fs::path zone_path = poly / pFile;
+            if (!fs::exists(zone_path))
+                return zones;
+            const FoamFormat zone_fmt = detect_format(zone_path.string());
+            if (zone_fmt.mBinary) {
+                // strip_comments_and_header's comment-removal pass scans the
+                // whole body and is unsafe over raw id bytes -- see
+                // parse_zone_file_binary's own doc comment.
+                const detail::FileSource source = read_whole(zone_path.string());
+                zones = parse_zone_file_binary(source.View(), pKey, zone_fmt.mLabelBytes);
+            } else {
                 zones = parse_zone_file(
-                    strip_comments_and_header(read_whole((poly / pFile).string()).View()), pKey);
+                    strip_comments_and_header(read_whole(zone_path.string()).View()), pKey);
+            }
             return zones;
         };
 
@@ -75356,7 +75494,8 @@ fs::path foam_polymesh_dir(const fs::path& rPath, bool ForWrite) {
 
 /// Standard FoamFile header. `detect_format` reads only `format` and `arch`,
 /// but the rest is what makes the file legible to OpenFOAM itself.
-void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject) {
+void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::string& rObject,
+                       const OpenFoamWriteOptions& rOpts) {
     // The credit cell is fixed-width (48 chars before the closing box edge) so
     // the banner stays aligned regardless of how long the release string is.
     std::string credit = detail::provenance_lines(detail::SlotTier::Bounded)[0];
@@ -75374,8 +75513,12 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
            "FoamFile\n"
            "{\n"
            "    version     2.0;\n"
-           "    format      ascii;\n"
-           "    class       "
+           "    format      "
+        << (rOpts.mBinary ? "binary" : "ascii") << ";\n";
+    if (rOpts.mBinary)
+        rOs << "    arch        \"LSB;label=" << rOpts.mLabelBits
+            << ";scalar=" << rOpts.mScalarBits << "\";\n";
+    rOs << "    class       "
         << rClass
         << ";\n"
            "    location    \"constant/polyMesh\";\n"
@@ -75384,6 +75527,30 @@ void foam_write_header(std::ostream& rOs, const std::string& rClass, const std::
         << ";\n"
            "}\n"
            "// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //\n\n";
+}
+
+// ---- binary body writers ----
+// Raw little-endian bytes, matching read_binary_points/read_binary_labels/
+// read_binary_faces's own expectations exactly (this file's read side, not
+// invented independently) -- see foam_write_header's arch line for the
+// widths a reader needs to parse these back.
+
+void foam_write_binary_label(std::ostream& rOs, std::int64_t v, int LabelBits) {
+    if (LabelBits == 32) {
+        const std::int32_t v32 = static_cast<std::int32_t>(v);
+        rOs.write(reinterpret_cast<const char*>(&v32), sizeof(v32));
+    } else {
+        rOs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    }
+}
+
+void foam_write_binary_scalar(std::ostream& rOs, double v, int ScalarBits) {
+    if (ScalarBits == 32) {
+        const float f = static_cast<float>(v);
+        rOs.write(reinterpret_cast<const char*>(&f), sizeof(f));
+    } else {
+        rOs.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    }
 }
 
 /**
@@ -75714,17 +75881,25 @@ using FoamZoneOut = std::pair<std::string, std::vector<std::int64_t>>;
 
 void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char* pObject,
                           const char* pZoneType, const char* pLabelKey,
-                          const std::vector<FoamZoneOut>& rZones) {
+                          const std::vector<FoamZoneOut>& rZones,
+                          const OpenFoamWriteOptions& rOpts) {
     auto f = foam_open(rPath);
-    foam_write_header(f, pClass, pObject);
+    foam_write_header(f, pClass, pObject, rOpts);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
         f << name << "\n{\n";
         f << "    type " << pZoneType << ";\n";
-        f << "    " << pLabelKey << " List<label>\n    " << ids.size() << "\n    (\n";
-        for (std::int64_t id : ids)
-            f << "    " << id << "\n";
-        f << "    );\n";
+        f << "    " << pLabelKey << " List<label>\n    " << ids.size() << "\n    (";
+        if (rOpts.mBinary) {
+            for (std::int64_t id : ids)
+                foam_write_binary_label(f, id, rOpts.mLabelBits);
+            f << ");\n";
+        } else {
+            f << "\n";
+            for (std::int64_t id : ids)
+                f << "    " << id << "\n";
+            f << "    );\n";
+        }
         f << "}\n";
     }
     f << ")\n";
@@ -75817,7 +75992,18 @@ std::vector<FoamZoneOut> foam_collect_face_zones(
 
 }  // namespace
 
-void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo,
+                    const OpenFoamWriteOptions& rOpts) {
+    if (rOpts.mBinary && std::endian::native == std::endian::big)
+        throw WriteError(
+            "OpenFOAM: binary write requested on a big-endian host; OpenFOAM binary files are "
+            "little-endian only, and writing big-endian bytes under a 'LSB' arch header would "
+            "silently corrupt every value read back");
+    if (rOpts.mBinary && rOpts.mLabelBits != 32 && rOpts.mLabelBits != 64)
+        throw WriteError("OpenFOAM: label_bits must be 32 or 64");
+    if (rOpts.mBinary && rOpts.mScalarBits != 32 && rOpts.mScalarBits != 64)
+        throw WriteError("OpenFOAM: scalar_bits must be 32 or 64");
+
     const detail::GlobalFaces faces = detail::build_global_faces(rMesh);
 
     if (faces.NumCells() == 0)
@@ -75907,38 +76093,71 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
     {
         auto f = foam_open(poly / "points");
-        foam_write_header(f, "vectorField", "points");
+        foam_write_header(f, "vectorField", "points", rOpts);
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
         // be read as data and the list would come back EMPTY, not as an error.
-        f << np << "\n(\n";
-        f << std::setprecision(16);
-        for (std::size_t i = 0; i < np; ++i) {
-            const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
-            f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+        if (rOpts.mBinary) {
+            f << np << "\n(";
+            for (std::size_t i = 0; i < np; ++i) {
+                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                for (double c : p)
+                    foam_write_binary_scalar(f, c, rOpts.mScalarBits);
+            }
+            f << ")\n";
+        } else {
+            f << np << "\n(\n";
+            f << std::setprecision(16);
+            for (std::size_t i = 0; i < np; ++i) {
+                const detail::Vec3 p = detail::read_point(pts, dim, static_cast<std::int64_t>(i));
+                f << "(" << p[0] << " " << p[1] << " " << p[2] << ")\n";
+            }
+            f << ")\n";
         }
-        f << ")\n";
     }
     {
         auto f = foam_open(poly / "faces");
-        foam_write_header(f, "faceList", "faces");
-        f << order.mNewToOld.size() << "\n(\n";
-        for (std::int64_t old : order.mNewToOld) {
-            const std::size_t fi = static_cast<std::size_t>(old);
-            f << faces.FaceSize(fi) << "(";
-            for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
-                f << (k ? " " : "") << faces.Face(fi)[k];
+        foam_write_header(f, "faceList", "faces", rOpts);
+        // Non-contiguous, so each face is its own length-prefixed labelList,
+        // in binary exactly as in ASCII -- the same shape read_binary_faces
+        // (this file's own reader) expects, not CompactListList.
+        if (rOpts.mBinary) {
+            f << order.mNewToOld.size() << "\n(";
+            for (std::int64_t old : order.mNewToOld) {
+                const std::size_t fi = static_cast<std::size_t>(old);
+                f << faces.FaceSize(fi) << "(";
+                for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                    foam_write_binary_label(f, faces.Face(fi)[k], rOpts.mLabelBits);
+                f << ")";
+            }
+            f << ")\n";
+        } else {
+            f << order.mNewToOld.size() << "\n(\n";
+            for (std::int64_t old : order.mNewToOld) {
+                const std::size_t fi = static_cast<std::size_t>(old);
+                f << faces.FaceSize(fi) << "(";
+                for (std::size_t k = 0; k < faces.FaceSize(fi); ++k)
+                    f << (k ? " " : "") << faces.Face(fi)[k];
+                f << ")\n";
+            }
             f << ")\n";
         }
-        f << ")\n";
     }
     {
         auto f = foam_open(poly / "owner");
-        foam_write_header(f, "labelList", "owner");
-        f << order.mNewToOld.size() << "\n(\n";
-        for (std::int64_t old : order.mNewToOld)
-            f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
-        f << ")\n";
+        foam_write_header(f, "labelList", "owner", rOpts);
+        if (rOpts.mBinary) {
+            f << order.mNewToOld.size() << "\n(";
+            for (std::int64_t old : order.mNewToOld)
+                foam_write_binary_label(f, faces.mOwner[static_cast<std::size_t>(old)],
+                                        rOpts.mLabelBits);
+            f << ")\n";
+        } else {
+            f << order.mNewToOld.size() << "\n(\n";
+            for (std::int64_t old : order.mNewToOld)
+                f << faces.mOwner[static_cast<std::size_t>(old)] << "\n";
+            f << ")\n";
+        }
     }
     {
         // Always written, even with zero entries: a stale `neighbour` left from
@@ -75947,17 +76166,28 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
         auto f = foam_open(poly / "neighbour");
-        foam_write_header(f, "labelList", "neighbour");
-        f << order.mNumInternal << "\n(\n";
-        for (std::int64_t i = 0; i < order.mNumInternal; ++i)
-            f << faces.mNeighbour[static_cast<std::size_t>(
-                     order.mNewToOld[static_cast<std::size_t>(i)])]
-              << "\n";
-        f << ")\n";
+        foam_write_header(f, "labelList", "neighbour", rOpts);
+        if (rOpts.mBinary) {
+            f << order.mNumInternal << "\n(";
+            for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+                foam_write_binary_label(
+                    f,
+                    faces.mNeighbour[static_cast<std::size_t>(
+                        order.mNewToOld[static_cast<std::size_t>(i)])],
+                    rOpts.mLabelBits);
+            f << ")\n";
+        } else {
+            f << order.mNumInternal << "\n(\n";
+            for (std::int64_t i = 0; i < order.mNumInternal; ++i)
+                f << faces.mNeighbour[static_cast<std::size_t>(
+                         order.mNewToOld[static_cast<std::size_t>(i)])]
+                  << "\n";
+            f << ")\n";
+        }
     }
     {
         auto f = foam_open(poly / "boundary");
-        foam_write_header(f, "polyBoundaryMesh", "boundary");
+        foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {
             f << "    " << p.mName << "\n    {\n";
@@ -75987,7 +76217,7 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
                     log::info("OpenFOAM: removed stale {}", pFile);
                 return;
             }
-            foam_write_zone_file(poly / pFile, pClass, pFile, pZoneType, pLabelKey, rZones);
+            foam_write_zone_file(poly / pFile, pClass, pFile, pZoneType, pLabelKey, rZones, rOpts);
         };
 
         write_or_remove("cellZones", foam_collect_cell_zones(rMesh, global_to_compact),
@@ -76001,6 +76231,10 @@ void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamI
 
     log::info("Wrote polyMesh to {} ({} cells, {} faces, {} internal, {} patches)", poly.string(),
               faces.NumCells(), order.mNewToOld.size(), order.mNumInternal, order.mPatches.size());
+}
+
+void write_openfoam(const std::string& rPath, const Mesh& rMesh, const OpenFoamInfo& rInfo) {
+    write_openfoam(rPath, rMesh, rInfo, OpenFoamWriteOptions{});
 }
 
 }  // namespace meshioplusplus
@@ -115814,9 +116048,10 @@ bool wopt_is_text_only(const std::string& rFormat);
 
 /// Formats with both an ASCII and a binary variant reachable from here.
 bool wopt_has_encoding_variants(const std::string& rFormat) {
-    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" || rFormat == "pcd" ||
-           rFormat == "ply" || rFormat == "stl" || rFormat == "vtk" || rFormat == "vti" ||
-           rFormat == "vtu" || rFormat == "vtp" || rFormat == "xdmf" || wopt_is_text_only(rFormat);
+    return rFormat == "ansys" || rFormat == "flac3d" || rFormat == "gmsh" ||
+           rFormat == "openfoam" || rFormat == "pcd" || rFormat == "ply" || rFormat == "stl" ||
+           rFormat == "vtk" || rFormat == "vti" || rFormat == "vtu" || rFormat == "vtp" ||
+           rFormat == "xdmf" || wopt_is_text_only(rFormat);
 }
 
 /// Text-only formats that still accept an explicit ASCII request.
@@ -115895,6 +116130,14 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
         write_flac3d(rPath, rMesh, r_ff, binary);
     } else if (fmt == "gmsh") {
         write_gmsh41(rPath, rMesh, binary);
+    } else if (fmt == "openfoam") {
+        // Label/scalar width is Python/C++-only (OpenFoamWriteOptions), not
+        // reachable from the generic ASCII/binary switch every other format
+        // shares here -- see doc/formats/openfoam.md.
+        OpenFoamInfo info;
+        OpenFoamWriteOptions wopts;
+        wopts.mBinary = binary;
+        write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
         write_pcd(rPath, rMesh, binary ? PcdData::Binary : PcdData::Ascii);
     } else if (fmt == "ply") {
