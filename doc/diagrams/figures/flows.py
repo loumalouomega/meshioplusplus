@@ -940,7 +940,6 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("half-gaps of shipped formats", "S"),
                 ("UNV · .mail · OptiStruct", "S"),
                 ("Nastran .h5 · COMSOL · Elmer", "M"),
             ],

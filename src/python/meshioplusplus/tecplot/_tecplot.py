@@ -393,7 +393,9 @@ def write(filename, mesh):
         if c.type in meshio_only:
             cell_blocks.append(ic)
         else:
-            warn(f"Tecplot does not support cell type '{c.type}'. Skipping cell block {ic}.")
+            warn(
+                f"Tecplot does not support cell type '{c.type}'. Skipping cell block {ic}."
+            )
     if not cell_blocks:
         raise WriteError("No cell type supported by Tecplot in mesh")
 
@@ -457,7 +459,9 @@ def write(filename, mesh):
             present = [j for j, pb in enumerate(cell_var_blocks) if ic in pb]
             passive = [j for j, pb in enumerate(cell_var_blocks) if ic not in pb]
 
-            f.write(f'ZONE T = "{title}", NODES = {num_nodes}, ELEMENTS = {num_cells},\n')
+            f.write(
+                f'ZONE T = "{title}", NODES = {num_nodes}, ELEMENTS = {num_cells},\n'
+            )
             f.write(f"DATAPACKING = BLOCK, ZONETYPE = {zone_type}")
             if bi > 0:
                 f.write(f",\nVARSHARELIST = ([1-{num_shared}] = 1)")

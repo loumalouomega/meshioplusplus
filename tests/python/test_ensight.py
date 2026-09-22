@@ -224,7 +224,9 @@ def test_variable_write_round_trips_scalar_vector_tensor_and_constant(binary, tm
     atol = 1.0e-6 if binary else 1.0e-5
     assert np.allclose(out.point_data["temp"], mesh.point_data["temp"], atol=atol)
     assert out.point_data["vel2d"].shape == (4, 3)
-    assert np.allclose(out.point_data["vel2d"][:, :2], mesh.point_data["vel2d"], atol=atol)
+    assert np.allclose(
+        out.point_data["vel2d"][:, :2], mesh.point_data["vel2d"], atol=atol
+    )
     assert np.allclose(out.point_data["vel2d"][:, 2], 0.0, atol=atol)
     assert np.allclose(out.point_data["sig"], mesh.point_data["sig"], atol=atol)
     assert np.allclose(out.cell_data["eps"][0], mesh.cell_data["eps"][0], atol=atol)

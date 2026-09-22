@@ -232,7 +232,9 @@ def test_convert_openfoam_binary_variant(mesh_file, tmp_path):
     # roadmap §1.1: openfoam joined the ascii/binary variant table. The
     # header is text but the data past it is raw bytes, so this reads bytes
     # rather than text (a binary points file is not valid UTF-8).
-    out = _dump(_tools.tool_convert(mesh_file, str(tmp_path / "case.foam"), mode="binary"))
+    out = _dump(
+        _tools.tool_convert(mesh_file, str(tmp_path / "case.foam"), mode="binary")
+    )
     points = (tmp_path / "constant" / "polyMesh" / "points").read_bytes()
     assert b"format      binary;" in points
     assert out["output_format"] == "openfoam"
