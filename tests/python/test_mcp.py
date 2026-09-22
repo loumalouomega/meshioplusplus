@@ -142,6 +142,19 @@ def test_frd_is_readable_not_writable_and_convert_reaches_its_steps(tmp_path):
     assert written.field_data["meshio:time"].tolist() == [2.0]
 
 
+def test_unv_uff_extension_and_convert_reaches_its_frequency_steps(tmp_path):
+    import pathlib
+
+    uff = str(pathlib.Path(__file__).parent / "meshes" / "unv" / "pyuff_frf.uff")
+    out = _dump(_tools.tool_formats())
+    assert out["extensions"][".uff"] == ["unv"] and "unv" in out["writable"]
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(uff, target, time_step=-1)
+    written = meshioplusplus.read(target)
+    assert "frf_real" in written.point_data and "frf_imag" in written.point_data
+    assert written.field_data["meshio:time"].tolist() == [20.0]
+
+
 def test_sniff(mesh_file):
     out = _dump(_tools.tool_sniff(mesh_file))
     assert out["format"] == "vtu"

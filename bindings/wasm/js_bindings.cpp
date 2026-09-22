@@ -1086,8 +1086,8 @@ val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
  * reader, bypassing the generic registry. `rOptions` is honoured exactly by
  * the formats whose reader takes a `ReadOptions` (med, mdpa, gmsh, exodus,
  * and openfoam since v11.4.0 -- roadmap §1 tier B2's `timeStep`/`arrays`
- * time-directory fields); ansysinp/unv have no selective-read path with or
- * without info.
+ * time-directory fields, and unv since v15.6.0 -- the steps of its results);
+ * ansysinp has no selective-read path with or without info.
  * @param rFormat must satisfy `format_supports_info`.
  * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
  */
@@ -1113,7 +1113,7 @@ Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
     }
     if (rFormat == "unv") {
         meshioplusplus::UnvInfo info;
-        Mesh mesh = meshioplusplus::read_unv(rPath, info);
+        Mesh mesh = meshioplusplus::read_unv(rPath, info, rOptions);
         rInfoOut = point_cell_sets_info_to_val("unv", info);
         return mesh;
     }
@@ -1343,7 +1343,7 @@ val read_mesh(const std::string& rPath, const std::string& rFormat) {
  *   for any other format, rather than throwing, so a caller can always pass
  *   `info: true` and check `mesh.info` itself. `pointsOnly`/`arrays` are only
  *   honoured for the formats whose Info-bearing reader takes a `ReadOptions`
- *   (med, mdpa, gmsh, exodus); openfoam/ansysinp/unv have no selective-read
+ *   (med, mdpa, gmsh, exodus, unv); openfoam/ansysinp have no selective-read
  *   path with or without info, exactly as they have none without `info`.
  *
  * Formats without a native selective path are read whole and filtered, so the

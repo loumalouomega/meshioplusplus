@@ -13,8 +13,9 @@ is a **read-only** entry recorded below rather than a row here -- this matrix
 is a round-trip table, and a format that cannot write cannot round-trip.
 FLAC3D round-trips a cell region's *membership* but rewrites its *name* into
 the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
-bucket too rather than weakening this table's exact-name assertion. UNV,
-Ansys and XDMF are deferred entirely. See ``doc/regions.md``.
+bucket too rather than weakening this table's exact-name assertion. UNV joined
+in v15.6.0, mapping its permanent groups. Ansys and XDMF are deferred entirely.
+See ``doc/regions.md``.
 """
 
 import numpy as np
@@ -131,6 +132,19 @@ MATRIX = [
         "OpenFOAM has no format-native integer id for a zone, so `tag` is "
         "not carried.",
         id="openfoam",
+    ),
+    pytest.param(
+        "unv",
+        ".unv",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A permanent group (dataset 2467) lists nodes (entity type 7) and "
+        "elements (type 8), so point and cell regions map onto it and a point "
+        "and a cell region sharing a name are one group. The group number is "
+        "the region's tag when it is positive; an untagged region (here "
+        "`clamped`) gets the next free number, so `tag` is not asserted. UNV "
+        "has no facet group, so side regions are dropped.",
+        id="unv",
     ),
 ]
 
@@ -264,7 +278,6 @@ def test_side_regions_are_the_new_capability():
 # Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
 # --------------------------------------------------------------------------- #
 PHASE_2 = {
-    "unv": "groups (absorbing UnvInfo)",
     "ansysInp": "components (absorbing AnsysInfo)",
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",

@@ -2877,9 +2877,9 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ugrid(path));
     });
 
-    // UNV (I-DEAS Universal) writer / reader (.unv).  point_data/cell_data
-    // become field datasets 2414 (or 55/57 in Code-Aster mode); permanent
-    // groups (point_sets/cell_sets) travel via the UnvInfo side-channel.
+    // UNV (I-DEAS Universal) writer / reader (.unv / .uff). Groups travel as the mesh's
+    // regions; `point_sets`/`cell_sets` are extra groups (the UnvInfo side channel).
+    // `time_step` selects a step of the results (2414 / 55 / 56 / 58).
     m.def(
         "unv_write",
         [](const std::string& path, py::object pymesh,
@@ -2893,28 +2893,18 @@ PYBIND11_MODULE(_core, m) {
             info.mCellSets = std::move(cell_sets);
             meshioplusplus::write_unv(path, cpp, info, code_aster, node_dataset);
         },
-        py::arg("path"), py::arg("mesh"), py::arg("point_sets"), py::arg("cell_sets"),
+        py::arg("path"), py::arg("mesh"),
+        py::arg("point_sets") = std::map<std::string, std::vector<std::int64_t>>{},
+        py::arg("cell_sets") = std::map<std::string, std::vector<std::vector<std::int64_t>>>{},
         py::arg("code_aster") = false, py::arg("node_dataset") = 2411);
-    m.def("unv_read", [](const std::string& path) {
-        meshioplusplus::UnvInfo info;
-        py::object pymesh = meshioplusplus_py::mesh_to_py(meshioplusplus::read_unv(path, info));
-        py::dict psets, csets;
-        for (const auto& kv : info.mPointSets)
-            psets[py::str(kv.first)] = py::array_t<std::int64_t>(
-                static_cast<py::ssize_t>(kv.second.size()), kv.second.data());
-        for (const auto& kv : info.mCellSets) {
-            py::list blocks;
-            for (const auto& blk : kv.second)
-                blocks.append(
-                    py::array_t<std::int64_t>(static_cast<py::ssize_t>(blk.size()), blk.data()));
-            csets[py::str(kv.first)] = blocks;
-        }
-        if (py::len(psets) > 0)
-            pymesh.attr("point_sets") = psets;
-        if (py::len(csets) > 0)
-            pymesh.attr("cell_sets") = csets;
-        return pymesh;
-    });
+    m.def(
+        "unv_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(
+                meshioplusplus::read_unv(path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
 
     // EnSight Gold writer / reader (.case/.geo pair, geometry only).
     m.def("ensight_write", [](const std::string& path, py::object pymesh, bool binary) {
