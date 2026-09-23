@@ -83,6 +83,12 @@ const std::vector<NodeOrderSource>& node_order_sources() {
         {"code_aster", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
                                                      9,  10, 11, 16, 17, 18, 19, 12, 13,
                                                      14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // FEBio `.feb`/`.xplt`: hex27's mid-height face centres run y-, x+, y+,
+        // x- (FECore/FESolidElementShape.cpp FEHex27); every other FEBio type,
+        // hex20, penta15, pyra13 and tet10 included, is in meshio++'s order.
+        {"febio", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                9,  10, 11, 12, 13, 14, 15, 16, 17,
+                                                18, 19, 23, 21, 20, 22, 24, 25, 26}},
         // CalculiX `.frd`: the he20 and pe15 mid-edge groups and the be3 mid
         // node sit elsewhere than in Abaqus order (confirmed against ccx 2.23
         // output for the same `.inp`).

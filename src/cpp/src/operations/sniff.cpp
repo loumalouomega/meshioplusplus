@@ -158,6 +158,9 @@ std::string sniff_format(const std::string& rPath) {
     // --- binary magics ---
     if (sniff_is_mphbin(head))
         return "mphbin";
+    // FEBio input: XML whose root is <febio_spec>.
+    if (sniff_contains(head, "<febio_spec"))
+        return "febio";
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {

@@ -62,6 +62,7 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {"    1C\r\n    2C                            20\r\n", "frd"},
         {"# Created by COMSOL\n0 1 \n1 # number of tags\n5 mesh1 \n", "mphtxt"},
         {std::string("\0\0\0\0\1\0\0\0\1\0\0\0\5\0\0\0m\0\0\0", 20), "mphbin"},
+        {"<?xml version=\"1.0\"?>\n<febio_spec version=\"4.0\">", "febio"},
         {"0 1 2 3\n", ""},
         {"    1C\n", ""},
         {"    1C\nsomething else\n", ""},
