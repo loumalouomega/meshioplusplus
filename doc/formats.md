@@ -9,6 +9,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — |
+| [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | — | — |
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
 | [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — |
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
@@ -82,6 +83,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
 
 **Note on Elmer meshes (`elmer`)** (v16.2.0): ElmerSolver's native mesh, a *directory* of `mesh.header`, `mesh.nodes`, `mesh.elements`, `mesh.boundary` and `mesh.names`, read and written by both engines. Bulk and boundary elements are separate cell blocks; bodies and boundaries are `cell` regions tagged with their Elmer ids and named from `mesh.names`. Only the `820`/`827` bricks have a node permutation, pinned against ElmerSolver's `elements.def` and its own VTU writer. A partitioned mesh (`partitioning.N/part.n.*`, halo copies included) is merged with each cell's part in `cell_data["partition:part"]`, and `piece=` reads one part. The writer is serial: the highest-dimensional cells are the bulk, every lower-dimensional cell and every `side` region facet a boundary element with regenerated parents. Checked against ElmerGrid and ElmerSolver built from source. See [Elmer](./formats/elmer.md).
+
+**Note on Ansys MAPDL (`ansysInp`, `ansys_rst`)** (v16.3.0): the coded database (`.cdb`) is read and written by both engines with each block cut by its own Fortran format line, so MAPDL, Workbench and HyperMesh decks read alike. Elements become cells by their element routine's category, with degenerate bricks and shells resolved by their repeated nodes and missing midside nodes created at their edge midpoints; the routine, type, material, real constant and section are `ansys:*` cell data, and `CMBLOCK` components are point and cell regions. The writer emits MAPDL's own layouts (wedges, pyramids and tetrahedra as degenerate SOLID185/186 bricks) and keeps a model's element types. MAPDL's binary results (`.rst`, `.rth`) are **read-only**: the same mesh from the geometry records, and one step per result set whose nodal DOF solution (`U`, `ROT`, `TEMP` ...) is point data rotated to the global axes. Element results are not read yet. Both are checked against mapdl-archive and pymapdl-reader on files MAPDL wrote. See [`ansysinp.md`](./formats/ansysinp.md) and [`ansys_rst.md`](./formats/ansys_rst.md).
 
 **Note on FEBio (`febio`, `xplt`)** (v16.2.0): the mesh of an FEBio input file (`.feb`, spec 2.5 in `<Geometry>`, 3.0 and 4.0 in `<Mesh>`) is read by both engines under the rules of FEBio's own parsers: each `<Elements>` block a cell block and a cell region, `<NodeSet>`/`<ElementSet>` point and cell regions, a `<Surface>` on solid faces a side region, `<Edge>`/`<DiscreteSet>` line blocks, `<MeshData>` point and cell data. The writer emits spec 4.0 with a placeholder material per domain; faces of solids become surfaces, lone two-node lines discrete springs. FEBio's plot file (`.xplt`, read-only) is read one state at a time (`time_step`), compressed or not, in either byte order: nodal variables as point data, per-element ones as cell data, per-element-node ones averaged to the points. Only `hex27` has a node permutation (`FEHex27`'s face centres). Both were checked against FEBio 4.12 built from source. See [FEBio input](./formats/febio.md) and [FEBio plot files](./formats/xplt.md).
 
@@ -410,7 +413,7 @@ MED does not support compression. `meshioplusplus.med.read_med_multi`/ `write_me
 
 ### AnsysInp (`.cdb`, `.inp`)
 
-`meshioplusplus.ansysInp.read(filename)` / `meshioplusplus.ansysInp.write(filename, mesh)` — no extra options. See the [`.inp` note](#format-table) above for the Abaqus extension collision.
+`meshioplusplus.ansysInp.read(filename, lenient=False)` / `meshioplusplus.ansysInp.write(filename, mesh)`: `lenient` skips elements whose type has no meshio++ cell instead of failing. See the [`.inp` note](#format-table) above for the Abaqus extension collision.
 
 ### OpenFOAM (`.foam`)
 

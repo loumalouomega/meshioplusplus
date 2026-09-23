@@ -251,6 +251,7 @@ export default defineConfig({
           { text: "abaqus", link: "/formats/abaqus" },
           { text: "ansys", link: "/formats/ansys" },
           { text: "ansysInp", link: "/formats/ansysinp" },
+          { text: "ansys_rst", link: "/formats/ansys_rst" },
           { text: "avsucd", link: "/formats/avsucd" },
           { text: "cae", link: "/formats/cae" },
           { text: "cgns", link: "/formats/cgns" },
