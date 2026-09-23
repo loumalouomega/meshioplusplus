@@ -50,6 +50,7 @@ const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
         case CT::Triangle:
             return triangle;
         case CT::Triangle6:
+        case CT::Triangle7:  // same edges as triangle6; node 6 (center) is on no edge
             return triangle6;
         case CT::Quad:
             return quad;

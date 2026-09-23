@@ -110,7 +110,7 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
         if (type == "line") {
             n_corner = 2;
             is_line = true;
-        } else if (type == "triangle" || type == "triangle6") {
+        } else if (type == "triangle" || type == "triangle6" || type == "triangle7") {
             n_corner = 3;
         } else if (type == "quad" || type == "quad8" || type == "quad9") {
             n_corner = 4;

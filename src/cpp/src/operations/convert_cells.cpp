@@ -64,6 +64,7 @@ CellType ccells_linear_base(CellType type) {
         case CellType::Line4:
             return CellType::Line;
         case CellType::Triangle6:
+        case CellType::Triangle7:
         case CellType::Triangle10:
             return CellType::Triangle;
         case CellType::Quad8:

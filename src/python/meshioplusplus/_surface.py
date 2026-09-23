@@ -32,6 +32,12 @@ _CELL_EDGES = {
         ("line3", 2, (1, 2, 4)),
         ("line3", 2, (2, 0, 5)),
     ],
+    # Same edges as triangle6; node 6 (the center) is on no edge.
+    "triangle7": [
+        ("line3", 2, (0, 1, 3)),
+        ("line3", 2, (1, 2, 4)),
+        ("line3", 2, (2, 0, 5)),
+    ],
     "quad": [
         ("line", 2, (0, 1)),
         ("line", 2, (1, 2)),

@@ -40,7 +40,7 @@ So yes: **an inline function body change counts, even though no type changed siz
 ### Tier C — additive. Do **not** bump.
 
 - a **new** inline function, constexpr variable, type, free-function declaration, or header;
-- an **appended** enumerator.
+- an **appended** enumerator — one that comes after every existing enumerator. `CellType` ends in a catch-all `Custom` that follows its X-macro, so a new cell type moves `Custom` and is Tier A (ABI 16).
 
 Nothing that already existed changes definition, so an already-compiled consumer's translation unit is byte-for-byte what it was. It simply does not have the new name. v9.3.0's `kExodusAttributePrefix` is exactly this.
 
@@ -48,7 +48,7 @@ Record these in [`doc/abi_reviews.md`](abi_reviews.md), which is what lets the C
 
 #### The one asymmetry: appended enumerators
 
-Appending to `CellType` (`enum class CellType : std::uint16_t` — fixed underlying type, so the width never moves) is safe in the direction that matters: **older headers + newer library**. The reverse — a consumer compiled against *newer* headers running against an *older* library — can hand the library an enumerator it has never heard of. The guard below enforces exact agreement, so this cannot arise silently; it is documented because the tiers would otherwise seem to promise more than they do.
+Appending to an enum with a fixed underlying type (`RemeshMetric`, `CardMode`; the width never moves) is safe in the direction that matters: **older headers + newer library**. The reverse — a consumer compiled against *newer* headers running against an *older* library — can hand the library an enumerator it has never heard of. The guard below enforces exact agreement, so this cannot arise silently; it is documented because the tiers would otherwise seem to promise more than they do.
 
 ### What is out of scope entirely
 
@@ -75,6 +75,7 @@ Same-toolchain is a **precondition**, not something meshio++ can check. A consum
 | 13 | v11.4.0 | `OpenFoamInfo` gained `mRegion` (multi-region case selection, roadmap §1 tier B2), 96 → 128 bytes |
 | 14 | v14.0.0 | `ReadOptions` gained `mPiece`/`mPieceSet`, the merge-or-select-pieces switch for partitioned files (VTKHDF), 56 → 72 bytes, and with it the four aggregates that embed it by value (`PipelineInput`, `Pipeline`, `SequenceInput`, `SequencePipeline`; +16 each) |
 | 15 | v15.0.0 | **Tier A, and `sizeof` did not move**: `ReadOptions` gained `mGhosts` (`GhostPolicy`, `std::uint8_t`), the keep-or-drop switch for the ghost cells of a partitioned file (`pvtu`/`pvtp`/`pvd`). It was appended into the 7 bytes of tail padding after `mPieceSet`, so `sizeof(ReadOptions)` stays 72 and `PipelineInput`, `Pipeline`, `SequenceInput` and `SequencePipeline` do not move either — but a consumer compiled against v14 headers leaves that byte indeterminate and a v15 library reads it as the policy, so it is a break all the same. The layout snapshot cannot see it beyond the new offset pin; the ABI number is the record. |
+| 16 | v16.0.0 | **Tier A, from an appended enumerator**: `CellType` gained `Triangle7` (Code_Aster's `TRIA7`, VTK 34). The X-macro that generates the enum sits *before* `Custom`, so `Custom` moved from 76 to 77, and the inline `cell_type_name`/`cell_type_num_nodes`/`cell_type_dimension` tables grew; the C API's `mio_cell_type` mirror moved with it (`MIO_CELL_Custom` 76 → 77). Appending is Tier C only while nothing follows the new enumerator, which `Custom` does. `test_abi_layout.cpp` now pins both values. |
 
 It reaches consumers three ways:
 

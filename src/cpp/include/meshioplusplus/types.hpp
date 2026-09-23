@@ -63,6 +63,7 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
         //
         {"line3", 3},
         {"triangle6", 6},
+        {"triangle7", 7},
         {"quad9", 9},
         {"tetra10", 10},
         {"hexahedron27", 27},
@@ -153,6 +154,7 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
         {"pyramid", 3},
         {"line3", 1},
         {"triangle6", 2},
+        {"triangle7", 2},
         {"quad9", 2},
         {"tetra10", 3},
         {"hexahedron27", 3},

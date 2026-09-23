@@ -121,7 +121,8 @@ namespace meshioplusplus {
     X(VtkLagrangeTetrahedron, "VTK_LAGRANGE_TETRAHEDRON", -1, 3)     \
     X(VtkLagrangeHexahedron, "VTK_LAGRANGE_HEXAHEDRON", -1, 3)       \
     X(VtkLagrangeWedge, "VTK_LAGRANGE_WEDGE", -1, 3)                 \
-    X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)
+    X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)             \
+    X(Triangle7, "triangle7", 7, 2)
 
 /**
  * @brief Compact identifier for a meshio cell type.

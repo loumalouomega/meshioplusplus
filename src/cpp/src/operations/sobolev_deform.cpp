@@ -84,8 +84,8 @@ SoboCells sobo_gather_cells(const Mesh& rMesh) {
         const bool simplex =
             ct == CellType::Line || ct == CellType::Triangle || ct == CellType::Tetra;
         if (!simplex) {
-            const bool quadratic =
-                ct == CellType::Line3 || ct == CellType::Triangle6 || ct == CellType::Tetra10;
+            const bool quadratic = ct == CellType::Line3 || ct == CellType::Triangle6 ||
+                                   ct == CellType::Triangle7 || ct == CellType::Tetra10;
             throw std::invalid_argument(
                 std::string(kSoboPrefix) + "cell block '" + type + "' is not a linear simplex; " +
                 (quadratic ? "linearize the mesh first" : "run convert_cells(simplexify) first"));
