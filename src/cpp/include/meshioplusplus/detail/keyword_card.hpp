@@ -15,7 +15,6 @@
 //
 //
 #pragma once
-#pragma once
 
 /**
  * @file keyword_card.hpp
@@ -49,7 +48,8 @@ namespace detail {
 /// How a card's fixed columns are laid out.
 enum class CardMode { Standard, Long, I10 };
 
-/// One field of a card layout: `mKind` is `'i'` (integer) or `'r'` (real).
+/// One field of a card layout: `mKind` is `'i'` (integer), `'r'` (real), `'a'`
+/// (characters) or `'x'` (skipped columns, from a Fortran format's `nX`).
 struct CardField {
     char mKind;
     int mWidth;
@@ -84,6 +84,27 @@ MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std:
 /// `card_to_real` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
 MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere,
                                        const std::string& rFormat);
+
+/**
+ * @brief The fields of a Fortran edit-descriptor list, such as the format line of
+ * an ANSYS `.cdb` block: `"(1i7,2i9,6e21.13e3)"` gives one `i` field of width 7,
+ * two of width 9 and six `r` fields of width 21.
+ *
+ * `Iw` is an integer field; `Ew.d[Ee]`, `ESw.d`, `ENw.d`, `Dw.d`, `Fw.d` and `Gw.d`
+ * real fields; `Aw` a character field; `nX` skipped columns. Repeat counts and
+ * parenthesised groups (`2(i8,e16.9)`) expand; a scale factor (`1P`) is ignored.
+ * Case does not matter, blanks are ignored.
+ * @throws ReadError naming the format for anything else.
+ */
+MESHIOPLUSPLUS_API std::vector<CardField> parse_fortran_format(std::string_view Format);
+
+/**
+ * @brief The stripped text of each field `rFields` lays out on `Line`, in fixed
+ * columns (values may touch, as in `1.0E+00-2.0E+00`). Slicing stops at the end
+ * of the line, so a short line gives fewer fields; `x` fields are not returned.
+ */
+MESHIOPLUSPLUS_API std::vector<std::string> split_fixed(std::string_view Line,
+                                                        const std::vector<CardField>& rFields);
 
 /**
  * @brief `Value` in at most 16 columns: the shortest scientific string that

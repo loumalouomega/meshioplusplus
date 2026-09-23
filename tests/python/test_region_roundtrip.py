@@ -14,7 +14,8 @@ is a round-trip table, and a format that cannot write cannot round-trip.
 FLAC3D round-trips a cell region's *membership* but rewrites its *name* into
 the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
 bucket too rather than weakening this table's exact-name assertion. UNV joined
-in v15.6.0, mapping its permanent groups. Ansys and XDMF are deferred entirely.
+in v15.6.0, mapping its permanent groups, and Ansys ``.cdb`` components in v16.3.0.
+XDMF is deferred entirely.
 See ``doc/regions.md``.
 """
 
@@ -186,6 +187,28 @@ MATRIX = [
         "The binary twin of mphtxt: the same Selections.",
         id="mphbin",
     ),
+    pytest.param(
+        "febio",
+        ".feb",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "A <NodeSet> is a point region and an <ElementSet> a cell region; a cell "
+        "region covering one block exactly names that <Elements> block instead. A "
+        "<Surface> whose facets are all faces of solids is a side region. An "
+        "<Elements> block's tag is its domain's material id, which the writer "
+        "numbers afresh, so the tag is not carried.",
+        id="febio",
+    ),
+    pytest.param(
+        "ansysInp",
+        ".cdb",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A CMBLOCK component is a named set of NODE or ELEM ids, so point and "
+        "cell regions map directly. Components have no number (tag lost) and "
+        "no facet form, so side regions are dropped.",
+        id="ansysInp",
+    ),
 ]
 
 
@@ -305,20 +328,19 @@ def test_no_regions_writes_the_same_bytes(
 
 
 def test_side_regions_are_the_new_capability():
-    """No format could express a side set before; Abaqus, LS-DYNA and OpenFOAM now can.
+    """No format could express a side set before; Abaqus, LS-DYNA, OpenFOAM and FEBio now can.
 
     Spelled out separately because it is the one kind with no `point_sets` /
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus", "lsdyna", "openfoam"]
+    assert side_capable == ["abaqus", "lsdyna", "openfoam", "febio"]
 
 
 # --------------------------------------------------------------------------- #
 # Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
 # --------------------------------------------------------------------------- #
 PHASE_2 = {
-    "ansysInp": "components (absorbing AnsysInfo)",
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",
 }
@@ -354,6 +376,11 @@ READ_ONLY_REGIONS = {
         "(tests/python/test_pvtu.py)"
     ),
     "pvtp": "as pvtu: one Cell region per piece on read, none written",
+    "xplt": (
+        "FEBio plot files are read-only: domains -> Cell, node sets -> Point, "
+        "element sets -> Cell and surfaces -> Side, as in .feb "
+        "(tests/python/test_xplt.py)"
+    ),
     "pvd": (
         "reads one Cell region per entry of the chosen step (`name=`, else "
         "`group/part_<p>`, else `part_<p>`); a step is one file on write "
@@ -425,3 +452,42 @@ def test_read_only_region_formats_are_not_round_trip_rows(fmt):
         p.values[0] for p in MATRIX
     }, f"{fmt} now round-trips regions: move it from READ_ONLY_REGIONS into MATRIX"
     assert fmt not in PHASE_2, f"{fmt} is read-capable: it is no longer a Phase-2 gap"
+
+
+# --------------------------------------------------------------------------- #
+# Keeps every cell and side region, but as the format's own entities: Elmer    #
+# has bodies (bulk elements) and boundaries (boundary elements with parents),  #
+# not facet groups, so a side region's facets are written as boundary          #
+# elements and come back as a cell region over those new cells. Not a MATRIX   #
+# row -- the new cells change the geometry that table compares.               #
+# --------------------------------------------------------------------------- #
+FACETS_BECOME_CELLS = {
+    "elmer": (
+        "An Elmer body is a set of bulk elements and a boundary a set of boundary "
+        "elements, each with a positive id: a cell region becomes a body (its tag "
+        "kept as the id) and a side region's facets become boundary elements, read "
+        "back as a cell region over a new triangle block. Elmer has no node set, so "
+        "point regions are dropped."
+    ),
+}
+
+
+@pytest.mark.parametrize("fmt", sorted(FACETS_BECOME_CELLS))
+def test_facet_regions_come_back_as_boundary_cells(fmt, tmp_path):
+    why = FACETS_BECOME_CELLS[fmt]
+    mesh = fixture_mesh()
+    path = tmp_path / "regions"
+    meshioplusplus.write(path, mesh, file_format=fmt)
+    back = meshioplusplus.read(path)
+
+    assert np.allclose(back.points, mesh.points), why
+    assert_array_equal(np.asarray(back.cells[0].data), np.asarray(mesh.cells[0].data))
+    got = {r.name: r for r in back.regions}
+    assert sorted(got) == ["solid", "wall"], why
+    assert got["solid"].kind == "cell" and got["solid"].tag == 42, why
+    assert_array_equal(got["solid"].entries, [0, 1], err_msg=why)
+    # The two wall facets, now the cells of a triangle block after the tets.
+    assert got["wall"].kind == "cell" and got["wall"].dim == 2, why
+    assert_array_equal(got["wall"].entries, [2, 3], err_msg=why)
+    assert back.cells[1].type == "triangle"
+    assert fmt not in {p.values[0] for p in MATRIX}

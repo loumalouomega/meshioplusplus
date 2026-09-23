@@ -18,33 +18,28 @@
 
 /**
  * @file ansysinp.hpp
- * @brief Ansys MAPDL "coded database" (.cdb / .inp) C++ reader/writer.
+ * @brief Ansys MAPDL coded database (`.cdb`, `CDWRITE` output) C++ reader/writer.
  *
- * An autonomous format distinct from the unrelated Fluent `.msh` format in
- * ansys.hpp (both are named "ansys" in meshio++). Mirrors
- * `src/python/meshioplusplus/ansysInp/_ansysInp.py`. Parses whitespace/keyword-
- * delimited MAPDL command blocks directly: `ET`/`ETBLOCK` (element-type
- * declarations), `NBLOCK` (fixed-width node rows, field widths parsed from
- * the format-spec line such as `(3i9,6e20.13)` rather than hardcoded),
- * `EBLOCK` (element rows `(mat, type, real, secnum, esys, birth, death,
- * solkey, nodes_per_elem, ..., elem_id, node_ids...)`, with a continuation
- * line when there are more than 8 node ids), and `CMBLOCK` (named
- * components: `NODE` -> point set, `ELEM*` -> cell set, with negative
- * values expanding a range `-k` after base `b` into `range(b+1, k+1)`).
+ * Unrelated to the Fluent `.msh` format in ansys.hpp. Mirrors
+ * `src/python/meshioplusplus/ansysInp/_ansysInp.py`.
  *
- * Ansys element type ids group into 4 families (`solid`, `shell`, `plane`,
- * `line`) and combine with the actual node count read to resolve a meshio++
- * type (e.g. (solid, 10) -> `tetra10`, (shell/plane, 8) -> `quad8`); see
- * doc/formats/ansysinp.md for the full family/(family,nodes) tables and the
- * fixed meshio++ -> Ansys-type-id reverse map used on write (one id per
- * meshio++ type, e.g. `tetra10->187`, regardless of the id the file was
- * originally read with).
+ *  - Blocks are sliced by their own Fortran format lines (`(3i9,6e21.13e3)`,
+ *    `(1i7,2i9,6e21.13)`, `(19i10)` ...), parsed by `detail::parse_fortran_format`.
+ *    `ET`/`ETBLOCK`/`KEYOPT` give each element type slot its routine number
+ *    (`ET,1,186` or `ET,1,SOLID186`); `NBLOCK` the nodes; `EBLOCK` (the SOLID
+ *    layout MAPDL writes) the elements; `CMBLOCK` the components.
+ *  - An element becomes a cell by its routine's category (point, line, shell or
+ *    plane, degenerate brick, native tetrahedron; MESH200 by KEYOPT(1)): a brick
+ *    with repeated nodes is a wedge, pyramid or tetrahedron, a shell with K == L
+ *    a triangle. A missing midside node (node 0) is placed at its edge midpoint.
+ *  - Each cell carries `ansys:element` (routine), `ansys:type` (ET slot),
+ *    `ansys:mat`, `ansys:real` and `ansys:secnum` cell data; `NODE`/`ELEM`
+ *    components become point/cell regions (and fill @ref AnsysInfo too).
  *
- * `CMBLOCK` point/cell sets are custom attributes on the Python `Mesh`, not
- * carried by the Mesh conversion layer, so they travel out-of-band through
- * the @ref AnsysInfo side-channel struct (the same pattern as `MedInfo`) that
- * the binding layer `setattr`s onto the Python Mesh as `point_sets`/
- * `cell_sets`.
+ * The writer emits every type in the layout MAPDL expects (degenerate forms
+ * expanded to the full brick or quad), keeping `ansys:*` data where it fits the
+ * cell's shape, and writes point/cell regions as components.
+ * See doc/formats/ansysinp.md.
  */
 
 // System includes
@@ -56,6 +51,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
@@ -77,46 +73,50 @@ struct AnsysInfo {
 };
 
 /**
- * @brief Read an Ansys MAPDL coded-database (.cdb/.inp) file.
- *
- * Parses `ET`/`ETBLOCK` element-type declarations, `NBLOCK` node rows,
- * `EBLOCK` element rows (resolving each row's meshio++ type from the
- * element's family + node count), and `CMBLOCK` named components. A line
- * matching the exclusion list (known keywords, `KEYWORD,` syntax, `!`/`/`
- * comments) stops a block's row-reading loop early.
+ * @brief Read an Ansys MAPDL coded database (`.cdb`).
  *
  * @param rPath filesystem path to read
- * @param[out] rInfo receives `CMBLOCK` point/cell sets (0-based indices),
- *        keyed by component name
- * @return the read Mesh (no point_data/cell_data/field_data — only
- *         geometry, connectivity, and named sets are represented)
- * @throws ReadError if the file can't be opened, no `NBLOCK`/`EBLOCK`/
- *         `CMBLOCK` is found at all, a `CMBLOCK` negative range value
- *         appears before any base value, or an `EBLOCK` row's (family,
- *         node-count) pair has no meshio++ type mapping
+ * @param[out] rInfo receives the `CMBLOCK` components as point/cell sets
+ *        (0-based indices; cell sets per cell block), keyed by name; the same
+ *        components are also point/cell regions of the returned mesh
+ * @return the mesh, with `ansys:element`/`type`/`mat`/`real`/`secnum` cell data
+ * @throws ReadError if the file can't be opened, holds no block, a format line
+ *         does not parse, an element uses an undefined element type or node, a
+ *         `CMBLOCK` opens with a range end, or an element type has no meshio++
+ *         cell type
  */
 MESHIOPLUSPLUS_API Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo);
 
 /**
- * @brief Write `mesh` (plus `info`'s named sets) as an Ansys MAPDL
- *        coded-database file.
+ * @brief `read_ansysinp` with read options: `mLenient` skips elements whose type
+ *        has no meshio++ cell (contact, target and other special elements)
+ *        instead of failing.
+ */
+MESHIOPLUSPLUS_API Mesh read_ansysinp(const std::string& rPath, const ReadOptions& rOptions,
+                                      AnsysInfo& rInfo);
+
+/**
+ * @brief Write `rMesh` as an Ansys MAPDL coded database.
  *
- * Always emits exactly one `NBLOCK`/`EBLOCK` pair with fixed `i9`/`e20.13`
- * field widths (not preserving an original file's exact layout or element
- * type ids) — a read-write round trip is semantically but not byte-
- * identical. 2D input meshes are padded to 3D with a zero z-column (MAPDL
- * has no native 2D coordinate concept). Each meshio++ cell type is written
- * with the fixed reverse element-type-id map from the file-level doc
- * comment.
+ * One `NBLOCK` (`(3i9,6e21.13e3)`) and one SOLID `EBLOCK` (`(19i10)`), nodes and
+ * elements numbered from 1, 2-D points padded with z = 0. Each cell keeps its
+ * `ansys:element`/`ansys:type` when the element's layout fits the cell's shape;
+ * otherwise the default type for its meshio++ type is used (tetra 285, tetra10
+ * 187, hexahedron/wedge/pyramid 185, their quadratic forms 186, triangle/quad
+ * 181, triangle6/quad8 281, line 188, line3 189, vertex 21), with wedges,
+ * pyramids and tetrahedra under 185/186 and triangles under 181/281 written in
+ * their degenerate forms. `ansys:mat`/`real`/`secnum` are written when present
+ * (else 1). Point and cell regions, then any `rInfo` set not named by a region,
+ * become `CMBLOCK` components, runs of ids packed as ranges; side regions are
+ * dropped with a warning.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param rInfo point/cell sets to emit as `CMBLOCK` components
- * @throws WriteError if a cell block's meshio++ type has no entry in the
- *         reverse element-type map ("Unhandled meshio type")
- * @note point_sets/cell_sets travel via `info`, not via `mesh` — the Python
- *       binding setattrs them onto/from the Mesh object separately
+ * @param rInfo extra point/cell sets to emit as components
+ * @throws WriteError for a cell type with no element type (polygons,
+ *         polyhedra, higher-order Lagrange cells)
  */
-MESHIOPLUSPLUS_API void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo& rInfo);
+MESHIOPLUSPLUS_API void write_ansysinp(const std::string& rPath, const Mesh& rMesh,
+                                       const AnsysInfo& rInfo);
 
 }  // namespace meshioplusplus

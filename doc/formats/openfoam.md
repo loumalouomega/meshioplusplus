@@ -17,6 +17,7 @@ import meshioplusplus
 mesh = meshioplusplus.read("case.foam")                 # a <case>/case.foam marker file
 mesh = meshioplusplus.openfoam.read("/path/to/case")     # or the case directory directly
 mesh = meshioplusplus.openfoam.read("/path/to/constant/polyMesh")  # or polyMesh directly
+mesh = meshioplusplus.read("/path/to/case")               # v16.2.0: the directory is sniffed, no format needed
 ```
 
 ```python

@@ -29,6 +29,8 @@ from meshioplusplus._sniff import _sniff_format_py
             "mphbin",
         ),
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
+        (b'<?xml version="1.0"?>\n<febio_spec version="4.0">\n', "febio"),
+        (b"BEF\x00\x00\x00\x00\x01", "xplt"),
     ],
 )
 def test_recognizes_signatures(tmp_path, contents, expected):
@@ -73,3 +75,59 @@ def test_read_falls_back_to_sniff(tmp_path):
     unknown.write_bytes(src.read_bytes())
     back = meshioplusplus.read(unknown)  # no file_format -> extension unknown -> sniff
     assert len(back.points) == 4
+
+
+def _touch(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x\n")
+
+
+@pytest.mark.parametrize(
+    "files, sub, expected",
+    [
+        (["mesh.header"], "", "elmer"),
+        (["mesh.header"], "mesh.header", "elmer"),
+        (["partitioning.2/part.1.header"], "partitioning.2", "elmer"),
+        (["partitioning.2/part.1.header"], "", "elmer"),
+        (["constant/polyMesh/owner", "constant/polyMesh/faces"], "", "openfoam"),
+        (
+            ["constant/polyMesh/owner", "constant/polyMesh/faces"],
+            "constant/polyMesh",
+            "openfoam",
+        ),
+        (["processor0/constant/polyMesh/"], "", "openfoam"),
+        (["constant/regionProperties"], "", "openfoam"),
+        # both, neither, or half a polyMesh: not a guess
+        (["mesh.header", "polyMesh/owner", "polyMesh/faces"], "", ""),
+        ([], "", ""),
+        (["polyMesh/owner"], "", ""),
+    ],
+)
+def test_recognizes_directories(tmp_path, files, sub, expected):
+    root = tmp_path / "case"
+    root.mkdir()
+    for name in files:
+        if name.endswith("/"):
+            (root / name).mkdir(parents=True)
+        else:
+            _touch(root / name)
+    target = root / sub if sub else root
+    assert meshioplusplus.sniff_format(target) == expected
+    assert _sniff_format_py(target) == expected
+
+
+def test_read_sniffs_an_openfoam_case_directory(tmp_path):
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3]]))],
+    )
+    case = tmp_path / "case"
+    try:
+        meshioplusplus.write(case, mesh, file_format="openfoam")
+    except meshioplusplus.WriteError:
+        pytest.skip("openfoam writing needs the C++ core")
+    back = meshioplusplus.read(case)  # no file_format, no extension -> directory sniff
+    assert len(back.points) == 4
+    # A write to an extension-less path still needs its format named.
+    with pytest.raises((meshioplusplus.ReadError, meshioplusplus.WriteError)):
+        meshioplusplus.write(tmp_path / "other", mesh)

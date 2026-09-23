@@ -114,3 +114,133 @@ def pack_card(values, layout):
     for (_, width), v in zip(layout, values):
         out.append(f"{v:>{width}}")
     return "".join(out)
+
+
+class _FormatParser:
+    """Recursive-descent parse of a Fortran edit-descriptor list (the twin of
+    keyword_card.cpp's ``KcFormatParser``)."""
+
+    def __init__(self, text):
+        self.text = text
+        self.pos = 0
+
+    def fail(self):
+        raise ReadError(f"cannot parse Fortran format '{self.text}'")
+
+    def skip(self):
+        while self.pos < len(self.text) and self.text[self.pos] in " \t":
+            self.pos += 1
+
+    def number(self):
+        self.skip()
+        start = self.pos
+        while self.pos < len(self.text) and self.text[self.pos].isdigit():
+            self.pos += 1
+        if start == self.pos:
+            return -1
+        value = int(self.text[start : self.pos])
+        if value > 100000:
+            self.fail()
+        return value
+
+    def items(self, out, nested):
+        while True:
+            self.skip()
+            if self.pos >= len(self.text):
+                if nested:
+                    self.fail()
+                return
+            if self.text[self.pos] == ")":
+                if not nested:
+                    self.fail()
+                self.pos += 1
+                return
+            self.item(out)
+            self.skip()
+            if self.pos < len(self.text) and self.text[self.pos] == ",":
+                self.pos += 1
+
+    def item(self, out):
+        repeat = self.number()
+        count = 1 if repeat < 0 else repeat
+        self.skip()
+        if self.pos < len(self.text) and self.text[self.pos] == "(":
+            self.pos += 1
+            group = []
+            self.items(group, True)
+            out.extend(group * count)
+            return
+        self.skip()
+        if self.pos >= len(self.text):
+            self.fail()
+        c = self.text[self.pos].lower()
+        self.pos += 1
+        if c == "p":
+            if repeat < 0:
+                self.fail()
+            return
+        if c == "x":
+            out.append(("x", count))
+            return
+        kind = {"i": "i", "a": "a", "e": "r", "d": "r", "f": "r", "g": "r"}.get(c)
+        if kind is None:
+            self.fail()
+        if (
+            c == "e"
+            and self.pos < len(self.text)
+            and self.text[self.pos].lower() in "sn"
+        ):
+            self.pos += 1
+        width = self.number()
+        if width <= 0:
+            self.fail()
+        self.skip()
+        if self.pos < len(self.text) and self.text[self.pos] == ".":
+            self.pos += 1
+            if self.number() < 0:
+                self.fail()
+            self.skip()
+            if (
+                self.pos < len(self.text)
+                and self.text[self.pos].lower() == "e"
+                and kind == "r"
+            ):
+                self.pos += 1
+                if self.number() < 0:
+                    self.fail()
+        out.extend([(kind, width)] * count)
+
+
+def parse_fortran_format(text):
+    """The ``(kind, width)`` fields of a Fortran edit-descriptor list such as
+    ``"(1i7,2i9,6e21.13e3)"``: ``i`` integer, ``r`` real, ``a`` characters, ``x``
+    skipped columns. Repeat counts and groups expand; a scale factor is ignored."""
+    parser = _FormatParser(text)
+    parser.skip()
+    out = []
+    if parser.pos < len(text) and text[parser.pos] == "(":
+        parser.pos += 1
+        parser.items(out, True)
+        parser.skip()
+        if parser.pos != len(text):
+            parser.fail()
+    else:
+        parser.items(out, False)
+    if not out:
+        parser.fail()
+    return out
+
+
+def split_fixed(line, fields):
+    """The stripped text of each field ``fields`` lays out on ``line``, in fixed
+    columns; stops at the end of the line and returns no ``x`` fields."""
+    line = line.rstrip("\r\n")
+    out = []
+    col = 0
+    for kind, width in fields:
+        if col >= len(line):
+            break
+        if kind != "x":
+            out.append(line[col : col + width].strip(" \t"))
+        col += width
+    return out

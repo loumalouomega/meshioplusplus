@@ -212,10 +212,12 @@ bool seq_format_may_have_steps(const std::string& rFormat) {
     // unv joined in v15.6.0: its steps are the analysis steps of its results.
     // nastran_h5 joined in v15.7.0: its steps are the result domains (subcase,
     // mode, time or frequency) its INDEX tables reference.
-    return rFormat == "frd" || rFormat == "unv" || rFormat == "nastran_h5" || rFormat == "xdmf" ||
-           rFormat == "exodus" || rFormat == "gid" || rFormat == "med" || rFormat == "cgns" ||
-           rFormat == "tecplot" || rFormat == "gmsh" || rFormat == "ensight" ||
-           rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
+    // xplt joined in v16.2.0: its steps are the FEBio plot file's states.
+    // ansys_rst joined in v16.3.0: its steps are the result sets.
+    return rFormat == "frd" || rFormat == "unv" || rFormat == "nastran_h5" || rFormat == "xplt" ||
+           rFormat == "ansys_rst" || rFormat == "xdmf" || rFormat == "exodus" || rFormat == "gid" ||
+           rFormat == "med" || rFormat == "cgns" || rFormat == "tecplot" || rFormat == "gmsh" ||
+           rFormat == "ensight" || rFormat == "openfoam" || rFormat == "vtkhdf" || rFormat == "pvd";
 }
 
 std::size_t sequence_num_steps(const std::string& rPath, const std::string& rFormat) {

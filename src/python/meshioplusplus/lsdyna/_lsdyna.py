@@ -15,6 +15,7 @@ import numpy as np
 from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
+from .._facets import FacetIndex
 from .._files import open_file
 from .._mesh import Mesh
 from .._regions import Region
@@ -527,11 +528,12 @@ def _build_mesh(deck):
             entries = []
             for seg in ids:
                 idx = tuple(deck.node_index.get(i, -1) for i in seg)
-                hit = face_map.get(_segment_key(idx))
+                key = _segment_key(idx)
+                hit = None if key is None else face_map.find(key)
                 if hit is None:
                     dropped += 1
                 else:
-                    entries.append(hit)
+                    entries.append(hit.first)
             kind = "side"
         else:
             entries = [owner[(family, i)] for i in ids if (family, i) in owner]
@@ -564,25 +566,10 @@ def _segment_key(nodes):
 
 
 def _face_map(mesh):
-    """Corner-node key -> (global cell, facet) for every face of every cell.
-
-    An interior face is shared by two cells; the lowest cell index wins, and a shell
-    element's own face is facet 0.
+    """Corner-node lookup over every face of every solid and every shell's own face
+    (as facet 0). An interior face is shared by two cells; the lowest cell index wins.
     """
-    out = {}
-    base = 0
-    for block in mesh.cells:
-        faces = _CELL_FACES.get(block.type)
-        for r, row in enumerate(block.data):
-            g = base + r
-            if faces is not None:
-                for k, (_, ncorner, local) in enumerate(faces):
-                    key = tuple(sorted(int(row[i]) for i in local[:ncorner]))
-                    out.setdefault(key, (g, k))
-            elif block.type in ("triangle", "quad"):
-                out.setdefault(tuple(sorted(int(v) for v in row)), (g, 0))
-        base += len(block.data)
-    return out
+    return FacetIndex(mesh, surface_edges=False, surface_self=True)
 
 
 # -- writing ---------------------------------------------------------------------

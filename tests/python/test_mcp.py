@@ -176,6 +176,55 @@ def test_code_aster_mail_is_readable_writable_and_converts(tmp_path):
     assert [b.type for b in written.cells] == ["hexahedron20", "quad8"]
 
 
+def test_elmer_directory_converts_both_ways(tmp_path):
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / "meshes" / "elmer" / "tet10_two_bodies"
+    out = _dump(_tools.tool_formats())
+    assert "elmer" in out["readable"] and "elmer" in out["writable"]
+    assert _dump(_tools.tool_sniff(str(src)))["format"] == "elmer"
+    # A directory has no extension: reading sniffs it, writing names the format.
+    target = str(tmp_path / "bodies.vtu")
+    _tools.tool_convert(str(src), target)
+    back = tmp_path / "back"
+    _tools.tool_convert(target, str(back), output_format="elmer")
+    assert (back / "mesh.header").is_file()
+    written = meshioplusplus.read(back)
+    assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
+
+
+def test_febio_feb_is_readable_writable_and_converts(tmp_path):
+    import pathlib
+
+    feb = pathlib.Path(__file__).parent / "meshes" / "febio" / "block_v30.feb"
+    out = _dump(_tools.tool_formats())
+    assert "febio" in out["readable"] and "febio" in out["writable"]
+    assert out["extensions"][".feb"] == ["febio"]
+    # Surfaces are side regions: they survive .feb -> .feb.
+    back = str(tmp_path / "back.feb")
+    _tools.tool_convert(str(feb), back)
+    written = meshioplusplus.read(back)
+    assert [b.type for b in written.cells] == ["hexahedron", "hexahedron"]
+    assert ("top", "side") in {(r.name, r.kind) for r in written.regions}
+
+
+def test_febio_xplt_states_convert_to_vtu(tmp_path):
+    import pathlib
+
+    xplt = (
+        pathlib.Path(__file__).parent / "meshes" / "febio" / "xplt" / "xplt_hex27.xplt"
+    )
+    out = _dump(_tools.tool_formats())
+    assert "xplt" in out["readable"] and "xplt" not in out["writable"]
+    info = _dump(_tools.tool_info(str(xplt)))
+    assert len(info["time_values"]) == 4
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(xplt), target, time_step=-1)
+    written = meshioplusplus.read(target)
+    assert written.cells[0].type == "hexahedron27"
+    assert "displacement" in written.point_data
+
+
 def test_optistruct_components_survive_convert(tmp_path):
     import pathlib
 
@@ -222,6 +271,16 @@ def test_sniff(mesh_file):
     out = _dump(_tools.tool_sniff(mesh_file))
     assert out["format"] == "vtu"
     assert out["from_extension"] == ["vtu"]
+
+
+def test_sniff_directory(tmp_path):
+    case = tmp_path / "case"
+    (case / "constant" / "polyMesh").mkdir(parents=True)
+    for name in ("owner", "faces"):
+        (case / "constant" / "polyMesh" / name).write_text("x\n")
+    out = _dump(_tools.tool_sniff(str(case)))
+    assert out["format"] == "openfoam"
+    assert out["from_extension"] == []
 
 
 def test_info(mesh_file):

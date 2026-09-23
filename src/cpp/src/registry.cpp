@@ -33,7 +33,11 @@
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "meshioplusplus/formats/elmer.hpp"
+#include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
@@ -95,6 +99,11 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"abaqus", meshioplusplus::read_abaqus},
         {"lsdyna", meshioplusplus::read_lsdyna},
         {"code_aster", meshioplusplus::read_code_aster},
+        // A directory, not a file: no extension maps to it; sniff_format finds it.
+        {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
+        {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
+        {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
+        {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -163,9 +172,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
         {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
-        // Side-channel info (point_sets/cell_sets, cell-tag family names) is
-        // not carried by the flat bindings -- v1 limitation, see doc/wasm.md
-        // and doc/c_api.md.
+        // Side-channel info (cell-tag family names) is not carried by the flat
+        // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
+        // components travel as regions since v16.3.0, so they survive here.
         {"ansysinp",
          [](const std::string& path) {
              meshioplusplus::AnsysInfo info;
@@ -212,6 +221,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"abaqus", meshioplusplus::write_abaqus},
         {"lsdyna", meshioplusplus::write_lsdyna},
         {"code_aster", meshioplusplus::write_code_aster},
+        {"elmer", meshioplusplus::write_elmer},
+        {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
@@ -431,11 +442,16 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".cdb", "ansysinp"},
         {".frd", "frd"},
         {".k", "lsdyna"},
         {".key", "lsdyna"},
         {".dyn", "lsdyna"},
         {".mail", "code_aster"},
+        {".feb", "febio"},
+        {".xplt", "xplt"},
+        {".rst", "ansys_rst"},
+        {".rth", "ansys_rst"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},
@@ -593,6 +609,22 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                        const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
+        // mLenient (skip element types with no meshio++ cell type).
+        {"elmer", meshioplusplus::read_elmer},
+        // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
+        {"ansysinp",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::AnsysInfo info;
+             return meshioplusplus::read_ansysinp(path, opts, info);
+         }},
+        // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
+        {"febio", meshioplusplus::read_febio},
+        // FEBio .xplt honours mTimeStep (one state), the narrowing options and
+        // mLenient (downgrade tet5/tet15 domains).
+        {"xplt", meshioplusplus::read_xplt},
+        // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
+        {"ansys_rst", meshioplusplus::read_ansys_rst},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -664,6 +696,8 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
+        {"xplt", meshioplusplus::read_xplt_metadata},
+        {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

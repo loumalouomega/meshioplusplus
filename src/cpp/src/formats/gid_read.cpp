@@ -40,16 +40,13 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 #include "gid_common.hpp"
-
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-#include <zlib.h>
-#endif
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #include "meshioplusplus/detail/hdf5_util.hpp"
@@ -1176,30 +1173,9 @@ bool gid_looks_gzip(std::string_view bytes) {
 }
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
-/// Inflates a whole gzip stream. `uncompress()` cannot serve here: it speaks
-/// the zlib wrapper, not gzip, and the decompressed size is not known up front.
+/// Inflates a whole gzip stream (windowBits 15 + 16).
 std::string gid_gunzip(std::string_view bytes) {
-    z_stream strm{};
-    if (inflateInit2(&strm, 15 + 16) != Z_OK)
-        throw ReadError("GiD: could not initialize gzip decompression");
-    strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(bytes.data()));
-    strm.avail_in = static_cast<uInt>(bytes.size());
-
-    std::string out;
-    std::vector<char> chunk(1 << 16);
-    int rc = Z_OK;
-    do {
-        strm.next_out = reinterpret_cast<Bytef*>(chunk.data());
-        strm.avail_out = static_cast<uInt>(chunk.size());
-        rc = inflate(&strm, Z_NO_FLUSH);
-        if (rc != Z_OK && rc != Z_STREAM_END) {
-            inflateEnd(&strm);
-            throw ReadError("GiD: gzip decompression failed");
-        }
-        out.append(chunk.data(), chunk.size() - strm.avail_out);
-    } while (rc != Z_STREAM_END);
-    inflateEnd(&strm);
-    return out;
+    return detail::zlib_inflate(bytes, 15 + 16, nullptr, "GiD");
 }
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
 

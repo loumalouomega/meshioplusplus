@@ -17,11 +17,13 @@
 // Conservative content-based format detection: match only unambiguous leading
 // signatures, return "" otherwise. Signatures shared by several formats (the
 // generic HDF5 magic, a headerless binary STL) are intentionally NOT claimed.
+// A directory is sniffed by the files it holds (Elmer, OpenFOAM).
 
 // System includes
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -98,9 +100,51 @@ bool sniff_is_mphtxt(const std::string& rHead) {
             (tokens[4][0] >= 'A' && tokens[4][0] <= 'Z'));
 }
 
+// A directory-shaped mesh, recognised by the files the readers themselves look
+// for: an Elmer mesh directory (`mesh.header`, a `partitioning.N` directory of
+// `part.n.*` files, or a directory holding one) and an OpenFOAM case (the
+// layouts the openfoam reader resolves). A directory that looks like both, or
+// like neither, is "".
+std::string sniff_directory(const std::filesystem::path& rDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto is_file = [&](const fs::path& rPath) { return fs::is_regular_file(rPath, ec); };
+    const auto is_dir = [&](const fs::path& rPath) { return fs::is_directory(rPath, ec); };
+    const auto has_polymesh = [&](const fs::path& rPoly) {
+        return is_file(rPoly / "owner") && is_file(rPoly / "faces");
+    };
+
+    const auto is_partitioning = [&](const fs::path& rPath) {
+        return rPath.filename().string().rfind("partitioning.", 0) == 0 &&
+               is_file(rPath / "part.1.header");
+    };
+    bool elmer = is_file(rDir / "mesh.header") || is_partitioning(rDir);
+    for (auto it = fs::directory_iterator(rDir, ec);
+         !elmer && !ec && it != fs::directory_iterator(); it.increment(ec))
+        elmer = is_partitioning(it->path());
+    const bool openfoam = (rDir.filename() == "polyMesh" && has_polymesh(rDir)) ||
+                          has_polymesh(rDir / "constant" / "polyMesh") ||
+                          has_polymesh(rDir / "polyMesh") ||
+                          is_dir(rDir / "processor0" / "constant" / "polyMesh") ||
+                          is_file(rDir / "constant" / "regionProperties");
+    if (elmer == openfoam)
+        return "";
+    return elmer ? "elmer" : "openfoam";
+}
+
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path path(rPath);
+        if (fs::is_directory(path, ec))
+            return sniff_directory(path);
+        // The header of an Elmer mesh directory stands for the directory.
+        if (path.filename() == "mesh.header" && fs::is_regular_file(path, ec))
+            return "elmer";
+    }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return "";
@@ -114,6 +158,18 @@ std::string sniff_format(const std::string& rPath) {
     // --- binary magics ---
     if (sniff_is_mphbin(head))
         return "mphbin";
+    // FEBio plot file: the magic 0x00464542, in either byte order.
+    if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
+                             head.compare(0, 4, std::string("\0FEB", 4)) == 0))
+        return "xplt";
+    // Ansys MAPDL results: a 100-word integer record (length 100, flags
+    // 0x80000000) whose first value is the file number, 12.
+    if (head.size() >= 12 &&
+        head.compare(0, 12, std::string("d\0\0\0\0\0\0\x80\x0c\0\0\0", 12)) == 0)
+        return "ansys_rst";
+    // FEBio input: XML whose root is <febio_spec>.
+    if (sniff_contains(head, "<febio_spec"))
+        return "febio";
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {

@@ -2374,6 +2374,10 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
     // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
     assert.ok(readers.includes('frd') && !writers.includes('frd'));
+    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt read-only.
+    for (const fmt of ['elmer', 'febio'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
+    assert.ok(readers.includes('xplt') && !writers.includes('xplt'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });
@@ -2610,6 +2614,48 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
     assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
+step('elmer writes a mesh DIRECTORY into MEMFS and reads it back with no format', () => {
+    // An Elmer mesh is a directory with no extension: the write names the
+    // format, the read finds it by sniffing the directory's mesh.header.
+    const tets = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3, 1, 2, 3, 4]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([1, 2, 3]), nodesPerCell: 3 },
+        ],
+    };
+    const written = m.writeMesh('/elmer_mesh', tets, 'elmer');
+    assert.deepEqual(
+        written,
+        ['boundary', 'elements', 'header', 'names', 'nodes'].map((f) => `/elmer_mesh/mesh.${f}`),
+    );
+    // The shared face has both tets as parents.
+    assert.match(new TextDecoder().decode(m.FS.readFile('/elmer_mesh/mesh.boundary')), /^1 1 1 2 303 /);
+    const back = m.readMesh('/elmer_mesh');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra', 'triangle']);
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['body_1', 'boundary_1']);
+});
+
+step('febio writes a spec-4.0 .feb and reads its surface back as a side region', () => {
+    const tet = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([0, 2, 1]), nodesPerCell: 3 },
+        ],
+    };
+    m.writeMesh('/model.feb', tet, 'febio');
+    const text = new TextDecoder().decode(m.FS.readFile('/model.feb'));
+    assert.match(text, /<febio_spec version="4.0">/);
+    assert.match(text, /<Surface name="Surface2">/);
+    const back = m.readMesh('/model.feb');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra']);
+    const kinds = Object.fromEntries(back.regions.map((r) => [r.name, r.kind]));
+    assert.equal(kinds.Surface2, 'side');
+});
+
 step('openfoam reports and reads two time-directory fields (roadmap §1 tier B2)', () => {
     // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture, not a
     // wiring-only probe. Reuses the /of/case.foam single-hex polyMesh the
@@ -2769,6 +2815,34 @@ step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
         assert.equal(back.info.cellSets.MYCELLS.length, 1);
         assert.deepEqual(Array.from(back.info.cellSets.MYCELLS[0]), info.cellSets.MYCELLS[0]);
     }
+});
+
+step('.cdb: degenerate SOLID185 wedge, components as regions, a Workbench node format', () => {
+    const deck = 'ET,1,SOLID185\n' +
+        'NBLOCK,6,SOLID\n(1i7,2i9,6e21.13)\n' +
+        '      1        0        0  0.0000000000000E+00  0.0000000000000E+00  0.0000000000000E+00\n' +
+        '      2        0        0  1.0000000000000E+00  0.0000000000000E+00  0.0000000000000E+00\n' +
+        '      3        0        0  0.0000000000000E+00  1.0000000000000E+00  0.0000000000000E+00\n' +
+        '      4        0        0  0.0000000000000E+00  0.0000000000000E+00  1.0000000000000E+00\n' +
+        '      5        0        0  1.0000000000000E+00  0.0000000000000E+00  1.0000000000000E+00\n' +
+        '      6        0        0  0.0000000000000E+00  1.0000000000000E+00  1.0000000000000E+00\n' +
+        'N,R5.3,LOC,       -1,\n' +
+        'EBLOCK,19,SOLID\n(19i9)\n' +
+        '        1        1        1        1        0        0        0        0        8' +
+        '        0        1        1        2        3        3        4        5        6        6\n' +
+        '       -1\n' +
+        'CMBLOCK,BASE,NODE,       2  ! the bottom face\n(8i10)\n         1        -3\n' +
+        'FINISH\n';
+    m.FS.writeFile('/deck.cdb', deck);
+    const mesh = m.readMesh('/deck.cdb');
+    assert.equal(mesh.cells.length, 1);
+    assert.equal(mesh.cells[0].type, 'wedge');
+    const base = mesh.regions.find((r) => r.name === 'BASE');
+    assert.ok(base, 'expected the BASE component as a region');
+    assert.deepEqual(Array.from(base.entries), [0, 1, 2]);
+    m.writeMesh('/back.cdb', mesh);
+    const text = new TextDecoder().decode(m.FS.readFile('/back.cdb'));
+    assert.ok(text.includes('ET,1,185') && text.includes('CMBLOCK,BASE,NODE'));
 });
 
 step('.fem: HyperMesh components are regions and optimization cards are skipped', () => {

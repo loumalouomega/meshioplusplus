@@ -50,7 +50,7 @@ mesh = meshioplusplus.read("case.vtkhdf", piece=1)     # the second piece alone 
 mesh = meshioplusplus.read("case.vtkhdf", piece=-1)    # the last piece
 ```
 
-Out of range is an error naming the piece count, never a clamp, and a format whose reader has no pieces raises rather than returning the merged mesh. The switch is a value plus a flag (`ReadOptions::mPiece` / `mPieceSet`, `mio_read_opts.piece` / `piece_set`) rather than a `-1` sentinel: a hand-zeroed options struct must merge, not silently ask for piece 0 alone. `ReadOptions::ResolvePiece(n)` resolves a request against a piece count. Currently honoured by **`vtkhdf`**, by **`pvtu`** and **`pvtp`** (one `<Piece>` of the index; v15.0.0) and by **`pvd`** (one `part` of the chosen step: `timestep=` picks the step with `time_step`, `part=` the piece within it, so the two are orthogonal). A file with a single piece reads as that piece either way.
+Out of range is an error naming the piece count, never a clamp, and a format whose reader has no pieces raises rather than returning the merged mesh. The switch is a value plus a flag (`ReadOptions::mPiece` / `mPieceSet`, `mio_read_opts.piece` / `piece_set`) rather than a `-1` sentinel: a hand-zeroed options struct must merge, not silently ask for piece 0 alone. `ReadOptions::ResolvePiece(n)` resolves a request against a piece count. Currently honoured by **`vtkhdf`**, by **`pvtu`** and **`pvtp`** (one `<Piece>` of the index; v15.0.0), by **`elmer`** (one `part.n.*` of an ElmerGrid `partitioning.N` directory, halo copies included; v16.2.0, see [Elmer](formats/elmer.md#partitioned-meshes)) and by **`pvd`** (one `part` of the chosen step: `timestep=` picks the step with `time_step`, `part=` the piece within it, so the two are orthogonal). A file with a single piece reads as that piece either way.
 
 ## Dropping ghost cells
 
@@ -84,6 +84,8 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 | PVTU / PVTP | native (`arrays`, `piece`), forwarded to every piece | native, the sum of the pieces' own summaries | n/a |
 | PVD | native (`arrays`, `time_step`, `piece`), forwarded to every entry | native: every step's time from the index alone, plus step 0's pieces' summary | native |
 | VTKHDF | native (`arrays`, `time_step`, `piece`) | native for a polyhedron-free `UnstructuredGrid` (steps from `Steps/Values`); otherwise a full read | native |
+| FEBio `.xplt` | native (`arrays`, `time_step`; only the chosen state's data is decoded) | falls back to a full read of the mesh, with every state's time from its header | ✅ |
+| Ansys `.rst`/`.rth` | native (`arrays`, `time_step`; only the chosen set's nodal solution is decoded) | falls back to a full read of the mesh, with every set's time from the time table | ✅ |
 | Gmsh 4.1 | native | native | ✅ |
 | Gmsh 2.2 | native | falls back to a full read | n/a |
 | Exodus | read whole, then filtered | falls back to a full read, but reports `time_values` | ✅ |

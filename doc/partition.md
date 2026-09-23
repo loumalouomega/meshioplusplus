@@ -32,6 +32,8 @@ meshioplusplus partition domain.msh domain.pvtu --nparts 4 --ghost-layers 1
 
 ## Writing a partition as one dataset
 
+An Elmer mesh partitioned by ElmerGrid (`partitioning.N/part.n.*`) reads back merged with the same `partition:part` labels, one per cell (v16.2.0, see [Elmer](formats/elmer.md#partitioned-meshes)).
+
 A `.pvtu` (or `.pvtp`) is the ParaView index of a partition: one file that declares the arrays and names one piece per part, so the decomposition opens as a single dataset. `pvtu.write_pieces` takes exactly what `partition` returns — halo layers included, which a single mesh with a `partition:part` label cannot express, since a cell can be a ghost of several parts:
 
 ```python

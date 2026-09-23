@@ -3,7 +3,8 @@
 :func:`sniff_format` reads the leading bytes of a file and returns a meshio++
 format name on a confident signature match, or ``""`` otherwise. It is used as
 a fallback by :func:`meshioplusplus.read` when the format cannot be inferred
-from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``.
+from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``. A directory
+is sniffed by the files it holds (Elmer, OpenFOAM).
 """
 
 from __future__ import annotations
@@ -74,7 +75,42 @@ def _is_mphtxt(head: bytes) -> bool:
     )
 
 
+def _has_polymesh(poly: Path) -> bool:
+    return (poly / "owner").is_file() and (poly / "faces").is_file()
+
+
+def _sniff_directory(path: Path) -> str:
+    """An Elmer mesh directory or an OpenFOAM case, by the files the readers
+    look for; a directory that looks like both, or like neither, is ``""``."""
+
+    def is_partitioning(p):
+        return p.name.startswith("partitioning.") and (p / "part.1.header").is_file()
+
+    elmer = (path / "mesh.header").is_file() or is_partitioning(path)
+    if not elmer:
+        try:
+            elmer = any(is_partitioning(child) for child in path.iterdir())
+        except OSError:
+            pass
+    openfoam = (
+        (path.name == "polyMesh" and _has_polymesh(path))
+        or _has_polymesh(path / "constant" / "polyMesh")
+        or _has_polymesh(path / "polyMesh")
+        or (path / "processor0" / "constant" / "polyMesh").is_dir()
+        or (path / "constant" / "regionProperties").is_file()
+    )
+    if elmer == openfoam:
+        return ""
+    return "elmer" if elmer else "openfoam"
+
+
 def _sniff_format_py(path) -> str:
+    path = Path(path)
+    if path.is_dir():
+        return _sniff_directory(path)
+    # The header of an Elmer mesh directory stands for the directory.
+    if path.name == "mesh.header" and path.is_file():
+        return "elmer"
     try:
         with open(path, "rb") as f:
             head = f.read(512)
@@ -85,6 +121,16 @@ def _sniff_format_py(path) -> str:
     stripped = head.lstrip()
     if _is_mphbin(head):
         return "mphbin"
+    # FEBio plot file: the magic 0x00464542, in either byte order.
+    if head[:4] in (b"BEF\x00", b"\x00FEB"):
+        return "xplt"
+    # Ansys MAPDL results: a 100-word integer record (length 100, flags
+    # 0x80000000) whose first value is the file number, 12.
+    if head[:12] == b"d\x00\x00\x00\x00\x00\x00\x80\x0c\x00\x00\x00":
+        return "ansys_rst"
+    # FEBio input: XML whose root is <febio_spec>.
+    if b"<febio_spec" in head:
+        return "febio"
 
     if b"VTKFile" in head:
         # The parallel indices and the collection come first, and match the

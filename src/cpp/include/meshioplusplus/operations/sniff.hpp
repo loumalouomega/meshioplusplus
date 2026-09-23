@@ -28,6 +28,12 @@
  * never on a write path. It is deliberately conservative: signatures shared by
  * several formats (e.g. the generic HDF5 magic used by med/h5m/cgns/hmf, or a
  * headerless binary STL) yield `""` rather than a guess.
+ *
+ * A directory is sniffed by the files it holds: an Elmer mesh directory
+ * (`mesh.header`, a `partitioning.N` directory of `part.n.*` files, or a
+ * directory holding one) is
+ * `"elmer"`, an OpenFOAM case or `polyMesh` directory is `"openfoam"`. A file
+ * named exactly `mesh.header` stands for its Elmer directory.
  */
 
 // System includes
@@ -40,7 +46,7 @@ namespace meshioplusplus {
 
 /**
  * @brief Guess a mesh file's format from its contents.
- * @param rPath path to an existing, readable file
+ * @param rPath path to an existing, readable file or directory
  * @return a meshio++ format name (e.g. `"vtu"`, `"gmsh"`) on a confident
  *         signature match, or `""` if the format cannot be determined (or the
  *         file cannot be opened)

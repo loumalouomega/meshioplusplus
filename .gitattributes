@@ -92,3 +92,22 @@ tests/python/meshes/nastran_h5/*.h5 filter=lfs diff=lfs merge=lfs -text
 # like the ones above, and one small binary .mphbin twin.
 tests/python/meshes/comsol/** -filter -diff -merge text
 tests/python/meshes/comsol/*.mphbin binary
+# Elmer mesh directories written by tools/gen_elmer_fixtures.py: small text, kept
+# out of LFS like the ones above.
+tests/python/meshes/elmer/** -filter -diff -merge text
+# FEBio .feb fixtures written by tools/gen_febio_fixtures.py: small XML text, kept
+# out of LFS like the ones above.
+tests/python/meshes/febio/*.feb -filter -diff -merge text
+# FEBio plot files FEBio 4.12 wrote for the models next to them (see
+# tools/gen_febio_fixtures.py): a few KB each, binary, kept out of LFS like the
+# .mphbin twin above.
+tests/python/meshes/febio/xplt/*.feb -filter -diff -merge text
+tests/python/meshes/febio/xplt/*.xplt binary
+# Ansys .cdb decks from mapdl-archive (see that directory's README.md): small text kept
+# out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
+# line endings their writers produced and the reader must handle.
+tests/python/meshes/ansys/*.cdb -filter -diff -merge -text
+# Ansys MAPDL result files from pymapdl-reader (see that directory's README.md):
+# binary, a few hundred KB each, in LFS like the other binary reference fixtures.
+tests/python/meshes/ansys/rst/*.rst filter=lfs diff=lfs merge=lfs -text
+tests/python/meshes/ansys/rst/*.rth filter=lfs diff=lfs merge=lfs -text

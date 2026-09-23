@@ -8,6 +8,52 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.3.0 (2026-09-23)
+
+**Closes roadmap §1.9's `.cdb` half and the nodal half of `.rst`** (§1.9 narrowed to `.rst` element results). The Ansys MAPDL coded database reader and writer are rewritten in both engines, and MAPDL's binary results are a new read-only format, `ansys_rst`, reachable from every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP). Both are checked against the open readers mapdl-archive and pymapdl-reader on files MAPDL, Workbench and HyperMesh wrote. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers change only by additions (ABI review row for v16.3.0).
+
+- **`ansysInp` (`.cdb`), rewritten:**
+  - Every block is cut by its own Fortran format line, so Workbench's `(1i7,2i9,6e21.13)` and HyperMesh's `(3i8,6e16.9)` decks read like MAPDL's. `ET` by number or name, `ETBLOCK`, `KEYOPT` and its abbreviations, `!` comments and short `CMBLOCK`s are handled.
+  - Elements become cells by their routine's category (pymapdl-reader's table; MESH200 by KEYOPT(1)). Degenerate bricks resolve to wedges, pyramids and tetrahedra and K = L shells to triangles; missing midside nodes (node `0`, or a row cut short) are created at their edge midpoints.
+  - The routine, type slot, `MAT`, `REAL` and `SECNUM` are `ansys:*` cell data, and `CMBLOCK` components are point and cell regions (so the registry, CLI, WASM and MCP keep them). `ansysInp` joins the region round-trip matrix.
+  - The writer emits MAPDL's layouts: `(3i9,6e21.13e3)` nodes, a `(19i10)` `SOLID` `EBLOCK`, wedges, pyramids and tetrahedra as degenerate SOLID185/186 bricks (SOLID187/285 for tetrahedra), triangles as degenerate SHELL181/281 quads. It keeps `ansys:element`/`ansys:type` where they fit and writes regions as range-packed components. Rows are formatted in parallel, and both engines write the same bytes.
+  - **Breaking:** an element whose type has no meshio++ cell is a `ReadError` (it was read as a solid by node count); `read(..., lenient=True)` skips such elements with a warning. Cells are grouped into one block per type, and written decks differ in layout from v16.2.0's.
+- **`ansys_rst`** (`.rst`, `.rth`; read-only, also recognised by content): MAPDL's binary results, one result set per read.
+  - Integer, `int16`, `float32` and `float64` records, dense, bit-sparse or windowed-sparse; 64-bit pointers and release 13's 32-bit headers.
+  - The geometry records become the same mesh a `.cdb` gives (`detail::ansys_build_mesh`, shared with the `.cdb` reader), components included.
+  - `time_step` picks the set (`meshio:time`, the frequency in a modal analysis; `ansys:load_step`, `ansys:substep`, `ansys:cumulative`), `read_metadata` reports every set's time, and `ansys_rst` joins the sequence engine: `convert file.rst 'mode_{step}.vtu'` writes one file per mode.
+  - The nodal solution is point data: `U`, `ROT`, `A` and `V` as vectors rotated from each node's coordinate system to the global axes (`Rz Rx Ry`), other DOFs (`TEMP`, `PRES` ...) as scalars, NaN where a set has no value.
+  - zlib-compressed records and partial files of a distributed solve are refused, naming the fix; a cyclic model's base sector is read with a warning. Element results are not read yet.
+- **`detail::parse_fortran_format` / `split_fixed`** (`keyword_card.hpp`, Python twin in `lsdyna/_cards.py`) parse a Fortran format line (repeats, groups, `nX`, `nP`, `I`/`E`/`ES`/`EN`/`D`/`F`/`G`/`A`) and cut a line by it.
+- **Validation.** Eight mapdl-archive decks and seven pymapdl-reader result files (both MIT) are committed with their readers' frozen output (`tools/gen_ansys_cdb_reference.py`, `tools/gen_ansys_rst_reference.py`). Both engines match mapdl-archive's cells and components, and pymapdl-reader's cells, times and nodal solutions to 1e-12, on every fixture; across all 23 non-distributed result files in pymapdl-reader's repository, the only differences are pymapdl-reader's own misreads (partial result sets, 740 CONTA174 elements it leaves empty). A synthetic result file pins a three-axis node rotation, a partial set and MAPDL's undefined value. `example/python/15_ansys.ipynb` shows both formats.
+
+## v16.2.0 (2026-09-23)
+
+**Closes roadmap §1.1, FEBio `.feb`/`.xplt`, and §1.2, Elmer mesh directories** (both removed; §1.3–§1.19 renumbered, and a new §1.14 records what they left out). Three new formats, all in both engines and every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP), and directory-shaped meshes are now recognised by content. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).
+
+- **Directory sniffing.** `sniff_format` accepts a directory and recognises it by the files it holds: an Elmer mesh directory (`mesh.header`, a `partitioning.N`, or a directory holding one) or an OpenFOAM case (`constant/polyMesh`, `polyMesh`, a decomposed `processor0`, a multi-region `constant/regionProperties`). Every read path falls back to the sniff, so `read("case")` and `convert case out.vtu` need no format; a directory matching both or neither is not guessed. A write to an extension-less path still needs its format named. A file named exactly `mesh.header` stands for its Elmer directory.
+- **`elmer`**, ElmerSolver's native mesh directory (read/write):
+  - `mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names` in ElmerGrid's layout, twenty type codes from `101` to `827`.
+  - Bulk and boundary elements become separate cell blocks, bodies and boundaries `cell` regions tagged with their ids and named from `mesh.names`.
+  - Only `820`/`827` have a node permutation (new `"elmer"` registry tables, from ElmerSolver's `elements.def` and matching its own VTU writer).
+  - ElmerGrid's partitions (`partitioning.N/part.n.*`, halo copies `id/owner` included) are merged with each cell's part in `partition:part`; `piece=` reads one part.
+  - The writer is serial: the highest-dimensional cells are the bulk, every lower-dimensional cell and every `side` region facet a boundary element with regenerated parents; `mesh.names` is always written and carries the provenance block.
+  - Checked against ElmerGrid and ElmerSolver built from source: gmsh meshes converted by ElmerGrid read back node for node; written directories are re-read by ElmerGrid and solve the heat equation in ElmerSolver to the answer on ElmerGrid's own conversion (1e-12), exactly for a `hex27` block; ElmerGrid's partitions merge back into the serial mesh.
+- **`febio`**, FEBio's input file (`.feb`; spec 2.5, 3.0 and 4.0 read, 4.0 written): the mesh, under FEBio's own parsers' rules.
+  - `<Elements>` blocks are cell blocks and cell regions (tagged with the domain's material id), `<NodeSet>`/`<ElementSet>` point and cell regions, a `<Surface>` on solid faces a `side` region, `<Edge>`/`<DiscreteSet>` line blocks, `<MeshData>` point and cell data. `<Mesh from=...>` is followed; the `<Part>`/`<Instance>` form is refused; `tet5`/`tet15` downgrade only under `lenient`.
+  - `hex27` has a new `"febio"` node-order table (its mid-height face centres run y−, x+, y+, x−).
+  - The writer emits spec 4.0 with a placeholder material per domain; 2-D blocks on solid faces become `<Surface>`s, lines along cell edges `<Edge>`s, lone two-node lines `<DiscreteSet>`s. MeshData is not written yet.
+  - Checked against FEBio 4.12 built from source: the fixtures are read by FEBio, and febio-python's models (MIT, not redistributed) rewritten by this writer and pulled back with `<Mesh from=...>` reproduce FEBio's displacements.
+- **`xplt`**, FEBio's plot file (read-only), one state per read:
+  - Plot versions 0x0030 and later, either byte order, zlib-compressed states included; a state cut short is dropped with a warning; remeshed runs and FEBio 2 files are refused.
+  - Domains, node sets, element sets and surfaces become regions as in `.feb`. Nodal variables are point data, per-element ones cell data (NaN on other domains), per-region ones repeated over the domain, per-element-node ones averaged to the points, globals field data; surface and edge variables are named in a warning.
+  - `time_step` picks the state (`meshio:time`, `xplt:step`, `xplt:status`), `read_metadata` reports every state's time, and `xplt` joins the sequence engine: `convert run.xplt 'out_{step}.vtu'` writes one `.vtu` per state.
+  - Checked: the displacement read equals FEBio's own `node_data` log to float32 precision at every state, and febio-python's reader gives identical data for its samples.
+- **`detail/facet_index`** finds the cell facet a file names by its nodes (faces of solids, edges of surface cells, optionally a shell's own face), with `facet_nodes` for the reverse. LS-DYNA's `*SET_SEGMENT` resolution moved onto it, unchanged in behaviour; FEBio surfaces and Elmer's boundary parents use it.
+- **`detail/zlib_inflate`** inflates one deflate stream of unknown size and reports the bytes it used; the GiD reader's gzip path and the `.xplt` reader share it.
+- **Fixtures and tests.** `tools/gen_elmer_fixtures.py` and `tools/gen_febio_fixtures.py` write the fixtures in each code's own numbering; the three `.xplt` fixtures are FEBio 4.12's own output for models the latter generates, one compressed. `example/python/14_elmer_febio.ipynb` shows all three formats.
+- **Found, not fixed:** VTU files with *raw* appended data (what ElmerSolver writes) are not read by either engine; recorded for the VTU reader.
+
 ## v16.1.0 (2026-09-23)
 
 **Closes roadmap §1.1, Altair OptiStruct `.fem`, and §1.2, COMSOL `.mphtxt`/`.mphbin`** (both removed; §1.3–§1.21 renumbered to §1.1–§1.19). HyperMesh components and OptiStruct sets now read as named regions, from any Nastran bulk-data deck and in both engines. COMSOL meshes read and write with COMSOL's own node numbering, every object of the file, Selections as regions, and a new binary twin, `mphbin`. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).

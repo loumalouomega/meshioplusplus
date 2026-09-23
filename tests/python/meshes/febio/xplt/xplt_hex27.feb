@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<febio_spec version="4.0">
+	<Module type="solid"/>
+	<Control>
+		<analysis>STATIC</analysis>
+		<time_steps>3</time_steps>
+		<step_size>0.333333333333</step_size>
+		<plot_zero_state>1</plot_zero_state>
+		<solver type="solid">
+			<symmetric_stiffness>symmetric</symmetric_stiffness>
+		</solver>
+	</Control>
+	<Material>
+		<material id="1" name="m" type="neo-Hookean"><E>1</E><v>0.3</v></material>
+	</Material>
+	<Mesh>
+		<Nodes>
+			<node id="1">0,0,0</node>
+			<node id="2">1,0,0</node>
+			<node id="3">1,1,0</node>
+			<node id="4">0,1,0</node>
+			<node id="5">0,0,1</node>
+			<node id="6">1,0,1</node>
+			<node id="7">1,1,1</node>
+			<node id="8">0,1,1</node>
+			<node id="9">0.5,0,0</node>
+			<node id="10">1,0.5,0</node>
+			<node id="11">0.5,1,0</node>
+			<node id="12">0,0.5,0</node>
+			<node id="13">0.5,0,1</node>
+			<node id="14">1,0.5,1</node>
+			<node id="15">0.5,1,1</node>
+			<node id="16">0,0.5,1</node>
+			<node id="17">0,0,0.5</node>
+			<node id="18">1,0,0.5</node>
+			<node id="19">1,1,0.5</node>
+			<node id="20">0,1,0.5</node>
+			<node id="21">0.5,0,0.5</node>
+			<node id="22">1,0.5,0.5</node>
+			<node id="23">0.5,1,0.5</node>
+			<node id="24">0,0.5,0.5</node>
+			<node id="25">0.5,0.5,0</node>
+			<node id="26">0.5,0.5,1</node>
+			<node id="27">0.5,0.5,0.5</node>
+		</Nodes>
+		<Elements type="hex27" name="brick">
+			<elem id="1">1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27</elem>
+		</Elements>
+		<NodeSet name="bottom">1,2,3,4,9,10,11,12,25</NodeSet>
+		<NodeSet name="top">5,6,7,8,13,14,15,16,26</NodeSet>
+	</Mesh>
+	<MeshDomains>
+		<SolidDomain name="brick" mat="m"/>
+	</MeshDomains>
+	<Boundary>
+		<bc type="zero displacement" node_set="bottom">
+			<x_dof>1</x_dof><y_dof>1</y_dof><z_dof>1</z_dof>
+		</bc>
+		<bc type="prescribed displacement" node_set="top">
+			<dof>z</dof>
+			<value lc="1">-0.1</value>
+		</bc>
+	</Boundary>
+	<Output>
+		<plotfile type="febio">
+			<var type="displacement"/>
+			<var type="stress"/>
+		</plotfile>
+	</Output>
+	<LoadData>
+		<load_controller id="1" type="loadcurve">
+			<interpolate>LINEAR</interpolate>
+			<points>
+				<pt>0,0</pt>
+				<pt>1,1</pt>
+			</points>
+		</load_controller>
+	</LoadData>
+</febio_spec>

@@ -235,7 +235,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 16
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MINOR 3
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -646,7 +646,9 @@ MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
 
 /**
  * Guess a mesh file's format from its contents (magic-byte sniffing).
- * @param path   filesystem path to an existing, readable file.
+ * @param path   filesystem path to an existing, readable file, or a directory
+ *               (an Elmer mesh directory or an OpenFOAM case is recognised by
+ *               the files it holds).
  * @param buf    caller buffer for the format name (may be NULL to query length).
  * @param buflen size of `buf`.
  * @return the untruncated length of the format name (0 if undetermined), or -1
@@ -697,7 +699,9 @@ MIO_API mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells,
 
 /**
  * Guess a mesh file's format from its contents (magic-byte sniffing).
- * @param path   filesystem path to an existing, readable file.
+ * @param path   filesystem path to an existing, readable file, or a directory
+ *               (an Elmer mesh directory or an OpenFOAM case is recognised by
+ *               the files it holds).
  * @param buf    caller buffer for the format name (may be NULL to query length).
  * @param buflen size of `buf`.
  * @return the untruncated length of the format name (0 if undetermined), or -1

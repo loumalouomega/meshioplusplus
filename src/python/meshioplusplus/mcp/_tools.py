@@ -297,7 +297,8 @@ def formats_payload():
 
 
 def tool_sniff(input_path):
-    """Identify a mesh file's format from its leading bytes and extension."""
+    """Identify a mesh file's format from its leading bytes (or, for a directory,
+    the files it holds) and its extension."""
     resolved = _resolve(input_path, must_exist=True)
     sniffed = sniff_format(resolved)
     try:
