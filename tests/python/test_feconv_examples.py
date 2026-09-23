@@ -22,6 +22,7 @@ import warnings
 
 import numpy as np
 import pytest
+
 from meshioplusplus import _core
 from meshioplusplus._exceptions import ReadError
 

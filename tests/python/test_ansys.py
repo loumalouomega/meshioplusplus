@@ -1,8 +1,9 @@
 import pathlib
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus.ansys import _ansys
 
 from . import helpers

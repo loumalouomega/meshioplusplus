@@ -3,8 +3,9 @@ from __future__ import annotations
 import copy
 import string
 
-import meshioplusplus
 import numpy as np
+
+import meshioplusplus
 
 # In general:
 # Use values with an infinite decimal representation to test precision.

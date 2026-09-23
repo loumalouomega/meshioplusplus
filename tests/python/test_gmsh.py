@@ -2,9 +2,10 @@ import copy
 import pathlib
 from functools import partial
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 
 from . import helpers
 

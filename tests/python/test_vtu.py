@@ -1,9 +1,10 @@
 import pathlib
 import tempfile
 
-import meshioplusplus
 import numpy as np
 import pytest
+
+import meshioplusplus
 from meshioplusplus.vtu import _vtu
 
 from . import helpers
