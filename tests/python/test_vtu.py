@@ -1,10 +1,9 @@
 import pathlib
 import tempfile
 
+import meshioplusplus
 import numpy as np
 import pytest
-
-import meshioplusplus
 from meshioplusplus.vtu import _vtu
 
 from . import helpers
@@ -197,3 +196,56 @@ def test_polyhedra_with_alternating_node_counts_keep_their_cell_data():
             label,
             by_type,
         )
+
+
+# tools/gen_feconv_quirk_fixtures.py: one pyramid on one polyhedral cube, in
+# every framing FEconv's samples use (and base64 appended, which they do not).
+_QUIRKS = pathlib.Path(__file__).resolve().parent / "meshes" / "vtu"
+
+
+def _core_vtu_read(path):
+    from meshioplusplus import _core
+
+    return _core.vtu_read(str(path))
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+@pytest.mark.parametrize(
+    "name", ["raw_bigendian", "raw_zlib", "base64_appended", "binary_bigendian"]
+)
+def test_appended_and_bigendian_framings(reader, name):
+    mesh = reader(_QUIRKS / f"{name}.vtu")
+    assert [c.type for c in mesh.cells] == ["pyramid", "polyhedron8"]
+    np.testing.assert_array_equal(mesh.cells[0].data, [[4, 5, 6, 7, 8]])
+    faces = [np.asarray(f).tolist() for f in mesh.cells[1].data[0]]
+    assert faces[0] == [3, 0, 4, 7] and faces[-1] == [4, 5, 6, 7]
+    np.testing.assert_array_equal(mesh.points[8], [0.5, 0.5, 2.0])
+    np.testing.assert_array_equal(mesh.point_data["heat"], np.arange(9.0))
+    assert [np.asarray(d).tolist() for d in mesh.cell_data["material"]] == [[7], [9]]
+    assert mesh.cell_data["material"][0].dtype.isnative
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+def test_two_pieces_with_polyhedra_merge(reader):
+    mesh = reader(_QUIRKS / "two_pieces_polyhedron.vtu")
+    assert len(mesh.points) == 18
+    assert [c.type for c in mesh.cells] == ["pyramid", "polyhedron8"] * 2
+    # The second piece's node ids follow the first piece's nine points.
+    np.testing.assert_array_equal(mesh.cells[2].data, [[13, 14, 15, 16, 17]])
+    faces = [np.asarray(f).tolist() for f in mesh.cells[3].data[0]]
+    assert faces[0] == [12, 9, 13, 16]
+    # Cell data in both pieces survives; point data in only one is dropped.
+    assert [np.asarray(d).tolist() for d in mesh.cell_data["material"]] == [
+        [7],
+        [9],
+    ] * 2
+    assert "heat" not in (mesh.point_data or {})
+
+
+def test_two_pieces_metadata_matches_the_read():
+    from meshioplusplus import _core
+
+    meta = _core.read_metadata(str(_QUIRKS / "two_pieces_polyhedron.vtu"), "vtu")
+    assert meta["num_points"] == 18
+    assert meta["cell_data_names"] == ["material"]
+    assert meta["point_data_names"] == []

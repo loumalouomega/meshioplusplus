@@ -157,7 +157,9 @@ def num_bytes_to_num_base64_chars(num_bytes):
     return -(-num_bytes // 3) * 4
 
 
-def _polyhedron_cells_from_data(offsets, faces, faceoffsets, cell_data_raw):
+def _polyhedron_cells_from_data(
+    offsets, faces, faceoffsets, cell_data_raw, face_starts=None
+):
     # In general the number of faces will vary between cells, and the
     # number of nodes vary between faces for each cell. The information
     # will be stored as a List (one item per cell) of lists (one item
@@ -178,12 +180,14 @@ def _polyhedron_cells_from_data(offsets, faces, faceoffsets, cell_data_raw):
     # See https://vtk.org/Wiki/VTK/Polyhedron_Support for more.
 
     # The faceoffsets describes the end of the face description for each
-    # cell. Switch faceoffsets to give start points, not end points
-    faceoffsets = np.append([0], faceoffsets[:-1])
+    # cell. Switch faceoffsets to give start points, not end points; a run that
+    # does not open the stream passes its starts explicitly.
+    if face_starts is None:
+        face_starts = np.append([0], faceoffsets[:-1])
 
     # Double loop over cells then faces.
     # This will be slow, but seems necessary to cover all cases
-    for cell_start in faceoffsets:
+    for cell_start in face_starts:
         num_faces_this_cell = faces[cell_start]
         faces_this_cell = []
         next_face = cell_start + 1
@@ -248,12 +252,12 @@ def _organize_cells(point_offsets, cells, cell_data_raw):
             polyhedral_mesh = True
             break
 
-    if polyhedral_mesh:
-        # A single <Piece> only -- multi-piece polyhedral files remain
-        # unsupported here, as before.
-        if len(cells) > 1:
-            raise ValueError("Implementation assumes single set of cells")
+    if len(cells) > 1:
+        # Several <Piece>s: one stream, as the C++ reader builds it.
+        cells, cell_data_raw = _merge_pieces(point_offsets, cells, cell_data_raw)
+        point_offsets = [0]
 
+    if polyhedral_mesh:
         types = cells[0]["types"].ravel()
         if np.all(types == 42):
             # Every cell is a polyhedron: the historical fast path, unchanged.
@@ -281,6 +285,14 @@ def _organize_cells(point_offsets, cells, cell_data_raw):
             # Walk contiguous runs of same-"is it a polyhedron" so the output
             # block order follows the file's own cell order.
             is_poly = types == 42
+            # Where each polyhedron's faces start: the previous one's end.
+            face_ends = np.where(is_poly, faceoffsets, 0)
+            face_starts = np.zeros(len(types), dtype=np.int64)
+            last_end = 0
+            for i in range(len(types)):
+                if is_poly[i]:
+                    face_starts[i] = last_end
+                    last_end = face_ends[i]
             start = 0
             n = len(types)
             while start < n:
@@ -294,6 +306,7 @@ def _organize_cells(point_offsets, cells, cell_data_raw):
                         faces,
                         faceoffsets[start:end],
                         sub_raw,
+                        face_starts[start:end],
                     )
                     for tp, c in cls.items():
                         out_cells.append(CellBlock(tp, c))
@@ -306,27 +319,86 @@ def _organize_cells(point_offsets, cells, cell_data_raw):
                         sub_raw,
                     )
                     for c in blocks:
-                        out_cells.append(CellBlock(c.type, c.data + first_node))
+                        # Node ids, not positions: nothing to shift.
+                        out_cells.append(CellBlock(c.type, c.data))
                 for k, v in cd.items():
                     cell_data.setdefault(k, []).extend(v)
                 start = end
 
     else:
-        for offset, cls, cdr in zip(point_offsets, cells, cell_data_raw):
-            cls, cell_data = vtk_cells_from_data(
-                cls["connectivity"].ravel(),
-                cls["offsets"].ravel(),
-                cls["types"].ravel(),
-                cdr,
-            )
-
+        cls, cell_data = vtk_cells_from_data(
+            cells[0]["connectivity"].ravel(),
+            cells[0]["offsets"].ravel(),
+            cells[0]["types"].ravel(),
+            cell_data_raw[0],
+        )
         for c in cls:
-            out_cells.append(CellBlock(c.type, c.data + offset))
+            out_cells.append(CellBlock(c.type, c.data + point_offsets[0]))
 
     return out_cells, cell_data
 
 
-def get_grid(root):
+def _shift_face_stream(faces, shift):
+    """Add ``shift`` to every node id of a polyhedron face stream
+    (``nf, n0, ids.., n1, ids.., ...`` per cell)."""
+    faces = faces.copy()
+    i = 0
+    while i < len(faces):
+        num_faces = int(faces[i])
+        i += 1
+        for _ in range(num_faces):
+            n = int(faces[i])
+            faces[i + 1 : i + 1 + n] += shift
+            i += 1 + n
+    return faces
+
+
+def _merge_pieces(point_offsets, cells, cell_data_raw):
+    """Concatenate the cells of several pieces into one piece's arrays, node ids
+    shifted by each piece's first point. Cell data a piece lacks is dropped."""
+    has_faces = any("faces" in c for c in cells)
+    merged = {"connectivity": [], "offsets": [], "types": []}
+    if has_faces:
+        merged["faces"] = []
+        merged["faceoffsets"] = []
+    conn_base = 0
+    face_base = 0
+    for c, p0 in zip(cells, point_offsets):
+        conn = np.asarray(c["connectivity"]).ravel().astype(np.int64)
+        types = np.asarray(c["types"]).ravel()
+        merged["connectivity"].append(conn + p0)
+        merged["offsets"].append(
+            np.asarray(c["offsets"]).ravel().astype(np.int64) + conn_base
+        )
+        merged["types"].append(types)
+        conn_base += len(conn)
+        if has_faces:
+            faces = np.asarray(c.get("faces", np.empty(0))).ravel().astype(np.int64)
+            fo = c.get("faceoffsets")
+            fo = (
+                np.full(len(types), -1, dtype=np.int64)
+                if fo is None
+                else np.asarray(fo).ravel().astype(np.int64)
+            )
+            merged["faces"].append(_shift_face_stream(faces, p0))
+            merged["faceoffsets"].append(np.where(fo >= 0, fo + face_base, -1))
+            face_base += len(faces)
+    merged = {k: np.concatenate(v) for k, v in merged.items()}
+
+    names = set(cell_data_raw[0]) if cell_data_raw else set()
+    for cdr in cell_data_raw[1:]:
+        names &= set(cdr)
+    dropped = sorted(set().union(*cell_data_raw) - names) if cell_data_raw else []
+    if dropped:
+        warn(f"VTU: cell data {dropped} is missing from some pieces; dropped")
+    data = {
+        name: np.concatenate([np.asarray(cdr[name]) for cdr in cell_data_raw])
+        for name in sorted(names)
+    }
+    return [merged], [data]
+
+
+def get_grid(root, raw_appended=False):
     grid = None
     appended_data = None
     for c in root:
@@ -339,11 +411,18 @@ def get_grid(root):
                 raise ReadError(f"Unknown main tag '{c.tag}'.")
             if appended_data is not None:
                 raise ReadError("More than one AppendedData section found.")
+            if raw_appended:
+                # The payload was cut out as bytes before parsing.
+                appended_data = ""
+                continue
             if c.attrib["encoding"] != "base64":
-                raise ReadError("")
-            appended_data = c.text.strip()
+                raise ReadError(
+                    f"Unknown AppendedData encoding '{c.attrib['encoding']}'."
+                )
+            # Offsets count base64 characters only.
+            appended_data = "".join(c.text.split())
             # The appended data always begins with a (meaningless) underscore.
-            if appended_data[0] != "_":
+            if not appended_data or appended_data[0] != "_":
                 raise ReadError()
             appended_data = appended_data[1:]
 
@@ -352,91 +431,78 @@ def get_grid(root):
     return grid, appended_data
 
 
-def _parse_raw_binary(filename):
+class _RawSource:
+    """Sequential reader over a raw ``<AppendedData>`` payload."""
+
+    def __init__(self, buf, pos):
+        self.buf = buf
+        self.pos = pos
+
+    def take(self, n):
+        if self.pos + n > len(self.buf):
+            raise ReadError("VTU: appended array runs past the end of the data")
+        out = self.buf[self.pos : self.pos + n]
+        self.pos += n
+        return out
+
+
+class _Base64Source:
+    """Sequential reader over base64 text. A header and a body encoded apart
+    (each padded, as VTK's appended writer does) and one stream that encodes
+    both read the same: decoding stops at every padded group."""
+
+    def __init__(self, text, pos):
+        self.text = text  # whitespace already removed (get_grid)
+        self.pos = pos
+        self.pending = b""
+
+    def take(self, n):
+        while len(self.pending) < n:
+            need = -(-(n - len(self.pending)) // 3) * 4
+            chunk = self.text[self.pos : self.pos + need]
+            if len(chunk) < need or len(chunk) % 4:
+                raise ReadError("VTU: base64 data ends early")
+            pad = chunk.find("=")
+            if pad >= 0:
+                chunk = chunk[: (pad // 4 + 1) * 4]
+            try:
+                self.pending += base64.b64decode(chunk)
+            except ValueError as exc:
+                raise ReadError(f"VTU: invalid base64 data ({exc})")
+            self.pos += len(chunk)
+        out, self.pending = self.pending[:n], self.pending[n:]
+        return out
+
+
+def _load_root(filename):
+    """Parse the XML; raw appended data is cut out first and returned as bytes
+    (it is not XML text, and may hold any byte)."""
     from xml.etree import ElementTree as ET
 
-    with open(filename, "rb") as f:
-        raw = f.read()
-
-    try:
-        res = re.search(re.compile(b'<AppendedData[^>]+(?:">)'), raw)
-        assert res is not None
-        i_start = res.end()
-        i_stop = raw.find(b"</AppendedData>")
-    except Exception:
-        raise ReadError()
-
-    header = raw[:i_start].decode()
-    footer = raw[i_stop:].decode()
-    data = raw[i_start:i_stop].split(b"_", 1)[1].rsplit(b"\n", 1)[0]
-
-    root = ET.fromstring(header + footer)
-
-    dtype = vtu_to_numpy_type[root.get("header_type", "UInt32")]
-    if "byte_order" in root.attrib:
-        dtype = dtype.newbyteorder(
-            "<" if root.get("byte_order") == "LittleEndian" else ">"
-        )
-
-    appended_data_tag = root.find("AppendedData")
-    assert appended_data_tag is not None
-    appended_data_tag.set("encoding", "base64")
-
-    compressor = root.get("compressor")
-    if compressor is None:
-        arrays = ""
-        i = 0
-        while i < len(data):
-            # The following find() runs into issues if offset is padded with spaces, see
-            # <https://github.com/nschloe/meshio/issues/1135>. It works in ParaView.
-            # Unfortunately, Python's built-in XML tree can't handle regexes, see
-            # <https://stackoverflow.com/a/38810731/353337>.
-            da_tag = root.find(f".//DataArray[@offset='{i}']")
-            if da_tag is None:
-                raise RuntimeError(f"Could not find .//DataArray[@offset='{i}']")
-            da_tag.set("offset", str(len(arrays)))
-
-            block_size = int(np.frombuffer(data[i : i + dtype.itemsize], dtype)[0])
-            arrays += base64.b64encode(
-                data[i : i + block_size + dtype.itemsize]
-            ).decode()
-            i += block_size + dtype.itemsize
-
+    if hasattr(filename, "read"):
+        raw = filename.read()
+        if isinstance(raw, str):
+            raw = raw.encode()
     else:
-        c = _compressor_for(compressor)
-        root.attrib.pop("compressor")
+        with open(filename, "rb") as f:
+            raw = f.read()
 
-        # raise ReadError("Compressed raw binary VTU files not supported.")
-        arrays = ""
-        i = 0
-        while i < len(data):
-            da_tag = root.find(f".//DataArray[@offset='{i}']")
-            assert da_tag is not None
-            da_tag.set("offset", str(len(arrays)))
-
-            num_blocks = int(np.frombuffer(data[i : i + dtype.itemsize], dtype)[0])
-            num_header_items = 3 + num_blocks
-            num_header_bytes = num_header_items * dtype.itemsize
-            header = np.frombuffer(data[i : i + num_header_bytes], dtype)
-
-            block_data = b""
-            j = 0
-            for k in range(num_blocks):
-                block_size = int(header[k + 3])
-                block_data += c.decompress(
-                    data[
-                        i + j + num_header_bytes : i + j + block_size + num_header_bytes
-                    ]
-                )
-                j += block_size
-
-            block_size = np.array([len(block_data)]).astype(dtype).tobytes()
-            arrays += base64.b64encode(block_size + block_data).decode()
-
-            i += j + num_header_bytes
-
-    appended_data_tag.text = "_" + arrays
-    return root
+    tag = re.search(rb"<AppendedData\b[^>]*>", raw)
+    is_raw = tag is not None and re.search(
+        rb"""encoding\s*=\s*["']raw["']""", tag.group(0)
+    )
+    try:
+        if not is_raw:
+            return ET.fromstring(raw), None
+        # The payload starts after the underscore that opens it and runs to
+        # the closing tag; arrays are addressed by offset into it.
+        start = raw.index(b"_", tag.end()) + 1
+        stop = raw.rfind(b"</AppendedData>")
+        if stop < start:
+            raise ReadError("VTU: AppendedData is not closed")
+        return ET.fromstring(raw[: tag.end()] + raw[stop:]), raw[start:stop]
+    except (ET.ParseError, ValueError) as exc:
+        raise ReadError(f"VTU: {exc}")
 
 
 vtu_to_numpy_type = {
@@ -461,14 +527,7 @@ class VtuReader:
     """
 
     def __init__(self, filename):  # noqa: C901
-        from xml.etree import ElementTree as ET
-
-        parser = ET.XMLParser()
-        try:
-            tree = ET.parse(str(filename), parser)
-            root = tree.getroot()
-        except ET.ParseError:
-            root = _parse_raw_binary(str(filename))
+        root, self.raw_appended = _load_root(filename)
 
         if root.tag != "VTKFile":
             raise ReadError(f"Expected tag 'VTKFile', found {root.tag}")
@@ -507,7 +566,7 @@ class VtuReader:
         except KeyError:
             self.byte_order = None
 
-        grid, self.appended_data = get_grid(root)
+        grid, self.appended_data = get_grid(root, self.raw_appended is not None)
 
         pieces = []
         field_data = {}
@@ -547,9 +606,13 @@ class VtuReader:
             piece_cells = {}
             piece_point_data = {}
             piece_cell_data_raw = {}
+            cell_data_raw.append(piece_cell_data_raw)
+            point_data.append(piece_point_data)
 
             num_points = int(piece.attrib["NumberOfPoints"])
             num_cells = int(piece.attrib["NumberOfCells"])
+            if num_points > 0 and piece.find("Points/DataArray") is None:
+                raise ReadError("VTU: a Piece declares points but has no <Points>")
 
             for child in piece:
                 if child.tag == "Points":
@@ -590,24 +653,17 @@ class VtuReader:
                         except CorruptionError as e:
                             warn(e.args[0] + " Skipping.")
 
-                    point_data.append(piece_point_data)
-
                 elif child.tag == "CellData":
                     for c in child:
                         if c.tag != "DataArray":
                             raise ReadError()
                         piece_cell_data_raw[c.attrib["Name"]] = self.read_data(c)
-
-                    cell_data_raw.append(piece_cell_data_raw)
                 elif child.tag == "FieldData":
                     # VTK also accepts field data inside a piece; it is dataset
                     # metadata all the same, and overrides the grid's.
                     read_field_data(child)
                 else:
                     raise ReadError(f"Unknown tag '{child.tag}'.")
-
-        if not cell_data_raw:
-            cell_data_raw = [{}] * len(cells)
 
         if len(cell_data_raw) != len(cells):
             raise ReadError()
@@ -619,18 +675,54 @@ class VtuReader:
             raise ReadError()
         self.points = np.concatenate(points)
 
-        if point_data:
-            self.point_data = {
-                key: np.concatenate([pd[key] for pd in point_data])
-                for key in point_data[0]
-            }
-        else:
-            self.point_data = None
+        # A name some piece lacks is dropped, as the C++ reader does.
+        names = set(point_data[0]).intersection(*point_data[1:])
+        dropped = sorted(set().union(*point_data) - names)
+        if dropped:
+            warn(f"VTU: point data {dropped} is missing from some pieces; dropped")
+        self.point_data = {
+            key: np.concatenate([pd[key] for pd in point_data]) for key in sorted(names)
+        } or None
 
         self.cells, self.cell_data = _organize_cells(
             point_offsets, cells, cell_data_raw
         )
         self.field_data = field_data
+
+    def _ordered(self, dtype):
+        if self.byte_order is None:
+            return dtype
+        return dtype.newbyteorder("<" if self.byte_order == "LittleEndian" else ">")
+
+    def read_appended(self, offset, dtype):
+        """One array of the ``<AppendedData>`` payload (raw bytes or base64
+        text), read from its offset: a byte-count header (or, compressed, the
+        block table), then the bytes."""
+        if self.raw_appended is not None:
+            src = _RawSource(self.raw_appended, offset)
+        else:
+            src = _Base64Source(self.appended_data, offset)
+        header_dtype = self._ordered(vtu_to_numpy_type[self.header_type])
+        hs = header_dtype.itemsize
+        dtype = self._ordered(dtype)
+
+        def header(count):
+            return np.frombuffer(src.take(count * hs), header_dtype)
+
+        if self.compression is None:
+            return np.frombuffer(src.take(int(header(1)[0])), dtype=dtype)
+        num_blocks = int(header(1)[0])
+        max_size, last_size = (int(v) for v in header(2))
+        sizes = header(num_blocks) if num_blocks else []
+        c = _compressor_for(self.compression)
+        parts = [
+            c.decompress(
+                src.take(int(size)),
+                uncompressed_size=last_size if k + 1 == num_blocks else max_size,
+            )
+            for k, size in enumerate(sizes)
+        ]
+        return np.frombuffer(b"".join(parts), dtype=dtype)
 
     def read_uncompressed_binary(self, data, dtype):
         byte_string = base64.b64decode(data)
@@ -751,16 +843,16 @@ class VtuReader:
             )
             data = reader(c.text.strip(), dtype)
         elif fmt == "appended":
-            offset = int(c.attrib["offset"])
-            reader = (
-                self.read_uncompressed_binary
-                if self.compression is None
-                else self.read_compressed_binary
-            )
-            assert self.appended_data is not None
-            data = reader(self.appended_data[offset:], dtype)
+            if self.raw_appended is None and self.appended_data is None:
+                raise ReadError("VTU: appended DataArray but no <AppendedData>")
+            # int() skips the padding some writers put around the offset.
+            data = self.read_appended(int(c.attrib["offset"]), dtype)
         else:
             raise ReadError(f"Unknown data format '{fmt}'.")
+
+        if data.dtype.byteorder not in "=|":
+            # BigEndian on a little-endian host (or the reverse): native order.
+            data = data.astype(data.dtype.newbyteorder("="))
 
         if "NumberOfComponents" in c.attrib:
             nc = int(c.attrib["NumberOfComponents"])
