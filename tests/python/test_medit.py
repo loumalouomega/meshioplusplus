@@ -1,9 +1,8 @@
 import pathlib
 
+import meshioplusplus
 import numpy as np
 import pytest
-
-import meshioplusplus
 
 from . import helpers
 
@@ -157,3 +156,24 @@ def test_medit_non_alpha_keyword_raises(tmp_path):
     p.write_text("123 456\n")
     with pytest.raises(meshioplusplus.ReadError):
         _medit_py_read(str(p))
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_missing_dimension_is_inferred(engine):
+    # FEconv writes no `Dimension` keyword (tools/gen_feconv_quirk_fixtures.py).
+    from meshioplusplus import _core
+
+    path = (
+        pathlib.Path(__file__).resolve().parent
+        / "meshes"
+        / "medit"
+        / "no_dimension.mesh"
+    )
+    mesh = (
+        _core.medit_read_ascii(str(path)) if engine == "core" else _medit_py_read(path)
+    )
+    assert mesh.points.shape == (5, 3)
+    np.testing.assert_array_equal(mesh.points[4], [1, 1, 1])
+    tetra = [c for c in mesh.cells if c.type == "tetra"]
+    np.testing.assert_array_equal(tetra[0].data, [[0, 1, 2, 3], [1, 4, 2, 3]])
+    np.testing.assert_array_equal(mesh.cell_data["medit:ref"][0], [1, 2])

@@ -2,10 +2,9 @@ import copy
 import pathlib
 from functools import partial
 
+import meshioplusplus
 import numpy as np
 import pytest
-
-import meshioplusplus
 
 from . import helpers
 
@@ -510,3 +509,17 @@ def test_wedge15_gmsh_order_matches_gmsh_own_edge_table():
         ],
         faces=[],
     )
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_indented_file_reads(engine):
+    # FEconv's samples indent every line (tools/gen_feconv_quirk_fixtures.py);
+    # the third element line is past the declared count and ignored.
+    from meshioplusplus import _core
+    from meshioplusplus.gmsh.main import read as py_read
+
+    path = pathlib.Path(__file__).resolve().parent / "meshes" / "gmsh" / "indented.msh"
+    mesh = _core.gmsh_read(str(path)) if engine == "core" else py_read(path)
+    assert len(mesh.points) == 6
+    assert [c.type for c in mesh.cells] == ["quad"]
+    np.testing.assert_array_equal(mesh.cells[0].data, [[0, 1, 2, 3], [1, 4, 5, 2]])

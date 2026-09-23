@@ -151,10 +151,11 @@ struct GmshCursor {
             line.pop_back();
         return line;
     }
+    // Trimmed: some writers (FEconv's samples) indent every line.
     std::string next_nonblank() {
         while (!eof()) {
-            std::string l = read_line();
-            if (!gmsh_trim(l).empty())
+            std::string l = gmsh_trim(read_line());
+            if (!l.empty())
                 return l;
         }
         return "";

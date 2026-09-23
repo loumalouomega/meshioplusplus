@@ -36,7 +36,8 @@ def _fast_forward_over_blank_lines(f):
             break
         elif len(line.strip()) > 0:
             break
-    return line, is_eof
+    # Stripped: some writers (FEconv's samples) indent every line.
+    return line.strip(), is_eof
 
 
 def _read_physical_names(f, field_data):
