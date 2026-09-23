@@ -55,6 +55,14 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("model.gltf", ""), "gltf");
 }
 
+TEST(Registry, ElmerIsReadWriteByDirectoryNotExtension) {
+    EXPECT_EQ(registry_readers().count("elmer"), 1u);
+    EXPECT_EQ(registry_writers().count("elmer"), 1u);
+    EXPECT_EQ(registry_readers_ex().count("elmer"), 1u);
+    // A directory has no extension: resolve_format refuses, sniff_format finds it.
+    EXPECT_THROW(resolve_format("some/mesh_dir", ""), ReadError);
+}
+
 TEST(Registry, GltfIsWriteOnly) {
     EXPECT_EQ(registry_writers().count("gltf"), 1u);
     EXPECT_EQ(registry_readers().count("gltf"), 0u);

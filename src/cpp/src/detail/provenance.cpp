@@ -20,9 +20,11 @@
 #include <atomic>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string_view>
+#include <system_error>
 
 // Project includes
 #include "meshioplusplus/detail/provenance.hpp"
@@ -428,6 +430,20 @@ ProvenanceReadResult scan_provenance_text(std::string_view text) {
 }
 
 ProvenanceReadResult read_provenance_lines(const std::string& rPath, std::size_t max_bytes) {
+    // An Elmer mesh directory keeps its block in `mesh.names` (a `mesh.header`
+    // path stands for its directory); any other directory has no head bytes.
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::path dir(rPath);
+        if (dir.filename() == "mesh.header" && fs::is_regular_file(dir, ec))
+            dir = dir.has_parent_path() ? dir.parent_path() : fs::path(".");
+        if (fs::is_directory(dir, ec)) {
+            const fs::path names = dir / "mesh.names";
+            return fs::is_regular_file(names, ec) ? read_provenance_lines(names.string(), max_bytes)
+                                                  : ProvenanceReadResult{};
+        }
+    }
     // Best-effort: an unopenable path is "nothing found", never a throw. This
     // enriches a summary; it must not be able to fail one.
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);

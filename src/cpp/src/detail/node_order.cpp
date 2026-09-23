@@ -90,6 +90,16 @@ const std::vector<NodeOrderSource>& node_order_sources() {
                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"frd", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
         {"frd", "line3", D::ToMeshio, {0, 2, 1}},
+        // Elmer mesh directory: the vertical mid-edge nodes of the 820/827
+        // bricks come before the top ring, and the 827 mid-height face centres
+        // run y-, x+, y+, x- (ElmerSolver's elements.def reference coordinates;
+        // its own VTU writer applies the same permutation). Every other Elmer
+        // code is already in meshio++'s order.
+        {"elmer", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"elmer", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                14, 15, 23, 21, 20, 22, 24, 25, 26}},
         // COMSOL `.mphtxt`/`.mphbin`: corners in tensor order (x fastest), then
         // every other node of the element's quadratic lattice in lexicographic
         // (z, y, x) order ("Mesh Element Numbering Conventions", COMSOL API
