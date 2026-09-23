@@ -34,8 +34,10 @@
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
@@ -63,6 +65,7 @@
 #include "meshioplusplus/formats/ip.hpp"
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/medit.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
@@ -2841,6 +2844,52 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("code_aster_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
+    });
+
+    // MFEM mesh (.mesh) and grid functions (.gf) writer / reader.
+    m.def(
+        "mfem_write",
+        [](const std::string& path, py::object pymesh, bool grid_functions) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_mfem(path, meshioplusplus_py::py_to_mesh(pymesh, refs),
+                                       grid_functions);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("grid_functions") = false);
+    m.def(
+        "mfem_read",
+        [](const std::string& path,
+           const std::vector<std::pair<std::string, std::string>>& grid_functions) {
+            std::vector<meshioplusplus::MfemGridFunction> gfs;
+            for (const auto& [name, gf] : grid_functions)
+                gfs.push_back({name, gf});
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mfem(path, gfs));
+        },
+        py::arg("path"),
+        py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{});
+
+    // Femap neutral file (.neu) reader / mesh writer.
+    m.def(
+        "femap_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_femap(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("femap_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_femap(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("femap_time_values",
+          [](const std::string& path) { return meshioplusplus::femap_time_values(path); });
+
+    // MSC Patran 2 neutral file (.pat/.out) writer / reader.
+    m.def("patran_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_patran(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("patran_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_patran(path));
     });
 
     // Elmer mesh directory writer / reader.

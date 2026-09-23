@@ -79,15 +79,18 @@ def _cases():
     from meshioplusplus.ensight import _ensight as py_ensight
     from meshioplusplus.exodus import _exodus as py_exodus
     from meshioplusplus.febio import _febio as py_febio
+    from meshioplusplus.femap import _femap as py_femap
     from meshioplusplus.flac3d import _flac3d as py_flac3d
     from meshioplusplus.flux import _flux as py_flux
     from meshioplusplus.gltf import _gltf as py_gltf
     from meshioplusplus.lsdyna import _lsdyna as py_lsdyna
+    from meshioplusplus.mfem import _mfem as py_mfem
     from meshioplusplus.mphtxt import _mphtxt as py_mphtxt
     from meshioplusplus.nastran import _nastran as py_nastran
     from meshioplusplus.netgen import _netgen as py_netgen
     from meshioplusplus.obj import _obj as py_obj
     from meshioplusplus.off import _off as py_off
+    from meshioplusplus.patran import _patran as py_patran
     from meshioplusplus.pcd import _pcd as py_pcd
     from meshioplusplus.permas import _permas as py_permas
     from meshioplusplus.ply import _ply as py_ply
@@ -124,6 +127,9 @@ def _cases():
         # A directory: the block is in its mesh.names (see _inspect_path).
         "elmer": (TRI, "", _core.elmer_write, py_elmer.write),
         "febio": (TRI, ".feb", _core.febio_write, py_febio.write),
+        "patran": (TRI, ".pat", _core.patran_write, py_patran.write),
+        "femap": (TRI, ".neu", _core.femap_write, py_femap.write),
+        "mfem": (TRI, ".mesh", _core.mfem_write, py_mfem.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

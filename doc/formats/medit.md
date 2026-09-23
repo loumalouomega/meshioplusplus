@@ -5,7 +5,7 @@ The [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) mesh for
 | | |
 |---|---|
 | **Format name** | `medit` |
-| **Extensions** | `.mesh`, `.meshb` |
+| **Extensions** | `.mesh`, `.meshb` (`.mesh` is shared with [MFEM](./mfem.md): a file whose first line names an MFEM mesh is read as `mfem`) |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
@@ -64,7 +64,7 @@ A leading `int32` magic code — `1` for native byte order, or its byte-swap (`1
 
 ## Quirks & limitations
 
-- A file without a `Dimension` keyword (FEconv writes none) is read with the dimension its first `Vertices` row implies: the number of values on that row minus the trailing reference. Before v16.4.0 both engines refused such a file.
+- A file without a `Dimension` keyword (FEconv writes none) is read with the dimension its first `Vertices` row implies: the number of values on that row minus the trailing reference. Before v16.6.0 both engines refused such a file.
 - Only **one** integer point-data array and **one** integer cell-data array can be written (Medit's single-`ref`-column limitation): if more than one candidate exists, the first is used and the rest silently dropped (a warning is emitted for the dropped ones).
 - Coordinate dtype is version-driven, not user-selectable in binary mode: ASCII `MeshVersionFormatted` 0 or 1 → `float32`, 2 → `float64`; binary version 1 → `float32`, versions 2-4 → `float64`. The writer auto-upgrades to binary version 4 if any cell block's connectivity needs 8-byte integers.
 - Binary record headers embed **absolute byte offsets** (`pos` fields) that the writer must track precisely while emitting records — a strict requirement for libMeshb compatibility, not merely a convenience field.

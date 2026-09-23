@@ -96,6 +96,12 @@ const std::vector<NodeOrderSource>& node_order_sources() {
                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"frd", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
         {"frd", "line3", D::ToMeshio, {0, 2, 1}},
+        // MSC Patran neutral file: hex20 and wedge15 list the bottom ring, the
+        // vertical mid-edges, then the top ring (Patran Reference Manual,
+        // Element Library); every other Patran shape is in meshio++'s order.
+        {"patran", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"patran", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
         // Elmer mesh directory: the vertical mid-edge nodes of the 820/827
         // bricks come before the top ring, and the 827 mid-height face centres
         // run y-, x+, y+, x- (ElmerSolver's elements.def reference coordinates;

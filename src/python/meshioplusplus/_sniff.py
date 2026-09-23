@@ -75,6 +75,41 @@ def _is_mphtxt(head: bytes) -> bool:
     )
 
 
+def _is_femap(head: bytes) -> bool:
+    """Femap neutral: a lone ``-1`` line (first or second line -- MYSTRAN writes a
+    number before it), then the header block's id, 100; see sniff.cpp."""
+    parts = head.split(b"\n")[:-1][:3]
+    lines = [p.strip(b" \t\r") for p in parts]
+    return any(
+        lines[k] == b"-1" and lines[k + 1] == b"100"
+        for k in range(min(2, len(lines) - 1))
+    )
+
+
+def _is_patran(head: bytes) -> bool:
+    """Patran 2 neutral: a 25/26 packet header in the fixed ``(I2,8I8)`` columns,
+    every field right-justified digits, announcing a data card; see sniff.cpp."""
+    if len(head) < 26 or head[:1] != b"2" or head[1:2] not in (b"5", b"6"):
+        return False
+    line = head.split(b"\n", 1)[0]
+    if line.endswith(b"\r"):
+        line = line[:-1]
+    if not 26 <= len(line) <= 80:
+        return False
+    kc = 0
+    for f in range(8):
+        start = 2 + 8 * f
+        if start >= len(line):
+            break
+        field = line[start : start + 8].lstrip(b" ")
+        digits = field[1:] if field[:1] == b"-" else field
+        if not digits or not digits.isdigit():
+            return False
+        if f == 2:
+            kc = int(field)
+    return kc >= 1
+
+
 def _has_polymesh(poly: Path) -> bool:
     return (poly / "owner").is_file() and (poly / "faces").is_file()
 
@@ -200,6 +235,14 @@ def _sniff_format_py(path) -> str:
             first = rest[1:].split(None, 1)[:1]
             if first and first[0].rstrip(b"bB").decode("latin-1") in _UNV_IDS:
                 return "unv"
+    if stripped.startswith(
+        (b"MFEM mesh v1.", b"MFEM NC mesh", b"MFEM NURBS mesh", b"MFEM INLINE mesh")
+    ):
+        return "mfem"
+    if _is_femap(head):
+        return "femap"
+    if _is_patran(head):
+        return "patran"
     if stripped.startswith(b"solid "):
         return "stl"
     # Code_Aster .mail meshes open, after any `%` comment lines, with a TITRE or

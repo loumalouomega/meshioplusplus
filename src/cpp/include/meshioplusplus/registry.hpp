@@ -85,6 +85,10 @@ MESHIOPLUSPLUS_API const std::map<std::string, std::string>& registry_extension_
 /**
  * @brief Resolve the effective format: `rFormat` if non-empty, else the
  *        extension default for `rPath`.
+ *
+ * One default looks at the content: `.mesh` is Medit's, but an existing file
+ * whose first line names an MFEM mesh (`MFEM mesh v1.x`, `MFEM NC mesh ...`)
+ * resolves to `mfem`.
  * @throws ReadError if `rFormat` is empty and the extension is unknown.
  */
 MESHIOPLUSPLUS_API std::string resolve_format(const std::string& rPath, const std::string& rFormat);

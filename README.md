@@ -30,6 +30,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`; bodies and boundaries as named regions, ElmerGrid partitions merged, recognised by content),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`),
 > [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions) and plot files (`.xplt`, read-only; every state is a step),
+> [Femap](https://www.sw.siemens.com/en-US/simcenter/femap/) neutral file (`.neu`, 4.41 to 2020.1 read, 8.2 mesh written; properties and groups as named regions, every output set is a step),
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`, named cell groups),
 > [FLUX](https://www.altair.com/flux/) (mesh `.pf3`, field `.dex`),
 > [FreeFem++](https://freefem.org/) (`.msh`),
@@ -43,6 +44,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
+> [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
 > [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
@@ -55,6 +57,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
+> [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
 > [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
@@ -1035,7 +1038,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.4.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -47,7 +47,7 @@ Any other dataset is skipped. Data at nodes on elements (dataset 57, 2414 locati
 
 ### Nodes and coordinate systems
 
-Record 1 of a 2411 node names its definition coordinate system. When a 2420 dataset defines that system as **Cartesian**, the coordinates are moved into the global system as `x = M·x_local + o`, where `M` is the matrix's first three rows and `o` its fourth: the convention of Salome's reader, the only widely used consumer of the dataset. A **cylindrical** or **spherical** system is warned about and its nodes are left in local coordinates; a system number above 1 with no 2420 definition is taken as global, with a warning. Units (164) are recorded, not applied: `unv:unit_factors` holds the length, force, temperature and temperature-offset factors *to SI* as the file states them. The units code is read from columns 1–10 of record 1 (`I10,20A1,I10`), since some writers run the description into it (`5mm (milli-newton)`); since v16.4.0 Python no longer refuses such a record.
+Record 1 of a 2411 node names its definition coordinate system. When a 2420 dataset defines that system as **Cartesian**, the coordinates are moved into the global system as `x = M·x_local + o`, where `M` is the matrix's first three rows and `o` its fourth: the convention of Salome's reader, the only widely used consumer of the dataset. A **cylindrical** or **spherical** system is warned about and its nodes are left in local coordinates; a system number above 1 with no 2420 definition is taken as global, with a warning. Units (164) are recorded, not applied: `unv:unit_factors` holds the length, force, temperature and temperature-offset factors *to SI* as the file states them. The units code is read from columns 1–10 of record 1 (`I10,20A1,I10`), since some writers run the description into it (`5mm (milli-newton)`); since v16.6.0 Python no longer refuses such a record.
 
 ### Elements
 
@@ -124,7 +124,7 @@ Dataset **58b** is the binary variant: 11 ASCII header records, then the raw val
 
 ### Code_Aster comments
 
-Code_Aster's UNV writer ends integer records with a `%` comment: the dataset line (`55   %VALEURS AUX NOEUDS`) and every node label of a 55/57 record (`1     % NOEUD N1`). An integer record stops at the first token starting with `%` (since v16.4.0; both engines refused these files before).
+Code_Aster's UNV writer ends integer records with a `%` comment: the dataset line (`55   %VALEURS AUX NOEUDS`) and every node label of a 55/57 record (`1     % NOEUD N1`). An integer record stops at the first token starting with `%` (since v16.6.0; both engines refused these files before).
 
 ## Compatibility with files written by meshio++ ≤ 15.5
 

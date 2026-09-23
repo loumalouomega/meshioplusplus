@@ -78,7 +78,7 @@ Hybrid meshes are supported.
 
 ## Quirks & limitations
 
-- **Node order.** FLUX lists every solid in VTK's order mirrored: the base face runs clockwise seen from inside, and `tetra10` lists its mid-edges as (0,1) (0,2) (0,3) (1,2) (2,3) (1,3) of the file corners. The `flux` tables of the [node-ordering registry](../node_ordering.md) undo this on read and redo it on write, for `tetra`, `tetra10`, `pyramid`, `wedge`, `wedge15`, `hexahedron` and `hexahedron20`; planar and line elements already match. Before v16.4.0 no permutation was applied and every solid read inverted. The `wedge15` table follows the same rule but has no real sample behind it.
+- **Node order.** FLUX lists every solid in VTK's order mirrored: the base face runs clockwise seen from inside, and `tetra10` lists its mid-edges as (0,1) (0,2) (0,3) (1,2) (2,3) (1,3) of the file corners. The `flux` tables of the [node-ordering registry](../node_ordering.md) undo this on read and redo it on write, for `tetra`, `tetra10`, `pyramid`, `wedge`, `wedge15`, `hexahedron` and `hexahedron20`; planar and line elements already match. Before v16.6.0 no permutation was applied and every solid read inverted. The `wedge15` table follows the same rule but has no real sample behind it.
 - **Truncated files.** A file holding fewer elements or points than its header declares (FLUX excerpts do) keeps what it holds, with a warning; an element cut off in the middle of its connectivity is a `ReadError`.
 - The file is read as Latin-1, the encoding FLUX uses for accented region names.
 - Header-line detection is French-text substring matching; a real FLUX file with reworded headers (not expected in practice, but possible) would break parsing.

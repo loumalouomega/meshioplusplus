@@ -2378,6 +2378,9 @@ step('availableFormats reports what this build can read and write', () => {
     for (const fmt of ['elmer', 'febio'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     assert.ok(readers.includes('xplt') && !writers.includes('xplt'));
+    // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
+    for (const fmt of ['patran', 'femap', 'mfem'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });
@@ -2635,6 +2638,26 @@ step('elmer writes a mesh DIRECTORY into MEMFS and reads it back with no format'
     const back = m.readMesh('/elmer_mesh');
     assert.deepEqual(back.cells.map((c) => c.type), ['tetra', 'triangle']);
     assert.deepEqual(back.regions.map((r) => r.name).sort(), ['body_1', 'boundary_1']);
+});
+
+step('patran, femap and mfem round-trip a quadratic tetrahedron', () => {
+    // Corners, then the mid-edge nodes of 0-1, 1-2, 2-0, 0-3, 1-3, 2-3.
+    const tet10 = {
+        points: new Float64Array([
+            0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0.5, 0, 0, 0, 0.5, 0.5, 0,
+            0.5, 0, 0.5, 0.5,
+        ]),
+        dim: 3,
+        cells: [{ type: 'tetra10', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), nodesPerCell: 10 }],
+    };
+    for (const [path, fmt] of [['/tet.pat', 'patran'], ['/tet.neu', 'femap'], ['/tet.mesh', 'mfem']]) {
+        m.writeMesh(path, tet10, fmt);
+        // No format given: .pat and .neu are these formats' own extensions, and
+        // `.mesh` goes to mfem because the file's first line names an MFEM mesh.
+        const back = m.readMesh(path);
+        assert.deepEqual(back.cells.map((c) => c.type), ['tetra10'], fmt);
+        assert.equal(back.points.length, 30, fmt);
+    }
 });
 
 step('febio writes a spec-4.0 .feb and reads its surface back as a side region', () => {

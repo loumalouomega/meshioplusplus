@@ -20,6 +20,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — |
 | [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
 | [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — |
+| [`femap`](./formats/femap.md) | `.neu` | ✓ | ✓ (mesh) | — |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
 | [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — |
@@ -34,6 +35,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`mdpa`](./formats/mdpa.md) | `.mdpa` | ✓ | ✓ | — |
 | [`med`](./formats/med.md) | `.med` | ✓ | ✓ | `h5py` |
 | [`medit`](./formats/medit.md) | `.mesh`, `.meshb` | ✓ | ✓ | — |
+| [`mfem`](./formats/mfem.md) | `.mesh` (by content), `.gf` grid functions | ✓ | ✓ | — |
 | [`mff`](./formats/mff.md) | `.mff` | ✓ | ✓ | — |
 | [`mfm`](./formats/mfm.md) | `.mfm` | ✓ | ✓ | — |
 | [`mphbin`](./formats/mphbin.md) | `.mphbin` | ✓ | ✓ | — |
@@ -45,6 +47,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — |
 | [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — |
+| [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — |
 | [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — |
@@ -89,6 +92,10 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on FEBio (`febio`, `xplt`)** (v16.2.0): the mesh of an FEBio input file (`.feb`, spec 2.5 in `<Geometry>`, 3.0 and 4.0 in `<Mesh>`) is read by both engines under the rules of FEBio's own parsers: each `<Elements>` block a cell block and a cell region, `<NodeSet>`/`<ElementSet>` point and cell regions, a `<Surface>` on solid faces a side region, `<Edge>`/`<DiscreteSet>` line blocks, `<MeshData>` point and cell data. The writer emits spec 4.0 with a placeholder material per domain; faces of solids become surfaces, lone two-node lines discrete springs. FEBio's plot file (`.xplt`, read-only) is read one state at a time (`time_step`), compressed or not, in either byte order: nodal variables as point data, per-element ones as cell data, per-element-node ones averaged to the points. Only `hex27` has a node permutation (`FEHex27`'s face centres). Both were checked against FEBio 4.12 built from source. See [FEBio input](./formats/febio.md) and [FEBio plot files](./formats/xplt.md).
 
 **Note on Code_Aster meshes (`code_aster`)** (v16.0.0): Code_Aster's own ASCII mesh, read and written by both engines under the rules of Code_Aster's reader: only the first 80 columns of a line are read, records are token streams that may wrap, `%` starts a comment. `COOR_nD` gives the points, `POI1` … `HEXA27` the cell blocks (`TRIA7` as the new `triangle7`), and `GROUP_MA`/`GROUP_NO` cell and point regions without a tag. Its node order is **not** MED's: the quadratic hexahedra and wedges list the vertical mid-edges before the top ring, and the tables are pinned against Code_Aster's own gmsh and MED readers in the [node-ordering registry](./node_ordering.md). The writer keeps every line within 80 columns, names nodes and elements `N…`/`M…`, sanitises group names to 24 characters, and drops side regions and data arrays with a warning. See [Code_Aster](./formats/code_aster.md).
+
+**Note on the Patran and Femap neutral files (`patran`, `femap`)** (v16.5.0): two FEM interchange files, read and written by both engines. Patran's `.pat`/`.out` is a sequence of fixed-width `(I2,8I8)` packets: nodes, elements (shape in the header, linear or quadratic by node count, `hexahedron20`/`wedge15` with the vertical mid-edges before the top ring), and named components as point and cell regions; elements no component names are grouped by property. Femap's `.neu` is a sequence of `-1`-delimited, comma-separated blocks whose layouts change with the version, so every record is read by position and length (4.41 to 2020.1): nodes, elements in Femap's 20-slot degenerate-brick node layout, property titles, groups as regions, and output sets as steps (`time_step`) whose `451`/`1051` vectors become point or cell data. The Femap writer emits the 8.2 layout, mesh and groups only. Neither Patran nor Femap was available: the Patran fixtures are written from its documentation, the Femap ones are real Femap, EMSolution and MYSTRAN files, checked against FrontISTR's `neu2fstr` and femap_neutral_parser. See [Patran](./formats/patran.md) and [Femap](./formats/femap.md).
+
+**Note on MFEM meshes (`mfem`)** (v16.5.0): MFEM's own `.mesh` (v1.0–v1.3, conforming) and its `.gf` grid functions, read and written by both engines. `.mesh` stays Medit's extension; a file whose first line names an MFEM mesh is read as one, by the Python reader loop and by the native resolver alike. Attributes become `mfem:attribute` and `attribute_<n>`/`boundary_<n>` regions, v1.3 attribute sets named regions. Order-2 `H1` nodes give quadratic cells whose points are MFEM's degrees of freedom in MFEM's own numbering; higher orders keep the vertices, with a warning. Grid functions (`mfem.read(path, {name: gf})`, `mfem.write(..., grid_functions=True)`) become point or cell data. Checked against MFEM 4.10 (PyMFEM) both ways. See [MFEM](./formats/mfem.md).
 
 **Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, **read-only** — it is what a solver writes, so there is nothing to write back. Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
 
@@ -136,7 +143,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `exodus`:** One-node `SPHERE`/particle meshes (peridynamics solvers such as [PeriLab](https://github.com/PeriHub/PeriLab.jl) write these) read as `vertex` cells, and per-element **attributes** — `attrib{k}`, where a sphere's radius or a shell's thickness lives — round-trip as `cell_data` under the `exodus:attr:` prefix, always float64 and NaN for a block the file gives no such attribute. Since v9.9.0 ordinary (non-attribute) `cell_data` round-trips too, as element variables (`name_elem_var`/`elem_var_tab`/`vals_elem_var{j}eb{k}`); element-block names round-trip through `Cell` regions (`eb_names`), and `field_data["exodus:time"]` labels the written step. See [`exodus.md`](./formats/exodus.md#element-attributes).
 
-**Note on FEconv-derived formats (`unv`, `mfm`, `freefem`, `flux`, `mff`, `dex`, `ip`):** These readers/writers were implemented against the [FEconv](https://github.com/victorsndvg/FEconv) format documentation and public format specs (FEconv is GPL; no FEconv code or data is used — MIT-clean, with fixtures generated by round-trip). `unv` is described on [its own page](./formats/unv.md): since v15.6.0 its node orders and group layouts are checked against gmsh, Salome and pyuff, its groups are regions and its results (2414, 55, 56 and the 58/58b functions of test-lab `.uff` files) are the steps of a sequence; `flux` round-trips per-element region references as `cell_data` (`pf3:ref`), and since v16.4.0 applies FLUX's mirrored solid node order through the [node-ordering registry](./node_ordering.md). `mphtxt` started here too; since v16.1.0 it follows COMSOL's own documentation and files instead, with its binary twin `mphbin` (see [its page](./formats/mphtxt.md)). Node orderings for higher-order elements round-trip losslessly but may differ from the originating tool's internal ordering for some element types. FEconv's own `examples/` (many small meshes, several the same mesh written by different tools) are a useful cross-check but GPL, so they are not committed: `tests/python/test_feconv_examples.py` reads a local checkout when `MESHIOPLUSPLUS_FECONV_DIR` points at it, checking engine parity, orientation, mid-edge placement and the twins (FLUX, VTU, Medit, Gmsh, Fluent, COMSOL and UNV files). The quirks they exposed in v16.4.0 are reproduced by the generated fixtures of `tools/gen_feconv_quirk_fixtures.py`.
+**Note on FEconv-derived formats (`unv`, `mfm`, `freefem`, `flux`, `mff`, `dex`, `ip`):** These readers/writers were implemented against the [FEconv](https://github.com/victorsndvg/FEconv) format documentation and public format specs (FEconv is GPL; no FEconv code or data is used — MIT-clean, with fixtures generated by round-trip). `unv` is described on [its own page](./formats/unv.md): since v15.6.0 its node orders and group layouts are checked against gmsh, Salome and pyuff, its groups are regions and its results (2414, 55, 56 and the 58/58b functions of test-lab `.uff` files) are the steps of a sequence; `flux` round-trips per-element region references as `cell_data` (`pf3:ref`), and since v16.6.0 applies FLUX's mirrored solid node order through the [node-ordering registry](./node_ordering.md). `mphtxt` started here too; since v16.1.0 it follows COMSOL's own documentation and files instead, with its binary twin `mphbin` (see [its page](./formats/mphtxt.md)). Node orderings for higher-order elements round-trip losslessly but may differ from the originating tool's internal ordering for some element types. FEconv's own `examples/` (many small meshes, several the same mesh written by different tools) are a useful cross-check but GPL, so they are not committed: `tests/python/test_feconv_examples.py` reads a local checkout when `MESHIOPLUSPLUS_FECONV_DIR` points at it, checking engine parity, orientation, mid-edge placement and the twins (FLUX, VTU, Medit, Gmsh, Fluent, COMSOL and UNV files). The quirks they exposed in v16.6.0 are reproduced by the generated fixtures of `tools/gen_feconv_quirk_fixtures.py`.
 
 **Note on the field-only formats (`mff`, `dex`, `ip`):** These carry result data, not geometry. They read into a geometry-less `Mesh` (no cells) with the field(s) in `point_data`; `dex`/`ip` also populate `points` from the coordinates in the file, while `mff` carries no coordinates (its `points` has zero columns and only the field values round-trip). To attach a field to a mesh, read the field file and the mesh file separately and copy the field `Mesh`'s `point_data` onto the geometry `Mesh` — there is no fixed naming convention pairing a field file with its mesh (unlike TetGen's `.node`/`.ele`).
 
@@ -164,6 +171,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `elmer` | `!` lines in `mesh.names` (any line without both `$` and `=` is ignored by ElmerGrid and ElmerSolver) | `mesh.names`, which the writer always writes; the writer puts it first | Yes |
 | `ensight` | None named, but the `.geo` header's description line 2 is free text | Fixed line 2 of the `.geo` header | Yes |
 | `exodus` | netCDF root `title` attribute | n/a (one attribute, not a line) | Yes |
+| `femap` | None (a block's title line is the nearest free-text slot) | Block 100's title line | Yes (the title) |
 | `febio` | XML `<!-- -->` | Anywhere in the document; the writer puts it just inside `<febio_spec>`, so the root tag stays within the bytes sniffing reads | Yes |
 | `flac3d` | `*` prefix | Top of file | Yes |
 | `flux` | None named — an unlabeled free-text line the reader skips (keyed lookup, not positional) | Top of file | Yes |
@@ -178,6 +186,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `mdpa` | `//` prefix (Kratos/C++ style) | Anywhere | — |
 | `med` | HDF5 `DES` mesh-description field (user-overridable via `MedInfo.description`, not a provenance slot) | n/a | — (see the `med.md` note below) |
 | `medit` | `#` prefix | Anywhere | — |
+| `mfem` | `#` lines (between sections) | Anywhere between sections; the writer puts it after the header line | Yes |
 | `mff` | None (fixed positional numeric layout, no geometry) | n/a | — |
 | `mfm` | None (fixed positional numeric layout) | n/a | — |
 | `mphbin` | None (binary serialisation, no comment slot) | n/a | — |
@@ -188,6 +197,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `obj` | `#` prefix | Top of file | Yes |
 | `off` | `#` prefix | After the `OFF` magic line | Yes |
 | `openfoam` | C-style `/* ... */`; the `FoamFile` banner's fixed-width credit cell is this writer's own convention | Top of file, inside the banner box | Yes (C++ writer only — no Python twin) |
+| `patran` | None (the `25` title packet's 80-column card is the nearest free-text slot) | The title card | Yes (the title) |
 | `pcd` | `#` prefix (the header's own comment syntax) | After the `# .PCD v0.7` first line, before `VERSION` | Yes |
 | `permas` | `!` prefix | Top of file | Yes |
 | `ply` | `comment ` prefix (the format's own keyword) | Anywhere in the header, before `end_header` | Yes |
@@ -505,6 +515,22 @@ meshioplusplus.flac3d.write(filename, mesh,
 ### Code_Aster (`.mail`)
 
 `meshioplusplus.code_aster.write(filename, mesh)` — no extra options. Point and cell regions become `GROUP_NO`/`GROUP_MA`, with names sanitised to 24 letters, digits and `_`; every line stays within the 80 columns Code_Aster reads; see [`code_aster.md`](./formats/code_aster.md#writing).
+
+### Patran neutral (`.pat`, `.out`)
+
+`meshioplusplus.patran.write(filename, mesh)` — no extra options. Point and cell regions become named components (one per name), the element property comes from `patran:property`, and coordinates keep ten significant digits (`E16.9`); see [`patran.md`](./formats/patran.md#writing).
+
+### Femap neutral (`.neu`)
+
+`meshioplusplus.femap.write(filename, mesh)` — no extra options. The Femap 8.2 layout: properties from `femap:property`/`femap:type` and their regions, other regions as groups; results are not written. See [`femap.md`](./formats/femap.md#writing).
+
+### MFEM (`.mesh`)
+
+```python
+meshioplusplus.mfem.write(filename, mesh, grid_functions=False)
+```
+
+`.mesh` defaults to Medit, so pass `file_format="mfem"` to `meshioplusplus.write`. `grid_functions=True` also writes each data array as `<stem>.<name>.gf`. Quadratic cells become an `H1_<d>D_P2` nodes space and named cell regions v1.3 attribute sets; see [`mfem.md`](./formats/mfem.md#writing).
 
 ### Abaqus (`.inp`)
 

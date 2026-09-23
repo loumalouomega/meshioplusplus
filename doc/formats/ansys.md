@@ -77,8 +77,8 @@ On read the type comes from the faces, not from this code. meshio++ → Ansys co
 
 ## Quirks & limitations
 
-- Before v16.4.0 the reader returned the faces only, never a volume cell, and the C++ reader handed every file with face sections to Python. It now rebuilds the cells in both engines, which give identical meshes, zones and regions. **Interior faces are no longer returned** as `triangle`/`quad` blocks.
-- Out-of-order node zones, a missing blank in `(13(`, GAMBIT's boundary rows with `c0 = 0`, bodyless binary declarations and binary mixed face zones are all accepted; before v16.4.0 each of them failed.
+- Before v16.6.0 the reader returned the faces only, never a volume cell, and the C++ reader handed every file with face sections to Python. It now rebuilds the cells in both engines, which give identical meshes, zones and regions. **Interior faces are no longer returned** as `triangle`/`quad` blocks.
+- Out-of-order node zones, a missing blank in `(13(`, GAMBIT's boundary rows with `c0 = 0`, bodyless binary declarations and binary mixed face zones are all accepted; before v16.6.0 each of them failed.
 - A leading node count is assumed for polygonal rows in a mixed face zone (the samples only have fixed-size rows there).
 - Hanging-node trees (`(58 ...)`/`(59 ...)`), periodic shadows and cell-tree data are skipped.
 - The writer still emits the legacy layout; a face-based writer that Fluent reads is on the [roadmap](../roadmap.md).
