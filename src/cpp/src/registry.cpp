@@ -170,9 +170,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"wkt", meshioplusplus::read_wkt},
         {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
         {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
-        // Side-channel info (point_sets/cell_sets, cell-tag family names) is
-        // not carried by the flat bindings -- v1 limitation, see doc/wasm.md
-        // and doc/c_api.md.
+        // Side-channel info (cell-tag family names) is not carried by the flat
+        // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
+        // components travel as regions since v16.3.0, so they survive here.
         {"ansysinp",
          [](const std::string& path) {
              meshioplusplus::AnsysInfo info;
@@ -607,6 +607,12 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
+        // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
+        {"ansysinp",
+         [](const std::string& path, const ReadOptions& opts) {
+             meshioplusplus::AnsysInfo info;
+             return meshioplusplus::read_ansysinp(path, opts, info);
+         }},
         // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
         {"febio", meshioplusplus::read_febio},
         // FEBio .xplt honours mTimeStep (one state), the narrowing options and
