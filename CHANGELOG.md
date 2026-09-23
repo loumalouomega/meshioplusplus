@@ -8,6 +8,41 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.1.0 (2026-09-23)
+
+**Closes roadmap §1.1, Altair OptiStruct `.fem`, and §1.2, COMSOL `.mphtxt`/`.mphbin`** (both removed; §1.3–§1.21 renumbered to §1.1–§1.19). HyperMesh components and OptiStruct sets now read as named regions, from any Nastran bulk-data deck and in both engines. COMSOL meshes read and write with COMSOL's own node numbering, every object of the file, Selections as regions, and a new binary twin, `mphbin`. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).
+
+- **Breaking:** the C++ Nastran reader reads **any** bulk-data deck. Before, it accepted only files carrying the C++ writer's `meshioplusplus-cpp-nastran` comment, so every real `.bdf`/`.fem`/`.nas` went to the Python reader, and the native CLI, C API and WASM could not read one at all. It now handles:
+  - small, large and free-field cards with explicit and implicit continuations;
+  - the full element table, reading a fixed number of node fields per card (so THETA/ZOFFS, thicknesses and orientation vectors are no longer taken for nodes);
+  - quadratic solids;
+  - `nastran:ref` data, where a blank field reads as 0.
+  The Python reader follows it, and both give the same mesh on every fixture. A malformed card is a `ReadError` naming it.
+- **Breaking:** both Nastran writers emit real `CTETRA`/`CPYRA`/`CPENTA`/`CHEXA` keywords for the quadratic solids; before, they wrote the internal names `CTETRA_`, `CPYRA_`, `CPENTA_` and `CHEXA_`, which no solver accepts. A zero `nastran:ref` is written as a blank field, and the C++ writer now writes `nastran:ref` too.
+- **OptiStruct / HyperMesh.** Three kinds of named groups become regions:
+  - `$HMMOVE <id>` with its `$` lines of element ids (and `THRU` ranges), named by `$HMNAME COMP <id>"name"` even when that comes after the elements, becomes a `cell` region tagged with the component id.
+  - Elements that no `$HMMOVE` lists join the component whose `$HMNAME COMP` line records their PID as its property. HyperMesh writes `$HMMOVE` only for the others.
+  - OptiStruct `SET,<id>,GRID|ELEM,LIST` cards become `point`/`cell` regions, named by `$HMSET`.
+  Cards meshio++ does not read are skipped. Optimization, contact and unmapped element cards (`DESVAR`, `DRESP1`, `TIE`, `CONTACT`, `CONM2`, `RBE2`, …) are named, with counts, in one warning; properties, materials, loads and solution parameters are skipped quietly. On write, disjoint cell regions become `$HMMOVE`/`$HMNAME COMP` comment blocks, byte-identical in both engines. The done-when holds: HyperMesh's `cylinder.fem` reads with its component `misc1` as a region through the native CLI too, and a deck's optimization cards are skipped with a warning.
+- **Breaking:** COMSOL's quadratic node order is now COMSOL's. COMSOL numbers corners in tensor order, then the other nodes of the quadratic lattice lexicographically. meshio++ had read `tri2`, `tet2`, `quad2`, `prism2` and `hex2` in the identity order, misplacing their mid-edge nodes, and did not know `pyr2` (now `pyramid14`). Files written by earlier releases with quadratic elements read back differently. The tables now live in the node-ordering registry under `mphtxt`. They agree with AWS Palace's COMSOL tables composed with the gmsh ones, and they put every mid-edge node of 40 published COMSOL files (deal.II, FEconv, Wolfram FEMAddOns; not redistributed) on its edge's midpoint.
+- **COMSOL reader.** It reads every object of the file:
+  - Mesh versions 4 and older, including their parameter records (one to three values per node) and up/down pairs, which the old reader miscounted on 3-D boundaries.
+  - Strings containing blanks or `#`.
+  - Missing entity indices, which default to domain 1 or entity 0.
+  - Selections, as cell regions of their dimension.
+  - Several Mesh objects, merged, each one's cells a region.
+  The first object of any other class stops the read with a warning.
+- **Breaking:** the COMSOL writer writes a Mesh of version 4 instead of 2, without parameter records. Entity indices come from `mphtxt:geom` or, without it, from the disjoint cell regions per dimension: domains from 1 and lower dimensions from 0, where before every element got 0. Every cell region that is a union of whole entities is written as a Selection.
+- **`mphbin`** is a new read/write format (`.mphbin`), COMSOL's binary serialisation of the same content: little-endian int32 and float64, strings as int32 code points. It has no provenance slot. Both COMSOL files are now sniffed by content, and `.mphbin` is registered for every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP). Both engines write the same bytes in both forms.
+- **`keyword_card`** gains `card_to_int`/`card_to_real` overloads whose errors name the format; the Nastran reader parses its fields with them.
+- **Fixtures and tests.**
+  - Nastran: `tools/gen_optistruct_fixture.py` writes `optistruct_mixed.fem`, which exercises every field layout, quadratic solids, components by `$HMMOVE` and by property, sets and skipped cards. `composite_plate_2022.fem` is a real OptiStruct deck from pyNastran (BSD-3-Clause, credited in `CITATION.cff`).
+  - COMSOL: `tools/gen_comsol_fixtures.py` writes the COMSOL fixtures in COMSOL's own numbering: two domains with Selections (also as `.mphbin`), every quadratic type, a version 2 Mesh and two Mesh objects.
+  - Test suites: `test_nastran.py` and `test_mphtxt.py` test both engines, their agreement and their byte-identical writes. `tests/cpp/test_nastran.cpp` and `test_comsol.cpp` are new. `test_node_order.cpp` checks the COMSOL tables against Palace's. There are also region round-trip, sniff, registry, MCP and WASM smoke entries.
+- **Example.** `example/python/13_optistruct_comsol.ipynb`, executed with outputs: components and sets rendered, components written back, COMSOL domains and Selections, the quadratic node order with a mid-edge check, text against binary, and an OptiStruct deck converted to COMSOL.
+- **Tests and hashes.** The four `BASELINE_HASHES` were refreshed for the version only: the old hashes were verified against the new core with the version substituted first.
+- **Not verified in this change:** a COMSOL-written `.mphbin` (none is public; the reader follows COMSOL's documentation and Palace's reader, and the fixture is encoded independently of meshio++); importing a meshio++-written `.mphtxt`/`.mphbin` into COMSOL itself; OptiStruct running a meshio++-written deck; the R and Emscripten builds (not installed here; the WASM smoke steps were syntax-checked only).
+
 ## v16.0.0 (2026-09-23)
 
 **Closes roadmap §1.1, the Code_Aster `.mail` mesh** (removed; §1.2–§1.22 renumbered to §1.1–§1.21), and with it the node-ordering half of §1.21's shared infrastructure, which the roadmap sequenced with it. Code_Aster's native ASCII mesh is a new read/write format, `code_aster` (`.mail`), read under the rules of Code_Aster's own reader. The node-ordering permutations of MED, CalculiX `.frd`, I-DEAS UNV and Code_Aster now live in one registry, and `triangle7` is a new cell type. A major version because of the ABI: `MESHIOPLUSPLUS_ABI_VERSION` 15 → 16.

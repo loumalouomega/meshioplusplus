@@ -9255,6 +9255,14 @@ MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std:
  */
 MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere);
 
+/// `card_to_int` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
+MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std::string& rWhere,
+                                            const std::string& rFormat);
+
+/// `card_to_real` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
+MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere,
+                                       const std::string& rFormat);
+
 /**
  * @brief `Value` in at most 16 columns: the shortest scientific string that
  * round-trips, else as many digits as fit.
@@ -9998,7 +10006,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 0
+#define MESHIOPLUSPLUS_VERSION_MINOR 1
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10008,7 +10016,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.1.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -15935,27 +15943,27 @@ MESHIOPLUSPLUS_API Mesh read_mfm(const std::string& rPath);
 // ===== begin src/cpp/include/meshioplusplus/formats/mphtxt.hpp =====
 /**
  * @file mphtxt.hpp
- * @brief COMSOL text mesh (.mphtxt) C++ reader/writer.
+ * @brief COMSOL native mesh files: text (.mphtxt) and binary (.mphbin).
  *
- * `.mphtxt` (as handled by FEconv) is a flat ASCII token stream (comments
- * from `#` to end of line): a version pair, tag-name and type-name tables
- * (discarded), then one or more "object" records — **only the first mesh
- * object in the file is parsed**; the rest are ignored entirely. That
- * object holds `sdim` (spatial dimension), `n_points`, `lowest` (the file's
- * actual lowest node index, not assumed to be 1), node coordinates, and a
- * sequence of element-type blocks (hybrid/multi-type meshes are
- * supported), each: a COMSOL type name (`"tet"`, `"tri2"`, …), node/element
- * counts, connectivity shifted by `-lowest` to 0-based, discarded
- * parameter tokens, a per-element **geometric entity index** ->
- * `cell_data["mphtxt:geom"]`, and discarded up/down topology-link pairs.
+ * Both serialise the same sequence: a version pair (`0 1`), tag and type
+ * tables, then objects (`0 0 1` and a class name). Read are `Mesh` objects
+ * (versions 4 and older, whose element records also carry parameter values
+ * and up/down pairs) and `Selection` objects; the first object of any other
+ * class stops the read with a warning. Several Mesh objects are merged, each
+ * one's cells a region named by its tag. `.mphbin` stores integers as
+ * little-endian int32, doubles as float64, and a string as its length and
+ * one int32 code point per character; in `.mphtxt` a string is its length,
+ * a blank and the characters, and `#` starts a comment.
  *
- * COMSOL <-> meshio++ type map: `vtx`->`vertex`, `edg`/`edg2`->`line`/
- * `line3`, `tri`/`tri2`->`triangle`/`triangle6`, `quad`/`quad2`->`quad`/
- * `quad9`, `tet`/`tet2`->`tetra`/`tetra10`, `prism`/`prism2`->`wedge`/
- * `wedge18`, `pyr`->`pyramid`, `hex`/`hex2`->`hexahedron`/`hexahedron27`.
- * Node-order permutation is applied for `quad` (`[0,1,3,2]`, self-inverse)
- * and `hexahedron` (`[0,1,3,2,4,5,7,6]`, self-inverse); every other type
- * uses natural order.
+ * Every element's geometric entity index becomes `cell_data["mphtxt:geom"]`
+ * (domains count from 1, boundaries, edges and points from 0). A Selection
+ * becomes a cell Region: the elements of its dimension whose entity it
+ * lists. Node order goes through the node-ordering registry (format key
+ * `mphtxt`): COMSOL lists the corners in tensor order, then the other nodes
+ * of the quadratic lattice lexicographically. Types: `vtx`, `edg`/`edg2`,
+ * `tri`/`tri2`, `quad`/`quad2`, `tet`/`tet2`, `pyr`/`pyr2`,
+ * `prism`/`prism2`, `hex`/`hex2` (`quad9`, `pyramid14`, `wedge18` and
+ * `hexahedron27` for the quadratic ones). See doc/formats/mphtxt.md.
  */
 
 // System includes
@@ -15968,71 +15976,82 @@ namespace meshioplusplus {
 /**
  * @brief Write a Mesh to a COMSOL text mesh (.mphtxt) file.
  *
- * Emits the version/tag/type-name header tables, then a single mesh
- * object with 1-based-equivalent (`lowest = 1`) connectivity, applying the
- * `quad`/`hexahedron` node-order permutation on the way out. Per-element
- * geometric entity indices come from `cell_data["mphtxt:geom"]` (one array
- * per block); parameter and up/down-link sections are always written
- * empty/zero.
+ * Writes a version 4 Mesh object. Entity indices come from
+ * `cell_data["mphtxt:geom"]` when present; otherwise, per dimension, each
+ * pairwise-disjoint cell region is an entity in turn and the remaining cells
+ * one more (domains from 1, lower dimensions from 0). A cell region that is
+ * a union of whole entities of one dimension is written as a Selection;
+ * other regions are dropped with a warning, as are data arrays.
  *
  * @param rPath filesystem path to the .mphtxt file to create/overwrite
  * @param rMesh the mesh to write
- * @throws WriteError on a cell type with no COMSOL equivalent (the C++
- *         writer raises here, forcing the Python fallback, whereas the
- *         Python writer merely warns and skips the type)
- * @note reads `cell_data["mphtxt:geom"]` if present
+ * @throws WriteError on a cell type with no COMSOL equivalent, or a region
+ *         naming a cell that does not exist
  */
 MESHIOPLUSPLUS_API void write_mphtxt(const std::string& rPath, const Mesh& rMesh);
 
 /**
  * @brief Read a COMSOL text mesh (.mphtxt) file into a Mesh.
  *
- * Parses only the **first** mesh object in the file (subsequent objects
- * are ignored). Reads node coordinates, then each element-type block,
- * converting connectivity from the file's `lowest`-based indexing to
- * 0-based and applying the inverse `quad`/`hexahedron` node-order
- * permutation. Element parameter values and up/down topology-link pairs
- * are discarded.
- *
  * @param rPath filesystem path to the .mphtxt file to read
- * @return the read Mesh, with `cell_data["mphtxt:geom"]` populated (one
- *         array per cell block) from each element's geometric entity index
- * @throws ReadError on a malformed file or an unrecognized COMSOL type name
+ * @return the Mesh, with `cell_data["mphtxt:geom"]` and one cell Region per
+ *         Selection
+ * @throws ReadError on a malformed file, an unknown element type, or a file
+ *         without a Mesh object
  */
 MESHIOPLUSPLUS_API Mesh read_mphtxt(const std::string& rPath);
+
+/**
+ * @brief Write a Mesh to a COMSOL binary mesh (.mphbin) file; the same
+ *        content as #write_mphtxt. There is no comment slot, so no
+ *        provenance is written.
+ * @param rPath filesystem path to the .mphbin file to create/overwrite
+ * @param rMesh the mesh to write
+ * @throws WriteError as #write_mphtxt, or on a value beyond 32 bits
+ */
+MESHIOPLUSPLUS_API void write_mphbin(const std::string& rPath, const Mesh& rMesh);
+
+/**
+ * @brief Read a COMSOL binary mesh (.mphbin) file into a Mesh; the same
+ *        content as #read_mphtxt.
+ * @param rPath filesystem path to the .mphbin file to read
+ * @return the Mesh
+ * @throws ReadError as #read_mphtxt
+ */
+MESHIOPLUSPLUS_API Mesh read_mphbin(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/mphtxt.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/nastran.hpp =====
 /**
  * @file nastran.hpp
- * @brief MSC/NX Nastran bulk-data (.bdf/.fem/.nas) C++ writer + reader.
+ * @brief MSC/NX Nastran and Altair OptiStruct bulk-data (.bdf/.fem/.nas)
+ *        reader and writer.
  *
- * Nastran bulk data is fixed-width card text (`GRID`, `CTRIA3`, `CTETRA`,
- * `CHEXA`, …) between a `"BEGIN BULK"` line and `"ENDDATA"`, in
- * small-field (10 x 8-char fields), large-field (8 + 4x16 + 8 chars, `*`
- * continuation), or free (comma-separated) layout. This C++ implementation
- * only emits/parses the `fixed-large`/`fixed-small` point/cell-format
- * combination.
+ * Bulk data is card text (`GRID`, `CTRIA3`, `CTETRA`, `CHEXA`, …) between a
+ * `BEGIN BULK` line and `ENDDATA`, in small-field (10 x 8 columns),
+ * large-field (8 + 4x16 + 8 columns, keyword suffixed `*`) or free
+ * (comma-separated) layout, with `+`/`*` or implicit blank continuations.
+ * The reader accepts any such deck; the Python reference
+ * (`nastran/_nastran.py`) is its twin and both give the same Mesh.
  *
- * **The reader is sentinel-gated**: it only accepts files whose first `$`
- * comment line is the exact literal string the C++ writer itself emits
- * (`"meshioplusplus-cpp-nastran"`). Any real-world Nastran file — including
- * this project's own reference `.fem` fixtures — lacks that sentinel and
- * is therefore always parsed by the more permissive Python reader instead;
- * this is the single most consequential interop rule for this format (see
- * doc/formats/nastran.md). The shim likewise only attempts the C++ writer
- * for the exact `fixed-large`/`fixed-small` combination and only when no
- * `nastran:ref` data is present.
+ * HyperMesh/OptiStruct decks keep their components in comment cards:
+ * `$HMMOVE <id>` followed by `$` lines of element ids (`a THRU b` ranges)
+ * and `$HMNAME COMP <id>"name"`, which may come after the elements. Each
+ * component becomes a cell Region tagged with its id. OptiStruct
+ * `SET,<id>,GRID|ELEM,LIST,…` cards become point or cell Regions, named
+ * by `$HMSET`. Cards meshio++ does not read are skipped; the ones that are
+ * not properties, materials, loads, constraints, coordinate systems or
+ * solution parameters are named in one warning (optimization, contact,
+ * unsupported elements such as `CONM2` or `RBE2`).
  *
- * Cell-type map includes `CTETRA`/`CPYRAM`/`CPENTA`/`CHEXA` auto-upgraded
- * to their 10/13/15/20-node quadratic meshio++ counterparts whenever a card
- * lists more node ids than the linear element's base count (a heuristic,
- * not a version flag). Node-order permutations are applied for
- * `triangle6`/`CTRAX6`/`CTRIAX6` (to-VTK `[0,2,4,1,3,5]`, to-Nastran
- * `[0,3,1,4,2,5]`), `hexahedron20`
- * (`[0,1,2,3,4,5,6,7,8,9,10,11,16,17,18,19,12,13,14,15]`), and `wedge15`
- * (`[0,1,2,3,4,5,6,7,8,12,13,14,9,10,11]`).
+ * `CTETRA`/`CPYRA`/`CPENTA`/`CHEXA` become their 10/13/15/20-node
+ * quadratic forms when a card lists that many nodes. Node orders:
+ * `CTRIAX6`/`CTRAX6` list corner, mid, corner… (to meshio `[0,2,4,1,3,5]`);
+ * `hexahedron20` and `wedge15` put the vertical mid-edges before the top
+ * ring (involutions `[0..11,16..19,12..15]`, `[0..8,12,13,14,9,10,11]`).
+ * Other card fields past the nodes (THETA, ZOFFS, orientation vectors) are
+ * ignored. See doc/formats/nastran.md.
  */
 
 // System includes
@@ -16043,18 +16062,15 @@ MESHIOPLUSPLUS_API Mesh read_mphtxt(const std::string& rPath);
 namespace meshioplusplus {
 
 /**
- * @brief Write a Mesh to a Nastran bulk-data file (fixed-large/fixed-small
- *        layout only).
+ * @brief Write a Mesh to a Nastran bulk-data file (large-field `GRID*`,
+ *        small-field element cards).
  *
- * Emits `GRID*` large-field point cards (16-character floats found by
- * searching increasing precision, 0 through 11, for the shortest string
- * that round-trips exactly via `strtod`, then trimming trailing mantissa
- * zeros — not guaranteed byte-identical to the Python writer's
- * `np.format_float_scientific(precision=11)` + `e`->`E` approach, but
- * targeting the same 16-char field) and fixed-small element cards, plus
- * the `"meshioplusplus-cpp-nastran"` sentinel comment as the first `$`
- * line (required for this writer's own output to be read back by
- * #read_nastran). 2D points are force-promoted to 3D with a warning.
+ * `GRID*` coordinates use the shortest 16-character string that round-trips.
+ * `nastran:ref` point/cell data fills the CP/PID field (0 is written blank).
+ * Disjoint cell regions are written as HyperMesh `$HMMOVE`/`$HMNAME COMP`
+ * comment blocks; point, side and overlapping regions are dropped with a
+ * warning. The first line is the comment `meshioplusplus-cpp-nastran`,
+ * which releases before 16.1 required to read the file back.
  *
  * @param rPath filesystem path to the .bdf/.fem/.nas file to create/overwrite
  * @param rMesh the mesh to write
@@ -16063,24 +16079,16 @@ namespace meshioplusplus {
 MESHIOPLUSPLUS_API void write_nastran(const std::string& rPath, const Mesh& rMesh);
 
 /**
- * @brief Read a Nastran bulk-data file into a Mesh — only accepts files
- *        carrying this writer's sentinel comment.
+ * @brief Read a Nastran/OptiStruct bulk-data file into a Mesh.
  *
- * Parses `GRID`/`GRID*` and element cards between `"BEGIN BULK"` and
- * `"ENDDATA"`, decoding Nastran's compressed-exponent float notation
- * (e.g. `1.5+1`) and re-merging large-field continuation lines. Applies
- * the inverse node-order permutation for `triangle6`, `hexahedron20`, and
- * `wedge15`. `CBAR`/`CBEAM`/`CBUSH`/`CBUSH1D`/`CGAP` cards only keep their
- * first 2 node ids (a 3rd orientation/grid-id field is discarded).
+ * Produces `nastran:ref` point data (GRID CP field) and cell data (element
+ * PID field) when any card fills that field, blanks reading as 0; HyperMesh
+ * components and OptiStruct SETs as Regions.
  *
  * @param rPath filesystem path to the .bdf/.fem/.nas file to read
  * @return the read Mesh
- * @throws ReadError if the file's first `$` comment line is not exactly
- *         `"meshioplusplus-cpp-nastran"` (routes real-world Nastran files
- *         to the Python fallback), or on a malformed card
- * @note point_data/cell_data keys are not produced by this reader (unlike
- *       the Python reference, which populates `"nastran:ref"` from the
- *       optional GRID/element reference field)
+ * @throws ReadError when there is no `BEGIN BULK`, on a malformed field, on
+ *         an element with a wrong node count, or on an undefined grid
  */
 MESHIOPLUSPLUS_API Mesh read_nastran(const std::string& rPath);
 
@@ -45596,17 +45604,27 @@ std::vector<std::string> split_card(std::string_view Line, const std::vector<Car
 }
 
 std::int64_t card_to_int(const std::string& rText, const std::string& rWhere) {
+    return card_to_int(rText, rWhere, "LS-DYNA");
+}
+
+std::int64_t card_to_int(const std::string& rText, const std::string& rWhere,
+                         const std::string& rFormat) {
     if (rText.empty())
         return 0;
     errno = 0;
     char* end = nullptr;
     const long long v = std::strtoll(rText.c_str(), &end, 10);
     if (end == rText.c_str() || *end != '\0' || errno == ERANGE)
-        throw ReadError("LS-DYNA: invalid integer field '" + rText + "'" + rWhere);
+        throw ReadError(rFormat + ": invalid integer field '" + rText + "'" + rWhere);
     return static_cast<std::int64_t>(v);
 }
 
 double card_to_real(const std::string& rText, const std::string& rWhere) {
+    return card_to_real(rText, rWhere, "LS-DYNA");
+}
+
+double card_to_real(const std::string& rText, const std::string& rWhere,
+                    const std::string& rFormat) {
     if (rText.empty())
         return 0.0;
     std::string s = rText;
@@ -45620,7 +45638,7 @@ double card_to_real(const std::string& rText, const std::string& rWhere) {
     const char* end = nullptr;
     const double v = parse_double(s.c_str(), end);
     if (end == s.c_str() || *end != '\0')
-        throw ReadError("LS-DYNA: invalid real field '" + rText + "'" + rWhere);
+        throw ReadError(rFormat + ": invalid real field '" + rText + "'" + rWhere);
     return v;
 }
 
@@ -46415,6 +46433,25 @@ const std::vector<NodeOrderSource>& node_order_sources() {
                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"frd", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
         {"frd", "line3", D::ToMeshio, {0, 2, 1}},
+        // COMSOL `.mphtxt`/`.mphbin`: corners in tensor order (x fastest), then
+        // every other node of the element's quadratic lattice in lexicographic
+        // (z, y, x) order ("Mesh Element Numbering Conventions", COMSOL API
+        // guide). Checked against real COMSOL files and against AWS Palace's
+        // COMSOL-to-gmsh tables composed with the gmsh ones.
+        {"mphtxt", "quad", D::ToMeshio, {0, 1, 3, 2}},
+        {"mphtxt", "hexahedron", D::ToMeshio, {0, 1, 3, 2, 4, 5, 7, 6}},
+        {"mphtxt", "pyramid", D::ToMeshio, {0, 1, 3, 2, 4}},
+        {"mphtxt", "triangle6", D::ToMeshio, {0, 1, 2, 3, 5, 4}},
+        {"mphtxt", "quad9", D::ToMeshio, {0, 1, 3, 2, 4, 7, 8, 5, 6}},
+        {"mphtxt", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 6, 5, 7, 8, 9}},
+        {"mphtxt", "hexahedron27", D::ToMeshio, {0,  1,  3,  2,  4,  5,  7,  6,  8,
+                                                 11, 12, 9,  22, 25, 26, 23, 13, 15,
+                                                 21, 19, 16, 18, 14, 20, 10, 24, 17}},
+        {"mphtxt",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 8, 7, 15, 17, 16, 9, 11, 14, 10, 13, 12}},
+        {"mphtxt", "pyramid14", D::ToMeshio, {0, 1, 3, 2, 4, 5, 8, 9, 6, 10, 11, 13, 12, 7}},
         // I-DEAS UNV: parabolic elements list their mid-side nodes
         // "sandwiched" between the corners of each ring; the solids list the
         // bottom ring, then the vertical mid-edges, then the top ring (pinned
@@ -73376,12 +73413,16 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/mfm.cpp =====
 // ===== begin src/cpp/src/formats/mphtxt.cpp =====
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
-#include <sstream>
+#include <cstring>
+#include <iterator>
+#include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -73390,219 +73431,885 @@ namespace meshioplusplus {
 
 namespace {
 
-std::string comsol_to_meshio(const std::string& rT) {
+// COMSOL element type <-> meshio type.
+const std::unordered_map<std::string, std::string>& comsol_types() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vtx", "vertex"},     {"edg", "line"},         {"tri", "triangle"}, {"quad", "quad"},
-        {"tet", "tetra"},      {"prism", "wedge"},      {"pyr", "pyramid"},  {"hex", "hexahedron"},
-        {"edg2", "line3"},     {"tri2", "triangle6"},   {"quad2", "quad9"},  {"tet2", "tetra10"},
-        {"prism2", "wedge18"}, {"hex2", "hexahedron27"}};
-    auto it = m.find(rT);
-    return it == m.end() ? std::string() : it->second;
+        {"vtx", "vertex"},     {"edg", "line"},          {"tri", "triangle"},
+        {"quad", "quad"},      {"tet", "tetra"},         {"prism", "wedge"},
+        {"pyr", "pyramid"},    {"hex", "hexahedron"},    {"edg2", "line3"},
+        {"tri2", "triangle6"}, {"quad2", "quad9"},       {"tet2", "tetra10"},
+        {"prism2", "wedge18"}, {"hex2", "hexahedron27"}, {"pyr2", "pyramid14"}};
+    return m;
 }
 
 std::string meshio_to_comsol(const std::string& rT) {
-    static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "vtx"},     {"line", "edg"},         {"triangle", "tri"}, {"quad", "quad"},
-        {"tetra", "tet"},      {"wedge", "prism"},      {"pyramid", "pyr"},  {"hexahedron", "hex"},
-        {"line3", "edg2"},     {"triangle6", "tri2"},   {"quad9", "quad2"},  {"tetra10", "tet2"},
-        {"wedge18", "prism2"}, {"hexahedron27", "hex2"}};
-    auto it = m.find(rT);
-    return it == m.end() ? std::string() : it->second;
+    for (const auto& [c, m] : comsol_types())
+        if (m == rT)
+            return c;
+    return "";
 }
 
-const std::vector<int>* perm_of(const std::string& rT) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"quad", {0, 1, 3, 2}}, {"hexahedron", {0, 1, 3, 2, 4, 5, 7, 6}}};
-    auto it = m.find(rT);
-    return it == m.end() ? nullptr : &it->second;
+// ---------------------------------------------------------------------------
+// Sources: the text and the binary serialisation hold the same sequence of
+// integers, doubles and strings.
+// ---------------------------------------------------------------------------
+
+void comsol_append_utf8(std::string& rOut, std::uint32_t Cp) {
+    if (Cp < 0x80) {
+        rOut += static_cast<char>(Cp);
+    } else if (Cp < 0x800) {
+        rOut += static_cast<char>(0xC0 | (Cp >> 6));
+        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
+    } else if (Cp < 0x10000) {
+        rOut += static_cast<char>(0xE0 | (Cp >> 12));
+        rOut += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F));
+        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
+    } else {
+        rOut += static_cast<char>(0xF0 | (Cp >> 18));
+        rOut += static_cast<char>(0x80 | ((Cp >> 12) & 0x3F));
+        rOut += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F));
+        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
+    }
 }
 
-struct MphtxtCursor {
-    std::vector<std::string> mT;
-    std::size_t mI = 0;
-    const std::string& Tok() {
-        if (mI >= mT.size())
-            throw ReadError("mphtxt: unexpected end of file");
-        return mT[mI++];
+// The code points of a UTF-8 string (a stray byte counts as itself).
+std::vector<std::uint32_t> comsol_code_points(const std::string& rS) {
+    std::vector<std::uint32_t> out;
+    for (std::size_t i = 0; i < rS.size();) {
+        const unsigned char c = static_cast<unsigned char>(rS[i]);
+        int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        if (i + static_cast<std::size_t>(extra) >= rS.size() + (extra ? 0 : 1))
+            extra = 0;
+        std::uint32_t cp = extra == 0 ? c : (c & (0x3F >> extra));
+        for (int k = 1; k <= extra; ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(rS[i + k]) & 0x3F);
+        out.push_back(cp);
+        i += static_cast<std::size_t>(extra) + 1;
     }
-    long long Integer() { return std::strtoll(Tok().c_str(), nullptr, 10); }
-    double Real() { return detail::parse_double(Tok()); }
-    std::string Str() {
-        Integer();  // length prefix
-        return Tok();
-    }
+    return out;
+}
+
+class ComsolSource {
+public:
+    virtual ~ComsolSource() = default;
+    virtual std::int64_t Int() = 0;
+    virtual double Real() = 0;
+    virtual std::string String() = 0;
+    virtual bool AtEnd() = 0;
+    virtual std::size_t Mark() const = 0;
+    virtual void Reset(std::size_t Pos) = 0;
+    // Skip one value of a parameter record (a double).
+    virtual void SkipValue() = 0;
+    // Whether the next value reads as an integer (text: no '.', 'e').
+    virtual bool NextIsInteger() = 0;
+    // Whether the next value is a type-name string (text: a length, then a letter).
+    virtual bool NextIsName() = 0;
 };
+
+class ComsolText : public ComsolSource {
+public:
+    explicit ComsolText(std::string Text) : mText(std::move(Text)) {}
+
+    std::int64_t Int() override {
+        const std::string t = Token();
+        char* end = nullptr;
+        const long long v = std::strtoll(t.c_str(), &end, 10);
+        if (end == t.c_str() || *end != '\0')
+            throw ReadError("mphtxt: expected an integer, found '" + t + "'");
+        return v;
+    }
+    double Real() override {
+        const std::string t = Token();
+        const char* end = nullptr;
+        const double v = detail::parse_double(t.c_str(), end);
+        if (end == t.c_str() || *end != '\0')
+            throw ReadError("mphtxt: expected a number, found '" + t + "'");
+        return v;
+    }
+    // A length, one blank, then exactly that many characters (which may
+    // include blanks and '#').
+    std::string String() override {
+        const std::int64_t n = Int();
+        if (n < 0)
+            throw ReadError("mphtxt: negative string length");
+        if (n == 0)
+            return "";
+        if (mPos < mText.size() && (mText[mPos] == ' ' || mText[mPos] == '\t'))
+            ++mPos;
+        std::string out;
+        for (std::int64_t k = 0; k < n; ++k) {
+            if (mPos >= mText.size())
+                throw ReadError("mphtxt: unexpected end of file in a string");
+            const unsigned char c = static_cast<unsigned char>(mText[mPos]);
+            std::size_t len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+            len = std::min(len, mText.size() - mPos);
+            out.append(mText, mPos, len);
+            mPos += len;
+        }
+        return out;
+    }
+    bool AtEnd() override {
+        SkipBlank();
+        return mPos >= mText.size();
+    }
+    std::size_t Mark() const override { return mPos; }
+    void Reset(std::size_t Pos) override { mPos = Pos; }
+    void SkipValue() override { Token(); }
+    bool NextIsInteger() override {
+        const std::size_t keep = mPos;
+        if (AtEnd())
+            return false;
+        const std::string t = Token();
+        mPos = keep;
+        if (t.empty())
+            return false;
+        for (std::size_t k = (t[0] == '-' || t[0] == '+') ? 1 : 0; k < t.size(); ++k)
+            if (t[k] < '0' || t[k] > '9')
+                return false;
+        return true;
+    }
+    bool NextIsName() override {
+        const std::size_t keep = mPos;
+        bool ok = NextIsInteger();
+        if (ok) {
+            Token();
+            SkipBlank();
+            ok = mPos < mText.size() && ((mText[mPos] >= 'a' && mText[mPos] <= 'z') ||
+                                         (mText[mPos] >= 'A' && mText[mPos] <= 'Z'));
+        }
+        mPos = keep;
+        return ok;
+    }
+
+private:
+    void SkipBlank() {
+        while (mPos < mText.size()) {
+            const char c = mText[mPos];
+            if (c == '#') {
+                while (mPos < mText.size() && mText[mPos] != '\n')
+                    ++mPos;
+            } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                ++mPos;
+            } else {
+                break;
+            }
+        }
+    }
+    std::string Token() {
+        SkipBlank();
+        if (mPos >= mText.size())
+            throw ReadError("mphtxt: unexpected end of file");
+        const std::size_t b = mPos;
+        while (mPos < mText.size()) {
+            const char c = mText[mPos];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '#')
+                break;
+            ++mPos;
+        }
+        return mText.substr(b, mPos - b);
+    }
+
+    std::string mText;
+    std::size_t mPos = 0;
+};
+
+class ComsolBinary : public ComsolSource {
+public:
+    explicit ComsolBinary(std::string Bytes) : mBytes(std::move(Bytes)) {}
+
+    std::int64_t Int() override {
+        Need(4);
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(mBytes.data() + mPos);
+        const std::uint32_t u =
+            static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+            (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+        mPos += 4;
+        return static_cast<std::int32_t>(u);
+    }
+    double Real() override {
+        Need(8);
+        std::uint64_t u = 0;
+        for (int k = 7; k >= 0; --k)
+            u = (u << 8) | static_cast<unsigned char>(mBytes[mPos + static_cast<std::size_t>(k)]);
+        mPos += 8;
+        double v;
+        std::memcpy(&v, &u, sizeof(v));
+        return v;
+    }
+    std::string String() override {
+        const std::int64_t n = Int();
+        if (n < 0 || static_cast<std::uint64_t>(n) > (mBytes.size() - mPos) / 4)
+            throw ReadError("mphbin: invalid string length " + std::to_string(n));
+        std::string out;
+        for (std::int64_t k = 0; k < n; ++k)
+            comsol_append_utf8(out, static_cast<std::uint32_t>(Int()));
+        return out;
+    }
+    bool AtEnd() override { return mPos >= mBytes.size(); }
+    std::size_t Mark() const override { return mPos; }
+    void Reset(std::size_t Pos) override { mPos = Pos; }
+    void SkipValue() override {
+        Need(8);
+        mPos += 8;
+    }
+    bool NextIsInteger() override { return mPos + 4 <= mBytes.size(); }
+    bool NextIsName() override {
+        if (mPos + 8 > mBytes.size())
+            return false;
+        const std::size_t keep = mPos;
+        const std::int64_t n = Int();
+        const std::int64_t c = Int();
+        mPos = keep;
+        return n > 0 && n < 64 && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+    }
+
+private:
+    void Need(std::size_t N) const {
+        if (mPos + N > mBytes.size())
+            throw ReadError("mphbin: unexpected end of file");
+    }
+    std::string mBytes;
+    std::size_t mPos = 0;
+};
+
+// One Mesh object as read.
+struct ComsolBlock {
+    std::string mType;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;  // 0-based within its object, meshio order
+    std::vector<std::int64_t> mGeom;
+};
+struct ComsolMesh {
+    std::string mTag;
+    std::size_t mSdim = 0;
+    std::vector<double> mPoints;
+    std::vector<ComsolBlock> mBlocks;
+};
+struct ComsolSelection {
+    std::string mLabel;
+    std::string mMeshTag;
+    int mDim = 0;
+    std::vector<std::int64_t> mEntities;
+};
+
+// Whether the next values end the file or open an object: 0 0 1 and a class name.
+bool comsol_object_or_end(ComsolSource& rIn) {
+    if (rIn.AtEnd())
+        return true;
+    for (int expected : {0, 0, 1})
+        if (!rIn.NextIsInteger() || rIn.Int() != expected)
+            return false;
+    return rIn.NextIsName();
+}
+
+// Whether the rest of an element-type record of a version < 4 Mesh fits once
+// the parameter values are skipped: `ne` entity indices, then up/down pairs,
+// then the next type name, the next object or the end.
+bool comsol_tail_fits(ComsolSource& rIn, std::int64_t Ne, bool Last) {
+    const std::size_t keep = rIn.Mark();
+    bool ok = false;
+    try {
+        const std::int64_t ngeom = rIn.NextIsInteger() ? rIn.Int() : -1;
+        if (ngeom == Ne || ngeom == 0) {
+            ok = true;
+            for (std::int64_t k = 0; k < ngeom && ok; ++k)
+                ok = rIn.NextIsInteger() && rIn.Int() >= 0;
+            if (ok && rIn.NextIsInteger()) {
+                const std::int64_t nud = rIn.Int();
+                ok = nud >= 0;
+                for (std::int64_t k = 0; k < 2 * nud && ok; ++k)
+                    ok = rIn.NextIsInteger() && (rIn.Int(), true);
+                if (ok)
+                    ok = Last ? comsol_object_or_end(rIn) : rIn.NextIsName();
+            } else {
+                ok = false;
+            }
+        }
+    } catch (const ReadError&) {
+        ok = false;
+    }
+    rIn.Reset(keep);
+    return ok;
+}
+
+ComsolMesh comsol_read_mesh(ComsolSource& rIn, const char* pFormat) {
+    ComsolMesh m;
+    const std::int64_t version = rIn.Int();
+    const std::int64_t sdim = rIn.Int();
+    const std::int64_t np = rIn.Int();
+    const std::int64_t lowest = rIn.Int();
+    if (sdim < 1 || sdim > 3 || np < 0)
+        throw ReadError(std::string(pFormat) + ": invalid Mesh header (sdim " +
+                        std::to_string(sdim) + ", " + std::to_string(np) + " vertices)");
+    m.mSdim = static_cast<std::size_t>(sdim);
+    m.mPoints.resize(static_cast<std::size_t>(np * sdim));
+    for (double& x : m.mPoints)
+        x = rIn.Real();
+    const std::int64_t ntypes = rIn.Int();
+    for (std::int64_t t = 0; t < ntypes; ++t) {
+        const std::string ctype = rIn.String();
+        auto it = comsol_types().find(ctype);
+        if (it == comsol_types().end())
+            throw ReadError(std::string(pFormat) + ": unknown element type '" + ctype + "'");
+        ComsolBlock b;
+        b.mType = it->second;
+        const std::int64_t nep = rIn.Int();
+        const std::int64_t ne = rIn.Int();
+        const int expected = cell_type_num_nodes(cell_type_from_name(b.mType));
+        if (nep != expected || ne < 0)
+            throw ReadError(std::string(pFormat) + ": '" + ctype + "' elements with " +
+                            std::to_string(nep) + " nodes");
+        b.mNodes = static_cast<std::size_t>(nep);
+        std::vector<std::int64_t> raw(static_cast<std::size_t>(ne * nep));
+        for (std::int64_t& v : raw) {
+            v = rIn.Int() - lowest;
+            if (v < 0 || v >= np)
+                throw ReadError(std::string(pFormat) + ": '" + ctype + "' element names vertex " +
+                                std::to_string(v + lowest));
+        }
+        const detail::NodeOrder* order = detail::node_order("mphtxt", b.mType);
+        b.mConn.resize(raw.size());
+        for (std::size_t r = 0; r < static_cast<std::size_t>(ne); ++r)
+            for (std::size_t j = 0; j < b.mNodes; ++j)
+                b.mConn[r * b.mNodes + j] =
+                    raw[r * b.mNodes + (order ? static_cast<std::size_t>(order->mToMeshio[j]) : j)];
+        if (version < 4) {
+            // Parameter records of npp values each, one value per parameter
+            // dimension: find how many by where the rest of the record fits.
+            const std::int64_t npp = rIn.Int();
+            const std::int64_t npar = rIn.Int();
+            const std::size_t start = rIn.Mark();
+            bool found = false;
+            for (int k = 1; k <= 3 && !found; ++k) {
+                rIn.Reset(start);
+                try {
+                    for (std::int64_t v = 0; v < npp * npar * k; ++v)
+                        rIn.SkipValue();
+                    found = comsol_tail_fits(rIn, ne, t + 1 == ntypes);
+                } catch (const ReadError&) {
+                    found = false;
+                }
+            }
+            if (!found)
+                throw ReadError(std::string(pFormat) + ": cannot delimit the parameters of the '" +
+                                ctype + "' elements");
+        }
+        // No entity indices at all is allowed: every element then gets
+        // COMSOL's default, domain 1 or entity 0 below the space dimension.
+        const std::int64_t ngeom = rIn.Int();
+        if (ngeom != ne && ngeom != 0)
+            throw ReadError(std::string(pFormat) + ": " + std::to_string(ngeom) +
+                            " entity indices for " + std::to_string(ne) + " '" + ctype +
+                            "' elements");
+        const int dim = cell_type_dimension(cell_type_from_name(b.mType));
+        b.mGeom.assign(static_cast<std::size_t>(ne), dim == sdim ? 1 : 0);
+        for (std::int64_t k = 0; k < ngeom; ++k)
+            b.mGeom[static_cast<std::size_t>(k)] = rIn.Int();
+        if (version < 4) {
+            const std::int64_t nud = rIn.Int();
+            for (std::int64_t k = 0; k < 2 * nud; ++k)
+                rIn.Int();
+        }
+        m.mBlocks.push_back(std::move(b));
+    }
+    return m;
+}
+
+Mesh comsol_read(ComsolSource& rIn, const char* pFormat) {
+    const std::int64_t major = rIn.Int();
+    const std::int64_t minor = rIn.Int();
+    if (major != 0 || minor != 1)
+        throw ReadError(std::string(pFormat) + ": unsupported file version " +
+                        std::to_string(major) + "." + std::to_string(minor));
+    std::vector<std::string> tags(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+    for (std::string& t : tags)
+        t = rIn.String();
+    const std::int64_t ntypes = rIn.Int();
+    for (std::int64_t k = 0; k < ntypes; ++k)
+        rIn.String();
+
+    std::vector<ComsolMesh> meshes;
+    std::vector<ComsolSelection> selections;
+    for (std::int64_t obj = 0; obj < ntypes; ++obj) {
+        if (rIn.AtEnd())
+            break;
+        rIn.Int();
+        rIn.Int();
+        rIn.Int();
+        const std::string cls = rIn.String();
+        const std::string tag = static_cast<std::size_t>(obj) < tags.size()
+                                    ? tags[static_cast<std::size_t>(obj)]
+                                    : std::string();
+        if (cls == "Mesh") {
+            meshes.push_back(comsol_read_mesh(rIn, pFormat));
+            meshes.back().mTag = tag;
+        } else if (cls == "Selection") {
+            ComsolSelection s;
+            rIn.Int();  // version
+            s.mLabel = rIn.String();
+            s.mMeshTag = rIn.String();
+            s.mDim = static_cast<int>(rIn.Int());
+            s.mEntities.resize(static_cast<std::size_t>(std::max<std::int64_t>(0, rIn.Int())));
+            for (std::int64_t& e : s.mEntities)
+                e = rIn.Int();
+            selections.push_back(std::move(s));
+        } else {
+            log::warn(
+                "{}: object {} is a '{}', which meshio++ does not read; the objects "
+                "after it are skipped too",
+                pFormat, obj, cls);
+            break;
+        }
+    }
+    if (meshes.empty())
+        throw ReadError(std::string(pFormat) + ": the file holds no Mesh object");
+
+    // All Mesh objects in one mesh, their points one after the other.
+    const std::size_t sdim = meshes.front().mSdim;
+    std::size_t npoints = 0;
+    for (const ComsolMesh& m : meshes) {
+        if (m.mSdim != sdim)
+            throw ReadError(std::string(pFormat) + ": Mesh objects of different dimensions");
+        npoints += m.mPoints.size() / sdim;
+    }
+    Mesh mesh;
+    NDArray pts(DType::Float64, {npoints, sdim});
+    double* pp = pts.As<double>();
+    for (const ComsolMesh& m : meshes)
+        pp = std::copy(m.mPoints.begin(), m.mPoints.end(), pp);
+    mesh.AssignPoints(std::move(pts));
+
+    std::vector<NDArray> geom;
+    std::vector<std::size_t> first_block;  // per object
+    std::vector<int> block_dims;
+    std::size_t offset = 0;
+    for (const ComsolMesh& m : meshes) {
+        first_block.push_back(geom.size());
+        for (const ComsolBlock& b : m.mBlocks) {
+            const std::size_t ne = b.mGeom.size();
+            NDArray conn(DType::Int64, {ne, b.mNodes});
+            std::int64_t* c = conn.As<std::int64_t>();
+            for (std::size_t k = 0; k < b.mConn.size(); ++k)
+                c[k] = b.mConn[k] + static_cast<std::int64_t>(offset);
+            mesh.AddCellBlock(b.mType, std::move(conn));
+            NDArray g(DType::Int64, {ne});
+            std::copy(b.mGeom.begin(), b.mGeom.end(), g.As<std::int64_t>());
+            geom.push_back(std::move(g));
+            block_dims.push_back(cell_type_dimension(cell_type_from_name(b.mType)));
+        }
+        offset += m.mPoints.size() / sdim;
+    }
+    if (!geom.empty())
+        mesh.AddCellData("mphtxt:geom", std::vector<NDArray>(geom.begin(), geom.end()));
+
+    const std::vector<std::int64_t> bases = detail::block_bases(mesh);
+    auto add = [&](const std::string& rName, int Dim, const std::vector<std::int64_t>& rIds) {
+        NDArray e(DType::Int64, {rIds.size()});
+        std::copy(rIds.begin(), rIds.end(), e.As<std::int64_t>());
+        mesh.AddRegion(Region(rName, RegionKind::Cell, Dim, -1, std::move(e)));
+    };
+    std::set<std::string> taken;
+    auto unique_name = [&](const std::string& rName) {
+        std::string name = rName;
+        for (int k = 2; taken.count(name); ++k)
+            name = rName + " (" + std::to_string(k) + ")";
+        if (name != rName)
+            log::warn("{}: a second region named '{}' is read as '{}'", pFormat, rName, name);
+        taken.insert(name);
+        return name;
+    };
+    // With several Mesh objects, each one's cells are a region named by its tag.
+    if (meshes.size() > 1)
+        for (std::size_t o = 0; o < meshes.size(); ++o) {
+            std::vector<std::int64_t> ids;
+            const std::size_t end = first_block[o] + meshes[o].mBlocks.size();
+            for (std::size_t b = first_block[o]; b < end; ++b)
+                for (std::int64_t r = 0; r < bases[b + 1] - bases[b]; ++r)
+                    ids.push_back(bases[b] + r);
+            add(unique_name(meshes[o].mTag), -1, ids);
+        }
+    // A Selection: the elements of its dimension whose entity it lists.
+    for (const ComsolSelection& s : selections) {
+        std::size_t o = 0;
+        while (o < meshes.size() && meshes[o].mTag != s.mMeshTag)
+            ++o;
+        if (o == meshes.size()) {
+            log::warn("{}: selection '{}' refers to '{}', which is not a Mesh here; skipped",
+                      pFormat, s.mLabel, s.mMeshTag);
+            continue;
+        }
+        const std::set<std::int64_t> wanted(s.mEntities.begin(), s.mEntities.end());
+        std::vector<std::int64_t> ids;
+        const std::size_t end = first_block[o] + meshes[o].mBlocks.size();
+        for (std::size_t b = first_block[o]; b < end; ++b) {
+            if (block_dims[b] != s.mDim)
+                continue;
+            const std::int64_t* g = geom[b].As<std::int64_t>();
+            for (std::int64_t r = 0; r < bases[b + 1] - bases[b]; ++r)
+                if (wanted.count(g[r]))
+                    ids.push_back(bases[b] + r);
+        }
+        add(unique_name(s.mLabel), s.mDim, ids);
+    }
+    return mesh;
+}
+
+std::string comsol_slurp(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// ---------------------------------------------------------------------------
+// Writing: one serialiser over two sinks.
+// ---------------------------------------------------------------------------
+
+class ComsolSink {
+public:
+    virtual ~ComsolSink() = default;
+    virtual void Int(std::int64_t V, const char* pComment = nullptr) = 0;
+    virtual void Ints(const std::int64_t* pV, std::size_t N) = 0;  // one record
+    virtual void Real(const double* pV, std::size_t N) = 0;        // one record
+    virtual void String(const std::string& rS, const char* pComment = nullptr) = 0;
+    virtual void Comment(const std::string& rText) = 0;
+    virtual void Blank() = 0;
+};
+
+class ComsolTextSink : public ComsolSink {
+public:
+    explicit ComsolTextSink(std::string& rOut) : mOut(rOut) {}
+    void Int(std::int64_t V, const char* pComment) override {
+        mOut += std::to_string(V);
+        End(pComment);
+    }
+    void Ints(const std::int64_t* pV, std::size_t N) override {
+        for (std::size_t k = 0; k < N; ++k) {
+            mOut += std::to_string(pV[k]);
+            mOut += k + 1 == N ? '\n' : ' ';
+        }
+    }
+    void Real(const double* pV, std::size_t N) override {
+        char buf[40];
+        for (std::size_t k = 0; k < N; ++k) {
+            detail::snprintf_c(buf, sizeof(buf), "%.17g", pV[k]);
+            mOut += buf;
+            mOut += k + 1 == N ? '\n' : ' ';
+        }
+    }
+    void String(const std::string& rS, const char* pComment) override {
+        mOut += std::to_string(comsol_code_points(rS).size());
+        mOut += ' ';
+        mOut += rS;
+        End(pComment);
+    }
+    void Comment(const std::string& rText) override { mOut += "# " + rText + "\n"; }
+    void Blank() override { mOut += "\n"; }
+
+private:
+    void End(const char* pComment) {
+        if (pComment) {
+            mOut += " # ";
+            mOut += pComment;
+        }
+        mOut += '\n';
+    }
+    std::string& mOut;
+};
+
+class ComsolBinarySink : public ComsolSink {
+public:
+    explicit ComsolBinarySink(std::string& rOut) : mOut(rOut) {}
+    void Int(std::int64_t V, const char*) override { Put32(V); }
+    void Ints(const std::int64_t* pV, std::size_t N) override {
+        for (std::size_t k = 0; k < N; ++k)
+            Put32(pV[k]);
+    }
+    void Real(const double* pV, std::size_t N) override {
+        for (std::size_t k = 0; k < N; ++k) {
+            std::uint64_t u;
+            std::memcpy(&u, &pV[k], sizeof(u));
+            for (int b = 0; b < 8; ++b)
+                mOut += static_cast<char>((u >> (8 * b)) & 0xFF);
+        }
+    }
+    void String(const std::string& rS, const char*) override {
+        const std::vector<std::uint32_t> cps = comsol_code_points(rS);
+        Put32(static_cast<std::int64_t>(cps.size()));
+        for (std::uint32_t cp : cps)
+            Put32(static_cast<std::int64_t>(cp));
+    }
+    void Comment(const std::string&) override {}
+    void Blank() override {}
+
+private:
+    void Put32(std::int64_t V) {
+        if (V < INT32_MIN || V > INT32_MAX)
+            throw WriteError("mphbin: " + std::to_string(V) + " does not fit a 32-bit integer");
+        const std::uint32_t u = static_cast<std::uint32_t>(static_cast<std::int32_t>(V));
+        for (int b = 0; b < 4; ++b)
+            mOut += static_cast<char>((u >> (8 * b)) & 0xFF);
+    }
+    std::string& mOut;
+};
+
+struct ComsolSelectionOut {
+    std::string mLabel;
+    int mDim = 0;
+    std::vector<std::int64_t> mEntities;
+};
+
+void comsol_write(ComsolSink& rOut, const Mesh& rMesh, const char* pFormat) {
+    const std::size_t sdim = rMesh.PointDim();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::string> ctypes;
+    std::vector<int> dims;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string c = cb.IsRagged() ? std::string() : meshio_to_comsol(cb.Type());
+        if (c.empty())
+            throw WriteError(std::string(pFormat) + ": unsupported cell type " + cb.Type());
+        ctypes.push_back(c);
+        dims.push_back(cell_type_dimension(cell_type_from_name(cb.Type())));
+    }
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
+    std::vector<int> cell_dim(ncells);
+    for (std::size_t b = 0; b < nblocks; ++b)
+        for (std::int64_t c = bases[b]; c < bases[b + 1]; ++c)
+            cell_dim[static_cast<std::size_t>(c)] = dims[b];
+
+    // Cell regions, validated.
+    std::vector<const Region*> regions;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind != RegionKind::Cell) {
+            log::warn(
+                "{}: {} region '{}' dropped; COMSOL selections are written for cell "
+                "regions only",
+                pFormat, reg.mKind == RegionKind::Point ? "point" : "side", reg.mName);
+            continue;
+        }
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t j = 0; j < reg.NumEntries(); ++j)
+            if (e[j] < 0 || static_cast<std::size_t>(e[j]) >= ncells)
+                throw WriteError(std::string(pFormat) + ": cell region '" + reg.mName +
+                                 "' names cell " + std::to_string(e[j]) + " of " +
+                                 std::to_string(ncells));
+        regions.push_back(&reg);
+    }
+
+    // Geometric entity of every cell: mphtxt:geom when the mesh has it; else
+    // per dimension, the pairwise-disjoint single-dimension cell regions in
+    // order, then one entity for the cells in none. Domains (dimension sdim)
+    // count from 1, lower dimensions from 0.
+    std::vector<std::int64_t> entity(ncells, 0);
+    if (rMesh.HasCellData("mphtxt:geom")) {
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& g = rMesh.CellData("mphtxt:geom", b);
+            for (std::int64_t c = bases[b]; c < bases[b + 1]; ++c)
+                entity[static_cast<std::size_t>(c)] =
+                    detail::read_int(g, static_cast<std::size_t>(c - bases[b]));
+        }
+    } else {
+        std::vector<char> assigned(ncells, 0);
+        std::map<int, std::int64_t> next;
+        auto base = [&](int d) { return d == static_cast<int>(sdim) ? 1 : 0; };
+        for (const Region* reg : regions) {
+            const std::int64_t* e = reg->Entries();
+            if (reg->NumEntries() == 0)
+                continue;
+            const int d = cell_dim[static_cast<std::size_t>(e[0])];
+            bool ok = true;
+            for (std::size_t j = 0; j < reg->NumEntries() && ok; ++j)
+                ok = cell_dim[static_cast<std::size_t>(e[j])] == d &&
+                     !assigned[static_cast<std::size_t>(e[j])];
+            if (!ok)
+                continue;
+            auto it = next.try_emplace(d, base(d)).first;
+            for (std::size_t j = 0; j < reg->NumEntries(); ++j) {
+                entity[static_cast<std::size_t>(e[j])] = it->second;
+                assigned[static_cast<std::size_t>(e[j])] = 1;
+            }
+            ++it->second;
+        }
+        for (std::size_t c = 0; c < ncells; ++c)
+            if (!assigned[c]) {
+                auto it = next.find(cell_dim[c]);
+                entity[c] = it == next.end() ? base(cell_dim[c]) : it->second;
+            }
+    }
+
+    // A cell region becomes a Selection when it is exactly a union of whole
+    // entities of one dimension.
+    std::vector<ComsolSelectionOut> selections;
+    for (const Region* reg : regions) {
+        const std::int64_t* e = reg->Entries();
+        ComsolSelectionOut s;
+        s.mLabel = reg->mName;
+        if (reg->NumEntries() == 0) {
+            s.mDim = reg->mDim >= 0 ? reg->mDim : static_cast<int>(sdim);
+            selections.push_back(std::move(s));
+            continue;
+        }
+        const int d = cell_dim[static_cast<std::size_t>(e[0])];
+        std::set<std::int64_t> ents;
+        bool ok = true;
+        for (std::size_t j = 0; j < reg->NumEntries() && ok; ++j) {
+            ok = cell_dim[static_cast<std::size_t>(e[j])] == d;
+            ents.insert(entity[static_cast<std::size_t>(e[j])]);
+        }
+        std::size_t covered = 0;
+        for (std::size_t c = 0; c < ncells && ok; ++c)
+            if (cell_dim[c] == d && ents.count(entity[c]))
+                ++covered;
+        if (!ok || covered != reg->NumEntries()) {
+            log::warn(
+                "{}: cell region '{}' is not a union of whole geometric entities of one "
+                "dimension; dropped",
+                pFormat, reg->mName);
+            continue;
+        }
+        s.mDim = d;
+        s.mEntities.assign(ents.begin(), ents.end());
+        selections.push_back(std::move(s));
+    }
+
+    const std::size_t nobjects = 1 + selections.size();
+    rOut.Int(0);
+    rOut.Int(1, "version");
+    rOut.Int(static_cast<std::int64_t>(nobjects), "number of tags");
+    rOut.String("mesh1");
+    for (std::size_t k = 1; k < nobjects; ++k)
+        rOut.String("mesh1_sel" + std::to_string(k));
+    rOut.Int(static_cast<std::int64_t>(nobjects), "number of types");
+    for (std::size_t k = 0; k < nobjects; ++k)
+        rOut.String("obj");
+    rOut.Blank();
+    rOut.Comment("--------- Object 0 ----------");
+    rOut.Int(0);
+    rOut.Int(0);
+    rOut.Int(1);
+    rOut.String("Mesh", "class");
+    rOut.Int(4, "version");
+    rOut.Int(static_cast<std::int64_t>(sdim), "sdim");
+    rOut.Int(static_cast<std::int64_t>(rMesh.NumPoints()), "number of mesh vertices");
+    rOut.Int(0, "lowest mesh vertex index");
+    rOut.Blank();
+    rOut.Comment("Mesh vertex coordinates");
+    const NDArray& points = rMesh.Points();
+    std::vector<double> row(sdim);
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
+        for (std::size_t c = 0; c < sdim; ++c)
+            row[c] = detail::read_double(points, i * sdim + c);
+        rOut.Real(row.data(), sdim);
+    }
+    rOut.Blank();
+    rOut.Int(static_cast<std::int64_t>(nblocks), "number of element types");
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        rOut.Blank();
+        rOut.Comment("Type #" + std::to_string(b));
+        rOut.String(ctypes[b], "type name");
+        const NDArray& conn = cb.Conn();
+        const std::size_t nn = detail::cols(conn);
+        const std::size_t ne = cb.NumCells();
+        rOut.Int(static_cast<std::int64_t>(nn), "number of vertices per element");
+        rOut.Int(static_cast<std::int64_t>(ne), "number of elements");
+        rOut.Comment("Elements");
+        const detail::NodeOrder* order = detail::node_order("mphtxt", cb.Type());
+        std::vector<std::int64_t> nodes(nn);
+        for (std::size_t r = 0; r < ne; ++r) {
+            for (std::size_t j = 0; j < nn; ++j)
+                nodes[j] = detail::read_int(
+                    conn, r * nn + (order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j));
+            rOut.Ints(nodes.data(), nn);
+        }
+        rOut.Blank();
+        rOut.Int(static_cast<std::int64_t>(ne), "number of geometric entity indices");
+        rOut.Comment("Geometric entity indices");
+        for (std::int64_t c = bases[b]; c < bases[b + 1]; ++c)
+            rOut.Ints(&entity[static_cast<std::size_t>(c)], 1);
+    }
+    for (std::size_t k = 0; k < selections.size(); ++k) {
+        const ComsolSelectionOut& s = selections[k];
+        rOut.Blank();
+        rOut.Comment("--------- Object " + std::to_string(k + 1) + " ----------");
+        rOut.Int(0);
+        rOut.Int(0);
+        rOut.Int(1);
+        rOut.String("Selection", "class");
+        rOut.Int(0, "Version");
+        rOut.String(s.mLabel, "Label");
+        rOut.String("mesh1", "Geometry/mesh tag");
+        rOut.Int(s.mDim, "Dimension");
+        rOut.Int(static_cast<std::int64_t>(s.mEntities.size()), "Number of entities");
+        rOut.Comment("Entities");
+        for (std::int64_t e : s.mEntities)
+            rOut.Ints(&e, 1);
+    }
+}
+
+void comsol_check_data(const Mesh& rMesh, const char* pFormat) {
+    std::size_t dropped = rMesh.PointDataNames().size() + rMesh.FieldDataNames().size();
+    for (const std::string& n : rMesh.CellDataNames())
+        dropped += n != "mphtxt:geom";
+    if (dropped > 0)
+        log::warn("{}: a COMSOL mesh holds no data arrays; {} array(s) dropped", pFormat, dropped);
+}
 
 }  // namespace
 
 Mesh read_mphtxt(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    MphtxtCursor c;
-    std::string line;
-    while (std::getline(in, line)) {
-        std::size_t h = line.find('#');
-        if (h != std::string::npos)
-            line = line.substr(0, h);
-        auto iss = detail::make_classic_istringstream(line);
-        std::string w;
-        while (iss >> w)
-            c.mT.push_back(w);
-    }
+    ComsolText in(comsol_slurp(rPath));
+    return comsol_read(in, "mphtxt");
+}
 
-    c.Integer();  // version major
-    c.Integer();  // version minor
-    for (long long k = c.Integer(); k > 0; --k)
-        c.Str();  // tags
-    const long long n_types = c.Integer();
-    for (long long k = 0; k < n_types; ++k)
-        c.Str();  // type names
-
-    Mesh mesh;
-    std::vector<NDArray> geom;
-
-    for (long long obj = 0; obj < n_types; ++obj) {
-        c.Integer();
-        c.Integer();
-        c.Integer();  // object type indices
-        c.Str();      // class name
-        c.Integer();  // object version
-        const long long sdim = c.Integer();
-        const long long n_points = c.Integer();
-        const long long lowest = c.Integer();
-        NDArray pts(DType::Float64,
-                    {static_cast<std::size_t>(n_points), static_cast<std::size_t>(sdim)});
-        for (long long p = 0; p < n_points * sdim; ++p)
-            pts.As<double>()[p] = c.Real();
-        mesh.AssignPoints(std::move(pts));
-
-        const long long n_eltypes = c.Integer();
-        for (long long e = 0; e < n_eltypes; ++e) {
-            std::string ctype = c.Str();
-            std::string mtype = comsol_to_meshio(ctype);
-            if (mtype.empty())
-                throw ReadError("mphtxt: unknown element type " + ctype);
-            const long long nn = c.Integer();
-            const long long ne = c.Integer();
-            NDArray conn(DType::Int64,
-                         {static_cast<std::size_t>(ne), static_cast<std::size_t>(nn)});
-            std::vector<std::int64_t> raw(ne * nn);
-            for (long long v = 0; v < ne * nn; ++v)
-                raw[v] = c.Integer() - lowest;
-            const std::vector<int>* p = perm_of(mtype);
-            for (long long r = 0; r < ne; ++r)
-                for (long long j = 0; j < nn; ++j)
-                    conn.As<std::int64_t>()[r * nn + j] =
-                        p ? raw[r * nn + (*p)[j]] : raw[r * nn + j];
-
-            const long long npar_per = c.Integer();
-            const long long npar = c.Integer();
-            for (long long v = 0; v < npar * npar_per; ++v)
-                c.Tok();
-            const long long ngeom = c.Integer();
-            NDArray g(DType::Int64, {static_cast<std::size_t>(ngeom)});
-            for (long long v = 0; v < ngeom; ++v)
-                g.As<std::int64_t>()[v] = c.Integer();
-            const long long nud = c.Integer();
-            for (long long v = 0; v < nud * 2; ++v)
-                c.Integer();
-
-            mesh.AddCellBlock(mtype, std::move(conn));
-            geom.push_back(std::move(g));
-        }
-        break;  // first mesh object only
-    }
-
-    if (!geom.empty())
-        mesh.AddCellData("mphtxt:geom", std::move(geom));
-    return mesh;
+Mesh read_mphbin(const std::string& rPath) {
+    ComsolBinary in(comsol_slurp(rPath));
+    return comsol_read(in, "mphbin");
 }
 
 void write_mphtxt(const std::string& rPath, const Mesh& rMesh) {
+    std::string out = detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    ComsolTextSink sink(out);
+    comsol_write(sink, rMesh, "mphtxt");
+    comsol_check_data(rMesh, "mphtxt");
     auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
         throw WriteError("Could not open file for writing: " + rPath);
+    f << out;
+    if (!f)
+        throw WriteError("mphtxt: failed writing " + rPath);
+}
 
-    const std::size_t sdim = rMesh.PointDim();
-
-    struct Blk {
-        std::size_t mIdx;
-        Mesh::CellView mCb;
-    };
-    std::vector<Blk> blocks;
-    for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
-        const auto cb = rMesh.Cells(k);
-        if (!meshio_to_comsol(cb.Type()).empty())
-            blocks.push_back({k, cb});
-        else
-            throw WriteError("mphtxt: unsupported cell type " + cb.Type());
-    }
-
-    const bool has_geom = rMesh.HasCellData("mphtxt:geom");
-
-    f << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
-    f << "0 1\n";
-    f << "1 # number of tags\n5 mesh1\n";
-    f << "1 # number of types\n3 obj\n\n";
-    f << "0 0 1\n4 Mesh # class\n2 # version\n";
-    f << sdim << " # sdim\n";
-    f << rMesh.NumPoints() << " # number of mesh points\n";
-    f << "1 # lowest mesh point index\n\n# Mesh point coordinates\n";
-    const NDArray& points = rMesh.Points();
-    char buf[32];
-    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i) {
-        for (std::size_t cc = 0; cc < sdim; ++cc) {
-            detail::snprintf_c(buf, sizeof(buf), "%.16g",
-                               detail::read_double(points, i * sdim + cc));
-            f << buf << (cc + 1 == sdim ? '\n' : ' ');
-        }
-    }
-    f << "\n" << blocks.size() << " # number of element types\n\n";
-
-    int ti = 0;
-    for (const auto& b : blocks) {
-        const auto cb = b.mCb;
-        std::string ctype = meshio_to_comsol(cb.Type());
-        const std::vector<int>* p = perm_of(cb.Type());
-        const NDArray& conn = cb.Conn();
-        std::size_t nn = detail::cols(conn);
-        std::size_t ne = cb.NumCells();
-        f << "# Type #" << (++ti) << "\n\n";
-        f << ctype.size() << " " << ctype << " # type name\n\n";
-        f << nn << " # number of nodes per element\n";
-        f << ne << " # number of elements\n# Elements\n";
-        for (std::size_t r = 0; r < ne; ++r) {
-            for (std::size_t j = 0; j < nn; ++j) {
-                std::size_t src = p ? (*p)[j] : j;
-                f << (detail::read_int(conn, r * nn + src) + 1) << (j + 1 == nn ? '\n' : ' ');
-            }
-        }
-        f << "\n" << nn << " # number of parameter values per element\n";
-        f << "0 # number of parameters\n# Parameters\n\n";
-        f << ne << " # number of geometric entity indices\n# Geometric entity indices\n";
-        const NDArray* g = (has_geom && b.mIdx < rMesh.CellDataNumBlocks("mphtxt:geom"))
-                               ? &rMesh.CellData("mphtxt:geom", b.mIdx)
-                               : nullptr;
-        for (std::size_t r = 0; r < ne; ++r)
-            f << (g ? detail::read_int(*g, r) : 0) << "\n";
-        f << "\n0 # number of up/down pairs\n# Up/down\n\n";
-    }
+void write_mphbin(const std::string& rPath, const Mesh& rMesh) {
+    // No comment slot: consumes the pending record, and fails under
+    // Mode::Required like the other slotless formats.
+    detail::provenance_lines(detail::SlotTier::None);
+    std::string out;
+    ComsolBinarySink sink(out);
+    comsol_write(sink, rMesh, "mphbin");
+    comsol_check_data(rMesh, "mphbin");
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+    f << out;
+    if (!f)
+        throw WriteError("mphbin: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/mphtxt.cpp =====
 // ===== begin src/cpp/src/formats/nastran.cpp =====
-#include <array>
-#include <cctype>
-#include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <fstream>
+#include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -73611,44 +74318,390 @@ namespace meshioplusplus {
 
 namespace {
 
+// Written as the first comment line of every file the C++ writer produces. The
+// reader no longer needs it (it reads any bulk-data deck); it stays so older
+// meshio++ releases, whose reader was gated on it, can still read new output.
 constexpr const char* kSentinel = "meshioplusplus-cpp-nastran";
 
-const std::unordered_map<std::string, std::string>& nastran_to_meshio() {
-    static const std::unordered_map<std::string, std::string> m = {
-        {"CTRIA3", "triangle"},     {"CTRIA6", "triangle6"}, {"CQUAD4", "quad"},
-        {"CQUAD8", "quad8"},        {"CQUAD9", "quad9"},     {"CTETRA", "tetra"},
-        {"CTETRA_", "tetra10"},     {"CPYRA", "pyramid"},    {"CPYRA_", "pyramid13"},
-        {"CPENTA", "wedge"},        {"CPENTA_", "wedge15"},  {"CHEXA", "hexahedron"},
-        {"CHEXA_", "hexahedron20"}, {"CBAR", "line"},        {"CROD", "line"},
+// An element card: its meshio type and how many node fields it holds. A fixed
+// count (> 0) reads exactly that many fields and ignores the rest of the card
+// (THETA, ZOFFS, thicknesses, an orientation vector ...); 0 marks a solid whose
+// linear or quadratic form is told apart by the number of node fields given.
+struct NasElement {
+    const char* mType;
+    int mNodes;
+};
+
+const std::unordered_map<std::string, NasElement>& nas_elements() {
+    static const std::unordered_map<std::string, NasElement> m = {
+        {"CELAS1", {"vertex", 1}},    {"CBEAM", {"line", 2}},        {"CBUSH", {"line", 2}},
+        {"CBUSH1D", {"line", 2}},     {"CROD", {"line", 2}},         {"CGAP", {"line", 2}},
+        {"CBAR", {"line", 2}},        {"CTRIAR", {"triangle", 3}},   {"CTRIA3", {"triangle", 3}},
+        {"CTRAX6", {"triangle6", 6}}, {"CTRIAX6", {"triangle6", 6}}, {"CTRIA6", {"triangle6", 6}},
+        {"CQUADR", {"quad", 4}},      {"CSHEAR", {"quad", 4}},       {"CQUAD4", {"quad", 4}},
+        {"CQUAD8", {"quad8", 8}},     {"CQUAD9", {"quad9", 9}},      {"CTETRA", {"tetra", 0}},
+        {"CPYRAM", {"pyramid", 0}},   {"CPYRA", {"pyramid", 0}},     {"CPENTA", {"wedge", 0}},
+        {"CHEXA", {"hexahedron", 0}},
     };
     return m;
 }
-// meshio -> nastran (matches the Python inverse: last entry per meshio type).
+
+// A solid card's linear and quadratic meshio types and node counts.
+struct NasSolid {
+    const char* mLinear;
+    int mLinearNodes;
+    const char* mQuadratic;
+    int mQuadraticNodes;
+};
+
+const NasSolid* nas_solid(const std::string& rType) {
+    static const NasSolid solids[] = {
+        {"tetra", 4, "tetra10", 10},
+        {"pyramid", 5, "pyramid13", 13},
+        {"wedge", 6, "wedge15", 15},
+        {"hexahedron", 8, "hexahedron20", 20},
+    };
+    for (const NasSolid& s : solids)
+        if (rType == s.mLinear)
+            return &s;
+    return nullptr;
+}
+
+// meshio type -> the card the writer emits.
 const std::unordered_map<std::string, std::string>& meshio_to_nastran() {
     static const std::unordered_map<std::string, std::string> m = {
         {"vertex", "CELAS1"},    {"line", "CBAR"},        {"triangle", "CTRIA3"},
         {"triangle6", "CTRIA6"}, {"quad", "CQUAD4"},      {"quad8", "CQUAD8"},
-        {"quad9", "CQUAD9"},     {"tetra", "CTETRA"},     {"tetra10", "CTETRA_"},
-        {"pyramid", "CPYRA"},    {"pyramid13", "CPYRA_"}, {"wedge", "CPENTA"},
-        {"wedge15", "CPENTA_"},  {"hexahedron", "CHEXA"}, {"hexahedron20", "CHEXA_"},
+        {"quad9", "CQUAD9"},     {"tetra", "CTETRA"},     {"tetra10", "CTETRA"},
+        {"pyramid", "CPYRA"},    {"pyramid13", "CPYRA"},  {"wedge", "CPENTA"},
+        {"wedge15", "CPENTA"},   {"hexahedron", "CHEXA"}, {"hexahedron20", "CHEXA"},
     };
     return m;
 }
 
-// Node reordering between meshio (VTK-like) and Nastran for the few types that
-// differ. The given permutation P maps: out[j] = in[P[j]].
-const std::vector<int>& reorder_meshio_to_nastran(const std::string& rNastranType) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"CHEXA_", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
-        {"CPENTA_", {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
-    };
-    static const std::vector<int> empty;
-    auto it = m.find(rNastranType);
-    return it == m.end() ? empty : it->second;
+// meshio slot j holds Nastran slot P[j]. hexahedron20 and wedge15 put the
+// vertical mid-edges before the top ring in Nastran; both are involutions.
+const std::vector<int>& nas_perm_hex20() {
+    static const std::vector<int> p = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                       10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
+    return p;
 }
-// Inverse (Nastran -> meshio). CHEXA_/CPENTA_ permutations are involutions.
-const std::vector<int>& reorder_nastran_to_meshio(const std::string& rNastranType) {
-    return reorder_meshio_to_nastran(rNastranType);
+const std::vector<int>& nas_perm_wedge15() {
+    static const std::vector<int> p = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
+    return p;
+}
+// CTRIAX6/CTRAX6 list corner, mid, corner, mid, corner, mid.
+const std::vector<int>& nas_perm_triax6_read() {
+    static const std::vector<int> p = {0, 2, 4, 1, 3, 5};
+    return p;
+}
+
+const std::vector<int>* nas_read_perm(const std::string& rCard, const std::string& rType) {
+    if (rCard == "CTRIAX6" || rCard == "CTRAX6")
+        return &nas_perm_triax6_read();
+    if (rType == "hexahedron20")
+        return &nas_perm_hex20();
+    if (rType == "wedge15")
+        return &nas_perm_wedge15();
+    return nullptr;
+}
+
+const std::vector<int>* nas_write_perm(const std::string& rType) {
+    if (rType == "hexahedron20")
+        return &nas_perm_hex20();
+    if (rType == "wedge15")
+        return &nas_perm_wedge15();
+    return nullptr;
+}
+
+// Cards read silently although they carry nothing meshio++ keeps: properties,
+// materials, loads, constraints, coordinate systems, tables and solution
+// parameters. Anything else not read is counted and named in one warning.
+bool nas_is_quietly_skipped(const std::string& rKeyword) {
+    static const char* const prefixes[] = {
+        "P",      "MAT",   "SPC",   "MPC",   "FORCE", "MOMENT", "LOAD",   "TEMP",  "GRAV",
+        "RFORCE", "ACCEL", "CORD",  "TABLE", "EIGR",  "EIGC",   "NLPARM", "TSTEP", "FREQ",
+        "SUPORT", "DAREA", "DLOAD", "RLOAD", "TLOAD", "SPOINT", "ASET",   "OMIT",  "INCLUDE",
+    };
+    for (const char* p : prefixes)
+        if (rKeyword.rfind(p, 0) == 0)
+            return true;
+    return false;
+}
+
+std::string nas_strip(const std::string& rS) {
+    const std::size_t b = rS.find_first_not_of(" \t");
+    if (b == std::string::npos)
+        return "";
+    const std::size_t e = rS.find_last_not_of(" \t");
+    return rS.substr(b, e - b + 1);
+}
+
+bool nas_is_comment(const std::string& rLine) {
+    return rLine.size() < 3 || rLine[0] == '$' || rLine[0] == '#' || rLine.rfind("//", 0) == 0;
+}
+
+// One raw field of a card line; `mNone` marks a continuation marker, which is
+// dropped when the card's fields are flattened.
+struct NasChunk {
+    std::string mText;
+    bool mNone = false;
+};
+using NasChunks = std::vector<NasChunk>;
+
+bool nas_is_free(const std::string& rLine) {
+    return rLine.find(',') != std::string::npos;
+}
+
+// A free-field line splits on commas; a fixed-field line into (at most ten)
+// 8-column fields, the tenth being the continuation marker.
+NasChunks nas_chunk_line(const std::string& rLine) {
+    NasChunks out;
+    if (nas_is_free(rLine)) {
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t comma = rLine.find(',', start);
+            if (comma == std::string::npos) {
+                out.push_back({rLine.substr(start)});
+                break;
+            }
+            out.push_back({rLine.substr(start, comma - start)});
+            start = comma + 1;
+        }
+        return out;
+    }
+    for (std::size_t i = 0; i < rLine.size() && out.size() < 10; i += 8)
+        out.push_back({rLine.substr(i, 8)});
+    return out;
+}
+
+// Large-field lines hold 8 + 4x16 + 8 columns: re-merge each pair of 8-column
+// chunks into one 16-column field.
+NasChunks nas_merge_large(const NasChunks& rC) {
+    NasChunks d;
+    d.push_back(rC[0]);
+    for (std::size_t k = 1; k <= 7 && k < rC.size(); k += 2) {
+        NasChunk f = rC[k];
+        if (k + 1 < rC.size() && !rC[k + 1].mNone)
+            f.mText += rC[k + 1].mText;
+        d.push_back(f);
+    }
+    if (rC.size() > 9)
+        d.push_back(rC[9]);
+    return d;
+}
+
+// The logical cards of the bulk section: each is the flattened, stripped list
+// of its fields, continuation lines merged in.
+std::vector<std::vector<std::string>> nas_cards(const std::vector<std::string>& rLines) {
+    std::vector<std::vector<std::string>> cards;
+    const std::string blank8(8, ' ');
+    std::size_t i = 0;
+    while (i < rLines.size()) {
+        std::vector<NasChunks> chunks;
+        chunks.push_back(nas_chunk_line(rLines[i]));
+        const bool free = nas_is_free(rLines[i]);
+        ++i;
+        while (i < rLines.size()) {
+            const std::string& next = rLines[i];
+            if (next[0] == '+' || next[0] == '*') {
+                if (chunks.back().size() == 10)
+                    chunks.back().back().mNone = true;
+                NasChunks c = nas_chunk_line(next);
+                c[0].mNone = true;
+                chunks.push_back(std::move(c));
+                ++i;
+            } else if (chunks.back().size() == 10 && !chunks.back().back().mNone &&
+                       chunks.back().back().mText == blank8) {
+                // Implicit continuation: a blank tenth field followed by a line
+                // whose first field is blank too.
+                NasChunks c = nas_chunk_line(next);
+                if (!c.empty() && c[0].mText == blank8) {
+                    chunks.back()[9].mNone = true;
+                    c[0].mNone = true;
+                    chunks.push_back(std::move(c));
+                    ++i;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        const std::string head = nas_strip(chunks[0][0].mText);
+        if (!free && !head.empty() && head.back() == '*')
+            for (NasChunks& c : chunks)
+                c = nas_merge_large(c);
+        std::vector<std::string> fields;
+        for (const NasChunks& c : chunks)
+            for (const NasChunk& f : c)
+                if (!f.mNone)
+                    fields.push_back(nas_strip(f.mText));
+        cards.push_back(std::move(fields));
+    }
+    return cards;
+}
+
+const std::string& nas_field(const std::vector<std::string>& rFields, std::size_t k) {
+    static const std::string empty;
+    return k < rFields.size() ? rFields[k] : empty;
+}
+
+std::int64_t nas_int(const std::string& rText, const std::string& rCard) {
+    return detail::card_to_int(rText, " in a " + rCard + " card", "Nastran");
+}
+
+double nas_real(const std::string& rText, const std::string& rCard) {
+    return detail::card_to_real(rText, " in a " + rCard + " card", "Nastran");
+}
+
+// A list of ids with `a THRU b` ranges, as $HMMOVE lines and SET cards hold them.
+// Explicit ids land in `rIds`; each range in `rRanges`.
+void nas_parse_id_list(const std::vector<std::string>& rTokens, std::size_t First,
+                       const std::string& rCard, std::vector<std::int64_t>& rIds,
+                       std::vector<std::pair<std::int64_t, std::int64_t>>& rRanges) {
+    std::vector<std::string> t;
+    for (std::size_t k = First; k < rTokens.size(); ++k)
+        if (!rTokens[k].empty())
+            t.push_back(rTokens[k]);
+    for (std::size_t k = 0; k < t.size(); ++k) {
+        if (k + 2 < t.size() && t[k + 1] == "THRU") {
+            rRanges.emplace_back(nas_int(t[k], rCard), nas_int(t[k + 2], rCard));
+            k += 2;
+        } else {
+            rIds.push_back(nas_int(t[k], rCard));
+        }
+    }
+}
+
+// Members of a HyperMesh component or a SET, as parsed.
+struct NasGroup {
+    std::vector<std::int64_t> mIds;
+    std::vector<std::pair<std::int64_t, std::int64_t>> mRanges;
+};
+
+// The HyperMesh comment cards: component membership ($HMMOVE plus the `$`
+// id lines after it), component names ($HMNAME COMP) and SET names ($HMSET).
+struct NasHyperMesh {
+    std::map<std::int64_t, NasGroup> mComponents;
+    std::map<std::int64_t, std::string> mComponentNames;
+    // Component id -> the property id `$HMNAME COMP <id>"name" <pid> "type"`
+    // records after the name, when it does.
+    std::map<std::int64_t, std::int64_t> mComponentProperties;
+    std::map<std::int64_t, std::string> mSetNames;
+    std::int64_t mActive = -1;
+    bool mHasActive = false;
+
+    // The quoted name after position `Pos`, or nothing when there is none.
+    static bool QuotedAfter(const std::string& rLine, std::size_t Pos, std::int64_t& rId,
+                            std::string& rName, std::size_t* pEnd = nullptr) {
+        std::size_t k = Pos;
+        while (k < rLine.size() && rLine[k] == ' ')
+            ++k;
+        const std::size_t digits = k;
+        while (k < rLine.size() && rLine[k] >= '0' && rLine[k] <= '9')
+            ++k;
+        if (k == digits)
+            return false;
+        rId = std::strtoll(rLine.substr(digits, k - digits).c_str(), nullptr, 10);
+        const std::size_t open = rLine.find('"', k);
+        if (open == std::string::npos)
+            return false;
+        const std::size_t close = rLine.find('"', open + 1);
+        if (close == std::string::npos)
+            return false;
+        rName = rLine.substr(open + 1, close - open - 1);
+        if (pEnd)
+            *pEnd = close + 1;
+        return true;
+    }
+
+    // `$` followed by blanks, then 8-column fields of ids and THRU.
+    static bool IdLine(const std::string& rLine, std::vector<std::string>& rTokens) {
+        if (rLine.empty() || rLine[0] != '$')
+            return false;
+        for (std::size_t k = 1; k < 8 && k < rLine.size(); ++k)
+            if (rLine[k] != ' ')
+                return false;
+        bool any = false;
+        for (std::size_t k = 8; k < rLine.size(); k += 8) {
+            const std::string f = nas_strip(rLine.substr(k, 8));
+            if (f.empty())
+                continue;
+            if (f != "THRU" && f.find_first_not_of("0123456789") != std::string::npos)
+                return false;
+            any = any || f != "THRU";
+            rTokens.push_back(f);
+        }
+        return any;
+    }
+
+    void Feed(const std::string& rLine) {
+        if (rLine.rfind("$HMMOVE", 0) == 0) {
+            const std::string id = nas_strip(rLine.substr(7, 9));
+            mHasActive = !id.empty() && id.find_first_not_of("0123456789") == std::string::npos;
+            if (mHasActive) {
+                mActive = std::strtoll(id.c_str(), nullptr, 10);
+                mComponents[mActive];
+            }
+            return;
+        }
+        std::vector<std::string> tokens;
+        if (mHasActive && IdLine(rLine, tokens)) {
+            NasGroup& g = mComponents[mActive];
+            nas_parse_id_list(tokens, 0, "$HMMOVE", g.mIds, g.mRanges);
+            return;
+        }
+        mHasActive = false;
+        std::int64_t id = 0;
+        std::string name;
+        std::size_t end = 0;
+        if (rLine.rfind("$HMNAME COMP ", 0) == 0 && QuotedAfter(rLine, 13, id, name, &end)) {
+            mComponentNames[id] = name;
+            std::size_t k = end;
+            while (k < rLine.size() && rLine[k] == ' ')
+                ++k;
+            std::size_t e = k;
+            while (e < rLine.size() && rLine[e] >= '0' && rLine[e] <= '9')
+                ++e;
+            if (e > k)
+                mComponentProperties[id] =
+                    std::strtoll(rLine.substr(k, e - k).c_str(), nullptr, 10);
+        } else if (rLine.rfind("$HMSET ", 0) == 0) {
+            // $HMSET <id> <type> "name"
+            std::size_t k = 7;
+            while (k < rLine.size() && rLine[k] == ' ')
+                ++k;
+            std::size_t e = k;
+            while (e < rLine.size() && rLine[e] >= '0' && rLine[e] <= '9')
+                ++e;
+            if (e > k && QuotedAfter(rLine, e, id, name))
+                mSetNames[std::strtoll(rLine.substr(k, e - k).c_str(), nullptr, 10)] = name;
+        }
+    }
+};
+
+// The global indices a group names. Ids no entity has are counted in
+// `rMissing` when listed explicitly; a range only picks the ids that exist.
+std::vector<std::int64_t> nas_resolve(const NasGroup& rGroup,
+                                      const std::unordered_map<std::int64_t, std::int64_t>& rIndex,
+                                      const std::map<std::int64_t, std::int64_t>& rSorted,
+                                      std::size_t& rMissing) {
+    std::vector<std::int64_t> out;
+    for (std::int64_t id : rGroup.mIds) {
+        auto it = rIndex.find(id);
+        if (it == rIndex.end())
+            ++rMissing;
+        else
+            out.push_back(it->second);
+    }
+    for (const auto& r : rGroup.mRanges)
+        for (auto it = rSorted.lower_bound(r.first); it != rSorted.end() && it->first <= r.second;
+             ++it)
+            out.push_back(it->second);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
 }
 
 std::string nastran_float(double v) {
@@ -73691,40 +74744,96 @@ std::string nastran_float(double v) {
     return out;
 }
 
-double parse_nastran_float(std::string s) {
-    // strip
-    std::size_t b = s.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return 0.0;
-    std::size_t e = s.find_last_not_of(" \t");
-    s = s.substr(b, e - b + 1);
-    const char* endp = nullptr;
-    double v = detail::parse_double(s.c_str(), endp);
-    if (endp != s.c_str() && *endp == '\0')
-        return v;
-    // Nastran compressed exponent, e.g. "1.5+1" -> "1.5e+1"
-    std::string t;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
-        if ((c == '+' || c == '-') && i > 0 && s[i - 1] != 'e' && s[i - 1] != 'E')
-            t += 'e';
-        t += c;
+// The HyperMesh comment block that records disjoint cell regions as
+// components: `$HMMOVE` with the element ids (runs as `a THRU b`), then
+// `$HMNAME COMP`. Comments only, so no solver sees them. The Python writer
+// emits the same bytes (nastran/_nastran.py, `_hypermesh_block`).
+std::string nas_hypermesh_block(const Mesh& rMesh) {
+    std::vector<const Region*> kept;
+    std::vector<char> owned(
+        static_cast<std::size_t>(detail::total_cells(detail::block_bases(rMesh))), 0);
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind != RegionKind::Cell) {
+            log::warn("Nastran: {} region '{}' dropped; HyperMesh components hold cells only",
+                      reg.mKind == RegionKind::Point ? "point" : "side", reg.mName);
+            continue;
+        }
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t j = 0; j < reg.NumEntries(); ++j)
+            if (e[j] < 0 || static_cast<std::size_t>(e[j]) >= owned.size())
+                throw WriteError("Nastran writer: cell region '" + reg.mName + "' names cell " +
+                                 std::to_string(e[j]) + " of " + std::to_string(owned.size()));
+        bool overlaps = false;
+        for (std::size_t j = 0; j < reg.NumEntries() && !overlaps; ++j)
+            overlaps = owned[static_cast<std::size_t>(e[j])] != 0;
+        if (overlaps) {
+            log::warn(
+                "Nastran: cell region '{}' overlaps an earlier one and is dropped; a "
+                "HyperMesh component owns each element once",
+                reg.mName);
+            continue;
+        }
+        for (std::size_t j = 0; j < reg.NumEntries(); ++j)
+            owned[static_cast<std::size_t>(e[j])] = 1;
+        kept.push_back(&reg);
     }
-    return detail::parse_double(t);
-}
-
-std::string nastran_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t");
-    if (b == std::string::npos)
+    if (kept.empty())
         return "";
-    std::size_t e = rS.find_last_not_of(" \t");
-    return rS.substr(b, e - b + 1);
-}
-
-std::string field(const std::string& rLine, std::size_t start, std::size_t width) {
-    if (start >= rLine.size())
-        return "";
-    return nastran_strip(rLine.substr(start, width));
+    // Keep the regions' tags as component ids when they are usable ones.
+    bool tags_ok = true;
+    std::vector<std::int64_t> seen;
+    for (const Region* reg : kept) {
+        if (reg->mTag <= 0 || std::find(seen.begin(), seen.end(), reg->mTag) != seen.end())
+            tags_ok = false;
+        seen.push_back(reg->mTag);
+    }
+    std::string out;
+    char buf[64];
+    for (std::size_t k = 0; k < kept.size(); ++k) {
+        const Region& reg = *kept[k];
+        const std::int64_t comp = tags_ok ? reg.mTag : static_cast<std::int64_t>(k + 1);
+        std::string name = reg.mName;
+        std::replace(name.begin(), name.end(), '"', '\'');
+        out += "$\n";
+        if (reg.NumEntries() > 0) {
+            std::snprintf(buf, sizeof(buf), "$HMMOVE %8lld\n", static_cast<long long>(comp));
+            out += buf;
+            const std::int64_t* e = reg.Entries();
+            std::string singles;
+            int nsingles = 0;
+            auto flush = [&]() {
+                if (nsingles > 0)
+                    out += "$       " + singles + "\n";
+                singles.clear();
+                nsingles = 0;
+            };
+            std::size_t j = 0;
+            while (j < reg.NumEntries()) {
+                std::size_t run = j;
+                while (run + 1 < reg.NumEntries() && e[run + 1] == e[run] + 1)
+                    ++run;
+                if (run > j) {
+                    flush();
+                    std::snprintf(buf, sizeof(buf), "$       %8lldTHRU    %8lld\n",
+                                  static_cast<long long>(e[j] + 1),
+                                  static_cast<long long>(e[run] + 1));
+                    out += buf;
+                } else {
+                    std::snprintf(buf, sizeof(buf), "%8lld", static_cast<long long>(e[j] + 1));
+                    singles += buf;
+                    if (++nsingles == 8)
+                        flush();
+                }
+                j = run + 1;
+            }
+            flush();
+        }
+        std::snprintf(buf, sizeof(buf), "$HMNAME COMP%20lld", static_cast<long long>(comp));
+        out += buf;
+        out += "\"" + name + "\"\n";
+    }
+    return out;
 }
 
 }  // namespace
@@ -73737,12 +74846,21 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t n = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
     const NDArray& points = rMesh.Points();
+    const NDArray* point_refs =
+        rMesh.HasPointData("nastran:ref") ? &rMesh.PointData("nastran:ref") : nullptr;
+    const bool cell_refs = rMesh.HasCellData("nastran:ref");
+
+    // Validate before writing anything.
+    const auto& m2n = meshio_to_nastran();
+    for (const auto cb : rMesh.CellRange())
+        if (!m2n.count(cb.Type()))
+            throw WriteError("Nastran writer: unsupported cell type " + cb.Type());
 
     os << "$ " << kSentinel << "\n";
     os << detail::provenance_render_lines(detail::SlotTier::Block, "$ ");
     os << "BEGIN BULK\n";
 
-    // Points: fixed-large GRID*.
+    // Points: fixed-large GRID*. A zero reference field is written blank.
     char buf[128];
     for (std::size_t i = 0; i < n; ++i) {
         double xyz[3] = {0, 0, 0};
@@ -73750,32 +74868,43 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
             xyz[c] = detail::read_double(points, i * dim + c);
         std::string sx = nastran_float(xyz[0]), sy = nastran_float(xyz[1]),
                     sz = nastran_float(xyz[2]);
+        std::string ref;
+        if (point_refs) {
+            const long long v = detail::read_int(*point_refs, i);
+            if (v != 0)
+                ref = std::to_string(v);
+        }
         std::snprintf(buf, sizeof(buf), "GRID*   %-16d%-16s%16s%16s\n*       %16s\n",
-                      static_cast<int>(i + 1), "", sx.c_str(), sy.c_str(), sz.c_str());
+                      static_cast<int>(i + 1), ref.c_str(), sx.c_str(), sy.c_str(), sz.c_str());
         os << buf;
     }
 
     // Cells: fixed-small element cards (8-char fields), with + continuations.
-    const auto& m2n = meshio_to_nastran();
     std::size_t cell_id = 0;
+    std::size_t block = 0;
     for (const auto cb : rMesh.CellRange()) {
-        auto it = m2n.find(cb.Type());
-        if (it == m2n.end())
-            throw WriteError("Nastran writer: unsupported cell type " + cb.Type());
-        std::string ntype = it->second;
+        const std::string& ntype = m2n.at(cb.Type());
+        const NDArray* refs = cell_refs ? &rMesh.CellData("nastran:ref", block) : nullptr;
+        ++block;
         const NDArray& conn = cb.Conn();
         std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
-        const std::vector<int>& perm = reorder_meshio_to_nastran(ntype);
+        const std::vector<int>* perm = nas_write_perm(cb.Type());
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             ++cell_id;
             std::vector<long long> nodes(k);
             for (std::size_t j = 0; j < k; ++j) {
-                std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                std::size_t src = perm ? static_cast<std::size_t>((*perm)[j]) : j;
                 nodes[j] = detail::read_int(conn, r * k + src) + 1;
+            }
+            std::string ref;
+            if (refs) {
+                const long long v = detail::read_int(*refs, r);
+                if (v != 0)
+                    ref = std::to_string(v);
             }
             // first line: type, id, ref, up to 6 nodes
             std::snprintf(buf, sizeof(buf), "%-8s%-8d%-8s", ntype.c_str(),
-                          static_cast<int>(cell_id), "");
+                          static_cast<int>(cell_id), ref.c_str());
             std::string line = buf;
             std::size_t nipl1 = 6, nipl2 = 14;
             for (std::size_t j = 0; j < k && j < nipl1; ++j) {
@@ -73810,132 +74939,256 @@ void write_nastran(const std::string& rPath, const Mesh& rMesh) {
         }
     }
 
+    os << nas_hypermesh_block(rMesh);
     os << "ENDDATA\n";
+    if (!os)
+        throw WriteError("Nastran writer: failed writing " + rPath);
 }
 
 Mesh read_nastran(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
+
+    // Everything before BEGIN BULK (executive and case control, I/O options) is
+    // skipped; comment lines feed the HyperMesh parser; ENDDATA ends the deck.
     std::vector<std::string> lines;
+    NasHyperMesh hm;
     std::string l;
+    bool bulk = false;
     while (std::getline(in, l)) {
         if (!l.empty() && l.back() == '\r')
             l.pop_back();
-        lines.push_back(l);
-    }
-
-    // Sentinel gate: only parse files this writer produced.
-    bool ok = false;
-    std::size_t start = 0;
-    for (; start < lines.size(); ++start) {
-        if (lines[start].find(kSentinel) != std::string::npos)
-            ok = true;
-        if (nastran_strip(lines[start]).rfind("BEGIN BULK", 0) == 0) {
-            ++start;
-            break;
+        if (!bulk) {
+            bulk = nas_strip(l).rfind("BEGIN BULK", 0) == 0;
+            continue;
         }
+        if (l.rfind("ENDDATA", 0) == 0)
+            break;
+        if (!l.empty() && l[0] == '$')
+            hm.Feed(l);
+        else
+            hm.mHasActive = false;
+        if (!nas_is_comment(l))
+            lines.push_back(l);
     }
-    if (!ok)
-        throw ReadError("Not a meshio++-C++ Nastran file");
-
-    const auto& n2m = nastran_to_meshio();
-    Mesh mesh;
-    std::unordered_map<std::int64_t, std::int64_t> point_ids;
-    std::vector<std::array<double, 3>> pts;
+    if (!bulk)
+        throw ReadError("Nastran: \"BEGIN BULK\" statement not found in " + rPath);
 
     struct Blk {
         std::string mType;
-        int mN;
+        int mN = 0;
         std::vector<std::int64_t> mConn;
-        std::size_t mCount = 0;
+        std::vector<std::int64_t> mRefs;
     };
     std::vector<Blk> blocks;
+    std::vector<double> pts;
+    std::vector<std::int64_t> point_refs;
+    bool any_point_ref = false, any_cell_ref = false;
+    std::unordered_map<std::int64_t, std::int64_t> point_index, cell_index;
+    std::vector<std::int64_t> cell_dims;
+    std::vector<std::int64_t> cell_pids;
+    std::map<std::int64_t, std::pair<std::string, NasGroup>> sets;
+    std::map<std::string, std::size_t> skipped;
+    const auto& elements = nas_elements();
 
-    std::size_t i = start;
-    while (i < lines.size()) {
-        const std::string& line = lines[i];
-        std::string s = nastran_strip(line);
-        if (s.empty() || s[0] == '$' || s.rfind("//", 0) == 0 || s[0] == '#') {
-            ++i;
+    for (const std::vector<std::string>& f : nas_cards(lines)) {
+        std::string kw = f.empty() ? std::string() : f[0];
+        if (!kw.empty() && kw.back() == '*')
+            kw.pop_back();
+        if (kw == "GRID") {
+            const std::int64_t id = nas_int(nas_field(f, 1), kw);
+            const std::string& ref = nas_field(f, 2);
+            any_point_ref = any_point_ref || !ref.empty();
+            point_refs.push_back(nas_int(ref, kw));
+            point_index[id] = static_cast<std::int64_t>(point_refs.size() - 1);
+            for (std::size_t c = 3; c < 6; ++c)
+                pts.push_back(nas_real(nas_field(f, c), kw));
             continue;
         }
-        if (s.rfind("ENDDATA", 0) == 0)
-            break;
-
-        std::string kw = field(line, 0, 8);
-        if (kw == "GRID*") {
-            // line1: 8 + 4x16 (id, ref, x, y); line2: 8 + 16 (z)
-            std::int64_t id = std::strtoll(field(line, 8, 16).c_str(), nullptr, 10);
-            double x = parse_nastran_float(field(line, 40, 16));
-            double y = parse_nastran_float(field(line, 56, 16));
-            double z = 0.0;
-            if (i + 1 < lines.size())
-                z = parse_nastran_float(field(lines[i + 1], 8, 16));
-            point_ids[id] = static_cast<std::int64_t>(pts.size());
-            pts.push_back({x, y, z});
-            i += 2;
-        } else if (n2m.count(kw)) {
-            std::string mtype = n2m.at(kw);
-            // gather node fields: first line fields[3..9] (chars 24..72),
-            // continuation lines fields[1..9] (chars 8..72).
+        auto el = elements.find(kw);
+        if (el != elements.end()) {
+            const std::int64_t id = nas_int(nas_field(f, 1), kw);
+            const std::string& ref = nas_field(f, 2);
+            std::string type = el->second.mType;
             std::vector<std::int64_t> nodes;
-            // Field 9 (chars 72..80) holds the continuation marker, never a node.
-            auto grab = [&](const std::string& ln, std::size_t first_field) {
-                for (std::size_t fidx = first_field; fidx < 9; ++fidx) {
-                    std::string f = field(ln, fidx * 8, 8);
-                    if (!f.empty())
-                        nodes.push_back(std::strtoll(f.c_str(), nullptr, 10));
+            if (el->second.mNodes > 0) {
+                for (int j = 0; j < el->second.mNodes; ++j) {
+                    const std::string& t = nas_field(f, 3 + static_cast<std::size_t>(j));
+                    if (t.empty())
+                        throw ReadError("Nastran: " + kw + " " + std::to_string(id) +
+                                        " is missing node " + std::to_string(j + 1));
+                    nodes.push_back(nas_int(t, kw));
                 }
-            };
-            grab(line, 3);
-            ++i;
-            while (i < lines.size() && !lines[i].empty() &&
-                   (lines[i][0] == '+' || lines[i][0] == '*')) {
-                grab(lines[i], 1);
-                ++i;
+            } else {
+                for (std::size_t j = 3; j < f.size(); ++j)
+                    if (!f[j].empty())
+                        nodes.push_back(nas_int(f[j], kw));
+                const NasSolid* s = nas_solid(type);
+                const int nn = static_cast<int>(nodes.size());
+                if (nn == s->mQuadraticNodes)
+                    type = s->mQuadratic;
+                else if (nn != s->mLinearNodes)
+                    throw ReadError("Nastran: " + kw + " " + std::to_string(id) + " has " +
+                                    std::to_string(nn) + " nodes; expected " +
+                                    std::to_string(s->mLinearNodes) + " or " +
+                                    std::to_string(s->mQuadraticNodes));
             }
-            int nn = num_nodes_per_cell().count(mtype) ? num_nodes_per_cell().at(mtype)
-                                                       : (int)nodes.size();
-            if ((int)nodes.size() != nn)
-                throw ReadError("Nastran: node count mismatch for " + kw);
-            const std::vector<int>& perm = reorder_nastran_to_meshio(kw);
-            if (blocks.empty() || blocks.back().mType != mtype) {
+            if (const std::vector<int>* perm = nas_read_perm(kw, type)) {
+                std::vector<std::int64_t> p(nodes.size());
+                for (std::size_t j = 0; j < p.size(); ++j)
+                    p[j] = nodes[static_cast<std::size_t>((*perm)[j])];
+                nodes = std::move(p);
+            }
+            if (blocks.empty() || blocks.back().mType != type) {
                 Blk b;
-                b.mType = mtype;
-                b.mN = nn;
+                b.mType = type;
+                b.mN = static_cast<int>(nodes.size());
                 blocks.push_back(std::move(b));
             }
             Blk& blk = blocks.back();
-            for (int j = 0; j < nn; ++j) {
-                int src = perm.empty() ? j : perm[j];
-                blk.mConn.push_back(nodes[src]);  // 1-based gmsh-ish id
-            }
-            ++blk.mCount;
-        } else {
-            ++i;
+            blk.mConn.insert(blk.mConn.end(), nodes.begin(), nodes.end());
+            any_cell_ref = any_cell_ref || !ref.empty();
+            blk.mRefs.push_back(nas_int(ref, kw));
+            cell_pids.push_back(blk.mRefs.back());
+            cell_index[id] = static_cast<std::int64_t>(cell_dims.size());
+            cell_dims.push_back(cell_type_dimension(cell_type_from_name(type)));
+            continue;
         }
+        if (kw == "SET") {
+            // OptiStruct: SET, id, GRID|ELEM, LIST, ids (with THRU ranges).
+            const std::int64_t id = nas_int(nas_field(f, 1), kw);
+            const std::string& kind = nas_field(f, 2);
+            const std::string& sub = nas_field(f, 3);
+            if ((kind != "GRID" && kind != "ELEM") || sub != "LIST") {
+                log::warn("Nastran: SET {} of type '{} {}' is not read; skipped", id, kind, sub);
+                continue;
+            }
+            auto& entry = sets[id];
+            entry.first = kind;
+            nas_parse_id_list(f, 4, kw, entry.second.mIds, entry.second.mRanges);
+            continue;
+        }
+        if (!nas_is_quietly_skipped(kw))
+            ++skipped[kw];
     }
 
-    // Points + remap.
-    NDArray points(DType::Float64, {pts.size(), 3});
-    double* pp = points.As<double>();
-    for (std::size_t r = 0; r < pts.size(); ++r)
-        for (int c = 0; c < 3; ++c)
-            pp[r * 3 + c] = pts[r][c];
+    if (!skipped.empty()) {
+        std::string list;
+        std::size_t total = 0;
+        for (const auto& [k, c] : skipped) {
+            list += (list.empty() ? "" : ", ") + k + " (" + std::to_string(c) + ")";
+            total += c;
+        }
+        log::warn("Nastran: skipped {} card(s) meshio++ does not read: {}", total, list);
+    }
+
+    Mesh mesh;
+    const std::size_t np = point_refs.size();
+    NDArray points(DType::Float64, {np, 3});
+    std::copy(pts.begin(), pts.end(), points.As<double>());
     mesh.AssignPoints(std::move(points));
 
-    for (auto& blk : blocks) {
-        NDArray data(DType::Int64, {blk.mCount, static_cast<std::size_t>(blk.mN)});
+    std::vector<NDArray> cell_ref_arrays;
+    for (Blk& blk : blocks) {
+        const std::size_t count = blk.mRefs.size();
+        NDArray data(DType::Int64, {count, static_cast<std::size_t>(blk.mN)});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t idx = 0; idx < blk.mConn.size(); ++idx) {
-            auto it = point_ids.find(blk.mConn[idx]);
-            if (it == point_ids.end())
-                throw ReadError("Nastran: unknown node id");
+            auto it = point_index.find(blk.mConn[idx]);
+            if (it == point_index.end())
+                throw ReadError("Nastran: an element references grid " +
+                                std::to_string(blk.mConn[idx]) + ", which is not defined");
             dp[idx] = it->second;
         }
         mesh.AddCellBlock(blk.mType, std::move(data));
+        NDArray refs(DType::Int64, {count});
+        std::copy(blk.mRefs.begin(), blk.mRefs.end(), refs.As<std::int64_t>());
+        cell_ref_arrays.push_back(std::move(refs));
     }
+    if (any_point_ref) {
+        NDArray refs(DType::Int64, {np});
+        std::copy(point_refs.begin(), point_refs.end(), refs.As<std::int64_t>());
+        mesh.AddPointData("nastran:ref", std::move(refs));
+    }
+    if (any_cell_ref)
+        mesh.AddCellData("nastran:ref", std::move(cell_ref_arrays));
+
+    // Regions: HyperMesh components (tag = component id), then SET cards
+    // (tag = set id). Names resolve last: $HMNAME may follow the elements.
+    const std::map<std::int64_t, std::int64_t> sorted_cells(cell_index.begin(), cell_index.end());
+    const std::map<std::int64_t, std::int64_t> sorted_points(point_index.begin(),
+                                                             point_index.end());
+    std::size_t missing = 0;
+    auto cell_dim = [&](const std::vector<std::int64_t>& rIds) -> int {
+        int dim = -1;
+        for (std::size_t k = 0; k < rIds.size(); ++k) {
+            const int d = static_cast<int>(cell_dims[static_cast<std::size_t>(rIds[k])]);
+            if (k == 0)
+                dim = d;
+            else if (d != dim)
+                return -1;
+        }
+        return dim;
+    };
+    auto add = [&](const std::string& rName, RegionKind Kind, int Dim, std::int64_t Tag,
+                   const std::vector<std::int64_t>& rIds) {
+        NDArray entries(DType::Int64, {rIds.size()});
+        std::copy(rIds.begin(), rIds.end(), entries.As<std::int64_t>());
+        mesh.AddRegion(Region(rName, Kind, Dim, Tag, std::move(entries)));
+    };
+    for (const auto& [comp, _] : hm.mComponentNames)
+        hm.mComponents[comp];
+    std::map<std::int64_t, std::vector<std::int64_t>> members;
+    std::vector<char> moved(cell_dims.size(), 0);
+    for (const auto& [comp, group] : hm.mComponents) {
+        members[comp] = nas_resolve(group, cell_index, sorted_cells, missing);
+        for (std::int64_t c : members[comp])
+            moved[static_cast<std::size_t>(c)] = 1;
+    }
+    // An element no $HMMOVE lists belongs to the component whose recorded
+    // property is its PID (HyperMesh writes $HMMOVE only for the others).
+    if (!hm.mComponentProperties.empty()) {
+        std::unordered_map<std::int64_t, std::int64_t> by_property;
+        for (const auto& [comp, pid] : hm.mComponentProperties)
+            by_property.emplace(pid, comp);
+        bool added = false;
+        for (std::size_t c = 0; c < cell_pids.size(); ++c) {
+            if (moved[c])
+                continue;
+            auto it = by_property.find(cell_pids[c]);
+            if (it != by_property.end()) {
+                members[it->second].push_back(static_cast<std::int64_t>(c));
+                added = true;
+            }
+        }
+        if (added)
+            for (auto& [comp, ids] : members)
+                std::sort(ids.begin(), ids.end());
+    }
+    for (const auto& [comp, ids] : members) {
+        const auto name_it = hm.mComponentNames.find(comp);
+        const std::string name = name_it != hm.mComponentNames.end()
+                                     ? name_it->second
+                                     : "component_" + std::to_string(comp);
+        add(name, RegionKind::Cell, cell_dim(ids), comp, ids);
+    }
+    for (const auto& [id, entry] : sets) {
+        const auto name_it = hm.mSetNames.find(id);
+        const std::string name =
+            name_it != hm.mSetNames.end() ? name_it->second : "set_" + std::to_string(id);
+        if (entry.first == "GRID") {
+            const std::vector<std::int64_t> ids =
+                nas_resolve(entry.second, point_index, sorted_points, missing);
+            add(name, RegionKind::Point, -1, id, ids);
+        } else {
+            const std::vector<std::int64_t> ids =
+                nas_resolve(entry.second, cell_index, sorted_cells, missing);
+            add(name, RegionKind::Cell, cell_dim(ids), id, ids);
+        }
+    }
+    if (missing > 0)
+        log::warn("Nastran: {} region member id(s) name no grid or element; dropped", missing);
     return mesh;
 }
 
@@ -114866,8 +116119,10 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
 // ===== begin src/cpp/src/operations/sniff.cpp =====
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <string>
+#include <vector>
 
 // Project includes
 
@@ -114894,6 +116149,51 @@ std::string sniff_lstrip(const std::string& rIn) {
     return rIn.substr(i);
 }
 
+// COMSOL files open with the version pair 0 1, a tag count and the first tag, a
+// length-prefixed name. Binary: little-endian int32s, one per character too.
+bool sniff_is_mphbin(const std::string& rHead) {
+    if (rHead.size() < 20)
+        return false;
+    auto i32 = [&](std::size_t k) {
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(rHead.data() + k);
+        return static_cast<std::int64_t>(static_cast<std::int32_t>(
+            static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+            (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24)));
+    };
+    const std::int64_t first_char = i32(16);
+    return i32(0) == 0 && i32(4) == 1 && i32(8) >= 1 && i32(8) <= 4096 && i32(12) >= 1 &&
+           i32(12) <= 1024 && first_char > 32 && first_char < 127;
+}
+
+// Text: the same values as tokens, `#` comments skipped.
+bool sniff_is_mphtxt(const std::string& rHead) {
+    std::vector<std::string> tokens;
+    std::size_t k = 0;
+    while (k < rHead.size() && tokens.size() < 5) {
+        const char c = rHead[k];
+        if (c == '#') {
+            while (k < rHead.size() && rHead[k] != '\n')
+                ++k;
+        } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            ++k;
+        } else {
+            const std::size_t b = k;
+            while (k < rHead.size() && rHead[k] != ' ' && rHead[k] != '\t' && rHead[k] != '\n' &&
+                   rHead[k] != '\r' && rHead[k] != '#')
+                ++k;
+            tokens.push_back(rHead.substr(b, k - b));
+        }
+    }
+    auto count = [](const std::string& rT) {
+        return !rT.empty() && rT.size() < 6 &&
+               rT.find_first_not_of("0123456789") == std::string::npos && rT != "0";
+    };
+    return tokens.size() == 5 && tokens[0] == "0" && tokens[1] == "1" && count(tokens[2]) &&
+           count(tokens[3]) &&
+           ((tokens[4][0] >= 'a' && tokens[4][0] <= 'z') ||
+            (tokens[4][0] >= 'A' && tokens[4][0] <= 'Z'));
+}
+
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
@@ -114908,6 +116208,8 @@ std::string sniff_format(const std::string& rPath) {
     const std::string stripped = sniff_lstrip(head);
 
     // --- binary magics ---
+    if (sniff_is_mphbin(head))
+        return "mphbin";
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {
@@ -114968,6 +116270,8 @@ std::string sniff_format(const std::string& rPath) {
         return "gid";
     if (sniff_starts_with(stripped, "MESH \""))
         return "gid";
+    if (sniff_is_mphtxt(head))
+        return "mphtxt";
     // PLY: "ply" on its own first line.
     if (sniff_starts_with(stripped, "ply\n") || sniff_starts_with(stripped, "ply\r") ||
         stripped == "ply")
@@ -118514,6 +119818,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"medit", meshioplusplus::read_medit_ascii},
         {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
+        {"mphbin", meshioplusplus::read_mphbin},
         {"mphtxt", meshioplusplus::read_mphtxt},
         {"nastran", meshioplusplus::read_nastran},
         {"netgen", meshioplusplus::read_netgen},
@@ -118635,6 +119940,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"mff", meshioplusplus::write_mff},
         {"mfm",
          [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
+        {"mphbin", meshioplusplus::write_mphbin},
         {"mphtxt", meshioplusplus::write_mphtxt},
         {"nastran", meshioplusplus::write_nastran},
         {"netgen",
@@ -118835,6 +120141,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".mdpa", "mdpa"},
         {".mesh", "medit"},
         {".mfm", "mfm"},
+        {".mphbin", "mphbin"},
         {".mphtxt", "mphtxt"},
         {".bdf", "nastran"},
         {".nas", "nastran"},
