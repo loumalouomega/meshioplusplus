@@ -136,6 +136,7 @@ _TIME_CAPABLE_READERS = (
     "nastran_h5",
     "frd",
     "unv",
+    "xplt",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

@@ -208,6 +208,23 @@ def test_febio_feb_is_readable_writable_and_converts(tmp_path):
     assert ("top", "side") in {(r.name, r.kind) for r in written.regions}
 
 
+def test_febio_xplt_states_convert_to_vtu(tmp_path):
+    import pathlib
+
+    xplt = (
+        pathlib.Path(__file__).parent / "meshes" / "febio" / "xplt" / "xplt_hex27.xplt"
+    )
+    out = _dump(_tools.tool_formats())
+    assert "xplt" in out["readable"] and "xplt" not in out["writable"]
+    info = _dump(_tools.tool_info(str(xplt)))
+    assert len(info["time_values"]) == 4
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(xplt), target, time_step=-1)
+    written = meshioplusplus.read(target)
+    assert written.cells[0].type == "hexahedron27"
+    assert "displacement" in written.point_data
+
+
 def test_optistruct_components_survive_convert(tmp_path):
     import pathlib
 

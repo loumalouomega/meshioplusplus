@@ -65,6 +65,7 @@ from . import (
     vtu,
     wkt,
     xdmf,
+    xplt,
     xyz,
     zarr,
 )
@@ -263,6 +264,7 @@ __all__ = [
     "vtu",
     "wkt",
     "xdmf",
+    "xplt",
     "xyz",
     "zarr",
     "_cli",

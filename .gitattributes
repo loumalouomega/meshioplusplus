@@ -98,3 +98,8 @@ tests/python/meshes/elmer/** -filter -diff -merge text
 # FEBio .feb fixtures written by tools/gen_febio_fixtures.py: small XML text, kept
 # out of LFS like the ones above.
 tests/python/meshes/febio/*.feb -filter -diff -merge text
+# FEBio plot files FEBio 4.12 wrote for the models next to them (see
+# tools/gen_febio_fixtures.py): a few KB each, binary, kept out of LFS like the
+# .mphbin twin above.
+tests/python/meshes/febio/xplt/*.feb -filter -diff -merge text
+tests/python/meshes/febio/xplt/*.xplt binary

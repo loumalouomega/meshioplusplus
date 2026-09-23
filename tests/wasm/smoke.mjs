@@ -2374,6 +2374,10 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
     // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
     assert.ok(readers.includes('frd') && !writers.includes('frd'));
+    // Elmer mesh directories and FEBio .feb (v16.2.0) both ways; FEBio .xplt read-only.
+    for (const fmt of ['elmer', 'febio'])
+        assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
+    assert.ok(readers.includes('xplt') && !writers.includes('xplt'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });

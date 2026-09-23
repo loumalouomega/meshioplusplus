@@ -255,8 +255,175 @@ def two_blocks(version):
     return "\n".join(lines) + "\n"
 
 
+# -- FEBio models whose plot files are the .xplt fixtures ------------------------
+
+_XPLT_CONTROL = """\t<Control>
+\t\t<analysis>STATIC</analysis>
+\t\t<time_steps>3</time_steps>
+\t\t<step_size>0.333333333333</step_size>
+\t\t<plot_zero_state>1</plot_zero_state>
+\t\t<solver type="solid">
+\t\t\t<symmetric_stiffness>symmetric</symmetric_stiffness>
+\t\t</solver>
+\t</Control>"""
+
+_XPLT_TAIL = """\t<LoadData>
+\t\t<load_controller id="1" type="loadcurve">
+\t\t\t<interpolate>LINEAR</interpolate>
+\t\t\t<points>
+\t\t\t\t<pt>0,0</pt>
+\t\t\t\t<pt>1,1</pt>
+\t\t\t</points>
+\t\t</load_controller>
+\t</LoadData>
+</febio_spec>"""
+
+
+def xplt_blocks(compression):
+    """Two hex8 domains in a row, a quad4 shell skin on top of the left one,
+    fixed at x=0 and pulled by a pressure on x=2; plots nodal, element,
+    element-node, shell and surface variables."""
+    nodes = Nodes()
+    grid = {
+        (i, j, k): nodes((i, j, k)) for k in (0, 1) for j in (0, 1) for i in (0, 1, 2)
+    }
+
+    def brick(i):
+        c = [(i, 0, 0), (i + 1, 0, 0), (i + 1, 1, 0), (i, 1, 0)]
+        c += [(x, y, 1) for x, y, _ in c]
+        return [grid[p] for p in c]
+
+    left, right = brick(0), brick(1)
+    skin = [grid[(0, 0, 1)], grid[(1, 0, 1)], grid[(1, 1, 1)], grid[(0, 1, 1)]]
+    fixed = [grid[(0, j, k)] for j in (0, 1) for k in (0, 1)]
+    end = [grid[(2, 0, 0)], grid[(2, 1, 0)], grid[(2, 1, 1)], grid[(2, 0, 1)]]
+    lines = [
+        '<?xml version="1.0" encoding="ISO-8859-1"?>',
+        '<febio_spec version="4.0">',
+    ]
+    lines.append('\t<Module type="solid"/>')
+    lines.append(_XPLT_CONTROL)
+    lines.append("\t<Material>")
+    lines.append(
+        '\t\t<material id="1" name="soft" type="neo-Hookean">'
+        "<E>1</E><v>0.3</v></material>"
+    )
+    lines.append(
+        '\t\t<material id="2" name="stiff" type="neo-Hookean">'
+        "<E>3</E><v>0.3</v></material>"
+    )
+    lines.append("\t</Material>")
+    lines.append("\t<Mesh>")
+    lines.append("\t\t<Nodes>")
+    lines += [f'\t\t\t<node id="{i}">{t}</node>' for i, t in xyz_text(nodes).items()]
+    lines.append("\t\t</Nodes>")
+    for eid, name, row in ((1, "left", left), (2, "right", right)):
+        lines.append(f'\t\t<Elements type="hex8" name="{name}">')
+        lines.append(f'\t\t\t<elem id="{eid}">{",".join(map(str, row))}</elem>')
+        lines.append("\t\t</Elements>")
+    lines.append('\t\t<Elements type="quad4" name="skin">')
+    lines.append(f'\t\t\t<elem id="3">{",".join(map(str, skin))}</elem>')
+    lines.append("\t\t</Elements>")
+    lines.append(
+        '\t\t<NodeSet name="fixed">' + ",".join(map(str, fixed)) + "</NodeSet>"
+    )
+    lines.append('\t\t<Surface name="end">')
+    lines.append(f'\t\t\t<quad4 id="1">{",".join(map(str, end))}</quad4>')
+    lines.append("\t\t</Surface>")
+    lines.append("\t</Mesh>")
+    lines.append("\t<MeshDomains>")
+    lines.append('\t\t<SolidDomain name="left" mat="soft"/>')
+    lines.append('\t\t<SolidDomain name="right" mat="stiff"/>')
+    lines.append('\t\t<ShellDomain name="skin" mat="soft">')
+    lines.append("\t\t\t<shell_thickness>0.01</shell_thickness>\n\t\t</ShellDomain>")
+    lines.append("\t</MeshDomains>")
+    lines.append("\t<Boundary>")
+    lines.append('\t\t<bc type="zero displacement" node_set="fixed">')
+    lines.append("\t\t\t<x_dof>1</x_dof><y_dof>1</y_dof><z_dof>1</z_dof>\n\t\t</bc>")
+    lines.append("\t</Boundary>")
+    lines.append("\t<Loads>")
+    lines.append('\t\t<surface_load type="pressure" surface="end">')
+    lines.append('\t\t\t<pressure lc="1">-0.05</pressure>\n\t\t</surface_load>')
+    lines.append("\t</Loads>")
+    lines.append("\t<Output>")
+    lines.append('\t\t<plotfile type="febio">')
+    for var in (
+        "displacement",
+        "stress",
+        "relative volume",
+        "nodal stress",
+        "shell thickness",
+    ):
+        lines.append(f'\t\t\t<var type="{var}"/>')
+    lines.append('\t\t\t<var type="surface traction" surface="end"/>')
+    if compression:
+        lines.append("\t\t\t<compression>1</compression>")
+    lines.append("\t\t</plotfile>")
+    lines.append("\t</Output>")
+    lines.append(_XPLT_TAIL)
+    return "\n".join(lines) + "\n"
+
+
+def xplt_hex27():
+    """One hex27 in FEBio's numbering, fixed at z=0 and pushed down on z=1."""
+    nodes = Nodes()
+    brick = hex27(nodes, HEX)
+    bottom = [i for key, i in nodes.ids.items() if key[2] == 0]
+    top = [brick[k] for k in (4, 5, 6, 7, 12, 13, 14, 15, 25)]
+    lines = [
+        '<?xml version="1.0" encoding="ISO-8859-1"?>',
+        '<febio_spec version="4.0">',
+    ]
+    lines.append('\t<Module type="solid"/>')
+    lines.append(_XPLT_CONTROL)
+    lines.append("\t<Material>")
+    lines.append(
+        '\t\t<material id="1" name="m" type="neo-Hookean"><E>1</E><v>0.3</v></material>'
+    )
+    lines.append("\t</Material>")
+    lines.append("\t<Mesh>")
+    lines.append("\t\t<Nodes>")
+    lines += [f'\t\t\t<node id="{i}">{t}</node>' for i, t in xyz_text(nodes).items()]
+    lines.append("\t\t</Nodes>")
+    lines.append('\t\t<Elements type="hex27" name="brick">')
+    lines.append(f'\t\t\t<elem id="1">{",".join(map(str, brick))}</elem>')
+    lines.append("\t\t</Elements>")
+    lines.append(
+        '\t\t<NodeSet name="bottom">' + ",".join(map(str, bottom)) + "</NodeSet>"
+    )
+    lines.append('\t\t<NodeSet name="top">' + ",".join(map(str, top)) + "</NodeSet>")
+    lines.append("\t</Mesh>")
+    lines.append("\t<MeshDomains>")
+    lines.append('\t\t<SolidDomain name="brick" mat="m"/>')
+    lines.append("\t</MeshDomains>")
+    lines.append("\t<Boundary>")
+    lines.append('\t\t<bc type="zero displacement" node_set="bottom">')
+    lines.append("\t\t\t<x_dof>1</x_dof><y_dof>1</y_dof><z_dof>1</z_dof>\n\t\t</bc>")
+    lines.append('\t\t<bc type="prescribed displacement" node_set="top">')
+    lines.append('\t\t\t<dof>z</dof>\n\t\t\t<value lc="1">-0.1</value>\n\t\t</bc>')
+    lines.append("\t</Boundary>")
+    lines.append("\t<Output>")
+    lines.append('\t\t<plotfile type="febio">')
+    lines.append('\t\t\t<var type="displacement"/>\n\t\t\t<var type="stress"/>')
+    lines.append("\t\t</plotfile>")
+    lines.append("\t</Output>")
+    lines.append(_XPLT_TAIL)
+    return "\n".join(lines) + "\n"
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
+    # FEBio models whose plot files are the .xplt fixtures. Run with FEBio
+    # 4.12:  febio4 -i <name>.feb -silent  (each writes <name>.xplt).
+    for name, text in (
+        ("xplt_blocks.feb", xplt_blocks(False)),
+        ("xplt_blocks_z.feb", xplt_blocks(True)),
+        ("xplt_hex27.feb", xplt_hex27()),
+    ):
+        (OUT / "xplt").mkdir(exist_ok=True)
+        with open(OUT / "xplt" / name, "w", newline="\n") as f:
+            f.write(text)
+        print(f"wrote {OUT / 'xplt' / name}")
     for name, text in (
         ("all_elements_v40.feb", all_elements_v40()),
         ("block_v30.feb", two_blocks("3.0")),

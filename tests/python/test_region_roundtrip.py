@@ -366,6 +366,11 @@ READ_ONLY_REGIONS = {
         "(tests/python/test_pvtu.py)"
     ),
     "pvtp": "as pvtu: one Cell region per piece on read, none written",
+    "xplt": (
+        "FEBio plot files are read-only: domains -> Cell, node sets -> Point, "
+        "element sets -> Cell and surfaces -> Side, as in .feb "
+        "(tests/python/test_xplt.py)"
+    ),
     "pvd": (
         "reads one Cell region per entry of the chosen step (`name=`, else "
         "`group/part_<p>`, else `part_<p>`); a step is one file on write "

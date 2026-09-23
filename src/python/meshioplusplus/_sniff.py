@@ -121,6 +121,9 @@ def _sniff_format_py(path) -> str:
     stripped = head.lstrip()
     if _is_mphbin(head):
         return "mphbin"
+    # FEBio plot file: the magic 0x00464542, in either byte order.
+    if head[:4] in (b"BEF\x00", b"\x00FEB"):
+        return "xplt"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"
