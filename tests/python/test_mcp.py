@@ -189,6 +189,19 @@ def test_optistruct_components_survive_convert(tmp_path):
     assert {"solids", "shells", "beams"} <= names
 
 
+def test_comsol_text_and_binary_convert_keep_selections(tmp_path):
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / "meshes" / "comsol" / "two_domains.mphtxt"
+    out = _dump(_tools.tool_formats())
+    assert out["extensions"][".mphbin"] == ["mphbin"]
+    assert "mphbin" in out["readable"] and "mphbin" in out["writable"]
+    target = str(tmp_path / "two_domains.mphbin")
+    _tools.tool_convert(str(src), target)
+    back = meshioplusplus.read(target)
+    assert {r.name for r in back.regions} == {"Lower Part", "Part #2", "caps"}
+
+
 def test_unv_uff_extension_and_convert_reaches_its_steps(tmp_path):
     import pathlib
 

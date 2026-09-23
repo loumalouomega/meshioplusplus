@@ -167,6 +167,25 @@ MATRIX = [
         "regions are dropped (OptiStruct SET cards are read, not written).",
         id="nastran",
     ),
+    pytest.param(
+        "mphtxt",
+        ".mphtxt",
+        {"point": False, "cell": True, "side": False},
+        {"tag": False},
+        "A COMSOL Selection lists geometric entities of one dimension; the "
+        "writer numbers the entities after the disjoint cell regions, so a cell "
+        "region survives as a Selection with its name and dimension. Selections "
+        "have no number (tag lost) and no point or facet form.",
+        id="mphtxt",
+    ),
+    pytest.param(
+        "mphbin",
+        ".mphbin",
+        {"point": False, "cell": True, "side": False},
+        {"tag": False},
+        "The binary twin of mphtxt: the same Selections.",
+        id="mphbin",
+    ),
 ]
 
 

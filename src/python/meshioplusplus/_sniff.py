@@ -9,6 +9,7 @@ from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``.
 from __future__ import annotations
 
 import re
+import struct
 from pathlib import Path
 
 # Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
@@ -40,6 +41,39 @@ _UNV_IDS = {
 }
 
 
+def _is_mphbin(head: bytes) -> bool:
+    """COMSOL binary: int32 0 1 (version), a tag count, then the first tag's
+    length and first character, one int32 each; see sniff.cpp."""
+    if len(head) < 20:
+        return False
+    v = struct.unpack_from("<5i", head)
+    return (
+        v[0] == 0
+        and v[1] == 1
+        and 1 <= v[2] <= 4096
+        and 1 <= v[3] <= 1024
+        and 32 < v[4] < 127
+    )
+
+
+def _is_mphtxt(head: bytes) -> bool:
+    """COMSOL text: the same values as tokens, ``#`` comments skipped."""
+    text = re.sub(rb"#[^\n]*", b" ", head)
+    tokens = text.split()[:5]
+
+    def count(t):
+        return t.isdigit() and len(t) < 6 and t != b"0"
+
+    return (
+        len(tokens) == 5
+        and tokens[0] == b"0"
+        and tokens[1] == b"1"
+        and count(tokens[2])
+        and count(tokens[3])
+        and tokens[4][:1].isalpha()
+    )
+
+
 def _sniff_format_py(path) -> str:
     try:
         with open(path, "rb") as f:
@@ -49,6 +83,8 @@ def _sniff_format_py(path) -> str:
     if not head:
         return ""
     stripped = head.lstrip()
+    if _is_mphbin(head):
+        return "mphbin"
 
     if b"VTKFile" in head:
         # The parallel indices and the collection come first, and match the
@@ -94,6 +130,8 @@ def _sniff_format_py(path) -> str:
         return "gid"
     if stripped.startswith(b'MESH "'):
         return "gid"
+    if _is_mphtxt(head):
+        return "mphtxt"
     if stripped.startswith((b"ply\n", b"ply\r")) or stripped == b"ply":
         return "ply"
     if stripped.startswith((b"OFF", b"COFF", b"NOFF", b"STOFF")):

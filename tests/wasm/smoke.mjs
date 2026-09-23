@@ -2370,6 +2370,8 @@ step('availableFormats reports what this build can read and write', () => {
     assert.ok(readers.includes('lsdyna') && writers.includes('lsdyna'));
     // Code_Aster native meshes (roadmap section 1.1, v16.0.0): .mail, both directions.
     assert.ok(readers.includes('code_aster') && writers.includes('code_aster'));
+    // COMSOL binary meshes (roadmap section 1.2, v16.1.0): .mphbin, both directions.
+    assert.ok(readers.includes('mphbin') && writers.includes('mphbin'));
     // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
     assert.ok(readers.includes('frd') && !writers.includes('frd'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
@@ -2766,6 +2768,40 @@ step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
         assert.deepEqual(Array.from(back.info.pointSets.MYNODES), info.pointSets.MYNODES);
         assert.equal(back.info.cellSets.MYCELLS.length, 1);
         assert.deepEqual(Array.from(back.info.cellSets.MYCELLS[0]), info.cellSets.MYCELLS[0]);
+    }
+});
+
+step('.fem: HyperMesh components are regions and optimization cards are skipped', () => {
+    const deck = 'BEGIN BULK\n' +
+        'GRID    1               0.0     0.0     0.0\n' +
+        'GRID    2               1.0     0.0     0.0\n' +
+        'GRID    3               0.0     1.0     0.0\n' +
+        'CTRIA3  7       1       1       2       3\n' +
+        'DESVAR  1       T1      0.1     0.01    1.0\n' +
+        '$HMMOVE        4\n' +
+        '$              7\n' +
+        '$HMNAME COMP                   4"shell"\n' +
+        'ENDDATA\n';
+    m.FS.writeFile('/deck.fem', deck);
+    const mesh = m.readMesh('/deck.fem');
+    assert.equal(mesh.cells[0].type, 'triangle');
+    assert.equal(mesh.regions.length, 1);
+    assert.equal(mesh.regions[0].name, 'shell');
+    assert.equal(mesh.regions[0].tag, 4);
+    assert.deepEqual(Array.from(mesh.regions[0].entries), [0]);
+});
+
+step('.mphtxt/.mphbin: COMSOL selections are regions, text and binary alike', () => {
+    const grouped = {
+        ...tet,
+        regions: [{ name: 'Solid 1', kind: 'cell', dim: 3, tag: -1, entries: Int32Array.from([0]) }],
+    };
+    for (const path of ['/c.mphtxt', '/c.mphbin']) {
+        m.writeMesh(path, grouped);
+        const back = m.readMesh(path);
+        assert.equal(back.regions.length, 1, path);
+        assert.equal(back.regions[0].name, 'Solid 1', path);
+        assert.deepEqual(Array.from(back.regions[0].entries), [0], path);
     }
 });
 
