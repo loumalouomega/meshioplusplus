@@ -287,6 +287,10 @@ def test_optistruct_components_survive_convert(tmp_path):
     fem = pathlib.Path(__file__).parent / "meshes" / "nastran" / "optistruct_mixed.fem"
     out = _dump(_tools.tool_formats())
     assert out["extensions"][".fem"] == ["nastran"]
+    # `*.fem` is Git LFS; the MCP CI job checks out without LFS.
+    with open(fem, "rb") as f:
+        if f.read(24).startswith(b"version https://git-lfs"):
+            pytest.skip("optistruct_mixed.fem is an unfetched Git-LFS pointer")
     # HyperMesh components are cell regions: they reach a .mail GROUP_MA.
     target = str(tmp_path / "deck.mail")
     _tools.tool_convert(str(fem), target)
