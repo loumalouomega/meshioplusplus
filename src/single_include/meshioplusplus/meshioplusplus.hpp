@@ -9321,7 +9321,8 @@ namespace detail {
 /// How a card's fixed columns are laid out.
 enum class CardMode { Standard, Long, I10 };
 
-/// One field of a card layout: `mKind` is `'i'` (integer) or `'r'` (real).
+/// One field of a card layout: `mKind` is `'i'` (integer), `'r'` (real), `'a'`
+/// (characters) or `'x'` (skipped columns, from a Fortran format's `nX`).
 struct CardField {
     char mKind;
     int mWidth;
@@ -9356,6 +9357,27 @@ MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std:
 /// `card_to_real` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
 MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere,
                                        const std::string& rFormat);
+
+/**
+ * @brief The fields of a Fortran edit-descriptor list, such as the format line of
+ * an ANSYS `.cdb` block: `"(1i7,2i9,6e21.13e3)"` gives one `i` field of width 7,
+ * two of width 9 and six `r` fields of width 21.
+ *
+ * `Iw` is an integer field; `Ew.d[Ee]`, `ESw.d`, `ENw.d`, `Dw.d`, `Fw.d` and `Gw.d`
+ * real fields; `Aw` a character field; `nX` skipped columns. Repeat counts and
+ * parenthesised groups (`2(i8,e16.9)`) expand; a scale factor (`1P`) is ignored.
+ * Case does not matter, blanks are ignored.
+ * @throws ReadError naming the format for anything else.
+ */
+MESHIOPLUSPLUS_API std::vector<CardField> parse_fortran_format(std::string_view Format);
+
+/**
+ * @brief The stripped text of each field `rFields` lays out on `Line`, in fixed
+ * columns (values may touch, as in `1.0E+00-2.0E+00`). Slicing stops at the end
+ * of the line, so a short line gives fewer fields; `x` fields are not returned.
+ */
+MESHIOPLUSPLUS_API std::vector<std::string> split_fixed(std::string_view Line,
+                                                        const std::vector<CardField>& rFields);
 
 /**
  * @brief `Value` in at most 16 columns: the shortest scientific string that
@@ -46084,6 +46106,162 @@ double card_to_real(const std::string& rText, const std::string& rWhere,
     if (end == s.c_str() || *end != '\0')
         throw ReadError(rFormat + ": invalid real field '" + rText + "'" + rWhere);
     return v;
+}
+
+namespace {
+
+// Recursive-descent parse of a Fortran edit-descriptor list, appending fields.
+struct KcFormatParser {
+    std::string_view mText;
+    std::size_t mPos = 0;
+
+    [[noreturn]] void Fail() const {
+        throw ReadError("cannot parse Fortran format '" + std::string(mText) + "'");
+    }
+    void Skip() {
+        while (mPos < mText.size() && (mText[mPos] == ' ' || mText[mPos] == '\t'))
+            ++mPos;
+    }
+    bool Digit() const { return mPos < mText.size() && mText[mPos] >= '0' && mText[mPos] <= '9'; }
+    int Number() {
+        Skip();
+        if (!Digit())
+            return -1;
+        int v = 0;
+        while (Digit()) {
+            v = v * 10 + (mText[mPos++] - '0');
+            if (v > 100000)
+                Fail();
+        }
+        return v;
+    }
+    char Letter() {
+        Skip();
+        if (mPos >= mText.size())
+            Fail();
+        const char c = mText[mPos];
+        return static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    }
+
+    // A comma-separated list up to `Close` (')' or end of text).
+    void List(std::vector<CardField>& rOut, bool Nested) {
+        while (true) {
+            Skip();
+            if (mPos >= mText.size()) {
+                if (Nested)
+                    Fail();
+                return;
+            }
+            if (mText[mPos] == ')') {
+                if (!Nested)
+                    Fail();
+                ++mPos;
+                return;
+            }
+            Item(rOut);
+            Skip();
+            if (mPos < mText.size() && mText[mPos] == ',')
+                ++mPos;
+        }
+    }
+
+    void Item(std::vector<CardField>& rOut) {
+        const int repeat = Number();
+        const int count = repeat < 0 ? 1 : repeat;
+        Skip();
+        if (mPos < mText.size() && mText[mPos] == '(') {
+            ++mPos;
+            std::vector<CardField> group;
+            List(group, true);
+            for (int k = 0; k < count; ++k)
+                rOut.insert(rOut.end(), group.begin(), group.end());
+            return;
+        }
+        const char c = Letter();
+        ++mPos;
+        if (c == 'p') {  // scale factor: `1P`
+            if (repeat < 0)
+                Fail();
+            return;
+        }
+        if (c == 'x') {  // `nX`: skipped columns
+            rOut.push_back(CardField{'x', count});
+            return;
+        }
+        char kind = 0;
+        if (c == 'i')
+            kind = 'i';
+        else if (c == 'a')
+            kind = 'a';
+        else if (c == 'e' || c == 'd' || c == 'f' || c == 'g')
+            kind = 'r';
+        else
+            Fail();
+        // ES / EN variants of the E descriptor.
+        if (c == 'e' && mPos < mText.size()) {
+            const char n = static_cast<char>(mText[mPos] | 0x20);
+            if (n == 's' || n == 'n')
+                ++mPos;
+        }
+        const int width = Number();
+        if (width <= 0)
+            Fail();
+        Skip();
+        if (mPos < mText.size() && mText[mPos] == '.') {  // .d
+            ++mPos;
+            if (Number() < 0)
+                Fail();
+            Skip();
+            if (mPos < mText.size() && (mText[mPos] | 0x20) == 'e' && kind == 'r') {  // Ee
+                ++mPos;
+                if (Number() < 0)
+                    Fail();
+            }
+        }
+        for (int k = 0; k < count; ++k)
+            rOut.push_back(CardField{kind, width});
+    }
+};
+
+}  // namespace
+
+std::vector<CardField> parse_fortran_format(std::string_view Format) {
+    KcFormatParser parser{Format};
+    parser.Skip();
+    std::vector<CardField> out;
+    if (parser.mPos < Format.size() && Format[parser.mPos] == '(') {
+        ++parser.mPos;
+        parser.List(out, true);
+        parser.Skip();
+        if (parser.mPos != Format.size())
+            parser.Fail();
+    } else {
+        parser.List(out, false);
+    }
+    if (out.empty())
+        parser.Fail();
+    return out;
+}
+
+std::vector<std::string> split_fixed(std::string_view Line, const std::vector<CardField>& rFields) {
+    while (!Line.empty() && (Line.back() == '\r' || Line.back() == '\n'))
+        Line.remove_suffix(1);
+    std::vector<std::string> out;
+    std::size_t col = 0;
+    for (const CardField& f : rFields) {
+        if (col >= Line.size())
+            break;
+        const std::size_t width = static_cast<std::size_t>(f.mWidth);
+        if (f.mKind != 'x') {
+            std::string_view text = Line.substr(col, width);
+            const std::size_t a = text.find_first_not_of(" \t");
+            const std::size_t b = text.find_last_not_of(" \t");
+            out.emplace_back(a == std::string_view::npos ? std::string_view()
+                                                         : text.substr(a, b - a + 1));
+        }
+        col += width;
+    }
+    return out;
 }
 
 std::string format_real16(double Value) {
