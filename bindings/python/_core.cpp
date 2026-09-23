@@ -3700,6 +3700,13 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     m.def("mphtxt_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphtxt(path));
     });
+    m.def("mphbin_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_mphbin(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("mphbin_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_mphbin(path));
+    });
 
     // FreeFem++ writer / reader (.msh).
     m.def("freefem_write", [](const std::string& path, py::object pymesh) {

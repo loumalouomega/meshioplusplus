@@ -90,6 +90,25 @@ const std::vector<NodeOrderSource>& node_order_sources() {
                                               10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"frd", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
         {"frd", "line3", D::ToMeshio, {0, 2, 1}},
+        // COMSOL `.mphtxt`/`.mphbin`: corners in tensor order (x fastest), then
+        // every other node of the element's quadratic lattice in lexicographic
+        // (z, y, x) order ("Mesh Element Numbering Conventions", COMSOL API
+        // guide). Checked against real COMSOL files and against AWS Palace's
+        // COMSOL-to-gmsh tables composed with the gmsh ones.
+        {"mphtxt", "quad", D::ToMeshio, {0, 1, 3, 2}},
+        {"mphtxt", "hexahedron", D::ToMeshio, {0, 1, 3, 2, 4, 5, 7, 6}},
+        {"mphtxt", "pyramid", D::ToMeshio, {0, 1, 3, 2, 4}},
+        {"mphtxt", "triangle6", D::ToMeshio, {0, 1, 2, 3, 5, 4}},
+        {"mphtxt", "quad9", D::ToMeshio, {0, 1, 3, 2, 4, 7, 8, 5, 6}},
+        {"mphtxt", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 6, 5, 7, 8, 9}},
+        {"mphtxt", "hexahedron27", D::ToMeshio, {0,  1,  3,  2,  4,  5,  7,  6,  8,
+                                                 11, 12, 9,  22, 25, 26, 23, 13, 15,
+                                                 21, 19, 16, 18, 14, 20, 10, 24, 17}},
+        {"mphtxt",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 8, 7, 15, 17, 16, 9, 11, 14, 10, 13, 12}},
+        {"mphtxt", "pyramid14", D::ToMeshio, {0, 1, 3, 2, 4, 5, 8, 9, 6, 10, 11, 13, 12, 7}},
         // I-DEAS UNV: parabolic elements list their mid-side nodes
         // "sandwiched" between the corners of each ring; the solids list the
         // bottom ring, then the vertical mid-edges, then the top ring (pinned

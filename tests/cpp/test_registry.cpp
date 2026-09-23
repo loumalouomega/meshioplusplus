@@ -44,6 +44,8 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
     EXPECT_EQ(resolve_format("mesh.mail", ""), "code_aster");
+    EXPECT_EQ(resolve_format("mesh.mphbin", ""), "mphbin");
+    EXPECT_EQ(resolve_format("mesh.mphtxt", ""), "mphtxt");
     EXPECT_EQ(resolve_format("results.frd", ""), "frd");
     // `.h5` is MSC Nastran HDF5; the longer `.post.h5` stays GiD.
     EXPECT_EQ(resolve_format("job.h5", ""), "nastran_h5");
