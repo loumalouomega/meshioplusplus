@@ -16,7 +16,6 @@
 //
 // System includes
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
@@ -88,8 +87,10 @@ const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
 }
 
 std::string ca_upper(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
+    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
+        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
+    });
     return s;
 }
 
@@ -506,8 +507,13 @@ void ca_end_record(std::string& rOut, std::size_t& rColumn) {
 std::string ca_group_name(const std::string& rName, std::map<std::string, int>& rTaken,
                           const char* pKind) {
     std::string clean;
-    for (char c : rName)
-        clean.push_back(std::isalnum(static_cast<unsigned char>(c)) || c == '_' ? c : '_');
+    // An explicit ASCII test, not std::isalnum: macOS's C locale calls some bytes
+    // above 0x7F alphanumeric, which would let UTF-8 bytes through.
+    for (char c : rName) {
+        const bool keep =
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        clean.push_back(keep ? c : '_');
+    }
     if (clean.empty())
         clean = "GROUP";
     if (clean.size() > kCaMaxGroupName)
