@@ -940,8 +940,8 @@ def roadmap_map():
         (
             "§1 format reach",
             [
-                ("OptiStruct · Z88", "S"),
-                ("COMSOL · Elmer · FEBio", "M"),
+                ("Z88", "S"),
+                ("Elmer · FEBio", "M"),
             ],
             [],
         ),

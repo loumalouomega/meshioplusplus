@@ -19,9 +19,10 @@ Most tables are their own inverse, but not all. MED's `hexahedron27` is not, and
 | `med` | `tetra`, `pyramid`, `wedge`, `hexahedron` and their quadratic forms up to `wedge18`/`hexahedron27` | MEDCoupling's `CellModel.cxx` edge and face tables (orientation and mid-edges); `hexahedron27`/`wedge18` (v16.0.0) against a file written by MED-fichier itself and Code_Aster's MED reader |
 | `code_aster` | `wedge15`, `wedge18`, `hexahedron20`, `hexahedron27` | Code_Aster's gmsh reader (`inigms.F90`) exactly, and its MED reader (`lrmtyp.F90`) up to a symmetry of the reference cell; see [Code_Aster](./formats/code_aster.md#node-order) |
 | `frd` | `hexahedron20`, `wedge15`, `line3` | `ccx` 2.23 output for the same `.inp` |
+| `mphtxt` (also `mphbin`) | `quad`, `pyramid`, `hexahedron`, `triangle6`, `quad9`, `tetra10`, `pyramid14`, `wedge18`, `hexahedron27` | COMSOL's "Mesh Element Numbering Conventions" (corners in tensor order, then the quadratic lattice in lexicographic order), real COMSOL files (deal.II, FEconv, Wolfram FEMAddOns), and AWS Palace's COMSOL-to-gmsh tables composed with the gmsh ones (v16.1.0) |
 | `unv` | `line3`, `triangle6`, `quad8`, `quad9`, `tetra10`, `pyramid13`, `wedge15`, `hexahedron20` | gmsh's `.unv`/`.msh` twins and Salome's SMESH driver |
 
-The gmsh, CGNS, GiD, Exodus, Kratos and COMSOL tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.20](./roadmap.md)).
+The gmsh, CGNS, GiD, Exodus and Kratos tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.18](./roadmap.md)).
 
 ## Self-test
 

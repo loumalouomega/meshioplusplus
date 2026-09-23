@@ -275,6 +275,7 @@ export default defineConfig({
           { text: "medit", link: "/formats/medit" },
           { text: "mff", link: "/formats/mff" },
           { text: "mfm", link: "/formats/mfm" },
+          { text: "mphbin", link: "/formats/mphbin" },
           { text: "mphtxt", link: "/formats/mphtxt" },
           { text: "nastran", link: "/formats/nastran" },
           { text: "nastran_h5", link: "/formats/nastran_h5" },
