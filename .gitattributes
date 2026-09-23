@@ -107,3 +107,7 @@ tests/python/meshes/febio/xplt/*.xplt binary
 # out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
 # line endings their writers produced and the reader must handle.
 tests/python/meshes/ansys/*.cdb -filter -diff -merge -text
+# Ansys MAPDL result files from pymapdl-reader (see that directory's README.md):
+# binary, a few hundred KB each, in LFS like the other binary reference fixtures.
+tests/python/meshes/ansys/rst/*.rst filter=lfs diff=lfs merge=lfs -text
+tests/python/meshes/ansys/rst/*.rth filter=lfs diff=lfs merge=lfs -text

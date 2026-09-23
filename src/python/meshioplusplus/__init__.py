@@ -2,6 +2,7 @@ from . import (
     _cli,
     abaqus,
     ansys,
+    ansys_rst,
     ansysInp,
     avsucd,
     cae,
@@ -201,6 +202,7 @@ from ._voxelize import voxelize
 __all__ = [
     "abaqus",
     "ansys",
+    "ansys_rst",
     "ansysInp",
     "avsucd",
     "cae",

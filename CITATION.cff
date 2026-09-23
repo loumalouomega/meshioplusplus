@@ -47,6 +47,13 @@ license: MIT
 # directory's README.md; mapdl_archive_reference.npz there is mapdl-archive's own reading
 # of them, frozen by tools/gen_ansys_cdb_reference.py. The `ansysInp` reader's element
 # categories and degenerate-shape rules follow mapdl-archive's; no code is copied.
+# tests/python/meshes/ansys/rst/*.rst and *.rth are MAPDL result files from the
+# pymapdl-reader repository (https://github.com/ansys/pymapdl-reader), Copyright (c)
+# 2021-2026 Synopsys, Inc. and ANSYS, Inc., redistributed unmodified under the MIT
+# licence, whose text sits beside them in that directory's README.md;
+# pymapdl_reference.npz there is pymapdl-reader's own reading of them, frozen by
+# tools/gen_ansys_rst_reference.py. The `ansys_rst` reader reads the record layout
+# pymapdl-reader documents; no code is copied.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/

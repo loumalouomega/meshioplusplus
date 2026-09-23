@@ -124,6 +124,10 @@ def _sniff_format_py(path) -> str:
     # FEBio plot file: the magic 0x00464542, in either byte order.
     if head[:4] in (b"BEF\x00", b"\x00FEB"):
         return "xplt"
+    # Ansys MAPDL results: a 100-word integer record (length 100, flags
+    # 0x80000000) whose first value is the file number, 12.
+    if head[:12] == b"d\x00\x00\x00\x00\x00\x00\x80\x0c\x00\x00\x00":
+        return "ansys_rst"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"

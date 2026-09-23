@@ -86,6 +86,8 @@ def _resolve(category, nodes):
             # trailing midsides are missing ones
             if at(2) == at(3):
                 return "triangle6", [0, 1, 2, 4, 5, 7]
+            if at(6) == at(7):  # e.g. a linear contact face with no midsides
+                return "quad", [0, 1, 2, 3]
             return "quad8", list(range(8))
         if n >= 4:
             if at(2) == at(3):
@@ -383,6 +385,13 @@ def _read_lines(lines, lenient=False):
         )
     if deck["rotations"]:
         warn("Ansys .cdb: nodal rotation angles are not kept")
+    return _build(deck, lenient, "Ansys .cdb")[0]
+
+
+def _build(deck, lenient, label):
+    """The mesh of a parsed deck (shared with the ``.rst`` reader): cells by
+    element category, missing midsides created, ``ansys:*`` cell data and
+    component regions. Returns it with the node-number -> point-index map."""
     coords = list(deck["coords"])
     node_index = {}
     for k, ident in enumerate(deck["node_ids"]):
@@ -395,7 +404,7 @@ def _read_lines(lines, lenient=False):
     for e in deck["elements"]:
         if e["slot"] not in deck["routine"]:
             raise ReadError(
-                f"Ansys .cdb: element {e['id']} uses element type {e['slot']}, which "
+                f"{label}: element {e['id']} uses element type {e['slot']}, which "
                 "no ET or ETBLOCK defines"
             )
         routine = deck["routine"][e["slot"]]
@@ -403,10 +412,16 @@ def _read_lines(lines, lenient=False):
         if routine == 200:
             category = _mesh200_category(deck["keyopt"].get(e["slot"], {}).get(1, 0))
         cell_type, slots = _resolve(category, e["nodes"])
+        if cell_type is not None:
+            # A corner node 0 (TARGE170's pilot and line shapes ...) has no cell.
+            nodes = e["nodes"]
+            corner_slots = slots[: _num_corners(cell_type)]
+            if any(k >= len(nodes) or nodes[k] == 0 for k in corner_slots):
+                cell_type = None
         if cell_type is None:
             if not lenient:
                 raise ReadError(
-                    f"Ansys .cdb: element {e['id']} (element type {routine}, "
+                    f"{label}: element {e['id']} (element type {routine}, "
                     f"{len(e['nodes'])} nodes) has no meshio++ cell type; read with "
                     "lenient to skip it"
                 )
@@ -428,7 +443,7 @@ def _read_lines(lines, lenient=False):
                 continue
             if ident not in node_index:
                 raise ReadError(
-                    f"Ansys .cdb: element {e['id']} names undefined node {ident}"
+                    f"{label}: element {e['id']} names undefined node {ident}"
                 )
             row.append(node_index[ident])
         edges = _MIDSIDE_EDGES.get(cell_type, [])
@@ -451,12 +466,12 @@ def _read_lines(lines, lenient=False):
         b["secnum"].append(e["secnum"])
     for routine in sorted(skipped):
         warn(
-            f"Ansys .cdb: {skipped[routine]} element(s) of type {routine} skipped "
+            f"{label}: {skipped[routine]} element(s) of type {routine} skipped "
             "(no meshio++ cell type)"
         )
     if midsides:
         warn(
-            f"Ansys .cdb: {len(midsides)} missing midside node(s) placed at their "
+            f"{label}: {len(midsides)} missing midside node(s) placed at their "
             "edge midpoints"
         )
 
@@ -501,7 +516,7 @@ def _read_lines(lines, lenient=False):
     # C++ keeps one region per (kind, name): the last of two same-named ones wins.
     unique = {r.key: r for r in regions}
     mesh.regions = sorted(unique.values(), key=lambda r: r.key)
-    return mesh
+    return mesh, node_index
 
 
 # -- writing ---------------------------------------------------------------------
