@@ -176,6 +176,19 @@ def test_code_aster_mail_is_readable_writable_and_converts(tmp_path):
     assert [b.type for b in written.cells] == ["hexahedron20", "quad8"]
 
 
+def test_optistruct_components_survive_convert(tmp_path):
+    import pathlib
+
+    fem = pathlib.Path(__file__).parent / "meshes" / "nastran" / "optistruct_mixed.fem"
+    out = _dump(_tools.tool_formats())
+    assert out["extensions"][".fem"] == ["nastran"]
+    # HyperMesh components are cell regions: they reach a .mail GROUP_MA.
+    target = str(tmp_path / "deck.mail")
+    _tools.tool_convert(str(fem), target)
+    names = {r.name for r in meshioplusplus.read(target).regions if r.kind == "cell"}
+    assert {"solids", "shells", "beams"} <= names
+
+
 def test_unv_uff_extension_and_convert_reaches_its_steps(tmp_path):
     import pathlib
 

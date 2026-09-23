@@ -156,6 +156,17 @@ MATRIX = [
         "mesh has no facet group, so side regions are dropped.",
         id="code_aster",
     ),
+    pytest.param(
+        "nastran",
+        ".fem",
+        {"point": False, "cell": True, "side": False},
+        {"tag": True},
+        "A disjoint cell region is written as a HyperMesh component: the "
+        "`$HMMOVE` comment lists its element ids and `$HMNAME COMP` its name, "
+        "keyed by the tag. Components hold elements only, so point and side "
+        "regions are dropped (OptiStruct SET cards are read, not written).",
+        id="nastran",
+    ),
 ]
 
 

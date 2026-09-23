@@ -38,6 +38,9 @@ license: MIT
 # there is pyNastran's own reading of them, frozen by tools/gen_nastran_h5_reference.py.
 # BSD-3-Clause is permissive and imposes no obligation on the rest of this repository. The
 # `nastran_h5` reader reads the published MSC schema; no pyNastran code is copied.
+# tests/python/meshes/nastran/composite_plate_2022.fem is an OptiStruct deck from the same
+# repository (models/optistruct/), redistributed unmodified under the same BSD-3-Clause
+# licence, whose text sits beside it in that directory's README.md.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/
