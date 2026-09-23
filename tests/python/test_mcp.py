@@ -149,6 +149,10 @@ def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_p
     out = _dump(_tools.tool_formats())
     assert "nastran_h5" in out["readable"] and "nastran_h5" not in out["writable"]
     assert out["extensions"][".h5"] == ["nastran_h5"]
+    # The MSC fixtures are Git LFS; the MCP CI job checks out without LFS.
+    with open(h5, "rb") as f:
+        if f.read(24).startswith(b"version https://git-lfs"):
+            pytest.skip("modes_elements.h5 is an unfetched Git-LFS pointer")
     target = str(tmp_path / "mode3.vtu")
     _tools.tool_convert(str(h5), target, time_step=-1)
     written = meshioplusplus.read(target)
