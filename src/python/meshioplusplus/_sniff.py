@@ -75,6 +75,17 @@ def _is_mphtxt(head: bytes) -> bool:
     )
 
 
+def _is_femap(head: bytes) -> bool:
+    """Femap neutral: a lone ``-1`` line (first or second line -- MYSTRAN writes a
+    number before it), then the header block's id, 100; see sniff.cpp."""
+    parts = head.split(b"\n")[:-1][:3]
+    lines = [p.strip(b" \t\r") for p in parts]
+    return any(
+        lines[k] == b"-1" and lines[k + 1] == b"100"
+        for k in range(min(2, len(lines) - 1))
+    )
+
+
 def _is_patran(head: bytes) -> bool:
     """Patran 2 neutral: a 25/26 packet header in the fixed ``(I2,8I8)`` columns,
     every field right-justified digits, announcing a data card; see sniff.cpp."""
@@ -228,6 +239,8 @@ def _sniff_format_py(path) -> str:
         (b"MFEM mesh v1.", b"MFEM NC mesh", b"MFEM NURBS mesh", b"MFEM INLINE mesh")
     ):
         return "mfem"
+    if _is_femap(head):
+        return "femap"
     if _is_patran(head):
         return "patran"
     if stripped.startswith(b"solid "):

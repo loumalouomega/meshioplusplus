@@ -105,6 +105,27 @@ bool sniff_is_mphtxt(const std::string& rHead) {
 // `part.n.*` files, or a directory holding one) and an OpenFOAM case (the
 // layouts the openfoam reader resolves). A directory that looks like both, or
 // like neither, is "".
+// Femap neutral file: a lone `-1` line (on the first or second line -- MYSTRAN
+// writes a number before it), then the header block's id, 100.
+bool sniff_is_femap(const std::string& rHead) {
+    std::vector<std::string> lines;
+    std::size_t pos = 0;
+    while (pos < rHead.size() && lines.size() < 3) {
+        std::size_t eol = rHead.find('\n', pos);
+        if (eol == std::string::npos)
+            break;
+        std::string line = rHead.substr(pos, eol - pos);
+        const std::size_t b = line.find_first_not_of(" \t\r");
+        const std::size_t e = line.find_last_not_of(" \t\r");
+        lines.push_back(b == std::string::npos ? std::string() : line.substr(b, e - b + 1));
+        pos = eol + 1;
+    }
+    for (std::size_t k = 0; k + 1 < lines.size() && k < 2; ++k)
+        if (lines[k] == "-1" && lines[k + 1] == "100")
+            return true;
+    return false;
+}
+
 // Patran 2 neutral file: the first card is a title (25) or summary (26) packet
 // header in the fixed `(I2,8I8)` columns -- every field right-justified digits --
 // announcing at least one data card. Matched on the unstripped head: the columns
@@ -323,6 +344,8 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    if (sniff_is_femap(head))
+        return "femap";
     if (sniff_is_patran(head))
         return "patran";
     // ASCII STL.

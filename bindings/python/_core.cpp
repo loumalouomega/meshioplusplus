@@ -37,6 +37,7 @@
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
@@ -2865,6 +2866,22 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"),
         py::arg("grid_functions") = std::vector<std::pair<std::string, std::string>>{});
+
+    // Femap neutral file (.neu) reader / mesh writer.
+    m.def(
+        "femap_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_femap(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("femap_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_femap(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("femap_time_values",
+          [](const std::string& path) { return meshioplusplus::femap_time_values(path); });
 
     // MSC Patran 2 neutral file (.pat/.out) writer / reader.
     m.def("patran_write", [](const std::string& path, py::object pymesh) {

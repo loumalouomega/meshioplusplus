@@ -46,6 +46,7 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("mesh.mail", ""), "code_aster");
     EXPECT_EQ(resolve_format("model.pat", ""), "patran");
     EXPECT_EQ(resolve_format("model.out", ""), "patran");
+    EXPECT_EQ(resolve_format("model.neu", ""), "femap");
     EXPECT_EQ(resolve_format("mesh.mphbin", ""), "mphbin");
     EXPECT_EQ(resolve_format("mesh.mphtxt", ""), "mphtxt");
     EXPECT_EQ(resolve_format("results.frd", ""), "frd");

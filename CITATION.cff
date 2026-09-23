@@ -61,6 +61,15 @@ license: MIT
 # there were written by MFEM itself (PyMFEM) through tools/gen_mfem_fixtures.py. The
 # `mfem` reader reproduces MFEM's documented degree-of-freedom numbering; no MFEM code is
 # copied.
+# tests/python/meshes/femap/*.neu are Femap neutral files from FrontISTR
+# (https://github.com/FrontISTR/FrontISTR, Copyright (c) 2019 FrontISTR Commons),
+# ems_file_format_converter (https://github.com/EMSolution-SSIL/ems_file_format_converter,
+# Copyright (c) 2025 Science Solutions International Laboratory, Inc.) and
+# femap_neutral_parser (https://framagit.org/numenic/femap_neutral_parser, Copyright (c)
+# 2021 Nicolas Cordier), all MIT, redistributed (some concatenated) by
+# tools/gen_femap_fixtures.py with the licence text beside them in that directory's
+# README.md. The `femap` reader's record layouts follow FrontISTR's neu2fstr and those
+# files; no code is copied.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/

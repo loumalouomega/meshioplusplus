@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansys_rst.hpp"
@@ -104,6 +105,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"lsdyna", meshioplusplus::read_lsdyna},
         {"code_aster", meshioplusplus::read_code_aster},
         {"patran", meshioplusplus::read_patran},
+        {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
@@ -230,6 +232,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"lsdyna", meshioplusplus::write_lsdyna},
         {"code_aster", meshioplusplus::write_code_aster},
         {"patran", meshioplusplus::write_patran},
+        {"femap", meshioplusplus::write_femap},
         {"elmer", meshioplusplus::write_elmer},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
@@ -461,6 +464,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".mail", "code_aster"},
         {".pat", "patran"},
         {".out", "patran"},
+        {".neu", "femap"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -641,6 +645,10 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
                        const ReadOptions& opts) { return meshioplusplus::read_ensight(path, opts); }},
         {"frd", [](const std::string& path,
                    const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
+        // Femap honours mTimeStep (its steps are the 450 output sets) and the
+        // data narrowing options.
+        {"femap", [](const std::string& path,
+                     const ReadOptions& opts) { return meshioplusplus::read_femap(path, opts); }},
         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
         // mLenient (skip element types with no meshio++ cell type).
         {"elmer", meshioplusplus::read_elmer},
@@ -728,6 +736,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
+        {"femap", meshioplusplus::read_femap_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
         {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
