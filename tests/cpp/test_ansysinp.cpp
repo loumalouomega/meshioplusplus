@@ -52,7 +52,7 @@ void roundtrip_plain(const meshioplusplus::Mesh& mesh, const std::string& suffix
     std::filesystem::remove(path, ec);
 }
 
-// Four nodes at the unit square's corners, then `Et` (ET/KEYOPT lines), one
+// Four nodes at the unit square's corners and two mid-edge ones, then `Et` (ET/KEYOPT lines), one
 // `(19i9)` element row and `Tail` (e.g. a CMBLOCK).
 std::string deck(const std::string& rEt, const std::string& rRow, const std::string& rTail = "") {
     return "/PREP7\n" + rEt +
@@ -64,6 +64,10 @@ std::string deck(const std::string& rEt, const std::string& rRow, const std::str
            "        3        0        0 1.0000000000000E+000 1.0000000000000E+000 "
            "0.0000000000000E+000\n"
            "        4        0        0 0.0000000000000E+000 1.0000000000000E+000 "
+           "0.0000000000000E+000\n"
+           "        5        0        0 5.0000000000000E-001 0.0000000000000E+000 "
+           "0.0000000000000E+000\n"
+           "        6        0        0 5.0000000000000E-001 1.0000000000000E+000 "
            "0.0000000000000E+000\n"
            "N,R5.3,LOC,       -1,\nEBLOCK,19,SOLID\n(19i9)\n" +
            rRow + "\n       -1\n" + rTail + "FINISH\n";
@@ -179,10 +183,13 @@ TEST(AnsysInp, ElementTypeByKeyoptAbbreviation) {
 }
 
 TEST(AnsysInp, MissingMidsidesArePlacedOnTheirEdges) {
-    // PLANE183 with its midsides absent (three 0s, and a row cut short by one).
-    auto mesh = read_text(deck("ET,1,183", row({1, 2, 3, 4, 0, 0, 0})));
+    // With no midside at all (nodes 6 and 7 equal), the shell is a linear quad.
+    EXPECT_EQ(read_text(deck("ET,1,183", row({1, 2, 3, 4, 0, 0, 0, 0}))).Cells(0).Type(), "quad");
+    // PLANE183 with one midside set (node 6) and three absent (two 0s, and a
+    // row cut short by one).
+    auto mesh = read_text(deck("ET,1,183", row({1, 2, 3, 4, 0, 0, 6})));
     ASSERT_EQ(mesh.Cells(0).Type(), "quad8");
-    EXPECT_EQ(mesh.NumPoints(), 8u);
+    EXPECT_EQ(mesh.NumPoints(), 9u);
     const auto& conn = mesh.Cells(0).Conn();
     const auto& pts = mesh.Points();
     const auto x = [&](std::int64_t p, int d) {

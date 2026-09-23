@@ -36,6 +36,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/ansysinp.hpp"
+#include "meshioplusplus/detail/ansys_model.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
@@ -44,172 +45,12 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 
 namespace {
-
-// ---- element categories ------------------------------------------------------
-// How an element routine number's nodes become a cell (pymapdl-reader's
-// ETYPE_MAP): a point, a line (quadratic when its third node is set), a shell or
-// plane (triangle when K == L), a degenerate brick, a native tetrahedron, or a
-// line whose extra nodes are orientation nodes.
-enum class AnsCategory { Skip, Point, Line, Shell, Brick, Tet, LinearLine };
-
-AnsCategory ans_category(int Routine) {
-    static const std::unordered_map<int, AnsCategory> kTable = [] {
-        std::unordered_map<int, AnsCategory> m;
-        for (int n : {7, 21, 71, 175})
-            m[n] = AnsCategory::Point;
-        for (int n :
-             {1,   3,   4,   8,   10,  11,  12,  14,  16,  17,  18,  20,  23,  24,  31,  32,  33,
-              34,  37,  38,  39,  40,  44,  59,  60,  61,  66,  68,  116, 126, 129, 151, 153, 156,
-              161, 169, 171, 172, 176, 177, 178, 180, 189, 208, 209, 250, 251, 280, 288, 289, 290})
-            m[n] = AnsCategory::Line;
-        for (int n :
-             {2,   13,  22,  25,  28,  29,  35,  41,  42,  43,  51,  53,  54,  55,  57,  63,
-              67,  75,  77,  78,  79,  81,  82,  83,  88,  91,  93,  99,  106, 115, 118, 121,
-              130, 131, 132, 136, 143, 152, 154, 155, 157, 163, 170, 173, 174, 181, 182, 183,
-              212, 213, 218, 219, 222, 223, 230, 233, 238, 252, 281, 282, 283, 292, 293})
-            m[n] = AnsCategory::Shell;
-        for (int n : {5,   30,  45,  46,  62,  64,  65,  69,  70,  80,  89,  90,  95,  96,
-                      97,  100, 101, 102, 103, 104, 105, 107, 108, 117, 120, 122, 164, 185,
-                      186, 190, 192, 215, 220, 226, 231, 236, 239, 272, 273, 278, 279})
-            m[n] = AnsCategory::Brick;
-        for (int n : {87, 92, 98, 119, 123, 140, 168, 187, 221, 227, 232, 237, 240, 285, 291})
-            m[n] = AnsCategory::Tet;
-        for (int n : {188, 214, 216, 217})
-            m[n] = AnsCategory::LinearLine;
-        return m;
-    }();
-    const auto it = kTable.find(Routine);
-    return it == kTable.end() ? AnsCategory::Skip : it->second;
-}
-
-// MESH200's shape comes from KEYOPT(1) (pymapdl-reader's MESH200_MAP).
-AnsCategory ans_mesh200_category(int Keyopt1) {
-    if (Keyopt1 >= 0 && Keyopt1 <= 3)
-        return AnsCategory::Line;
-    if (Keyopt1 >= 4 && Keyopt1 <= 7)
-        return AnsCategory::Shell;
-    if (Keyopt1 == 8 || Keyopt1 == 9)
-        return AnsCategory::Tet;
-    if (Keyopt1 == 10 || Keyopt1 == 11)
-        return AnsCategory::Brick;
-    return AnsCategory::Skip;
-}
-
-// A cell resolved from one element row: the meshio++ type and, per node of that
-// type, the element's slot (a slot past the row's end is a missing midside).
-struct AnsShape {
-    const char* mType = nullptr;
-    std::vector<int> mSlots;
-};
-
-// Slot maps of the degenerate forms, from the ANSYS brick numbering (corners
-// I..P = 0..7; mid-edges Q R S T = 8..11 on IJ JK KL LI, U V W X = 12..15 on MN
-// NO OP PM, Y Z A B = 16..19 on IM JN KO LP) into meshio++'s (VTK) orders.
-AnsShape ans_resolve(AnsCategory Category, const std::vector<std::int64_t>& rNodes) {
-    const std::size_t n = rNodes.size();
-    const auto at = [&](std::size_t k) { return k < n ? rNodes[k] : 0; };
-    const auto slots = [](std::initializer_list<int> l) { return std::vector<int>(l); };
-    switch (Category) {
-        case AnsCategory::Point:
-            if (n >= 1)
-                return {"vertex", slots({0})};
-            break;
-        case AnsCategory::Line:
-            if (n >= 3 && at(2) > 0)
-                return {"line3", slots({0, 1, 2})};
-            if (n >= 2)
-                return {"line", slots({0, 1})};
-            break;
-        case AnsCategory::LinearLine:
-            if (n >= 2)
-                return {"line", slots({0, 1})};
-            break;
-        case AnsCategory::Shell:
-            if (n == 3)
-                return {"triangle", slots({0, 1, 2})};
-            if (n == 6)
-                return {"triangle6", slots({0, 1, 2, 3, 4, 5})};
-            if (n > 5) {  // 8-node (5 is a quad plus an orientation node); absent
-                          // trailing midsides are missing ones
-                if (at(2) == at(3))
-                    return {"triangle6", slots({0, 1, 2, 4, 5, 7})};
-                return {"quad8", slots({0, 1, 2, 3, 4, 5, 6, 7})};
-            }
-            if (n >= 4) {
-                if (at(2) == at(3))
-                    return {"triangle", slots({0, 1, 2})};
-                return {"quad", slots({0, 1, 2, 3})};
-            }
-            break;
-        case AnsCategory::Tet:
-            if (n > 4)
-                return {"tetra10", slots({0, 1, 2, 3, 4, 5, 6, 7, 8, 9})};
-            if (n >= 4)
-                return {"tetra", slots({0, 1, 2, 3})};
-            break;
-        case AnsCategory::Brick: {
-            if (n < 8)
-                break;
-            const bool quad = n > 8;
-            if (at(6) != at(7))  // hexahedron
-                return quad ? AnsShape{"hexahedron20",
-                                       slots({0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                                              10, 11, 12, 13, 14, 15, 16, 17, 18, 19})}
-                            : AnsShape{"hexahedron", slots({0, 1, 2, 3, 4, 5, 6, 7})};
-            if (at(5) != at(6))  // wedge: K == L, O == P
-                return quad ? AnsShape{"wedge15",
-                                       slots({0, 1, 2, 4, 5, 6, 8, 9, 11, 12, 13, 15, 16, 17, 18})}
-                            : AnsShape{"wedge", slots({0, 1, 2, 4, 5, 6})};
-            if (at(2) != at(3))  // pyramid: M == N == O == P
-                return quad ? AnsShape{"pyramid13",
-                                       slots({0, 1, 2, 3, 4, 8, 9, 10, 11, 16, 17, 18, 19})}
-                            : AnsShape{"pyramid", slots({0, 1, 2, 3, 4})};
-            // tetrahedron: K == L, M == N == O == P
-            return quad ? AnsShape{"tetra10", slots({0, 1, 2, 4, 8, 9, 11, 16, 17, 18})}
-                        : AnsShape{"tetra", slots({0, 1, 2, 4})};
-        }
-        case AnsCategory::Skip:
-            break;
-    }
-    return {};
-}
-
-// Corner pairs of each mid-edge slot of a meshio++ type (for missing midside
-// nodes, written as node 0), indexed by position in the type's node list.
-std::vector<std::pair<int, int>> ans_midside_edges(std::string_view Type) {
-    if (Type == "line3")
-        return {{0, 1}};
-    if (Type == "triangle6")
-        return {{0, 1}, {1, 2}, {2, 0}};
-    if (Type == "quad8")
-        return {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
-    if (Type == "tetra10")
-        return {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}};
-    if (Type == "pyramid13")
-        return {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {0, 4}, {1, 4}, {2, 4}, {3, 4}};
-    if (Type == "wedge15")
-        return {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5}, {5, 3}, {0, 3}, {1, 4}, {2, 5}};
-    if (Type == "hexahedron20")
-        return {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
-                {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-    return {};
-}
-
-std::size_t ans_num_corners(std::string_view Type) {
-    static const std::pair<std::string_view, std::size_t> kCorners[] = {
-        {"vertex", 1}, {"line", 2},    {"triangle", 3}, {"quad", 4},
-        {"tetra", 4},  {"pyramid", 5}, {"wedge", 6},    {"hexahedron", 8},
-    };
-    for (const auto& [prefix, c] : kCorners)
-        if (Type.substr(0, prefix.size()) == prefix)
-            return c;
-    return 0;
-}
 
 std::string ans_upper(std::string_view Text) {
     std::string out(Text);
@@ -313,26 +154,9 @@ bool ans_is_keyopt(const std::string& rUpper) {
     return std::string_view("KEYOPT").substr(0, comma) == std::string_view(rUpper).substr(0, comma);
 }
 
-struct AnsElement {
-    int mSlot = 0;
-    std::int64_t mMat = 0, mReal = 0, mSecnum = 0, mId = 0;
-    std::vector<std::int64_t> mNodes;
-};
-
-struct AnsComponent {
-    std::string mName;
-    bool mNodes = false;
-    std::vector<std::int64_t> mIds;
-};
-
 struct AnsDeck {
-    std::map<int, int> mRoutine;                // ET slot -> routine
-    std::map<int, std::map<int, int>> mKeyopt;  // ET slot -> keyopt k -> value
-    std::vector<std::int64_t> mNodeIds;
-    std::vector<double> mCoords;
+    detail::AnsysModel mModel;
     bool mDroppedRotations = false;
-    std::vector<AnsElement> mElements;
-    std::vector<AnsComponent> mComponents;
     std::size_t mNonSolidBlocks = 0;
 };
 
@@ -363,7 +187,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 const auto slot = ans_int(p[1]);
                 const int routine = ans_routine(ans_upper(p[2]));
                 if (slot && routine > 0)
-                    deck.mRoutine[static_cast<int>(*slot)] = routine;
+                    deck.mModel.mRoutine[static_cast<int>(*slot)] = routine;
             }
             ++i;
         } else if (ans_is_keyopt(up)) {
@@ -371,7 +195,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             if (p.size() >= 4) {
                 const auto slot = ans_int(p[1]), k = ans_int(p[2]), v = ans_int(p[3]);
                 if (slot && k && v)
-                    deck.mKeyopt[static_cast<int>(*slot)][static_cast<int>(*k)] =
+                    deck.mModel.mKeyopt[static_cast<int>(*slot)][static_cast<int>(*k)] =
                         static_cast<int>(*v);
             }
             ++i;
@@ -383,10 +207,11 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                 const auto f = detail::split_fixed(rLines[i], fields);
                 if (f.size() >= 2) {
                     const int slot = static_cast<int>(ans_field_int(f, 0, i));
-                    deck.mRoutine[slot] = static_cast<int>(ans_field_int(f, 1, i));
+                    deck.mModel.mRoutine[slot] = static_cast<int>(ans_field_int(f, 1, i));
                     for (std::size_t k = 2; k < f.size() && k < 20; ++k)
                         if (const auto v = ans_int(f[k]); v && *v != 0)
-                            deck.mKeyopt[slot][static_cast<int>(k - 1)] = static_cast<int>(*v);
+                            deck.mModel.mKeyopt[slot][static_cast<int>(k - 1)] =
+                                static_cast<int>(*v);
                 }
                 ++i;
             }
@@ -404,9 +229,9 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                     ++i;
                     continue;
                 }
-                deck.mNodeIds.push_back(ans_field_int(f, 0, i));
+                deck.mModel.mNodeIds.push_back(ans_field_int(f, 0, i));
                 for (std::size_t d = 0; d < 3; ++d)
-                    deck.mCoords.push_back(ans_field_real(f, n_int + d, i));
+                    deck.mModel.mCoords.push_back(ans_field_real(f, n_int + d, i));
                 for (std::size_t d = 3; n_int + d < f.size(); ++d)
                     if (ans_field_real(f, n_int + d, i) != 0.0)
                         deck.mDroppedRotations = true;
@@ -432,7 +257,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                     ++i;
                     continue;
                 }
-                AnsElement e;
+                detail::AnsysElement e;
                 e.mMat = ans_field_int(f, 0, i);
                 e.mSlot = static_cast<int>(ans_field_int(f, 1, i));
                 e.mReal = ans_field_int(f, 2, i);
@@ -449,7 +274,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                         e.mNodes.push_back(ans_field_int(more, k, i));
                     ++i;
                 }
-                deck.mElements.push_back(std::move(e));
+                deck.mModel.mElements.push_back(std::move(e));
             }
             ++i;
         } else if (up.rfind("CMBLOCK", 0) == 0) {
@@ -457,7 +282,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
             const auto header = ans_commas(line);
             if (header.size() < 3)
                 ans_fail(i, "a CMBLOCK needs a name and an entity type");
-            AnsComponent comp;
+            detail::AnsysComponent comp;
             comp.mName = header[1];
             const std::string entity = ans_upper(header[2]);
             const bool known = entity == "NODE" || entity.rfind("ELEM", 0) == 0;
@@ -489,7 +314,7 @@ AnsDeck ans_parse(const std::vector<std::string>& rLines) {
                     comp.mIds.push_back(v);
             }
             if (known)
-                deck.mComponents.push_back(std::move(comp));
+                deck.mModel.mComponents.push_back(std::move(comp));
             else
                 log::debug("Ansys .cdb: {} component '{}' skipped", entity, comp.mName);
         } else {
@@ -527,152 +352,9 @@ Mesh read_ansysinp(const std::string& rPath, const ReadOptions& rOptions, AnsysI
     if (deck.mDroppedRotations)
         log::warn("Ansys .cdb: nodal rotation angles are not kept");
 
-    std::vector<double> coords = std::move(deck.mCoords);
     std::unordered_map<std::int64_t, std::int64_t> node_index;
-    for (std::size_t k = 0; k < deck.mNodeIds.size(); ++k)
-        node_index.emplace(deck.mNodeIds[k], static_cast<std::int64_t>(k));
-    // Missing midside nodes (node 0) become new points at their edge midpoints.
-    std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> midsides;
-    std::size_t n_missing = 0;
-
-    struct Block {
-        std::string mType;
-        std::vector<std::int64_t> mConn;
-        std::vector<std::int64_t> mRoutine, mSlot, mMat, mReal, mSecnum;
-        std::size_t Rows() const { return mSlot.size(); }
-    };
-    std::vector<Block> blocks;
-    std::map<std::string, std::size_t> block_of;
-    std::unordered_map<std::int64_t, std::pair<std::size_t, std::size_t>> element_loc;
-    std::map<int, std::size_t> skipped;  // routine -> count
-
-    for (const AnsElement& e : deck.mElements) {
-        const auto rt = deck.mRoutine.find(e.mSlot);
-        if (rt == deck.mRoutine.end())
-            throw ReadError("Ansys .cdb: element " + std::to_string(e.mId) + " uses element type " +
-                            std::to_string(e.mSlot) + ", which no ET or ETBLOCK defines");
-        const int routine = rt->second;
-        AnsCategory category = ans_category(routine);
-        if (routine == 200) {
-            const auto& ko = deck.mKeyopt[e.mSlot];
-            const auto k1 = ko.find(1);
-            category = ans_mesh200_category(k1 == ko.end() ? 0 : k1->second);
-        }
-        const AnsShape shape = ans_resolve(category, e.mNodes);
-        if (!shape.mType) {
-            if (!rOptions.mLenient)
-                throw ReadError("Ansys .cdb: element " + std::to_string(e.mId) + " (element type " +
-                                std::to_string(routine) + ", " + std::to_string(e.mNodes.size()) +
-                                " nodes) has no meshio++ cell type; read with lenient to skip it");
-            ++skipped[routine];
-            continue;
-        }
-        const auto [it, fresh] = block_of.emplace(shape.mType, blocks.size());
-        if (fresh)
-            blocks.push_back(Block{shape.mType, {}, {}, {}, {}, {}, {}});
-        Block& b = blocks[it->second];
-        const std::size_t corners = ans_num_corners(shape.mType);
-        const auto edges = ans_midside_edges(shape.mType);
-        std::vector<std::int64_t> row;
-        for (int slot : shape.mSlots) {
-            // A row cut short omits trailing midside nodes: they read as node 0.
-            const auto k = static_cast<std::size_t>(slot);
-            const std::int64_t id = k < e.mNodes.size() ? e.mNodes[k] : 0;
-            if (id == 0 && row.size() >= corners) {
-                row.push_back(-1);  // resolved below, once the corners are known
-                continue;
-            }
-            const auto found = node_index.find(id);
-            if (found == node_index.end())
-                throw ReadError("Ansys .cdb: element " + std::to_string(e.mId) +
-                                " names undefined node " + std::to_string(id));
-            row.push_back(found->second);
-        }
-        for (std::size_t k = corners; k < row.size(); ++k) {
-            if (row[k] >= 0)
-                continue;
-            const auto [a, c] = edges[k - corners];
-            std::int64_t p = row[static_cast<std::size_t>(a)], q = row[static_cast<std::size_t>(c)];
-            const auto key = std::make_pair(std::min(p, q), std::max(p, q));
-            auto [mit, added] = midsides.emplace(key, static_cast<std::int64_t>(coords.size() / 3));
-            if (added) {
-                for (std::size_t d = 0; d < 3; ++d)
-                    coords.push_back(0.5 * (coords[static_cast<std::size_t>(p) * 3 + d] +
-                                            coords[static_cast<std::size_t>(q) * 3 + d]));
-                ++n_missing;
-            }
-            row[k] = mit->second;
-        }
-        element_loc[e.mId] = {it->second, b.Rows()};
-        b.mConn.insert(b.mConn.end(), row.begin(), row.end());
-        b.mRoutine.push_back(routine);
-        b.mSlot.push_back(e.mSlot);
-        b.mMat.push_back(e.mMat);
-        b.mReal.push_back(e.mReal);
-        b.mSecnum.push_back(e.mSecnum);
-    }
-    for (const auto& [routine, count] : skipped)
-        log::warn("Ansys .cdb: {} element(s) of type {} skipped (no meshio++ cell type)", count,
-                  routine);
-    if (n_missing)
-        log::warn("Ansys .cdb: {} missing midside node(s) placed at their edge midpoints",
-                  n_missing);
-
-    Mesh mesh;
-    NDArray points(DType::Float64, {coords.size() / 3, 3});
-    std::copy(coords.begin(), coords.end(), points.As<double>());
-    mesh.AssignPoints(std::move(points));
-    const auto column = [](const std::vector<std::int64_t>& rValues) {
-        NDArray a(DType::Int64, {rValues.size()});
-        std::copy(rValues.begin(), rValues.end(), a.As<std::int64_t>());
-        return a;
-    };
-    std::vector<NDArray> routine_data, slot_data, mat_data, real_data, secnum_data;
-    std::vector<std::int64_t> bases;
-    std::int64_t base = 0;
-    for (const Block& b : blocks) {
-        const std::size_t k = b.mConn.size() / std::max<std::size_t>(b.Rows(), 1);
-        NDArray conn(DType::Int64, {b.Rows(), k});
-        std::copy(b.mConn.begin(), b.mConn.end(), conn.As<std::int64_t>());
-        mesh.AddCellBlock(b.mType, std::move(conn));
-        routine_data.push_back(column(b.mRoutine));
-        slot_data.push_back(column(b.mSlot));
-        mat_data.push_back(column(b.mMat));
-        real_data.push_back(column(b.mReal));
-        secnum_data.push_back(column(b.mSecnum));
-        bases.push_back(base);
-        base += static_cast<std::int64_t>(b.Rows());
-    }
-    if (!blocks.empty()) {
-        mesh.AddCellData("ansys:element", std::move(routine_data));
-        mesh.AddCellData("ansys:type", std::move(slot_data));
-        mesh.AddCellData("ansys:mat", std::move(mat_data));
-        mesh.AddCellData("ansys:real", std::move(real_data));
-        mesh.AddCellData("ansys:secnum", std::move(secnum_data));
-    }
-
-    // Components: point and cell regions, and the legacy side channel.
-    for (const AnsComponent& c : deck.mComponents) {
-        std::vector<std::int64_t> entries;
-        if (c.mNodes) {
-            for (std::int64_t id : c.mIds)
-                if (const auto it = node_index.find(id); it != node_index.end())
-                    entries.push_back(it->second);
-            rInfo.mPointSets[c.mName] = entries;
-        } else {
-            std::vector<std::vector<std::int64_t>> per(blocks.size());
-            for (std::int64_t id : c.mIds)
-                if (const auto it = element_loc.find(id); it != element_loc.end()) {
-                    per[it->second.first].push_back(static_cast<std::int64_t>(it->second.second));
-                    entries.push_back(bases[it->second.first] +
-                                      static_cast<std::int64_t>(it->second.second));
-                }
-            rInfo.mCellSets[c.mName] = per;
-        }
-        mesh.AddRegion(Region(c.mName, c.mNodes ? RegionKind::Point : RegionKind::Cell, -1, -1,
-                              column(entries)));
-    }
-    return mesh;
+    return detail::ansys_build_mesh(deck.mModel, rOptions.mLenient, "Ansys .cdb", rInfo,
+                                    node_index);
 }
 
 Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
@@ -682,9 +364,9 @@ Mesh read_ansysinp(const std::string& rPath, AnsysInfo& rInfo) {
 namespace {
 
 // The degenerate or native layout of `Type` under an element of `Category`.
-std::optional<std::vector<int>> ans_layout(std::string_view Type, AnsCategory Category) {
+std::optional<std::vector<int>> ans_layout(std::string_view Type, detail::AnsysCategory Category) {
     using V = std::vector<int>;
-    if (Category == AnsCategory::Brick) {
+    if (Category == detail::AnsysCategory::Brick) {
         if (Type == "hexahedron")
             return V{0, 1, 2, 3, 4, 5, 6, 7};
         if (Type == "hexahedron20")
@@ -701,12 +383,12 @@ std::optional<std::vector<int>> ans_layout(std::string_view Type, AnsCategory Ca
             return V{0, 1, 2, 2, 3, 3, 3, 3};
         if (Type == "tetra10")  // K=L, M..P, S=K, U..X=M, B=A
             return V{0, 1, 2, 2, 3, 3, 3, 3, 4, 5, 2, 6, 3, 3, 3, 3, 7, 8, 9, 9};
-    } else if (Category == AnsCategory::Tet) {
+    } else if (Category == detail::AnsysCategory::Tet) {
         if (Type == "tetra")
             return V{0, 1, 2, 3};
         if (Type == "tetra10")
             return V{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    } else if (Category == AnsCategory::Shell) {
+    } else if (Category == detail::AnsysCategory::Shell) {
         if (Type == "quad")
             return V{0, 1, 2, 3};
         if (Type == "quad8")
@@ -715,12 +397,13 @@ std::optional<std::vector<int>> ans_layout(std::string_view Type, AnsCategory Ca
             return V{0, 1, 2, 2};
         if (Type == "triangle6")  // K=L, the K-L midside = K
             return V{0, 1, 2, 2, 3, 4, 2, 5};
-    } else if (Category == AnsCategory::Line || Category == AnsCategory::LinearLine) {
+    } else if (Category == detail::AnsysCategory::Line ||
+               Category == detail::AnsysCategory::LinearLine) {
         if (Type == "line")
             return V{0, 1};
-        if (Type == "line3" && Category == AnsCategory::Line)
+        if (Type == "line3" && Category == detail::AnsysCategory::Line)
             return V{0, 1, 2};
-    } else if (Category == AnsCategory::Point) {
+    } else if (Category == detail::AnsysCategory::Point) {
         if (Type == "vertex")
             return V{0};
     }
@@ -746,15 +429,16 @@ std::string ans_i(std::int64_t Value, int Width) {
     return buf;
 }
 
-// A per-cell integer from `Name` cell data, or `Default` when absent.
-std::int64_t ans_cell_int(const Mesh& rMesh, const std::string& rName, std::size_t Block,
-                          std::size_t Row, std::int64_t Default) {
-    if (!rMesh.HasCellData(rName))
+// Block `Block` of the `Name` cell data, or null when the mesh has none.
+const NDArray* ans_cell_column(const Mesh& rMesh, const std::string& rName, std::size_t Block) {
+    return rMesh.HasCellData(rName) ? &rMesh.CellData(rName, Block) : nullptr;
+}
+
+// Row `Row` of a cell-data column, or `Default` when absent.
+std::int64_t ans_column_int(const NDArray* pColumn, std::size_t Row, std::int64_t Default) {
+    if (!pColumn || pColumn->Size() <= Row)
         return Default;
-    const NDArray& a = rMesh.CellData(rName, Block);
-    if (a.Size() <= Row)
-        return Default;
-    return detail::read_int(a, Row);
+    return detail::read_int(*pColumn, Row);
 }
 
 }  // namespace
@@ -774,10 +458,12 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
         const int fallback = ans_default_routine(type);
         if (cb.IsRagged() || fallback < 0)
             throw WriteError("Ansys .cdb writer: cell type '" + type + "' has no element type");
+        const NDArray* elements = ans_cell_column(rMesh, "ansys:element", b);
+        const NDArray* types = ans_cell_column(rMesh, "ansys:type", b);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            int routine = static_cast<int>(ans_cell_int(rMesh, "ansys:element", b, r, fallback));
-            int slot = static_cast<int>(ans_cell_int(rMesh, "ansys:type", b, r, 0));
-            if (!ans_layout(type, ans_category(routine)) ||
+            int routine = static_cast<int>(ans_column_int(elements, r, fallback));
+            int slot = static_cast<int>(ans_column_int(types, r, 0));
+            if (!ans_layout(type, detail::ansys_category(routine)) ||
                 (slot > 0 && slot_routine.count(slot) && slot_routine[slot] != routine)) {
                 dropped_etype = dropped_etype || routine != fallback;
                 routine = fallback;
@@ -869,52 +555,61 @@ void write_ansysinp(const std::string& rPath, const Mesh& rMesh, const AnsysInfo
     const std::size_t pdim = rMesh.PointDim();
     out += "NBLOCK,6,SOLID," + ans_i(static_cast<std::int64_t>(npts), 9) + "," +
            ans_i(static_cast<std::int64_t>(npts), 9) + "\n(3i9,6e21.13e3)\n";
-    char buf[48];
-    for (std::size_t p = 0; p < npts; ++p) {
-        out += ans_i(static_cast<std::int64_t>(p + 1), 9) + ans_i(0, 9) + ans_i(0, 9);
+    // Rows are formatted in parallel, then joined in order (bytes unchanged).
+    std::vector<std::string> rows(npts);
+    parallel_for(npts, [&](std::size_t p) {
+        char buf[48];
+        std::string& row = rows[p];
+        row = ans_i(static_cast<std::int64_t>(p + 1), 9) + ans_i(0, 9) + ans_i(0, 9);
         for (std::size_t d = 0; d < 3; ++d) {
             const double v = d < pdim ? detail::read_double(points, p * pdim + d) : 0.0;
             detail::snprintf_c(buf, sizeof(buf), "%21.13E", v);
-            out += buf;
+            row += buf;
         }
-        out += '\n';
-    }
+        row += '\n';
+    });
+    for (const std::string& row : rows)
+        out += row;
     out += "N,R5.3,LOC,       -1,\n";
 
     const std::int64_t n_cells = bases.back();
     out += "EBLOCK,19,SOLID," + ans_i(n_cells, 10) + "," + ans_i(n_cells, 10) + "\n(19i10)\n";
-    std::int64_t element = 0;
     for (std::size_t b = 0; b < n_blocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const std::string type(cb.Type());
         const NDArray& conn = cb.Conn();
         const std::size_t k = cb.NodesPerCell();
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+        const NDArray* mat = ans_cell_column(rMesh, "ansys:mat", b);
+        const NDArray* real = ans_cell_column(rMesh, "ansys:real", b);
+        const NDArray* secnum = ans_cell_column(rMesh, "ansys:secnum", b);
+        rows.assign(cb.NumCells(), std::string());
+        parallel_for(cb.NumCells(), [&](std::size_t r) {
             const auto [routine, slot] = cell_etype[b][r];
-            const std::vector<int> layout = *ans_layout(type, ans_category(routine));
-            std::vector<std::int64_t> nodes;
-            for (int from : layout)
-                nodes.push_back(detail::read_int(conn, r * k + static_cast<std::size_t>(from)) + 1);
-            const std::int64_t head[11] = {ans_cell_int(rMesh, "ansys:mat", b, r, 1),
+            const std::vector<int> layout = *ans_layout(type, detail::ansys_category(routine));
+            const std::int64_t head[11] = {ans_column_int(mat, r, 1),
                                            slot,
-                                           ans_cell_int(rMesh, "ansys:real", b, r, 1),
-                                           ans_cell_int(rMesh, "ansys:secnum", b, r, 1),
+                                           ans_column_int(real, r, 1),
+                                           ans_column_int(secnum, r, 1),
                                            0,
                                            0,
                                            0,
                                            0,
-                                           static_cast<std::int64_t>(nodes.size()),
+                                           static_cast<std::int64_t>(layout.size()),
                                            0,
-                                           ++element};
+                                           bases[b] + static_cast<std::int64_t>(r) + 1};
+            std::string& row = rows[r];
             for (std::int64_t v : head)
-                out += ans_i(v, 10);
-            for (std::size_t c = 0; c < nodes.size(); ++c) {
+                row += ans_i(v, 10);
+            for (std::size_t c = 0; c < layout.size(); ++c) {
                 if (c == 8)
-                    out += '\n';
-                out += ans_i(nodes[c], 10);
+                    row += '\n';
+                row += ans_i(
+                    detail::read_int(conn, r * k + static_cast<std::size_t>(layout[c])) + 1, 10);
             }
-            out += '\n';
-        }
+            row += '\n';
+        });
+        for (const std::string& row : rows)
+            out += row;
     }
     out += "        -1\n";
 

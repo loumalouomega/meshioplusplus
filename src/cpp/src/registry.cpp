@@ -37,6 +37,7 @@
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
@@ -102,6 +103,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
         {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
+        {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -440,6 +442,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
 const std::map<std::string, std::string>& registry_extension_defaults() {
     static const std::map<std::string, std::string> m = {
         {".inp", "abaqus"},
+        {".cdb", "ansysinp"},
         {".frd", "frd"},
         {".k", "lsdyna"},
         {".key", "lsdyna"},
@@ -447,6 +450,8 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".mail", "code_aster"},
         {".feb", "febio"},
         {".xplt", "xplt"},
+        {".rst", "ansys_rst"},
+        {".rth", "ansys_rst"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},
@@ -618,6 +623,8 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         // FEBio .xplt honours mTimeStep (one state), the narrowing options and
         // mLenient (downgrade tet5/tet15 domains).
         {"xplt", meshioplusplus::read_xplt},
+        // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
+        {"ansys_rst", meshioplusplus::read_ansys_rst},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -690,6 +697,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
         {"xplt", meshioplusplus::read_xplt_metadata},
+        {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5

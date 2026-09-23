@@ -162,6 +162,11 @@ std::string sniff_format(const std::string& rPath) {
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))
         return "xplt";
+    // Ansys MAPDL results: a 100-word integer record (length 100, flags
+    // 0x80000000) whose first value is the file number, 12.
+    if (head.size() >= 12 &&
+        head.compare(0, 12, std::string("d\0\0\0\0\0\0\x80\x0c\0\0\0", 12)) == 0)
+        return "ansys_rst";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";

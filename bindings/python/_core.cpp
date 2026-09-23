@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -2883,6 +2884,20 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0, py::arg("lenient") = false);
     m.def("xplt_time_values", [](const std::string& path) {
         return meshioplusplus::read_xplt_metadata(path).mTimeValues;
+    });
+
+    // Ansys MAPDL results (.rst/.rth) reader: one result set per read.
+    m.def(
+        "ansys_rst_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           bool lenient) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys_rst(
+                path, core_read_options(points_only, arrays, time_step, py::none(), lenient)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("lenient") = false);
+    m.def("ansys_rst_time_values", [](const std::string& path) {
+        return meshioplusplus::read_ansys_rst_metadata(path).mTimeValues;
     });
 
     // AVS-UCD writer / reader (.avs).
