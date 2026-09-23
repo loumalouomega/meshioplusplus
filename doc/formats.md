@@ -15,8 +15,10 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — |
 | [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — |
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
+| [`elmer`](./formats/elmer.md) | a directory (`mesh.header`, …) | ✓ | ✓ | — |
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — |
 | [`exodus`](./formats/exodus.md) | `.e`, `.exo`, `.ex2` | ✓ | ✓ | `netCDF4` |
+| [`febio`](./formats/febio.md) | `.feb` | ✓ | ✓ | — |
 | [`flac3d`](./formats/flac3d.md) | `.f3grid` | ✓ | ✓ | — |
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — |
 | [`frd`](./formats/frd.md) | `.frd` | ✓ | — | — |
@@ -69,14 +71,19 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`vtu`](./formats/vtu.md) | `.vtu` | ✓ | ✓ | — |
 | [`wkt`](./formats/wkt.md) | `.wkt` | ✓ | ✓ | — |
 | [`xdmf`](./formats/xdmf.md) | `.xdmf`, `.xmf` | ✓ | ✓ | `h5py` (for HDF data) |
+| [`xplt`](./formats/xplt.md) | `.xplt` | ✓ | — | — (zlib for compressed files) |
 | [`xyz`](./formats/xyz.md) | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` | ✓ | ✓ | — |
 | [`zarr`](./formats/zarr.md) | `.zarr` | ✓ | ✓ | `zarr` (writing needs 3.x) |
 
-**Note on directory formats:** `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a target with no extension needs an explicit `file_format=`, and none of the three can be read from or written to a buffer. A glob over such a set — `read_sequence("out_*.pmsh")` — matches them, which an ordinary file glob would not.
+**Note on directory formats:** [`elmer`](./formats/elmer.md), `openfoam`, [`pmsh`](./formats/pmsh.md) and [`zarr`](./formats/zarr.md) write a *directory* rather than a file. Extension dispatch still works (`case.pmsh` and `case.zarr` carry their suffix on the directory name), but a write target with no extension needs an explicit `file_format=`, and none of the four can be read from or written to a buffer. **Reading sniffs a directory by the files it holds** (v16.2.0): a `mesh.header` (or a `partitioning.N` of `part.n.*` files) makes it `elmer`, and a `constant/polyMesh` or `polyMesh` with `owner` and `faces` (or a decomposed `processor0`, or a multi-region `constant/regionProperties`) makes it `openfoam`, so `read("case")` and `convert case out.vtu` need no format; a directory matching both, or neither, is not guessed. A glob over such a set — `read_sequence("out_*.pmsh")` — matches the suffixed ones, which an ordinary file glob would not; an extension-less Elmer directory has to be listed explicitly.
 
 **Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**. They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
 
 **Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
+
+**Note on Elmer meshes (`elmer`)** (v16.2.0): ElmerSolver's native mesh, a *directory* of `mesh.header`, `mesh.nodes`, `mesh.elements`, `mesh.boundary` and `mesh.names`, read and written by both engines. Bulk and boundary elements are separate cell blocks; bodies and boundaries are `cell` regions tagged with their Elmer ids and named from `mesh.names`. Only the `820`/`827` bricks have a node permutation, pinned against ElmerSolver's `elements.def` and its own VTU writer. A partitioned mesh (`partitioning.N/part.n.*`, halo copies included) is merged with each cell's part in `cell_data["partition:part"]`, and `piece=` reads one part. The writer is serial: the highest-dimensional cells are the bulk, every lower-dimensional cell and every `side` region facet a boundary element with regenerated parents. Checked against ElmerGrid and ElmerSolver built from source. See [Elmer](./formats/elmer.md).
+
+**Note on FEBio (`febio`, `xplt`)** (v16.2.0): the mesh of an FEBio input file (`.feb`, spec 2.5 in `<Geometry>`, 3.0 and 4.0 in `<Mesh>`) is read by both engines under the rules of FEBio's own parsers: each `<Elements>` block a cell block and a cell region, `<NodeSet>`/`<ElementSet>` point and cell regions, a `<Surface>` on solid faces a side region, `<Edge>`/`<DiscreteSet>` line blocks, `<MeshData>` point and cell data. The writer emits spec 4.0 with a placeholder material per domain; faces of solids become surfaces, lone two-node lines discrete springs. FEBio's plot file (`.xplt`, read-only) is read one state at a time (`time_step`), compressed or not, in either byte order: nodal variables as point data, per-element ones as cell data, per-element-node ones averaged to the points. Only `hex27` has a node permutation (`FEHex27`'s face centres). Both were checked against FEBio 4.12 built from source. See [FEBio input](./formats/febio.md) and [FEBio plot files](./formats/xplt.md).
 
 **Note on Code_Aster meshes (`code_aster`)** (v16.0.0): Code_Aster's own ASCII mesh, read and written by both engines under the rules of Code_Aster's reader: only the first 80 columns of a line are read, records are token streams that may wrap, `%` starts a comment. `COOR_nD` gives the points, `POI1` … `HEXA27` the cell blocks (`TRIA7` as the new `triangle7`), and `GROUP_MA`/`GROUP_NO` cell and point regions without a tag. Its node order is **not** MED's: the quadratic hexahedra and wedges list the vertical mid-edges before the top ring, and the tables are pinned against Code_Aster's own gmsh and MED readers in the [node-ordering registry](./node_ordering.md). The writer keeps every line within 80 columns, names nodes and elements `N…`/`M…`, sanitises group names to 24 characters, and drops side regions and data arrays with a warning. See [Code_Aster](./formats/code_aster.md).
 
@@ -151,8 +158,10 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `code_aster` | `%` prefix | Anywhere; the writer puts it first | Yes |
 | `dex` | None — a fixed two-line header, the second ending in `#` | n/a (structural, not free text) | — |
 | `dolfin-xml` | XML `<!-- -->` | Anywhere in the document | — |
+| `elmer` | `!` lines in `mesh.names` (any line without both `$` and `=` is ignored by ElmerGrid and ElmerSolver) | `mesh.names`, which the writer always writes; the writer puts it first | Yes |
 | `ensight` | None named, but the `.geo` header's description line 2 is free text | Fixed line 2 of the `.geo` header | Yes |
 | `exodus` | netCDF root `title` attribute | n/a (one attribute, not a line) | Yes |
+| `febio` | XML `<!-- -->` | Anywhere in the document; the writer puts it just inside `<febio_spec>`, so the root tag stays within the bytes sniffing reads | Yes |
 | `flac3d` | `*` prefix | Top of file | Yes |
 | `flux` | None named — an unlabeled free-text line the reader skips (keyed lookup, not positional) | Top of file | Yes |
 | `freefem` | None (fixed positional numeric header) | n/a | — |
@@ -481,6 +490,14 @@ meshioplusplus.flac3d.write(filename, mesh,
 ### AVS-UCD (`.avs`)
 
 `meshioplusplus.avsucd.write(filename, mesh)` — no extra options.
+
+### Elmer (mesh directory)
+
+`meshioplusplus.elmer.write(dirname, mesh)` — no extra options; a directory has no extension, so `meshioplusplus.write` needs `file_format="elmer"`. Cell regions become bodies and boundaries, side regions boundary elements, with parents regenerated; see [`elmer.md`](./formats/elmer.md#writing).
+
+### FEBio (`.feb`)
+
+`meshioplusplus.febio.write(filename, mesh)` — no extra options. Spec 4.0 with a placeholder material per domain; 2-D blocks on solid faces become `<Surface>`s, line blocks `<Edge>`s or `<DiscreteSet>`s, regions node sets, element sets and surfaces; data arrays are not written. See [`febio.md`](./formats/febio.md#writing).
 
 ### Code_Aster (`.mail`)
 
