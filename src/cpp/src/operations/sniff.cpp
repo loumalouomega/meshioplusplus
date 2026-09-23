@@ -158,6 +158,10 @@ std::string sniff_format(const std::string& rPath) {
     // --- binary magics ---
     if (sniff_is_mphbin(head))
         return "mphbin";
+    // FEBio plot file: the magic 0x00464542, in either byte order.
+    if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
+                             head.compare(0, 4, std::string("\0FEB", 4)) == 0))
+        return "xplt";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";

@@ -35,6 +35,7 @@
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -100,6 +101,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // A directory, not a file: no extension maps to it; sniff_format finds it.
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
+        {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -444,6 +446,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".dyn", "lsdyna"},
         {".mail", "code_aster"},
         {".feb", "febio"},
+        {".xplt", "xplt"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},
@@ -606,6 +609,9 @@ const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
         {"elmer", meshioplusplus::read_elmer},
         // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
         {"febio", meshioplusplus::read_febio},
+        // FEBio .xplt honours mTimeStep (one state), the narrowing options and
+        // mLenient (downgrade tet5/tet15 domains).
+        {"xplt", meshioplusplus::read_xplt},
         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
         // narrowing options.
         {"unv", [](const std::string& path,
@@ -677,6 +683,7 @@ const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
         {"tecplot", meshioplusplus::read_tecplot_metadata},
         {"ensight", meshioplusplus::read_ensight_metadata},
         {"frd", meshioplusplus::read_frd_metadata},
+        {"xplt", meshioplusplus::read_xplt_metadata},
         {"unv", meshioplusplus::read_unv_metadata},
         {"openfoam", meshioplusplus::read_openfoam_metadata},
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
