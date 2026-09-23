@@ -7642,6 +7642,100 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/face_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/facet_index.hpp =====
+/**
+ * @file detail/facet_index.hpp
+ * @brief Find the cell facet a file names by its nodes.
+ *
+ * Several formats name a boundary facet by its node list rather than by
+ * (cell, local facet): LS-DYNA segments, FEBio surfaces, Elmer boundary
+ * elements. `FacetIndex` keys every facet of a mesh by its sorted corner nodes
+ * and answers, for a node list, which cells own that facet and under which
+ * local facet number — the numbering a `Side` region uses (`cell_faces` for a
+ * 3-D cell, `cell_edges` for a 2-D one; see `doc/regions.md`). An interior
+ * facet has two owners; the first two in block-major order are kept, with the
+ * total count.
+ *
+ * `facet_nodes` is the other direction: the node list of one (cell, facet).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Which facets a `FacetIndex` holds.
+struct FacetIndexOptions {
+    /// The faces of every 3-D cell (`cell_faces`).
+    bool mSolidFaces = true;
+    /// The edges of every 2-D cell (`cell_edges`).
+    bool mSurfaceEdges = true;
+    /// A `triangle`/`quad` cell's own face, as facet 0. Not a `Side` region
+    /// facet (a 2-D cell's facets are its edges): LS-DYNA's shell segments
+    /// and FEBio's shell surfaces use it to recognise a shell by its nodes.
+    bool mSurfaceSelf = false;
+};
+
+/// One owner of a facet: a global (block-major) cell index and a local facet.
+struct FacetOwner {
+    std::int64_t mCell = -1;
+    std::int64_t mFacet = -1;
+};
+
+/// The owners of one facet: the first two in block-major order, and how many.
+struct FacetHit {
+    FacetOwner mFirst;
+    FacetOwner mSecond;
+    std::size_t mCount = 0;
+};
+
+/// Sorted-corner lookup of every facet of a mesh.
+class MESHIOPLUSPLUS_API FacetIndex {
+public:
+    /**
+     * @brief Index the facets of @p rMesh.
+     * @param rMesh The mesh; ragged and polyhedral blocks are skipped.
+     * @param rOptions Which facets to hold.
+     */
+    explicit FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions = {});
+
+    /**
+     * @brief The owners of the facet whose corners are @p pCorners.
+     * @param pCorners Corner node ids, in any order (mid-side nodes excluded).
+     * @param N Number of corners.
+     * @return The hit, or `nullptr` when no indexed facet has these corners.
+     */
+    const FacetHit* Find(const std::int64_t* pCorners, std::size_t N) const;
+
+    /// Number of distinct facets held.
+    std::size_t Size() const { return mMap.size(); }
+
+private:
+    std::unordered_map<FacetKey, FacetHit, FacetKeyHash> mMap;
+};
+
+/**
+ * @brief The nodes of one `Side` facet: its cell type and node ids, corners
+ * first, then mid-side and centre nodes as `cell_faces`/`cell_edges` list them.
+ * @param rMesh The mesh.
+ * @param Cell Global (block-major) cell index.
+ * @param Facet Local facet: a face of a 3-D cell, an edge of a 2-D one.
+ * @param rType Receives the facet's cell type.
+ * @param rNodes Receives the facet's node ids.
+ * @return `false` when the cell or facet does not exist (nothing is written).
+ */
+MESHIOPLUSPLUS_API bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet,
+                                    CellType& rType, std::vector<std::int64_t>& rNodes);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/facet_index.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/fast_number.hpp =====
 /**
  * @file fast_number.hpp
@@ -44352,6 +44446,112 @@ std::int64_t FaceLookup::Find(const std::int64_t* pIds, std::size_t N) const {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/face_mesh.cpp =====
+// ===== begin src/cpp/src/detail/facet_index.cpp =====
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+FacetIndex::FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions) {
+    std::int64_t base = 0;
+    std::int64_t corners[4];
+    const auto add = [&](std::size_t N, std::int64_t Cell, std::int64_t Facet) {
+        FacetHit& hit = mMap[FacetKey(corners, N)];
+        if (hit.mCount == 0)
+            hit.mFirst = FacetOwner{Cell, Facet};
+        else if (hit.mCount == 1)
+            hit.mSecond = FacetOwner{Cell, Facet};
+        ++hit.mCount;
+    };
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t n_cells = cb.NumCells();
+        if (cb.IsRagged()) {
+            base += static_cast<std::int64_t>(n_cells);
+            continue;
+        }
+        const CellType type = cell_type_from_name(std::string(cb.Type()));
+        const int dim = cell_type_dimension(type);
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = cb.NodesPerCell();
+        const bool self =
+            rOptions.mSurfaceSelf && (type == CellType::Triangle || type == CellType::Quad);
+        if (dim == 3 && rOptions.mSolidFaces) {
+            const auto& faces = cell_faces(type);
+            for (std::size_t r = 0; r < n_cells; ++r)
+                for (std::size_t f = 0; f < faces.size(); ++f) {
+                    for (std::size_t c = 0; c < faces[f].mNumCorners; ++c)
+                        corners[c] = read_int(conn, r * k + faces[f].mNodes[c]);
+                    add(faces[f].mNumCorners, base + static_cast<std::int64_t>(r),
+                        static_cast<std::int64_t>(f));
+                }
+        } else if (dim == 2 && (rOptions.mSurfaceEdges || self)) {
+            const auto& edges = cell_edges(type);
+            for (std::size_t r = 0; r < n_cells; ++r) {
+                const std::int64_t g = base + static_cast<std::int64_t>(r);
+                if (self) {
+                    for (std::size_t c = 0; c < k; ++c)
+                        corners[c] = read_int(conn, r * k + c);
+                    add(k, g, 0);
+                }
+                if (rOptions.mSurfaceEdges)
+                    for (std::size_t e = 0; e < edges.size(); ++e) {
+                        for (std::size_t c = 0; c < 2; ++c)
+                            corners[c] = read_int(conn, r * k + edges[e].mNodes[c]);
+                        add(2, g, static_cast<std::int64_t>(e));
+                    }
+            }
+        }
+        base += static_cast<std::int64_t>(n_cells);
+    }
+}
+
+const FacetHit* FacetIndex::Find(const std::int64_t* pCorners, std::size_t N) const {
+    const auto it = mMap.find(FacetKey(pCorners, N));
+    return it == mMap.end() ? nullptr : &it->second;
+}
+
+bool facet_nodes(const Mesh& rMesh, std::int64_t Cell, std::int64_t Facet, CellType& rType,
+                 std::vector<std::int64_t>& rNodes) {
+    const auto [block, row] = global_to_block_row(block_bases(rMesh), Cell);
+    if (block == static_cast<std::size_t>(-1) || Facet < 0)
+        return false;
+    const auto cb = rMesh.Cells(block);
+    if (cb.IsRagged())
+        return false;
+    const CellType type = cell_type_from_name(std::string(cb.Type()));
+    const NDArray& conn = cb.Conn();
+    const std::size_t k = cb.NodesPerCell();
+    const std::size_t r = static_cast<std::size_t>(row);
+    const int dim = cell_type_dimension(type);
+    rNodes.clear();
+    if (dim == 3) {
+        const auto& faces = cell_faces(type);
+        if (static_cast<std::size_t>(Facet) >= faces.size())
+            return false;
+        const CellFaceDef& face = faces[static_cast<std::size_t>(Facet)];
+        rType = face.mFaceType;
+        for (std::size_t c = 0; c < face.mNumNodes; ++c)
+            rNodes.push_back(read_int(conn, r * k + face.mNodes[c]));
+        return true;
+    }
+    if (dim == 2) {
+        const auto& edges = cell_edges(type);
+        if (static_cast<std::size_t>(Facet) >= edges.size())
+            return false;
+        const CellEdgeDef& edge = edges[static_cast<std::size_t>(Facet)];
+        rType = edge.mEdgeType;
+        for (std::size_t c = 0; c < edge.mNumNodes; ++c)
+            rNodes.push_back(read_int(conn, r * k + edge.mNodes[c]));
+        return true;
+    }
+    return false;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/facet_index.cpp =====
 // ===== begin src/cpp/src/detail/geometry.cpp =====
 
 namespace meshioplusplus {
@@ -69008,62 +69208,14 @@ NDArray lsd_entries(const std::vector<std::int64_t>& rValues, std::size_t Stride
     return out;
 }
 
-struct LsdFaceKey {
-    std::array<std::int64_t, 4> mNodes;
-    bool operator==(const LsdFaceKey& rOther) const { return mNodes == rOther.mNodes; }
-};
-
-struct LsdFaceKeyHash {
-    std::size_t operator()(const LsdFaceKey& rKey) const {
-        std::size_t h = 1469598103934665603ULL;
-        for (std::int64_t v : rKey.mNodes)
-            h = (h ^ static_cast<std::size_t>(v + 2)) * 1099511628211ULL;
-        return h;
-    }
-};
-
-// Sorted corner nodes, padded with -1 for a triangle.
-LsdFaceKey lsd_face_key(std::array<std::int64_t, 4> Nodes, std::size_t Count) {
-    std::sort(Nodes.begin(), Nodes.begin() + static_cast<std::ptrdiff_t>(Count));
-    for (std::size_t k = Count; k < 4; ++k)
-        Nodes[k] = -1;
-    return LsdFaceKey{Nodes};
-}
-
-using LsdFaceMap =
-    std::unordered_map<LsdFaceKey, std::pair<std::int64_t, std::int64_t>, LsdFaceKeyHash>;
-
-// Corner-node key -> (global cell, facet) for every face of every cell. An interior
-// face is shared by two cells; the lowest cell index wins, and a shell element's own
-// face is facet 0.
-LsdFaceMap lsd_face_map(const Mesh& rMesh) {
-    LsdFaceMap out;
-    std::int64_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string type(cb.Type());
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = cb.NodesPerCell();
-        const auto& faces = detail::cell_faces(cell_type_from_name(type));
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int64_t g = base + static_cast<std::int64_t>(r);
-            if (!faces.empty()) {
-                for (std::size_t f = 0; f < faces.size(); ++f) {
-                    std::array<std::int64_t, 4> nodes{-1, -1, -1, -1};
-                    for (std::size_t c = 0; c < faces[f].mNumCorners; ++c)
-                        nodes[c] = detail::read_int(conn, r * k + faces[f].mNodes[c]);
-                    out.emplace(lsd_face_key(nodes, faces[f].mNumCorners),
-                                std::make_pair(g, static_cast<std::int64_t>(f)));
-                }
-            } else if (type == "triangle" || type == "quad") {
-                std::array<std::int64_t, 4> nodes{-1, -1, -1, -1};
-                for (std::size_t c = 0; c < k; ++c)
-                    nodes[c] = detail::read_int(conn, r * k + c);
-                out.emplace(lsd_face_key(nodes, k), std::make_pair(g, std::int64_t{0}));
-            }
-        }
-        base += static_cast<std::int64_t>(cb.NumCells());
-    }
-    return out;
+// Corner-node lookup over every face of every solid and every shell's own face
+// (as facet 0). An interior face is shared by two cells; the lowest cell index
+// wins.
+detail::FacetIndex lsd_face_map(const Mesh& rMesh) {
+    detail::FacetIndexOptions options;
+    options.mSurfaceEdges = false;
+    options.mSurfaceSelf = true;
+    return detail::FacetIndex(rMesh, options);
 }
 
 Mesh lsd_build_mesh(LsdDeck& rDeck) {
@@ -69144,7 +69296,7 @@ Mesh lsd_build_mesh(LsdDeck& rDeck) {
     }
 
     std::size_t dropped = 0;
-    std::optional<LsdFaceMap> face_map;
+    std::optional<detail::FacetIndex> face_map;
     for (const LsdSet& set : rDeck.mSets) {
         const std::string family = lsd_family_name(set.mFamily);
         std::string name = set.mTitle.empty()
@@ -69178,14 +69330,13 @@ Mesh lsd_build_mesh(LsdDeck& rDeck) {
                     idx[k] = it == rDeck.mNodeIndex.end() ? -1 : it->second;
                     defined = defined && it != rDeck.mNodeIndex.end();
                 }
-                const auto hit = defined
-                                     ? face_map->find(lsd_face_key(idx, idx[3] == idx[2] ? 3 : 4))
-                                     : face_map->end();
-                if (!defined || hit == face_map->end()) {
+                const detail::FacetHit* hit =
+                    defined ? face_map->Find(idx.data(), idx[3] == idx[2] ? 3 : 4) : nullptr;
+                if (hit == nullptr) {
                     ++dropped;
                 } else {
-                    entries.push_back(hit->second.first);
-                    entries.push_back(hit->second.second);
+                    entries.push_back(hit->mFirst.mCell);
+                    entries.push_back(hit->mFirst.mFacet);
                 }
             }
         } else {

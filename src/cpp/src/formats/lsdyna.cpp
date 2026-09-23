@@ -40,6 +40,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -798,62 +799,14 @@ NDArray lsd_entries(const std::vector<std::int64_t>& rValues, std::size_t Stride
     return out;
 }
 
-struct LsdFaceKey {
-    std::array<std::int64_t, 4> mNodes;
-    bool operator==(const LsdFaceKey& rOther) const { return mNodes == rOther.mNodes; }
-};
-
-struct LsdFaceKeyHash {
-    std::size_t operator()(const LsdFaceKey& rKey) const {
-        std::size_t h = 1469598103934665603ULL;
-        for (std::int64_t v : rKey.mNodes)
-            h = (h ^ static_cast<std::size_t>(v + 2)) * 1099511628211ULL;
-        return h;
-    }
-};
-
-// Sorted corner nodes, padded with -1 for a triangle.
-LsdFaceKey lsd_face_key(std::array<std::int64_t, 4> Nodes, std::size_t Count) {
-    std::sort(Nodes.begin(), Nodes.begin() + static_cast<std::ptrdiff_t>(Count));
-    for (std::size_t k = Count; k < 4; ++k)
-        Nodes[k] = -1;
-    return LsdFaceKey{Nodes};
-}
-
-using LsdFaceMap =
-    std::unordered_map<LsdFaceKey, std::pair<std::int64_t, std::int64_t>, LsdFaceKeyHash>;
-
-// Corner-node key -> (global cell, facet) for every face of every cell. An interior
-// face is shared by two cells; the lowest cell index wins, and a shell element's own
-// face is facet 0.
-LsdFaceMap lsd_face_map(const Mesh& rMesh) {
-    LsdFaceMap out;
-    std::int64_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string type(cb.Type());
-        const NDArray& conn = cb.Conn();
-        const std::size_t k = cb.NodesPerCell();
-        const auto& faces = detail::cell_faces(cell_type_from_name(type));
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
-            const std::int64_t g = base + static_cast<std::int64_t>(r);
-            if (!faces.empty()) {
-                for (std::size_t f = 0; f < faces.size(); ++f) {
-                    std::array<std::int64_t, 4> nodes{-1, -1, -1, -1};
-                    for (std::size_t c = 0; c < faces[f].mNumCorners; ++c)
-                        nodes[c] = detail::read_int(conn, r * k + faces[f].mNodes[c]);
-                    out.emplace(lsd_face_key(nodes, faces[f].mNumCorners),
-                                std::make_pair(g, static_cast<std::int64_t>(f)));
-                }
-            } else if (type == "triangle" || type == "quad") {
-                std::array<std::int64_t, 4> nodes{-1, -1, -1, -1};
-                for (std::size_t c = 0; c < k; ++c)
-                    nodes[c] = detail::read_int(conn, r * k + c);
-                out.emplace(lsd_face_key(nodes, k), std::make_pair(g, std::int64_t{0}));
-            }
-        }
-        base += static_cast<std::int64_t>(cb.NumCells());
-    }
-    return out;
+// Corner-node lookup over every face of every solid and every shell's own face
+// (as facet 0). An interior face is shared by two cells; the lowest cell index
+// wins.
+detail::FacetIndex lsd_face_map(const Mesh& rMesh) {
+    detail::FacetIndexOptions options;
+    options.mSurfaceEdges = false;
+    options.mSurfaceSelf = true;
+    return detail::FacetIndex(rMesh, options);
 }
 
 Mesh lsd_build_mesh(LsdDeck& rDeck) {
@@ -934,7 +887,7 @@ Mesh lsd_build_mesh(LsdDeck& rDeck) {
     }
 
     std::size_t dropped = 0;
-    std::optional<LsdFaceMap> face_map;
+    std::optional<detail::FacetIndex> face_map;
     for (const LsdSet& set : rDeck.mSets) {
         const std::string family = lsd_family_name(set.mFamily);
         std::string name = set.mTitle.empty()
@@ -968,14 +921,13 @@ Mesh lsd_build_mesh(LsdDeck& rDeck) {
                     idx[k] = it == rDeck.mNodeIndex.end() ? -1 : it->second;
                     defined = defined && it != rDeck.mNodeIndex.end();
                 }
-                const auto hit = defined
-                                     ? face_map->find(lsd_face_key(idx, idx[3] == idx[2] ? 3 : 4))
-                                     : face_map->end();
-                if (!defined || hit == face_map->end()) {
+                const detail::FacetHit* hit =
+                    defined ? face_map->Find(idx.data(), idx[3] == idx[2] ? 3 : 4) : nullptr;
+                if (hit == nullptr) {
                     ++dropped;
                 } else {
-                    entries.push_back(hit->second.first);
-                    entries.push_back(hit->second.second);
+                    entries.push_back(hit->mFirst.mCell);
+                    entries.push_back(hit->mFirst.mFacet);
                 }
             }
         } else {
