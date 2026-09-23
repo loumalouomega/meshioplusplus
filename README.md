@@ -1038,7 +1038,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.5.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.6.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

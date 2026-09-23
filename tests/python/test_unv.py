@@ -509,3 +509,31 @@ def test_sniffing(tmp_path):
         blind.write_bytes(path.read_bytes())
         assert sniff_format(blind) == "unv", path.name
         assert _sniff_format_py(blind) == "unv", path.name
+
+
+def test_code_aster_comments_and_touching_units(tmp_path):
+    # Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1",
+    # "55   %VALEURS AUX NOEUDS"), and a units record may run its description
+    # into the code ("5mm (milli-newton)"): both seen in FEconv's samples.
+    mesh = _field_mesh()
+    p = tmp_path / "ca.unv"
+    meshioplusplus.unv.write(p, mesh, code_aster=True)
+    blocks = p.read_text().split("    -1\n")
+    for k, block in enumerate(blocks):
+        lines = block.split("\n")
+        if lines[0].strip() == "55":
+            lines[0] += "   %VALEURS AUX NOEUDS"
+            # after the 6 ID lines and records 6-8, a node label line, then values
+            for i in range(9, len(lines)):
+                if lines[i].strip().isdigit():
+                    lines[i] += f"     % NOEUD N{lines[i].strip()}"
+        blocks[k] = "\n".join(lines)
+    units = (
+        "    -1\n   164\n         5mm (milli-newton)            2\n"
+        "  1.0D+03  1.0D+03  1.0D+00\n  2.7315D+02\n    -1\n"
+    )
+    p.write_text(units + "    -1\n".join(blocks))
+    assert "% NOEUD N" in p.read_text()
+    for out in _both_readers(p):
+        _assert_fields(out, rtol=1e-5)
+        assert out.field_data["unv:units"][0] == 5

@@ -89,6 +89,7 @@ A transient Gmsh file carries several `$NodeData`/`$ElementData` sections under 
 
 ## Quirks & limitations
 
+- Section keywords may be indented (FEconv's samples indent every line); leading and trailing whitespace around `$Nodes`, `$Elements` and the other markers is ignored. Before v16.6.0 both engines refused such a file.
 - Version strings are normalized: `"2"` → 2.2, `"4"` → 4.1.
 - Gmsh can't distinguish a `(n,)` shape from `(n,1)` for post-processing data; the reader squeezes single-component arrays to 1D.
 - Elements in v4.0/4.1 are addressed by **node tag**, not array position — the most structurally distinctive quirk of this format relative to nearly every other one meshio++ supports.

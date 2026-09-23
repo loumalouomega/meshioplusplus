@@ -50,6 +50,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "face_cells_common.hpp"
 
 namespace fs = std::filesystem;
 
@@ -650,142 +651,11 @@ std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
 
 // ---- geometry ----
 
-double triple(const std::array<double, 3>& rA, const std::array<double, 3>& rB,
-              const std::array<double, 3>& rC) {
-    // a . (b x c)
-    double cx = rB[1] * rC[2] - rB[2] * rC[1];
-    double cy = rB[2] * rC[0] - rB[0] * rC[2];
-    double cz = rB[0] * rC[1] - rB[1] * rC[0];
-    return rA[0] * cx + rA[1] * cy + rA[2] * cz;
-}
-
-std::array<double, 3> sub(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-std::size_t unique_node_count(const std::vector<Face>& rFaces) {
-    std::unordered_set<std::int64_t> s;
-    for (const auto& f : rFaces)
-        for (std::int64_t v : f)
-            s.insert(v);
-    return s.size();
-}
-
-std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> node_adjacency(
-    const std::vector<Face>& rFaces) {
-    std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> adj;
-    for (const auto& f : rFaces) {
-        std::size_t m = f.size();
-        for (std::size_t i = 0; i < m; ++i) {
-            std::int64_t a = f[i], b = f[(i + 1) % m];
-            adj[a].insert(b);
-            adj[b].insert(a);
-        }
-    }
-    return adj;
-}
-
-// Returns the ordered top ring, or empty if ambiguous.
-std::vector<std::int64_t> match_top(const Face& rBottom, const std::vector<Face>& rOriented) {
-    auto adj = node_adjacency(rOriented);
-    std::unordered_set<std::int64_t> base(rBottom.begin(), rBottom.end());
-    std::vector<std::int64_t> top;
-    for (std::int64_t b : rBottom) {
-        std::vector<std::int64_t> cand;
-        for (std::int64_t x : adj[b])
-            if (!base.count(x))
-                cand.push_back(x);
-        if (cand.size() != 1)
-            return {};
-        top.push_back(cand[0]);
-    }
-    return top;
-}
-
-using P3 = std::vector<std::array<double, 3>>;
-
-Face build_tetra(const std::vector<Face>& rOriented, const P3& rP) {
-    const Face& base = rOriented[0];
-    std::unordered_set<std::int64_t> all;
-    for (const auto& f : rOriented)
-        for (std::int64_t v : f)
-            all.insert(v);
-    for (std::int64_t v : base)
-        all.erase(v);
-    std::int64_t apex = *all.begin();
-    Face n = {base[0], base[1], base[2], apex};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
-        n = {base[0], base[2], base[1], apex};
-    return n;
-}
-
-Face build_pyramid(const std::vector<Face>& rOriented, const P3& rP) {
-    Face quad;
-    for (const auto& f : rOriented)
-        if (f.size() == 4) {
-            quad = f;
-            break;
-        }
-    std::unordered_set<std::int64_t> all;
-    for (const auto& f : rOriented)
-        for (std::int64_t v : f)
-            all.insert(v);
-    for (std::int64_t v : quad)
-        all.erase(v);
-    std::int64_t apex = *all.begin();
-    Face n = {quad[0], quad[1], quad[2], quad[3], apex};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
-        n = {quad[0], quad[3], quad[2], quad[1], apex};
-    return n;
-}
-
-Face build_wedge(const std::vector<Face>& rOriented, const P3& rP) {
-    Face bottom;
-    for (const auto& f : rOriented)
-        if (f.size() == 3) {
-            bottom = f;
-            break;
-        }
-    std::vector<std::int64_t> top = match_top(bottom, rOriented);
-    if (top.empty())
-        return {};
-    Face n = {bottom[0], bottom[1], bottom[2], top[0], top[1], top[2]};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
-        n = {bottom[0], bottom[2], bottom[1], top[0], top[2], top[1]};
-    return n;
-}
-
-Face build_hexahedron(const std::vector<Face>& rOriented, const P3& rP) {
-    Face bottom;
-    for (const auto& f : rOriented)
-        if (f.size() == 4) {
-            bottom = f;
-            break;
-        }
-    std::vector<std::int64_t> top = match_top(bottom, rOriented);
-    if (top.empty())
-        return {};
-    Face n = {bottom[0], bottom[1], bottom[2], bottom[3], top[0], top[1], top[2], top[3]};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
-        n = {bottom[0], bottom[3], bottom[2], bottom[1], top[0], top[3], top[2], top[1]};
-    return n;
-}
-
-// Classify a cell. Returns {meshio type, connectivity}. For "polyhedron" the
-// connectivity is empty (the caller keeps the oriented faces).
-std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented, const P3& rP) {
-    std::size_t nf = rOriented.size();
-    std::size_t np = unique_node_count(rOriented);
-    if (nf == 4 && np == 4)
-        return {"tetra", build_tetra(rOriented, rP)};
-    if (nf == 5 && np == 5)
-        return {"pyramid", build_pyramid(rOriented, rP)};
-    if (nf == 5 && np == 6)
-        return {"wedge", build_wedge(rOriented, rP)};
-    if (nf == 6 && np == 8)
-        return {"hexahedron", build_hexahedron(rOriented, rP)};
-    return {"polyhedron", {}};
-}
+// The face-to-cell kernel (triple, match_top, build_*, reconstruct_cell) is
+// shared with the Fluent reader: formats/face_cells_common.hpp.
+using face_cells::P3;
+using face_cells::reconstruct_cell;
+using face_cells::unique_node_count;
 
 // ---- decomposed (processorN) cases (v11.4.0, roadmap §1 tier B2) ----
 

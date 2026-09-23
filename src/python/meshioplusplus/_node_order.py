@@ -153,6 +153,20 @@ _SOURCES = [
         [0, 1, 2, 3, 4, 5, 6, 8, 7, 15, 17, 16, 9, 11, 14, 10, 13, 12],
     ),
     ("mphtxt", "pyramid14", _TO, [0, 1, 3, 2, 4, 5, 8, 9, 6, 10, 11, 13, 12, 7]),
+    # FLUX .pf3: every solid is VTK's element mirrored (base face clockwise);
+    # pinned against FEconv's FLUX samples and their UNV twins.
+    ("flux", "tetra", _TO, [0, 2, 1, 3]),
+    ("flux", "tetra10", _TO, [0, 2, 1, 3, 5, 7, 4, 6, 8, 9]),
+    ("flux", "pyramid", _TO, [0, 3, 2, 1, 4]),
+    ("flux", "wedge", _TO, [0, 2, 1, 3, 5, 4]),
+    ("flux", "wedge15", _TO, [0, 2, 1, 3, 5, 4, 8, 7, 6, 11, 10, 9, 12, 14, 13]),
+    ("flux", "hexahedron", _TO, [0, 3, 2, 1, 4, 7, 6, 5]),
+    (
+        "flux",
+        "hexahedron20",
+        _TO,
+        [0, 3, 2, 1, 4, 7, 6, 5, 11, 10, 9, 8, 15, 14, 13, 12, 16, 19, 18, 17],
+    ),
     ("unv", "line3", _FROM, [0, 2, 1]),
     ("unv", "triangle6", _FROM, [0, 3, 1, 4, 2, 5]),
     ("unv", "quad8", _FROM, [0, 4, 1, 5, 2, 6, 3, 7]),

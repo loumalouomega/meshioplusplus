@@ -90,6 +90,24 @@ struct Tokenizer {
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     double next_double() { return detail::parse_double(next()); }
+    // Tokens on the line of the next token, without consuming anything.
+    std::size_t tokens_on_next_line() {
+        const std::size_t saved = mPos;
+        skip_ws();
+        std::size_t count = 0;
+        while (mPos < mBuf.size() && mBuf[mPos] != '\n' && mBuf[mPos] != '#') {
+            if (std::isspace(static_cast<unsigned char>(mBuf[mPos]))) {
+                ++mPos;
+                continue;
+            }
+            ++count;
+            while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
+                   mBuf[mPos] != '#')
+                ++mPos;
+        }
+        mPos = saved;
+        return count;
+    }
     void skip_line() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
@@ -158,9 +176,13 @@ Mesh read_medit_ascii(const std::string& rPath) {
         } else if (kw == "Dimension") {
             dim = static_cast<int>(tok.next_int());
         } else if (kw == "Vertices") {
-            if (dim <= 0)
-                throw ReadError("Medit: Dimension before Vertices");
             std::int64_t n = tok.next_int();
+            // No `Dimension` keyword (FEconv writes none): a vertex row holds
+            // the coordinates and a reference.
+            if (dim <= 0)
+                dim = n > 0 ? static_cast<int>(tok.tokens_on_next_line()) - 1 : 3;
+            if (dim < 1 || dim > 3)
+                throw ReadError("Medit: cannot tell the dimension from the Vertices rows");
             NDArray pts(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::int64_t i = 0; i < n; ++i) {

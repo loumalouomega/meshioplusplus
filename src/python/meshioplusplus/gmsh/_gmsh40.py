@@ -44,6 +44,9 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
         if not line:
             # EOF
             break
+        line = line.strip()
+        if not line:
+            continue
         if line[0] != "$":
             raise ReadError
         environ = line[1:].strip()

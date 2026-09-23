@@ -840,3 +840,75 @@ def generic_io(filepath):
     for c0, c1 in zip(tri_mesh.cells, out_mesh.cells):
         assert c0.type == c1.type
         assert (c0.data == c1.data).all()
+
+
+# Corner quadruples whose signed volume is positive for a well-oriented VTK
+# cell (the first corner and its three neighbours), and the mid-edge nodes of
+# the quadratic types as (node, corner, corner).
+_ORIENTATION_CORNERS = {
+    "tetra": (0, 1, 2, 3),
+    "tetra10": (0, 1, 2, 3),
+    "pyramid": (0, 1, 3, 4),
+    "pyramid13": (0, 1, 3, 4),
+    "wedge": (0, 1, 2, 3),
+    "wedge15": (0, 1, 2, 3),
+    "hexahedron": (0, 1, 3, 4),
+    "hexahedron20": (0, 1, 3, 4),
+}
+_MID_EDGES = {
+    "line3": [(2, 0, 1)],
+    "triangle6": [(3, 0, 1), (4, 1, 2), (5, 2, 0)],
+    "quad8": [(4, 0, 1), (5, 1, 2), (6, 2, 3), (7, 3, 0)],
+    "tetra10": [(4, 0, 1), (5, 1, 2), (6, 2, 0), (7, 0, 3), (8, 1, 3), (9, 2, 3)],
+    "wedge15": [
+        (6, 0, 1),
+        (7, 1, 2),
+        (8, 2, 0),
+        (9, 3, 4),
+        (10, 4, 5),
+        (11, 5, 3),
+        (12, 0, 3),
+        (13, 1, 4),
+        (14, 2, 5),
+    ],
+    "hexahedron20": [
+        (8, 0, 1),
+        (9, 1, 2),
+        (10, 2, 3),
+        (11, 3, 0),
+        (12, 4, 5),
+        (13, 5, 6),
+        (14, 6, 7),
+        (15, 7, 4),
+        (16, 0, 4),
+        (17, 1, 5),
+        (18, 2, 6),
+        (19, 3, 7),
+    ],
+}
+
+
+def assert_well_formed(mesh, atol=1.0e-9):
+    """Every solid positively oriented, every mid-edge node on its edge's
+    midpoint (straight-sided elements only)."""
+    pts = np.asarray(mesh.points, dtype=float)
+    if pts.shape[1] == 2:
+        pts = np.column_stack([pts, np.zeros(len(pts))])
+    for block in mesh.cells:
+        if block.type not in _ORIENTATION_CORNERS and block.type not in _MID_EDGES:
+            continue
+        data = np.asarray(block.data)
+        if block.type in _ORIENTATION_CORNERS and len(data):
+            a, b, c, d = _ORIENTATION_CORNERS[block.type]
+            x = pts[data]
+            vol = np.einsum(
+                "ij,ij->i",
+                np.cross(x[:, b] - x[:, a], x[:, c] - x[:, a]),
+                x[:, d] - x[:, a],
+            )
+            assert (vol > 0).all(), (block.type, vol)
+        for m, i, j in _MID_EDGES.get(block.type, []):
+            mid = 0.5 * (pts[data[:, i]] + pts[data[:, j]])
+            np.testing.assert_allclose(
+                pts[data[:, m]], mid, atol=atol, err_msg=block.type
+            )

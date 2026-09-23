@@ -10302,7 +10302,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 5
+#define MESHIOPLUSPLUS_VERSION_MINOR 6
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10312,7 +10312,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.5.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.6.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -27889,6 +27889,218 @@ inline bool is_special_cell(const std::string& rMeshioType) {
 
 #ifdef MESHIOPLUSPLUS_IMPLEMENTATION
 // ================= IMPLEMENTATION =================
+// ===== begin src/cpp/src/formats/face_cells_common.hpp =====
+/**
+ * @file formats/face_cells_common.hpp
+ * @brief Volume cells from their faces: the kernel shared by the readers of
+ *        face-based formats (OpenFOAM `polyMesh`, ANSYS Fluent `.msh`).
+ *
+ * A cell is given as its faces, each a list of point ids wound so that its
+ * right-hand normal points out of the cell. Tetrahedra, pyramids, wedges and
+ * hexahedra come back in meshio++'s (VTK) node order with a positive volume --
+ * the orientation is checked geometrically, so a flipped input face does not
+ * invert the cell; anything else is reported as a polyhedron and the caller
+ * keeps its outward faces. `polygon_from_edges` does the 2-D counterpart.
+ *
+ * A **format-private** header (the `gid_common.hpp` precedent): it sits beside
+ * the `.cpp` files, is never installed, and lives in a *named* namespace
+ * because the amalgamation concatenates every source into one translation
+ * unit. Twin of `src/python/meshioplusplus/_face_cells.py`.
+ */
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus {
+namespace face_cells {
+
+using Face = std::vector<std::int64_t>;
+using P3 = std::vector<std::array<double, 3>>;
+
+inline double triple(const std::array<double, 3>& rA, const std::array<double, 3>& rB,
+                     const std::array<double, 3>& rC) {
+    // a . (b x c)
+    double cx = rB[1] * rC[2] - rB[2] * rC[1];
+    double cy = rB[2] * rC[0] - rB[0] * rC[2];
+    double cz = rB[0] * rC[1] - rB[1] * rC[0];
+    return rA[0] * cx + rA[1] * cy + rA[2] * cz;
+}
+
+inline std::array<double, 3> sub(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+inline std::size_t unique_node_count(const std::vector<Face>& rFaces) {
+    std::unordered_set<std::int64_t> s;
+    for (const auto& f : rFaces)
+        for (std::int64_t v : f)
+            s.insert(v);
+    return s.size();
+}
+
+inline std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> node_adjacency(
+    const std::vector<Face>& rFaces) {
+    std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> adj;
+    for (const auto& f : rFaces) {
+        std::size_t m = f.size();
+        for (std::size_t i = 0; i < m; ++i) {
+            std::int64_t a = f[i], b = f[(i + 1) % m];
+            adj[a].insert(b);
+            adj[b].insert(a);
+        }
+    }
+    return adj;
+}
+
+// Returns the ordered top ring, or empty if ambiguous.
+inline std::vector<std::int64_t> match_top(const Face& rBottom,
+                                           const std::vector<Face>& rOriented) {
+    auto adj = node_adjacency(rOriented);
+    std::unordered_set<std::int64_t> base(rBottom.begin(), rBottom.end());
+    std::vector<std::int64_t> top;
+    for (std::int64_t b : rBottom) {
+        std::vector<std::int64_t> cand;
+        for (std::int64_t x : adj[b])
+            if (!base.count(x))
+                cand.push_back(x);
+        if (cand.size() != 1)
+            return {};
+        top.push_back(cand[0]);
+    }
+    return top;
+}
+
+inline Face build_tetra(const std::vector<Face>& rOriented, const P3& rP) {
+    const Face& base = rOriented[0];
+    std::unordered_set<std::int64_t> all;
+    for (const auto& f : rOriented)
+        for (std::int64_t v : f)
+            all.insert(v);
+    for (std::int64_t v : base)
+        all.erase(v);
+    std::int64_t apex = *all.begin();
+    Face n = {base[0], base[1], base[2], apex};
+    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
+        n = {base[0], base[2], base[1], apex};
+    return n;
+}
+
+inline Face build_pyramid(const std::vector<Face>& rOriented, const P3& rP) {
+    Face quad;
+    for (const auto& f : rOriented)
+        if (f.size() == 4) {
+            quad = f;
+            break;
+        }
+    std::unordered_set<std::int64_t> all;
+    for (const auto& f : rOriented)
+        for (std::int64_t v : f)
+            all.insert(v);
+    for (std::int64_t v : quad)
+        all.erase(v);
+    std::int64_t apex = *all.begin();
+    Face n = {quad[0], quad[1], quad[2], quad[3], apex};
+    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
+        n = {quad[0], quad[3], quad[2], quad[1], apex};
+    return n;
+}
+
+inline Face build_wedge(const std::vector<Face>& rOriented, const P3& rP) {
+    Face bottom;
+    for (const auto& f : rOriented)
+        if (f.size() == 3) {
+            bottom = f;
+            break;
+        }
+    std::vector<std::int64_t> top = match_top(bottom, rOriented);
+    if (top.empty())
+        return {};
+    Face n = {bottom[0], bottom[1], bottom[2], top[0], top[1], top[2]};
+    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
+        n = {bottom[0], bottom[2], bottom[1], top[0], top[2], top[1]};
+    return n;
+}
+
+inline Face build_hexahedron(const std::vector<Face>& rOriented, const P3& rP) {
+    Face bottom;
+    for (const auto& f : rOriented)
+        if (f.size() == 4) {
+            bottom = f;
+            break;
+        }
+    std::vector<std::int64_t> top = match_top(bottom, rOriented);
+    if (top.empty())
+        return {};
+    Face n = {bottom[0], bottom[1], bottom[2], bottom[3], top[0], top[1], top[2], top[3]};
+    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
+        n = {bottom[0], bottom[3], bottom[2], bottom[1], top[0], top[3], top[2], top[1]};
+    return n;
+}
+
+// Classify a cell. Returns {meshio type, connectivity}. For "polyhedron" the
+// connectivity is empty (the caller keeps the oriented faces).
+inline std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented,
+                                                     const P3& rP) {
+    std::size_t nf = rOriented.size();
+    std::size_t np = unique_node_count(rOriented);
+    if (nf == 4 && np == 4)
+        return {"tetra", build_tetra(rOriented, rP)};
+    if (nf == 5 && np == 5)
+        return {"pyramid", build_pyramid(rOriented, rP)};
+    if (nf == 5 && np == 6)
+        return {"wedge", build_wedge(rOriented, rP)};
+    if (nf == 6 && np == 8)
+        return {"hexahedron", build_hexahedron(rOriented, rP)};
+    return {"polyhedron", {}};
+}
+
+// Chain a 2-D cell's boundary edges into one ring of point ids, counter-
+// clockwise in the xy plane. Empty when the edges do not close a single loop.
+inline Face polygon_from_edges(const std::vector<std::array<std::int64_t, 2>>& rEdges,
+                               const P3& rP) {
+    if (rEdges.size() < 3)
+        return {};
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> next;
+    for (const auto& e : rEdges) {
+        next[e[0]].push_back(e[1]);
+        next[e[1]].push_back(e[0]);
+    }
+    for (const auto& [node, nbrs] : next)
+        if (nbrs.size() != 2)
+            return {};
+    const std::int64_t start = rEdges[0][0];
+    Face ring = {start, rEdges[0][1]};
+    while (ring.size() < next.size()) {
+        const auto& nbrs = next[ring.back()];
+        const std::int64_t c = nbrs[0] != ring[ring.size() - 2] ? nbrs[0] : nbrs[1];
+        if (c == start)
+            return {};
+        ring.push_back(c);
+    }
+    const auto& last = next[ring.back()];
+    if (ring.size() != rEdges.size() || (last[0] != start && last[1] != start))
+        return {};
+    double area = 0.0;
+    for (std::size_t i = 0; i < ring.size(); ++i) {
+        const auto& a = rP[static_cast<std::size_t>(ring[i])];
+        const auto& b = rP[static_cast<std::size_t>(ring[(i + 1) % ring.size()])];
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    if (area < 0)
+        std::reverse(ring.begin() + 1, ring.end());
+    return ring;
+}
+
+}  // namespace face_cells
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/face_cells_common.hpp =====
 // ===== begin src/cpp/src/formats/gid_common.hpp =====
 /**
  * @file formats/gid_common.hpp
@@ -47827,6 +48039,21 @@ const std::vector<NodeOrderSource>& node_order_sources() {
          D::ToMeshio,
          {0, 1, 2, 3, 4, 5, 6, 8, 7, 15, 17, 16, 9, 11, 14, 10, 13, 12}},
         {"mphtxt", "pyramid14", D::ToMeshio, {0, 1, 3, 2, 4, 5, 8, 9, 6, 10, 11, 13, 12, 7}},
+        // FLUX `.pf3`: every solid is VTK's element mirrored (the base face runs
+        // clockwise seen from inside), tetra10 listing its mid-edges as
+        // (0,1) (0,2) (0,3) (1,2) (2,3) (1,3) of the file corners. Pinned
+        // against FEconv's FLUX samples (positive Jacobians, mid-edge nodes at
+        // edge midpoints, and row-for-row equal to their I-DEAS UNV twins);
+        // wedge15 has no sample and follows the same mirror rule. Planar and
+        // line elements are already in meshio++'s order.
+        {"flux", "tetra", D::ToMeshio, {0, 2, 1, 3}},
+        {"flux", "tetra10", D::ToMeshio, {0, 2, 1, 3, 5, 7, 4, 6, 8, 9}},
+        {"flux", "pyramid", D::ToMeshio, {0, 3, 2, 1, 4}},
+        {"flux", "wedge", D::ToMeshio, {0, 2, 1, 3, 5, 4}},
+        {"flux", "wedge15", D::ToMeshio, {0, 2, 1, 3, 5, 4, 8, 7, 6, 11, 10, 9, 12, 14, 13}},
+        {"flux", "hexahedron", D::ToMeshio, {0, 3, 2, 1, 4, 7, 6, 5}},
+        {"flux", "hexahedron20", D::ToMeshio, {0, 3, 2,  1,  4,  7,  6,  5,  11, 10,
+                                               9, 8, 15, 14, 13, 12, 16, 19, 18, 17}},
         // I-DEAS UNV: parabolic elements list their mid-side nodes
         // "sandwiched" between the corners of each ring; the solids list the
         // bottom ring, then the vertical mid-edges, then the top ring (pinned
@@ -52866,137 +53093,264 @@ void write_abaqus(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/abaqus.cpp =====
 // ===== begin src/cpp/src/formats/ansys.cpp =====
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
+
+// ANSYS Fluent `.msh` (also TGrid and GAMBIT meshes). A face row lists its
+// nodes and the two cells it separates, `n0 .. nk c0 c1` (hexadecimal in
+// ASCII), and a cell zone normally declares only a range of cell ids, so volume
+// cells are rebuilt from their faces: the right-hand normal of `n0 .. nk`
+// points into c0 (in 2-D, walking n0 -> n1 leaves c0 on the left), so a face is
+// outward for c1 and reversed for c0. Twin of ansys/_ansys.py.
 
 namespace meshioplusplus {
 
 namespace {
 
-// Cursor over the whole file, mixing line reads with raw binary reads.
-struct Buf {
-    std::string mData;
+// Cell element types with a fixed node count.
+bool fluent_cell_type(std::int64_t ElementType, std::string& rType, int& rNodes) {
+    switch (ElementType) {
+        case 1:
+            rType = "triangle";
+            rNodes = 3;
+            return true;
+        case 2:
+            rType = "tetra";
+            rNodes = 4;
+            return true;
+        case 3:
+            rType = "quad";
+            rNodes = 4;
+            return true;
+        case 4:
+            rType = "hexahedron";
+            rNodes = 8;
+            return true;
+        case 5:
+            rType = "pyramid";
+            rNodes = 5;
+            return true;
+        case 6:
+            rType = "wedge";
+            rNodes = 6;
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Face element types with a fixed node count; 0 (mixed) and 5 (polygonal)
+// rows lead with their node count.
+int fluent_face_nodes(std::int64_t FaceType) {
+    return (FaceType >= 2 && FaceType <= 4) ? static_cast<int>(FaceType) : 0;
+}
+
+constexpr std::int64_t kFluentInterior = 2;
+
+bool fluent_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+struct FluentReader {
+    const std::string& mD;
     std::size_t mP = 0;
 
-    bool eof() const { return mP >= mData.size(); }
+    explicit FluentReader(const std::string& rD) : mD(rD) {}
 
-    std::string readline() {
-        if (mP >= mData.size())
-            return "";
-        std::size_t nl = mData.find('\n', mP);
-        std::string line;
-        if (nl == std::string::npos) {
-            line = mData.substr(mP);
-            mP = mData.size();
-        } else {
-            line = mData.substr(mP, nl - mP + 1);
-            mP = nl + 1;
-        }
-        return line;
-    }
+    bool Eof() const { return mP >= mD.size(); }
+    char At() const { return mD[mP]; }
 
-    void skip_close(int n) {
-        while (n > 0 && mP < mData.size()) {
-            char c = mData[mP++];
-            if (c == '(')
-                ++n;
-            else if (c == ')')
-                --n;
-        }
-    }
-
-    void advance_to(char ch) {
-        while (mP < mData.size() && mData[mP] != ch)
+    void SkipWs() {
+        while (mP < mD.size() && fluent_is_space(mD[mP]))
             ++mP;
-        if (mP < mData.size())
-            ++mP;  // consume it
     }
 
-    const char* raw(std::size_t nbytes) {
-        if (mP + nbytes > mData.size())
-            throw ReadError("ANSYS: unexpected end of file");
-        const char* ptr = mData.data() + mP;
-        mP += nbytes;
-        return ptr;
+    // Past `Depth` unmatched closing brackets; quoted text is skipped whole.
+    void SkipBalanced(int Depth) {
+        while (Depth > 0 && mP < mD.size()) {
+            const char c = mD[mP++];
+            if (c == '(') {
+                ++Depth;
+            } else if (c == ')') {
+                --Depth;
+            } else if (c == '"') {
+                const std::size_t q = mD.find('"', mP);
+                mP = q == std::string::npos ? mD.size() : q + 1;
+            }
+        }
+    }
+
+    // Past `End of Binary Section NNNN)` if it follows, else past the section's
+    // own closing bracket.
+    void SkipBinaryTrailer() {
+        SkipWs();
+        if (mD.compare(mP, 21, "End of Binary Section") == 0) {
+            const std::size_t q = mD.find(')', mP);
+            mP = q == std::string::npos ? mD.size() : q + 1;
+        } else if (mP < mD.size() && mD[mP] == ')') {
+            ++mP;
+        }
+    }
+
+    // The `(a b c ...)` group after a section index, as hex integers; returns
+    // whether a body follows.
+    bool Header(std::vector<std::int64_t>& rValues) {
+        SkipWs();
+        if (Eof() || At() != '(')
+            throw ReadError("Fluent: expected a section header");
+        const std::size_t q = mD.find(')', mP);
+        if (q == std::string::npos)
+            throw ReadError("Fluent: unterminated section header");
+        rValues.clear();
+        for (std::size_t i = mP + 1; i < q;) {
+            while (i < q && fluent_is_space(mD[i]))
+                ++i;
+            const std::size_t j = i;
+            while (i < q && !fluent_is_space(mD[i]))
+                ++i;
+            if (i > j)
+                rValues.push_back(std::strtoll(mD.substr(j, i - j).c_str(), nullptr, 16));
+        }
+        mP = q + 1;
+        // A body opens with '(' after nothing but blanks; anything else (a
+        // closing bracket, `End of Binary Section`) makes a declaration.
+        const std::size_t start = mP;
+        SkipWs();
+        if (!Eof() && At() == '(') {
+            const bool newline_before = mD.find('\n', start) < mP;
+            ++mP;
+            // meshio's writer puts the body's '(' last on the header line and
+            // starts the data on the next line.
+            if (!newline_before) {
+                if (mD.compare(mP, 2, "\r\n") == 0)
+                    mP += 2;
+                else if (mP < mD.size() && mD[mP] == '\n')
+                    ++mP;
+            }
+            return true;
+        }
+        mP = start;
+        SkipBinaryTrailer();
+        return false;
+    }
+
+    std::vector<std::string_view> AsciiBody() {
+        const std::size_t q = mD.find(')', mP);
+        if (q == std::string::npos)
+            throw ReadError("Fluent: unterminated section body");
+        std::vector<std::string_view> tokens;
+        const std::string_view body(mD.data() + mP, q - mP);
+        for (std::size_t i = 0; i < body.size();) {
+            while (i < body.size() && fluent_is_space(body[i]))
+                ++i;
+            const std::size_t j = i;
+            while (i < body.size() && !fluent_is_space(body[i]))
+                ++i;
+            if (i > j)
+                tokens.push_back(body.substr(j, i - j));
+        }
+        mP = q + 1;
+        SkipWs();
+        if (!Eof() && At() == ')')
+            ++mP;
+        return tokens;
+    }
+
+    // `Count` little-endian values of `Size` bytes (floats when `Float`).
+    template <class T>
+    std::vector<T> Binary(std::size_t Count) {
+        const std::size_t size = Count * sizeof(T);
+        if (mP > mD.size() || size > mD.size() - mP)
+            throw ReadError("Fluent: binary section runs past the end of the file");
+        std::vector<T> out(Count);
+        if (size)
+            std::memcpy(out.data(), mD.data() + mP, size);
+        mP += size;
+        SkipWs();
+        if (!Eof() && At() == ')')
+            ++mP;
+        SkipBinaryTrailer();
+        return out;
+    }
+
+    // A mixed binary face body: each row leads with its node count.
+    template <class T>
+    std::vector<std::int64_t> BinaryMixedFaces(std::size_t Count) {
+        std::vector<std::int64_t> values;
+        for (std::size_t r = 0; r < Count; ++r) {
+            if (mP + sizeof(T) > mD.size())
+                throw ReadError("Fluent: binary section runs past the end of the file");
+            T n;
+            std::memcpy(&n, mD.data() + mP, sizeof(T));
+            const std::size_t row = static_cast<std::size_t>(n) + 3;
+            if (n < 0 || row * sizeof(T) > mD.size() - mP)
+                throw ReadError("Fluent: binary section runs past the end of the file");
+            for (std::size_t k = 0; k < row; ++k) {
+                T v;
+                std::memcpy(&v, mD.data() + mP + k * sizeof(T), sizeof(T));
+                values.push_back(static_cast<std::int64_t>(v));
+            }
+            mP += row * sizeof(T);
+        }
+        SkipWs();
+        if (!Eof() && At() == ')')
+            ++mP;
+        SkipBinaryTrailer();
+        return values;
     }
 };
 
-int count_char(const std::string& rS, char c) {
-    int n = 0;
-    for (char ch : rS)
-        if (ch == c)
-            ++n;
-    return n;
+std::int64_t fluent_hex(std::string_view Tok) {
+    return std::strtoll(std::string(Tok).c_str(), nullptr, 16);
 }
 
-std::string rstrip(const std::string& rS) {
-    std::size_t b = rS.size();
-    while (b > 0 && std::isspace(static_cast<unsigned char>(rS[b - 1])))
-        --b;
-    return rS.substr(0, b);
-}
+struct FluentNodeZone {
+    std::int64_t mFirst, mLast;
+    std::size_t mDim;
+    std::vector<double> mPoints;
+};
 
-// Parse the bracketed "first second ... " hex group, e.g. "(... (1 1 4 1 3) ...".
-std::vector<std::int64_t> parse_header_nums(const std::string& rLine) {
-    std::size_t o1 = rLine.find('(');
-    std::size_t o2 = (o1 == std::string::npos) ? std::string::npos : rLine.find('(', o1 + 1);
-    std::size_t c2 = (o2 == std::string::npos) ? std::string::npos : rLine.find(')', o2 + 1);
-    if (c2 == std::string::npos)
-        throw ReadError("ANSYS: malformed section header");
-    std::string nums = rLine.substr(o2 + 1, c2 - o2 - 1);
-    std::vector<std::int64_t> a;
-    auto iss = detail::make_classic_istringstream(nums);
-    std::string t;
-    while (iss >> t)
-        a.push_back(std::strtoll(t.c_str(), nullptr, 16));
-    return a;
-}
+struct FluentFace {
+    std::int64_t mZone, mBc, mC0, mC1;
+    std::vector<std::int64_t> mNodes;
+};
 
-// Leading "(" + ws + digits -> the index string; "" if not a section line.
-std::string section_index(const std::string& rLine) {
+struct FluentCellZone {
+    std::int64_t mZone, mFirst, mLast;
+};
+
+// (nodes, c0, c1) rows of a face body.
+void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Count,
+                      std::int64_t FaceType, std::int64_t Zone, std::int64_t Bc,
+                      std::vector<FluentFace>& rFaces) {
+    const int k = fluent_face_nodes(FaceType);
     std::size_t i = 0;
-    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
-        ++i;
-    if (i >= rLine.size() || rLine[i] != '(')
-        return "";
-    ++i;
-    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
-        ++i;
-    std::size_t s = i;
-    while (i < rLine.size() && std::isdigit(static_cast<unsigned char>(rLine[i])))
-        ++i;
-    return rLine.substr(s, i - s);
-}
-
-// "" / "20" / "30" prefix on a 10/12/13 core; returns false if not points/cells/faces.
-bool classify(const std::string& rIdx, int& rCore, std::string& rPrefix) {
-    static const std::unordered_map<std::string, std::pair<int, std::string>> m = {
-        {"10", {10, ""}}, {"2010", {10, "20"}}, {"3010", {10, "30"}},
-        {"12", {12, ""}}, {"2012", {12, "20"}}, {"3012", {12, "30"}},
-        {"13", {13, ""}}, {"2013", {13, "20"}}, {"3013", {13, "30"}}};
-    auto it = m.find(rIdx);
-    if (it == m.end())
-        return false;
-    rCore = it->second.first;
-    rPrefix = it->second.second;
-    return true;
-}
-
-const std::unordered_map<int, std::pair<std::string, int>>& cell_type_map() {
-    static const std::unordered_map<int, std::pair<std::string, int>> m = {
-        {1, {"triangle", 3}},   {2, {"tetra", 4}},   {3, {"quad", 4}},
-        {4, {"hexahedron", 8}}, {5, {"pyramid", 5}}, {6, {"wedge", 6}}};
-    return m;
+    for (std::size_t r = 0; r < Count; ++r) {
+        const std::size_t n = k ? static_cast<std::size_t>(k)
+                                : (i < rValues.size() ? static_cast<std::size_t>(rValues[i++]) : 0);
+        if (i + n + 2 > rValues.size())
+            throw ReadError("Fluent: face section shorter than its header");
+        FluentFace f{Zone, Bc, rValues[i + n], rValues[i + n + 1], {}};
+        f.mNodes.assign(rValues.begin() + static_cast<std::ptrdiff_t>(i),
+                        rValues.begin() + static_cast<std::ptrdiff_t>(i + n));
+        rFaces.push_back(std::move(f));
+        i += n + 2;
+    }
 }
 
 }  // namespace
@@ -53005,167 +53359,330 @@ Mesh read_ansys(const std::string& rPath) {
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         throw ReadError("Could not open file: " + rPath);
-    Buf buf;
-    buf.mData.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    FluentReader rd(data);
 
-    std::vector<double> points;  // flat
-    std::size_t dim = 3;
-    std::int64_t npoints = 0;
-    std::int64_t first_point_index_overall = -1;
-
-    struct RawCell {
+    std::int64_t dim = 0;
+    std::vector<FluentNodeZone> node_zones;
+    std::vector<FluentFace> faces;
+    std::vector<FluentCellZone> cell_zones;
+    struct Legacy {
         std::string mType;
-        std::vector<std::int64_t> mData;
-        std::size_t mRows;
-        std::size_t mCols;
+        std::size_t mRows, mCols;
+        std::vector<std::int64_t> mConn;
     };
-    std::vector<RawCell> cells;
+    std::vector<Legacy> legacy;
+    std::map<std::int64_t, std::string> names;
+    std::vector<std::int64_t> head;
 
-    while (!buf.eof()) {
-        std::string line = buf.readline();
-        if (line.empty())
+    while (true) {
+        rd.SkipWs();
+        if (rd.Eof())
             break;
-        // blank?
-        bool blank = true;
-        for (char c : line)
-            if (!std::isspace(static_cast<unsigned char>(c))) {
-                blank = false;
-                break;
-            }
-        if (blank)
-            continue;
+        const std::size_t start = rd.mP;
+        if (rd.At() != '(')
+            throw ReadError("Fluent: expected a section at byte " + std::to_string(start));
+        ++rd.mP;
+        rd.SkipWs();
+        const std::size_t idx0 = rd.mP;
+        while (!rd.Eof() && std::isdigit(static_cast<unsigned char>(rd.At())))
+            ++rd.mP;
+        const std::string index = data.substr(idx0, rd.mP - idx0);
+        if (index.empty())
+            throw ReadError("Fluent: expected a section at byte " + std::to_string(start));
+        const std::string prefix = index.size() <= 2 ? "" : index.substr(0, index.size() - 2);
+        const std::string core = index.size() <= 2 ? index : index.substr(index.size() - 2);
 
-        std::string idx = section_index(line);
-        if (idx.empty())
-            throw ReadError("ANSYS: expected a section line");
-
-        int core;
-        std::string prefix;
-        if (idx == "0" || idx == "1" || idx == "2" || idx == "39" || idx == "45") {
-            buf.skip_close(count_char(line, '(') - count_char(line, ')'));
-            continue;
-        }
-        if (!classify(idx, core, prefix)) {
-            buf.skip_close(count_char(line, '(') - count_char(line, ')'));
-            continue;
-        }
-
-        // Self-contained declaration line (no data block).
-        if (count_char(line, '(') == count_char(line, ')'))
-            continue;
-
-        std::vector<std::int64_t> a = parse_header_nums(line);
-        if (a.size() <= 4)
-            throw ReadError("ANSYS: short section header");
-
-        // Position at the data block opener.
-        if (rstrip(line).back() != '(')
-            buf.advance_to('(');
-
-        if (core == 10) {
-            std::int64_t first = a[1], last = a[2];
-            std::int64_t n = last - first + 1;
-            int d = static_cast<int>(a[4]);
-            if (first_point_index_overall < 0)
-                first_point_index_overall = first;
-            if (points.empty())
-                dim = static_cast<std::size_t>(d);
-            if (prefix.empty()) {
-                for (std::int64_t k = 0; k < n; ++k) {
-                    std::string pl = buf.readline();
-                    while (rstrip(pl).empty() && !buf.eof())
-                        pl = buf.readline();
-                    auto iss = detail::make_classic_istringstream(pl);
-                    for (int c = 0; c < d; ++c) {
-                        double v;
-                        iss >> v;
-                        points.push_back(v);
-                    }
-                }
-            } else {
-                std::size_t isz = (prefix == "20") ? 4 : 8;
-                const char* ptr = buf.raw(static_cast<std::size_t>(n) * d * isz);
-                for (std::int64_t k = 0; k < n * d; ++k) {
-                    if (isz == 4) {
-                        float f;
-                        std::memcpy(&f, ptr + k * 4, 4);
-                        points.push_back(f);
-                    } else {
-                        double db;
-                        std::memcpy(&db, ptr + k * 8, 8);
-                        points.push_back(db);
-                    }
+        if (index == "2") {
+            rd.SkipWs();
+            const std::size_t q = data.find(')', rd.mP);
+            dim = std::strtoll(data.substr(rd.mP, q - rd.mP).c_str(), nullptr, 10);
+            rd.mP = q == std::string::npos ? data.size() : q + 1;
+        } else if (index == "39" || index == "45") {
+            // (45 (id type name)(...)): the id is decimal here.
+            rd.SkipWs();
+            if (!rd.Eof() && rd.At() == '(') {
+                const std::size_t q = data.find_first_of("()", rd.mP + 1);
+                if (q != std::string::npos) {
+                    auto iss =
+                        detail::make_classic_istringstream(data.substr(rd.mP + 1, q - rd.mP - 1));
+                    std::int64_t id = 0;
+                    std::string type, name;
+                    if (iss >> id >> type >> name)
+                        names[id] = name;
                 }
             }
-            npoints += n;
-            buf.skip_close(2);
-        } else if (core == 12) {
-            std::int64_t first = a[1], last = a[2];
-            std::int64_t zone_type = a[3];
-            int element_type = static_cast<int>(a[4]);
-            std::int64_t n = last - first + 1;
-            if (zone_type == 0) {
-                buf.skip_close(2);
+            rd.SkipBalanced(1);
+        } else if ((core == "10" || core == "12" || core == "13") &&
+                   (prefix.empty() || prefix == "20" || prefix == "30")) {
+            const bool has_body = rd.Header(head);
+            if (head.size() < 4)
                 continue;
-            }  // dead zone
-            auto tit = cell_type_map().find(element_type);
-            if (tit == cell_type_map().end())
-                throw ReadError("ANSYS: unsupported cell element-type");
-            const std::string& key = tit->second.first;
-            int npc = tit->second.second;
-
-            std::vector<std::int64_t> cdata(static_cast<std::size_t>(n) * npc);
-            if (prefix.empty()) {
-                for (std::int64_t k = 0; k < n; ++k) {
-                    std::string cl = buf.readline();
-                    auto iss = detail::make_classic_istringstream(cl);
-                    std::string tok;
-                    for (int c = 0; c < npc; ++c) {
-                        iss >> tok;
-                        cdata[k * npc + c] = std::strtoll(tok.c_str(), nullptr, 16);
+            const std::int64_t zone = head[0], first = head[1], last = head[2];
+            const std::size_t count =
+                static_cast<std::size_t>(std::max<std::int64_t>(0, last - first + 1));
+            auto ints = [&](std::size_t n) {
+                std::vector<std::int64_t> v;
+                if (prefix == "20") {
+                    for (std::int32_t x : rd.Binary<std::int32_t>(n))
+                        v.push_back(x);
+                } else {
+                    v = rd.Binary<std::int64_t>(n);
+                }
+                return v;
+            };
+            if (core == "10") {
+                if (!has_body)
+                    continue;
+                const std::size_t nd =
+                    head.size() > 4 ? static_cast<std::size_t>(head[4]) : (dim ? dim : 3);
+                FluentNodeZone z{first, last, nd, {}};
+                if (prefix.empty()) {
+                    for (std::string_view t : rd.AsciiBody())
+                        z.mPoints.push_back(detail::parse_double(std::string(t)));
+                } else if (prefix == "20") {
+                    for (float x : rd.Binary<float>(count * nd))
+                        z.mPoints.push_back(x);
+                } else {
+                    z.mPoints = rd.Binary<double>(count * nd);
+                }
+                if (z.mPoints.size() != count * nd)
+                    throw ReadError("Fluent: node section size mismatch");
+                node_zones.push_back(std::move(z));
+            } else if (core == "13") {
+                if (!has_body || zone == 0)
+                    continue;
+                const std::int64_t bc = head[3];
+                const std::int64_t face_type = head.size() > 4 ? head[4] : 0;
+                std::vector<std::int64_t> values;
+                const int k = fluent_face_nodes(face_type);
+                if (prefix.empty()) {
+                    for (std::string_view t : rd.AsciiBody())
+                        values.push_back(fluent_hex(t));
+                } else if (k) {
+                    values = ints(count * static_cast<std::size_t>(k + 2));
+                } else if (prefix == "20") {
+                    values = rd.BinaryMixedFaces<std::int32_t>(count);
+                } else {
+                    values = rd.BinaryMixedFaces<std::int64_t>(count);
+                }
+                fluent_face_rows(values, count, face_type, zone, bc, faces);
+            } else {
+                const std::int64_t zone_type = head[3];
+                const std::int64_t element_type = head.size() > 4 ? head[4] : 0;
+                std::string type;
+                int npc = 1;
+                const bool fixed = fluent_cell_type(element_type, type, npc);
+                std::vector<std::int64_t> body;
+                if (has_body) {
+                    if (prefix.empty()) {
+                        for (std::string_view t : rd.AsciiBody())
+                            body.push_back(fluent_hex(t));
+                    } else {
+                        body = ints(count * static_cast<std::size_t>(npc));
                     }
                 }
-            } else {
-                std::size_t isz = (prefix == "20") ? 4 : 8;
-                const char* ptr = buf.raw(static_cast<std::size_t>(n) * npc * isz);
-                for (std::int64_t k = 0; k < n * npc; ++k) {
-                    if (isz == 4) {
-                        std::int32_t v;
-                        std::memcpy(&v, ptr + k * 4, 4);
-                        cdata[k] = v;
-                    } else {
-                        std::int64_t v;
-                        std::memcpy(&v, ptr + k * 8, 8);
-                        cdata[k] = v;
-                    }
+                if (zone == 0 || zone_type == 0)
+                    continue;  // the global declaration, or a dead zone
+                if (has_body && fixed) {
+                    if (body.size() != count * static_cast<std::size_t>(npc))
+                        throw ReadError("Fluent: cell section size mismatch");
+                    legacy.push_back({type, count, static_cast<std::size_t>(npc), std::move(body)});
+                } else {
+                    cell_zones.push_back({zone, first, last});
                 }
             }
-            cells.push_back({key, std::move(cdata), static_cast<std::size_t>(n),
-                             static_cast<std::size_t>(npc)});
-            buf.skip_close(2);
-        } else {  // faces (core == 13) with a data body -> defer to Python
-            throw ReadError("ANSYS: face sections handled by Python fallback");
+        } else if (prefix == "20" || prefix == "30") {
+            // An unknown binary section: its body is not bracket-balanced.
+            std::size_t q = data.find("End of Binary Section", rd.mP);
+            q = q == std::string::npos ? q : data.find(')', q);
+            rd.mP = q == std::string::npos ? data.size() : q + 1;
+        } else {
+            rd.SkipBalanced(1);
         }
     }
 
-    if (first_point_index_overall < 0)
-        first_point_index_overall = 0;
+    if (node_zones.empty())
+        throw ReadError("Fluent: no nodes");
+    std::int64_t base = node_zones[0].mFirst, top = node_zones[0].mLast;
+    std::size_t nd = 0;
+    for (const auto& z : node_zones) {
+        base = std::min(base, z.mFirst);
+        top = std::max(top, z.mLast);
+        nd = std::max(nd, z.mDim);
+    }
+    const std::size_t npoints = static_cast<std::size_t>(top - base + 1);
+    NDArray pts(DType::Float64, {npoints, nd});
+    double* pp = pts.As<double>();
+    std::fill(pp, pp + npoints * nd, 0.0);
+    for (const auto& z : node_zones)
+        for (std::size_t r = 0; r < static_cast<std::size_t>(z.mLast - z.mFirst + 1); ++r)
+            for (std::size_t c = 0; c < z.mDim; ++c)
+                pp[(static_cast<std::size_t>(z.mFirst - base) + r) * nd + c] =
+                    z.mPoints[r * z.mDim + c];
+    face_cells::P3 p3(npoints, {0.0, 0.0, 0.0});
+    for (std::size_t i = 0; i < npoints; ++i)
+        for (std::size_t c = 0; c < std::min<std::size_t>(nd, 3); ++c)
+            p3[i][c] = pp[i * nd + c];
 
     Mesh mesh;
-    NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), dim});
-    double* pp = pts.As<double>();
-    for (std::size_t i = 0; i < points.size(); ++i)
-        pp[i] = points[i];
     mesh.AssignPoints(std::move(pts));
 
-    for (auto& rc : cells) {
-        NDArray data(DType::Int64, {rc.mRows, rc.mCols});
-        std::int64_t* dp = data.As<std::int64_t>();
-        for (std::size_t k = 0; k < rc.mData.size(); ++k)
-            dp[k] = rc.mData[k] - first_point_index_overall;
-        mesh.AddCellBlock(rc.mType, std::move(data));
+    if (!legacy.empty()) {
+        if (!faces.empty())
+            log::warn("Fluent: cells with connectivity bodies; the face sections are ignored");
+        for (auto& rc : legacy) {
+            NDArray conn(DType::Int64, {rc.mRows, rc.mCols});
+            std::int64_t* dp = conn.As<std::int64_t>();
+            for (std::size_t k = 0; k < rc.mConn.size(); ++k)
+                dp[k] = rc.mConn[k] - base;
+            mesh.AddCellBlock(rc.mType, std::move(conn));
+        }
+        return mesh;
+    }
+    if (dim == 0)
+        dim = static_cast<std::int64_t>(nd);
+
+    std::map<std::int64_t, std::int64_t> zone_of;  // cell id -> zone, ascending
+    for (const auto& z : cell_zones)
+        for (std::int64_t c = z.mFirst; c <= z.mLast; ++c)
+            zone_of[c] = z.mZone;
+    if (cell_zones.empty())
+        for (const auto& f : faces)
+            for (std::int64_t c : {f.mC0, f.mC1})
+                if (c)
+                    zone_of.emplace(c, 0);
+    auto live = [&](std::int64_t c) { return zone_of.count(c) > 0; };
+
+    // Outward faces (3-D) or directed edges (2-D) per cell, in file order.
+    std::unordered_map<std::int64_t, std::vector<face_cells::Face>> per_cell;
+    for (const auto& f : faces) {
+        face_cells::Face g(f.mNodes.size());
+        for (std::size_t i = 0; i < g.size(); ++i)
+            g[i] = f.mNodes[i] - base;
+        if (live(f.mC1))
+            per_cell[f.mC1].push_back(g);
+        if (live(f.mC0))
+            per_cell[f.mC0].emplace_back(g.rbegin(), g.rend());
     }
 
+    // (zone, type) buckets in first-seen order.
+    struct Bucket {
+        std::int64_t mZone;
+        std::string mType;
+        std::vector<face_cells::Face> mConn;
+        std::vector<std::vector<face_cells::Face>> mPoly;
+    };
+    std::vector<Bucket> volume, surface;
+    auto bucket = [](std::vector<Bucket>& rList, std::int64_t Zone,
+                     const std::string& rType) -> Bucket& {
+        for (auto& b : rList)
+            if (b.mZone == Zone && b.mType == rType)
+                return b;
+        rList.push_back({Zone, rType, {}, {}});
+        return rList.back();
+    };
+    auto face_type_name = [](std::size_t N, bool Surface) -> std::string {
+        if (N == 2 && Surface)
+            return "line";
+        if (N == 3)
+            return "triangle";
+        if (N == 4)
+            return "quad";
+        return "polygon" + std::to_string(N);
+    };
+
+    std::size_t skipped = 0;
+    for (const auto& [cid, zone] : zone_of) {
+        auto it = per_cell.find(cid);
+        if (it == per_cell.end() || it->second.empty()) {
+            ++skipped;
+            continue;
+        }
+        const auto& cf = it->second;
+        if (dim == 2) {
+            std::vector<std::array<std::int64_t, 2>> edges;
+            for (const auto& f : cf)
+                edges.push_back({f.front(), f.back()});
+            face_cells::Face ring = face_cells::polygon_from_edges(edges, p3);
+            if (ring.empty()) {
+                ++skipped;
+                continue;
+            }
+            bucket(volume, zone, face_type_name(ring.size(), false)).mConn.push_back(ring);
+            continue;
+        }
+        auto [type, conn] = face_cells::reconstruct_cell(cf, p3);
+        if (type == "polyhedron") {
+            const std::string key =
+                "polyhedron" + std::to_string(face_cells::unique_node_count(cf));
+            bucket(volume, zone, key).mPoly.push_back(cf);
+        } else if (conn.empty()) {
+            ++skipped;
+        } else {
+            bucket(volume, zone, type).mConn.push_back(std::move(conn));
+        }
+    }
+    if (skipped)
+        log::warn("Fluent: {} cell(s) with no usable faces skipped", skipped);
+
+    for (const auto& f : faces) {
+        if (f.mBc == kFluentInterior && live(f.mC0) && live(f.mC1))
+            continue;
+        face_cells::Face g(f.mNodes.size());
+        for (std::size_t i = 0; i < g.size(); ++i)
+            g[i] = f.mNodes[i] - base;
+        // Outward from the domain: the normal points into c0.
+        if (live(f.mC0) && !live(f.mC1))
+            std::reverse(g.begin(), g.end());
+        bucket(surface, f.mZone, face_type_name(g.size(), true)).mConn.push_back(std::move(g));
+    }
+
+    std::vector<NDArray> zone_data;
+    // (zone, dim) -> global cell ids, first-seen order
+    std::vector<std::pair<std::pair<std::int64_t, int>, std::vector<std::int64_t>>> regions;
+    std::int64_t offset = 0;
+    for (auto* pGroup : {&volume, &surface}) {
+        const int cdim = static_cast<int>(pGroup == &volume ? dim : dim - 1);
+        for (auto& b : *pGroup) {
+            std::size_t n;
+            if (b.mType.rfind("polyhedron", 0) == 0) {
+                n = b.mPoly.size();
+                mesh.AddPolyhedronBlock(b.mType, std::move(b.mPoly));
+            } else {
+                n = b.mConn.size();
+                const std::size_t k = n ? b.mConn[0].size() : 0;
+                NDArray conn(DType::Int64, {n, k});
+                std::int64_t* c = conn.As<std::int64_t>();
+                for (std::size_t r = 0; r < n; ++r)
+                    std::copy(b.mConn[r].begin(), b.mConn[r].end(), c + r * k);
+                mesh.AddCellBlock(b.mType, std::move(conn));
+            }
+            NDArray z(DType::Int64, {n});
+            std::fill(z.As<std::int64_t>(), z.As<std::int64_t>() + n, b.mZone);
+            zone_data.push_back(std::move(z));
+            auto key = std::make_pair(b.mZone, cdim);
+            auto rit = std::find_if(regions.begin(), regions.end(),
+                                    [&](const auto& r) { return r.first == key; });
+            if (rit == regions.end()) {
+                regions.push_back({key, {}});
+                rit = regions.end() - 1;
+            }
+            for (std::size_t r = 0; r < n; ++r)
+                rit->second.push_back(offset + static_cast<std::int64_t>(r));
+            offset += static_cast<std::int64_t>(n);
+        }
+    }
+    if (!zone_data.empty())
+        mesh.AddCellData("ansys:zone", std::move(zone_data));
+    for (auto& [key, ids] : regions) {
+        auto nit = names.find(key.first);
+        const std::string name =
+            nit != names.end() ? nit->second : "zone_" + std::to_string(key.first);
+        NDArray e(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), e.As<std::int64_t>());
+        mesh.AddRegion(Region(name, RegionKind::Cell, key.second, key.first, std::move(e)));
+    }
     return mesh;
 }
 
@@ -64966,6 +65483,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/flac3d.cpp =====
 // ===== begin src/cpp/src/formats/flux.cpp =====
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -65066,18 +65584,23 @@ Mesh read_flux(const std::string& rPath) {
     std::unordered_map<std::string, std::size_t> gindex;
     std::size_t pos = 0;
     for (long long e = 0; e < nel; ++e) {
-        if (pos + 12 > etok.size())
-            throw ReadError("pf3: truncated element header");
+        // A file cut short (FLUX excerpts are) keeps the elements it has.
+        if (pos + 12 > etok.size()) {
+            log::warn("pf3: {} elements declared, {} present; reading those", nel, e);
+            break;
+        }
         long long ref = std::strtoll(etok[pos + 3].c_str(), nullptr, 10);
         int desc3 = std::atoi(etok[pos + 6].c_str());
         int lnn = std::atoi(etok[pos + 7].c_str());
         pos += 12;
+        if (lnn < 0 || pos + static_cast<std::size_t>(lnn) > etok.size())
+            throw ReadError("pf3: truncated element connectivity");
         std::string mtype = desc3_to_meshio(desc3);
         if (mtype.empty())
-            throw ReadError("pf3: unknown element descriptor");
+            throw ReadError("pf3: unknown element descriptor " + std::to_string(desc3));
         std::vector<std::int64_t> nodes(lnn);
         for (int j = 0; j < lnn; ++j)
-            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10) - 1;
+            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10);
         pos += lnn;
         auto it = gindex.find(mtype);
         if (it == gindex.end()) {
@@ -65089,7 +65612,7 @@ Mesh read_flux(const std::string& rPath) {
         groups[it->second].mRef.push_back(ref);
     }
 
-    // coordinate tokens
+    // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
         auto iss = detail::make_classic_istringstream(lines[i]);
@@ -65097,24 +65620,56 @@ Mesh read_flux(const std::string& rPath) {
         while (iss >> w)
             ctok.push_back(w);
     }
-    Mesh mesh;
-    NDArray pts(DType::Float64, {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
-    std::size_t cp = 0;
-    for (long long i = 0; i < nnod; ++i) {
-        ++cp;  // node index
-        for (long long j = 0; j < dim; ++j)
-            pts.As<double>()[i * dim + j] = detail::parse_double(ctok[cp++]);
+    std::vector<long long> ids;
+    std::vector<double> coords;
+    const std::size_t udim = static_cast<std::size_t>(dim < 0 ? 0 : dim);
+    for (std::size_t cp = 0; cp + udim < ctok.size() && ctok[cp][0] != '=';) {
+        ids.push_back(std::strtoll(ctok[cp].c_str(), nullptr, 10));
+        for (std::size_t j = 0; j < udim; ++j)
+            coords.push_back(detail::parse_double(ctok[cp + 1 + j]));
+        cp += 1 + udim;
     }
+    if (static_cast<long long>(ids.size()) != nnod)
+        log::warn("pf3: {} points declared, {} present", nnod, ids.size());
+
+    Mesh mesh;
+    NDArray pts(DType::Float64, {ids.size(), udim});
+    std::copy(coords.begin(), coords.end(), pts.As<double>());
     mesh.AssignPoints(std::move(pts));
+
+    // Node ids are normally 1..n in row order; otherwise number the rows.
+    bool sequential = true;
+    for (std::size_t r = 0; r < ids.size() && sequential; ++r)
+        sequential = ids[r] == static_cast<long long>(r) + 1;
+    std::unordered_map<long long, std::int64_t> row_of;
+    if (!sequential)
+        for (std::size_t r = 0; r < ids.size(); ++r)
+            row_of.emplace(ids[r], static_cast<std::int64_t>(r));
+    auto to_row = [&](std::int64_t Id) -> std::int64_t {
+        if (sequential) {
+            if (Id < 1 || Id > static_cast<std::int64_t>(ids.size()))
+                throw ReadError("pf3: element references an undefined node");
+            return Id - 1;
+        }
+        auto it = row_of.find(Id);
+        if (it == row_of.end())
+            throw ReadError("pf3: element references undefined node " + std::to_string(Id));
+        return it->second;
+    };
 
     std::vector<NDArray> refs;
     for (auto& g : groups) {
         std::size_t ne = g.mRows.size();
         std::size_t k = ne ? g.mRows[0].size() : 0;
+        const detail::NodeOrder* order = detail::node_order("flux", g.mType);
+        if (order && order->mToMeshio.size() != k)
+            order = nullptr;
         NDArray data(DType::Int64, {ne, k});
+        std::int64_t* pData = data.As<std::int64_t>();
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < k; ++j)
-                data.As<std::int64_t>()[r * k + j] = g.mRows[r][j];
+                pData[r * k + j] =
+                    to_row(g.mRows[r][order ? static_cast<std::size_t>(order->mToMeshio[j]) : j]);
         mesh.AddCellBlock(g.mType, std::move(data));
         NDArray rf(DType::Int64, {ne});
         for (std::size_t r = 0; r < ne; ++r)
@@ -65182,6 +65737,9 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         meshio_to_desc(cb.Type(), d);
         const NDArray& conn = cb.Conn();
         int lnn = static_cast<int>(detail::cols(conn));
+        const detail::NodeOrder* order = detail::node_order("flux", cb.Type());
+        if (order && order->mFromMeshio.size() != static_cast<std::size_t>(lnn))
+            order = nullptr;
         const NDArray* ref = (has_ref && k < rMesh.CellDataNumBlocks("pf3:ref"))
                                  ? &rMesh.CellData("pf3:ref", k)
                                  : nullptr;
@@ -65192,8 +65750,10 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
                           d[1], rv, lnn, 0, d[2], lnn, 0, 0, 0, 0);
             f << buf;
             for (int j = 0; j < lnn; ++j) {
+                const std::size_t src =
+                    order ? static_cast<std::size_t>(order->mFromMeshio[j]) : std::size_t(j);
                 std::snprintf(buf, sizeof(buf), "%8lld",
-                              static_cast<long long>(detail::read_int(conn, r * lnn + j) + 1));
+                              static_cast<long long>(detail::read_int(conn, r * lnn + src) + 1));
                 f << buf;
             }
             f << "\n";
@@ -70529,10 +71089,11 @@ struct GmshCursor {
             line.pop_back();
         return line;
     }
+    // Trimmed: some writers (FEconv's samples) indent every line.
     std::string next_nonblank() {
         while (!eof()) {
-            std::string l = read_line();
-            if (!gmsh_trim(l).empty())
+            std::string l = gmsh_trim(read_line());
+            if (!l.empty())
                 return l;
         }
         return "";
@@ -77910,6 +78471,24 @@ struct Tokenizer {
     }
     std::int64_t next_int() { return std::strtoll(next().c_str(), nullptr, 10); }
     double next_double() { return detail::parse_double(next()); }
+    // Tokens on the line of the next token, without consuming anything.
+    std::size_t tokens_on_next_line() {
+        const std::size_t saved = mPos;
+        skip_ws();
+        std::size_t count = 0;
+        while (mPos < mBuf.size() && mBuf[mPos] != '\n' && mBuf[mPos] != '#') {
+            if (std::isspace(static_cast<unsigned char>(mBuf[mPos]))) {
+                ++mPos;
+                continue;
+            }
+            ++count;
+            while (mPos < mBuf.size() && !std::isspace(static_cast<unsigned char>(mBuf[mPos])) &&
+                   mBuf[mPos] != '#')
+                ++mPos;
+        }
+        mPos = saved;
+        return count;
+    }
     void skip_line() {
         while (mPos < mBuf.size() && mBuf[mPos] != '\n')
             ++mPos;
@@ -77978,9 +78557,13 @@ Mesh read_medit_ascii(const std::string& rPath) {
         } else if (kw == "Dimension") {
             dim = static_cast<int>(tok.next_int());
         } else if (kw == "Vertices") {
-            if (dim <= 0)
-                throw ReadError("Medit: Dimension before Vertices");
             std::int64_t n = tok.next_int();
+            // No `Dimension` keyword (FEconv writes none): a vertex row holds
+            // the coordinates and a reference.
+            if (dim <= 0)
+                dim = n > 0 ? static_cast<int>(tok.tokens_on_next_line()) - 1 : 3;
+            if (dim < 1 || dim > 3)
+                throw ReadError("Medit: cannot tell the dimension from the Vertices rows");
             NDArray pts(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
             for (std::int64_t i = 0; i < n; ++i) {
@@ -84036,142 +84619,11 @@ std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
 
 // ---- geometry ----
 
-double triple(const std::array<double, 3>& rA, const std::array<double, 3>& rB,
-              const std::array<double, 3>& rC) {
-    // a . (b x c)
-    double cx = rB[1] * rC[2] - rB[2] * rC[1];
-    double cy = rB[2] * rC[0] - rB[0] * rC[2];
-    double cz = rB[0] * rC[1] - rB[1] * rC[0];
-    return rA[0] * cx + rA[1] * cy + rA[2] * cz;
-}
-
-std::array<double, 3> sub(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-std::size_t unique_node_count(const std::vector<Face>& rFaces) {
-    std::unordered_set<std::int64_t> s;
-    for (const auto& f : rFaces)
-        for (std::int64_t v : f)
-            s.insert(v);
-    return s.size();
-}
-
-std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> node_adjacency(
-    const std::vector<Face>& rFaces) {
-    std::unordered_map<std::int64_t, std::unordered_set<std::int64_t>> adj;
-    for (const auto& f : rFaces) {
-        std::size_t m = f.size();
-        for (std::size_t i = 0; i < m; ++i) {
-            std::int64_t a = f[i], b = f[(i + 1) % m];
-            adj[a].insert(b);
-            adj[b].insert(a);
-        }
-    }
-    return adj;
-}
-
-// Returns the ordered top ring, or empty if ambiguous.
-std::vector<std::int64_t> match_top(const Face& rBottom, const std::vector<Face>& rOriented) {
-    auto adj = node_adjacency(rOriented);
-    std::unordered_set<std::int64_t> base(rBottom.begin(), rBottom.end());
-    std::vector<std::int64_t> top;
-    for (std::int64_t b : rBottom) {
-        std::vector<std::int64_t> cand;
-        for (std::int64_t x : adj[b])
-            if (!base.count(x))
-                cand.push_back(x);
-        if (cand.size() != 1)
-            return {};
-        top.push_back(cand[0]);
-    }
-    return top;
-}
-
-using P3 = std::vector<std::array<double, 3>>;
-
-Face build_tetra(const std::vector<Face>& rOriented, const P3& rP) {
-    const Face& base = rOriented[0];
-    std::unordered_set<std::int64_t> all;
-    for (const auto& f : rOriented)
-        for (std::int64_t v : f)
-            all.insert(v);
-    for (std::int64_t v : base)
-        all.erase(v);
-    std::int64_t apex = *all.begin();
-    Face n = {base[0], base[1], base[2], apex};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
-        n = {base[0], base[2], base[1], apex};
-    return n;
-}
-
-Face build_pyramid(const std::vector<Face>& rOriented, const P3& rP) {
-    Face quad;
-    for (const auto& f : rOriented)
-        if (f.size() == 4) {
-            quad = f;
-            break;
-        }
-    std::unordered_set<std::int64_t> all;
-    for (const auto& f : rOriented)
-        for (std::int64_t v : f)
-            all.insert(v);
-    for (std::int64_t v : quad)
-        all.erase(v);
-    std::int64_t apex = *all.begin();
-    Face n = {quad[0], quad[1], quad[2], quad[3], apex};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
-        n = {quad[0], quad[3], quad[2], quad[1], apex};
-    return n;
-}
-
-Face build_wedge(const std::vector<Face>& rOriented, const P3& rP) {
-    Face bottom;
-    for (const auto& f : rOriented)
-        if (f.size() == 3) {
-            bottom = f;
-            break;
-        }
-    std::vector<std::int64_t> top = match_top(bottom, rOriented);
-    if (top.empty())
-        return {};
-    Face n = {bottom[0], bottom[1], bottom[2], top[0], top[1], top[2]};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[2]], rP[n[0]]), sub(rP[n[3]], rP[n[0]])) < 0)
-        n = {bottom[0], bottom[2], bottom[1], top[0], top[2], top[1]};
-    return n;
-}
-
-Face build_hexahedron(const std::vector<Face>& rOriented, const P3& rP) {
-    Face bottom;
-    for (const auto& f : rOriented)
-        if (f.size() == 4) {
-            bottom = f;
-            break;
-        }
-    std::vector<std::int64_t> top = match_top(bottom, rOriented);
-    if (top.empty())
-        return {};
-    Face n = {bottom[0], bottom[1], bottom[2], bottom[3], top[0], top[1], top[2], top[3]};
-    if (triple(sub(rP[n[1]], rP[n[0]]), sub(rP[n[3]], rP[n[0]]), sub(rP[n[4]], rP[n[0]])) < 0)
-        n = {bottom[0], bottom[3], bottom[2], bottom[1], top[0], top[3], top[2], top[1]};
-    return n;
-}
-
-// Classify a cell. Returns {meshio type, connectivity}. For "polyhedron" the
-// connectivity is empty (the caller keeps the oriented faces).
-std::pair<std::string, Face> reconstruct_cell(const std::vector<Face>& rOriented, const P3& rP) {
-    std::size_t nf = rOriented.size();
-    std::size_t np = unique_node_count(rOriented);
-    if (nf == 4 && np == 4)
-        return {"tetra", build_tetra(rOriented, rP)};
-    if (nf == 5 && np == 5)
-        return {"pyramid", build_pyramid(rOriented, rP)};
-    if (nf == 5 && np == 6)
-        return {"wedge", build_wedge(rOriented, rP)};
-    if (nf == 6 && np == 8)
-        return {"hexahedron", build_hexahedron(rOriented, rP)};
-    return {"polyhedron", {}};
-}
+// The face-to-cell kernel (triple, match_top, build_*, reconstruct_cell) is
+// shared with the Fluent reader: formats/face_cells_common.hpp.
+using face_cells::P3;
+using face_cells::reconstruct_cell;
+using face_cells::unique_node_count;
 
 // ---- decomposed (processorN) cases (v11.4.0, roadmap §1 tier B2) ----
 
@@ -93395,8 +93847,12 @@ std::int64_t unv_int(std::string_view t) {
 
 std::vector<std::int64_t> unv_ints(std::string_view line) {
     std::vector<std::int64_t> out;
-    for (auto t : unv_split(line))
+    for (auto t : unv_split(line)) {
+        // Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
+        if (t.front() == '%')
+            break;
         out.push_back(unv_int(t));
+    }
     return out;
 }
 
@@ -93794,7 +94250,9 @@ void unv_parse_units(const UnvDataset& rDs, UnvFile& rFile) {
     if (r1.empty())
         return;
     rFile.mHasUnits = true;
-    rFile.mUnitsCode = unv_int(r1[0]);
+    // Record 1 is I10, 20A1, I10: the description may touch the code ("5mm").
+    const std::string_view code = unv_strip(rDs.mLines[0].substr(0, 10));
+    rFile.mUnitsCode = unv_int(code.empty() ? r1[0] : code);
     std::size_t k = 1;
     rFile.mUnitFactors.clear();
     while (k < rDs.mLines.size() && rFile.mUnitFactors.size() < 4) {
@@ -100037,10 +100495,13 @@ void write_vtu_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/vtu.cpp =====
 // ===== begin src/cpp/src/formats/vtu_read.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -100055,8 +100516,165 @@ namespace {
 
 using detail::vtu_to_int64;
 
-// The codec is resolved once from the root's compressor= attribute.
-NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, std::size_t hsz,
+/**
+ * @brief Sequential reader over one array's encoded bytes: either raw bytes (a
+ * raw `<AppendedData>` payload) or base64 text.
+ *
+ * Base64 is decoded group by group, so a header and a body that were encoded
+ * separately (each padded, as VTK's appended writer does) and one stream that
+ * encodes both read the same.
+ */
+struct VtuByteSource {
+    const unsigned char* mRaw = nullptr;
+    std::size_t mRawLen = 0;
+    const char* mText = nullptr;
+    std::size_t mTextLen = 0;
+    std::size_t mPos = 0;
+    std::vector<unsigned char> mPending;
+    std::size_t mPendingPos = 0;
+
+    static int Base64Value(char c) {
+        if (c >= 'A' && c <= 'Z')
+            return c - 'A';
+        if (c >= 'a' && c <= 'z')
+            return c - 'a' + 26;
+        if (c >= '0' && c <= '9')
+            return c - '0' + 52;
+        if (c == '+')
+            return 62;
+        if (c == '/')
+            return 63;
+        return -1;
+    }
+
+    // Upper bound on the bytes left, to refuse absurd sizes before allocating.
+    std::size_t Remaining() const {
+        if (mRaw)
+            return mRawLen - std::min(mPos, mRawLen);
+        return (mPending.size() - mPendingPos) + (mTextLen - std::min(mPos, mTextLen)) / 4 * 3 + 3;
+    }
+
+    void Take(unsigned char* pOut, std::size_t n) {
+        if (mRaw) {
+            if (mPos > mRawLen || n > mRawLen - mPos)
+                throw ReadError("VTU: appended array runs past the end of the data");
+            std::memcpy(pOut, mRaw + mPos, n);
+            mPos += n;
+            return;
+        }
+        while (mPending.size() - mPendingPos < n) {
+            char q[4];
+            int k = 0;
+            while (k < 4 && mPos < mTextLen) {
+                const char c = mText[mPos++];
+                if (!std::isspace(static_cast<unsigned char>(c)))
+                    q[k++] = c;
+            }
+            if (k < 4)
+                throw ReadError("VTU: base64 data ends early");
+            std::uint32_t t = 0;
+            int pad = 0;
+            for (int i = 0; i < 4; ++i) {
+                int v = 0;
+                if (q[i] == '=')
+                    ++pad;
+                else if ((v = Base64Value(q[i])) < 0)
+                    throw ReadError("VTU: invalid base64 character");
+                t = (t << 6) | static_cast<std::uint32_t>(v);
+            }
+            mPending.push_back(static_cast<unsigned char>((t >> 16) & 0xff));
+            if (pad < 2)
+                mPending.push_back(static_cast<unsigned char>((t >> 8) & 0xff));
+            if (pad < 1)
+                mPending.push_back(static_cast<unsigned char>(t & 0xff));
+        }
+        std::memcpy(pOut, mPending.data() + mPendingPos, n);
+        mPendingPos += n;
+        if (mPendingPos == mPending.size()) {
+            mPending.clear();
+            mPendingPos = 0;
+        }
+    }
+};
+
+std::uint64_t vtu_read_uint(const unsigned char* pP, std::size_t Size, bool BigEndian) {
+    std::uint64_t v = 0;
+    for (std::size_t i = 0; i < Size; ++i)
+        v = BigEndian ? (v << 8) | pP[i] : v | (static_cast<std::uint64_t>(pP[i]) << (8 * i));
+    return v;
+}
+
+/** @brief One array's bytes: the byte-count header (or, compressed, the block
+ * table) and the body, decompressed; the header is in the file's byte order. */
+std::vector<unsigned char> vtu_decode_sequential(VtuByteSource& rSrc, detail::VtkCodec Codec,
+                                                 std::size_t HeaderSize, bool BigEndian) {
+    unsigned char h[8];
+    auto next = [&]() {
+        rSrc.Take(h, HeaderSize);
+        return vtu_read_uint(h, HeaderSize, BigEndian);
+    };
+    std::vector<unsigned char> out;
+    if (Codec == detail::VtkCodec::None) {
+        const std::uint64_t n = next();
+        if (n > rSrc.Remaining())
+            throw ReadError("VTU: array size exceeds the data");
+        out.resize(static_cast<std::size_t>(n));
+        if (n)
+            rSrc.Take(out.data(), out.size());
+        return out;
+    }
+    const std::uint64_t num_blocks = next();
+    const std::uint64_t max_block = next();
+    const std::uint64_t last_block = next();
+    if (num_blocks > rSrc.Remaining() / HeaderSize)
+        throw ReadError("VTU: block count exceeds the data");
+    std::vector<std::uint64_t> sizes(static_cast<std::size_t>(num_blocks));
+    for (auto& rSize : sizes)
+        rSize = next();
+    std::vector<unsigned char> comp;
+    for (std::size_t k = 0; k < sizes.size(); ++k) {
+        if (sizes[k] > rSrc.Remaining())
+            throw ReadError("VTU: compressed block exceeds the data");
+        comp.resize(static_cast<std::size_t>(sizes[k]));
+        if (!comp.empty())
+            rSrc.Take(comp.data(), comp.size());
+        const std::size_t expected =
+            static_cast<std::size_t>(k + 1 == sizes.size() ? last_block : max_block);
+        std::vector<unsigned char> dec =
+            detail::vtk_codec_decompress_block(Codec, comp.data(), comp.size(), expected);
+        out.insert(out.end(), dec.begin(), dec.begin() + std::min(dec.size(), expected));
+    }
+    return out;
+}
+
+NDArray vtu_array_from_bytes(const std::vector<unsigned char>& rBytes, DType Dt, bool BigEndian) {
+    const std::size_t isz = dtype_size(Dt);
+    const std::size_t n = isz ? rBytes.size() / isz : 0;
+    NDArray a(Dt, {n});
+    if (n)
+        std::memcpy(a.Data(), rBytes.data(), n * isz);
+    if (BigEndian && isz > 1) {
+        char* p = reinterpret_cast<char*>(a.Data());
+        for (std::size_t i = 0; i < n; ++i)
+            detail::bswap_inplace(p + i * isz, static_cast<int>(isz));
+    }
+    return a;
+}
+
+/** @brief How the arrays of one file are framed: codec, header width, byte
+ * order and, when present, the `<AppendedData>` payload. */
+struct VtuContext {
+    detail::VtkCodec mCodec = detail::VtkCodec::None;
+    std::size_t mHeaderSize = 4;
+    bool mBigEndian = false;
+    // Raw appended payload (bytes after the opening '_'), or base64 text.
+    const unsigned char* mRaw = nullptr;
+    std::size_t mRawLen = 0;
+    const char* mBase64 = nullptr;
+    std::size_t mBase64Len = 0;
+};
+
+NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
                             int& rNumComponents) {
     std::string fmt = rDa.attribute("format").as_string("ascii");
     DType dt = detail::dtype_from_vtu(rDa.attribute("type").as_string());
@@ -100064,13 +100682,94 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
 
     if (fmt == "ascii")
         return detail::vtu_parse_ascii(rDa.text().get(), dt);
-    if (fmt == "binary")
-        return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, codec, hsz);
+    if (fmt == "binary") {
+        if (!rCtx.mBigEndian)
+            return detail::vtu_parse_binary(detail::vtu_strip(rDa.text().get()), dt, rCtx.mCodec,
+                                            rCtx.mHeaderSize);
+        const char* text = rDa.text().get();
+        VtuByteSource src;
+        src.mText = text;
+        src.mTextLen = std::strlen(text);
+        return vtu_array_from_bytes(vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true),
+                                    dt, true);
+    }
+    if (fmt == "appended") {
+        // strtoull skips the padding some writers put around the offset.
+        const std::uint64_t offset =
+            std::strtoull(rDa.attribute("offset").as_string("0"), nullptr, 10);
+        VtuByteSource src;
+        if (rCtx.mRaw) {
+            src.mRaw = rCtx.mRaw;
+            src.mRawLen = rCtx.mRawLen;
+        } else if (rCtx.mBase64) {
+            src.mText = rCtx.mBase64;
+            src.mTextLen = rCtx.mBase64Len;
+        } else {
+            throw ReadError("VTU: appended DataArray but no <AppendedData>");
+        }
+        if (offset > (src.mRaw ? src.mRawLen : src.mTextLen))
+            throw ReadError("VTU: appended offset past the end of the data");
+        src.mPos = static_cast<std::size_t>(offset);
+        return vtu_array_from_bytes(
+            vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, rCtx.mBigEndian), dt,
+            rCtx.mBigEndian);
+    }
     throw ReadError("VTU '" + fmt + "' data is not supported by the C++ reader");
 }
 
 /**
- * @brief The `<Piece>` node plus the framing attributes every path needs.
+ * @brief The XML document and the file's bytes when they are needed.
+ *
+ * A raw `<AppendedData>` payload is not XML text (it may hold any byte, `<`
+ * included): the file is read as bytes, the payload cut out, and only the text
+ * around it parsed. Every other file parses as before.
+ */
+struct VtuSource {
+    pugi::xml_document mDoc;
+    std::string mBytes;
+    std::size_t mRawStart = 0;
+    std::size_t mRawStop = 0;
+    bool mIsRaw = false;
+};
+
+void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource) {
+    pugi::xml_parse_result res = rSource.mDoc.load_file(rPath.c_str(), ParseOptions);
+    if (res) {
+        pugi::xml_node app = rSource.mDoc.child("VTKFile").child("AppendedData");
+        if (!app || std::string(app.attribute("encoding").as_string("base64")) != "raw")
+            return;
+        // A raw payload that happened to parse as text still has to be read as bytes.
+    }
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Could not open file: " + rPath);
+    rSource.mBytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    const std::string& b = rSource.mBytes;
+    const std::size_t tag = b.find("<AppendedData");
+    const std::size_t tag_end = tag == std::string::npos ? tag : b.find('>', tag);
+    const bool raw = tag_end != std::string::npos &&
+                     b.substr(tag, tag_end - tag).find("\"raw\"") != std::string::npos;
+    if (!raw) {
+        if (!res)
+            throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+        return;
+    }
+    const std::size_t underscore = b.find('_', tag_end);
+    const std::size_t stop = b.rfind("</AppendedData>");
+    if (underscore == std::string::npos || stop == std::string::npos || stop <= underscore)
+        throw ReadError("VTU: AppendedData is not closed");
+    const std::string xml = b.substr(0, tag_end + 1) + b.substr(stop);
+    rSource.mDoc.reset();
+    res = rSource.mDoc.load_buffer(xml.data(), xml.size(), ParseOptions);
+    if (!res)
+        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
+    rSource.mIsRaw = true;
+    rSource.mRawStart = underscore + 1;
+    rSource.mRawStop = stop;
+}
+
+/**
+ * @brief The `<Piece>` nodes plus the framing attributes every path needs.
  *
  * Shared by the mesh and metadata readers so the two cannot disagree about
  * which files they accept -- a metadata summary must never succeed on a file
@@ -100078,14 +100777,13 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, detail::VtkCodec codec, s
  */
 struct vtu_header {
     pugi::xml_node mGrid;
-    pugi::xml_node mPiece;
-    detail::VtkCodec mCodec = detail::VtkCodec::None;
-    std::size_t mHeaderSize = 4;
+    std::vector<pugi::xml_node> mPieces;
+    VtuContext mCtx;
     std::size_t mNumPoints = 0;
 };
 
-vtu_header vtu_parse_header(const pugi::xml_document& rDoc) {
-    pugi::xml_node root = rDoc.child("VTKFile");
+vtu_header vtu_parse_header(const VtuSource& rSource) {
+    pugi::xml_node root = rSource.mDoc.child("VTKFile");
     if (!root)
         throw ReadError("Expected tag 'VTKFile'");
     if (std::string(root.attribute("type").as_string()) != "UnstructuredGrid")
@@ -100094,52 +100792,111 @@ vtu_header vtu_parse_header(const pugi::xml_document& rDoc) {
     vtu_header h;
     const std::string compressor = root.attribute("compressor").as_string("");
     if (compressor.empty())
-        h.mCodec = detail::VtkCodec::None;
+        h.mCtx.mCodec = detail::VtkCodec::None;
     else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::Zlib))
-        h.mCodec = detail::VtkCodec::Zlib;
+        h.mCtx.mCodec = detail::VtkCodec::Zlib;
     else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZ4))
-        h.mCodec = detail::VtkCodec::LZ4;
+        h.mCtx.mCodec = detail::VtkCodec::LZ4;
     else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::ZSTD))
-        h.mCodec = detail::VtkCodec::ZSTD;
+        h.mCtx.mCodec = detail::VtkCodec::ZSTD;
     else if (compressor == detail::vtk_codec_compressor(detail::VtkCodec::LZMA))
         throw ReadError("lzma-compressed VTU not supported by the C++ reader");
     else
         throw ReadError("Unknown VTU compressor '" + compressor + "'");
     // Fail early and actionably when the file needs a codec this build lacks,
     // rather than at the first array body.
-    detail::vtk_codec_require_read(h.mCodec);
+    detail::vtk_codec_require_read(h.mCtx.mCodec);
 
     std::string header_type = root.attribute("header_type").as_string("UInt32");
-    h.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+    h.mCtx.mHeaderSize = (header_type == "UInt64") ? 8 : 4;
+    const std::string byte_order = root.attribute("byte_order").as_string("LittleEndian");
+    if (byte_order != "LittleEndian" && byte_order != "BigEndian")
+        throw ReadError("Unknown VTU byte order '" + byte_order + "'");
+    h.mCtx.mBigEndian = byte_order == "BigEndian";
 
     pugi::xml_node grid = root.child("UnstructuredGrid");
     if (!grid)
         throw ReadError("No UnstructuredGrid found");
 
-    // Appended data is not handled here -> let the Python reader take over.
-    if (grid.parent().child("AppendedData") || root.child("AppendedData"))
-        throw ReadError("appended VTU data not supported by the C++ reader");
+    if (rSource.mIsRaw) {
+        h.mCtx.mRaw =
+            reinterpret_cast<const unsigned char*>(rSource.mBytes.data()) + rSource.mRawStart;
+        h.mCtx.mRawLen = rSource.mRawStop - rSource.mRawStart;
+    } else if (pugi::xml_node app = root.child("AppendedData")) {
+        const std::string encoding = app.attribute("encoding").as_string("base64");
+        if (encoding != "base64")
+            throw ReadError("Unknown VTU AppendedData encoding '" + encoding + "'");
+        const char* text = app.text().get();
+        while (*text && std::isspace(static_cast<unsigned char>(*text)))
+            ++text;
+        if (*text != '_')
+            throw ReadError("VTU: AppendedData does not start with '_'");
+        h.mCtx.mBase64 = text + 1;
+        h.mCtx.mBase64Len = std::strlen(text + 1);
+    }
 
     h.mGrid = grid;
-    h.mPiece = grid.child("Piece");
-    if (!h.mPiece)
+    for (pugi::xml_node piece : grid.children("Piece")) {
+        const std::size_t n =
+            static_cast<std::size_t>(piece.attribute("NumberOfPoints").as_ullong());
+        if (n > 0 && !piece.child("Points").child("DataArray"))
+            throw ReadError("VTU: a Piece declares points but has no <Points>");
+        h.mPieces.push_back(piece);
+        h.mNumPoints += n;
+    }
+    if (h.mPieces.empty())
         throw ReadError("No Piece found");
-    // A single piece is supported; multiple pieces -> Python reader.
-    if (h.mPiece.next_sibling("Piece"))
-        throw ReadError("multi-piece VTU not supported by the C++ reader");
-
-    h.mNumPoints = static_cast<std::size_t>(h.mPiece.attribute("NumberOfPoints").as_ullong());
     return h;
 }
 
-/** @brief `<DataArray>` `Name` attributes under @p rSection, in document order. */
-std::vector<std::string> vtu_array_names(const pugi::xml_node& rPiece, const char* pSection) {
+/** @brief Stack same-dtype, same-width arrays row-wise; empty when they differ. */
+NDArray vtu_concat_rows(std::vector<NDArray>& rParts) {
+    if (rParts.size() == 1)
+        return std::move(rParts[0]);
+    const DType dt = rParts[0].Dtype();
+    const std::size_t cols = rParts[0].Shape().size() > 1 ? rParts[0].Shape()[1] : 0;
+    std::size_t rows = 0;
+    for (const NDArray& rPart : rParts) {
+        const std::size_t c = rPart.Shape().size() > 1 ? rPart.Shape()[1] : 0;
+        if (rPart.Dtype() != dt || c != cols)
+            return NDArray();
+        rows += rPart.Shape().empty() ? 0 : rPart.Shape()[0];
+    }
+    std::vector<std::size_t> shape{rows};
+    if (cols)
+        shape.push_back(cols);
+    NDArray out(dt, shape);
+    char* dst = reinterpret_cast<char*>(out.Data());
+    for (const NDArray& rPart : rParts) {
+        const std::size_t nbytes = rPart.Size() * dtype_size(dt);
+        if (nbytes)
+            std::memcpy(dst, rPart.Data(), nbytes);
+        dst += nbytes;
+    }
+    return out;
+}
+
+/** @brief `<DataArray>` `Name` attributes under @p rSection present in every
+ * piece (a multi-piece read drops the others), sorted. */
+std::vector<std::string> vtu_array_names(const std::vector<pugi::xml_node>& rPieces,
+                                         const char* pSection) {
     std::vector<std::string> names;
-    for (pugi::xml_node da : rPiece.child(pSection).children("DataArray"))
-        names.emplace_back(da.attribute("Name").as_string());
-    // The uniform mesh API hands back sorted names; match it so a summary and a
-    // real read report data arrays in the same order.
-    std::sort(names.begin(), names.end());
+    for (std::size_t k = 0; k < rPieces.size(); ++k) {
+        std::vector<std::string> here;
+        for (pugi::xml_node da : rPieces[k].child(pSection).children("DataArray"))
+            here.emplace_back(da.attribute("Name").as_string());
+        // The uniform mesh API hands back sorted names; match it so a summary
+        // and a real read report data arrays in the same order.
+        std::sort(here.begin(), here.end());
+        if (k == 0) {
+            names = std::move(here);
+        } else {
+            std::vector<std::string> both;
+            std::set_intersection(names.begin(), names.end(), here.begin(), here.end(),
+                                  std::back_inserter(both));
+            names = std::move(both);
+        }
+    }
     return names;
 }
 
@@ -100160,8 +100917,8 @@ bool vtu_is_numeric_type(const std::string& rType) {
  * meshio++ dtype: it is skipped with a warning rather than failing a read that
  * used to succeed by ignoring the whole section.
  */
-void vtu_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
-                         std::size_t HeaderSize, const ReadOptions& rOpts, Mesh& rMesh) {
+void vtu_read_field_data(const pugi::xml_node& rNode, const VtuContext& rCtx,
+                         const ReadOptions& rOpts, Mesh& rMesh) {
     for (pugi::xml_node da : rNode.child("FieldData").children("DataArray")) {
         const std::string name = da.attribute("Name").as_string();
         if (!rOpts.WantsArray(name))
@@ -100174,7 +100931,7 @@ void vtu_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
             continue;
         }
         int nc = 0;
-        NDArray arr = vtu_read_data_array(da, Codec, HeaderSize, nc);
+        NDArray arr = vtu_read_data_array(da, rCtx, nc);
         if (nc > 1)
             arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
         rMesh.AddFieldData(name, std::move(arr));
@@ -100189,8 +100946,10 @@ void vtu_read_field_data(const pugi::xml_node& rNode, detail::VtkCodec Codec,
  * read skips.
  */
 std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
+    std::vector<pugi::xml_node> nodes{rHeader.mGrid};
+    nodes.insert(nodes.end(), rHeader.mPieces.begin(), rHeader.mPieces.end());
     std::vector<std::string> names;
-    for (const pugi::xml_node& rNode : {rHeader.mGrid, rHeader.mPiece})
+    for (const pugi::xml_node& rNode : nodes)
         for (pugi::xml_node da : rNode.child("FieldData").children("DataArray"))
             if (vtu_is_numeric_type(da.attribute("type").as_string()))
                 names.emplace_back(da.attribute("Name").as_string());
@@ -100202,85 +100961,150 @@ std::vector<std::string> vtu_field_data_names(const vtu_header& rHeader) {
 }  // namespace
 
 Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
-    pugi::xml_document doc;
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str());
-    if (!res)
-        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
-
-    const vtu_header h = vtu_parse_header(doc);
-    const pugi::xml_node piece = h.mPiece;
-    const detail::VtkCodec codec = h.mCodec;
-    const std::size_t hsz = h.mHeaderSize;
-    const std::size_t num_points = h.mNumPoints;
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_default, source);
+    const vtu_header h = vtu_parse_header(source);
+    const VtuContext& ctx = h.mCtx;
     const bool want_data = rOpts.WantsAnyData();
+    const bool many = h.mPieces.size() > 1;
 
     Mesh mesh;
     std::vector<std::int64_t> conn, offsets, types;
     // VTU's polyhedral stream; empty when the file has none.
     std::vector<std::int64_t> faces, face_offsets;
-    std::unordered_map<std::string, NDArray> cell_data_raw;
+    std::vector<NDArray> point_parts;
+    // Per name, one array per piece; a name some piece lacks is dropped.
+    std::map<std::string, std::vector<NDArray>> point_data, cell_data;
+    std::int64_t point_base = 0, conn_base = 0, face_base = 0;
 
-    for (pugi::xml_node child : piece.children()) {
-        std::string tag = child.name();
-        if (tag == "Points") {
-            pugi::xml_node da = child.child("DataArray");
-            int nc = 0;
-            NDArray pts = vtu_read_data_array(da, codec, hsz, nc);
-            if (nc <= 0)
-                nc = 3;
-            pts.Reshape({num_points, static_cast<std::size_t>(nc)});
-            mesh.AssignPoints(std::move(pts));
-        } else if (tag == "Cells") {
-            for (pugi::xml_node da : child.children("DataArray")) {
+    for (std::size_t k = 0; k < h.mPieces.size(); ++k) {
+        const pugi::xml_node piece = h.mPieces[k];
+        const std::size_t num_points =
+            static_cast<std::size_t>(piece.attribute("NumberOfPoints").as_ullong());
+        const std::size_t num_cells =
+            static_cast<std::size_t>(piece.attribute("NumberOfCells").as_ullong());
+        std::vector<std::int64_t> p_conn, p_offsets, p_types, p_faces, p_face_offsets;
+        for (pugi::xml_node child : piece.children()) {
+            std::string tag = child.name();
+            if (tag == "Points") {
+                pugi::xml_node da = child.child("DataArray");
                 int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
-                if (name == "connectivity")
-                    conn = vtu_to_int64(arr);
-                else if (name == "offsets")
-                    offsets = vtu_to_int64(arr);
-                else if (name == "types")
-                    types = vtu_to_int64(arr);
-                else if (name == "faces")
-                    faces = vtu_to_int64(arr);
-                else if (name == "faceoffsets")
-                    face_offsets = vtu_to_int64(arr);
-            }
-        } else if (tag == "PointData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                // The Name attribute is available before the body is touched,
-                // so an unwanted array costs nothing but the attribute read --
-                // no base64 decode, no inflate, no allocation.
-                if (!rOpts.WantsArray(name))
+                NDArray pts = vtu_read_data_array(da, ctx, nc);
+                if (nc <= 0)
+                    nc = 3;
+                pts.Reshape({num_points, static_cast<std::size_t>(nc)});
+                point_parts.push_back(std::move(pts));
+            } else if (tag == "Cells") {
+                for (pugi::xml_node da : child.children("DataArray")) {
+                    int nc = 0;
+                    std::string name = da.attribute("Name").as_string();
+                    if (name != "connectivity" && name != "offsets" && name != "types" &&
+                        name != "faces" && name != "faceoffsets")
+                        continue;
+                    NDArray arr = vtu_read_data_array(da, ctx, nc);
+                    if (name == "connectivity")
+                        p_conn = vtu_to_int64(arr);
+                    else if (name == "offsets")
+                        p_offsets = vtu_to_int64(arr);
+                    else if (name == "types")
+                        p_types = vtu_to_int64(arr);
+                    else if (name == "faces")
+                        p_faces = vtu_to_int64(arr);
+                    else
+                        p_face_offsets = vtu_to_int64(arr);
+                }
+            } else if (tag == "PointData" || tag == "CellData") {
+                if (!want_data)
                     continue;
-                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                mesh.AddPointData(name, std::move(arr));
-            }
-        } else if (tag == "CellData") {
-            if (!want_data)
-                continue;
-            for (pugi::xml_node da : child.children("DataArray")) {
-                int nc = 0;
-                std::string name = da.attribute("Name").as_string();
-                if (!rOpts.WantsArray(name))
-                    continue;
-                NDArray arr = vtu_read_data_array(da, codec, hsz, nc);
-                if (nc > 1)
-                    arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
-                cell_data_raw.emplace(name, std::move(arr));
+                auto& rTarget = tag == "PointData" ? point_data : cell_data;
+                for (pugi::xml_node da : child.children("DataArray")) {
+                    int nc = 0;
+                    std::string name = da.attribute("Name").as_string();
+                    // The Name attribute is available before the body is
+                    // touched, so an unwanted array costs nothing but the
+                    // attribute read -- no base64 decode, no inflate, no
+                    // allocation.
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    NDArray arr = vtu_read_data_array(da, ctx, nc);
+                    if (nc > 1)
+                        arr.Reshape({arr.Size() / nc, static_cast<std::size_t>(nc)});
+                    auto& rParts = rTarget[name];
+                    if (rParts.size() == k)  // one per piece; a repeat keeps the first
+                        rParts.push_back(std::move(arr));
+                }
             }
         }
+        if (many && (p_offsets.size() != num_cells || p_types.size() != num_cells))
+            throw ReadError("VTU: piece " + std::to_string(k) + " has inconsistent cells");
+        // One stream across pieces: node ids shift by the points before the
+        // piece, offsets by the connectivity before it, face offsets by the
+        // face stream before it (-1 marks a cell that is not a polyhedron).
+        for (auto& rV : p_conn)
+            rV += point_base;
+        for (auto& rV : p_offsets)
+            rV += conn_base;
+        for (std::size_t i = 0; i < p_faces.size();) {
+            const std::int64_t num_faces = p_faces[i++];
+            for (std::int64_t f = 0; f < num_faces && i < p_faces.size(); ++f) {
+                const std::int64_t n = p_faces[i++];
+                for (std::int64_t j = 0; j < n && i < p_faces.size(); ++j)
+                    p_faces[i++] += point_base;
+            }
+        }
+        if (p_face_offsets.empty() && (!faces.empty() || !face_offsets.empty()))
+            p_face_offsets.assign(p_types.size(), -1);
+        if (!p_face_offsets.empty() && face_offsets.empty() && !types.empty())
+            face_offsets.assign(types.size(), -1);
+        for (auto& rV : p_face_offsets)
+            if (rV >= 0)
+                rV += face_base;
+        point_base += static_cast<std::int64_t>(num_points);
+        conn_base += static_cast<std::int64_t>(p_conn.size());
+        face_base += static_cast<std::int64_t>(p_faces.size());
+        conn.insert(conn.end(), p_conn.begin(), p_conn.end());
+        offsets.insert(offsets.end(), p_offsets.begin(), p_offsets.end());
+        types.insert(types.end(), p_types.begin(), p_types.end());
+        faces.insert(faces.end(), p_faces.begin(), p_faces.end());
+        face_offsets.insert(face_offsets.end(), p_face_offsets.begin(), p_face_offsets.end());
     }
 
+    if (!point_parts.empty()) {
+        if (point_parts.size() != h.mPieces.size())
+            throw ReadError("VTU: a piece has no Points");
+        NDArray points = vtu_concat_rows(point_parts);
+        if (points.Size() == 0 && h.mNumPoints > 0)
+            throw ReadError("VTU: pieces disagree on the point dtype or dimension");
+        mesh.AssignPoints(std::move(points));
+    }
+
+    auto merged = [&](std::map<std::string, std::vector<NDArray>>& rData, const char* pWhat,
+                      auto&& rAdd) {
+        for (auto& [name, parts] : rData) {
+            NDArray arr = parts.size() == h.mPieces.size() ? vtu_concat_rows(parts) : NDArray();
+            if (parts.size() != h.mPieces.size() ||
+                (arr.Size() == 0 && !parts.empty() && parts[0].Size() != 0)) {
+                log::warn(
+                    "VTU: {} data '{}' is missing from, or differs between, pieces; "
+                    "dropped",
+                    pWhat, name);
+                continue;
+            }
+            rAdd(name, std::move(arr));
+        }
+    };
+    std::unordered_map<std::string, NDArray> cell_data_raw;
+    merged(point_data, "point", [&](const std::string& rName, NDArray&& rArr) {
+        mesh.AddPointData(rName, std::move(rArr));
+    });
+    merged(cell_data, "cell", [&](const std::string& rName, NDArray&& rArr) {
+        cell_data_raw.emplace(rName, std::move(rArr));
+    });
+
     if (want_data) {
-        vtu_read_field_data(h.mGrid, codec, hsz, rOpts, mesh);
-        vtu_read_field_data(piece, codec, hsz, rOpts, mesh);
+        vtu_read_field_data(h.mGrid, ctx, rOpts, mesh);
+        for (const pugi::xml_node& rPiece : h.mPieces)
+            vtu_read_field_data(rPiece, ctx, rOpts, mesh);
     }
 
     detail::reconstruct_cells(conn.data(), offsets, types, cell_data_raw,
@@ -100289,54 +101113,55 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
 }
 
 MeshMetadata read_vtu_metadata(const std::string& rPath, const ReadOptions&) {
-    pugi::xml_document doc;
     // parse_minimal skips escape expansion and EOL normalization over the
     // base64 bodies. It does NOT avoid reading the file: pugixml always
     // materializes PCDATA. The real saving below is skipping base64 decode,
     // decompression, allocation and byte-swapping for every array we don't
     // touch -- a solid multiple, not an asymptotic change. See read_options.hpp.
-    pugi::xml_parse_result res = doc.load_file(rPath.c_str(), pugi::parse_minimal);
-    if (!res)
-        throw ReadError(std::string("VTU XML parse failed: ") + res.description());
-
-    const vtu_header h = vtu_parse_header(doc);
+    VtuSource source;
+    vtu_load(rPath, pugi::parse_minimal, source);
+    const vtu_header h = vtu_parse_header(source);
 
     MeshMetadata meta;
-    meta.mNumPoints = h.mNumPoints;  // an attribute -- free
+    meta.mNumPoints = h.mNumPoints;  // attributes -- free
 
     // Point dimension comes from the Points DataArray's NumberOfComponents
     // attribute, so the coordinates themselves are never decoded.
-    pugi::xml_node points_da = h.mPiece.child("Points").child("DataArray");
+    pugi::xml_node points_da = h.mPieces[0].child("Points").child("DataArray");
     const int point_nc = points_da ? points_da.attribute("NumberOfComponents").as_int(0) : 0;
     meta.mPointDim = point_nc > 0 ? static_cast<std::size_t>(point_nc) : 3;
 
     // 'types' is one value per cell and is the only array a summary must decode;
     // 'offsets' is additionally needed only when a variable-node-count type
     // (polygon, VTK_LAGRANGE_*) is present.
+    auto piece_array = [&](const pugi::xml_node& rPiece, const char* pName) {
+        for (pugi::xml_node da : rPiece.child("Cells").children("DataArray"))
+            if (std::string(da.attribute("Name").as_string()) == pName) {
+                int nc = 0;
+                return vtu_to_int64(vtu_read_data_array(da, h.mCtx, nc));
+            }
+        return std::vector<std::int64_t>();
+    };
     std::vector<std::int64_t> types, offsets;
-    pugi::xml_node cells = h.mPiece.child("Cells");
-    for (pugi::xml_node da : cells.children("DataArray")) {
-        const std::string name = da.attribute("Name").as_string();
-        if (name != "types")
-            continue;
-        int nc = 0;
-        types = vtu_to_int64(vtu_read_data_array(da, h.mCodec, h.mHeaderSize, nc));
-        break;
+    for (const pugi::xml_node& rPiece : h.mPieces) {
+        std::vector<std::int64_t> t = piece_array(rPiece, "types");
+        types.insert(types.end(), t.begin(), t.end());
     }
     if (detail::cells_need_offsets(types)) {
-        for (pugi::xml_node da : cells.children("DataArray")) {
-            const std::string name = da.attribute("Name").as_string();
-            if (name != "offsets")
-                continue;
-            int nc = 0;
-            offsets = vtu_to_int64(vtu_read_data_array(da, h.mCodec, h.mHeaderSize, nc));
-            break;
+        std::int64_t base = 0;
+        for (const pugi::xml_node& rPiece : h.mPieces) {
+            std::vector<std::int64_t> o = piece_array(rPiece, "offsets");
+            for (auto& rV : o)
+                rV += base;
+            if (!o.empty())
+                base = o.back();
+            offsets.insert(offsets.end(), o.begin(), o.end());
         }
     }
     meta.mCellBlocks = detail::summarize_cells(offsets, types);
 
-    meta.mPointDataNames = vtu_array_names(h.mPiece, "PointData");
-    meta.mCellDataNames = vtu_array_names(h.mPiece, "CellData");
+    meta.mPointDataNames = vtu_array_names(h.mPieces, "PointData");
+    meta.mCellDataNames = vtu_array_names(h.mPieces, "CellData");
     meta.mFieldDataNames = vtu_field_data_names(h);
 
     // No bounding box: it would require decoding the point coordinates, which

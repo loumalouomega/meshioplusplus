@@ -14,6 +14,17 @@ from pathlib import Path
 
 import numpy as np
 
+# The face-to-cell kernel, shared with the Fluent reader; the private names
+# are kept for the tests that import them from here.
+from .._face_cells import build_hexahedron as _build_hexahedron  # noqa: F401
+from .._face_cells import build_polyhedra as _build_polyhedra  # noqa: F401
+from .._face_cells import build_pyramid as _build_pyramid  # noqa: F401
+from .._face_cells import build_tetra as _build_tetra  # noqa: F401
+from .._face_cells import build_wedge as _build_wedge  # noqa: F401
+from .._face_cells import match_top as _match_top  # noqa: F401
+from .._face_cells import node_adjacency as _node_adjacency  # noqa: F401
+from .._face_cells import reconstruct_cell as _reconstruct_cell  # noqa: F401
+from .._face_cells import triple as _triple  # noqa: F401
 from .._mesh import CellBlock, Mesh
 
 logger = logging.getLogger(__name__)
@@ -389,23 +400,6 @@ def _read_int_list(path: Path) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _triple(a, b, c) -> float:
-    """Scalar triple product a · (b × c)."""
-    return float(np.dot(a, np.cross(b, c)))
-
-
-def _node_adjacency(faces) -> dict:
-    """Build a node-to-node adjacency dict from a list of faces."""
-    adj: dict[int, set] = {}
-    for f in faces:
-        m = len(f)
-        for i in range(m):
-            a, b = f[i], f[(i + 1) % m]
-            adj.setdefault(a, set()).add(b)
-            adj.setdefault(b, set()).add(a)
-    return adj
-
-
 def _cell_faces_csr(n_cells, owner, neighbour) -> _RaggedArray:
     """
     Vectorised cell -> faces topology as a CSR :class:`_RaggedArray`.
@@ -446,70 +440,6 @@ def _outward_faces(cell_faces, faces, owner, cell_id):
     return oriented
 
 
-def _match_top(bottom, oriented):
-    """
-    For each base node, find its unique vertical neighbour.
-    Returns the ordered top ring, or None if the topology is ambiguous.
-    """
-    adj = _node_adjacency(oriented)
-    base = set(bottom)
-    top = []
-    for b in bottom:
-        cand = [x for x in adj[b] if x not in base]
-        if len(cand) != 1:
-            return None
-        top.append(cand[0])
-    return top
-
-
-def _build_tetra(oriented, P):
-    """Build a tetrahedron connectivity with positive volume orientation."""
-    base = oriented[0]
-    apex = (set().union(*oriented) - set(base)).pop()
-    n = [base[0], base[1], base[2], apex]
-    p = [P[i] for i in n]
-    if _triple(p[1] - p[0], p[2] - p[0], p[3] - p[0]) < 0:
-        n = [base[0], base[2], base[1], apex]
-    return n
-
-
-def _build_pyramid(oriented, P):
-    """Build a pyramid connectivity with positive volume orientation."""
-    quad = next(f for f in oriented if len(f) == 4)
-    apex = (set().union(*oriented) - set(quad)).pop()
-    n = list(quad) + [apex]
-    p = [P[i] for i in n]
-    if _triple(p[1] - p[0], p[3] - p[0], p[4] - p[0]) < 0:
-        n = [quad[0], quad[3], quad[2], quad[1], apex]
-    return n
-
-
-def _build_wedge(oriented, P):
-    """Build a wedge connectivity with positive volume orientation."""
-    bottom = next(f for f in oriented if len(f) == 3)
-    top = _match_top(bottom, oriented)
-    if top is None:
-        return None
-    n = list(bottom) + top
-    p = [P[i] for i in n]
-    if _triple(p[1] - p[0], p[2] - p[0], p[3] - p[0]) < 0:
-        n = [bottom[0], bottom[2], bottom[1], top[0], top[2], top[1]]
-    return n
-
-
-def _build_hexahedron(oriented, P):
-    """Build a hexahedron connectivity with positive volume orientation."""
-    bottom = next(f for f in oriented if len(f) == 4)
-    top = _match_top(bottom, oriented)
-    if top is None:
-        return None
-    n = list(bottom) + top
-    p = [P[i] for i in n]
-    if _triple(p[1] - p[0], p[3] - p[0], p[4] - p[0]) < 0:
-        n = [bottom[0], bottom[3], bottom[2], bottom[1], top[0], top[3], top[2], top[1]]
-    return n
-
-
 def _build_boundary_polygons(poly_faces, poly_tags):
     """Split boundary polygons by vertex count -> polygonN CellBlocks."""
     by_n = defaultdict(list)
@@ -522,45 +452,6 @@ def _build_boundary_polygons(poly_faces, poly_tags):
         cells.append(CellBlock(f"polygon{n}", np.array(faces, dtype=int)))
         tags.append(np.array(tag_n[n], dtype=int))
     return cells, tags
-
-
-def _build_polyhedra(poly_cells):
-    """Split general polyhedra by unique node count -> polyhedronN CellBlocks."""
-    by_n = defaultdict(list)
-    for oriented in poly_cells:
-        n_nodes = len(set().union(*oriented))
-        by_n[n_nodes].append([list(f) for f in oriented])
-    cells = []
-    for n_nodes, polys in by_n.items():
-        data = np.empty(len(polys), dtype=object)
-        for i, p in enumerate(polys):
-            data[i] = [np.array(f, dtype=int) for f in p]
-        cells.append(CellBlock(f"polyhedron{n_nodes}", data))
-    return cells
-
-
-def _reconstruct_cell(oriented, P):
-    """
-    Classify a cell by (n_faces, n_points).
-
-    Returns (meshio_type, connectivity) where:
-      - for standard types : connectivity is a flat list of point ids
-      - for 'polyhedron'   : connectivity is the list of outward-oriented faces
-    """
-    n_faces = len(oriented)
-    n_pts = len(set().union(*oriented))
-
-    if n_faces == 4 and n_pts == 4:
-        return "tetra", _build_tetra(oriented, P)
-    if n_faces == 5 and n_pts == 5:
-        return "pyramid", _build_pyramid(oriented, P)
-    if n_faces == 5 and n_pts == 6:
-        return "wedge", _build_wedge(oriented, P)
-    if n_faces == 6 and n_pts == 8:
-        return "hexahedron", _build_hexahedron(oriented, P)
-
-    # General polyhedron: keep outward-oriented faces
-    return "polyhedron", oriented
 
 
 def _build_volume_cells(n_cells, faces, owner, neighbour, P):

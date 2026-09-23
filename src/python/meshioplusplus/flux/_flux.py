@@ -7,9 +7,9 @@ ASCII with French keyword headers.  Each element is a 12-integer record
 1-based connectivity; node coordinates live under ``COORDONNEES DES NOEUDS``.
 Per-element region references are exposed as ``cell_data["pf3:ref"]``.
 
-Node ordering within an element uses meshio's convention directly; this
-round-trips losslessly but is not guaranteed identical to FLUX's internal
-ordering for every element type.
+FLUX lists every solid in VTK order mirrored (the base face runs clockwise
+seen from inside); the ``"flux"`` tables in ``_node_order.py`` undo it. Planar
+and line elements already match meshio++'s order.
 """
 
 import numpy as np
@@ -19,6 +19,7 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._node_order import from_meshio, to_meshio
 
 __all__ = ["read", "write"]
 
@@ -72,7 +73,8 @@ def _header_value(lines, predicate):
 
 
 def read(filename):
-    with open_file(filename, "r") as f:
+    # FLUX writes region names in Latin-1 (French accents).
+    with open_file(filename, "r", encoding="latin-1") as f:
         lines = f.read().splitlines()
 
     dim = _header_value(lines, lambda L: "NOMBRE DE DIMENSIONS" in L)
@@ -88,20 +90,28 @@ def read(filename):
         lines, lambda L: "NOMBRE DE POINTS" in L and "INTEGRATION" not in L
     )
 
-    di = next(i for i, L in enumerate(lines) if "DESCRIPTEUR DE TOPOLOGIE" in L)
-    ci = next(i for i, L in enumerate(lines) if "COORDONNEES DES NOEUDS" in L)
+    di = next((i for i, L in enumerate(lines) if "DESCRIPTEUR DE TOPOLOGIE" in L), None)
+    ci = next((i for i, L in enumerate(lines) if "COORDONNEES DES NOEUDS" in L), None)
+    if di is None or ci is None:
+        raise ReadError("pf3: missing element/coordinate section")
 
     etok = " ".join(lines[di + 1 : ci]).split()
     pos = 0
     groups = {}
     refs = {}
-    for _ in range(nel):
+    for e in range(nel):
+        # A file cut short (FLUX excerpts are) keeps the elements it has.
+        if pos + 12 > len(etok):
+            warn(f"pf3: {nel} elements declared, {e} present; reading those")
+            break
         hdr = etok[pos : pos + 12]
         pos += 12
         ref = int(hdr[3])
         desc3 = int(hdr[6])
         lnn = int(hdr[7])
-        nodes = [int(etok[pos + j]) - 1 for j in range(lnn)]
+        if pos + lnn > len(etok):
+            raise ReadError("pf3: truncated element connectivity")
+        nodes = [int(etok[pos + j]) for j in range(lnn)]
         pos += lnn
         if desc3 not in _desc3_to_meshio:
             raise ReadError(f"pf3: unknown element descriptor {desc3}")
@@ -109,19 +119,37 @@ def read(filename):
         groups.setdefault(mtype, []).append(nodes)
         refs.setdefault(mtype, []).append(ref)
 
+    # `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     ctok = " ".join(lines[ci + 1 :]).split()
-    points = np.empty((nnod, dim))
+    ids = []
+    coords = []
     p = 0
-    for i in range(nnod):
-        p += 1  # node index
-        for j in range(dim):
-            points[i, j] = float(ctok[p])
-            p += 1
+    while p + dim < len(ctok) and not ctok[p].startswith("="):
+        ids.append(int(ctok[p]))
+        coords.append([float(ctok[p + 1 + j]) for j in range(dim)])
+        p += 1 + dim
+    if len(ids) != nnod:
+        warn(f"pf3: {nnod} points declared, {len(ids)} present")
+    points = np.array(coords, dtype=float).reshape(len(ids), dim)
+
+    # Node ids are normally 1..n in row order; otherwise number the rows.
+    remap = None
+    if ids != list(range(1, len(ids) + 1)):
+        remap = {nid: row for row, nid in enumerate(ids)}
 
     cells = []
     cell_data = {"pf3:ref": []}
     for mtype, conn in groups.items():
-        cells.append(CellBlock(mtype, np.array(conn, dtype=int)))
+        if remap is None:
+            data = np.array(conn, dtype=int) - 1
+            if data.size and (data.min() < 0 or data.max() >= len(ids)):
+                raise ReadError("pf3: element references an undefined node")
+        else:
+            try:
+                data = np.array([[remap[n] for n in row] for row in conn], dtype=int)
+            except KeyError as exc:
+                raise ReadError(f"pf3: element references undefined node {exc}")
+        cells.append(CellBlock(mtype, to_meshio("flux", mtype, data)))
         cell_data["pf3:ref"].append(np.array(refs[mtype], dtype=int))
 
     return Mesh(points, cells, cell_data=cell_data if cells else {})
@@ -169,10 +197,11 @@ def write(filename, mesh):
         for k, cb in blocks:
             desc1, desc2, desc3 = _meshio_to_desc[cb.type]
             lnn = cb.data.shape[1]
+            conn = from_meshio("flux", cb.type, cb.data)
             block_refs = None
             if ref_data is not None and k < len(ref_data):
                 block_refs = ref_data[k]
-            for r, row in enumerate(cb.data):
+            for r, row in enumerate(conn):
                 eid += 1
                 ref = int(block_refs[r]) if block_refs is not None else 0
                 f.write(

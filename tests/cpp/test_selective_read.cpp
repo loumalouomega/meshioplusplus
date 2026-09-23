@@ -374,7 +374,8 @@ TEST(SelectiveReadVtp, PointsOnlyAndMetadataWork) {
 }
 
 TEST(SelectiveReadVtu, MetadataRejectsWhatTheReaderRejects) {
-    // A summary must never claim a file is fine when read_vtu would refuse it.
+    // A summary must never claim a file is fine when read_vtu would refuse it:
+    // here pieces that declare points but carry no <Points>.
     const std::string path = mt::temp_path(".vtu");
     {
         std::ofstream os(path);

@@ -212,14 +212,33 @@ def read_ascii_buffer(f):
                     int(f.readline())
                 )  # e.g. Dimension\n3, where the number of dimensions is on the next line
         elif items[0] == "Vertices":
-            if dim <= 0:
-                raise ReadError()
             if dtype is None:
                 raise ReadError("Expected `MeshVersionFormatted` before `Vertices`")
             num_verts = int(f.readline())
-            out = np.fromfile(
-                f, count=num_verts * (dim + 1), dtype=dtype, sep=" "
-            ).reshape(num_verts, dim + 1)
+            first = []
+            if dim <= 0:
+                # No `Dimension` keyword (FEconv writes none): a vertex row
+                # holds the coordinates and a reference.
+                dim = 3
+                if num_verts > 0:
+                    line = ""
+                    while not line.strip():
+                        line = f.readline()
+                    first = [float(v) for v in line.split("#")[0].split()]
+                    dim = len(first) - 1
+                if dim < 1 or dim > 3:
+                    raise ReadError(
+                        "Medit: cannot tell the dimension from the Vertices rows"
+                    )
+            rest = np.fromfile(
+                f,
+                count=(num_verts - (1 if first else 0)) * (dim + 1),
+                dtype=dtype,
+                sep=" ",
+            )
+            out = np.concatenate([np.array(first, dtype=dtype), rest]).reshape(
+                num_verts, dim + 1
+            )
             points = out[:, :dim]
             point_data["medit:ref"] = out[:, dim].astype(int)
         elif items[0] in meshio_from_medit:
