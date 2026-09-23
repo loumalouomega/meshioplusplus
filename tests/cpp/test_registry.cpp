@@ -44,6 +44,8 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
     EXPECT_EQ(resolve_format("mesh.mail", ""), "code_aster");
+    EXPECT_EQ(resolve_format("model.pat", ""), "patran");
+    EXPECT_EQ(resolve_format("model.out", ""), "patran");
     EXPECT_EQ(resolve_format("mesh.mphbin", ""), "mphbin");
     EXPECT_EQ(resolve_format("mesh.mphtxt", ""), "mphtxt");
     EXPECT_EQ(resolve_format("results.frd", ""), "frd");

@@ -54,6 +54,13 @@ license: MIT
 # pymapdl_reference.npz there is pymapdl-reader's own reading of them, frozen by
 # tools/gen_ansys_rst_reference.py. The `ansys_rst` reader reads the record layout
 # pymapdl-reader documents; no code is copied.
+# tests/python/meshes/mfem/*.mesh are sample meshes from the data/ directory of MFEM
+# (https://github.com/mfem/mfem), Copyright (c) 2010-2026 Lawrence Livermore National
+# Security, LLC, redistributed unmodified under the BSD-3-Clause licence, whose text sits
+# beside them in that directory's README.md; the *.gf grid functions and reference.npz
+# there were written by MFEM itself (PyMFEM) through tools/gen_mfem_fixtures.py. The
+# `mfem` reader reproduces MFEM's documented degree-of-freedom numbering; no MFEM code is
+# copied.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/

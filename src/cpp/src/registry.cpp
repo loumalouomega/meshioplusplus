@@ -23,16 +23,19 @@
  */
 
 // System includes
+#include <ios>
 #include <unordered_map>
 
 // Project includes
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
@@ -57,6 +60,7 @@
 #include "meshioplusplus/formats/mdpa.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/medit.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/formats/mff.hpp"
 #include "meshioplusplus/formats/mfm.hpp"
 #include "meshioplusplus/formats/mphtxt.hpp"
@@ -99,6 +103,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
         {"abaqus", meshioplusplus::read_abaqus},
         {"lsdyna", meshioplusplus::read_lsdyna},
         {"code_aster", meshioplusplus::read_code_aster},
+        {"patran", meshioplusplus::read_patran},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
         {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
         {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
@@ -132,6 +137,9 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
         {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
         {"medit", meshioplusplus::read_medit_ascii},
+        // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
+        // medit's extension; resolve_format hands MFEM files over by content.
+        {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
         {"mff", meshioplusplus::read_mff},
         {"mfm", meshioplusplus::read_mfm},
         {"mphbin", meshioplusplus::read_mphbin},
@@ -221,6 +229,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"abaqus", meshioplusplus::write_abaqus},
         {"lsdyna", meshioplusplus::write_lsdyna},
         {"code_aster", meshioplusplus::write_code_aster},
+        {"patran", meshioplusplus::write_patran},
         {"elmer", meshioplusplus::write_elmer},
         {"febio", meshioplusplus::write_febio},
         {"ansys", [](const std::string& p,
@@ -255,6 +264,8 @@ const std::map<std::string, WriteFn>& registry_writers() {
         {"ip", meshioplusplus::write_ip},
         {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
         {"medit", meshioplusplus::write_medit_ascii},
+        {"mfem",
+         [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
         {"mff", meshioplusplus::write_mff},
         {"mfm",
          [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
@@ -448,6 +459,8 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".key", "lsdyna"},
         {".dyn", "lsdyna"},
         {".mail", "code_aster"},
+        {".pat", "patran"},
+        {".out", "patran"},
         {".feb", "febio"},
         {".xplt", "xplt"},
         {".rst", "ansys_rst"},
@@ -553,6 +566,19 @@ namespace {
 // produce a nonsense first candidate. Behaviour-preserving for every
 // extension registered before the compound ones existed -- every one of them
 // is single-dot, so at most one candidate can ever match for those paths.
+// Whether `rPath` exists and opens with an MFEM mesh header (`MFEM mesh v1.x`,
+// `MFEM NC mesh ...`); only for the `.mesh` suffix Medit and MFEM share.
+bool registry_is_mfem_mesh(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        return false;
+    char buf[64];
+    in.read(buf, sizeof(buf));
+    std::string head(buf, static_cast<std::size_t>(in.gcount()));
+    const std::size_t first = head.find_first_not_of(" \t\r\n");
+    return first != std::string::npos && head.compare(first, 5, "MFEM ") == 0;
+}
+
 std::string basename_of(const std::string& rPath) {
     auto pos = rPath.find_last_of("/\\");
     return pos == std::string::npos ? rPath : rPath.substr(pos + 1);
@@ -567,9 +593,15 @@ std::string resolve_format(const std::string& rPath, const std::string& rFormat)
     const std::string base = basename_of(rPath);
     for (std::size_t pos = base.find('.'); pos != std::string::npos;
          pos = base.find('.', pos + 1)) {
-        auto it = defaults.find(base.substr(pos));
-        if (it != defaults.end())
-            return it->second;
+        const std::string suffix = base.substr(pos);
+        auto it = defaults.find(suffix);
+        if (it == defaults.end())
+            continue;
+        // `.mesh` is both Medit's and MFEM's. The one content-aware default: an
+        // existing file whose first line names an MFEM mesh goes to mfem.
+        if (suffix == ".mesh" && registry_is_mfem_mesh(rPath))
+            return "mfem";
+        return it->second;
     }
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                     "' -- pass an explicit format argument");

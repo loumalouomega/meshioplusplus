@@ -105,6 +105,39 @@ bool sniff_is_mphtxt(const std::string& rHead) {
 // `part.n.*` files, or a directory holding one) and an OpenFOAM case (the
 // layouts the openfoam reader resolves). A directory that looks like both, or
 // like neither, is "".
+// Patran 2 neutral file: the first card is a title (25) or summary (26) packet
+// header in the fixed `(I2,8I8)` columns -- every field right-justified digits --
+// announcing at least one data card. Matched on the unstripped head: the columns
+// are the signature.
+bool sniff_is_patran(const std::string& rHead) {
+    if (rHead.size() < 26 || rHead[0] != '2' || (rHead[1] != '5' && rHead[1] != '6'))
+        return false;
+    std::size_t eol = rHead.find('\n');
+    if (eol == std::string::npos)
+        eol = rHead.size();
+    std::string line = rHead.substr(0, eol);
+    if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+    if (line.size() < 26 || line.size() > 80)
+        return false;
+    std::int64_t kc = 0;
+    for (std::size_t f = 0; 2 + 8 * f < line.size() && f < 8; ++f) {
+        const std::string field = line.substr(2 + 8 * f, 8);
+        const std::size_t first = field.find_first_not_of(' ');
+        if (first == std::string::npos)
+            return false;
+        std::size_t k = first + (field[first] == '-' ? 1 : 0);
+        if (k >= field.size())
+            return false;
+        for (; k < field.size(); ++k)
+            if (field[k] < '0' || field[k] > '9')
+                return false;
+        if (f == 2)
+            kc = std::stoll(field.substr(first));
+    }
+    return kc >= 1;
+}
+
 std::string sniff_directory(const std::filesystem::path& rDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -283,6 +316,15 @@ std::string sniff_format(const std::string& rPath) {
                     return "unv";
         }
     }
+    // MFEM mesh: the first line names it (`MFEM mesh v1.x`; the non-conforming,
+    // NURBS and INLINE kinds are MFEM's too, and read_mfem names why it refuses them).
+    if (sniff_starts_with(stripped, "MFEM mesh v1.") ||
+        sniff_starts_with(stripped, "MFEM NC mesh") ||
+        sniff_starts_with(stripped, "MFEM NURBS mesh") ||
+        sniff_starts_with(stripped, "MFEM INLINE mesh"))
+        return "mfem";
+    if (sniff_is_patran(head))
+        return "patran";
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";
