@@ -103,3 +103,7 @@ tests/python/meshes/febio/*.feb -filter -diff -merge text
 # .mphbin twin above.
 tests/python/meshes/febio/xplt/*.feb -filter -diff -merge text
 tests/python/meshes/febio/xplt/*.xplt binary
+# Ansys .cdb decks from mapdl-archive (see that directory's README.md): small text kept
+# out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
+# line endings their writers produced and the reader must handle.
+tests/python/meshes/ansys/*.cdb -filter -diff -merge -text

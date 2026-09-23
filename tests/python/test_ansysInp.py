@@ -10,14 +10,7 @@ import pytest
 from meshioplusplus import CellBlock, Mesh
 
 # Direct imports from the internal module for in-memory tests
-from meshioplusplus.ansysInp._ansysInp import (
-    _int_width,
-    _is_data_line,
-    _read_lines,
-    _real_width,
-    _slice_ints,
-    write,
-)
+from meshioplusplus.ansysInp._ansysInp import _read_lines, write
 
 # Helper: write to a StringIO buffer via a temporary file
 
@@ -211,67 +204,6 @@ def _make_tetra_mesh() -> Mesh:
     )
     cells = [CellBlock("tetra", np.array([[0, 1, 2, 3]], dtype=np.int64))]
     return Mesh(points=points, cells=cells)
-
-
-# Tests: low-level helpers
-
-
-class TestHelpers:
-
-    def test_slice_ints_normal(self):
-        line = "        1        0        0"
-        assert _slice_ints(line, 9) == [1, 0, 0]
-
-    def test_slice_ints_negative(self):
-        assert _slice_ints("       -1", 9) == [-1]
-
-    def test_slice_ints_stops_on_text(self):
-        # "FINISH" must not raise an exception - we stop
-        result = _slice_ints("FINISH", 9)
-        assert result == []
-
-    def test_slice_ints_mixed_stops_at_text(self):
-        # If an alphabetic chunk appears, we stop cleanly
-        line = "        1        2FINISH  "
-        result = _slice_ints(line, 9)
-        # We get at least the first two integers
-        assert result[:2] == [1, 2]
-
-    def test_int_width_standard(self):
-        assert _int_width("(3i9,6e21.13e3)") == 9
-
-    def test_int_width_8i10(self):
-        assert _int_width("(8i10)") == 10
-
-    def test_real_width_standard(self):
-        assert _real_width("(3i9,6e21.13e3)") == 21
-
-    def test_real_width_e20(self):
-        assert _real_width("(3i9,6e20.13)") == 20
-
-    def test_is_data_line_numeric(self):
-        assert _is_data_line("        1        0        0") is True
-
-    def test_is_data_line_finish(self):
-        assert _is_data_line("FINISH") is False
-
-    def test_is_data_line_nblock(self):
-        assert _is_data_line("NBLOCK,6,SOLID,8,8") is False
-
-    def test_is_data_line_cmblock(self):
-        assert _is_data_line("CMBLOCK,MY_SET,NODE,4") is False
-
-    def test_is_data_line_comment(self):
-        assert _is_data_line("! comment") is False
-
-    def test_is_data_line_empty(self):
-        assert _is_data_line("") is False
-
-    def test_is_data_line_et_command(self):
-        assert _is_data_line("ET,1,285") is False
-
-    def test_is_data_line_n_terminator(self):
-        assert _is_data_line("N,R5.3,LOC,      -1,") is False
 
 
 # Tests: reading
@@ -478,5 +410,5 @@ class TestCMBlockEdgeCases:
         """
         from meshioplusplus._exceptions import ReadError
 
-        with pytest.raises(ReadError, match="range marker"):
+        with pytest.raises(ReadError, match="range end"):
             _read_from_str(BAD_CMBLOCK_INP)

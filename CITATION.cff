@@ -41,6 +41,12 @@ license: MIT
 # tests/python/meshes/nastran/composite_plate_2022.fem is an OptiStruct deck from the same
 # repository (models/optistruct/), redistributed unmodified under the same BSD-3-Clause
 # licence, whose text sits beside it in that directory's README.md.
+# tests/python/meshes/ansys/*.cdb are Ansys MAPDL decks from the mapdl-archive repository
+# (https://github.com/akaszynski/mapdl-archive), Copyright (c) 2023-2024 Alex Kaszynski,
+# redistributed unmodified under the MIT licence, whose text sits beside them in that
+# directory's README.md; mapdl_archive_reference.npz there is mapdl-archive's own reading
+# of them, frozen by tools/gen_ansys_cdb_reference.py. The `ansysInp` reader's element
+# categories and degenerate-shape rules follow mapdl-archive's; no code is copied.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/
