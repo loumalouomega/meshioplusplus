@@ -35,6 +35,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/medit.hpp"
@@ -226,4 +227,64 @@ TEST(FeconvQuirks, VtuTwoPiecesMerge) {
     EXPECT_EQ(fq_row(m, 0, 1), (std::vector<std::int64_t>{3, 4, 5}));
     EXPECT_TRUE(m.HasCellData("tag"));
     EXPECT_FALSE(m.HasPointData("u"));  // not in every piece
+}
+
+TEST(FeconvQuirks, FluentCellsFromFaces3d) {
+    // One tetrahedron known only through its faces: each face's right-hand
+    // normal points into c0 (cell 1), c1 = 0 outside.
+    const std::string body =
+        "(2 3)\n(10 (0 1 4 0 3))\n(10 (1 1 4 1 3)(\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n))\n"
+        "(13 (3 1 4 3 3)(\n1 2 3 1 0\n1 4 2 1 0\n2 4 3 1 0\n3 4 1 1 0\n))\n"
+        "(12 (0 1 1 0))\n(12 (4 1 1 1 2))\n(45 (4 fluid block)())\n(45 (3 wall skin)())\n";
+    const Mesh m = meshioplusplus::read_ansys(fq_write_file(body, ".msh"));
+    ASSERT_EQ(m.NumCellBlocks(), 2u);
+    EXPECT_EQ(m.Cells(0).Type(), "tetra");
+    EXPECT_EQ(m.Cells(1).Type(), "triangle");
+    EXPECT_EQ(m.Cells(1).NumCells(), 4u);
+    // Positive volume.
+    const auto t = fq_row(m, 0, 0);
+    auto p = [&](std::int64_t i, int c) {
+        return detail::read_double(m.Points(), static_cast<std::size_t>(i) * 3 + c);
+    };
+    double a[3], b[3], c[3];
+    for (int k = 0; k < 3; ++k) {
+        a[k] = p(t[1], k) - p(t[0], k);
+        b[k] = p(t[2], k) - p(t[0], k);
+        c[k] = p(t[3], k) - p(t[0], k);
+    }
+    const double vol = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) +
+                       a[2] * (b[0] * c[1] - b[1] * c[0]);
+    EXPECT_GT(vol, 0.0);
+    ASSERT_TRUE(m.HasCellData("ansys:zone"));
+    EXPECT_EQ(detail::read_int(m.CellData("ansys:zone", 0), 0), 4);
+    EXPECT_EQ(detail::read_int(m.CellData("ansys:zone", 1), 0), 3);
+    ASSERT_EQ(m.NumRegions(), 2u);
+}
+
+TEST(FeconvQuirks, FluentTwoDimensionalFromEdges) {
+    // A unit square as one quad; node zones out of order, mixed face rows.
+    const std::string body =
+        "(2 2)\n(10 (6 3 4 1 2) (\n1 1\n0 1\n))\n(10 (7 1 2 1 2) (\n0 0\n1 0\n))\n"
+        "(13(9 1 4 3 0)(\n2 1 2 1 0\n2 2 3 1 0\n2 3 4 1 0\n2 4 1 1 0\n))\n"
+        "(12 (a 1 1 1 3))\n";
+    const Mesh m = meshioplusplus::read_ansys(fq_write_file(body, ".msh"));
+    EXPECT_EQ(m.PointDim(), 2u);
+    ASSERT_EQ(m.NumCellBlocks(), 2u);
+    EXPECT_EQ(m.Cells(0).Type(), "quad");
+    // Counter-clockwise from the first edge's start (reversed: the cell is c0).
+    EXPECT_EQ(fq_row(m, 0, 0), (std::vector<std::int64_t>{1, 2, 3, 0}));
+    EXPECT_EQ(m.Cells(1).Type(), "line");
+}
+
+TEST(FeconvQuirks, FluentLegacyConnectivityRoundTrips) {
+    const Mesh src = mt::tet_mesh();
+    for (bool binary : {false, true}) {
+        const std::string path = mt::temp_path(".msh");
+        meshioplusplus::write_ansys(path, src, binary);
+        const Mesh m = meshioplusplus::read_ansys(path);
+        ASSERT_EQ(m.NumCellBlocks(), src.NumCellBlocks());
+        EXPECT_EQ(m.Cells(0).Type(), "tetra");
+        EXPECT_EQ(fq_row(m, 0, 0), fq_row(src, 0, 0));
+        EXPECT_FALSE(m.HasCellData("ansys:zone"));
+    }
 }

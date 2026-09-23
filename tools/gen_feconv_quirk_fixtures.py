@@ -26,6 +26,18 @@ not by meshio++, so a reader is never only checked against its own writer.
   base64, BigEndian; ``vtu/two_pieces_polyhedron.vtu`` -- two pieces, each a
   pyramid and a polyhedron, with cell data in both pieces and point data in
   only one. All five hold the same geometry.
+* ``ansys/cells3d.msh`` -- an ASCII Fluent mesh whose cells exist only through
+  their faces: two tetrahedra sharing an interior face, a hexahedron, a wedge,
+  a pyramid and an 8-node polyhedron (a cube with one side split in two), in a
+  mixed cell zone with its type list; wall faces in a mixed face zone; zone
+  names from ``(39 ...)`` and ``(45 ...)``.
+* ``ansys/tgrid2d.msh`` -- a TGrid-style 2-D mesh (a triangle and a quad):
+  node zones out of order, a blank before each body, a mixed face zone.
+* ``ansys/gambit2d.msh`` -- a GAMBIT-style 2-D mesh: ``(13(`` with no blank,
+  boundary faces listing their cell as ``c1`` with ``c0 = 0``.
+* ``ansys/binary3d.msh`` -- binary sections: float64 nodes, an int32 interior
+  face zone, an int64 mixed wall zone, and a cell declaration followed by
+  ``End of Binary Section`` instead of a body.
 
     python tools/gen_feconv_quirk_fixtures.py
 """
@@ -460,8 +472,200 @@ def write_vtu():
     (out / "two_pieces_polyhedron.vtu").write_text(text)
 
 
+# ---------------------------------------------------------------------------
+# ANSYS Fluent .msh
+# ---------------------------------------------------------------------------
+
+
+def _newell(pts):
+    n = [0.0, 0.0, 0.0]
+    for i, a in enumerate(pts):
+        b = pts[(i + 1) % len(pts)]
+        n[0] += (a[1] - b[1]) * (a[2] + b[2])
+        n[1] += (a[2] - b[2]) * (a[0] + b[0])
+        n[2] += (a[0] - b[0]) * (a[1] + b[1])
+    return n
+
+
+def _fluent_faces(points, cells):
+    """Every face of every cell, deduplicated, wound so that its right-hand
+    normal points into ``c0`` (Fluent's rule). Cells are ``(faces, centroid)``
+    with 1-based ids; returns ``[(nodes, c0, c1)]``, interior faces first."""
+    seen = {}
+    for cid, (cell_faces, _) in enumerate(cells, start=1):
+        for f in cell_faces:
+            seen.setdefault(frozenset(f), []).append((cid, f))
+    interior, boundary = [], []
+    for owners in seen.values():
+        (c0, f), rest = owners[0], owners[1:]
+        c1 = rest[0][0] if rest else 0
+        centre = cells[c0 - 1][1]
+        fc = [sum(points[i][k] for i in f) / len(f) for k in range(3)]
+        n = _newell([points[i] for i in f])
+        if sum(n[k] * (centre[k] - fc[k]) for k in range(3)) < 0:
+            f = f[::-1]
+        (interior if c1 else boundary).append((list(f), c0, c1))
+    return interior, boundary
+
+
+def _cells3d():
+    """(points, cells) with cells as (1-based faces, centroid, fluent type)."""
+    pts = []
+
+    def add(p):
+        pts.append(p)
+        return len(pts)
+
+    cells = []
+
+    def cell(faces, nodes, ftype):
+        centre = [sum(pts[i - 1][k] for i in nodes) / len(nodes) for k in range(3)]
+        cells.append((faces, centre, ftype))
+
+    # two tetrahedra sharing the face (a, b, c)
+    a, b, c = add((0, 0, 0)), add((1, 0, 0)), add((0, 1, 0))
+    d, e = add((0, 0, 1)), add((0.3, 0.3, -1))
+    cell([(a, b, c), (a, b, d), (b, c, d), (c, a, d)], (a, b, c, d), 2)
+    cell([(a, b, c), (a, b, e), (b, c, e), (c, a, e)], (a, b, c, e), 2)
+    # a hexahedron and a polyhedron (the same cube, one side split)
+    for x0, poly in ((3, False), (6, True)):
+        h = [add((x0 + x, y, z)) for z in (0, 1) for y in (0, 1) for x in (0, 1)]
+        b0, b1, b3, b2, t0, t1, t3, t2 = h
+        faces = [
+            (b0, b1, b2, b3),
+            (t0, t1, t2, t3),
+            (b0, b1, t1, t0),
+            (b1, b2, t2, t1),
+            (b2, b3, t3, t2),
+        ]
+        if poly:
+            faces += [(b3, b0, t0), (b3, t0, t3)]
+        else:
+            faces += [(b3, b0, t0, t3)]
+        cell(faces, h, 7 if poly else 4)
+    # a wedge and a pyramid
+    w = [add((9 + x, y, z)) for z in (0, 1) for x, y in ((0, 0), (1, 0), (0, 1))]
+    cell(
+        [
+            (w[0], w[1], w[2]),
+            (w[3], w[4], w[5]),
+            (w[0], w[1], w[4], w[3]),
+            (w[1], w[2], w[5], w[4]),
+            (w[2], w[0], w[3], w[5]),
+        ],
+        w,
+        6,
+    )
+    q = [add((12 + x, y, 0)) for x, y in ((0, 0), (1, 0), (1, 1), (0, 1))]
+    apex = add((12.5, 0.5, 1))
+    cell([tuple(q)] + [(q[i], q[(i + 1) % 4], apex) for i in range(4)], q + [apex], 5)
+    points = [tuple(float(v) for v in p) for p in pts]
+    return points, cells
+
+
+def _fluent_ascii_faces(zone, bc, rows, mixed):
+    first, last = rows[0][0], rows[-1][0]
+    ftype = 0 if mixed else len(rows[0][1])
+    out = f"(13 ({zone:x} {first:x} {last:x} {bc:x} {ftype:x})(\n"
+    for _, f, c0, c1 in rows:
+        lead = f"{len(f):x} " if mixed else ""
+        out += lead + " ".join(f"{v:x}" for v in f) + f" {c0:x} {c1:x}\n"
+    return out + "))\n"
+
+
+def write_fluent():
+    out = MESHES / "ansys"
+    out.mkdir(parents=True, exist_ok=True)
+
+    points, cells = _cells3d()
+    # (0-based faces, centroid) per cell
+    lookup = [([tuple(v - 1 for v in f) for f in fs], ctr) for fs, ctr, _ in cells]
+    interior, boundary = _fluent_faces(points, lookup)
+    n_int = len(interior)
+    rows_int = [
+        (i + 1, [v + 1 for v in f], c0, c1) for i, (f, c0, c1) in enumerate(interior)
+    ]
+    rows_wall = [
+        (n_int + i + 1, [v + 1 for v in f], c0, c1)
+        for i, (f, c0, c1) in enumerate(boundary)
+    ]
+    nf = len(rows_int) + len(rows_wall)
+    text = '(0 "gen_feconv_quirk_fixtures.py: cells known only by their faces")\n'
+    text += '(1 "fixture")\n(2 3)\n'
+    text += f"(10 (0 1 {len(points):x} 0 3))\n(13 (0 1 {nf:x} 0))\n"
+    text += f"(12 (0 1 {len(cells):x} 0))\n"
+    text += f"(10 (1 1 {len(points):x} 1 3)(\n"
+    text += "".join(" ".join(repr(v) for v in p) + "\n" for p in points) + "))\n"
+    text += _fluent_ascii_faces(2, 2, rows_int, mixed=False)
+    text += _fluent_ascii_faces(3, 3, rows_wall, mixed=True)
+    types = " ".join(f"{c[2]:x}" for c in cells)
+    text += f"(12 (4 1 {len(cells):x} 1 0)(\n{types}\n))\n"
+    text += "(39 (4 fluid block-of-cells)())\n"
+    text += "(45 (2 interior shared-face)())\n(45 (3 wall outer-walls)())\n"
+    (out / "cells3d.msh").write_text(text)
+
+    # 2-D: a quad (cell 2) left of x = 1 and a triangle (cell 1) right of it,
+    # sharing the edge 2-3. Points 1..3 are node zone 7 and 4..5 zone 6, which
+    # the file lists first.
+    p2 = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (2.0, 0.0)]
+    # edges (a, b, c0, c1): walking a -> b leaves c0 on the left
+    edges = [
+        (2, 3, 2, 1),  # interior: quad on the left going up x=1
+        (1, 2, 2, 0),
+        (3, 4, 2, 0),
+        (4, 1, 2, 0),
+        (2, 5, 1, 0),
+        (5, 3, 1, 0),
+    ]
+    text = '(1 "TGrid 2D fixture")\n(2 2)\n(10 (0 1 5 0))\n(13 (0 1 6 0))\n'
+    text += "(12 (0 1 2 0))\n"
+    text += "(10 (6 4 5 1 2) (\n0.0 1.0\n2.0 0.0\n))\n"
+    text += "(10 (7 1 3 1 2) (\n0.0 0.0\n1.0 0.0\n1.0 1.0\n))\n"
+    text += "(13 (8 1 1 2 0) (\n2 2 3 2 1\n))\n"
+    text += (
+        "(13 (9 2 6 3 0) (\n"
+        + "".join(f"2 {a:x} {b:x} {c0:x} {c1:x}\n" for a, b, c0, c1 in edges[1:])
+        + "))\n"
+    )
+    text += "(12 (a 1 2 1 0)(\n1 3\n))\n"
+    text += "(45 (10 fluid plate)())\n(45 (9 wall rim)())\n"
+    (out / "tgrid2d.msh").write_text(text)
+
+    # GAMBIT: the same 2-D mesh, boundary edges with c0 = 0 and reversed.
+    text = '(0 "GAMBIT to Fluent File")\n(2 2)\n(10 (0 1 5 0 2))\n'
+    text += "(10 (1 1 5 1 2)(\n" + "".join(f"{x} {y}\n" for x, y in p2) + "))\n"
+    text += "(13(0 1 6 0))\n(13(8 1 1 2 2)(\n2 3 2 1\n))\n"
+    text += (
+        "(13(9 2 6 3 2)(\n"
+        + "".join(f"{b:x} {a:x} 0 {c0:x}\n" for a, b, c0, _ in edges[1:])
+        + "))\n"
+    )
+    text += "(12 (0 1 2 0))\n(12 (a 1 2 1 0))\n(45 (10 fluid plate)())\n"
+    (out / "gambit2d.msh").write_text(text)
+
+    # Binary: the two tetrahedra of cells3d.
+    tp = points[:5]
+    interior, boundary = _fluent_faces(tp, lookup[:2])
+    body = b'(1 "binary fixture")\n(2 3)\n(10 (0 1 5 0 3))\n'
+    body += b"(3010 (1 1 5 1 3)\n(" + struct.pack("<15d", *[v for p in tp for v in p])
+    body += b")\nEnd of Binary Section 3010)\n"
+    f, c0, c1 = interior[0]
+    body += b"(2013 (2 1 1 2 3)\n(" + struct.pack("<5i", *[v + 1 for v in f], c0, c1)
+    body += b")\nEnd of Binary Section 2013)\n"
+    rows = []
+    for f, c0, c1 in boundary:
+        rows += [len(f)] + [v + 1 for v in f] + [c0, c1]
+    body += f"(3013 (3 2 {len(boundary) + 1:x} 3 0)\n(".encode()
+    body += struct.pack(f"<{len(rows)}q", *rows)
+    body += b")\nEnd of Binary Section 3013)\n"
+    body += b"(2012 (4 1 2 1 2)\nEnd of Binary Section 2012)\n"
+    body += b"(45 (4 fluid tets)())\n"
+    (out / "binary3d.msh").write_bytes(body)
+
+
 if __name__ == "__main__":
     write_flux()
     write_gmsh()
     write_medit()
     write_vtu()
+    write_fluent()

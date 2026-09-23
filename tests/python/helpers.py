@@ -894,6 +894,8 @@ def assert_well_formed(mesh, atol=1.0e-9):
     if pts.shape[1] == 2:
         pts = np.column_stack([pts, np.zeros(len(pts))])
     for block in mesh.cells:
+        if block.type not in _ORIENTATION_CORNERS and block.type not in _MID_EDGES:
+            continue
         data = np.asarray(block.data)
         if block.type in _ORIENTATION_CORNERS and len(data):
             a, b, c, d = _ORIENTATION_CORNERS[block.type]
