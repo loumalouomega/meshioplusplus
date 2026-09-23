@@ -36,33 +36,28 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError
 from .._mesh import Mesh
+from .._node_order import node_order
 from .._tensor_invariants import _mises as _ti_mises
 from .._tensor_invariants import _principal as _ti_principal
 
 TIME_KEY = "meshio:time"
 
-# FRD element type -> (cell type, node count, permutation). ``connectivity[k] =
-# frd_nodes[permutation[k]]``; None is the identity. The he20 and pe15 mid-edge groups
-# and the be3 mid-node sit elsewhere than in Abaqus order (confirmed against ccx 2.23
-# output for the same ``.inp``). Types 7-10 are cgx's own shells: ccx expands its
-# shells into solids and never writes them.
+# FRD element type -> (cell type, node count). The node permutations (he20, pe15 and
+# be3) live in meshioplusplus/_node_order.py under "frd". Types 7-10 are cgx's own
+# shells: ccx expands its shells into solids and never writes them.
 _TYPES = {
-    1: ("hexahedron", 8, None),
-    2: ("wedge", 6, None),
-    3: ("tetra", 4, None),
-    4: (
-        "hexahedron20",
-        20,
-        list(range(12)) + list(range(16, 20)) + list(range(12, 16)),
-    ),
-    5: ("wedge15", 15, list(range(9)) + [12, 13, 14, 9, 10, 11]),
-    6: ("tetra10", 10, None),
-    7: ("triangle", 3, None),
-    8: ("triangle6", 6, None),
-    9: ("quad", 4, None),
-    10: ("quad8", 8, None),
-    11: ("line", 2, None),
-    12: ("line3", 3, [0, 2, 1]),
+    1: ("hexahedron", 8),
+    2: ("wedge", 6),
+    3: ("tetra", 4),
+    4: ("hexahedron20", 20),
+    5: ("wedge15", 15),
+    6: ("tetra10", 10),
+    7: ("triangle", 3),
+    8: ("triangle6", 6),
+    9: ("quad", 4),
+    10: ("quad8", 8),
+    11: ("line", 2),
+    12: ("line3", 3),
 }
 
 # Result names whose 6 components are a symmetric tensor xx yy zz xy yz zx.
@@ -400,7 +395,7 @@ class _Frd:
             spec = _TYPES.get(etype)
             if spec is None:
                 raise _err(f"unknown FRD element type {etype}")
-            _, node_count, _ = spec
+            _, node_count = spec
             pos += 16
             self._binary_require(pos + node_count * 4, "element node list")
             if keep:
@@ -460,7 +455,8 @@ class _Frd:
             if spec is None:
                 self.skipped_types.add(etype)
                 continue
-            ctype, count, perm = spec
+            ctype, count = spec
+            order = node_order("frd", ctype)
             if len(nodes) != count:
                 raise _err(
                     f"element type {etype} ({ctype}) needs {count} nodes, found {len(nodes)}"
@@ -471,8 +467,8 @@ class _Frd:
                 raise _err(
                     f"an element references undefined node {exc.args[0]}"
                 ) from None
-            if perm is not None:
-                row = [row[k] for k in perm]
+            if order is not None:
+                row = [row[k] for k in order.to_meshio]
             if not cells or cells[-1][0] != ctype:
                 cells.append((ctype, []))
                 group.append([])

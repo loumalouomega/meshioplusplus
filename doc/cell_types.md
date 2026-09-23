@@ -37,6 +37,7 @@ Node ordering follows the VTK convention where available. The figures below are 
 |------|-------|
 | `triangle` | 3 |
 | `triangle6` | 6 |
+| `triangle7` | 7 (`triangle6` plus a centre node, VTK 34; Code_Aster `TRIA7`, MED `TR7`) |
 | `triangle10` | 10 |
 | `triangle15` | 15 |
 | `triangle21` | 21 |

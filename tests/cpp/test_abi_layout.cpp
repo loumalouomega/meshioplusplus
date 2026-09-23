@@ -138,6 +138,15 @@ static_assert(offsetof(meshioplusplus::ReadOptions, mPieceSet) == 64,
 static_assert(offsetof(meshioplusplus::ReadOptions, mGhosts) == 65,
               "meshio++ ABI: ReadOptions::mGhosts moved (ABI 15 placed it at offset 65)");
 MIO_ABI_LAYOUT(meshioplusplus::WriteOptions, 48, 8);
+// `CellType::Triangle7` (v16.0.0, ABI 16) was appended to the X-macro, which
+// sits before `Custom`: `Custom` moved from 76 to 77 and the inline name/count/
+// dimension tables grew, so a consumer compiled against v15 headers and a v16
+// library disagree on what 76 means. The two pins make the next append a
+// deliberate, recorded change instead of a silent one.
+static_assert(static_cast<int>(meshioplusplus::CellType::Triangle7) == 76,
+              "meshio++ ABI: CellType::Triangle7 moved (ABI 16 appended it at 76)");
+static_assert(static_cast<int>(meshioplusplus::CellType::Custom) == 77,
+              "meshio++ ABI: CellType::Custom moved (ABI 16 placed it at 77)");
 MIO_ABI_LAYOUT(meshioplusplus::PropertyValue, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PropertySet, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshMetadata, 288, 8);
@@ -312,12 +321,12 @@ static_assert(sizeof(meshioplusplus::detail::CardMode) == sizeof(int),
               "Tier A break (doc/abi.md).");
 
 // CellType is stored inside cell blocks on the NATIVE and KRATOS backends, so
-// its width is structural, not cosmetic. Appending an enumerator is fine (and
-// deliberately not caught here); widening the underlying type is not.
+// its width is structural, not cosmetic. A new cell type moves `Custom` (see
+// the Triangle7/Custom pins near the top), and widening the underlying type is
+// a second, separate break.
 static_assert(sizeof(meshioplusplus::CellType) == 2,
-              "meshio++ ABI: CellType's underlying type changed width. Appending "
-              "enumerators is safe and expected; changing `: std::uint16_t` is a "
-              "Tier A break (doc/abi.md).");
+              "meshio++ ABI: CellType's underlying type changed width. Changing "
+              "`: std::uint16_t` is a Tier A break (doc/abi.md).");
 
 // RemeshMetric mirrors the same reasoning as CellType above: appending
 // `Anisotropic` (v10.12.0) is fine and deliberately not caught here; the

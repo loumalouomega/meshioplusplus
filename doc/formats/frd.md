@@ -63,7 +63,7 @@ The he20, pe15 and be3 layouts differ from the Abaqus order that meshio++ uses, 
 | 5 (`wedge15`) | `0..8, 12, 13, 14, 9, 10, 11` | the three vertical mid-edge nodes come before the top ring |
 | 12 (`line3`) | `0, 2, 1` | end, mid, end instead of end, end, mid |
 
-The tables were confirmed against `ccx` 2.23: the `.frd` of each single-element deck in the test suite lists its nodes in the permuted order, and after the permutation every mid-node lies on its edge. The Python tests check exactly that. A quadratic **beam** is the exception: `ccx` expands it into a `hexahedron20` whose "mid-edge" nodes are the far end of the beam, which is its own convention and no geometry to check against.
+The tables live in the shared [node-ordering registry](../node_ordering.md) under `"frd"`. They were confirmed against `ccx` 2.23: the `.frd` of each single-element deck in the test suite lists its nodes in the permuted order, and after the permutation every mid-node lies on its edge. The Python tests check exactly that. A quadratic **beam** is the exception: `ccx` expands it into a `hexahedron20` whose "mid-edge" nodes are the far end of the beam, which is its own convention and no geometry to check against.
 
 ## Results and steps
 

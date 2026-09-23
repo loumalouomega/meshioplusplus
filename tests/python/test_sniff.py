@@ -18,6 +18,8 @@ from meshioplusplus._sniff import _sniff_format_py
         (b"*Heading\n test\n*Node\n", "abaqus"),
         (b"*KEYWORD\n*NODE\n", "lsdyna"),
         (b"$ a comment\n$ another\n*keyword long=y\n*NODE\n", "lsdyna"),
+        (b"% written by Salome\nTITRE\n mesh\nFINSF\n", "code_aster"),
+        (b"coor_3d NOM=INDEFINI\n N1 0 0 0\nFINSF\nFIN\n", "code_aster"),
         (b"    1C\n    1UCALCULIX\n    2C\n", "frd"),
         (b"    1C\r\n    2C                            20\r\n", "frd"),
         (b"GiD Post Results File 1.2\n", "gid"),

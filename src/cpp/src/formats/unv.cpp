@@ -44,6 +44,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -61,22 +62,11 @@ constexpr double kUnvNaN = std::numeric_limits<double>::quiet_NaN();
 // Element tables
 // ---------------------------------------------------------------------------
 
-// UNV node order -> meshio position (0-based): meshio_conn[perm[i]] = unv_conn[i].
-// Parabolic elements list their mid-side nodes "sandwiched" between the corners
-// of each ring; the solids list the bottom ring, then the vertical mid-edges,
-// then the top ring (pinned against gmsh's .unv/.msh twins and Salome's driver).
+// UNV node order -> meshio position (0-based): meshio_conn[perm[i]] = unv_conn[i],
+// i.e. the "from meshio" direction of the "unv" tables in detail/node_order.cpp.
 const std::vector<int>* unv_perm(const std::string& rType) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"line3", {0, 2, 1}},
-        {"triangle6", {0, 3, 1, 4, 2, 5}},
-        {"quad8", {0, 4, 1, 5, 2, 6, 3, 7}},
-        {"quad9", {0, 4, 1, 5, 2, 6, 3, 7, 8}},
-        {"tetra10", {0, 4, 1, 5, 2, 6, 7, 8, 9, 3}},
-        {"pyramid13", {0, 5, 1, 6, 2, 7, 3, 8, 9, 10, 11, 12, 4}},
-        {"wedge15", {0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11}},
-        {"hexahedron20", {0, 8, 1, 9, 2, 10, 3, 11, 16, 17, 18, 19, 4, 12, 5, 13, 6, 14, 7, 15}}};
-    auto it = m.find(rType);
-    return it == m.end() ? nullptr : &it->second;
+    const detail::NodeOrder* order = detail::node_order("unv", rType);
+    return order ? &order->mFromMeshio : nullptr;
 }
 
 bool unv_is_beam(int FeId) {
@@ -1265,6 +1255,7 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mPid, mMid;
         std::size_t mNumNodes = 0;
+        const std::vector<int>* mPerm = nullptr;
     };
     std::vector<Block> blocks;
     std::unordered_map<std::string, std::size_t> block_of;
@@ -1282,9 +1273,9 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         }
         auto [bit, fresh] = block_of.emplace(type, blocks.size());
         if (fresh)
-            blocks.push_back(Block{type, {}, {}, {}, el.mNodes.size()});
+            blocks.push_back(Block{type, {}, {}, {}, el.mNodes.size(), unv_perm(type)});
         Block& b = blocks[bit->second];
-        const std::vector<int>* perm = unv_perm(type);
+        const std::vector<int>* perm = b.mPerm;
         const std::size_t base = b.mConn.size();
         b.mConn.resize(base + b.mNumNodes);
         for (std::size_t j = 0; j < b.mNumNodes; ++j) {

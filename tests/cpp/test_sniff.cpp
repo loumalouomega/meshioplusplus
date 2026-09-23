@@ -55,6 +55,8 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {"*Heading\n test\n*Node\n", "abaqus"},
         {"*KEYWORD\n*NODE\n", "lsdyna"},
         {"$ a comment\n*keyword long=y\n*NODE\n", "lsdyna"},
+        {"% written by Salome\nTITRE\n mesh\nFINSF\n", "code_aster"},
+        {"coor_3d NOM=INDEFINI\n N1 0 0 0\nFINSF\nFIN\n", "code_aster"},
         {"    1C\n    1UCALCULIX\n    2C\n", "frd"},
         {"    1C\r\n    2C                            20\r\n", "frd"},
         {"    1C\n", ""},

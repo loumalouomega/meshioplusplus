@@ -27,7 +27,7 @@ edges = meshioplusplus.extract_surface(sheet)   # line/line3 boundary loop
 | surface type | boundary edges |
 |---|---|
 | `triangle` | 3 × `line` |
-| `triangle6` | 3 × `line3` |
+| `triangle6` / `triangle7` | 3 × `line3` |
 | `quad` | 4 × `line` |
 | `quad8` / `quad9` | 4 × `line3` |
 

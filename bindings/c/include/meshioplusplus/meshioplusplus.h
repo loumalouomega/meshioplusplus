@@ -174,7 +174,7 @@ typedef enum mio_dtype {
     X(Wedge126) X(Wedge196) X(Wedge288) X(Wedge405) X(Wedge550) X(Pyramid) X(Pyramid13)         \
     X(Pyramid14) X(Polygon) X(Polyhedron) X(VtkLagrangeCurve) X(VtkLagrangeTriangle)            \
     X(VtkLagrangeQuadrilateral) X(VtkLagrangeTetrahedron) X(VtkLagrangeHexahedron)              \
-    X(VtkLagrangeWedge) X(VtkLagrangePyramid)
+    X(VtkLagrangeWedge) X(VtkLagrangePyramid) X(Triangle7)
 
 /** Integer mirror of the meshio++ cell-type table. The string names (e.g.
  *  "tetra10") are the primary representation everywhere in this API; the
@@ -234,8 +234,8 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 15
-#define MIO_VERSION_MINOR 7
+#define MIO_VERSION_MAJOR 16
+#define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 

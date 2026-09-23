@@ -39,6 +39,7 @@ _LINEAR_BASE = {
     "line3": "line",
     "line4": "line",
     "triangle6": "triangle",
+    "triangle7": "triangle",
     "triangle10": "triangle",
     "quad8": "quad",
     "quad9": "quad",

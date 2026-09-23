@@ -31,6 +31,7 @@ _DRAWABLE = {
     "line": (2, True),
     "triangle": (3, False),
     "triangle6": (3, False),
+    "triangle7": (3, False),
     "quad": (4, False),
     "quad8": (4, False),
     "quad9": (4, False),

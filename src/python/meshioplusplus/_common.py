@@ -22,6 +22,7 @@ num_nodes_per_cell = {
     #
     "line3": 3,
     "triangle6": 6,
+    "triangle7": 7,
     "quad9": 9,
     "tetra10": 10,
     "hexahedron27": 27,

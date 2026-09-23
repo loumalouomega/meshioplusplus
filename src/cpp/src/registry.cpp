@@ -32,6 +32,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -93,6 +94,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
         {"lsdyna", meshioplusplus::read_lsdyna},
+        {"code_aster", meshioplusplus::read_code_aster},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -208,6 +210,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
     static const std::map<std::string, WriteFn> m = {
         {"abaqus", meshioplusplus::write_abaqus},
         {"lsdyna", meshioplusplus::write_lsdyna},
+        {"code_aster", meshioplusplus::write_code_aster},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
@@ -430,6 +433,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".k", "lsdyna"},
         {".key", "lsdyna"},
         {".dyn", "lsdyna"},
+        {".mail", "code_aster"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},

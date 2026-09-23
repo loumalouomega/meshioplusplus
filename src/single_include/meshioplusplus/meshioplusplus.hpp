@@ -115,7 +115,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 15
+#define MESHIOPLUSPLUS_ABI_VERSION 16
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -223,7 +223,8 @@ namespace meshioplusplus {
     X(VtkLagrangeTetrahedron, "VTK_LAGRANGE_TETRAHEDRON", -1, 3)     \
     X(VtkLagrangeHexahedron, "VTK_LAGRANGE_HEXAHEDRON", -1, 3)       \
     X(VtkLagrangeWedge, "VTK_LAGRANGE_WEDGE", -1, 3)                 \
-    X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)
+    X(VtkLagrangePyramid, "VTK_LAGRANGE_PYRAMID", -1, 3)             \
+    X(Triangle7, "triangle7", 7, 2)
 
 /**
  * @brief Compact identifier for a meshio cell type.
@@ -3363,6 +3364,7 @@ inline const std::unordered_map<std::string, int>& num_nodes_per_cell() {
         //
         {"line3", 3},
         {"triangle6", 6},
+        {"triangle7", 7},
         {"quad9", 9},
         {"tetra10", 10},
         {"hexahedron27", 27},
@@ -3453,6 +3455,7 @@ inline const std::unordered_map<std::string, int>& topological_dimension() {
         {"pyramid", 3},
         {"line3", 1},
         {"triangle6", 2},
+        {"triangle7", 2},
         {"quad9", 2},
         {"tetra10", 3},
         {"hexahedron27", 3},
@@ -9706,6 +9709,58 @@ MESHIOPLUSPLUS_API NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::si
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/node_adjacency.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/node_order.hpp =====
+/**
+ * @file detail/node_order.hpp
+ * @brief One registry of node-ordering permutations between file formats and
+ * meshio++'s (VTK) cell layouts, keyed by (format, cell type).
+ *
+ * Every entry holds both directions as *gather* tables, so a caller never has
+ * to know whether a table is its own inverse:
+ *
+ * - `mToMeshio[k]`: the file slot that meshio++ node `k` comes from on read,
+ *   `meshio[k] = file[mToMeshio[k]]`;
+ * - `mFromMeshio[j]`: the meshio++ node that file slot `j` comes from on write,
+ *   `file[j] = meshio[mFromMeshio[j]]`.
+ *
+ * A type with no entry uses the identity. The formats covered, and where each
+ * table was pinned, are listed in `doc/node_ordering.md`.
+ */
+
+// System includes
+#include <string_view>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Both directions of one (format, cell type) node permutation.
+struct NodeOrder {
+    std::vector<int> mToMeshio;
+    std::vector<int> mFromMeshio;
+};
+
+/**
+ * @brief The node permutation between a format and meshio++ for one cell type.
+ * @param Format The format key (`"med"`, `"code_aster"`, `"frd"`, `"unv"`).
+ * @param CellType The meshio++ cell type name (e.g. `"hexahedron20"`).
+ * @return The permutation, or `nullptr` when the two orders are identical (or
+ *         the format is unknown).
+ */
+MESHIOPLUSPLUS_API const NodeOrder* node_order(std::string_view Format, std::string_view CellType);
+
+/**
+ * @brief Every (format, cell type) key in the registry, for self-tests.
+ * @return Pairs of format key and cell type name, sorted.
+ */
+MESHIOPLUSPLUS_API std::vector<std::pair<std::string_view, std::string_view>> node_order_keys();
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/node_order.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/point_triangle.hpp =====
 /**
  * @file detail/point_triangle.hpp
@@ -9941,9 +9996,9 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 15
+#define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 7
+#define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -9953,7 +10008,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "15.7.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -13297,6 +13352,70 @@ MESHIOPLUSPLUS_API MeshMetadata read_cgns_mll_metadata(const std::string& rPath,
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/include/meshioplusplus/formats/cgns.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/code_aster.hpp =====
+/**
+ * @file code_aster.hpp
+ * @brief Code_Aster native mesh (`.mail`) C++ reader/writer.
+ *
+ * The `.mail` format is Code_Aster's own ASCII mesh (`LIRE_MAILLAGE(FORMAT=
+ * 'ASTER')`, document U3.01.00). It is a sequence of blocks, each opened by a
+ * keyword and closed by `FINSF`; the file ends at `FIN`. Tokens are separated by
+ * spaces or commas, `%` starts a comment, and Code_Aster reads only the first 80
+ * columns of a line, so this reader does too.
+ *
+ *  - `COOR_1D`/`COOR_2D`/`COOR_3D` hold named nodes; the point dimension follows
+ *    the keyword.
+ *  - Each element block (`POI1`, `SEG2/3/4`, `TRIA3/6/7`, `QUAD4/8/9`,
+ *    `TETRA4/10`, `PENTA6/15/18`, `PYRAM5/13`, `HEXA8/20/27`) becomes one cell
+ *    block. Records are read as a token stream, so they may wrap across lines.
+ *    Node order goes through the `"code_aster"` tables of
+ *    `detail/node_order.hpp`; it is **not** MED's order.
+ *  - `GROUP_MA` becomes a `Cell` region and `GROUP_NO` a `Point` region, named by
+ *    `NOM=` or by the block's first token. Neither carries a tag.
+ *  - `TITRE`, `DUMP`, `DEBUG` and the keywords Code_Aster itself ignores are
+ *    skipped; any other keyword is skipped with a warning.
+ *
+ * Nodes and elements are identified by name in the file. The names are not kept:
+ * the writer names them `N1…` and `M1…` again. See doc/formats/code_aster.md.
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Read a Code_Aster `.mail` mesh.
+ * @param rPath filesystem path to read
+ * @return the mesh, with `GROUP_MA`/`GROUP_NO` as regions
+ * @throws ReadError if the file can't be read, a block is not closed, a value is
+ *         malformed, a node or element name is defined twice, or an element or a
+ *         group names an undefined node or element
+ */
+MESHIOPLUSPLUS_API Mesh read_code_aster(const std::string& rPath);
+
+/**
+ * @brief Write `rMesh` as a Code_Aster `.mail` mesh.
+ *
+ * Emits one coordinate block, one element block per cell block, a `GROUP_NO` per
+ * point region and a `GROUP_MA` per cell region, with every line within 80
+ * columns. Group names are sanitised to letters, digits and `_` and truncated to
+ * 24 characters (collisions get a numbered suffix), each change with a warning.
+ * Side regions and data arrays have no `.mail` equivalent and are dropped with a
+ * warning.
+ *
+ * @param rPath filesystem path to write
+ * @param rMesh the mesh to write
+ * @throws WriteError for a cell type with no `.mail` keyword, a point dimension
+ *         above 3, or more than 9,999,999 nodes or elements (names are limited to
+ *         8 characters)
+ */
+MESHIOPLUSPLUS_API void write_code_aster(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/code_aster.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/dex.hpp =====
 /**
  * @file dex.hpp
@@ -42779,6 +42898,7 @@ const std::vector<CellEdgeDef>& cell_edges(CellType SurfaceType) {
         case CT::Triangle:
             return triangle;
         case CT::Triangle6:
+        case CT::Triangle7:  // same edges as triangle6; node 6 (center) is on no edge
             return triangle6;
         case CT::Quad:
             return quad;
@@ -44258,6 +44378,7 @@ int cell_corner_count(CellType type) {
             return 2;
         case CellType::Triangle:
         case CellType::Triangle6:
+        case CellType::Triangle7:
         case CellType::Triangle10:
         case CellType::Triangle15:
         case CellType::Triangle21:
@@ -46223,6 +46344,141 @@ NodeAdjacency build_node_adjacency(const Mesh& rMesh, std::size_t NumPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/node_adjacency.cpp =====
+// ===== begin src/cpp/src/detail/node_order.cpp =====
+#include <map>
+#include <string>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+enum class NodeOrderDirection { ToMeshio, FromMeshio };
+
+struct NodeOrderSource {
+    const char* mFormat;
+    const char* mCellType;
+    NodeOrderDirection mDirection;
+    std::vector<int> mTable;
+};
+
+// Each table is written in the direction its source gives it; the registry
+// derives the other one.
+const std::vector<NodeOrderSource>& node_order_sources() {
+    using D = NodeOrderDirection;
+    static const std::vector<NodeOrderSource> sources = {
+        // MED. Corner parts are MED's reversed reference orientation; the
+        // mid-edge parts come from MEDCoupling's INTERP_KERNEL/CellModel.cxx
+        // edge tables and put every mid-edge slot at its corners' midpoint.
+        // hexahedron27/wedge18 extend hexahedron20/wedge15 with the face and
+        // body centres Code_Aster's MED reader implies (lrmtyp.F90 composed
+        // with the code_aster tables below, each centre placed geometrically);
+        // hexahedron27's is not an involution.
+        {"med", "tetra", D::ToMeshio, {0, 1, 3, 2}},
+        {"med", "pyramid", D::ToMeshio, {0, 3, 2, 1, 4}},
+        {"med", "wedge", D::ToMeshio, {3, 4, 5, 0, 1, 2}},
+        {"med", "hexahedron", D::ToMeshio, {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"med", "tetra10", D::ToMeshio, {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
+        {"med", "pyramid13", D::ToMeshio, {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
+        {"med", "wedge15", D::ToMeshio, {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
+        {"med",
+         "wedge18",
+         D::ToMeshio,
+         {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14, 15, 16, 17}},
+        {"med", "hexahedron20", D::ToMeshio, {4,  5,  6, 7, 0,  1,  2,  3,  12, 13,
+                                              14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+        {"med", "hexahedron27", D::ToMeshio, {4,  5,  6,  7,  0,  1,  2,  3,  12, 13, 14, 15, 8, 9,
+                                              10, 11, 16, 17, 18, 19, 24, 22, 21, 23, 25, 20, 26}},
+        // Code_Aster `.mail`. Linear cells, tetra10 and pyramid13 already use
+        // meshio++'s order. The solids list the bottom-ring mid-edges, then the
+        // vertical ones, then the top ring, then face and body centres. Derived
+        // from Code_Aster's gmsh reader (inigms.F90) composed with the gmsh
+        // tables, and checked against its MED reader (lrmtyp.F90): both give
+        // the same element up to a symmetry of the reference cell.
+        {"code_aster", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"code_aster",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        {"code_aster", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                     10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"code_aster", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                     9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                     14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        // CalculiX `.frd`: the he20 and pe15 mid-edge groups and the be3 mid
+        // node sit elsewhere than in Abaqus order (confirmed against ccx 2.23
+        // output for the same `.inp`).
+        {"frd", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                              10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"frd", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"frd", "line3", D::ToMeshio, {0, 2, 1}},
+        // I-DEAS UNV: parabolic elements list their mid-side nodes
+        // "sandwiched" between the corners of each ring; the solids list the
+        // bottom ring, then the vertical mid-edges, then the top ring (pinned
+        // against gmsh's .unv/.msh twins and Salome's driver).
+        {"unv", "line3", D::FromMeshio, {0, 2, 1}},
+        {"unv", "triangle6", D::FromMeshio, {0, 3, 1, 4, 2, 5}},
+        {"unv", "quad8", D::FromMeshio, {0, 4, 1, 5, 2, 6, 3, 7}},
+        {"unv", "quad9", D::FromMeshio, {0, 4, 1, 5, 2, 6, 3, 7, 8}},
+        {"unv", "tetra10", D::FromMeshio, {0, 4, 1, 5, 2, 6, 7, 8, 9, 3}},
+        {"unv", "pyramid13", D::FromMeshio, {0, 5, 1, 6, 2, 7, 3, 8, 9, 10, 11, 12, 4}},
+        {"unv", "wedge15", D::FromMeshio, {0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11}},
+        {"unv", "hexahedron20", D::FromMeshio, {0,  8,  1, 9,  2, 10, 3, 11, 16, 17,
+                                                18, 19, 4, 12, 5, 13, 6, 14, 7,  15}},
+    };
+    return sources;
+}
+
+std::vector<int> node_order_inverse(const std::vector<int>& rTable) {
+    std::vector<int> inv(rTable.size());
+    for (std::size_t i = 0; i < rTable.size(); ++i)
+        inv[static_cast<std::size_t>(rTable[i])] = static_cast<int>(i);
+    return inv;
+}
+
+using NodeOrderMap = std::map<std::pair<std::string, std::string>, NodeOrder, std::less<>>;
+
+const NodeOrderMap& node_order_map() {
+    static const NodeOrderMap m = [] {
+        NodeOrderMap out;
+        for (const NodeOrderSource& s : node_order_sources()) {
+            NodeOrder order;
+            if (s.mDirection == NodeOrderDirection::ToMeshio) {
+                order.mToMeshio = s.mTable;
+                order.mFromMeshio = node_order_inverse(s.mTable);
+            } else {
+                order.mFromMeshio = s.mTable;
+                order.mToMeshio = node_order_inverse(s.mTable);
+            }
+            out.emplace(std::make_pair(std::string(s.mFormat), std::string(s.mCellType)),
+                        std::move(order));
+        }
+        return out;
+    }();
+    return m;
+}
+
+}  // namespace
+
+const NodeOrder* node_order(std::string_view Format, std::string_view CellType) {
+    const NodeOrderMap& m = node_order_map();
+    const auto it = m.find(std::make_pair(std::string(Format), std::string(CellType)));
+    return it == m.end() ? nullptr : &it->second;
+}
+
+std::vector<std::pair<std::string_view, std::string_view>> node_order_keys() {
+    std::vector<std::pair<std::string_view, std::string_view>> keys;
+    for (const auto& [key, order] : node_order_map())
+        keys.emplace_back(key.first, key.second);
+    return keys;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/node_order.cpp =====
 // ===== begin src/cpp/src/detail/polyhedron.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -46662,7 +46918,7 @@ ProjectedSurface project_surface(const Mesh& rMesh, double azimuth, double eleva
         if (type == "line") {
             n_corner = 2;
             is_line = true;
-        } else if (type == "triangle" || type == "triangle6") {
+        } else if (type == "triangle" || type == "triangle6" || type == "triangle7") {
             n_corner = 3;
         } else if (type == "quad" || type == "quad8" || type == "quad9") {
             n_corner = 4;
@@ -54944,6 +55200,623 @@ MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions&
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/formats/cgns_mll.cpp =====
+// ===== begin src/cpp/src/formats/code_aster.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <ios>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// Code_Aster reads the first 80 columns of every line (lirlig.F90) and nothing else.
+constexpr std::size_t kCaColumns = 80;
+// "N" or "M" plus seven digits: node and element names are at most 8 characters.
+constexpr std::size_t kCaMaxEntities = 9999999;
+constexpr std::size_t kCaMaxGroupName = 24;
+
+struct CaTypeSpec {
+    const char* mKeyword;
+    const char* mType;
+    std::size_t mNodes;
+};
+
+const std::vector<CaTypeSpec>& ca_types() {
+    static const std::vector<CaTypeSpec> types = {
+        {"POI1", "vertex", 1},          {"SEG2", "line", 2},
+        {"SEG3", "line3", 3},           {"SEG4", "line4", 4},
+        {"TRIA3", "triangle", 3},       {"TRIA6", "triangle6", 6},
+        {"TRIA7", "triangle7", 7},      {"QUAD4", "quad", 4},
+        {"QUAD8", "quad8", 8},          {"QUAD9", "quad9", 9},
+        {"TETRA4", "tetra", 4},         {"TETRA10", "tetra10", 10},
+        {"PENTA6", "wedge", 6},         {"PENTA15", "wedge15", 15},
+        {"PENTA18", "wedge18", 18},     {"PYRAM5", "pyramid", 5},
+        {"PYRAM13", "pyramid13", 13},   {"HEXA8", "hexahedron", 8},
+        {"HEXA20", "hexahedron20", 20}, {"HEXA27", "hexahedron27", 27},
+    };
+    return types;
+}
+
+const CaTypeSpec* ca_spec_by_keyword(const std::string& rKeyword) {
+    for (const CaTypeSpec& s : ca_types())
+        if (rKeyword == s.mKeyword)
+            return &s;
+    return nullptr;
+}
+
+const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
+    for (const CaTypeSpec& s : ca_types())
+        if (rType == s.mType)
+            return &s;
+    return nullptr;
+}
+
+std::string ca_upper(std::string s) {
+    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
+    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
+        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
+    });
+    return s;
+}
+
+struct CaToken {
+    std::string mText;
+    std::size_t mLine;
+};
+
+[[noreturn]] void ca_fail(const std::string& rWhat, std::size_t Line) {
+    throw ReadError("Code_Aster .mail: " + rWhat + " (line " + std::to_string(Line) + ")");
+}
+
+// Splits the file into tokens: each line cut at column 80, a `%` comment
+// dropped, then split on blanks and commas. `KEY = VALUE`, `KEY= VALUE` and
+// `KEY =VALUE` are joined into one `KEY=VALUE` token.
+std::vector<CaToken> ca_tokenize(const std::string& rText) {
+    std::vector<CaToken> tokens;
+    bool warned_long = false;
+    std::size_t line_no = 0;
+    std::size_t pos = 0;
+    while (pos < rText.size()) {
+        std::size_t eol = rText.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = rText.size();
+        std::string line = rText.substr(pos, eol - pos);
+        pos = eol + 1;
+        ++line_no;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.size() > kCaColumns) {
+            const std::size_t comment = line.find('%');
+            const bool beyond = line.find_first_not_of(" \t", kCaColumns) != std::string::npos &&
+                                (comment == std::string::npos || comment >= kCaColumns);
+            if (beyond && !warned_long) {
+                log::warn(
+                    "Code_Aster .mail: line {} is longer than 80 columns; like "
+                    "Code_Aster, the reader ignores everything past column 80",
+                    line_no);
+                warned_long = true;
+            }
+            line.resize(kCaColumns);
+        }
+        const std::size_t comment = line.find('%');
+        if (comment != std::string::npos)
+            line.resize(comment);
+        std::vector<std::string> words;
+        std::string word;
+        for (char c : line) {
+            if (c == ' ' || c == '\t' || c == ',') {
+                if (!word.empty())
+                    words.push_back(std::move(word));
+                word.clear();
+            } else {
+                word.push_back(c);
+            }
+        }
+        if (!word.empty())
+            words.push_back(std::move(word));
+        for (std::size_t i = 0; i < words.size(); ++i) {
+            std::string w = words[i];
+            while (i + 1 < words.size() && (w.back() == '=' || words[i + 1].front() == '=')) {
+                w += words[++i];
+            }
+            tokens.push_back({std::move(w), line_no});
+        }
+    }
+    return tokens;
+}
+
+// Keywords Code_Aster's reader (lrmast.F90) skips without a word.
+const std::set<std::string>& ca_skipped_keywords() {
+    static const std::set<std::string> skipped = {"TITRE",    "DUMP",     "DEBUG",    "GROUP_FA",
+                                                  "SYS_UNIT", "SYS_COOR", "MACRO_AR", "MACRO_FA",
+                                                  "MACRO_EL", "MATERIAU"};
+    return skipped;
+}
+
+// Something shaped like a block keyword: a letter, then letters, digits and `_`.
+bool ca_is_keyword(const std::string& rUpper) {
+    if (rUpper.empty() || rUpper[0] < 'A' || rUpper[0] > 'Z')
+        return false;
+    return std::all_of(rUpper.begin(), rUpper.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+}
+
+bool ca_is_option(const std::string& rToken) {
+    return rToken.find('=') != std::string::npos;
+}
+
+bool ca_is_block_end(const std::string& rUpper) {
+    return rUpper == "FINSF";
+}
+
+bool ca_is_file_end(const std::string& rUpper) {
+    return rUpper == "FIN" || rUpper.rfind("FIN(", 0) == 0;
+}
+
+// A Fortran real or integer: [sign] digits [. digits] [E|D [sign] digits], with
+// at least one digit before the exponent. Nothing else (no `inf`, no hex).
+bool ca_is_number(const std::string& rText) {
+    std::size_t i = 0;
+    const std::size_t n = rText.size();
+    auto digits = [&]() {
+        const std::size_t start = i;
+        while (i < n && rText[i] >= '0' && rText[i] <= '9')
+            ++i;
+        return i - start;
+    };
+    if (i < n && (rText[i] == '+' || rText[i] == '-'))
+        ++i;
+    std::size_t mantissa = digits();
+    if (i < n && rText[i] == '.') {
+        ++i;
+        mantissa += digits();
+    }
+    if (mantissa == 0)
+        return false;
+    if (i < n && (rText[i] == 'E' || rText[i] == 'e' || rText[i] == 'D' || rText[i] == 'd')) {
+        ++i;
+        if (i < n && (rText[i] == '+' || rText[i] == '-'))
+            ++i;
+        if (digits() == 0)
+            return false;
+    }
+    return i == n;
+}
+
+double ca_number(const CaToken& rToken) {
+    if (!ca_is_number(rToken.mText))
+        ca_fail("expected a coordinate, found '" + rToken.mText + "'", rToken.mLine);
+    std::string text = rToken.mText;
+    for (char& c : text)
+        if (c == 'D' || c == 'd')
+            c = 'E';
+    const char* end = nullptr;
+    return detail::parse_double(text.c_str(), end);
+}
+
+struct CaElementBlock {
+    const CaTypeSpec* mSpec;
+    std::vector<std::string> mNames;
+    std::vector<std::string> mNodes;  // mNames.size() * mSpec->mNodes, file order
+    std::vector<std::size_t> mLines;
+};
+
+struct CaGroup {
+    std::string mName;
+    bool mCells;
+    std::vector<std::pair<std::string, std::size_t>> mMembers;  // name, line
+};
+
+}  // namespace
+
+Mesh read_code_aster(const std::string& rPath) {
+    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError("Code_Aster .mail: cannot open " + rPath);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::vector<CaToken> tokens = ca_tokenize(text);
+
+    int point_dim = 0;
+    std::vector<double> coords;
+    std::vector<std::string> node_names;
+    std::vector<CaElementBlock> blocks;
+    std::vector<CaGroup> groups;
+    std::map<std::string, bool> warned_keywords;
+    bool saw_fin = false;
+
+    std::size_t i = 0;
+    const std::size_t n = tokens.size();
+    // Skips the options of a block header: every `KEY=VALUE` token.
+    auto skip_options = [&](std::string* pName) {
+        while (i < n && ca_is_option(tokens[i].mText)) {
+            const std::string& t = tokens[i].mText;
+            const std::size_t eq = t.find('=');
+            const std::string key = ca_upper(t.substr(0, eq));
+            if (pName && (key == "NOM" || key == "NAME"))
+                *pName = t.substr(eq + 1);
+            ++i;
+        }
+    };
+    auto require_token = [&](const char* pWhat, std::size_t Line) {
+        if (i >= n)
+            ca_fail(std::string("the file ends inside a block, while reading ") + pWhat, Line);
+    };
+
+    while (i < n) {
+        const CaToken& head = tokens[i];
+        const std::string kw = ca_upper(head.mText);
+        ++i;
+        if (ca_is_file_end(kw)) {
+            saw_fin = true;
+            break;
+        }
+        if (ca_is_block_end(kw))
+            continue;
+        if (kw == "COOR_1D" || kw == "COOR_2D" || kw == "COOR_3D") {
+            const int dim = kw[5] - '0';
+            if (point_dim != 0 && point_dim != dim)
+                ca_fail(kw + " after a COOR_" + std::to_string(point_dim) + "D block", head.mLine);
+            point_dim = dim;
+            skip_options(nullptr);
+            while (true) {
+                require_token("coordinates", head.mLine);
+                if (ca_is_block_end(ca_upper(tokens[i].mText))) {
+                    ++i;
+                    break;
+                }
+                if (ca_is_option(tokens[i].mText)) {
+                    ++i;
+                    continue;
+                }
+                node_names.push_back(tokens[i].mText);
+                const std::size_t line = tokens[i].mLine;
+                ++i;
+                for (int d = 0; d < dim; ++d) {
+                    require_token("coordinates", line);
+                    coords.push_back(ca_number(tokens[i]));
+                    ++i;
+                }
+            }
+            continue;
+        }
+        if (const CaTypeSpec* spec = ca_spec_by_keyword(kw)) {
+            CaElementBlock block{spec, {}, {}, {}};
+            skip_options(nullptr);
+            while (true) {
+                require_token("elements", head.mLine);
+                if (ca_is_block_end(ca_upper(tokens[i].mText))) {
+                    ++i;
+                    break;
+                }
+                if (ca_is_option(tokens[i].mText)) {
+                    ++i;
+                    continue;
+                }
+                block.mNames.push_back(tokens[i].mText);
+                block.mLines.push_back(tokens[i].mLine);
+                const std::size_t line = tokens[i].mLine;
+                ++i;
+                for (std::size_t k = 0; k < spec->mNodes; ++k) {
+                    require_token("element nodes", line);
+                    if (ca_is_block_end(ca_upper(tokens[i].mText)))
+                        ca_fail(std::string(spec->mKeyword) + " element '" + block.mNames.back() +
+                                    "' has fewer than " + std::to_string(spec->mNodes) + " nodes",
+                                line);
+                    block.mNodes.push_back(tokens[i].mText);
+                    ++i;
+                }
+            }
+            if (!block.mNames.empty())
+                blocks.push_back(std::move(block));
+            continue;
+        }
+        if (kw == "GROUP_NO" || kw == "GROUP_MA") {
+            CaGroup group{{}, kw == "GROUP_MA", {}};
+            skip_options(&group.mName);
+            while (true) {
+                require_token("a group", head.mLine);
+                if (ca_is_block_end(ca_upper(tokens[i].mText))) {
+                    ++i;
+                    break;
+                }
+                if (ca_is_option(tokens[i].mText)) {
+                    ++i;
+                    continue;
+                }
+                if (group.mName.empty())
+                    group.mName = tokens[i].mText;
+                else
+                    group.mMembers.emplace_back(tokens[i].mText, tokens[i].mLine);
+                ++i;
+            }
+            if (group.mName.empty())
+                ca_fail(kw + " block without a name", head.mLine);
+            groups.push_back(std::move(group));
+            continue;
+        }
+        if (ca_is_keyword(kw)) {
+            // Code_Aster skips its title, debug switches and inactive keywords;
+            // anything else (another cell type, a typo) is skipped with a warning.
+            if (!ca_skipped_keywords().count(kw) && !warned_keywords[kw]) {
+                log::warn("Code_Aster .mail: skipping the unsupported '{}' block (line {})",
+                          head.mText, head.mLine);
+                warned_keywords[kw] = true;
+            }
+            while (i < n && !ca_is_block_end(ca_upper(tokens[i].mText)))
+                ++i;
+            if (i == n)
+                ca_fail("block '" + head.mText + "' has no FINSF", head.mLine);
+            ++i;
+            continue;
+        }
+        ca_fail("expected a keyword, found '" + head.mText + "'", head.mLine);
+    }
+    if (!saw_fin)
+        log::warn("Code_Aster .mail: '{}' has no FIN line; reading it to the end", rPath);
+
+    // --- points -----------------------------------------------------------------
+    std::unordered_map<std::string, std::int64_t> node_index;
+    node_index.reserve(node_names.size());
+    for (std::size_t p = 0; p < node_names.size(); ++p)
+        if (!node_index.emplace(node_names[p], static_cast<std::int64_t>(p)).second)
+            throw ReadError("Code_Aster .mail: node '" + node_names[p] + "' is defined twice");
+    Mesh mesh;
+    const std::size_t pdim = point_dim == 0 ? 3 : static_cast<std::size_t>(point_dim);
+    NDArray points(DType::Float64, {node_names.size(), pdim});
+    std::copy(coords.begin(), coords.end(), points.As<double>());
+    mesh.AssignPoints(std::move(points));
+
+    // --- cells ------------------------------------------------------------------
+    std::unordered_map<std::string, std::int64_t> element_index;
+    std::vector<int> element_dim;
+    std::int64_t global = 0;
+    for (const CaElementBlock& b : blocks) {
+        const std::size_t k = b.mSpec->mNodes;
+        const std::size_t rows = b.mNames.size();
+        const detail::NodeOrder* order = detail::node_order("code_aster", b.mSpec->mType);
+        const int dim = cell_type_dimension(cell_type_from_name(b.mSpec->mType));
+        NDArray conn(DType::Int64, {rows, k});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t r = 0; r < rows; ++r) {
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mToMeshio[j]) : j;
+                const std::string& name = b.mNodes[r * k + src];
+                const auto it = node_index.find(name);
+                if (it == node_index.end())
+                    ca_fail("element '" + b.mNames[r] + "' names undefined node '" + name + "'",
+                            b.mLines[r]);
+                c[r * k + j] = it->second;
+            }
+            if (!element_index.emplace(b.mNames[r], global).second)
+                ca_fail("element '" + b.mNames[r] + "' is defined twice", b.mLines[r]);
+            element_dim.push_back(dim);
+            ++global;
+        }
+        mesh.AddCellBlock(b.mSpec->mType, std::move(conn));
+    }
+
+    // --- groups -----------------------------------------------------------------
+    // Two blocks with one name and kind are one group, as far as a Region can tell.
+    std::map<std::pair<bool, std::string>, std::vector<std::int64_t>> members;
+    std::map<std::pair<bool, std::string>, int> dims;
+    std::vector<std::pair<bool, std::string>> order;
+    for (const CaGroup& g : groups) {
+        const auto key = std::make_pair(g.mCells, g.mName);
+        auto [it, fresh] = members.emplace(key, std::vector<std::int64_t>{});
+        if (fresh) {
+            order.push_back(key);
+            dims[key] = -1;
+        } else {
+            log::warn("Code_Aster .mail: {} '{}' is defined twice; merging the two",
+                      g.mCells ? "GROUP_MA" : "GROUP_NO", g.mName);
+        }
+        std::unordered_set<std::int64_t> seen(it->second.begin(), it->second.end());
+        bool warned_duplicate = false;
+        for (const auto& [name, line] : g.mMembers) {
+            const auto& index = g.mCells ? element_index : node_index;
+            const auto found = index.find(name);
+            if (found == index.end())
+                ca_fail(std::string(g.mCells ? "GROUP_MA" : "GROUP_NO") + " '" + g.mName +
+                            "' names undefined " + (g.mCells ? "element" : "node") + " '" + name +
+                            "'",
+                        line);
+            if (!seen.insert(found->second).second) {
+                if (!warned_duplicate)
+                    log::warn("Code_Aster .mail: {} '{}' lists '{}' more than once",
+                              g.mCells ? "GROUP_MA" : "GROUP_NO", g.mName, name);
+                warned_duplicate = true;
+                continue;
+            }
+            it->second.push_back(found->second);
+            if (g.mCells)
+                dims[key] =
+                    std::max(dims[key], element_dim[static_cast<std::size_t>(found->second)]);
+        }
+    }
+    for (const auto& key : order) {
+        const std::vector<std::int64_t>& ids = members[key];
+        NDArray entries(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), entries.As<std::int64_t>());
+        mesh.AddRegion(Region(key.second, key.first ? RegionKind::Cell : RegionKind::Point,
+                              key.first ? dims[key] : -1, -1, std::move(entries)));
+    }
+    return mesh;
+}
+
+namespace {
+
+// Appends `rToken` to the record being written, wrapping to an indented
+// continuation line rather than crossing column 80.
+void ca_append(std::string& rOut, std::size_t& rColumn, const std::string& rToken) {
+    if (rColumn == 0) {
+        rOut += rToken;
+        rColumn = rToken.size();
+        return;
+    }
+    if (rColumn + 1 + rToken.size() > kCaColumns) {
+        rOut += "\n        ";
+        rColumn = 8;
+    }
+    rOut += ' ';
+    rOut += rToken;
+    rColumn += 1 + rToken.size();
+}
+
+void ca_end_record(std::string& rOut, std::size_t& rColumn) {
+    rOut += '\n';
+    rColumn = 0;
+}
+
+// Letters, digits and `_`, at most 24 characters, unique within its kind.
+std::string ca_group_name(const std::string& rName, std::map<std::string, int>& rTaken,
+                          const char* pKind) {
+    std::string clean;
+    // An explicit ASCII test, not std::isalnum: macOS's C locale calls some bytes
+    // above 0x7F alphanumeric, which would let UTF-8 bytes through.
+    for (char c : rName) {
+        const bool keep =
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        clean.push_back(keep ? c : '_');
+    }
+    if (clean.empty())
+        clean = "GROUP";
+    if (clean.size() > kCaMaxGroupName)
+        clean.resize(kCaMaxGroupName);
+    std::string out = clean;
+    for (int k = 1; rTaken.count(out); ++k) {
+        const std::string suffix = "_" + std::to_string(k);
+        out = clean.substr(0, std::min(clean.size(), kCaMaxGroupName - suffix.size())) + suffix;
+    }
+    rTaken[out] = 1;
+    if (out != rName)
+        log::warn("Code_Aster .mail: {} '{}' is written as '{}'", pKind, rName, out);
+    return out;
+}
+
+}  // namespace
+
+void write_code_aster(const std::string& rPath, const Mesh& rMesh) {
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim > 3)
+        throw WriteError("Code_Aster .mail writer: points of dimension " + std::to_string(pdim) +
+                         " (at most 3)");
+    std::size_t num_cells = 0;
+    std::vector<const CaTypeSpec*> specs;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const CaTypeSpec* spec = cb.IsRagged() ? nullptr : ca_spec_by_type(std::string(cb.Type()));
+        if (!spec)
+            throw WriteError("Code_Aster .mail writer: unsupported cell type '" +
+                             std::string(cb.Type()) + "'");
+        specs.push_back(spec);
+        num_cells += cb.NumCells();
+    }
+    if (rMesh.NumPoints() > kCaMaxEntities || num_cells > kCaMaxEntities)
+        throw WriteError(
+            "Code_Aster .mail writer: more than 9,999,999 nodes or elements do "
+            "not fit 8-character names; write MED instead");
+
+    // Notes first: they are rendered into the provenance block.
+    std::size_t side_regions = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+        if (rMesh.Region(r).mKind == RegionKind::Side)
+            ++side_regions;
+    if (side_regions) {
+        log::warn("Code_Aster .mail has no facet groups; {} side region(s) dropped", side_regions);
+        detail::provenance_note(
+            "regions-dropped",
+            std::to_string(side_regions) + " side region(s) have no Code_Aster .mail group");
+    }
+    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() > 0) {
+        log::warn("Code_Aster .mail holds no data arrays; point, cell and field data dropped");
+        detail::provenance_note("data-dropped", "a Code_Aster .mail mesh holds no data arrays");
+    }
+
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+    std::string out = detail::provenance_render_lines(detail::SlotTier::Block, "% ");
+    std::size_t column = 0;
+    char buf[64];
+
+    out += "COOR_" + std::to_string(pdim == 0 ? 3 : pdim) + "D\n";
+    const NDArray& points = rMesh.Points();
+    const std::size_t npts = rMesh.NumPoints();
+    for (std::size_t p = 0; p < npts; ++p) {
+        ca_append(out, column, "N" + std::to_string(p + 1));
+        for (std::size_t d = 0; d < pdim; ++d) {
+            detail::snprintf_c(buf, sizeof(buf), "%.16E",
+                               detail::read_double(points, p * pdim + d));
+            ca_append(out, column, buf);
+        }
+        ca_end_record(out, column);
+    }
+    out += "FINSF\n";
+    f << out;
+    out.clear();
+
+    std::size_t label = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const CaTypeSpec* spec = specs[b];
+        const NDArray& conn = cb.Conn();
+        const std::size_t k = spec->mNodes;
+        const detail::NodeOrder* order = detail::node_order("code_aster", spec->mType);
+        out += spec->mKeyword;
+        out += '\n';
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            ca_append(out, column, "M" + std::to_string(++label));
+            for (std::size_t j = 0; j < k; ++j) {
+                const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
+                ca_append(out, column,
+                          "N" + std::to_string(detail::read_int(conn, r * k + src) + 1));
+            }
+            ca_end_record(out, column);
+        }
+        out += "FINSF\n";
+        f << out;
+        out.clear();
+    }
+
+    std::map<std::string, int> taken_no, taken_ma;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind == RegionKind::Side)
+            continue;
+        const bool cells = reg.mKind == RegionKind::Cell;
+        const std::string name =
+            ca_group_name(reg.mName, cells ? taken_ma : taken_no, cells ? "GROUP_MA" : "GROUP_NO");
+        out += cells ? "GROUP_MA NOM=" : "GROUP_NO NOM=";
+        out += name;
+        out += '\n';
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t j = 0; j < reg.NumEntries(); ++j)
+            ca_append(out, column, (cells ? "M" : "N") + std::to_string(e[j] + 1));
+        if (column)
+            ca_end_record(out, column);
+        out += "FINSF\n";
+        f << out;
+        out.clear();
+    }
+    f << "FIN\n";
+    if (!f)
+        throw WriteError("Code_Aster .mail writer: failed writing " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/code_aster.cpp =====
 // ===== begin src/cpp/src/formats/dex.cpp =====
 #include <fstream>
 #include <sstream>
@@ -59292,36 +60165,28 @@ namespace {
 constexpr std::size_t frd_values_per_line = 6;
 constexpr std::size_t frd_value_width = 12;
 
-// FRD element type -> cell type, node count and permutation. `connectivity[k] =
-// frd_nodes[permutation[k]]`; a null permutation is the identity. The he20 and pe15
-// mid-edge groups and the be3 mid node sit elsewhere than in Abaqus order (confirmed
-// against ccx 2.23 output for the same `.inp`); types 7-10 are cgx's own shells, which
-// ccx expands into solids and never writes.
+// FRD element type -> cell type and node count. The node permutations (he20, pe15
+// and be3) live in detail/node_order.cpp under "frd"; types 7-10 are cgx's own
+// shells, which ccx expands into solids and never writes.
 struct FrdTypeSpec {
     const char* mName;
     std::size_t mNodes;
-    const int* mPermutation;
 };
-
-constexpr int frd_perm_he20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                                   10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
-constexpr int frd_perm_pe15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
-constexpr int frd_perm_be3[3] = {0, 2, 1};
 
 const FrdTypeSpec* frd_type_spec(int Type) {
     static const std::array<FrdTypeSpec, 12> table = {{
-        {"hexahedron", 8, nullptr},
-        {"wedge", 6, nullptr},
-        {"tetra", 4, nullptr},
-        {"hexahedron20", 20, frd_perm_he20},
-        {"wedge15", 15, frd_perm_pe15},
-        {"tetra10", 10, nullptr},
-        {"triangle", 3, nullptr},
-        {"triangle6", 6, nullptr},
-        {"quad", 4, nullptr},
-        {"quad8", 8, nullptr},
-        {"line", 2, nullptr},
-        {"line3", 3, frd_perm_be3},
+        {"hexahedron", 8},
+        {"wedge", 6},
+        {"tetra", 4},
+        {"hexahedron20", 20},
+        {"wedge15", 15},
+        {"tetra10", 10},
+        {"triangle", 3},
+        {"triangle6", 6},
+        {"quad", 4},
+        {"quad8", 8},
+        {"line", 2},
+        {"line3", 3},
     }};
     if (Type < 1 || Type > 12)
         return nullptr;
@@ -59964,6 +60829,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
     // One block per contiguous run of one cell type.
     struct Run {
         const FrdTypeSpec* mSpec;
+        const detail::NodeOrder* mOrder;
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mGroup;
         std::vector<std::int64_t> mMaterial;
@@ -59982,13 +60848,13 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
                      std::to_string(spec->mNodes) + " nodes, found " +
                      std::to_string(el.mNumNodes));
         if (runs.empty() || runs.back().mSpec != spec)
-            runs.push_back(Run{spec, {}, {}, {}});
+            runs.push_back(Run{spec, detail::node_order("frd", spec->mName), {}, {}, {}});
         Run& run = runs.back();
         const std::size_t base = run.mConn.size();
         run.mConn.resize(base + spec->mNodes);
+        const detail::NodeOrder* order = run.mOrder;
         for (std::size_t k = 0; k < spec->mNodes; ++k) {
-            const std::size_t src =
-                spec->mPermutation ? static_cast<std::size_t>(spec->mPermutation[k]) : k;
+            const std::size_t src = order ? static_cast<std::size_t>(order->mToMeshio[k]) : k;
             const std::int64_t id = file.mElementNodes[el.mFirstNode + src];
             const auto it = index.find(id);
             if (it == index.end())
@@ -70123,36 +70989,25 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& meshio_to_med() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "PO1"},     {"line", "SE2"},         {"line3", "SE3"},     {"line4", "SE4"},
-        {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},
-        {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},
-        {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"},
-        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"},
-        {"polyhedron", "POE"}};
+        {"vertex", "PO1"},     {"line", "SE2"},         {"line3", "SE3"},        {"line4", "SE4"},
+        {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"},    {"quad", "QU4"},
+        {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},        {"tetra10", "T10"},
+        {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"hexahedron27", "H27"}, {"pyramid", "PY5"},
+        {"pyramid13", "P13"},  {"wedge", "PE6"},        {"wedge15", "P15"},      {"wedge18", "P18"},
+        {"polygon", "POG"},    {"polygon2", "POG2"},    {"polyhedron", "POE"}};
     return m;
 }
 
-// self-inverse meshio <-> MED node permutations. The quadratic entries'
-// corner portion is identical to their linear sibling's; the mid-edge
-// portion was derived from MEDCoupling's own INTERP_KERNEL/CellModel.cxx
-// edge tables (the same authoritative source `_MED_ORIENT_REF` in
-// test_med.py already trusts for MED's face definitions) and verified
-// geometrically: every MED mid-edge slot lands at the exact arithmetic
-// midpoint of the two MED corners it should sit between. All four are
-// genuine involutions (Q[Q[i]] == i for every i), like the linear ones, so
-// one table again serves both read and write.
-const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra", {0, 1, 3, 2}},
-        {"pyramid", {0, 3, 2, 1, 4}},
-        {"wedge", {3, 4, 5, 0, 1, 2}},
-        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
-        {"tetra10", {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
-        {"pyramid13", {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
-        {"wedge15", {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
-        {"hexahedron20", {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
-    };
-    return m;
+// meshio <-> MED node permutations live in detail/node_order.cpp ("med").
+// hexahedron27's is not its own inverse, so read and write use the two
+// directions separately.
+const std::vector<int>* med_node_perm(const std::string& rType, std::size_t NumNodes,
+                                      bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("med", rType);
+    if (!order)
+        return nullptr;
+    const std::vector<int>& table = ToMeshio ? order->mToMeshio : order->mFromMeshio;
+    return table.size() == NumNodes ? &table : nullptr;
 }
 
 // (The former reorder_med_cells pass is fused into flatten_f/unflatten_f via
@@ -70459,13 +71314,13 @@ const std::vector<std::string>& med_geo_order_cell() {
 // to the subset the C++ writer can actually produce.
 const std::unordered_map<std::string, std::string>& med_short_to_geo_type() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"PO1", "MED_POINT1"},    {"SE2", "MED_SEG2"},    {"TR3", "MED_TRIA3"},
-        {"QU4", "MED_QUAD4"},     {"TR6", "MED_TRIA6"},   {"TR7", "MED_TRIA7"},
-        {"QU8", "MED_QUAD8"},     {"QU9", "MED_QUAD9"},   {"TE4", "MED_TETRA4"},
-        {"PY5", "MED_PYRA5"},     {"PE6", "MED_PENTA6"},  {"HE8", "MED_HEXA8"},
-        {"T10", "MED_TETRA10"},   {"P13", "MED_PYRA13"},  {"P15", "MED_PENTA15"},
-        {"H20", "MED_HEXA20"},    {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"},
-        {"POE", "MED_POLYHEDRON"}};
+        {"PO1", "MED_POINT1"},  {"SE2", "MED_SEG2"},      {"TR3", "MED_TRIA3"},
+        {"QU4", "MED_QUAD4"},   {"TR6", "MED_TRIA6"},     {"TR7", "MED_TRIA7"},
+        {"QU8", "MED_QUAD8"},   {"QU9", "MED_QUAD9"},     {"TE4", "MED_TETRA4"},
+        {"PY5", "MED_PYRA5"},   {"PE6", "MED_PENTA6"},    {"HE8", "MED_HEXA8"},
+        {"T10", "MED_TETRA10"}, {"P13", "MED_PYRA13"},    {"P15", "MED_PENTA15"},
+        {"H20", "MED_HEXA20"},  {"H27", "MED_HEXA27"},    {"P18", "MED_PENTA18"},
+        {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"}, {"POE", "MED_POLYHEDRON"}};
     return m;
 }
 
@@ -71359,9 +72214,7 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             std::size_t k = n_cells > 0 ? nod.Size() / static_cast<std::size_t>(n_cells) : 0;
             // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
             // node reorder into a single pass over the connectivity.
-            auto pit = med_node_perm().find(it->second);
-            const std::vector<int>* perm =
-                (pit != med_node_perm().end() && pit->second.size() == k) ? &pit->second : nullptr;
+            const std::vector<int>* perm = med_node_perm(it->second, k, true);
             NDArray data = unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1, perm);
             mesh.AddCellBlock(it->second, std::move(data));
             cell_types.push_back(it->second);
@@ -71844,10 +72697,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             // meshio_to_med() without a matching med_node_perm() entry)
             // cannot silently gather out of range.
             const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
-            auto pit = med_node_perm().find(ctype);
-            const std::vector<int>* perm =
-                (pit != med_node_perm().end() && pit->second.size() == npc) ? &pit->second
-                                                                            : nullptr;
+            const std::vector<int>* perm = med_node_perm(ctype, npc, false);
             NDArray conn = med_concat_conn_rows(rMesh, idxs, npc);
             NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);
@@ -83753,22 +84603,11 @@ constexpr double kUnvNaN = std::numeric_limits<double>::quiet_NaN();
 // Element tables
 // ---------------------------------------------------------------------------
 
-// UNV node order -> meshio position (0-based): meshio_conn[perm[i]] = unv_conn[i].
-// Parabolic elements list their mid-side nodes "sandwiched" between the corners
-// of each ring; the solids list the bottom ring, then the vertical mid-edges,
-// then the top ring (pinned against gmsh's .unv/.msh twins and Salome's driver).
+// UNV node order -> meshio position (0-based): meshio_conn[perm[i]] = unv_conn[i],
+// i.e. the "from meshio" direction of the "unv" tables in detail/node_order.cpp.
 const std::vector<int>* unv_perm(const std::string& rType) {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"line3", {0, 2, 1}},
-        {"triangle6", {0, 3, 1, 4, 2, 5}},
-        {"quad8", {0, 4, 1, 5, 2, 6, 3, 7}},
-        {"quad9", {0, 4, 1, 5, 2, 6, 3, 7, 8}},
-        {"tetra10", {0, 4, 1, 5, 2, 6, 7, 8, 9, 3}},
-        {"pyramid13", {0, 5, 1, 6, 2, 7, 3, 8, 9, 10, 11, 12, 4}},
-        {"wedge15", {0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11}},
-        {"hexahedron20", {0, 8, 1, 9, 2, 10, 3, 11, 16, 17, 18, 19, 4, 12, 5, 13, 6, 14, 7, 15}}};
-    auto it = m.find(rType);
-    return it == m.end() ? nullptr : &it->second;
+    const detail::NodeOrder* order = detail::node_order("unv", rType);
+    return order ? &order->mFromMeshio : nullptr;
 }
 
 bool unv_is_beam(int FeId) {
@@ -84957,6 +85796,7 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mPid, mMid;
         std::size_t mNumNodes = 0;
+        const std::vector<int>* mPerm = nullptr;
     };
     std::vector<Block> blocks;
     std::unordered_map<std::string, std::size_t> block_of;
@@ -84974,9 +85814,9 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         }
         auto [bit, fresh] = block_of.emplace(type, blocks.size());
         if (fresh)
-            blocks.push_back(Block{type, {}, {}, {}, el.mNodes.size()});
+            blocks.push_back(Block{type, {}, {}, {}, el.mNodes.size(), unv_perm(type)});
         Block& b = blocks[bit->second];
-        const std::vector<int>* perm = unv_perm(type);
+        const std::vector<int>* perm = b.mPerm;
         const std::size_t base = b.mConn.size();
         b.mConn.resize(base + b.mNumNodes);
         for (std::size_t j = 0; j < b.mNumNodes; ++j) {
@@ -94289,6 +95129,7 @@ CellType ccells_linear_base(CellType type) {
         case CellType::Line4:
             return CellType::Line;
         case CellType::Triangle6:
+        case CellType::Triangle7:
         case CellType::Triangle10:
             return CellType::Triangle;
         case CellType::Quad8:
@@ -114181,6 +115022,29 @@ std::string sniff_format(const std::string& rPath) {
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";
+    // Code_Aster .mail meshes open, after any `%` comment lines, with a TITRE or
+    // COOR_1D/2D/3D block keyword.
+    {
+        std::size_t pos = 0;
+        while (pos < stripped.size()) {
+            std::size_t eol = stripped.find('\n', pos);
+            if (eol == std::string::npos)
+                eol = stripped.size();
+            std::string line = stripped.substr(pos, eol - pos);
+            pos = eol + 1;
+            const std::size_t first = line.find_first_not_of(" \t\r");
+            if (first == std::string::npos || line[first] == '%')
+                continue;
+            line = line.substr(first);
+            std::transform(line.begin(), line.end(), line.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            const std::size_t end = line.find_first_of(" \t\r,%");
+            const std::string word = line.substr(0, end);
+            if (word == "TITRE" || word == "COOR_1D" || word == "COOR_2D" || word == "COOR_3D")
+                return "code_aster";
+            break;
+        }
+    }
     // LS-DYNA keyword decks open with "*KEYWORD" after any `$` comment lines; this
     // runs before the Abaqus rule so a deck that opens with a keyword line other
     // than *NODE is never mistaken for one.
@@ -114274,8 +115138,8 @@ SoboCells sobo_gather_cells(const Mesh& rMesh) {
         const bool simplex =
             ct == CellType::Line || ct == CellType::Triangle || ct == CellType::Tetra;
         if (!simplex) {
-            const bool quadratic =
-                ct == CellType::Line3 || ct == CellType::Triangle6 || ct == CellType::Tetra10;
+            const bool quadratic = ct == CellType::Line3 || ct == CellType::Triangle6 ||
+                                   ct == CellType::Triangle7 || ct == CellType::Tetra10;
             throw std::invalid_argument(
                 std::string(kSoboPrefix) + "cell block '" + type + "' is not a linear simplex; " +
                 (quadratic ? "linearize the mesh first" : "run convert_cells(simplexify) first"));
@@ -117619,6 +118483,7 @@ const std::map<std::string, ReadFn>& registry_readers() {
     static const std::map<std::string, ReadFn> m = {
         {"abaqus", meshioplusplus::read_abaqus},
         {"lsdyna", meshioplusplus::read_lsdyna},
+        {"code_aster", meshioplusplus::read_code_aster},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
         {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
         {"ansys", meshioplusplus::read_ansys},
@@ -117734,6 +118599,7 @@ const std::map<std::string, WriteFn>& registry_writers() {
     static const std::map<std::string, WriteFn> m = {
         {"abaqus", meshioplusplus::write_abaqus},
         {"lsdyna", meshioplusplus::write_lsdyna},
+        {"code_aster", meshioplusplus::write_code_aster},
         {"ansys", [](const std::string& p,
                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {"avsucd", meshioplusplus::write_avsucd},
@@ -117956,6 +118822,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".k", "lsdyna"},
         {".key", "lsdyna"},
         {".dyn", "lsdyna"},
+        {".mail", "code_aster"},
         {".avs", "avsucd"},
         {".xml", "dolfin"},
         {".f3grid", "flac3d"},

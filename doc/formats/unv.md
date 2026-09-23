@@ -67,7 +67,7 @@ The FE descriptor *and the node count* select the type; an element whose node co
 | 115 / 116 | `hexahedron` / `hexahedron20` | 115 / 116 |
 | 119, 312 / 114 | `pyramid` / `pyramid13` | 312 / 114 |
 
-Linear elements share VTK's node order. Parabolic elements list their nodes ring by ring with each mid-side node **between** its two corners: a quadratic hexahedron is the bottom ring (corner, mid, corner, mid, …), then the four vertical mid-edges, then the top ring. The permutation below (`meshio[perm[i]] = unv[i]`) was pinned against gmsh, which writes the same mesh as `.unv` and `.msh`, and matches Salome's reader:
+Linear elements share VTK's node order. Parabolic elements list their nodes ring by ring with each mid-side node **between** its two corners: a quadratic hexahedron is the bottom ring (corner, mid, corner, mid, …), then the four vertical mid-edges, then the top ring. The permutation below (`meshio[perm[i]] = unv[i]`) was pinned against gmsh, which writes the same mesh as `.unv` and `.msh`, and matches Salome's reader. It lives in the shared [node-ordering registry](../node_ordering.md) under `"unv"`:
 
 | Type | Permutation |
 |---|---|

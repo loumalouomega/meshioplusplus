@@ -42,6 +42,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
@@ -52,36 +53,25 @@ namespace {
 
 const std::unordered_map<std::string, std::string>& meshio_to_med() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"vertex", "PO1"},     {"line", "SE2"},         {"line3", "SE3"},     {"line4", "SE4"},
-        {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"}, {"quad", "QU4"},
-        {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},     {"tetra10", "T10"},
-        {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"pyramid", "PY5"},   {"pyramid13", "P13"},
-        {"wedge", "PE6"},      {"wedge15", "P15"},      {"polygon", "POG"},   {"polygon2", "POG2"},
-        {"polyhedron", "POE"}};
+        {"vertex", "PO1"},     {"line", "SE2"},         {"line3", "SE3"},        {"line4", "SE4"},
+        {"triangle", "TR3"},   {"triangle6", "TR6"},    {"triangle7", "TR7"},    {"quad", "QU4"},
+        {"quad8", "QU8"},      {"quad9", "QU9"},        {"tetra", "TE4"},        {"tetra10", "T10"},
+        {"hexahedron", "HE8"}, {"hexahedron20", "H20"}, {"hexahedron27", "H27"}, {"pyramid", "PY5"},
+        {"pyramid13", "P13"},  {"wedge", "PE6"},        {"wedge15", "P15"},      {"wedge18", "P18"},
+        {"polygon", "POG"},    {"polygon2", "POG2"},    {"polyhedron", "POE"}};
     return m;
 }
 
-// self-inverse meshio <-> MED node permutations. The quadratic entries'
-// corner portion is identical to their linear sibling's; the mid-edge
-// portion was derived from MEDCoupling's own INTERP_KERNEL/CellModel.cxx
-// edge tables (the same authoritative source `_MED_ORIENT_REF` in
-// test_med.py already trusts for MED's face definitions) and verified
-// geometrically: every MED mid-edge slot lands at the exact arithmetic
-// midpoint of the two MED corners it should sit between. All four are
-// genuine involutions (Q[Q[i]] == i for every i), like the linear ones, so
-// one table again serves both read and write.
-const std::unordered_map<std::string, std::vector<int>>& med_node_perm() {
-    static const std::unordered_map<std::string, std::vector<int>> m = {
-        {"tetra", {0, 1, 3, 2}},
-        {"pyramid", {0, 3, 2, 1, 4}},
-        {"wedge", {3, 4, 5, 0, 1, 2}},
-        {"hexahedron", {4, 5, 6, 7, 0, 1, 2, 3}},
-        {"tetra10", {0, 1, 3, 2, 4, 8, 7, 6, 5, 9}},
-        {"pyramid13", {0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10}},
-        {"wedge15", {3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14}},
-        {"hexahedron20", {4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
-    };
-    return m;
+// meshio <-> MED node permutations live in detail/node_order.cpp ("med").
+// hexahedron27's is not its own inverse, so read and write use the two
+// directions separately.
+const std::vector<int>* med_node_perm(const std::string& rType, std::size_t NumNodes,
+                                      bool ToMeshio) {
+    const detail::NodeOrder* order = detail::node_order("med", rType);
+    if (!order)
+        return nullptr;
+    const std::vector<int>& table = ToMeshio ? order->mToMeshio : order->mFromMeshio;
+    return table.size() == NumNodes ? &table : nullptr;
 }
 
 // (The former reorder_med_cells pass is fused into flatten_f/unflatten_f via
@@ -388,13 +378,13 @@ const std::vector<std::string>& med_geo_order_cell() {
 // to the subset the C++ writer can actually produce.
 const std::unordered_map<std::string, std::string>& med_short_to_geo_type() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"PO1", "MED_POINT1"},    {"SE2", "MED_SEG2"},    {"TR3", "MED_TRIA3"},
-        {"QU4", "MED_QUAD4"},     {"TR6", "MED_TRIA6"},   {"TR7", "MED_TRIA7"},
-        {"QU8", "MED_QUAD8"},     {"QU9", "MED_QUAD9"},   {"TE4", "MED_TETRA4"},
-        {"PY5", "MED_PYRA5"},     {"PE6", "MED_PENTA6"},  {"HE8", "MED_HEXA8"},
-        {"T10", "MED_TETRA10"},   {"P13", "MED_PYRA13"},  {"P15", "MED_PENTA15"},
-        {"H20", "MED_HEXA20"},    {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"},
-        {"POE", "MED_POLYHEDRON"}};
+        {"PO1", "MED_POINT1"},  {"SE2", "MED_SEG2"},      {"TR3", "MED_TRIA3"},
+        {"QU4", "MED_QUAD4"},   {"TR6", "MED_TRIA6"},     {"TR7", "MED_TRIA7"},
+        {"QU8", "MED_QUAD8"},   {"QU9", "MED_QUAD9"},     {"TE4", "MED_TETRA4"},
+        {"PY5", "MED_PYRA5"},   {"PE6", "MED_PENTA6"},    {"HE8", "MED_HEXA8"},
+        {"T10", "MED_TETRA10"}, {"P13", "MED_PYRA13"},    {"P15", "MED_PENTA15"},
+        {"H20", "MED_HEXA20"},  {"H27", "MED_HEXA27"},    {"P18", "MED_PENTA18"},
+        {"POG", "MED_POLYGON"}, {"POG2", "MED_POLYGON2"}, {"POE", "MED_POLYHEDRON"}};
     return m;
 }
 
@@ -1288,9 +1278,7 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
             std::size_t k = n_cells > 0 ? nod.Size() / static_cast<std::size_t>(n_cells) : 0;
             // Fuse the Fortran->C transpose (shift -1) with the MED->meshio
             // node reorder into a single pass over the connectivity.
-            auto pit = med_node_perm().find(it->second);
-            const std::vector<int>* perm =
-                (pit != med_node_perm().end() && pit->second.size() == k) ? &pit->second : nullptr;
+            const std::vector<int>* perm = med_node_perm(it->second, k, true);
             NDArray data = unflatten_f(nod, static_cast<std::size_t>(n_cells), k, -1, perm);
             mesh.AddCellBlock(it->second, std::move(data));
             cell_types.push_back(it->second);
@@ -1773,10 +1761,7 @@ void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo
             // meshio_to_med() without a matching med_node_perm() entry)
             // cannot silently gather out of range.
             const std::size_t npc = rMesh.Cells(idxs[0]).NodesPerCell();
-            auto pit = med_node_perm().find(ctype);
-            const std::vector<int>* perm =
-                (pit != med_node_perm().end() && pit->second.size() == npc) ? &pit->second
-                                                                            : nullptr;
+            const std::vector<int>* perm = med_node_perm(ctype, npc, false);
             NDArray conn = med_concat_conn_rows(rMesh, idxs, npc);
             NDArray nod = flatten_f(conn, +1, perm);
             h5::write_dataset(g, "NOD", nod);

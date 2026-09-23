@@ -12,6 +12,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`avsucd`](./formats/avsucd.md) | `.avs` | ✓ | ✓ | — |
 | [`cae`](./formats/cae.md) | `.npz` | ✓ | ✓ | — |
 | [`cgns`](./formats/cgns.md) | `.cgns` | ✓ | ✓ | `h5py` |
+| [`code_aster`](./formats/code_aster.md) | `.mail` | ✓ | ✓ | — |
 | [`dex`](./formats/dex.md) | `.dex` | ✓ | ✓ | — |
 | [`dolfin-xml`](./formats/dolfin.md) | `.xml` | ✓ | ✓ | — |
 | [`ensight`](./formats/ensight.md) | `.case` / `.geo` | ✓ | ✓ | — |
@@ -75,6 +76,8 @@ Each format name links to a detailed reference page (structure, options, data ma
 **Note on the physics-ML formats:** [`pmsh`](./formats/pmsh.md), [`zarr`](./formats/zarr.md), [`cae`](./formats/cae.md) and [`usd`](./formats/usd.md) are **Python-only**. They are not in the shared C++ dispatch registry, so they are absent from the WASM, C, Fortran, Julia, R and native-CLI surfaces; everything else in this table is reachable from all of them. `pmsh`, `zarr` and `cae` are also *lossy by design* — each reduces a mesh to what its consumer's data model holds (one simplex kind, or a triangulated skin plus node fields) — so they are export targets rather than interchange formats.
 
 **Note on LS-DYNA (`lsdyna`)** (v15.2.0): a keyword deck read in full by both engines, following `*INCLUDE` and `*INCLUDE_PATH`. `*PART` becomes a cell region (title as name, `pid` as tag) and `*SET_NODE` / `*SET_SOLID`, `_SHELL`, `_BEAM`, `_PART` / `*SET_SEGMENT` become point, cell and side regions. The standard, `LONG=`, `I10=` and comma-separated card formats are read per card, so they can be mixed in one file, and the tetra, pyramid and wedge that LS-DYNA writes as hexahedra with repeated nodes are collapsed on read and expanded on write. Only geometry is read — materials, sections, contacts and loads are skipped — and the writer puts placeholder section and material ids on every part. `.k`, `.key` and `.dyn` resolve to `lsdyna` (none was claimed before). See [LS-DYNA](./formats/lsdyna.md).
+
+**Note on Code_Aster meshes (`code_aster`)** (v16.0.0): Code_Aster's own ASCII mesh, read and written by both engines under the rules of Code_Aster's reader: only the first 80 columns of a line are read, records are token streams that may wrap, `%` starts a comment. `COOR_nD` gives the points, `POI1` … `HEXA27` the cell blocks (`TRIA7` as the new `triangle7`), and `GROUP_MA`/`GROUP_NO` cell and point regions without a tag. Its node order is **not** MED's: the quadratic hexahedra and wedges list the vertical mid-edges before the top ring, and the tables are pinned against Code_Aster's own gmsh and MED readers in the [node-ordering registry](./node_ordering.md). The writer keeps every line within 80 columns, names nodes and elements `N…`/`M…`, sanitises group names to 24 characters, and drops side regions and data arrays with a warning. See [Code_Aster](./formats/code_aster.md).
 
 **Note on CalculiX results (`frd`)** (v15.3.0, binary layout and `.dat` print v15.5.0): the result file of `ccx`, **read-only** — it is what a solver writes, so there is nothing to write back. Every `100C` increment is a step for the [sequence engine](./sequences.md) (`time_step`, `read_metadata(...).time_values`, `read_sequence`), each result block is a point data array named as the file names it, and the six components of a symmetric tensor keep the file's order `xx yy zz xy yz zx`. `ccx` expands shells and beams into solids, so the mesh read is not the `.inp` mesh; the he20, pe15 and be3 node orders are permuted to the Abaqus order. The short (`I5`) and long (`I10`) ASCII layouts and the binary layout (`*NODE OUTPUT`/`*ELEMENT OUTPUT`) are all read. `derived=True` on `meshioplusplus.frd.read` adds von Mises and principal values beside each stress and strain tensor, now backed by the shared [`tensor_invariants`](./tensor_invariants.md) operation. `meshioplusplus.frd.read_dat` separately parses the companion `.dat` tabular print (`*NODE PRINT`/`*EL PRINT`) into plain tables, Python-only. See [CalculiX results](./formats/frd.md).
 
@@ -144,6 +147,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `avsucd` | `#` prefix | Top of file | Yes |
 | `cae` | A bytes array written as the archive's **first** zip member; NUL-padded rows | The file's first bytes, so the ordinary head scanner finds it | Yes |
 | `cgns` | None (HDF5/CGNS binary container) — an HDF5 root attribute is the nearest equivalent | n/a | — |
+| `code_aster` | `%` prefix | Anywhere; the writer puts it first | Yes |
 | `dex` | None — a fixed two-line header, the second ending in `#` | n/a (structural, not free text) | — |
 | `dolfin-xml` | XML `<!-- -->` | Anywhere in the document | — |
 | `ensight` | None named, but the `.geo` header's description line 2 is free text | Fixed line 2 of the `.geo` header | Yes |
@@ -475,6 +479,10 @@ meshioplusplus.flac3d.write(filename, mesh,
 ### AVS-UCD (`.avs`)
 
 `meshioplusplus.avsucd.write(filename, mesh)` — no extra options.
+
+### Code_Aster (`.mail`)
+
+`meshioplusplus.code_aster.write(filename, mesh)` — no extra options. Point and cell regions become `GROUP_NO`/`GROUP_MA`, with names sanitised to 24 letters, digits and `_`; every line stays within the 80 columns Code_Aster reads; see [`code_aster.md`](./formats/code_aster.md#writing).
 
 ### Abaqus (`.inp`)
 

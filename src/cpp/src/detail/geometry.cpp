@@ -56,6 +56,7 @@ int cell_corner_count(CellType type) {
             return 2;
         case CellType::Triangle:
         case CellType::Triangle6:
+        case CellType::Triangle7:
         case CellType::Triangle10:
         case CellType::Triangle15:
         case CellType::Triangle21:

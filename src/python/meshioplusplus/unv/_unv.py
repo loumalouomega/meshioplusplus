@@ -20,6 +20,7 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._node_order import node_order, node_order_keys
 from .._regions import Region
 
 __all__ = ["read", "write", "time_values"]
@@ -27,19 +28,15 @@ __all__ = ["read", "write", "time_values"]
 TIME_KEY = "meshio:time"
 _NAN = float("nan")
 
-# UNV node order -> meshio position: meshio_conn[perm[i]] = unv_conn[i]. Parabolic
-# elements list their mid-side nodes "sandwiched" between the corners of each ring;
-# the solids list the bottom ring, then the vertical mid-edges, then the top ring.
+# UNV node order -> meshio position: meshio_conn[perm[i]] = unv_conn[i], i.e. the
+# "from meshio" direction of the "unv" tables in meshioplusplus/_node_order.py.
+# Parabolic elements list their mid-side nodes "sandwiched" between the corners of
+# each ring; the solids list the bottom ring, then the vertical mid-edges, then the
+# top ring.
 _PERM = {
-    "line3": [0, 2, 1],
-    "triangle6": [0, 3, 1, 4, 2, 5],
-    "quad8": [0, 4, 1, 5, 2, 6, 3, 7],
-    "quad9": [0, 4, 1, 5, 2, 6, 3, 7, 8],
-    "tetra10": [0, 4, 1, 5, 2, 6, 7, 8, 9, 3],
-    "pyramid13": [0, 5, 1, 6, 2, 7, 3, 8, 9, 10, 11, 12, 4],
-    "wedge15": [0, 6, 1, 7, 2, 8, 12, 13, 14, 3, 9, 4, 10, 5, 11],
-    "hexahedron20": [0, 8, 1, 9, 2, 10, 3, 11, 16, 17, 18, 19]
-    + [4, 12, 5, 13, 6, 14, 7, 15],
+    cell_type: list(node_order(fmt, cell_type).from_meshio)
+    for fmt, cell_type in node_order_keys()
+    if fmt == "unv"
 }
 
 _BEAMS = {11, 21, 22, 23, 24, 25}

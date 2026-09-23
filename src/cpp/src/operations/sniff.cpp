@@ -179,6 +179,29 @@ std::string sniff_format(const std::string& rPath) {
     // ASCII STL.
     if (sniff_starts_with(stripped, "solid "))
         return "stl";
+    // Code_Aster .mail meshes open, after any `%` comment lines, with a TITRE or
+    // COOR_1D/2D/3D block keyword.
+    {
+        std::size_t pos = 0;
+        while (pos < stripped.size()) {
+            std::size_t eol = stripped.find('\n', pos);
+            if (eol == std::string::npos)
+                eol = stripped.size();
+            std::string line = stripped.substr(pos, eol - pos);
+            pos = eol + 1;
+            const std::size_t first = line.find_first_not_of(" \t\r");
+            if (first == std::string::npos || line[first] == '%')
+                continue;
+            line = line.substr(first);
+            std::transform(line.begin(), line.end(), line.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            const std::size_t end = line.find_first_of(" \t\r,%");
+            const std::string word = line.substr(0, end);
+            if (word == "TITRE" || word == "COOR_1D" || word == "COOR_2D" || word == "COOR_3D")
+                return "code_aster";
+            break;
+        }
+    }
     // LS-DYNA keyword decks open with "*KEYWORD" after any `$` comment lines; this
     // runs before the Abaqus rule so a deck that opens with a keyword line other
     // than *NODE is never mistaken for one.

@@ -82,6 +82,9 @@ tests/python/meshes/frd/*_bin.frd binary
 tests/python/meshes/unv/** -filter -diff -merge text
 # ...except the 58b fixture: raw little-endian doubles after its ASCII header.
 tests/python/meshes/unv/*_58b.uff binary
+# Code_Aster .mail fixtures: small text written by tools/gen_code_aster_fixtures.py,
+# kept out of LFS like the ones above.
+tests/python/meshes/code_aster/** -filter -diff -merge text
 # MSC Nastran HDF5 result files (real MSC Nastran 2020 output, binary HDF5): LFS like
 # the other binary reference fixtures. Only this directory, so no other `.h5` is caught.
 tests/python/meshes/nastran_h5/*.h5 filter=lfs diff=lfs merge=lfs -text

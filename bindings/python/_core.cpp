@@ -24,6 +24,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/refine_templates.hpp"
@@ -32,6 +33,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -2828,6 +2830,15 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
     });
 
+    // Code_Aster native mesh (.mail) writer / reader.
+    m.def("code_aster_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_code_aster(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("code_aster_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
+    });
+
     // AVS-UCD writer / reader (.avs).
     m.def("avsucd_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
@@ -3500,6 +3511,19 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     });
     m.def("wkt_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_wkt(path));
+    });
+
+    // The node-ordering registry, exported so tests/python/test_node_order.py can
+    // pin it against its `_node_order.py` twin (the colormap_table precedent).
+    m.def("node_order_table", []() {
+        py::dict out;
+        for (const auto& [format, type] : meshioplusplus::detail::node_order_keys()) {
+            const meshioplusplus::detail::NodeOrder* order =
+                meshioplusplus::detail::node_order(format, type);
+            out[py::make_tuple(std::string(format), std::string(type))] =
+                py::make_tuple(order->mToMeshio, order->mFromMeshio);
+        }
+        return out;
     });
 
     // Built-in colormap tables, exported so tests/python/test_colormap.py can pin the

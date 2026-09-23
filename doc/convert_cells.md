@@ -42,7 +42,7 @@ Type mappings:
 | `hexahedron` | `hexahedron20` | 6 × `tetra` |
 | `polygon(n)` | — | (n − 2) × `triangle` (fan around node 0) |
 
-`linearize` additionally accepts the full-Lagrange types (`quad9`, `hexahedron27`, `wedge18`, `pyramid14`, and the higher `*20`/`*64` families), mapping each to its linear base.
+`linearize` additionally accepts the full-Lagrange types (`quad9`, `triangle7`, `hexahedron27`, `wedge18`, `pyramid14`, and the higher `*20`/`*64` families), mapping each to its linear base.
 
 All three modes are **idempotent on cells they do not apply to** — a linear block passes through `linearize` unchanged, an already-simplex block through `simplexify`, an already-quadratic block through `elevate` — so they are safe on a mixed-order mesh. Under `simplexify`, higher-order input is linearized first.
 
