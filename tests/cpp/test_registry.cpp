@@ -44,6 +44,9 @@ TEST(Registry, ResolveFormatUsesExtensionDefault) {
     EXPECT_EQ(resolve_format("deck.key", ""), "lsdyna");
     EXPECT_EQ(resolve_format("deck.dyn", ""), "lsdyna");
     EXPECT_EQ(resolve_format("results.frd", ""), "frd");
+    // `.h5` is MSC Nastran HDF5; the longer `.post.h5` stays GiD.
+    EXPECT_EQ(resolve_format("job.h5", ""), "nastran_h5");
+    EXPECT_EQ(resolve_format("job.post.h5", ""), "gid");
     // glTF is one format with two suffixes; the writer tells the containers apart.
     EXPECT_EQ(resolve_format("model.glb", ""), "gltf");
     EXPECT_EQ(resolve_format("model.gltf", ""), "gltf");
