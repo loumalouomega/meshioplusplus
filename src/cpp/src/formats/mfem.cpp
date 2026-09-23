@@ -17,7 +17,6 @@
 // System includes
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,7 +24,6 @@
 #include <iterator>
 #include <limits>
 #include <map>
-#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -1443,6 +1441,16 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     for (const std::string& t : dropped) {
         log::warn("MFEM mesh writer: '{}' cells are neither elements nor boundary; dropped", t);
         detail::provenance_note("cells-dropped", "'" + t + "' cells have no MFEM equivalent here");
+    }
+    std::size_t point_regions = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+        if (rMesh.Region(r).mKind == RegionKind::Point)
+            ++point_regions;
+    if (point_regions) {
+        log::warn("MFEM mesh writer: MFEM has no node sets; {} point region(s) dropped",
+                  point_regions);
+        detail::provenance_note("regions-dropped", std::to_string(point_regions) +
+                                                       " point region(s) have no MFEM equivalent");
     }
     if (bad_facets) {
         log::warn("MFEM mesh writer: {} side region entr(ies) name no facet and were dropped",

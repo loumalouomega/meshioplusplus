@@ -154,6 +154,8 @@ meta = read_metadata("run.exo")
 meta.time_values          # [0.0, 0.5, 1.0] -- how many steps `time_step` may name
 ```
 
+Format inference is the shared registry's, the C API's: the extension picks the format, with one content-aware exception since v16.5.0 — a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than `medit`. Formats added to the registry (Patran, Femap and MFEM in v16.5.0) reach this binding with no code change.
+
 Out of range is an error naming the available count, never a silent clamp. `meta.time_values` is empty for a format with no time concept, so `length(...)` is always safe. Honoured by `exodus`; see [Selective reads](/selective_read).
 
 ## Transient (time-series) XDMF writing

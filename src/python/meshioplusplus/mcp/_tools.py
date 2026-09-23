@@ -573,22 +573,42 @@ def tool_convert(
     compression=None,
     piece=None,
     ghosts="keep",
+    grid_functions=None,
+    write_grid_functions=False,
 ):
-    """Convert between mesh formats, optionally selecting variant/compression."""
-    mesh = _load(
-        input_path,
-        input_format,
-        points_only=points_only,
-        arrays=arrays,
-        time_step=time_step,
-        piece=piece,
-        ghosts=ghosts,
-    )
+    """Convert between mesh formats, optionally selecting variant/compression.
+
+    ``grid_functions`` (``{name: path}``) reads MFEM ``.gf`` files onto an MFEM
+    input mesh; ``write_grid_functions`` writes the data of an MFEM output as
+    ``.gf`` files beside it."""
+    if grid_functions:
+        from .. import mfem as _mfem
+
+        mesh = _mfem.read(
+            _resolve(input_path, must_exist=True),
+            {
+                str(name): str(_resolve(path, must_exist=True))
+                for name, path in grid_functions.items()
+            },
+        )
+    else:
+        mesh = _load(
+            input_path,
+            input_format,
+            points_only=points_only,
+            arrays=arrays,
+            time_step=time_step,
+            piece=piece,
+            ghosts=ghosts,
+        )
     out_fmt = output_format
     if out_fmt is None:
         try:
             candidates = _filetypes_from_path(pathlib.Path(str(output_path)))
             out_fmt = candidates[0] if candidates else None
+            # `.mesh` is Medit's first; asking for grid functions means MFEM.
+            if write_grid_functions and "mfem" in candidates:
+                out_fmt = output_format = "mfem"
         except Exception:
             out_fmt = None
     write_kwargs = {}
@@ -599,6 +619,12 @@ def tool_convert(
                 "mode/compression; pass output_format explicitly"
             )
         write_kwargs = _variant_kwargs(out_fmt, mode, compression)
+    if write_grid_functions:
+        if out_fmt != "mfem":
+            raise ValueError(
+                "meshio++: mcp: write_grid_functions needs MFEM (.mesh) output"
+            )
+        write_kwargs["grid_functions"] = True
     resolved = _store(mesh, output_path, output_format, **write_kwargs)
     return _result(resolved, mesh, output_format=out_fmt)
 

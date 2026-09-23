@@ -5,7 +5,7 @@ The [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) mesh for
 | | |
 |---|---|
 | **Format name** | `medit` |
-| **Extensions** | `.mesh`, `.meshb` |
+| **Extensions** | `.mesh`, `.meshb` (`.mesh` is shared with [MFEM](./mfem.md): a file whose first line names an MFEM mesh is read as `mfem`) |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 

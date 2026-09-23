@@ -176,6 +176,62 @@ def test_code_aster_mail_is_readable_writable_and_converts(tmp_path):
     assert [b.type for b in written.cells] == ["hexahedron20", "quad8"]
 
 
+def test_patran_neutral_is_readable_writable_and_converts(tmp_path):
+    import pathlib
+
+    pat = pathlib.Path(__file__).parent / "meshes" / "patran" / "quadratic.pat"
+    out = _dump(_tools.tool_formats())
+    assert "patran" in out["readable"] and "patran" in out["writable"]
+    assert out["extensions"][".pat"] == ["patran"]
+    assert out["extensions"][".out"] == ["patran"]
+    target = str(tmp_path / "quadratic.vtu")
+    _tools.tool_convert(str(pat), target)
+    back = str(tmp_path / "back.pat")
+    _tools.tool_convert(target, back)
+    written = meshioplusplus.read(back)
+    assert written.cells[0].type == "hexahedron20"
+
+
+def test_femap_neutral_steps_convert(tmp_path):
+    import pathlib
+
+    neu = pathlib.Path(__file__).parent / "meshes" / "femap" / "ems_results_1051.neu"
+    out = _dump(_tools.tool_formats())
+    assert "femap" in out["readable"] and "femap" in out["writable"]
+    assert out["extensions"][".neu"] == ["femap"]
+    assert _dump(_tools.tool_sniff(str(neu)))["format"] == "femap"
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(neu), target, time_step=-1)
+    last = meshioplusplus.read(target)
+    assert np.asarray(last.field_data["meshio:time"]).ravel()[0] > 0
+    back = str(tmp_path / "back.neu")
+    _tools.tool_convert(target, back)
+    assert meshioplusplus.read(back).points.shape == last.points.shape
+
+
+def test_mfem_grid_functions_convert_both_ways(tmp_path):
+    import pathlib
+
+    mfem_dir = pathlib.Path(__file__).parent / "meshes" / "mfem"
+    out = _dump(_tools.tool_formats())
+    assert "mfem" in out["readable"] and "mfem" in out["writable"]
+    assert out["extensions"][".mesh"] == ["medit", "mfem"]
+    assert _dump(_tools.tool_sniff(str(mfem_dir / "star-q2.mesh")))["format"] == "mfem"
+    target = str(tmp_path / "star.vtu")
+    _tools.tool_convert(
+        str(mfem_dir / "star-q2.mesh"),
+        target,
+        grid_functions={"u": str(mfem_dir / "star-q2.u.gf")},
+    )
+    vtu = meshioplusplus.read(target)
+    assert vtu.cells[0].type == "quad9" and "u" in vtu.point_data
+    back = tmp_path / "back.mesh"
+    _tools.tool_convert(target, str(back), write_grid_functions=True)
+    assert (tmp_path / "back.u.gf").is_file()
+    with pytest.raises(ValueError, match="MFEM"):
+        _tools.tool_convert(target, str(tmp_path / "x.vtu"), write_grid_functions=True)
+
+
 def test_elmer_directory_converts_both_ways(tmp_path):
     import pathlib
 

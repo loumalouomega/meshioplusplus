@@ -1095,6 +1095,16 @@ def write(filename, mesh, grid_functions=False):
             f"MFEM mesh writer: '{t}' cells are neither elements nor boundary; dropped"
         )
         _provenance.note("cells-dropped", f"'{t}' cells have no MFEM equivalent here")
+    point_regions = sum(1 for r in regions if r.kind == "point")
+    if point_regions:
+        warn(
+            f"MFEM mesh writer: MFEM has no node sets; {point_regions} point "
+            "region(s) dropped"
+        )
+        _provenance.note(
+            "regions-dropped",
+            f"{point_regions} point region(s) have no MFEM equivalent",
+        )
     if bad_facets:
         warn(
             f"MFEM mesh writer: {bad_facets} side region entr(ies) name no facet and "
