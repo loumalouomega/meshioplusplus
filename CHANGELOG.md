@@ -8,6 +8,25 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.3.0 (2026-09-23)
+
+**Closes roadmap §1.9's `.cdb` half and the nodal half of `.rst`** (§1.9 narrowed to `.rst` element results). The Ansys MAPDL coded database reader and writer are rewritten in both engines, and MAPDL's binary results are a new read-only format, `ansys_rst`, reachable from every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP). Both are checked against the open readers mapdl-archive and pymapdl-reader on files MAPDL, Workbench and HyperMesh wrote. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers change only by additions (ABI review row for v16.3.0).
+
+- **`ansysInp` (`.cdb`), rewritten:**
+  - Every block is cut by its own Fortran format line, so Workbench's `(1i7,2i9,6e21.13)` and HyperMesh's `(3i8,6e16.9)` decks read like MAPDL's. `ET` by number or name, `ETBLOCK`, `KEYOPT` and its abbreviations, `!` comments and short `CMBLOCK`s are handled.
+  - Elements become cells by their routine's category (pymapdl-reader's table; MESH200 by KEYOPT(1)). Degenerate bricks resolve to wedges, pyramids and tetrahedra and K = L shells to triangles; missing midside nodes (node `0`, or a row cut short) are created at their edge midpoints.
+  - The routine, type slot, `MAT`, `REAL` and `SECNUM` are `ansys:*` cell data, and `CMBLOCK` components are point and cell regions (so the registry, CLI, WASM and MCP keep them). `ansysInp` joins the region round-trip matrix.
+  - The writer emits MAPDL's layouts: `(3i9,6e21.13e3)` nodes, a `(19i10)` `SOLID` `EBLOCK`, wedges, pyramids and tetrahedra as degenerate SOLID185/186 bricks (SOLID187/285 for tetrahedra), triangles as degenerate SHELL181/281 quads. It keeps `ansys:element`/`ansys:type` where they fit and writes regions as range-packed components. Rows are formatted in parallel, and both engines write the same bytes.
+  - **Breaking:** an element whose type has no meshio++ cell is a `ReadError` (it was read as a solid by node count); `read(..., lenient=True)` skips such elements with a warning. Cells are grouped into one block per type, and written decks differ in layout from v16.2.0's.
+- **`ansys_rst`** (`.rst`, `.rth`; read-only, also recognised by content): MAPDL's binary results, one result set per read.
+  - Integer, `int16`, `float32` and `float64` records, dense, bit-sparse or windowed-sparse; 64-bit pointers and release 13's 32-bit headers.
+  - The geometry records become the same mesh a `.cdb` gives (`detail::ansys_build_mesh`, shared with the `.cdb` reader), components included.
+  - `time_step` picks the set (`meshio:time`, the frequency in a modal analysis; `ansys:load_step`, `ansys:substep`, `ansys:cumulative`), `read_metadata` reports every set's time, and `ansys_rst` joins the sequence engine: `convert file.rst 'mode_{step}.vtu'` writes one file per mode.
+  - The nodal solution is point data: `U`, `ROT`, `A` and `V` as vectors rotated from each node's coordinate system to the global axes (`Rz Rx Ry`), other DOFs (`TEMP`, `PRES` ...) as scalars, NaN where a set has no value.
+  - zlib-compressed records and partial files of a distributed solve are refused, naming the fix; a cyclic model's base sector is read with a warning. Element results are not read yet.
+- **`detail::parse_fortran_format` / `split_fixed`** (`keyword_card.hpp`, Python twin in `lsdyna/_cards.py`) parse a Fortran format line (repeats, groups, `nX`, `nP`, `I`/`E`/`ES`/`EN`/`D`/`F`/`G`/`A`) and cut a line by it.
+- **Validation.** Eight mapdl-archive decks and seven pymapdl-reader result files (both MIT) are committed with their readers' frozen output (`tools/gen_ansys_cdb_reference.py`, `tools/gen_ansys_rst_reference.py`). Both engines match mapdl-archive's cells and components, and pymapdl-reader's cells, times and nodal solutions to 1e-12, on every fixture; across all 23 non-distributed result files in pymapdl-reader's repository, the only differences are pymapdl-reader's own misreads (partial result sets, 740 CONTA174 elements it leaves empty). A synthetic result file pins a three-axis node rotation, a partial set and MAPDL's undefined value. `example/python/15_ansys.ipynb` shows both formats.
+
 ## v16.2.0 (2026-09-23)
 
 **Closes roadmap §1.1, FEBio `.feb`/`.xplt`, and §1.2, Elmer mesh directories** (both removed; §1.3–§1.19 renumbered, and a new §1.14 records what they left out). Three new formats, all in both engines and every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP), and directory-shaped meshes are now recognised by content. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).

@@ -85,6 +85,7 @@ meta["fell_back_to_full_read"]  # False -> the summary really was cheap
 | PVD | native (`arrays`, `time_step`, `piece`), forwarded to every entry | native: every step's time from the index alone, plus step 0's pieces' summary | native |
 | VTKHDF | native (`arrays`, `time_step`, `piece`) | native for a polyhedron-free `UnstructuredGrid` (steps from `Steps/Values`); otherwise a full read | native |
 | FEBio `.xplt` | native (`arrays`, `time_step`; only the chosen state's data is decoded) | falls back to a full read of the mesh, with every state's time from its header | ✅ |
+| Ansys `.rst`/`.rth` | native (`arrays`, `time_step`; only the chosen set's nodal solution is decoded) | falls back to a full read of the mesh, with every set's time from the time table | ✅ |
 | Gmsh 4.1 | native | native | ✅ |
 | Gmsh 2.2 | native | falls back to a full read | n/a |
 | Exodus | read whole, then filtered | falls back to a full read, but reports `time_values` | ✅ |

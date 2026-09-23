@@ -20,7 +20,7 @@ There are various mesh formats available for representing unstructured meshes. m
 
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
 > ANSYS msh (`.msh`),
-> [Ansys/APDL coded database](https://www.ansys.com) (`.cdb`, `.inp`),
+> [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, every result set is a step),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
 > [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
@@ -1035,7 +1035,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.3.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -113,16 +113,15 @@ Marc's input deck, and the formatted ASCII variant of its post file.
 - **Done when.** A hex20 deck reads with correct node order and element sets as regions.
 - **References.** [Marc 2024.2 Volume C: Program Input (PDF)](https://documentation-be.hexagon.com/bundle/Marc_2024.2-Volume_C_Program_Input/raw/resource/enus/Marc_2024.2-Volume_C_Program_Input.pdf) · [Volume C, older, with post codes (mirror)](http://www.sd.ruhr-uni-bochum.de/downloads/links/marc_manuals/online_documentation_marc_2005/volc.pdf) · [Volume A: theory and user information (mirror)](http://www.sd.ruhr-uni-bochum.de/downloads/links/marc_manuals/online_documentation_marc_2003/vola.pdf) · Volume B (element library) sits beside them on the same mirror
 
-### 1.9 ANSYS `.cdb` archive (read / write) — **S–M**; `.rst` / `.rth` results (read) — **L**
+### 1.9 ANSYS `.rst`, remaining half: element results — **M**
 
-`CDWRITE` archives and MAPDL binary results; on the other side is Ansys Mechanical/MAPDL.
+v16.3.0 reads and writes MAPDL `.cdb` decks and reads `.rst`/`.rth` nodal solutions, one step per result set ([coded database](./formats/ansysinp.md), [results](./formats/ansys_rst.md)). What was left out:
 
-- **`.cdb`.** Blocked ASCII: `NBLOCK` with a literal Fortran format line (e.g. `(3i9,6e21.13e3)`), `EBLOCK` (solid and non-solid layouts; 19 fields then continuation), `CMBLOCK` (components, negative values = ranges), `ET`/`ETBLOCK`, `TYPE`/`MAT`/`REAL`. Element *type number* → ANSYS element name → topology; degenerate shapes by repeated nodes.
-- **`.rst`.** Fortran-style blocked binary: 100-integer standard header, results header, nodal and element equivalence tables, data-set index, per-set solution header with *relative* pointers, nodal solution, element solution records (`ENS`, `EEL`, …). Compressed/sparse records exist (`/FCOMP,RST,0` avoids them).
-- **Mapping.** Components → sets; element type/material → regions; data-set index → sequence; nodal/element solution → point/cell data.
-- **Pitfalls.** Parse the format line, never assume widths; 32- vs 64-bit pointers; distributed-solve file layouts.
-- **Done when.** A `.cdb` with mixed solids and components round-trips; a modal `.rst` reads mode shapes matching pymapdl-reader.
-- **References.** [Coded database file commands (`NBLOCK`, `EBLOCK`, `CMBLOCK`)](https://ansyshelp.ansys.com/public/Views/Secured/corp/v251/en/ans_prog/Hlp_P_INT3_3.html) · [Guide to Interfacing with ANSYS: format of binary data files (old PDF mirror)](http://www.free-motor.org/DATA/p_int_2188.pdf) · [pymapdl-reader (MIT; C readers built from Ansys headers)](https://github.com/ansys/pymapdl-reader) · [mapdl-archive](https://github.com/akaszynski/mapdl-archive) † · [PyDPF, the vendor route](https://dpf.docs.pyansys.com/) †
+- **Element results.** Each set's element solution index (`ptrESL`) points per element to its records: nodal stresses (`ENS`: SX SY SZ SXY SYZ SXZ per corner node, doubled for SHELL181/281 with KEYOPT(8) = 0, `float32` possible), elastic strains (`EEL`), nodal forces (`ENF`), energies, Euler angles (`EUL`) to rotate them. Map them as pymapdl-reader's `nodal_stress` does (averaged to the nodes) or as per-element-node data; decide which before coding. Reaction forces (`RF`) likewise.
+- **zlib-compressed records** (`/FCOMP,RST,1` and higher): refused today; `detail/zlib_inflate` exists, the record framing around the stream needs a sample.
+- **Cyclic-symmetry expansion** of the base sector, and **distributed partial files** merged instead of refused.
+- **Done when.** A static SOLID186 result's nodal stresses match pymapdl-reader's `nodal_stress`.
+- **References.** [Guide to Interfacing with ANSYS: format of binary data files (old PDF mirror)](http://www.free-motor.org/DATA/p_int_2188.pdf) · [pymapdl-reader (MIT)](https://github.com/ansys/pymapdl-reader) · [PyDPF, the vendor route](https://dpf.docs.pyansys.com/) †
 
 ### 1.10 LS-DYNA `d3plot` family (read) — **L**
 
@@ -197,17 +196,17 @@ For these, the deliverable is a documented, tested route — a script that runs 
 
 ### 1.17 Shared infrastructure worth building once
 
-- **Fixed-width card tokenizer, remaining half: format-line parsing.** `detail/keyword_card.hpp` (v15.2.0, built for LS-DYNA) already splits a card into standard, long, I10 and free layouts per line and parses real fields with Fortran spellings; the Nastran/OptiStruct reader (v16.1.0) parses its fields with it, and Radioss, Marc, Patran, UNV and ANSYS `.cdb` should adopt it instead of growing their own (the `.frd` reader of v15.3.0 slices its own columns: the layout is fixed by the record key, not by a format line). What it lacks is parsing a Fortran format string such as `(3i9,6e20.13)`, which `.cdb` needs.
-- **Node-ordering permutation registry, remaining half.** `detail/node_order.hpp` and `_node_order.py` (v16.0.0, built for Code_Aster `.mail`) hold the MED, Code_Aster, `.frd`, UNV, COMSOL, Elmer and FEBio tables in both directions, with a self-test that maps a reference element through every table and checks midpoints and a positive Jacobian ([node ordering](./node_ordering.md)). What remains: the gmsh, CGNS, GiD, Exodus and Kratos tables still live inside their readers and should move in when those formats are next touched, and Femap, Marc, libMesh, MFEM high-order and ANSYS add their entries as they arrive.
+- **Fixed-width card tokenizer, remaining adoption.** `detail/keyword_card.hpp` (v15.2.0, built for LS-DYNA) splits a card into standard, long, I10 and free layouts per line, parses real fields with Fortran spellings and, since v16.3.0, parses a Fortran format line such as `(3i9,6e21.13e3)` into the fields `split_fixed` cuts (the ANSYS `.cdb` reader's). The Nastran/OptiStruct reader (v16.1.0) uses it too; Radioss, Marc, Patran and UNV should adopt it instead of growing their own (the `.frd` reader of v15.3.0 slices its own columns: the layout is fixed by the record key, not by a format line).
+- **Node-ordering permutation registry, remaining half.** `detail/node_order.hpp` and `_node_order.py` (v16.0.0, built for Code_Aster `.mail`) hold the MED, Code_Aster, `.frd`, UNV, COMSOL, Elmer and FEBio tables in both directions, with a self-test that maps a reference element through every table and checks midpoints and a positive Jacobian ([node ordering](./node_ordering.md)). What remains: the gmsh, CGNS, GiD, Exodus and Kratos tables still live inside their readers and should move in when those formats are next touched, and Femap, Marc, libMesh, MFEM high-order add their entries as they arrive (ANSYS's degenerate shapes are slot maps, not permutations, and live in `detail/ansys_model`).
 - **Fortran unformatted-record reader** with endianness and 4/8-byte marker sniffing — OP2, ANSYS `.rst`, Abaqus `.fil`, EnSight Fortran-binary. (`d3plot` is word-addressed, not record-framed, but shares the sniffing.)
 - **Directory-as-format support, remaining half.** Reading sniffs a directory by its files since v16.2.0 (Elmer, OpenFOAM). What remains: sequence globs keep only suffixed directories (`.pmsh`, `.zarr`), so an Elmer directory must be listed explicitly, and ADIOS2 `.bp` (§1.15) will need its own rule.
 - **Optional-plugin mechanism and a `contrib/` script convention** — §1.15, §1.16.
 
 ### 1.18 Suggested order
 
-1. **Next FEM wave:** §1.9 ANSYS `.cdb` (which needs the tokenizer's format-line half, §1.17), then §1.1 Patran; §1.14 as Elmer and FEBio users ask.
+1. **Next FEM wave:** §1.1 Patran; §1.14 as Elmer and FEBio users ask.
 2. **Legacy and research reach:** §1.2 Femap → §1.6 Abaqus `.fil` → §1.3 MFEM → §1.4 libMesh → §1.5 Z88 → §1.7 Radioss → §1.8 Marc.
-3. **Heavy binaries, on demand:** §1.10 d3plot (pull forward if crash-dataset users appear) → §1.9 `.rst` → §1.11 OP2 → §1.12 `.plt`; §1.13 (Nastran HDF5 coordinate systems and per-ply tables) as soon as a `CP != 0` or composite `.h5` is in hand.
+3. **Heavy binaries, on demand:** §1.10 d3plot (pull forward if crash-dataset users appear) → §1.9 `.rst` element results → §1.11 OP2 → §1.12 `.plt`; §1.13 (Nastran HDF5 coordinate systems and per-ply tables) as soon as a `CP != 0` or composite `.h5` is in hand.
 4. **Routes:** §1.16 scripts as users ask; §1.15 when a FEniCSx user asks.
 
 ### Considered, not queued
@@ -327,7 +326,7 @@ Two findings frame the section. First, **the serial phases below are deliberate*
 - **MED multi-mesh files and profiles**, which are Python-only and not reachable even under a lenient C++ read ([MED](./formats/med.md)). **M**
 - **Netgen extras** — periodic `identifications`, `materials`/`bcnames`/`cd2names`/`cd3names`, `edgesegmentsgi2` and the `.vol.gz` container ([Netgen](./formats/netgen.md)). **S–M**
 - **An Exodus writer that carries sets and steps.** It writes element blocks but no node sets or side sets, so only element-block regions round-trip, and it writes one step per file; a multi-step writer is a stateful object of the `XdmfTimeSeriesWriter` shape ([Exodus](./formats/exodus.md)). **M**
-- **Sets → regions, phase 2.** `ansysInp` sets still travel in a side-channel struct (UNV groups became regions in v15.6.0), XDMF `Sets` are not mapped, and VTU/VTP need a documented region convention ([Named regions](./regions.md)). **M**
+- **Sets → regions, phase 2.** XDMF `Sets` are not mapped (UNV groups became regions in v15.6.0 and Ansys components in v16.3.0), and VTU/VTP need a documented region convention ([Named regions](./regions.md)). **M**
 - **Named Side regions surviving operations.** `subdivide`, `agglomerate`, `undo_green` and `convert_cells(simplexify)` drop them through their parent-cell remap, and the cutters (`slice`, `isosurface`, `extract_surface`, `extract_skin`) drop them outright ([Named regions](./regions.md)); for a Kratos model, Side regions are where the boundary conditions live. **M**
 - **A structured pipeline report on the flat ABI.** C, Fortran, Julia and R receive status plus `mio_last_error()` only; a caller-buffer JSON accessor is recorded as a follow-up, as are the v2 multi-mesh steps (`Inputs:` for `Merge`/`Interpolate`/`UndoGreen`, an `Output.Pattern` for `Split`/partition) ([pipelines](./pipeline.md)). **S–M**
 - **PCD `binary_compressed` on the flat ABI.** The C++ API and Python write it (`write_pcd(..., PcdData::BinaryCompressed)`, `data="binary_compressed"`), but `WriteOptions`/`mio_write_opts` only carry the VTK block codecs, so C, Fortran, Julia, R and WASM can read it and cannot write it; the fix is an appended `MIO_CODEC_LZF` enumerator routed to `write_pcd` ([PCD](./formats/pcd.md)). **S**
@@ -425,7 +424,7 @@ Recorded so they are not re-proposed as gaps.
 
 Open work only; what shipped is in `CHANGELOG.md`.
 
-1. **Format reach ([§1](#_1-format-reach))** — the next FEM wave: ANSYS `.cdb`, then Patran.
+1. **Format reach ([§1](#_1-format-reach))** — the next FEM wave: Patran, then Femap.
 2. **Spack package upkeep ([§2](#_2-spack-package-upkeep))** — a small, mechanical catch-up (recipes, variants, one release-checklist line) that unblocks HPC users on the current release; then a checklist step, so it stays current.
 3. **Sanitizer leg, then fuzzing ([§3](#_3-quality-of-implementation))** — a parallel track from day one; it does not compete for the same attention as features.
 4. **Performance ([§4](#_4-performance))** — the harness and the measured regressions first, then the isolated wins (`b64decode`, the lazy CLI import, `optimize_volume`), then the shared facet table.

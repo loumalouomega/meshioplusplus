@@ -1,6 +1,6 @@
 # Ansys MAPDL coded database (`.cdb` / `.inp`)
 
-An autonomous reader/writer for the Ansys **MAPDL "coded database"** format — distinct from the [Fluent `.msh` format](ansys.md) also named "ansys" in meshioplusplus. It parses `ET`/`ETBLOCK`, `NBLOCK`, `EBLOCK`, and `CMBLOCK` blocks directly, with no dependency on any other format module.
+The coded database is the text archive Ansys MAPDL writes with `CDWRITE` and reads with `CDREAD`, and what Ansys Workbench, HyperMesh and other preprocessors export for MAPDL. meshio++ reads its mesh (nodes, elements, element types and components) and writes one MAPDL reads back. It is distinct from the [Fluent `.msh` format](ansys.md), which meshio++ calls `ansys`. Results live in MAPDL's binary [`.rst`](./ansys_rst.md) files.
 
 | | |
 |---|---|
@@ -14,81 +14,89 @@ An autonomous reader/writer for the Ansys **MAPDL "coded database"** format — 
 ```python
 import meshioplusplus
 
-mesh = meshioplusplus.ansysInp.read("model.cdb")
-meshioplusplus.ansysInp.write("out.cdb", mesh)
+mesh = meshioplusplus.read("model.cdb")
+mesh.regions                           # CMBLOCK components
+mesh.cell_data["ansys:element"]        # element routine per cell (185, 186 ...)
+meshioplusplus.write("out.cdb", mesh)
+
+meshioplusplus.ansysInp.read("model.cdb", lenient=True)  # skip unmappable elements
 ```
 
-Both `read(filename)` and `write(filename, mesh)` take no keyword arguments.
+```bash
+meshioplusplus convert model.cdb model.vtu
+```
 
-**Note on `.inp`**: this format registers **both** `.cdb` and `.inp` as extensions, colliding with [Abaqus](abaqus.md)'s pre-existing `.inp` registration. Since `abaqus` is imported before `ansysInp` in `src/python/meshioplusplus/__init__.py`, plain extension-based dispatch (`meshioplusplus.read("x.inp")`) still resolves to **Abaqus** by default — pass `file_format="ansysInp"` explicitly, or call `meshioplusplus.ansysInp.read`/`write` directly, to select this format for a `.inp` file.
+**`.inp` is shared with [Abaqus](abaqus.md)**, which is imported first, so `meshioplusplus.read("x.inp")` reads Abaqus. Pass `file_format="ansysInp"` to read a MAPDL `.inp`.
 
 ## File structure
 
-Whitespace/keyword-delimited MAPDL command blocks, each starting with a header line and ending at a sentinel row:
+A `.cdb` file is a list of MAPDL commands. Four of them open blocks of fixed-width rows, and a Fortran format line after the block header gives the column widths:
 
 ```
-/PREP7
-ET,<slot>,<ansys element type>              -- one per cell type in use
-NBLOCK,6,SOLID,<n>,<n>
-(3i9,6e20.13)                               -- format spec: int width, float width
-<id><cs><...>  x  y  z                      -- one row per node, fixed-width fields
-N,R5.3,LOC,      -1,                        -- NBLOCK terminator
-EBLOCK,19,SOLID,<ntot>,<ntot>
-(19i9)
-<elem header (11 ints)><node ids...>        -- continuation line if >8 nodes
-        -1                                  -- EBLOCK terminator
-CMBLOCK,<name>,NODE,<n>                     -- named point set
+ET,1,186                                  -- element type slot 1 is SOLID186
+KEYOPT,1,2,0
+NBLOCK,6,SOLID,     321,     321
+(3i9,6e21.13e3)                           -- 3 integers of 9 columns, then reals of 21
+        1        0        0 1.0000000000000E+000 0.0000000000000E+000 ...
+N,R5.3,LOC,       -1,
+EBLOCK,19,SOLID,      40,      40
+(19i10)
+         1         1         1         1         0         0         0         0        20         0         1        12 ...
+        ...                               -- nodes past the eighth continue on the next line
+        -1
+CMBLOCK,FIXED,NODE,       2               -- a node component
 (8i10)
-<ids, possibly negative range markers>
-CMBLOCK,<name>,ELEM,<n>                     -- named cell set
-(8i10)
-<ids>
-FINISH
+         1       -40                      -- nodes 1 to 40
 ```
 
-- **Field widths** are read from the format-spec line following each block header (`_int_width`/`_real_width`, parsed via regex against patterns like `3i9` / `6e20.13`), not hardcoded — but the writer always emits `i9`/`e20.13` widths.
-- **`ETBLOCK`** (an alternative to individual `ET,` lines) associates a numeric element-type slot with an underlying Ansys element type id; either form populates the same `etype_lib` mapping used to classify `EBLOCK` rows.
-- **`EBLOCK`** rows: fields are `(mat, type, real, secnum, esys, birth, death, solkey, nodes_per_elem, ..., elem_id, node_ids...)`; only fields 1 (etype slot), 8 (node count) and 10 (element id) are used, plus however many trailing node ids follow (spilling onto a continuation line if there are more than 8).
-- **`CMBLOCK`** (named component = point/cell set): entity `NODE` → point set, entity starting `ELEM` → cell set. Negative values encode a **range marker**: `-k` after a base value `b` expands to `range(b+1, k+1)` — an `ReadError` is raised if a negative value appears before any base value.
-- Any line matching `_is_data_line`'s exclusion list (known keywords, `KEYWORD,` command syntax, `!`/`/` comments) is treated as non-data and stops a block's row-reading loop early.
+- **Format lines** are parsed as Fortran formats (`detail::parse_fortran_format`), so each field is cut at its own width: `(3i9,6e21.13e3)` from MAPDL, `(1i7,2i9,6e21.13)` from Workbench, `(3i8,6e16.9)` from HyperMesh, repeat counts and groups included. The same parser serves the LS-DYNA reader.
+- **`ET`** (by number, `ET,1,186`, or by name, `ET,1,SOLID186`), **`ETBLOCK`** and **`KEYOPT`** (and its abbreviations, such as `KEYOP`) give each element type slot its routine number and key options.
+- **`NBLOCK`** rows hold the node number and coordinates. Nodal rotation angles, when a row has them, are dropped with a warning.
+- **`EBLOCK`** rows (the `SOLID` layout MAPDL writes) hold the material, type, real constant and section numbers, the node count, the element number and the nodes. A non-solid `EBLOCK` (which Workbench can write for contact elements) is skipped with a warning.
+- **`CMBLOCK`** lists a component's node or element numbers, a negative value closing a run opened by the value before it. A block whose header count is too large ends at the next command.
+- A `!` comment after a command is ignored. Other commands (`MP`, `R`, `SECTYPE`, `D`, `F` ...) are skipped.
 
 ## Cell types
 
-Ansys element type ids are grouped into 4 families by node-count-independent type id, then combined with the node count actually present to resolve a meshio++ type:
+An element becomes a cell by its routine's category, as in the open readers pymapdl-reader and [mapdl-archive](https://github.com/akaszynski/mapdl-archive):
 
-| family | Ansys element type ids |
-|---|---|
-| `solid` | 5, 45, 70, 87, 90, 92, 95, 162, 185, 186, 187, 226, 227, 285 |
-| `shell` | 28, 43, 63, 93, 131, 132, 181, 281 |
-| `plane` | 25, 42, 77, 82, 182, 183, 223 |
-| `line` | 1, 3, 4, 21, 180, 188, 189, 288, 289 |
+| Category | Routines (examples) | meshio++ |
+|---|---|---|
+| point | MASS21, 71, 175 | `vertex` |
+| line | LINK180, BEAM189, PIPE289, SURF151/153 ... | `line`, or `line3` when the third node is set |
+| linear line | BEAM188, 214, 216, 217 (the extra nodes orient the beam) | `line` |
+| shell or plane | SHELL181/281, PLANE182/183, SURF152/154, TARGE170, CONTA174 ... | `quad`/`quad8`; `triangle`/`triangle6` when K = L |
+| brick | SOLID45, 185, 186, SOLSH190, 272, 273 ... | `hexahedron`/`hexahedron20`, or a degenerate form |
+| tetrahedron | SOLID92, 187, 285 ... | `tetra`/`tetra10` |
 
-| (family, nodes) | meshio++ | (family, nodes) | meshio++ |
-|---|---|---|---|
-| (solid, 4) | `tetra` | (shell/plane, 3) | `triangle` |
-| (solid, 10) | `tetra10` | (shell/plane, 6) | `triangle6` |
-| (solid, 8) | `hexahedron` | (shell/plane, 4) | `quad` |
-| (solid, 20) | `hexahedron20` | (shell/plane, 8) | `quad8` |
-| (solid, 6) | `wedge` | (line, 2) | `line` |
-| (solid, 15) | `wedge15` | (line, 3) | `line3` |
-| (solid, 5) | `pyramid` | | |
-| (solid, 13) | `pyramid13` | | |
+MESH200's shape comes from its KEYOPT(1). **Degenerate bricks** are resolved by their repeated nodes: a hexahedron when O ≠ P, a wedge when K = L and O = P, a pyramid when M = N = O = P, and a tetrahedron when also K = L. A shell with K = L is a triangle. A shell of five nodes (SURF152's extra orientation node) is linear, and so is an 8-node shell whose last two midside nodes are equal (a contact face written without midsides).
 
-Write uses a fixed reverse mapping (one Ansys type id per meshio++ type, regardless of which id the file was originally read with): `tetra→285, tetra10→187, hexahedron→185, hexahedron20→186, wedge→185, wedge15→186, pyramid→185, pyramid13→186, triangle→181, triangle6→281, quad→181, quad8→281, line→188, line3→189`. An unmapped meshio++ cell type raises `WriteError`.
+**Missing midside nodes** are written as node `0`, or left off the end of a row (SOLID92 rows sometimes carry nine nodes). meshio++ creates each one at its edge midpoint, shared between the elements on that edge, with one warning. An element whose type has no category, or whose corner node is `0` (a TARGE170 pilot node), is a `ReadError` naming it; read with `lenient=True` to skip such elements with a warning.
 
 ## Data mapping
 
-- `mesh.point_sets[name]` — from `CMBLOCK ...,NODE,...`, 0-based point indices.
-- `mesh.cell_sets[name]` — from `CMBLOCK ...,ELEM,...`, one array per cell block (in the order blocks were first encountered), 0-based local indices.
-- No point_data, cell_data, or field_data — only geometry, connectivity, and named sets are represented.
+| `.cdb` | meshio++ |
+|---|---|
+| element routine, type slot, `MAT`, `REAL`, `SECNUM` | `cell_data["ansys:element"]`, `"ansys:type"`, `"ansys:mat"`, `"ansys:real"`, `"ansys:secnum"` |
+| `CMBLOCK` `NODE` / `ELEM` component | `point` / `cell` region (so also `point_sets` / `cell_sets`) |
 
-## Quirks & limitations
+Cells are grouped into one block per meshio++ type, in the order the types first appear.
 
-- 2D input meshes are padded to 3D with a zero z-column on write (MAPDL has no native 2D coordinate concept).
-- The writer always emits exactly one `NBLOCK`/`EBLOCK` pair (no attempt to preserve an original file's exact block layout, field widths, or element type ids) — a read→write round trip is not byte-identical, though it is semantically equivalent (same points, cells, sets).
-- Read and write go through the C++ core (`meshioplusplus._core.ansysinp_read`/ `ansysinp_write`), with the Python reference as an automatic fallback for buffers. CMBLOCK components (`point_sets`/`cell_sets`) travel through a dedicated `AnsysInfo` side-channel struct rather than the Mesh conversion layer.
+## Writing
+
+The writer emits `/PREP7`, one `ET` per element type slot, an `NBLOCK` in MAPDL's `(3i9,6e21.13e3)` layout, a `SOLID` `EBLOCK` in `(19i10)`, one `CMBLOCK` per point or cell region (runs of consecutive numbers packed as `first, -last`) and `FINISH`. Nodes and elements are numbered from 1 in mesh order. Each type is written in the layout MAPDL expects:
+
+| meshio++ | written as |
+|---|---|
+| `hexahedron`, `wedge`, `pyramid` | SOLID185, the wedge and pyramid as degenerate bricks |
+| `hexahedron20`, `wedge15`, `pyramid13` | SOLID186, likewise |
+| `tetra` / `tetra10` | SOLID285 / SOLID187 |
+| `quad`, `triangle` / `quad8`, `triangle6` | SHELL181 / SHELL281, the triangle as a degenerate quad |
+| `line` / `line3` / `vertex` | BEAM188 / BEAM189 / MASS21 |
+
+`ansys:element` and `ansys:type` are kept when the cell's type fits that routine's layout, so a MAPDL model keeps its element types through a round trip. Otherwise, with a warning, the default above is written. `ansys:mat`, `ansys:real` and `ansys:secnum` are written back, defaulting to 1. Side regions have no component equivalent and are dropped with a warning and a provenance note. Polygons, polyhedra and other types without a MAPDL element are a `WriteError`. The provenance block is written as `!` comments. Both engines write the same bytes.
 
 ## Notes
 
-- No dedicated `tests/python/meshes/` reference fixture; `tests/python/test_ansysInp.py` builds MAPDL snippets and meshes inline (including negative-range `CMBLOCK` expansion, multi-line `EBLOCK` continuation, and round-trips through `io.StringIO`/temp files) rather than shipping a binary fixture. The internal-helper tests import the Python module directly, so the pure- Python reference stays exercised alongside the C++ path.
-- Ported from [Simvia's meshlane fork](https://github.com/simvia-tech/meshlane) (see `CHANGELOG.md`) — this format did not exist upstream before that.
+- **Validation.** The test fixtures in `tests/python/meshes/ansys/` are decks from mapdl-archive (MIT) that MAPDL, Workbench and HyperMesh wrote. Both engines read them into the cells mapdl-archive builds, compared as sets of node coordinates, and the components mapdl-archive finds. The one difference: mapdl-archive puts three missing triangle midside nodes at the origin, where meshio++ puts them at their edge midpoints. MAPDL itself was not available, so a written deck is checked by reading it back, not by `CDREAD`.
+- `AnsysInfo`, the C++ side channel that carried components before v16.3.0, is still filled on read and still written, for code that uses it. Regions are the primary route.

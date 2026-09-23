@@ -14,7 +14,8 @@ is a round-trip table, and a format that cannot write cannot round-trip.
 FLAC3D round-trips a cell region's *membership* but rewrites its *name* into
 the file's own ``<zone|face>:<name>:<slot>`` vocabulary, so it gets its own
 bucket too rather than weakening this table's exact-name assertion. UNV joined
-in v15.6.0, mapping its permanent groups. Ansys and XDMF are deferred entirely.
+in v15.6.0, mapping its permanent groups, and Ansys ``.cdb`` components in v16.3.0.
+XDMF is deferred entirely.
 See ``doc/regions.md``.
 """
 
@@ -198,6 +199,16 @@ MATRIX = [
         "numbers afresh, so the tag is not carried.",
         id="febio",
     ),
+    pytest.param(
+        "ansysInp",
+        ".cdb",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A CMBLOCK component is a named set of NODE or ELEM ids, so point and "
+        "cell regions map directly. Components have no number (tag lost) and "
+        "no facet form, so side regions are dropped.",
+        id="ansysInp",
+    ),
 ]
 
 
@@ -330,7 +341,6 @@ def test_side_regions_are_the_new_capability():
 # Deferred to Phase 2 — recorded so the gap is explicit, not forgotten.        #
 # --------------------------------------------------------------------------- #
 PHASE_2 = {
-    "ansysInp": "components (absorbing AnsysInfo)",
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",
 }

@@ -2817,6 +2817,34 @@ step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
     }
 });
 
+step('.cdb: degenerate SOLID185 wedge, components as regions, a Workbench node format', () => {
+    const deck = 'ET,1,SOLID185\n' +
+        'NBLOCK,6,SOLID\n(1i7,2i9,6e21.13)\n' +
+        '      1        0        0  0.0000000000000E+00  0.0000000000000E+00  0.0000000000000E+00\n' +
+        '      2        0        0  1.0000000000000E+00  0.0000000000000E+00  0.0000000000000E+00\n' +
+        '      3        0        0  0.0000000000000E+00  1.0000000000000E+00  0.0000000000000E+00\n' +
+        '      4        0        0  0.0000000000000E+00  0.0000000000000E+00  1.0000000000000E+00\n' +
+        '      5        0        0  1.0000000000000E+00  0.0000000000000E+00  1.0000000000000E+00\n' +
+        '      6        0        0  0.0000000000000E+00  1.0000000000000E+00  1.0000000000000E+00\n' +
+        'N,R5.3,LOC,       -1,\n' +
+        'EBLOCK,19,SOLID\n(19i9)\n' +
+        '        1        1        1        1        0        0        0        0        8' +
+        '        0        1        1        2        3        3        4        5        6        6\n' +
+        '       -1\n' +
+        'CMBLOCK,BASE,NODE,       2  ! the bottom face\n(8i10)\n         1        -3\n' +
+        'FINISH\n';
+    m.FS.writeFile('/deck.cdb', deck);
+    const mesh = m.readMesh('/deck.cdb');
+    assert.equal(mesh.cells.length, 1);
+    assert.equal(mesh.cells[0].type, 'wedge');
+    const base = mesh.regions.find((r) => r.name === 'BASE');
+    assert.ok(base, 'expected the BASE component as a region');
+    assert.deepEqual(Array.from(base.entries), [0, 1, 2]);
+    m.writeMesh('/back.cdb', mesh);
+    const text = new TextDecoder().decode(m.FS.readFile('/back.cdb'));
+    assert.ok(text.includes('ET,1,185') && text.includes('CMBLOCK,BASE,NODE'));
+});
+
 step('.fem: HyperMesh components are regions and optimization cards are skipped', () => {
     const deck = 'BEGIN BULK\n' +
         'GRID    1               0.0     0.0     0.0\n' +

@@ -38,6 +38,7 @@
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -2885,6 +2886,20 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus::read_xplt_metadata(path).mTimeValues;
     });
 
+    // Ansys MAPDL results (.rst/.rth) reader: one result set per read.
+    m.def(
+        "ansys_rst_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step,
+           bool lenient) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys_rst(
+                path, core_read_options(points_only, arrays, time_step, py::none(), lenient)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0, py::arg("lenient") = false);
+    m.def("ansys_rst_time_values", [](const std::string& path) {
+        return meshioplusplus::read_ansys_rst_metadata(path).mTimeValues;
+    });
+
     // AVS-UCD writer / reader (.avs).
     m.def("avsucd_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
@@ -3457,39 +3472,32 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansys(path));
     });
 
-    // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components are point_sets
-    // / cell_sets, custom Mesh attributes carried through the AnsysInfo
-    // side-channel.
-    m.def("ansysinp_write",
-          [](const std::string& path, py::object pymesh,
-             std::map<std::string, std::vector<std::int64_t>> point_sets,
-             std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets) {
-              meshioplusplus_py::PyMeshRefs refs;
-              meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
-              meshioplusplus::AnsysInfo info;
-              info.mPointSets = std::move(point_sets);
-              info.mCellSets = std::move(cell_sets);
-              meshioplusplus::write_ansysinp(path, cpp, info);
-          });
-    m.def("ansysinp_read", [](const std::string& path) {
-        meshioplusplus::AnsysInfo info;
-        py::object pymesh =
-            meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansysinp(path, info));
-        py::dict psets, csets;
-        for (const auto& kv : info.mPointSets)
-            psets[py::str(kv.first)] = py::array_t<std::int64_t>(
-                static_cast<py::ssize_t>(kv.second.size()), kv.second.data());
-        for (const auto& kv : info.mCellSets) {
-            py::list blocks;
-            for (const auto& blk : kv.second)
-                blocks.append(
-                    py::array_t<std::int64_t>(static_cast<py::ssize_t>(blk.size()), blk.data()));
-            csets[py::str(kv.first)] = blocks;
-        }
-        pymesh.attr("point_sets") = psets;
-        pymesh.attr("cell_sets") = csets;
-        return pymesh;
-    });
+    // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components arrive as
+    // point/cell regions (the Python point_sets/cell_sets views read them).
+    m.def(
+        "ansysinp_write",
+        [](const std::string& path, py::object pymesh,
+           std::map<std::string, std::vector<std::int64_t>> point_sets,
+           std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+            meshioplusplus::AnsysInfo info;
+            info.mPointSets = std::move(point_sets);
+            info.mCellSets = std::move(cell_sets);
+            meshioplusplus::write_ansysinp(path, cpp, info);
+        },
+        py::arg("path"), py::arg("mesh"),
+        py::arg("point_sets") = std::map<std::string, std::vector<std::int64_t>>{},
+        py::arg("cell_sets") = std::map<std::string, std::vector<std::vector<std::int64_t>>>{});
+    m.def(
+        "ansysinp_read",
+        [](const std::string& path, bool lenient) {
+            meshioplusplus::AnsysInfo info;
+            meshioplusplus::ReadOptions opts;
+            opts.mLenient = lenient;
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_ansysinp(path, opts, info));
+        },
+        py::arg("path"), py::arg("lenient") = false);
 
     // OpenFOAM polyMesh reader. Boundary patch names and types are
     // mesh.cell_tags, carried through the OpenFoamInfo side-channel.

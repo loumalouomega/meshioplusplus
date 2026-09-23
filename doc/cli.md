@@ -1321,7 +1321,7 @@ meshioplusplus binary [options] INFILE
 
 The `--input-format` and `--output-format` options accept any of the registered format names. The full list is shown by `meshioplusplus convert --help`. Common values:
 
-`abaqus`, `ansys`, `avsucd`, `cgns`, `code_aster`, `dolfin-xml`, `elmer`, `exodus`, `febio`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `lsdyna`, `mdpa`, `med`, `medit`, `mphbin`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`, `xplt`, `xyz`
+`abaqus`, `ansys`, `ansys_rst`, `ansysinp`, `avsucd`, `cgns`, `code_aster`, `dolfin-xml`, `elmer`, `exodus`, `febio`, `flac3d`, `gmsh`, `gmsh22`, `h5m`, `hmf`, `lsdyna`, `mdpa`, `med`, `medit`, `mphbin`, `mphtxt`, `nastran`, `netgen`, `obj`, `off`, `pcd`, `permas`, `ply`, `pvd`, `pvtp`, `pvtu`, `stl`, `su2`, `svg`, `tecplot`, `tetgen`, `ugrid`, `vtk`, `vtk42`, `vtk51`, `vtkhdf`, `vtu`, `wkt`, `xdmf`, `xplt`, `xyz`
 
 An input with no recognised extension is sniffed by content, and a **directory** by the files it holds (v16.2.0): an Elmer mesh directory or an OpenFOAM case needs no `-i` (`meshioplusplus convert box box.vtu`). An output is never sniffed, so writing a directory format to an extension-less path needs `-o` (`meshioplusplus convert box.msh box -o elmer`). The `ascii`, `binary`, `compress` and `decompress` verbs take the format from the extension alone, so they do not accept a directory.
 
