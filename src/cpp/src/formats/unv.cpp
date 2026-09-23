@@ -323,8 +323,12 @@ std::int64_t unv_int(std::string_view t) {
 
 std::vector<std::int64_t> unv_ints(std::string_view line) {
     std::vector<std::int64_t> out;
-    for (auto t : unv_split(line))
+    for (auto t : unv_split(line)) {
+        // Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
+        if (t.front() == '%')
+            break;
         out.push_back(unv_int(t));
+    }
     return out;
 }
 
@@ -722,7 +726,9 @@ void unv_parse_units(const UnvDataset& rDs, UnvFile& rFile) {
     if (r1.empty())
         return;
     rFile.mHasUnits = true;
-    rFile.mUnitsCode = unv_int(r1[0]);
+    // Record 1 is I10, 20A1, I10: the description may touch the code ("5mm").
+    const std::string_view code = unv_strip(rDs.mLines[0].substr(0, 10));
+    rFile.mUnitsCode = unv_int(code.empty() ? r1[0] : code);
     std::size_t k = 1;
     rFile.mUnitFactors.clear();
     while (k < rDs.mLines.size() && rFile.mUnitFactors.size() < 4) {

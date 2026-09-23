@@ -209,7 +209,13 @@ def _int(tok):
 
 
 def _ints(line):
-    return [_int(t) for t in line.split()]
+    # Code_Aster ends integer records with a `%` comment ("1  % NOEUD N1").
+    out = []
+    for t in line.split():
+        if t.startswith("%"):
+            break
+        out.append(_int(t))
+    return out
 
 
 def _real(tok):
@@ -467,7 +473,8 @@ def _parse_units(ds, f):
         factors += _reals(ds.lines[k])
         k += 1
     factors = (factors + [0.0] * 4)[:4]
-    f.units = (_int(r1[0]), factors)
+    # Record 1 is I10, 20A1, I10: the description may touch the code ("5mm").
+    f.units = (_int(ds.lines[0][:10].strip() or r1[0]), factors)
 
 
 def _parse_cs(ds, f):
