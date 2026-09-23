@@ -124,17 +124,27 @@ std::vector<std::string> split_card(std::string_view Line, const std::vector<Car
 }
 
 std::int64_t card_to_int(const std::string& rText, const std::string& rWhere) {
+    return card_to_int(rText, rWhere, "LS-DYNA");
+}
+
+std::int64_t card_to_int(const std::string& rText, const std::string& rWhere,
+                         const std::string& rFormat) {
     if (rText.empty())
         return 0;
     errno = 0;
     char* end = nullptr;
     const long long v = std::strtoll(rText.c_str(), &end, 10);
     if (end == rText.c_str() || *end != '\0' || errno == ERANGE)
-        throw ReadError("LS-DYNA: invalid integer field '" + rText + "'" + rWhere);
+        throw ReadError(rFormat + ": invalid integer field '" + rText + "'" + rWhere);
     return static_cast<std::int64_t>(v);
 }
 
 double card_to_real(const std::string& rText, const std::string& rWhere) {
+    return card_to_real(rText, rWhere, "LS-DYNA");
+}
+
+double card_to_real(const std::string& rText, const std::string& rWhere,
+                    const std::string& rFormat) {
     if (rText.empty())
         return 0.0;
     std::string s = rText;
@@ -148,7 +158,7 @@ double card_to_real(const std::string& rText, const std::string& rWhere) {
     const char* end = nullptr;
     const double v = parse_double(s.c_str(), end);
     if (end == s.c_str() || *end != '\0')
-        throw ReadError("LS-DYNA: invalid real field '" + rText + "'" + rWhere);
+        throw ReadError(rFormat + ": invalid real field '" + rText + "'" + rWhere);
     return v;
 }
 

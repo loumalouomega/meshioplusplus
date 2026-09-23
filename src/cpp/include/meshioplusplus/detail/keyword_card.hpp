@@ -77,6 +77,14 @@ MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std:
  */
 MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere);
 
+/// `card_to_int` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
+MESHIOPLUSPLUS_API std::int64_t card_to_int(const std::string& rText, const std::string& rWhere,
+                                            const std::string& rFormat);
+
+/// `card_to_real` whose error names `rFormat` (e.g. `"Nastran"`) instead of LS-DYNA.
+MESHIOPLUSPLUS_API double card_to_real(const std::string& rText, const std::string& rWhere,
+                                       const std::string& rFormat);
+
 /**
  * @brief `Value` in at most 16 columns: the shortest scientific string that
  * round-trips, else as many digits as fit.

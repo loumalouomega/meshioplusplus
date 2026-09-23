@@ -106,11 +106,10 @@ TEST(Provenance, StlBinaryHeaderIsTagThenNulPadded) {
     std::filesystem::remove(path, ec);
 }
 
-// nastran is the one documented exception: the C++ reader gates on a
-// sentinel comment line the Python writer never emits (doc/formats/nastran.md),
-// so the sentinel stays first and the tag follows it as a second `$` line --
-// both must be present, in that order, for the reader's own gate to keep
-// working exactly as before this change.
+// nastran is the one documented exception: the C++ writer emits a sentinel
+// comment line the Python writer never does (doc/formats/nastran.md) -- the
+// C++ reader of releases before 16.1 accepted only files carrying it, so it
+// stays first and the tag follows it as a second `$` line.
 TEST(Provenance, NastranSentinelPrecedesTheTag) {
     std::string path = mt::temp_path(".bdf");
     meshioplusplus::write_nastran(path, mt::tri_mesh());
