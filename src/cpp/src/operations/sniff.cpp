@@ -21,8 +21,10 @@
 // System includes
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/operations/sniff.hpp"
@@ -51,6 +53,51 @@ std::string sniff_lstrip(const std::string& rIn) {
     return rIn.substr(i);
 }
 
+// COMSOL files open with the version pair 0 1, a tag count and the first tag, a
+// length-prefixed name. Binary: little-endian int32s, one per character too.
+bool sniff_is_mphbin(const std::string& rHead) {
+    if (rHead.size() < 20)
+        return false;
+    auto i32 = [&](std::size_t k) {
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(rHead.data() + k);
+        return static_cast<std::int64_t>(static_cast<std::int32_t>(
+            static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+            (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24)));
+    };
+    const std::int64_t first_char = i32(16);
+    return i32(0) == 0 && i32(4) == 1 && i32(8) >= 1 && i32(8) <= 4096 && i32(12) >= 1 &&
+           i32(12) <= 1024 && first_char > 32 && first_char < 127;
+}
+
+// Text: the same values as tokens, `#` comments skipped.
+bool sniff_is_mphtxt(const std::string& rHead) {
+    std::vector<std::string> tokens;
+    std::size_t k = 0;
+    while (k < rHead.size() && tokens.size() < 5) {
+        const char c = rHead[k];
+        if (c == '#') {
+            while (k < rHead.size() && rHead[k] != '\n')
+                ++k;
+        } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            ++k;
+        } else {
+            const std::size_t b = k;
+            while (k < rHead.size() && rHead[k] != ' ' && rHead[k] != '\t' && rHead[k] != '\n' &&
+                   rHead[k] != '\r' && rHead[k] != '#')
+                ++k;
+            tokens.push_back(rHead.substr(b, k - b));
+        }
+    }
+    auto count = [](const std::string& rT) {
+        return !rT.empty() && rT.size() < 6 &&
+               rT.find_first_not_of("0123456789") == std::string::npos && rT != "0";
+    };
+    return tokens.size() == 5 && tokens[0] == "0" && tokens[1] == "1" && count(tokens[2]) &&
+           count(tokens[3]) &&
+           ((tokens[4][0] >= 'a' && tokens[4][0] <= 'z') ||
+            (tokens[4][0] >= 'A' && tokens[4][0] <= 'Z'));
+}
+
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
@@ -65,6 +112,8 @@ std::string sniff_format(const std::string& rPath) {
     const std::string stripped = sniff_lstrip(head);
 
     // --- binary magics ---
+    if (sniff_is_mphbin(head))
+        return "mphbin";
     // VTK XML formats begin (possibly after a BOM/whitespace) with "<?xml" or
     // directly a "<VTKFile" element carrying the grid type.
     if (sniff_contains(head, "VTKFile")) {
@@ -125,6 +174,8 @@ std::string sniff_format(const std::string& rPath) {
         return "gid";
     if (sniff_starts_with(stripped, "MESH \""))
         return "gid";
+    if (sniff_is_mphtxt(head))
+        return "mphtxt";
     // PLY: "ply" on its own first line.
     if (sniff_starts_with(stripped, "ply\n") || sniff_starts_with(stripped, "ply\r") ||
         stripped == "ply")

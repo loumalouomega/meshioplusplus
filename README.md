@@ -25,7 +25,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [CAE sample layout](https://docs.nvidia.com/physicsnemo/) (`.npz`, what PhysicsNeMo's DoMINO/Transolver datapipes read),
 > [CGNS](https://cgns.github.io/) (`.cgns`),
 > [DOLFIN XML](https://manpages.ubuntu.com/manpages/jammy/en/man1/dolfin-convert.1.html) (`.xml`),
-> [COMSOL](https://www.comsol.com) (`.mphtxt`),
+> [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`),
 > [FLAC3D](https://www.itascacg.com/software/flac3d) (`.f3grid`, named cell groups),
@@ -43,7 +43,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
-> [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) (bulk data, `.bdf`, `.fem`, `.nas`),
+> [Nastran](https://help.autodesk.com/view/NSTRN/2019/ENU/?guid=GUID-42B54ACB-FBE3-47CA-B8FE-475E7AD91A00) and [Altair OptiStruct](https://help.altair.com/hwsolvers/os/index.htm) (bulk data, `.bdf`, `.fem`, `.nas`; HyperMesh components and OptiStruct `SET`s as named regions),
 > [MSC Nastran HDF5](https://simulatemore.mscsoftware.com/hdf5-a-useful-enhancement-for-msc-nastran-and-patran/) results (`.h5`, read-only; every subcase, mode, time or frequency is a step),
 > [Netgen](https://github.com/ngsolve/netgen) (`.vol`, `.vol.gz`),
 > [Neuroglancer precomputed format](https://github.com/google/neuroglancer/tree/master/src/datasource/precomputed#mesh-representation-of-segmented-object-surfaces),
@@ -1033,7 +1033,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 16.0.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 16.1.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

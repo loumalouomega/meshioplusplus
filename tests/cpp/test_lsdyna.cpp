@@ -417,6 +417,24 @@ TEST(KeywordCard, ConvertsAndRejects) {
     EXPECT_THROW(card_to_real("1.5x", ""), meshioplusplus::ReadError);
 }
 
+TEST(KeywordCard, ErrorsNameTheFormat) {
+    using namespace meshioplusplus::detail;
+    try {
+        card_to_int("x", " here");
+        FAIL();
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_EQ(std::string(e.what()), "LS-DYNA: invalid integer field 'x' here");
+    }
+    try {
+        card_to_real("1.5x", " in a GRID card", "Nastran");
+        FAIL();
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_EQ(std::string(e.what()), "Nastran: invalid real field '1.5x' in a GRID card");
+    }
+    EXPECT_EQ(card_to_int("7", "", "Nastran"), 7);
+    EXPECT_EQ(card_to_real("-2.45-16", "", "Nastran"), -2.45e-16);
+}
+
 TEST(KeywordCard, FormatReal16FitsAndRoundTrips) {
     using namespace meshioplusplus::detail;
     for (double x : {0.0, 1.0, -2.5, 0.1, 1.0 / 3.0, 123456.789, 1e-5, -1e-30, 1e100, 6.02e23}) {

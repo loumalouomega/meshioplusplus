@@ -23,6 +23,11 @@ from meshioplusplus._sniff import _sniff_format_py
         (b"    1C\n    1UCALCULIX\n    2C\n", "frd"),
         (b"    1C\r\n    2C                            20\r\n", "frd"),
         (b"GiD Post Results File 1.2\n", "gid"),
+        (b"# Created by COMSOL\n0 1 \n1 # number of tags\n5 mesh1 \n", "mphtxt"),
+        (
+            b"\x00\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x05\x00\x00\x00m\x00\x00\x00",
+            "mphbin",
+        ),
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
     ],
 )

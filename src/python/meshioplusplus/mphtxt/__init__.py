@@ -7,7 +7,11 @@ from ._mphtxt import write as _py_write
 
 
 def read(filename):
-    """Read a COMSOL .mphtxt file (C++ core for real file paths, Python fallback)."""
+    """Read a COMSOL text mesh (.mphtxt) file.
+
+    Uses the C++ core for real file paths, the Python reference otherwise.
+    Selections become ``mesh.regions``; entity indices ``cell_data["mphtxt:geom"]``.
+    """
     if not is_buffer(filename, "r"):
         try:
             return _core.mphtxt_read(str(filename))
@@ -18,7 +22,11 @@ def read(filename):
 
 
 def write(filename, mesh):
-    """Write a COMSOL .mphtxt file (C++ core for real file paths, Python fallback)."""
+    """Write a COMSOL text mesh (.mphtxt) file (Mesh version 4).
+
+    Uses the C++ core for real file paths, the Python reference otherwise. Cell
+    regions that are unions of whole geometric entities become Selections.
+    """
     if not is_buffer(filename, "w"):
         try:
             _core.mphtxt_write(str(filename), mesh)

@@ -125,7 +125,7 @@ No reader in this library retains any slot a provenance-bearing writer uses. The
 | `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, code_aster, exodus, flac3d, flux, gltf, lsdyna, mphtxt, nastran, netgen, obj, off, permas, ply, tetgen, triangle, vti, vtp, vtu |
 | `SingleLine` | Exactly one line | ansys, tecplot, vtk/vtk42/vtk51 |
 | `Bounded` | One line, hard byte cap | ensight, openfoam, stl (binary only) |
-| `None` | No slot at all | every format `doc/formats.md`'s table marks "—" |
+| `None` | No slot at all | every format `doc/formats.md`'s table marks "—" (mphbin among them: its writer still asks, so `Mode::Required` fails there) |
 
 \* ansys's own comment grammar would support `Block`; the writer is pinned to `SingleLine` for the reason in the parenthetical above.
 

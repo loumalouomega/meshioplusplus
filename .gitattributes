@@ -88,3 +88,7 @@ tests/python/meshes/code_aster/** -filter -diff -merge text
 # MSC Nastran HDF5 result files (real MSC Nastran 2020 output, binary HDF5): LFS like
 # the other binary reference fixtures. Only this directory, so no other `.h5` is caught.
 tests/python/meshes/nastran_h5/*.h5 filter=lfs diff=lfs merge=lfs -text
+# COMSOL fixtures written by tools/gen_comsol_fixtures.py: small text kept out of LFS
+# like the ones above, and one small binary .mphbin twin.
+tests/python/meshes/comsol/** -filter -diff -merge text
+tests/python/meshes/comsol/*.mphbin binary

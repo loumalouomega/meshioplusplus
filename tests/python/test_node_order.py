@@ -62,6 +62,8 @@ _SHAPES = {
     "hexahedron": (_HEX, [], [], False),
     "hexahedron20": (_HEX, _HEX_E, [], False),
     "hexahedron27": (_HEX, _HEX_E, _HEX_F, True),
+    "quad": (_QUA, [], [], False),
+    "pyramid14": (_PYR, _PYR_E, [(0, 1, 2, 3)], False),
 }
 
 

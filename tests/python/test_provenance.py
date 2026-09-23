@@ -192,10 +192,10 @@ def _cases():
 
 CASES = _cases()
 
-# nastran's C++ reader is deliberately sentinel-gated (see doc/formats/nastran.md):
-# only a file carrying the literal "meshioplusplus-cpp-nastran" comment -- which
-# the Python writer never emits -- is accepted, so the two engines' *files*
-# legitimately differ by that one extra line. The provenance tag itself is not
+# nastran's C++ writer still emits the literal "meshioplusplus-cpp-nastran"
+# comment first -- the C++ reader of releases before 16.1 accepted only files
+# carrying it (see doc/formats/nastran.md) -- and the Python writer never does,
+# so the two engines' *files* legitimately differ by that one extra line. The provenance tag itself is not
 # an exception to anything: both engines still emit character-identical text.
 NASTRAN_ONLY_CPP_HAS_SENTINEL = "nastran"
 
