@@ -10302,7 +10302,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 3
+#define MESHIOPLUSPLUS_VERSION_MINOR 5
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10312,7 +10312,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.3.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.5.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -27556,6 +27556,10 @@ MESHIOPLUSPLUS_API const std::map<std::string, std::string>& registry_extension_
 /**
  * @brief Resolve the effective format: `rFormat` if non-empty, else the
  *        extension default for `rPath`.
+ *
+ * One default looks at the content: `.mesh` is Medit's, but an existing file
+ * whose first line names an MFEM mesh (`MFEM mesh v1.x`, `MFEM NC mesh ...`)
+ * resolves to `mfem`.
  * @throws ReadError if `rFormat` is empty and the extension is unknown.
  */
 MESHIOPLUSPLUS_API std::string resolve_format(const std::string& rPath, const std::string& rFormat);
@@ -78113,7 +78117,6 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/mfem.cpp =====
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -78121,7 +78124,6 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
 #include <iterator>
 #include <limits>
 #include <map>
-#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -79529,6 +79531,16 @@ void write_mfem(const std::string& rPath, const Mesh& rMesh, bool GridFunctions)
     for (const std::string& t : dropped) {
         log::warn("MFEM mesh writer: '{}' cells are neither elements nor boundary; dropped", t);
         detail::provenance_note("cells-dropped", "'" + t + "' cells have no MFEM equivalent here");
+    }
+    std::size_t point_regions = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+        if (rMesh.Region(r).mKind == RegionKind::Point)
+            ++point_regions;
+    if (point_regions) {
+        log::warn("MFEM mesh writer: MFEM has no node sets; {} point region(s) dropped",
+                  point_regions);
+        detail::provenance_note("regions-dropped", std::to_string(point_regions) +
+                                                       " point region(s) have no MFEM equivalent");
     }
     if (bad_facets) {
         log::warn("MFEM mesh writer: {} side region entr(ies) name no facet and were dropped",
