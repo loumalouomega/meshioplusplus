@@ -121,6 +121,9 @@ def _sniff_format_py(path) -> str:
     stripped = head.lstrip()
     if _is_mphbin(head):
         return "mphbin"
+    # FEBio input: XML whose root is <febio_spec>.
+    if b"<febio_spec" in head:
+        return "febio"
 
     if b"VTKFile" in head:
         # The parallel indices and the collection come first, and match the

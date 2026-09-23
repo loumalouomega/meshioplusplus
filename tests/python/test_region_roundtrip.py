@@ -186,6 +186,18 @@ MATRIX = [
         "The binary twin of mphtxt: the same Selections.",
         id="mphbin",
     ),
+    pytest.param(
+        "febio",
+        ".feb",
+        {"point": True, "cell": True, "side": True},
+        {"tag": False},
+        "A <NodeSet> is a point region and an <ElementSet> a cell region; a cell "
+        "region covering one block exactly names that <Elements> block instead. A "
+        "<Surface> whose facets are all faces of solids is a side region. An "
+        "<Elements> block's tag is its domain's material id, which the writer "
+        "numbers afresh, so the tag is not carried.",
+        id="febio",
+    ),
 ]
 
 
@@ -305,13 +317,13 @@ def test_no_regions_writes_the_same_bytes(
 
 
 def test_side_regions_are_the_new_capability():
-    """No format could express a side set before; Abaqus, LS-DYNA and OpenFOAM now can.
+    """No format could express a side set before; Abaqus, LS-DYNA, OpenFOAM and FEBio now can.
 
     Spelled out separately because it is the one kind with no `point_sets` /
     `cell_sets` equivalent at all — it is only reachable through `.regions`.
     """
     side_capable = [p.values[0] for p in MATRIX if p.values[2]["side"]]
-    assert side_capable == ["abaqus", "lsdyna", "openfoam"]
+    assert side_capable == ["abaqus", "lsdyna", "openfoam", "febio"]
 
 
 # --------------------------------------------------------------------------- #

@@ -193,6 +193,21 @@ def test_elmer_directory_converts_both_ways(tmp_path):
     assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
 
 
+def test_febio_feb_is_readable_writable_and_converts(tmp_path):
+    import pathlib
+
+    feb = pathlib.Path(__file__).parent / "meshes" / "febio" / "block_v30.feb"
+    out = _dump(_tools.tool_formats())
+    assert "febio" in out["readable"] and "febio" in out["writable"]
+    assert out["extensions"][".feb"] == ["febio"]
+    # Surfaces are side regions: they survive .feb -> .feb.
+    back = str(tmp_path / "back.feb")
+    _tools.tool_convert(str(feb), back)
+    written = meshioplusplus.read(back)
+    assert [b.type for b in written.cells] == ["hexahedron", "hexahedron"]
+    assert ("top", "side") in {(r.name, r.kind) for r in written.regions}
+
+
 def test_optistruct_components_survive_convert(tmp_path):
     import pathlib
 

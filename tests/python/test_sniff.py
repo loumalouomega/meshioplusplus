@@ -29,6 +29,7 @@ from meshioplusplus._sniff import _sniff_format_py
             "mphbin",
         ),
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
+        (b'<?xml version="1.0"?>\n<febio_spec version="4.0">\n', "febio"),
     ],
 )
 def test_recognizes_signatures(tmp_path, contents, expected):

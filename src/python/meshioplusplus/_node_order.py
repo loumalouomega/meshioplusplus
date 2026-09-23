@@ -86,6 +86,9 @@ _SOURCES = [
     ("frd", "hexahedron20", _TO, list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15]),
     ("frd", "wedge15", _TO, list(range(9)) + [12, 13, 14, 9, 10, 11]),
     ("frd", "line3", _TO, [0, 2, 1]),
+    # FEBio .feb/.xplt: hex27's mid-height face centres run y-, x+, y+, x-
+    # (FECore FEHex27); every other FEBio type is in meshio++'s order.
+    ("febio", "hexahedron27", _TO, list(range(20)) + [23, 21, 20, 22, 24, 25, 26]),
     # Elmer mesh directory: 820/827 put the vertical mid-edge nodes before the top
     # ring, and the 827 mid-height face centres run y-, x+, y+, x- (elements.def;
     # ElmerSolver's VTU writer applies the same permutation).

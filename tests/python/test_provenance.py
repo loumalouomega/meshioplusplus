@@ -78,6 +78,7 @@ def _cases():
     from meshioplusplus.elmer import _elmer as py_elmer
     from meshioplusplus.ensight import _ensight as py_ensight
     from meshioplusplus.exodus import _exodus as py_exodus
+    from meshioplusplus.febio import _febio as py_febio
     from meshioplusplus.flac3d import _flac3d as py_flac3d
     from meshioplusplus.flux import _flux as py_flux
     from meshioplusplus.gltf import _gltf as py_gltf
@@ -122,6 +123,7 @@ def _cases():
         "code_aster": (TRI, ".mail", _core.code_aster_write, py_code_aster.write),
         # A directory: the block is in its mesh.names (see _inspect_path).
         "elmer": (TRI, "", _core.elmer_write, py_elmer.write),
+        "febio": (TRI, ".feb", _core.febio_write, py_febio.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

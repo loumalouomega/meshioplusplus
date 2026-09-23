@@ -35,6 +35,7 @@
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
+#include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -2854,6 +2855,20 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
         py::arg("piece") = py::none(), py::arg("lenient") = false);
+
+    // FEBio input (.feb) writer / reader: the mesh only.
+    m.def("febio_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_febio(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def(
+        "febio_read",
+        [](const std::string& path, bool points_only, py::object arrays, bool lenient) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_febio(
+                path, core_read_options(points_only, arrays, 0, py::none(), lenient)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("lenient") = false);
 
     // AVS-UCD writer / reader (.avs).
     m.def("avsucd_write", [](const std::string& path, py::object pymesh) {

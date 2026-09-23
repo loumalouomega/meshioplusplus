@@ -95,3 +95,6 @@ tests/python/meshes/comsol/*.mphbin binary
 # Elmer mesh directories written by tools/gen_elmer_fixtures.py: small text, kept
 # out of LFS like the ones above.
 tests/python/meshes/elmer/** -filter -diff -merge text
+# FEBio .feb fixtures written by tools/gen_febio_fixtures.py: small XML text, kept
+# out of LFS like the ones above.
+tests/python/meshes/febio/*.feb -filter -diff -merge text

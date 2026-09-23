@@ -2633,6 +2633,25 @@ step('elmer writes a mesh DIRECTORY into MEMFS and reads it back with no format'
     assert.deepEqual(back.regions.map((r) => r.name).sort(), ['body_1', 'boundary_1']);
 });
 
+step('febio writes a spec-4.0 .feb and reads its surface back as a side region', () => {
+    const tet = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([0, 2, 1]), nodesPerCell: 3 },
+        ],
+    };
+    m.writeMesh('/model.feb', tet, 'febio');
+    const text = new TextDecoder().decode(m.FS.readFile('/model.feb'));
+    assert.match(text, /<febio_spec version="4.0">/);
+    assert.match(text, /<Surface name="Surface2">/);
+    const back = m.readMesh('/model.feb');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra']);
+    const kinds = Object.fromEntries(back.regions.map((r) => [r.name, r.kind]));
+    assert.equal(kinds.Surface2, 'side');
+});
+
 step('openfoam reports and reads two time-directory fields (roadmap §1 tier B2)', () => {
     // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture, not a
     // wiring-only probe. Reuses the /of/case.foam single-hex polyMesh the
