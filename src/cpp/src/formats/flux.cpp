@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +34,8 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
+#include "meshioplusplus/log.hpp"
 
 namespace meshioplusplus {
 
@@ -123,18 +126,23 @@ Mesh read_flux(const std::string& rPath) {
     std::unordered_map<std::string, std::size_t> gindex;
     std::size_t pos = 0;
     for (long long e = 0; e < nel; ++e) {
-        if (pos + 12 > etok.size())
-            throw ReadError("pf3: truncated element header");
+        // A file cut short (FLUX excerpts are) keeps the elements it has.
+        if (pos + 12 > etok.size()) {
+            log::warn("pf3: {} elements declared, {} present; reading those", nel, e);
+            break;
+        }
         long long ref = std::strtoll(etok[pos + 3].c_str(), nullptr, 10);
         int desc3 = std::atoi(etok[pos + 6].c_str());
         int lnn = std::atoi(etok[pos + 7].c_str());
         pos += 12;
+        if (lnn < 0 || pos + static_cast<std::size_t>(lnn) > etok.size())
+            throw ReadError("pf3: truncated element connectivity");
         std::string mtype = desc3_to_meshio(desc3);
         if (mtype.empty())
-            throw ReadError("pf3: unknown element descriptor");
+            throw ReadError("pf3: unknown element descriptor " + std::to_string(desc3));
         std::vector<std::int64_t> nodes(lnn);
         for (int j = 0; j < lnn; ++j)
-            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10) - 1;
+            nodes[j] = std::strtoll(etok[pos + j].c_str(), nullptr, 10);
         pos += lnn;
         auto it = gindex.find(mtype);
         if (it == gindex.end()) {
@@ -146,7 +154,7 @@ Mesh read_flux(const std::string& rPath) {
         groups[it->second].mRef.push_back(ref);
     }
 
-    // coordinate tokens
+    // `id x1 .. x_dim` rows up to the `==== DECOUPAGE TERMINE` trailer.
     std::vector<std::string> ctok;
     for (std::size_t i = ci + 1; i < lines.size(); ++i) {
         auto iss = detail::make_classic_istringstream(lines[i]);
@@ -154,24 +162,56 @@ Mesh read_flux(const std::string& rPath) {
         while (iss >> w)
             ctok.push_back(w);
     }
-    Mesh mesh;
-    NDArray pts(DType::Float64, {static_cast<std::size_t>(nnod), static_cast<std::size_t>(dim)});
-    std::size_t cp = 0;
-    for (long long i = 0; i < nnod; ++i) {
-        ++cp;  // node index
-        for (long long j = 0; j < dim; ++j)
-            pts.As<double>()[i * dim + j] = detail::parse_double(ctok[cp++]);
+    std::vector<long long> ids;
+    std::vector<double> coords;
+    const std::size_t udim = static_cast<std::size_t>(dim < 0 ? 0 : dim);
+    for (std::size_t cp = 0; cp + udim < ctok.size() && ctok[cp][0] != '=';) {
+        ids.push_back(std::strtoll(ctok[cp].c_str(), nullptr, 10));
+        for (std::size_t j = 0; j < udim; ++j)
+            coords.push_back(detail::parse_double(ctok[cp + 1 + j]));
+        cp += 1 + udim;
     }
+    if (static_cast<long long>(ids.size()) != nnod)
+        log::warn("pf3: {} points declared, {} present", nnod, ids.size());
+
+    Mesh mesh;
+    NDArray pts(DType::Float64, {ids.size(), udim});
+    std::copy(coords.begin(), coords.end(), pts.As<double>());
     mesh.AssignPoints(std::move(pts));
+
+    // Node ids are normally 1..n in row order; otherwise number the rows.
+    bool sequential = true;
+    for (std::size_t r = 0; r < ids.size() && sequential; ++r)
+        sequential = ids[r] == static_cast<long long>(r) + 1;
+    std::unordered_map<long long, std::int64_t> row_of;
+    if (!sequential)
+        for (std::size_t r = 0; r < ids.size(); ++r)
+            row_of.emplace(ids[r], static_cast<std::int64_t>(r));
+    auto to_row = [&](std::int64_t Id) -> std::int64_t {
+        if (sequential) {
+            if (Id < 1 || Id > static_cast<std::int64_t>(ids.size()))
+                throw ReadError("pf3: element references an undefined node");
+            return Id - 1;
+        }
+        auto it = row_of.find(Id);
+        if (it == row_of.end())
+            throw ReadError("pf3: element references undefined node " + std::to_string(Id));
+        return it->second;
+    };
 
     std::vector<NDArray> refs;
     for (auto& g : groups) {
         std::size_t ne = g.mRows.size();
         std::size_t k = ne ? g.mRows[0].size() : 0;
+        const detail::NodeOrder* order = detail::node_order("flux", g.mType);
+        if (order && order->mToMeshio.size() != k)
+            order = nullptr;
         NDArray data(DType::Int64, {ne, k});
+        std::int64_t* pData = data.As<std::int64_t>();
         for (std::size_t r = 0; r < ne; ++r)
             for (std::size_t j = 0; j < k; ++j)
-                data.As<std::int64_t>()[r * k + j] = g.mRows[r][j];
+                pData[r * k + j] =
+                    to_row(g.mRows[r][order ? static_cast<std::size_t>(order->mToMeshio[j]) : j]);
         mesh.AddCellBlock(g.mType, std::move(data));
         NDArray rf(DType::Int64, {ne});
         for (std::size_t r = 0; r < ne; ++r)
@@ -239,6 +279,9 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
         meshio_to_desc(cb.Type(), d);
         const NDArray& conn = cb.Conn();
         int lnn = static_cast<int>(detail::cols(conn));
+        const detail::NodeOrder* order = detail::node_order("flux", cb.Type());
+        if (order && order->mFromMeshio.size() != static_cast<std::size_t>(lnn))
+            order = nullptr;
         const NDArray* ref = (has_ref && k < rMesh.CellDataNumBlocks("pf3:ref"))
                                  ? &rMesh.CellData("pf3:ref", k)
                                  : nullptr;
@@ -249,8 +292,10 @@ void write_flux(const std::string& rPath, const Mesh& rMesh) {
                           d[1], rv, lnn, 0, d[2], lnn, 0, 0, 0, 0);
             f << buf;
             for (int j = 0; j < lnn; ++j) {
+                const std::size_t src =
+                    order ? static_cast<std::size_t>(order->mFromMeshio[j]) : std::size_t(j);
                 std::snprintf(buf, sizeof(buf), "%8lld",
-                              static_cast<long long>(detail::read_int(conn, r * lnn + j) + 1));
+                              static_cast<long long>(detail::read_int(conn, r * lnn + src) + 1));
                 f << buf;
             }
             f << "\n";

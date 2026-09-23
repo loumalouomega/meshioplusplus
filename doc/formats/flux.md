@@ -42,7 +42,7 @@ The element block starts after the line containing `"DESCRIPTEUR DE TOPOLOGIE"`;
 | 7 | node count (drives how many ids follow) |
 | 8-11 | unused (0 0 0 0) |
 
-followed by the element's 1-based node ids. After `"COORDONNEES DES NOEUDS"`, `nnod` records of `node_index x1 x2 ... x_dim` follow; the leading index is read and discarded (rows are assumed already in file order).
+followed by the element's 1-based node ids. After `"COORDONNEES DES NOEUDS"`, records of `node_id x1 x2 ... x_dim` follow up to the `==== DECOUPAGE TERMINE` trailer (or the end of the file). When the ids are `1..n` in row order they are used as they are; otherwise the rows are numbered in file order and the connectivity is remapped, and an element naming an id no row defines is a `ReadError`.
 
 ## Cell types
 
@@ -78,7 +78,9 @@ Hybrid meshes are supported.
 
 ## Quirks & limitations
 
-- Unlike UNV/gmsh/mphtxt, **no node-order permutation table** is applied — node ids pass through in file order directly. This round-trips losslessly through meshio++ but is not guaranteed to match FLUX's own internal node ordering convention for every element type.
+- **Node order.** FLUX lists every solid in VTK's order mirrored: the base face runs clockwise seen from inside, and `tetra10` lists its mid-edges as (0,1) (0,2) (0,3) (1,2) (2,3) (1,3) of the file corners. The `flux` tables of the [node-ordering registry](../node_ordering.md) undo this on read and redo it on write, for `tetra`, `tetra10`, `pyramid`, `wedge`, `wedge15`, `hexahedron` and `hexahedron20`; planar and line elements already match. Before v16.4.0 no permutation was applied and every solid read inverted. The `wedge15` table follows the same rule but has no real sample behind it.
+- **Truncated files.** A file holding fewer elements or points than its header declares (FLUX excerpts do) keeps what it holds, with a warning; an element cut off in the middle of its connectivity is a `ReadError`.
+- The file is read as Latin-1, the encoding FLUX uses for accented region names.
 - Header-line detection is French-text substring matching; a real FLUX file with reworded headers (not expected in practice, but possible) would break parsing.
 - Region *names* (which FLUX may store as binary data alongside the mesh) are not read at all — only the numeric per-element reference.
 - Several always-placeholder header fields on write: region counts are always `1`/`0`/`0`/`0`/`0`/`0`, and both "max nodes per element" and "max integration points per element" fields are hardcoded to `20` regardless of actual mesh content.
@@ -86,4 +88,4 @@ Hybrid meshes are supported.
 ## Notes
 
 - Fully handled by the C++ core.
-- No reference fixture exists under `tests/python/meshes/flux/`; tests round-trip every supported linear and second-order type.
+- Generated fixtures under `tests/python/meshes/flux/` (`tools/gen_feconv_quirk_fixtures.py`) hold one element of every type in FLUX's own order and a truncated file with sparse node ids; tests check that every solid reads with a positive Jacobian and its mid-edge nodes on edge midpoints, in both engines. The FEconv samples themselves (GPL) are not committed; `tests/python/test_feconv_examples.py` reads them from a local checkout when `MESHIOPLUSPLUS_FECONV_DIR` is set.
