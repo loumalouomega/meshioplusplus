@@ -2393,3 +2393,60 @@ def test_line4_roundtrip(tmp_path):
     back = meshioplusplus.med.read(path)
     assert back.cells[0].type == "line4"
     np.testing.assert_array_equal(back.cells[0].data, mesh.cells[0].data)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_hexa27_and_penta18_from_the_med_library(engine):
+    """``hexa27_penta18.med`` was written by MED-fichier itself
+    (tools/gen_med_quadratic_fixture.py): a unit HEXA27 and PENTA18 whose nodes
+    are the meshio++ reference elements in MED order. Both engines must read
+    them back as the reference elements, face and body centres included."""
+    from meshioplusplus.med._med import read as _py_read
+
+    from .test_node_order import _is_valid, _reference
+
+    path = pathlib.Path(__file__).parent / "meshes" / "med" / "hexa27_penta18.med"
+    if path.read_bytes().startswith(b"version https://git-lfs"):
+        pytest.skip("LFS fixture not fetched")
+    mesh = meshioplusplus.med.read(path) if engine == "core" else _py_read(path)
+    blocks = {b.type: b.data for b in mesh.cells}
+    assert set(blocks) == {"hexahedron27", "wedge18"}
+    for cell_type, offset in (("hexahedron27", 0.0), ("wedge18", 2.0)):
+        nodes = mesh.points[blocks[cell_type][0]]
+        np.testing.assert_allclose(nodes, _reference(cell_type) + [offset, 0.0, 0.0])
+        assert _is_valid(nodes, cell_type)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_hexa27_and_penta18_write_in_med_order(tmp_path, engine):
+    """The writer puts each node in the MED slot the MED library's own file
+    uses; hexahedron27's table is not its own inverse, so this also catches a
+    writer that reuses the read table."""
+    from meshioplusplus import _node_order
+    from meshioplusplus.med._med import write as _py_write
+
+    from .test_node_order import _reference
+
+    points = np.vstack(
+        [_reference("hexahedron27"), _reference("wedge18") + [2.0, 0, 0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("hexahedron27", [np.arange(27)]), ("wedge18", [np.arange(27, 45)])],
+    )
+    path = tmp_path / "q.med"
+    (meshioplusplus.med.write if engine == "core" else _py_write)(path, mesh)
+    with h5py.File(path, "r") as f:
+        mesh_group = next(iter(f["ENS_MAA"].values()))
+        mai = next(iter(mesh_group.values()))["MAI"]
+        h27 = mai["H27/NOD"][()]
+        p18 = mai["P18/NOD"][()]
+    np.testing.assert_array_equal(
+        h27, 1 + np.array(_node_order.node_order("med", "hexahedron27").from_meshio)
+    )
+    np.testing.assert_array_equal(
+        p18, 28 + np.array(_node_order.node_order("med", "wedge18").from_meshio)
+    )
+    back = meshioplusplus.med.read(path)
+    np.testing.assert_array_equal(back.cells_dict["hexahedron27"], [np.arange(27)])
+    np.testing.assert_array_equal(back.cells_dict["wedge18"], [np.arange(27, 45)])

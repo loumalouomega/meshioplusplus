@@ -33,6 +33,7 @@
 // Project includes
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -48,36 +49,28 @@ namespace {
 constexpr std::size_t frd_values_per_line = 6;
 constexpr std::size_t frd_value_width = 12;
 
-// FRD element type -> cell type, node count and permutation. `connectivity[k] =
-// frd_nodes[permutation[k]]`; a null permutation is the identity. The he20 and pe15
-// mid-edge groups and the be3 mid node sit elsewhere than in Abaqus order (confirmed
-// against ccx 2.23 output for the same `.inp`); types 7-10 are cgx's own shells, which
-// ccx expands into solids and never writes.
+// FRD element type -> cell type and node count. The node permutations (he20, pe15
+// and be3) live in detail/node_order.cpp under "frd"; types 7-10 are cgx's own
+// shells, which ccx expands into solids and never writes.
 struct FrdTypeSpec {
     const char* mName;
     std::size_t mNodes;
-    const int* mPermutation;
 };
-
-constexpr int frd_perm_he20[20] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
-                                   10, 11, 16, 17, 18, 19, 12, 13, 14, 15};
-constexpr int frd_perm_pe15[15] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11};
-constexpr int frd_perm_be3[3] = {0, 2, 1};
 
 const FrdTypeSpec* frd_type_spec(int Type) {
     static const std::array<FrdTypeSpec, 12> table = {{
-        {"hexahedron", 8, nullptr},
-        {"wedge", 6, nullptr},
-        {"tetra", 4, nullptr},
-        {"hexahedron20", 20, frd_perm_he20},
-        {"wedge15", 15, frd_perm_pe15},
-        {"tetra10", 10, nullptr},
-        {"triangle", 3, nullptr},
-        {"triangle6", 6, nullptr},
-        {"quad", 4, nullptr},
-        {"quad8", 8, nullptr},
-        {"line", 2, nullptr},
-        {"line3", 3, frd_perm_be3},
+        {"hexahedron", 8},
+        {"wedge", 6},
+        {"tetra", 4},
+        {"hexahedron20", 20},
+        {"wedge15", 15},
+        {"tetra10", 10},
+        {"triangle", 3},
+        {"triangle6", 6},
+        {"quad", 4},
+        {"quad8", 8},
+        {"line", 2},
+        {"line3", 3},
     }};
     if (Type < 1 || Type > 12)
         return nullptr;
@@ -720,6 +713,7 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
     // One block per contiguous run of one cell type.
     struct Run {
         const FrdTypeSpec* mSpec;
+        const detail::NodeOrder* mOrder;
         std::vector<std::int64_t> mConn;
         std::vector<std::int64_t> mGroup;
         std::vector<std::int64_t> mMaterial;
@@ -738,13 +732,13 @@ Mesh read_frd(const std::string& rPath, const ReadOptions& rOpts, const FrdReadO
                      std::to_string(spec->mNodes) + " nodes, found " +
                      std::to_string(el.mNumNodes));
         if (runs.empty() || runs.back().mSpec != spec)
-            runs.push_back(Run{spec, {}, {}, {}});
+            runs.push_back(Run{spec, detail::node_order("frd", spec->mName), {}, {}, {}});
         Run& run = runs.back();
         const std::size_t base = run.mConn.size();
         run.mConn.resize(base + spec->mNodes);
+        const detail::NodeOrder* order = run.mOrder;
         for (std::size_t k = 0; k < spec->mNodes; ++k) {
-            const std::size_t src =
-                spec->mPermutation ? static_cast<std::size_t>(spec->mPermutation[k]) : k;
+            const std::size_t src = order ? static_cast<std::size_t>(order->mToMeshio[k]) : k;
             const std::int64_t id = file.mElementNodes[el.mFirstNode + src];
             const auto it = index.find(id);
             if (it == index.end())

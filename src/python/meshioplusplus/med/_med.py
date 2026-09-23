@@ -11,6 +11,7 @@ import numpy as np
 from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
+from .._node_order import from_meshio, node_order, node_order_keys, to_meshio
 from ._med41 import FieldBitmaskWriter
 
 # https://docs.salome-platform.org/5/med/dev/med__outils_8hxx.html
@@ -29,80 +30,46 @@ meshio_to_med_type = {
     "tetra10": "T10",
     "hexahedron": "HE8",
     "hexahedron20": "H20",
+    "hexahedron27": "H27",
     "pyramid": "PY5",
     "pyramid13": "P13",
     "wedge": "PE6",
     "wedge15": "P15",
+    "wedge18": "P18",
     "polygon": "POG",
     "polygon2": "POG2",
 }
 med_to_meshio_type = {v: k for k, v in meshio_to_med_type.items()}
 
 # meshio uses VTK node ordering for 3D cells; MED uses the same node structure
-# but the opposite orientation (winding). These structure-preserving,
-# self-inverse permutations convert meshio (VTK) <-> MED. They are derived so
-# that after permutation, every face defined by MEDCoupling's INTERP_KERNEL model
-# (SalomePlatform/medcoupling, CellModel.cxx) has an outward normal -- i.e. a
-# valid MED cell. Applied on BOTH read and write, so the in-memory mesh stays in
-# meshio convention and MED->MED round-trips are the identity, while meshio->MED
-# output (e.g. from OpenFOAM/Abaqus) is correctly oriented for MED readers such
-# as Salome and code_saturne.
-#
-# The quadratic entries' corner portion is identical to their linear
-# sibling's; the mid-edge portion was derived from MEDCoupling's own
-# INTERP_KERNEL/CellModel.cxx edge tables (the same authoritative source
-# `_MED_ORIENT_REF` in test_med.py already trusts for MED's face
-# definitions) and verified geometrically: every MED mid-edge slot lands at
-# the exact arithmetic midpoint of the two MED corners it should sit
-# between. All four are genuine involutions, like the linear ones, so one
-# table again serves both read and write. Twin of med.cpp's med_node_perm().
+# but the opposite orientation (winding). The permutations between the two live
+# in meshioplusplus/_node_order.py (twin of detail/node_order.cpp) under "med".
+# They are derived so that after permutation, every face defined by
+# MEDCoupling's INTERP_KERNEL model (SalomePlatform/medcoupling, CellModel.cxx)
+# has an outward normal -- i.e. a valid MED cell. Applied on BOTH read and
+# write, so the in-memory mesh stays in meshio convention and MED->MED
+# round-trips are the identity, while meshio->MED output (e.g. from
+# OpenFOAM/Abaqus) is correctly oriented for MED readers such as Salome and
+# code_saturne. hexahedron27's is not its own inverse, so read and write use
+# the two directions separately.
 _med_node_perm = {
-    "tetra": [0, 1, 3, 2],
-    "pyramid": [0, 3, 2, 1, 4],
-    "wedge": [3, 4, 5, 0, 1, 2],
-    "hexahedron": [4, 5, 6, 7, 0, 1, 2, 3],
-    "tetra10": [0, 1, 3, 2, 4, 8, 7, 6, 5, 9],
-    "pyramid13": [0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10],
-    "wedge15": [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14],
-    "hexahedron20": [
-        4,
-        5,
-        6,
-        7,
-        0,
-        1,
-        2,
-        3,
-        12,
-        13,
-        14,
-        15,
-        8,
-        9,
-        10,
-        11,
-        16,
-        17,
-        18,
-        19,
-    ],
+    cell_type: list(node_order("med", cell_type).to_meshio)
+    for fmt, cell_type in node_order_keys()
+    if fmt == "med"
 }
 
 
 def _reorder_med_cells(cell_type, data):
-    """Apply the self-inverse meshio <-> MED node permutation to a (n, k) cell
-    array (no-op for types not in ``_med_node_perm``). Shared by the reader and
-    both writers (single-mesh and multi-mesh) so the paths cannot drift."""
-    perm = _med_node_perm.get(cell_type)
-    return data[:, perm] if perm is not None else data
+    """MED -> meshio node order for a (n, k) cell array (no-op for types with no
+    "med" entry in the node-order registry). Shared by the reader of both the
+    single- and multi-mesh paths so they cannot drift."""
+    return to_meshio("med", cell_type, data)
 
 
 def _med_cells_for_write(cell_type, data):
-    """Alias of :func:`_reorder_med_cells`, kept as a separate name for the
-    write call sites (historically also warned for unconverted quadratic 3D
-    types; every meshio<->MED 3D type is now permuted, so there is nothing
-    left to warn about)."""
-    return _reorder_med_cells(cell_type, data)
+    """meshio -> MED node order for a (n, k) cell array; the inverse of
+    :func:`_reorder_med_cells`, used by both writers."""
+    return from_meshio("med", cell_type, data)
 
 
 numpy_void_str = np.bytes_("")
@@ -140,7 +107,7 @@ med_to_geo_type = {
     "P13": "MED_PYRA13",
     "PE6": "MED_PENTA6",
     "P15": "MED_PENTA15",
-    "PE18": "MED_PENTA18",
+    "P18": "MED_PENTA18",
     "POG": "MED_POLYGON",
     "POG2": "MED_POLYGON2",
 }
@@ -164,7 +131,7 @@ med_type_to_entity = {
     "P13": "MED_CELL",
     "PE6": "MED_CELL",
     "P15": "MED_CELL",
-    "PE18": "MED_CELL",
+    "P18": "MED_CELL",
     "POG": "MED_CELL",
     "POG2": "MED_CELL",
 }
