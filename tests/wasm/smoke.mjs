@@ -2368,6 +2368,8 @@ step('availableFormats reports what this build can read and write', () => {
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
     // LS-DYNA keyword decks (roadmap section 1.1, v15.2.0): .k, .key and .dyn.
     assert.ok(readers.includes('lsdyna') && writers.includes('lsdyna'));
+    // Code_Aster native meshes (roadmap section 1.1, v16.0.0): .mail, both directions.
+    assert.ok(readers.includes('code_aster') && writers.includes('code_aster'));
     // CalculiX results (roadmap section 1.1, v15.3.0): read-only.
     assert.ok(readers.includes('frd') && !writers.includes('frd'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
@@ -2765,6 +2767,35 @@ step('info: ansysinp and unv point/cell sets round-trip (shared shape)', () => {
         assert.equal(back.info.cellSets.MYCELLS.length, 1);
         assert.deepEqual(Array.from(back.info.cellSets.MYCELLS[0]), info.cellSets.MYCELLS[0]);
     }
+});
+
+step('.mail: Code_Aster groups are regions and a HEXA20 keeps its node order', () => {
+    const grouped = {
+        ...tet,
+        regions: [
+            { name: 'FIXED', kind: 'point', dim: -1, tag: -1, entries: Int32Array.from([0, 1]) },
+            { name: 'SOLID', kind: 'cell', dim: 3, tag: -1, entries: Int32Array.from([0]) },
+        ],
+    };
+    m.writeMesh('/g.mail', grouped, 'code_aster');
+    const back = m.readMesh('/g.mail');
+    const byName = Object.fromEntries(back.regions.map((r) => [`${r.name}:${r.kind}`, r]));
+    assert.deepEqual(Array.from(byName['FIXED:point'].entries), [0, 1]);
+    assert.deepEqual(Array.from(byName['SOLID:cell'].entries), [0]);
+    // Code_Aster lists a HEXA20's vertical mid-edges before its top ring.
+    let coor = 'COOR_3D\n';
+    const corners = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
+    const edges = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 4], [1, 5], [2, 6], [3, 7], [4, 5], [5, 6], [6, 7], [7, 4]];
+    const nodes = corners.concat(edges.map(([a, b]) => corners[a].map((v, i) => (v + corners[b][i]) / 2)));
+    nodes.forEach((p, i) => (coor += ` N${i + 1} ${p.join(' ')}\n`));
+    const names = nodes.map((_, i) => `N${i + 1}`);
+    const text = coor + 'FINSF\nHEXA20\n M1 ' + names.slice(0, 8).join(' ') + '\n  ' +
+        names.slice(8).join(' ') + '\nFINSF\nFIN\n';
+    m.FS.writeFile('/h.mail', text);
+    const hex = m.readMesh('/h.mail');
+    assert.equal(hex.cells[0].type, 'hexahedron20');
+    // meshio++ slot 12 is the top-ring mid-edge 4-5, Code_Aster's node 17.
+    assert.equal(hex.cells[0].data[12], 16);
 });
 
 step('.unv/.uff: groups are regions, results are steps (no info needed)', () => {

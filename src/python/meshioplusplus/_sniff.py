@@ -8,6 +8,7 @@ from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 # Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
@@ -117,6 +118,16 @@ def _sniff_format_py(path) -> str:
                 return "unv"
     if stripped.startswith(b"solid "):
         return "stl"
+    # Code_Aster .mail meshes open, after any `%` comment lines, with a TITRE or
+    # COOR_1D/2D/3D block keyword; see the C++ twin.
+    for line in stripped.split(b"\n"):
+        line = line.lstrip(b" \t\r")
+        if not line or line[:1] == b"%":
+            continue
+        word = re.split(rb"[ \t\r,%]", line.upper(), maxsplit=1)[0]
+        if word in (b"TITRE", b"COOR_1D", b"COOR_2D", b"COOR_3D"):
+            return "code_aster"
+        break
     # LS-DYNA decks open with "*KEYWORD" after any `$` comment lines; checked before
     # the Abaqus rule, as in the C++ twin.
     for line in stripped.split(b"\n"):

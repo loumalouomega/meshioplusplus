@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -2827,6 +2828,15 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0, py::arg("derived") = false);
     m.def("lsdyna_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna(path));
+    });
+
+    // Code_Aster native mesh (.mail) writer / reader.
+    m.def("code_aster_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_code_aster(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def("code_aster_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
     });
 
     // AVS-UCD writer / reader (.avs).

@@ -160,6 +160,22 @@ def test_nastran_h5_is_readable_not_writable_and_convert_reaches_its_modes(tmp_p
     assert written.field_data["nastran:mode"].tolist() == [3]
 
 
+def test_code_aster_mail_is_readable_writable_and_converts(tmp_path):
+    import pathlib
+
+    mail = pathlib.Path(__file__).parent / "meshes" / "code_aster" / "hexa20_block.mail"
+    out = _dump(_tools.tool_formats())
+    assert "code_aster" in out["readable"] and "code_aster" in out["writable"]
+    assert out["extensions"][".mail"] == ["code_aster"]
+    target = str(tmp_path / "block.med")
+    _tools.tool_convert(str(mail), target)
+    back = str(tmp_path / "back.mail")
+    _tools.tool_convert(target, back)
+    written = meshioplusplus.read(back)
+    assert [b.type for b in written.cells] == ["hexahedron20", "quad8"]
+    assert {(r.kind, r.name) for r in written.regions} >= {("cell", "VOLUME")}
+
+
 def test_unv_uff_extension_and_convert_reaches_its_steps(tmp_path):
     import pathlib
 

@@ -72,6 +72,7 @@ def _cases():
     from meshioplusplus.abaqus import _abaqus as py_abaqus
     from meshioplusplus.ansys import _ansys as py_ansys
     from meshioplusplus.avsucd import _avsucd as py_avsucd
+    from meshioplusplus.code_aster import _code_aster as py_code_aster
     from meshioplusplus.ensight import _ensight as py_ensight
     from meshioplusplus.exodus import _exodus as py_exodus
     from meshioplusplus.flac3d import _flac3d as py_flac3d
@@ -115,6 +116,7 @@ def _cases():
         "triangle": (TRI_2D, ".node", _core.triangle_write, py_triangle.write),
         "abaqus": (TRI, ".inp", _core.abaqus_write, py_abaqus.write),
         "lsdyna": (TRI, ".k", _core.lsdyna_write, py_lsdyna.write),
+        "code_aster": (TRI, ".mail", _core.code_aster_write, py_code_aster.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

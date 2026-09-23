@@ -146,6 +146,16 @@ MATRIX = [
         "has no facet group, so side regions are dropped.",
         id="unv",
     ),
+    pytest.param(
+        "code_aster",
+        ".mail",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "GROUP_NO and GROUP_MA are named node and element groups with no number, "
+        "so point and cell regions survive by name and the tag is lost. A .mail "
+        "mesh has no facet group, so side regions are dropped.",
+        id="code_aster",
+    ),
 ]
 
 
