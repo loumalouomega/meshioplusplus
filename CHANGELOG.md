@@ -8,6 +8,28 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.5.0 (2026-09-23)
+
+**Closes roadmap §1.1, Patran neutral, §1.2, Femap neutral, and §1.3, MFEM** (all three removed; §1.4–§1.18 renumbered, and a new §1.12 records what they left out). Three new formats in both engines and every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP).
+
+- **`patran`** (`.pat`, `.out`; read/write, also recognised by content): the MSC Patran 2 neutral file.
+  - Fixed-width `(I2,8I8)` packets: `01` nodes, `02` elements (shape from the header, linear or quadratic by node count, bar to hex including pyramids), `21` named components as point and cell regions tagged with the component number, `25`/`26`/`99`. Other packets are skipped by their card count.
+  - The property id is `patran:property`; elements no component names are grouped into `property_<pid>` regions.
+  - New `"patran"` node-order tables: `hexahedron20` and `wedge15` put the vertical mid-edges before the top ring.
+  - The writer puts the provenance tag on the title card, writes coordinates `E16.9` (ten significant digits) and one component per region name (names cut to 12 characters).
+- **`femap`** (`.neu`; read, and mesh write; also recognised by content): the Femap neutral file, 4.41 to 2020.1.
+  - `-1`-delimited, comma-separated blocks read by position and length rather than by version: `403` nodes, `404` elements (seven lines plus 4.5+'s node lists, nodes in Femap's 20-slot degenerate-brick layout, `femap:property`/`femap:type` cell data), `402` property titles naming `property_<id>` regions, `408` groups as point and cell regions.
+  - `450` output sets are steps (`time_step`, `meshio:time`, `femap:set`, `femap.time_values`); their `451` records and `1051` ranges (and Femap 11's `id,value` records in `1051`) become point or cell data, NaN where missing. `femap` joins the sequence engine: `convert model.neu 'set_{step}.vtu'`.
+  - The writer emits the Femap 8.2 layout: blocks `100`, `402`, `403`, `404`, `408`. Results are not written.
+- **`mfem`** (`.mesh`, `.gf`; read/write): MFEM's mesh (`v1.0`/`v1.2`/`v1.3`) and grid functions.
+  - Elements and boundary elements as cell blocks with `mfem:attribute` and `attribute_<n>`/`boundary_<n>` regions; v1.3 attribute sets as named regions.
+  - Order-2 `H1` nodes give quadratic cells whose points are MFEM's degrees of freedom in MFEM's own numbering (vertices, edges and faces by first appearance, element interiors); `L2_T1` P1 (periodic) nodes give each element its own points; higher orders keep the vertices with a warning. Non-conforming, NURBS and INLINE meshes are refused.
+  - `mfem.read(path, grid_functions={name: gf})` reads `H1` order 1/2 fields as point data (promoting a linear mesh when needed) and `L2` order 0 as cell data; `mfem.write(..., grid_functions=True)` writes every data array as a `.gf`. The writer completes serendipity cells with their face and body centres and turns side regions into boundary elements.
+  - `.mesh` stays Medit's extension: **`resolve_format` now looks at the first line of an existing `.mesh` file** and hands an MFEM mesh to `mfem` (the one content-aware extension default; Python tries both readers).
+- **MCP:** `convert` takes `grid_functions` and `write_grid_functions` for MFEM.
+- **Validation.** Patran: fixtures written from the Patran documentation (`tools/gen_patran_fixtures.py`); no Patran, Cubit or ANSA was available. Femap: real Femap 8.2 models from FrontISTR, EMSolution 4.41 results and Femap 2020.1/8.2/MYSTRAN result blocks from femap_neutral_parser (all MIT, `tools/gen_femap_fixtures.py`); the 8.2 and MYSTRAN values equal femap_neutral_parser's reading. MFEM: MFEM's own sample meshes (BSD-3) with fields and a reference frozen by PyMFEM (`tools/gen_mfem_fixtures.py`); reading and writing match MFEM 4.10 exactly.
+- **Docs:** new [Patran](doc/formats/patran.md), [Femap](doc/formats/femap.md) and [MFEM](doc/formats/mfem.md) pages; notebook `16_patran_femap_mfem.ipynb`.
+
 ## v16.3.0 (2026-09-23)
 
 **Closes roadmap §1.9's `.cdb` half and the nodal half of `.rst`** (§1.9 narrowed to `.rst` element results). The Ansys MAPDL coded database reader and writer are rewritten in both engines, and MAPDL's binary results are a new read-only format, `ansys_rst`, reachable from every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP). Both are checked against the open readers mapdl-archive and pymapdl-reader on files MAPDL, Workbench and HyperMesh wrote. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers change only by additions (ABI review row for v16.3.0).

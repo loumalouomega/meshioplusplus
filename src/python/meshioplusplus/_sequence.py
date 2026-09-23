@@ -138,6 +138,7 @@ _TIME_CAPABLE_READERS = (
     "unv",
     "xplt",
     "ansys_rst",
+    "femap",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

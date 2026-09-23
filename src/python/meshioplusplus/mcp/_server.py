@@ -224,9 +224,13 @@ def _register_conversion(server: FastMCP) -> None:
         compression: Optional[str] = None,
         piece: Optional[int] = None,
         ghosts: str = "keep",
+        grid_functions: Optional[Dict[str, str]] = None,
+        write_grid_functions: bool = False,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
-        unless given). points_only/arrays/time_step narrow the read; piece
+        unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
+        an MFEM .mesh input; write_grid_functions writes the data of an MFEM
+        output as <stem>.<name>.gf files beside it. points_only/arrays/time_step narrow the read; piece
         keeps one partition/block of a partitioned file (VTKHDF, .pvtu/.pvtp,
         or one part of a .pvd step) instead of the merged mesh; ghosts=drop
         removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd. mode selects ascii|binary output where the format
@@ -246,6 +250,8 @@ def _register_conversion(server: FastMCP) -> None:
             compression=compression,
             piece=piece,
             ghosts=ghosts,
+            grid_functions=grid_functions,
+            write_grid_functions=write_grid_functions,
         )
 
     @server.tool()

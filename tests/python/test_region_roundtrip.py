@@ -200,6 +200,41 @@ MATRIX = [
         id="febio",
     ),
     pytest.param(
+        "patran",
+        ".pat",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A packet 21 named component lists nodes and elements, so point and cell "
+        "regions map onto it and a point and a cell region sharing a name are one "
+        "component. The component number is the region's tag when positive; an "
+        "untagged region (here `clamped`) gets the next free number, so `tag` is "
+        "not asserted. Components hold no facets, so side regions are dropped.",
+        id="patran",
+    ),
+    pytest.param(
+        "femap",
+        ".neu",
+        {"point": True, "cell": True, "side": False},
+        {"tag": False},
+        "A 408 group lists nodes and elements, so point and cell regions map onto "
+        "it (one group per name, numbered by the tag when positive, else the next "
+        "free id, so `tag` is not asserted). Groups hold no facets, so side "
+        "regions are dropped; the reader adds a property_<id> region per property.",
+        id="femap",
+    ),
+    pytest.param(
+        "mfem",
+        ".mesh",
+        {"point": False, "cell": True, "side": False},
+        {"tag": False},
+        "A cell region's cells take its tag as their attribute and the region "
+        "becomes a v1.3 attribute set of its name. A side region's facets become "
+        "boundary elements, read back as a *cell* region of lower dimension, so "
+        "the side kind does not survive. MFEM has no node sets: point regions are "
+        "dropped.",
+        id="mfem",
+    ),
+    pytest.param(
         "ansysInp",
         ".cdb",
         {"point": True, "cell": True, "side": False},
@@ -285,6 +320,15 @@ def test_geometry_is_unaffected_by_regions(
         assert len(back.cells) == len(plain_back.cells)
         for a, b in zip(back.cells, plain_back.cells):
             assert_array_equal(np.asarray(a.data), np.asarray(b.data))
+        return
+
+    if fmt == "mfem":
+        # The side region comes back as boundary cells: one block more.
+        assert np.allclose(back.points, mesh.points)
+        assert len(back.cells) == len(mesh.cells) + 1
+        assert_array_equal(
+            np.asarray(back.cells[0].data), np.asarray(mesh.cells[0].data)
+        )
         return
 
     assert np.allclose(back.points, mesh.points)

@@ -111,3 +111,15 @@ tests/python/meshes/ansys/*.cdb -filter -diff -merge -text
 # binary, a few hundred KB each, in LFS like the other binary reference fixtures.
 tests/python/meshes/ansys/rst/*.rst filter=lfs diff=lfs merge=lfs -text
 tests/python/meshes/ansys/rst/*.rth filter=lfs diff=lfs merge=lfs -text
+# Patran 2 neutral fixtures written by tools/gen_patran_fixtures.py: small text kept
+# out of LFS like the ones above.
+tests/python/meshes/patran/** -filter -diff -merge text
+# MFEM sample meshes (BSD-3-Clause, see that directory's README.md) and the grid
+# functions and reference tools/gen_mfem_fixtures.py writes with PyMFEM: small, kept
+# out of LFS like the ones above.
+tests/python/meshes/mfem/** -filter -diff -merge text
+tests/python/meshes/mfem/*.npz binary
+# Femap neutral files from FrontISTR, ems_file_format_converter and femap_neutral_parser
+# (MIT, see that directory's README.md), assembled by tools/gen_femap_fixtures.py: small
+# text kept out of LFS like the ones above.
+tests/python/meshes/femap/** -filter -diff -merge text
