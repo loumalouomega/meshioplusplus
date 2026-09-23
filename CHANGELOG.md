@@ -8,6 +8,33 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v16.2.0 (2026-09-23)
+
+**Closes roadmap §1.1, FEBio `.feb`/`.xplt`, and §1.2, Elmer mesh directories** (both removed; §1.3–§1.19 renumbered, and a new §1.14 records what they left out). Three new formats, all in both engines and every registry consumer (C, Fortran, Julia, R, WASM, both CLIs, MCP), and directory-shaped meshes are now recognised by content. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).
+
+- **Directory sniffing.** `sniff_format` accepts a directory and recognises it by the files it holds: an Elmer mesh directory (`mesh.header`, a `partitioning.N`, or a directory holding one) or an OpenFOAM case (`constant/polyMesh`, `polyMesh`, a decomposed `processor0`, a multi-region `constant/regionProperties`). Every read path falls back to the sniff, so `read("case")` and `convert case out.vtu` need no format; a directory matching both or neither is not guessed. A write to an extension-less path still needs its format named. A file named exactly `mesh.header` stands for its Elmer directory.
+- **`elmer`**, ElmerSolver's native mesh directory (read/write):
+  - `mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names` in ElmerGrid's layout, twenty type codes from `101` to `827`.
+  - Bulk and boundary elements become separate cell blocks, bodies and boundaries `cell` regions tagged with their ids and named from `mesh.names`.
+  - Only `820`/`827` have a node permutation (new `"elmer"` registry tables, from ElmerSolver's `elements.def` and matching its own VTU writer).
+  - ElmerGrid's partitions (`partitioning.N/part.n.*`, halo copies `id/owner` included) are merged with each cell's part in `partition:part`; `piece=` reads one part.
+  - The writer is serial: the highest-dimensional cells are the bulk, every lower-dimensional cell and every `side` region facet a boundary element with regenerated parents; `mesh.names` is always written and carries the provenance block.
+  - Checked against ElmerGrid and ElmerSolver built from source: gmsh meshes converted by ElmerGrid read back node for node; written directories are re-read by ElmerGrid and solve the heat equation in ElmerSolver to the answer on ElmerGrid's own conversion (1e-12), exactly for a `hex27` block; ElmerGrid's partitions merge back into the serial mesh.
+- **`febio`**, FEBio's input file (`.feb`; spec 2.5, 3.0 and 4.0 read, 4.0 written): the mesh, under FEBio's own parsers' rules.
+  - `<Elements>` blocks are cell blocks and cell regions (tagged with the domain's material id), `<NodeSet>`/`<ElementSet>` point and cell regions, a `<Surface>` on solid faces a `side` region, `<Edge>`/`<DiscreteSet>` line blocks, `<MeshData>` point and cell data. `<Mesh from=...>` is followed; the `<Part>`/`<Instance>` form is refused; `tet5`/`tet15` downgrade only under `lenient`.
+  - `hex27` has a new `"febio"` node-order table (its mid-height face centres run y−, x+, y+, x−).
+  - The writer emits spec 4.0 with a placeholder material per domain; 2-D blocks on solid faces become `<Surface>`s, lines along cell edges `<Edge>`s, lone two-node lines `<DiscreteSet>`s. MeshData is not written yet.
+  - Checked against FEBio 4.12 built from source: the fixtures are read by FEBio, and febio-python's models (MIT, not redistributed) rewritten by this writer and pulled back with `<Mesh from=...>` reproduce FEBio's displacements.
+- **`xplt`**, FEBio's plot file (read-only), one state per read:
+  - Plot versions 0x0030 and later, either byte order, zlib-compressed states included; a state cut short is dropped with a warning; remeshed runs and FEBio 2 files are refused.
+  - Domains, node sets, element sets and surfaces become regions as in `.feb`. Nodal variables are point data, per-element ones cell data (NaN on other domains), per-region ones repeated over the domain, per-element-node ones averaged to the points, globals field data; surface and edge variables are named in a warning.
+  - `time_step` picks the state (`meshio:time`, `xplt:step`, `xplt:status`), `read_metadata` reports every state's time, and `xplt` joins the sequence engine: `convert run.xplt 'out_{step}.vtu'` writes one `.vtu` per state.
+  - Checked: the displacement read equals FEBio's own `node_data` log to float32 precision at every state, and febio-python's reader gives identical data for its samples.
+- **`detail/facet_index`** finds the cell facet a file names by its nodes (faces of solids, edges of surface cells, optionally a shell's own face), with `facet_nodes` for the reverse. LS-DYNA's `*SET_SEGMENT` resolution moved onto it, unchanged in behaviour; FEBio surfaces and Elmer's boundary parents use it.
+- **`detail/zlib_inflate`** inflates one deflate stream of unknown size and reports the bytes it used; the GiD reader's gzip path and the `.xplt` reader share it.
+- **Fixtures and tests.** `tools/gen_elmer_fixtures.py` and `tools/gen_febio_fixtures.py` write the fixtures in each code's own numbering; the three `.xplt` fixtures are FEBio 4.12's own output for models the latter generates, one compressed. `example/python/14_elmer_febio.ipynb` shows all three formats.
+- **Found, not fixed:** VTU files with *raw* appended data (what ElmerSolver writes) are not read by either engine; recorded for the VTU reader.
+
 ## v16.1.0 (2026-09-23)
 
 **Closes roadmap §1.1, Altair OptiStruct `.fem`, and §1.2, COMSOL `.mphtxt`/`.mphbin`** (both removed; §1.3–§1.21 renumbered to §1.1–§1.19). HyperMesh components and OptiStruct sets now read as named regions, from any Nastran bulk-data deck and in both engines. COMSOL meshes read and write with COMSOL's own node numbering, every object of the file, Selections as regions, and a new binary twin, `mphbin`. `MESHIOPLUSPLUS_ABI_VERSION` stays 16: the installed headers only gain declarations ([ABI review](doc/abi_reviews.md)).
