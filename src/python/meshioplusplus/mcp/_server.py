@@ -73,7 +73,8 @@ def _register_inspection(server: FastMCP) -> None:
 
     @server.tool()
     def sniff(input_path: str) -> dict:
-        """Identify a mesh file's format from its leading bytes and extension."""
+        """Identify a mesh file's format from its leading bytes (a directory: the
+        files it holds) and its extension."""
         return _guard(_tools.tool_sniff, input_path=input_path)
 
     @server.tool()

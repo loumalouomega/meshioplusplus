@@ -18,6 +18,7 @@
 
 // System includes
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -83,4 +84,61 @@ TEST(Sniff, ReturnsEmptyOnAmbiguousOrUnknown) {
     std::remove(garbage.c_str());
 
     EXPECT_EQ(meshioplusplus::sniff_format("/nonexistent/path/xyz.dat"), "");
+}
+
+namespace {
+
+// A fresh, empty temporary directory.
+std::filesystem::path make_temp_dir(const std::string& rName) {
+    const std::filesystem::path dir = std::string(std::tmpnam(nullptr)) + "_" + rName;
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+void touch(const std::filesystem::path& rPath) {
+    std::filesystem::create_directories(rPath.parent_path());
+    std::ofstream(rPath) << "x\n";
+}
+
+}  // namespace
+
+TEST(Sniff, RecognizesDirectoryFormatsByTheirFiles) {
+    namespace fs = std::filesystem;
+    const fs::path elmer = make_temp_dir("elmer");
+    touch(elmer / "mesh.header");
+    EXPECT_EQ(meshioplusplus::sniff_format(elmer.string()), "elmer");
+    // The header itself stands for its directory.
+    EXPECT_EQ(meshioplusplus::sniff_format((elmer / "mesh.header").string()), "elmer");
+
+    const fs::path parts = make_temp_dir("parts") / "partitioning.2";
+    touch(parts / "part.1.header");
+    EXPECT_EQ(meshioplusplus::sniff_format(parts.string()), "elmer");
+
+    const fs::path foam = make_temp_dir("foam");
+    touch(foam / "constant" / "polyMesh" / "owner");
+    touch(foam / "constant" / "polyMesh" / "faces");
+    EXPECT_EQ(meshioplusplus::sniff_format(foam.string()), "openfoam");
+    EXPECT_EQ(meshioplusplus::sniff_format((foam / "constant" / "polyMesh").string()), "openfoam");
+
+    const fs::path decomposed = make_temp_dir("decomposed");
+    fs::create_directories(decomposed / "processor0" / "constant" / "polyMesh");
+    EXPECT_EQ(meshioplusplus::sniff_format(decomposed.string()), "openfoam");
+
+    // Both, or neither, is not a guess.
+    const fs::path both = make_temp_dir("both");
+    touch(both / "mesh.header");
+    touch(both / "polyMesh" / "owner");
+    touch(both / "polyMesh" / "faces");
+    EXPECT_EQ(meshioplusplus::sniff_format(both.string()), "");
+    const fs::path empty = make_temp_dir("empty");
+    EXPECT_EQ(meshioplusplus::sniff_format(empty.string()), "");
+    // A polyMesh without its faces file is not a case.
+    const fs::path partial = make_temp_dir("partial");
+    touch(partial / "polyMesh" / "owner");
+    EXPECT_EQ(meshioplusplus::sniff_format(partial.string()), "");
+
+    for (const fs::path& rDir :
+         {elmer, parts.parent_path(), foam, decomposed, both, empty, partial})
+        fs::remove_all(rDir);
 }

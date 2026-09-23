@@ -3,7 +3,8 @@
 :func:`sniff_format` reads the leading bytes of a file and returns a meshio++
 format name on a confident signature match, or ``""`` otherwise. It is used as
 a fallback by :func:`meshioplusplus.read` when the format cannot be inferred
-from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``.
+from the extension. Mirrors ``src/cpp/src/operations/sniff.cpp``. A directory
+is sniffed by the files it holds (Elmer, OpenFOAM).
 """
 
 from __future__ import annotations
@@ -74,7 +75,35 @@ def _is_mphtxt(head: bytes) -> bool:
     )
 
 
+def _has_polymesh(poly: Path) -> bool:
+    return (poly / "owner").is_file() and (poly / "faces").is_file()
+
+
+def _sniff_directory(path: Path) -> str:
+    """An Elmer mesh directory or an OpenFOAM case, by the files the readers
+    look for; a directory that looks like both, or like neither, is ``""``."""
+    elmer = (path / "mesh.header").is_file() or (
+        path.name.startswith("partitioning.") and (path / "part.1.header").is_file()
+    )
+    openfoam = (
+        (path.name == "polyMesh" and _has_polymesh(path))
+        or _has_polymesh(path / "constant" / "polyMesh")
+        or _has_polymesh(path / "polyMesh")
+        or (path / "processor0" / "constant" / "polyMesh").is_dir()
+        or (path / "constant" / "regionProperties").is_file()
+    )
+    if elmer == openfoam:
+        return ""
+    return "elmer" if elmer else "openfoam"
+
+
 def _sniff_format_py(path) -> str:
+    path = Path(path)
+    if path.is_dir():
+        return _sniff_directory(path)
+    # The header of an Elmer mesh directory stands for the directory.
+    if path.name == "mesh.header" and path.is_file():
+        return "elmer"
     try:
         with open(path, "rb") as f:
             head = f.read(512)

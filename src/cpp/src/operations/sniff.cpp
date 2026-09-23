@@ -17,11 +17,13 @@
 // Conservative content-based format detection: match only unambiguous leading
 // signatures, return "" otherwise. Signatures shared by several formats (the
 // generic HDF5 magic, a headerless binary STL) are intentionally NOT claimed.
+// A directory is sniffed by the files it holds (Elmer, OpenFOAM).
 
 // System includes
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -98,9 +100,45 @@ bool sniff_is_mphtxt(const std::string& rHead) {
             (tokens[4][0] >= 'A' && tokens[4][0] <= 'Z'));
 }
 
+// A directory-shaped mesh, recognised by the files the readers themselves look
+// for: an Elmer mesh directory (`mesh.header`, or a `partitioning.N` directory of
+// `part.n.*` files) and an OpenFOAM case (the layouts the openfoam reader
+// resolves). A directory that looks like both, or like neither, is "".
+std::string sniff_directory(const std::filesystem::path& rDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto is_file = [&](const fs::path& rPath) { return fs::is_regular_file(rPath, ec); };
+    const auto is_dir = [&](const fs::path& rPath) { return fs::is_directory(rPath, ec); };
+    const auto has_polymesh = [&](const fs::path& rPoly) {
+        return is_file(rPoly / "owner") && is_file(rPoly / "faces");
+    };
+
+    const bool elmer =
+        is_file(rDir / "mesh.header") || (rDir.filename().string().rfind("partitioning.", 0) == 0 &&
+                                          is_file(rDir / "part.1.header"));
+    const bool openfoam = (rDir.filename() == "polyMesh" && has_polymesh(rDir)) ||
+                          has_polymesh(rDir / "constant" / "polyMesh") ||
+                          has_polymesh(rDir / "polyMesh") ||
+                          is_dir(rDir / "processor0" / "constant" / "polyMesh") ||
+                          is_file(rDir / "constant" / "regionProperties");
+    if (elmer == openfoam)
+        return "";
+    return elmer ? "elmer" : "openfoam";
+}
+
 }  // namespace
 
 std::string sniff_format(const std::string& rPath) {
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path path(rPath);
+        if (fs::is_directory(path, ec))
+            return sniff_directory(path);
+        // The header of an Elmer mesh directory stands for the directory.
+        if (path.filename() == "mesh.header" && fs::is_regular_file(path, ec))
+            return "elmer";
+    }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
         return "";

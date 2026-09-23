@@ -224,6 +224,16 @@ def test_sniff(mesh_file):
     assert out["from_extension"] == ["vtu"]
 
 
+def test_sniff_directory(tmp_path):
+    case = tmp_path / "case"
+    (case / "constant" / "polyMesh").mkdir(parents=True)
+    for name in ("owner", "faces"):
+        (case / "constant" / "polyMesh" / name).write_text("x\n")
+    out = _dump(_tools.tool_sniff(str(case)))
+    assert out["format"] == "openfoam"
+    assert out["from_extension"] == []
+
+
 def test_info(mesh_file):
     out = _dump(_tools.tool_info(mesh_file))
     assert out["num_points"] == 5
