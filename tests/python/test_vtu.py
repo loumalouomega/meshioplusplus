@@ -249,3 +249,35 @@ def test_two_pieces_metadata_matches_the_read():
     assert meta["num_points"] == 18
     assert meta["cell_data_names"] == ["material"]
     assert meta["point_data_names"] == []
+
+
+def test_faceoffsets_after_an_ordinary_block_end_at_the_stream(tmp_path):
+    # faceoffsets are END offsets into `faces`. After a non-polyhedral block
+    # (-1 entries) the next polyhedron's offset used to be rebased on that -1,
+    # one short, and VTK (9.4+, ParaView 6) refused the whole file.
+    import re
+
+    pts = np.random.default_rng(1).random((20, 3))
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [
+            ("tetra", [[0, 1, 2, 3]]),
+            ("polyhedron4", [_tet_faces(4)]),
+            ("hexahedron", [list(range(8, 16))]),
+            ("polyhedron4", [_tet_faces(16)]),
+        ],
+    )
+    p = tmp_path / "mixed.vtu"
+    _vtu.write(p, mesh, binary=False)
+    text = p.read_text()
+
+    def array(name):
+        m = re.search(rf'Name="{name}"[^>]*>(.*?)</DataArray>', text, re.S)
+        return [int(v) for v in m.group(1).split()]
+
+    faces, faceoffsets = array("faces"), array("faceoffsets")
+    assert faceoffsets[0] == -1 and faceoffsets[2] == -1
+    assert faceoffsets[3] == len(faces)
+    assert faceoffsets[1] == 1 + 4 * 4  # one tetrahedron: count + 4 x (3 + 1)
+    out = _vtu.read(p)
+    assert [c.type for c in out.cells] == [c.type for c in mesh.cells]

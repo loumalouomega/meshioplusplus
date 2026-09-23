@@ -1203,12 +1203,11 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
                 # Get face-cell relation on the vtu format. See comments in helper
                 # function for more information of how to specify this.
                 faces_loc, faceoffsets_loc = _polyhedron_face_cells(cell_block.data)
-                # Adjust offsets to global numbering
-                assert faceoffsets is not None
-                if len(faceoffsets) > 0:
-                    faceoffsets_loc = [fi + faceoffsets[-1] for fi in faceoffsets_loc]
-
-                assert faces is not None
+                # Adjust offsets to global numbering: they end past the faces
+                # already written (not past faceoffsets[-1], which is -1 after
+                # a non-polyhedral block and made VTK reject the file).
+                assert faceoffsets is not None and faces is not None
+                faceoffsets_loc = [fi + len(faces) for fi in faceoffsets_loc]
                 faces += faces_loc
                 faceoffsets += faceoffsets_loc
                 key = "polyhedron"
