@@ -82,9 +82,16 @@ def _has_polymesh(poly: Path) -> bool:
 def _sniff_directory(path: Path) -> str:
     """An Elmer mesh directory or an OpenFOAM case, by the files the readers
     look for; a directory that looks like both, or like neither, is ``""``."""
-    elmer = (path / "mesh.header").is_file() or (
-        path.name.startswith("partitioning.") and (path / "part.1.header").is_file()
-    )
+
+    def is_partitioning(p):
+        return p.name.startswith("partitioning.") and (p / "part.1.header").is_file()
+
+    elmer = (path / "mesh.header").is_file() or is_partitioning(path)
+    if not elmer:
+        try:
+            elmer = any(is_partitioning(child) for child in path.iterdir())
+        except OSError:
+            pass
     openfoam = (
         (path.name == "polyMesh" and _has_polymesh(path))
         or _has_polymesh(path / "constant" / "polyMesh")

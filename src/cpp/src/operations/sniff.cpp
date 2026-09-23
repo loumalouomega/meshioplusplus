@@ -101,9 +101,10 @@ bool sniff_is_mphtxt(const std::string& rHead) {
 }
 
 // A directory-shaped mesh, recognised by the files the readers themselves look
-// for: an Elmer mesh directory (`mesh.header`, or a `partitioning.N` directory of
-// `part.n.*` files) and an OpenFOAM case (the layouts the openfoam reader
-// resolves). A directory that looks like both, or like neither, is "".
+// for: an Elmer mesh directory (`mesh.header`, a `partitioning.N` directory of
+// `part.n.*` files, or a directory holding one) and an OpenFOAM case (the
+// layouts the openfoam reader resolves). A directory that looks like both, or
+// like neither, is "".
 std::string sniff_directory(const std::filesystem::path& rDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -113,9 +114,14 @@ std::string sniff_directory(const std::filesystem::path& rDir) {
         return is_file(rPoly / "owner") && is_file(rPoly / "faces");
     };
 
-    const bool elmer =
-        is_file(rDir / "mesh.header") || (rDir.filename().string().rfind("partitioning.", 0) == 0 &&
-                                          is_file(rDir / "part.1.header"));
+    const auto is_partitioning = [&](const fs::path& rPath) {
+        return rPath.filename().string().rfind("partitioning.", 0) == 0 &&
+               is_file(rPath / "part.1.header");
+    };
+    bool elmer = is_file(rDir / "mesh.header") || is_partitioning(rDir);
+    for (auto it = fs::directory_iterator(rDir, ec);
+         !elmer && !ec && it != fs::directory_iterator(); it.increment(ec))
+        elmer = is_partitioning(it->path());
     const bool openfoam = (rDir.filename() == "polyMesh" && has_polymesh(rDir)) ||
                           has_polymesh(rDir / "constant" / "polyMesh") ||
                           has_polymesh(rDir / "polyMesh") ||

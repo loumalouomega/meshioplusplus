@@ -92,3 +92,6 @@ tests/python/meshes/nastran_h5/*.h5 filter=lfs diff=lfs merge=lfs -text
 # like the ones above, and one small binary .mphbin twin.
 tests/python/meshes/comsol/** -filter -diff -merge text
 tests/python/meshes/comsol/*.mphbin binary
+# Elmer mesh directories written by tools/gen_elmer_fixtures.py: small text, kept
+# out of LFS like the ones above.
+tests/python/meshes/elmer/** -filter -diff -merge text

@@ -114,6 +114,7 @@ TEST(Sniff, RecognizesDirectoryFormatsByTheirFiles) {
     const fs::path parts = make_temp_dir("parts") / "partitioning.2";
     touch(parts / "part.1.header");
     EXPECT_EQ(meshioplusplus::sniff_format(parts.string()), "elmer");
+    EXPECT_EQ(meshioplusplus::sniff_format(parts.parent_path().string()), "elmer");
 
     const fs::path foam = make_temp_dir("foam");
     touch(foam / "constant" / "polyMesh" / "owner");

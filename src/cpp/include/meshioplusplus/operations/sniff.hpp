@@ -30,7 +30,8 @@
  * headerless binary STL) yield `""` rather than a guess.
  *
  * A directory is sniffed by the files it holds: an Elmer mesh directory
- * (`mesh.header`, or a `partitioning.N` directory of `part.n.*` files) is
+ * (`mesh.header`, a `partitioning.N` directory of `part.n.*` files, or a
+ * directory holding one) is
  * `"elmer"`, an OpenFOAM case or `polyMesh` directory is `"openfoam"`. A file
  * named exactly `mesh.header` stands for its Elmer directory.
  */

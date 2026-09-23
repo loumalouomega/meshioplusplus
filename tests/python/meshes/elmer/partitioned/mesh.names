@@ -1,0 +1,5 @@
+! ----- names for bodies -----
+$ plate = 1
+! ----- names for boundaries -----
+$ bottom = 1
+$ right = 2

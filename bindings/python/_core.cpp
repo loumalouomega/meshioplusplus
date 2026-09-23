@@ -34,6 +34,7 @@
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/ansysinp.hpp"
 #include "meshioplusplus/formats/avsucd.hpp"
@@ -2838,6 +2839,21 @@ PYBIND11_MODULE(_core, m) {
     m.def("code_aster_read", [](const std::string& path) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_code_aster(path));
     });
+
+    // Elmer mesh directory writer / reader.
+    m.def("elmer_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+    });
+    m.def(
+        "elmer_read",
+        [](const std::string& path, bool points_only, py::object arrays, py::object piece,
+           bool lenient) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_elmer(
+                path, core_read_options(points_only, arrays, 0, piece, lenient)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("piece") = py::none(), py::arg("lenient") = false);
 
     // AVS-UCD writer / reader (.avs).
     m.def("avsucd_write", [](const std::string& path, py::object pymesh) {

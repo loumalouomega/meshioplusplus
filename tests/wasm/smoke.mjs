@@ -2610,6 +2610,29 @@ step('openfoam writes a polyMesh DIRECTORY into MEMFS and reads it back', () => 
     assert.ok(back.cells.some((c) => c.type === 'hexahedron'));
 });
 
+step('elmer writes a mesh DIRECTORY into MEMFS and reads it back with no format', () => {
+    // An Elmer mesh is a directory with no extension: the write names the
+    // format, the read finds it by sniffing the directory's mesh.header.
+    const tets = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3, 1, 2, 3, 4]), nodesPerCell: 4 },
+            { type: 'triangle', data: new Int32Array([1, 2, 3]), nodesPerCell: 3 },
+        ],
+    };
+    const written = m.writeMesh('/elmer_mesh', tets, 'elmer');
+    assert.deepEqual(
+        written,
+        ['boundary', 'elements', 'header', 'names', 'nodes'].map((f) => `/elmer_mesh/mesh.${f}`),
+    );
+    // The shared face has both tets as parents.
+    assert.match(new TextDecoder().decode(m.FS.readFile('/elmer_mesh/mesh.boundary')), /^1 1 1 2 303 /);
+    const back = m.readMesh('/elmer_mesh');
+    assert.deepEqual(back.cells.map((c) => c.type), ['tetra', 'triangle']);
+    assert.deepEqual(back.regions.map((r) => r.name).sort(), ['body_1', 'boundary_1']);
+});
+
 step('openfoam reports and reads two time-directory fields (roadmap §1 tier B2)', () => {
     // Plain text, like Tecplot/Gmsh -- a genuine two-step fixture, not a
     // wiring-only probe. Reuses the /of/case.foam single-hex polyMesh the

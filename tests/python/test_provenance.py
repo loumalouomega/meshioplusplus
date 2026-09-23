@@ -64,6 +64,8 @@ def _inspect_path(written_path: Path, name: str) -> Path:
     """
     if name == "ensight":
         return written_path.with_suffix(".geo")
+    if name == "elmer":
+        return written_path / "mesh.names"
     return written_path
 
 
@@ -73,6 +75,7 @@ def _cases():
     from meshioplusplus.ansys import _ansys as py_ansys
     from meshioplusplus.avsucd import _avsucd as py_avsucd
     from meshioplusplus.code_aster import _code_aster as py_code_aster
+    from meshioplusplus.elmer import _elmer as py_elmer
     from meshioplusplus.ensight import _ensight as py_ensight
     from meshioplusplus.exodus import _exodus as py_exodus
     from meshioplusplus.flac3d import _flac3d as py_flac3d
@@ -117,6 +120,8 @@ def _cases():
         "abaqus": (TRI, ".inp", _core.abaqus_write, py_abaqus.write),
         "lsdyna": (TRI, ".k", _core.lsdyna_write, py_lsdyna.write),
         "code_aster": (TRI, ".mail", _core.code_aster_write, py_code_aster.write),
+        # A directory: the block is in its mesh.names (see _inspect_path).
+        "elmer": (TRI, "", _core.elmer_write, py_elmer.write),
         "permas": (TRI, ".post", _core.permas_write, py_permas.write),
         "flac3d": (
             TET,

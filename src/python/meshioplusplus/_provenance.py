@@ -612,6 +612,12 @@ def read_provenance_lines(path, max_bytes: int = _SCAN_BYTES):
     what counts as a block.
     """
     text = str(path)
+    # An Elmer mesh directory keeps its block in `mesh.names` (a `mesh.header`
+    # path stands for its directory).
+    if os.path.basename(text) == "mesh.header" and os.path.isfile(text):
+        text = os.path.dirname(text) or "."
+    if os.path.isdir(text) and os.path.isfile(os.path.join(text, "mesh.names")):
+        return read_provenance_lines(os.path.join(text, "mesh.names"), max_bytes)
     if os.path.isdir(text):
         # A directory store holds no head bytes to scan. `zarr` keeps the
         # block in its root group's attributes, which are plain JSON, so this

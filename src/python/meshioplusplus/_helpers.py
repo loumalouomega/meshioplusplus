@@ -34,6 +34,7 @@ _MULTIFILE_FORMATS = (
     "gid",
     "pmsh",
     "zarr",
+    "elmer",
     "usd",
     # An index whose piece paths resolve against its own directory, which a
     # buffer does not have.

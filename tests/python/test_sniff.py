@@ -86,6 +86,7 @@ def _touch(path):
         (["mesh.header"], "", "elmer"),
         (["mesh.header"], "mesh.header", "elmer"),
         (["partitioning.2/part.1.header"], "partitioning.2", "elmer"),
+        (["partitioning.2/part.1.header"], "", "elmer"),
         (["constant/polyMesh/owner", "constant/polyMesh/faces"], "", "openfoam"),
         (
             ["constant/polyMesh/owner", "constant/polyMesh/faces"],

@@ -425,3 +425,42 @@ def test_read_only_region_formats_are_not_round_trip_rows(fmt):
         p.values[0] for p in MATRIX
     }, f"{fmt} now round-trips regions: move it from READ_ONLY_REGIONS into MATRIX"
     assert fmt not in PHASE_2, f"{fmt} is read-capable: it is no longer a Phase-2 gap"
+
+
+# --------------------------------------------------------------------------- #
+# Keeps every cell and side region, but as the format's own entities: Elmer    #
+# has bodies (bulk elements) and boundaries (boundary elements with parents),  #
+# not facet groups, so a side region's facets are written as boundary          #
+# elements and come back as a cell region over those new cells. Not a MATRIX   #
+# row -- the new cells change the geometry that table compares.               #
+# --------------------------------------------------------------------------- #
+FACETS_BECOME_CELLS = {
+    "elmer": (
+        "An Elmer body is a set of bulk elements and a boundary a set of boundary "
+        "elements, each with a positive id: a cell region becomes a body (its tag "
+        "kept as the id) and a side region's facets become boundary elements, read "
+        "back as a cell region over a new triangle block. Elmer has no node set, so "
+        "point regions are dropped."
+    ),
+}
+
+
+@pytest.mark.parametrize("fmt", sorted(FACETS_BECOME_CELLS))
+def test_facet_regions_come_back_as_boundary_cells(fmt, tmp_path):
+    why = FACETS_BECOME_CELLS[fmt]
+    mesh = fixture_mesh()
+    path = tmp_path / "regions"
+    meshioplusplus.write(path, mesh, file_format=fmt)
+    back = meshioplusplus.read(path)
+
+    assert np.allclose(back.points, mesh.points), why
+    assert_array_equal(np.asarray(back.cells[0].data), np.asarray(mesh.cells[0].data))
+    got = {r.name: r for r in back.regions}
+    assert sorted(got) == ["solid", "wall"], why
+    assert got["solid"].kind == "cell" and got["solid"].tag == 42, why
+    assert_array_equal(got["solid"].entries, [0, 1], err_msg=why)
+    # The two wall facets, now the cells of a triangle block after the tets.
+    assert got["wall"].kind == "cell" and got["wall"].dim == 2, why
+    assert_array_equal(got["wall"].entries, [2, 3], err_msg=why)
+    assert back.cells[1].type == "triangle"
+    assert fmt not in {p.values[0] for p in MATRIX}

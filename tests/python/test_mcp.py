@@ -176,6 +176,23 @@ def test_code_aster_mail_is_readable_writable_and_converts(tmp_path):
     assert [b.type for b in written.cells] == ["hexahedron20", "quad8"]
 
 
+def test_elmer_directory_converts_both_ways(tmp_path):
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / "meshes" / "elmer" / "tet10_two_bodies"
+    out = _dump(_tools.tool_formats())
+    assert "elmer" in out["readable"] and "elmer" in out["writable"]
+    assert _dump(_tools.tool_sniff(str(src)))["format"] == "elmer"
+    # A directory has no extension: reading sniffs it, writing names the format.
+    target = str(tmp_path / "bodies.vtu")
+    _tools.tool_convert(str(src), target)
+    back = tmp_path / "back"
+    _tools.tool_convert(target, str(back), output_format="elmer")
+    assert (back / "mesh.header").is_file()
+    written = meshioplusplus.read(back)
+    assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
+
+
 def test_optistruct_components_survive_convert(tmp_path):
     import pathlib
 
