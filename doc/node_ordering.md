@@ -1,0 +1,33 @@
+# Node ordering
+
+meshio++ stores every cell in the [VTK node order](./cell_types.md). A format that numbers the nodes of an element differently needs a permutation on the way in and its inverse on the way out. Since v16.0.0 those permutations live in one registry, keyed by *(format, cell type)*:
+
+- C++: `detail/node_order.hpp`, `node_order(format, cell_type)`;
+- Python: `meshioplusplus._node_order`, `node_order(fmt, cell_type)`, `to_meshio(...)` and `from_meshio(...)`.
+
+A type with no entry uses the identity. Every entry holds **both directions as gather tables**:
+
+- `to_meshio[k]` is the file slot meshio++ node `k` comes from on read: `meshio[k] = file[to_meshio[k]]`;
+- `from_meshio[j]` is the meshio++ node written to file slot `j`: `file[j] = meshio[from_meshio[j]]`.
+
+Most tables are their own inverse, but not all. MED's `hexahedron27` is not, and a writer that reused its read table would scramble the face centres, so a format never has to know.
+
+## What is in the registry
+
+| Format | Cell types with a permutation | Pinned against |
+|---|---|---|
+| `med` | `tetra`, `pyramid`, `wedge`, `hexahedron` and their quadratic forms up to `wedge18`/`hexahedron27` | MEDCoupling's `CellModel.cxx` edge and face tables (orientation and mid-edges); `hexahedron27`/`wedge18` (v16.0.0) against a file written by MED-fichier itself and Code_Aster's MED reader |
+| `code_aster` | `wedge15`, `wedge18`, `hexahedron20`, `hexahedron27` | Code_Aster's gmsh reader (`inigms.F90`) exactly, and its MED reader (`lrmtyp.F90`) up to a symmetry of the reference cell; see [Code_Aster](./formats/code_aster.md#node-order) |
+| `frd` | `hexahedron20`, `wedge15`, `line3` | `ccx` 2.23 output for the same `.inp` |
+| `unv` | `line3`, `triangle6`, `quad8`, `quad9`, `tetra10`, `pyramid13`, `wedge15`, `hexahedron20` | gmsh's `.unv`/`.msh` twins and Salome's SMESH driver |
+
+The gmsh, CGNS, GiD, Exodus, Kratos and COMSOL tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.20](./roadmap.md)).
+
+## Self-test
+
+`tests/cpp/test_node_order.cpp` and `tests/python/test_node_order.py` check every entry the same way:
+
+- it is a permutation of its cell type's node count, and its two directions are inverses;
+- a reference element (mid-edge nodes on midpoints, face and body centres on centroids) written through `from_meshio` and read back through `to_meshio` is again a valid, positively oriented element;
+- the C++ and Python tables are identical;
+- the `code_aster` tables equal Code_Aster's gmsh reader composed with the gmsh tables, and agree with its MED reader composed with the `med` tables.

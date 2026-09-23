@@ -69,6 +69,7 @@ export default defineConfig({
         items: [
           { text: "Mesh data model", link: "/mesh_data_model" },
           { text: "Cell types", link: "/cell_types" },
+          { text: "Node ordering", link: "/node_ordering" },
           { text: "Named regions", link: "/regions" },
           { text: "Polyhedra and ragged cells", link: "/polyhedra" },
           { text: "C++ mesh backends", link: "/cpp_backends" },
@@ -253,6 +254,7 @@ export default defineConfig({
           { text: "avsucd", link: "/formats/avsucd" },
           { text: "cae", link: "/formats/cae" },
           { text: "cgns", link: "/formats/cgns" },
+          { text: "code_aster", link: "/formats/code_aster" },
           { text: "dex", link: "/formats/dex" },
           { text: "dolfin-xml", link: "/formats/dolfin" },
           { text: "ensight", link: "/formats/ensight" },

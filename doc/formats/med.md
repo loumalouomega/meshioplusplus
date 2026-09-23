@@ -76,16 +76,17 @@ Point/cell coordinate and connectivity arrays are stored **Fortran-ordered** (co
 | `line` | `SE2` | `tetra10` | `T10` |
 | `line3` | `SE3` | `hexahedron` | `HE8` |
 | `line4` | `SE4` | `hexahedron20` | `H20` |
-| `triangle` | `TR3` | `pyramid` | `PY5` |
-| `triangle6` | `TR6` | `pyramid13` | `P13` |
-| `triangle7` | `TR7` | `wedge` | `PE6` |
-| `quad` | `QU4` | `wedge15` | `P15` |
-| `quad8` | `QU8` | `polygon` | `POG` |
-| `quad9` | `QU9` | `polygon2` | `POG2` |
+| `triangle` | `TR3` | `hexahedron27` | `H27` |
+| `triangle6` | `TR6` | `pyramid` | `PY5` |
+| `triangle7` | `TR7` | `pyramid13` | `P13` |
+| `quad` | `QU4` | `wedge` | `PE6` |
+| `quad8` | `QU8` | `wedge15` | `P15` |
+| `quad9` | `QU9` | `wedge18` | `P18` |
+| `polygon` | `POG` | `polygon2` | `POG2` |
 
 `polygon`/`polygon2` (both mapped to MED's `MED_POLYGON`/`MED_POLYGON2`, entity `MED_CELL`) support **ragged** cell blocks — a Voronoi-style mesh mixing 4-gons through 7-gons in one block reads back as a Python `list` of per-polygon node arrays rather than a rectangular ndarray (see [`_mesh.py`'s `CellBlock`](mdpa.md) uniform-vs-ragged detection: a block is still stored as an ndarray when every polygon in it happens to have the same vertex count).
 
-**Node-orientation permutation** (`_med_node_perm`, applied identically on read and write, since every permutation is a fixed involution):
+**Node-orientation permutation.** The tables live in the shared [node-ordering registry](../node_ordering.md) under `"med"` (read direction shown, `meshio[k] = med[perm[k]]`):
 
 ```
 tetra:         [0, 1, 3, 2]
@@ -95,10 +96,15 @@ hexahedron:    [4, 5, 6, 7, 0, 1, 2, 3]
 tetra10:       [0, 1, 3, 2, 4, 8, 7, 6, 5, 9]
 pyramid13:     [0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10]
 wedge15:       [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14]
+wedge18:       [3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8, 12, 13, 14, 15, 16, 17]
 hexahedron20:  [4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19]
+hexahedron27:  [4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19,
+                24, 22, 21, 23, 25, 20, 26]
 ```
 
 Since v9.20.0 the quadratic types (`tetra10`, `hexahedron20`, `pyramid13`, `wedge15`) are permuted too, not just their linear siblings: each quadratic entry's corner portion is identical to its linear sibling's, and the mid-edge portion is derived from MEDCoupling's own `INTERP_KERNEL/CellModel.cxx` edge tables — the same authoritative source the linear entries' faces are pinned against, `tests/python/test_med.py`'s `_MED_ORIENT_REF` — and geometrically verified: every MED mid-edge slot lands at the exact arithmetic midpoint of the two MED corners it should sit between.
+
+`hexahedron27` and `wedge18` (`H27`/`P18`, v16.0.0) extend `hexahedron20`/`wedge15` with the face and body centres Code_Aster's MED reader implies, and read back as the reference element from a file written by MED-fichier itself (`tests/python/meshes/med/hexa27_penta18.med`, `tools/gen_med_quadratic_fixture.py`). `hexahedron27`'s table is **not** its own inverse, so the writer uses the registry's other direction. Before v16.0.0 the Python engine spelled the `wedge18` group `PE18`; MED's name is `P18`.
 
 ## Data mapping
 
