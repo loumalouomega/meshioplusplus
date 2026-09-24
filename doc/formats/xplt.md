@@ -44,14 +44,17 @@ When compression is on, every chunk after the first mesh (every state) is its ow
 |---|---|
 | a domain | a cell block, and a `cell` region tagged with its part id. The region is named after the domain; FEBio 4 names only solid domains, so a nameless one takes the name of the element set holding exactly its elements (FEBio writes one per `<Elements>` block), else its part's. |
 | node set / element set | `point` / `cell` region |
-| surface, facet set | a `side` region when every facet is a face of a solid, otherwise its own cell block and a `cell` region, as for [`.feb`](./febio.md#mapping) |
+| surface (a data surface: the plot variables' regions) | a block of facet cells per facet type (`triangle`, `quad`, `triangle6`, `quad8`, `quad9`...) after the domains, a `cell` region of the same name over them, and a `side` region when every facet is a face of a solid (since v16.10.0) |
+| facet set | a `side` region when every facet is a face of a solid, otherwise its own cell block and a `cell` region, as for [`.feb`](./febio.md#mapping) |
+| which data surface a cell is | `cell_data["xplt:surface"]`: its 1-based surface id, 0 on the domains |
 | the state's time, index, status | `field_data["meshio:time"]`, `"xplt:step"`, `"xplt:status"` |
 | nodal variables | point data |
 | domain variables stored per element (`FMT_ITEM`) | cell data, NaN on domains that do not carry the variable |
 | domain variables stored once per domain (`FMT_REGION`) | cell data, the value repeated over the domain's cells |
 | domain variables stored per element node (`FMT_NODE`, `FMT_MULT`) | point data, averaged over the elements that share each node |
 | global variables | field data |
-| surface, edge and material-point variables | not read; one warning names them |
+| surface variables | on the facet cells, in the same way: per facet (`FMT_ITEM`) and once per surface (`FMT_REGION`) as cell data, NaN on the domains and other surfaces; per surface node (`FMT_NODE`) and per facet node (`FMT_MULT`) as point data, averaged at shared nodes. A variable with values on no surface of the mesh gives no array. |
+| edge and material-point variables | not read; one warning names them |
 
 Values are FEBio's `float32`, widened to `float64`. Components keep FEBio's order. A symmetric tensor (`mat3fs`) has 6 components, `xx, yy, zz, xy, yz, xz`, which is also VTK's order. A diagonal tensor has 3 components, and a full one (`mat3f`) 9 in row-major order.
 
@@ -60,5 +63,6 @@ Values are FEBio's `float32`, widened to `float64`. Components keep FEBio's orde
 ## Notes
 
 - **A state cut short** (FEBio killed mid-write) is dropped with a warning, and the earlier states are still read.
-- **A remeshed run**, one with a second mesh between states, is a `ReadError`.
-- **Validation**, made outside the repository with FEBio 4.12 built from source: the displacement read from FEBio's plot files equals FEBio's own `node_data` log to `float32` precision at every state, for three models. febio-python's reader (MIT) gives identical displacements, strains, stresses and fibre vectors for its `0x0031` samples. The test fixtures are plot files FEBio 4.12 wrote for the models `tools/gen_febio_fixtures.py` generates, one of them compressed.
+- **A remeshed run** (FEBio's `<MeshAdaptor>`) writes a new mesh before the states that use it. Since v16.10.0 each state is read on its own mesh, so the points, cells and regions change from one step of a sequence to the next. `read_metadata` describes the first mesh.
+- FEBio 4.12 plots a variable on one surface only: asked for the same variable on two surfaces, it writes values for one of them, and the other is NaN. It also writes the traction record of a pressure-loaded surface empty.
+- **Validation**, made outside the repository with FEBio 4.12 built from source: the displacement read from FEBio's plot files equals FEBio's own `node_data` log to `float32` precision at every state, for three models. febio-python's reader (MIT) gives identical displacements, strains, stresses and fibre vectors for its `0x0031` samples. The test fixtures are plot files FEBio 4.12 wrote for the models `tools/gen_febio_fixtures.py` generates, one of them compressed. In the suite, the `facet area` a surface fixture plots equals the area of the deformed facets and `surface area` their sum, and the remeshed fixture's states have the node counts FEBio's log reports (12, 45, 78, 111) with the prescribed end displacement at each.

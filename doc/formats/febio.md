@@ -31,8 +31,8 @@ The mesh lives in `<Geometry>` in spec 2.5 and in `<Mesh>`, plus `<MeshDomains>`
 |---|---|
 | `<Nodes>` (one or more; ids may be sparse) | the points; a named `<Nodes>` block is also a `point` region, as it is a node set in FEBio |
 | `<Elements type= name=>` | one cell block, and a `cell` region of that name tagged with its domain's material id (spec 2.5: the `mat` attribute) |
-| `<NodeSet>` | a `point` region, in every spec's form: a comma list (4.0 ranges `a:b[:step]` included), `<node id=/>` or `<n id=/>` children, `<node_list>`, or a 2.5 `<NodeSet node_set=/>` include |
-| `<ElementSet>` | a `cell` region |
+| `<NodeSet>` | a `point` region (except a `meshdata:<name>` set), in every spec's form: a comma list (4.0 ranges `a:b[:step]` included), `<node id=/>` or `<n id=/>` children, `<node_list>`, or a 2.5 `<NodeSet node_set=/>` include |
+| `<ElementSet>` | a `cell` region (except a `meshdata:<name>` set, which only carries a MeshData array; see [Writing](#writing)) |
 | `<Surface>` | a `side` region when every facet is a face of a solid element, matched by its corner nodes; otherwise its facets become their own cell block and a `cell` region, with a warning |
 | `<Edge>` | a `line`/`line3` block and a `cell` region |
 | `<DiscreteSet>` | a `line` block (one cell per `<delem>` spring) and a `cell` region |
@@ -57,7 +57,8 @@ The writer emits spec 4.0:
 - A block is named after the `cell` region that covers exactly its cells, else `Part<k>`, `Surface<k>`, `Edge<k>` or `DiscreteSet<k>`.
 - Other regions: a `point` region is a `<NodeSet>`, a `cell` region an `<ElementSet>` over the `<Elements>` cells it holds, and a `side` region a `<Surface>` (or an `<Edge>` for the edges of a surface mesh). A region's tag is not kept, since the material ids are renumbered.
 - The provenance block is an XML comment inside `<febio_spec>`, so the root tag stays within the bytes content sniffing reads.
-- **Dropped, with a warning and a provenance note:** vertex cells and data arrays (MeshData is not written yet; see the [roadmap](../roadmap.md)). Polygons, polyhedra and higher-order Lagrange cells are a `WriteError`.
+- **MeshData** (since v16.10.0): each point data array is a `<NodeData name= data_type= node_set=>` over the nodes where it is defined (not NaN), and each cell data array an `<ElementData name= data_type= elem_set=>` over the `<Elements>` cells where it is, in a `<MeshData>` section after `<MeshDomains>`. Each array gets its own set, a `<NodeSet>` or `<ElementSet>` named `meshdata:<name>`, which the reader recognises and makes no region of, so the mesh round-trips. The `data_type` comes from the width: 1 `scalar`, 2 `vec2`, 3 `vec3`, 6 `mat3s`, 9 `mat3`. FEBio uses the arrays wherever a model parameter names them as a map (`<E type="map">E</E>`).
+- **Dropped, with a warning and a provenance note:** vertex cells, field data, arrays of another width, arrays whose width differs between blocks, and the values of cell data on `<Surface>`, `<Edge>` or `<DiscreteSet>` cells. Polygons, polyhedra and higher-order Lagrange cells are a `WriteError`.
 
 The written file is meant to be imported into FEBio Studio, or pulled into a model file with `<Mesh from="mesh.feb"/>`, which takes only its `<Mesh>`.
 
@@ -66,4 +67,5 @@ The written file is meant to be imported into FEBio Studio, or pulled into a mod
 These checks were made outside the repository, with FEBio 4.12 built from source:
 
 - The three test fixtures, written by `tools/gen_febio_fixtures.py` in FEBio's numbering, are read by FEBio itself.
+- A mesh written with a MeshData array, pulled into a model whose Young's modulus is `<E type="map">` of the element array, gives the same displacements as the model with that modulus given uniformly.
 - febio-python's spec-3.0/4.0 sample models (MIT) read identically in both engines. Their meshes, written back by this writer and pulled into the original models with `<Mesh from=…>`, give FEBio's original displacements: to 1e-13 for a static surface-load model, 1e-10 for a fibre-reinforced one, and within the solver's tolerance (1e-5 of the peak) for a dynamic model with springs.

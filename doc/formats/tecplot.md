@@ -1,12 +1,12 @@
-# Tecplot (`.dat`, `.tec`)
+# Tecplot (`.dat`, `.tec`, `.plt`)
 
-The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format: a `VARIABLES` list and one or more finite-element `ZONE`s. meshio++ writes one zone per cell block; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one **step** of the file's `SOLUTIONTIME`/`STRANDID` timeline — a step being every zone sharing one distinct `SOLUTIONTIME` — see [Selecting a time step](#selecting-a-time-step). A non-transient file (no `SOLUTIONTIME` anywhere) is a single step holding every zone in the file — see [Multiple zones](#multiple-zones).
+The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format, a `VARIABLES` list and one or more finite-element or ordered `ZONE`s, and its binary form `.plt` (read only, since v16.10.0; see [Binary `.plt`](#binary-plt)). meshio++ writes one zone per cell block; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one **step** of the file's `SOLUTIONTIME`/`STRANDID` timeline — a step being every zone sharing one distinct `SOLUTIONTIME` — see [Selecting a time step](#selecting-a-time-step). A non-transient file (no `SOLUTIONTIME` anywhere) is a single step holding every zone in the file — see [Multiple zones](#multiple-zones).
 
 | | |
 |---|---|
 | **Format name** | `tecplot` |
-| **Extensions** | `.dat`, `.tec` (a `.dat` file that opens as an MSC Marc input deck is read as [`marc`](./marc.md#which-dat-is-marc-s) instead, v16.8.0) |
-| **Read / Write** | ✓ / ✓ |
+| **Extensions** | `.dat`, `.tec`, `.plt` (a file starting with `#!TDV` is binary whatever its extension; a `.dat` file that opens as an MSC Marc input deck is read as [`marc`](./marc.md#which-dat-is-marc-s) instead, v16.8.0) |
+| **Read / Write** | ✓ / ✓ (ASCII); ✓ / — (`.plt`) |
 | **Extra dependencies** | — |
 
 ## Reading & writing
@@ -15,6 +15,7 @@ The [Tecplot ASCII](http://paulbourke.net/dataformats/tp/) data format: a `VARIA
 import meshioplusplus
 
 mesh = meshioplusplus.read("field.dat")
+flow = meshioplusplus.read("flow.plt", time_step=-1)  # binary, last step
 meshioplusplus.tecplot.write("out.dat", mesh)
 ```
 
@@ -29,7 +30,7 @@ ZONE T="..." N=<nodes> E=<elements> F=FEPOINT|FEBLOCK ET=TRIANGLE|... [VARLOCATI
 <connectivity, 1-based>
 ```
 
-`VARIABLES` supports multi-line continuation and quoted multi-word names (re-joined if a quoted name gets split across whitespace tokens); `X`/`x` and `Y`/`y` must be present or `ReadError`. Every `ZONE` header is parsed (not just the first), tolerating multi-line continuation (it keeps reading as long as the next line's first token fails to parse as a float — i.e. as long as it still looks like header text) and handling a quoted zone title (`T="..."`) plus either `F=` (accepts only `FEPOINT`/`FEBLOCK`) + `ET=`, or `DATAPACKING=`+`ZONETYPE=` (folded into an equivalent `"FE" + DATAPACKING` internal representation). Which zone's *data* is actually decoded is `mTimeStep`'s job — see [Selecting a time step](#selecting-a-time-step).
+`VARIABLES` supports multi-line continuation and quoted multi-word names (re-joined if a quoted name gets split across whitespace tokens); `X`/`x` and `Y`/`y` must be present or `ReadError`. Every `ZONE` header is parsed (not just the first), tolerating multi-line continuation (it keeps reading as long as the next line's first token fails to parse as a float — i.e. as long as it still looks like header text) and handling a quoted zone title (`T="..."`) plus either the old `F=` (`FEPOINT`/`FEBLOCK` with `ET=`, or `POINT`/`BLOCK` for an ordered zone) or `DATAPACKING=`+`ZONETYPE=`. As the Data Format Guide says, a zone without `ZONETYPE` is `ORDERED` and one without `DATAPACKING` is `BLOCK` (since v16.10.0; before, `POINT` was assumed). An ordered zone's size is `I=`, `J=`, `K=` (each 1 when absent). Which zone's *data* is actually decoded is `mTimeStep`'s job — see [Selecting a time step](#selecting-a-time-step).
 
 `VARLOCATION=([a-b]=CELLCENTERED)` (1-based, inclusive ranges, comma- separated `[i]` or `[i-j]` entries) marks which variables are cell-centered; without it, cell-centered-ness is instead inferred from `NV=` (a node- variable count — everything after it is cell-centered).
 
@@ -44,6 +45,12 @@ Data itself: `FEBLOCK` reads one variable's full array before moving to the next
 | `QUADRILATERAL` / `FEQUADRILATERAL` | `quad` |
 | `TETRAHEDRON` / `FETETRAHEDRON` | `tetra` |
 | `BRICK` / `FEBRICK` | `hexahedron` |
+| `ORDERED`, one dimension > 1 | `line` |
+| `ORDERED`, two dimensions > 1 | `quad` |
+| `ORDERED`, `I`, `J`, `K` > 1 | `hexahedron` |
+| `FEPOLYGON` / `FEPOLYHEDRON` | `ReadError` |
+
+Ordered zones (since v16.10.0, ASCII and binary) become regular cells over their dimensions longer than one, with `i` varying fastest and corners in VTK order. Their cell-centred variables have `(I-1)(J-1)(K-1)` values, but a binary file stores them over the node dimensions with the last dimension longer than one shortened by one; the ghost values at the ends are dropped. The writer writes FE zones only, so an ordered zone read in is written back as an FE zone of the same cells.
 
 On write, `pyramid`/`wedge` degrade to `FEBRICK` (8-node brick), padding with duplicated corner nodes. Write-side node-order tables:
 
@@ -62,9 +69,19 @@ A mesh with several cell blocks — of the same type or mixed — writes one `ZO
 
 This closes the roadmap gap where several static zones were previously not a timeline and only the first was read (with a warning); they are now read in full, as multiple parts of one step, matching how SU2's multizone files and VTKHDF's composites are modeled.
 
+## Binary `.plt`
+
+Since v16.10.0 the reader decodes the binary format of the Data Format Guide's appendix A, version `#!TDV112` (Tecplot 360 2009 onwards), in either byte order. A binary file decodes into the same zone model as an ASCII one, so everything on this page (zones and regions, sharing, passive variables, time steps) applies to both, and a `.plt` reads identically to the ASCII file it was made from. In detail:
+
+- Header: the title, variable names and zone records (FE and ordered zone types, variable locations, `STRANDID` and `SOLUTIONTIME`). Geometry, text, custom-label, user and auxiliary-data records are skipped. User-defined face-neighbour connections are skipped too.
+- Data: `float`, `double`, `int32`, `int16` and `byte` values; bit-packed variables are refused. Variable sharing, passive variables and connectivity sharing are honoured. FE connectivity is zero-based in the file.
+- Anything else raises `ReadError`: another version, a zone of an unknown type, a polygonal or polyhedral zone, or a file cut short.
+
+`.szplt` (SZL) files are a different, undocumented format and are not read; save them as `.plt` in Tecplot. The Python reference reader (`meshioplusplus.tecplot`) reads `.plt` too, value for value like the core.
+
 ## Data mapping
 
-Point/cell variable names are used verbatim as `point_data`/`cell_data` keys (no `tecplot:` prefix); `X`/`Y`/`Z` (or lowercase) are reserved for coordinates and excluded from the data dicts. `cell_data["tecplot:zone"]` names each cell's zone (its 0-based position within the step) for a file with more than one zone. Named [regions](../regions.md) — see [Multiple zones](#multiple-zones) and the [format matrix](../regions.md#the-format-matrix).
+Point/cell variable names are used verbatim as `point_data`/`cell_data` keys (no `tecplot:` prefix); `X`/`Y`/`Z` (or lowercase) are reserved for coordinates and excluded from the data dicts. A variable that is nodal in some zones of a step and cell-centred in others is both a `point_data` and a `cell_data` array, each `NaN` where that zone stores it the other way (since v16.10.0). A zone reuses an earlier zone's points only when all its nodal variables, coordinates included, are shared from that zone; otherwise its points are its own. `cell_data["tecplot:zone"]` names each cell's zone (its 0-based position within the step) for a file with more than one zone. Named [regions](../regions.md) — see [Multiple zones](#multiple-zones) and the [format matrix](../regions.md#the-format-matrix).
 
 ## Selecting a time step
 
@@ -78,10 +95,12 @@ A transient Tecplot file marks each `ZONE`'s place in a series with `SOLUTIONTIM
 
 - Data columns are wrapped at 20 values per line on write.
 - A transient *write* path is not implemented (`sequence_write_supports_time("tecplot")` is `false`); every write is a single, non-transient set of zones — see [Multiple zones](#multiple-zones).
-- `VARSHARELIST`/`CONNECTIVITYSHAREZONE`/`PASSIVEVARLIST` are read by the C++ core only; the Python reference reader stays single-zone and geometry-only, and now warns (rather than raising `KeyError`) on any zone-header field it does not itself understand, including these three.
+- The Python reference reader decodes every zone, time step and sharing list as the C++ core does (since v16.10.0; it was single-zone and geometry-only before), so `time_step` no longer needs the core.
+- A `VARSHARELIST` entry without a zone number shares from the previous zone, as the Data Format Guide says.
 - `POINT`/`FEPOINT` data packing has no sharing equivalent (there is nothing to point `VARSHARELIST` at within one interleaved row), so a `POINT`-packed zone that names one anyway is read as if the field were unshared, ordinary data.
 
 ## Notes
 
 - `tests/python/meshes/tecplot/quad_zone_comma.tec` / `quad_zone_space.tec` / `quad_zone_multivar.tec` — a single quad zone (`N=4, E=1, ET=QUADRILATERAL`), `FEBLOCK` packing, one cell-centered variable via `VARLOCATION=([4]=CELLCENTERED)`; the three files vary the delimiter style around zone-header keys (comma vs. plain space vs. an extra variable) to exercise the tolerant zone-header parser. `quad_zone_space.tec` in particular has a zone title that is *literally the string* `"VARLOCATION"` with spaced `=` signs; a quote-and-paren-aware tokenizer (v15.5.0, roadmap §1.1) lets the C++ reader handle it directly — earlier it threw and let the Python reader take over.
-- The C++ core handles FE meshes (BLOCK/POINT packing, `VARLOCATION`, `VARSHARELIST`, `PASSIVEVARLIST`, `CONNECTIVITYSHAREZONE`), writing and reading every zone of a step.
+- The C++ core handles FE and ordered zones (BLOCK/POINT packing, `VARLOCATION`, `VARSHARELIST`, `PASSIVEVARLIST`, `CONNECTIVITYSHAREZONE`), writing and reading every zone of a step.
+- `tests/python/meshes/tecplot/plt/` holds `.plt` files written by Tecplot's TecIO library, each beside the ASCII file with the same content (`tools/gen_tecplot_plt_fixtures.py`). No Tecplot licence was available, so no file written by `preplot` or Tecplot 360 itself has been read.
