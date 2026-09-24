@@ -113,8 +113,6 @@ def test_older_specs(engine, version):
 def test_writers_write_the_same_bytes(tmp_path):
     for path in FIXTURES:
         mesh = meshioplusplus.read(path)
-        mesh.point_data.clear()
-        mesh.cell_data.clear()
         _core.febio_write(str(tmp_path / "cpp.feb"), mesh)
         py_febio.write(tmp_path / "py.feb", mesh)
         assert (tmp_path / "cpp.feb").read_bytes() == (tmp_path / "py.feb").read_bytes()
@@ -123,10 +121,16 @@ def test_writers_write_the_same_bytes(tmp_path):
 @pytest.mark.parametrize("path", FIXTURES, ids=[p.name for p in FIXTURES])
 def test_round_trip(engine, path, tmp_path):
     mesh = meshioplusplus.read(path)
-    mesh.point_data.clear()
-    mesh.cell_data.clear()
     engine.write(tmp_path / "out.feb", mesh)
     back = engine.read(tmp_path / "out.feb")
+    # MeshData comes back as it was, NaN outside its set.
+    assert sorted(back.point_data) == sorted(mesh.point_data)
+    for name in mesh.point_data:
+        np.testing.assert_array_equal(back.point_data[name], mesh.point_data[name])
+    assert sorted(back.cell_data) == sorted(mesh.cell_data)
+    for name in mesh.cell_data:
+        for x, y in zip(back.cell_data[name], mesh.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
     np.testing.assert_allclose(back.points, mesh.points)
     assert [(c.type, c.data.tolist()) for c in back.cells] == [
         (c.type, c.data.tolist()) for c in mesh.cells
@@ -211,3 +215,20 @@ def test_sniffed_and_registered():
     assert meshioplusplus.sniff_format(MESHES / "block_v25.feb") == "febio"
     out = meshioplusplus.formats()
     assert out["extensions"][".feb"] == ["febio"]
+
+
+def test_mesh_data_is_written_on_its_own_sets(engine, tmp_path):
+    mesh = meshioplusplus.read(FIXTURES[0])
+    n = len(mesh.points)
+    mesh.point_data["stress"] = np.arange(6 * n, dtype=float).reshape(n, 6)
+    mesh.point_data["stress"][::2] = np.nan
+    mesh.point_data["odd"] = np.zeros((n, 4))  # no FEBio data type
+    engine.write(tmp_path / "out.feb", mesh)
+    text = (tmp_path / "out.feb").read_text()
+    assert '<NodeSet name="meshdata:stress">' in text
+    assert 'data_type="mat3s"' in text and "odd" not in text
+    back = engine.read(tmp_path / "out.feb")
+    np.testing.assert_array_equal(back.point_data["stress"], mesh.point_data["stress"])
+    assert "odd" not in back.point_data
+    # the sets carry the arrays; they are not regions
+    assert not any(r.name.startswith("meshdata:") for r in back.regions)

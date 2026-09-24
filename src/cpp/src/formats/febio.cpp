@@ -405,8 +405,11 @@ struct FebReader {
                 members.push_back(Node(feb_need_int(c.attribute("id").value(), "node id")));
             }
         }
-        FebGroup& g = Group(name, RegionKind::Point);
-        g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        // meshio++'s own MeshData sets (`meshdata:<array>`) carry an array, not a group.
+        if (name.rfind("meshdata:", 0) != 0) {
+            FebGroup& g = Group(name, RegionKind::Point);
+            g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        }
         auto& ordered = mNodeSets[name];
         ordered.insert(ordered.end(), members.begin(), members.end());
     }
@@ -419,8 +422,10 @@ struct FebReader {
         for (const pugi::xml_node& c : rSet.children())
             if (c.type() == pugi::node_element)
                 members.push_back(Element(feb_need_int(c.attribute("id").value(), "element id")));
-        FebGroup& g = Group(name, RegionKind::Cell);
-        g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        if (name.rfind("meshdata:", 0) != 0) {
+            FebGroup& g = Group(name, RegionKind::Cell);
+            g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        }
         auto& ordered = mElemSets[name];
         ordered.insert(ordered.end(), members.begin(), members.end());
     }
@@ -918,9 +923,123 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("cells-dropped", std::to_string(dropped_vertices) +
                                                      " vertex cell(s) have no FEBio element");
     }
-    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() > 0) {
-        log::warn("FEBio .feb writer: data arrays are not written (MeshData is not supported yet)");
-        detail::provenance_note("data-dropped", "the .feb writer does not write MeshData");
+    // MeshData: every point array over the nodes where it is defined, every cell
+    // array over the <Elements> cells where it is; each on its own set,
+    // `meshdata:<name>`, which the reader recognises and makes no region of.
+    struct FebArray {
+        std::string mName;
+        bool mNodal = true;
+        std::string mType;
+        std::size_t mWidth = 1;
+        std::vector<std::int64_t> mMembers;  // 1-based node or element numbers
+        std::vector<double> mValues;         // mMembers.size() * mWidth
+    };
+    std::vector<FebArray> arrays;
+    std::vector<std::string> unwritable;
+    auto data_type = [](std::size_t Width) -> const char* {
+        switch (Width) {
+            case 1:
+                return "scalar";
+            case 2:
+                return "vec2";
+            case 3:
+                return "vec3";
+            case 6:
+                return "mat3s";
+            case 9:
+                return "mat3";
+            default:
+                return nullptr;
+        }
+    };
+    auto width_of = [](const NDArray& rA) {
+        std::size_t w = 1;
+        for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+            w *= rA.Shape()[k];
+        return w;
+    };
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t w = width_of(a);
+        const char* type = data_type(w);
+        if (!type || a.Shape().empty()) {
+            unwritable.push_back(name);
+            continue;
+        }
+        FebArray arr{name, true, type, w, {}, {}};
+        for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
+            bool defined = true;
+            for (std::size_t c = 0; c < w && defined; ++c)
+                defined = !std::isnan(detail::read_double(a, p * w + c));
+            if (!defined)
+                continue;
+            arr.mMembers.push_back(static_cast<std::int64_t>(p + 1));
+            for (std::size_t c = 0; c < w; ++c)
+                arr.mValues.push_back(detail::read_double(a, p * w + c));
+        }
+        if (!arr.mMembers.empty())
+            arrays.push_back(std::move(arr));
+    }
+    std::size_t off_elements = 0;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::size_t w = 0;
+        bool ok = true;
+        for (std::size_t b = 0; b < n_blocks && ok; ++b) {
+            if (rMesh.Cells(b).NumCells() == 0)
+                continue;
+            const NDArray& a = rMesh.CellData(name, b);
+            if (a.Shape().empty()) {
+                ok = false;
+                continue;
+            }
+            const std::size_t wb = width_of(a);
+            if (w == 0)
+                w = wb;
+            else if (w != wb)
+                ok = false;
+        }
+        const char* type = ok ? data_type(w == 0 ? 1 : w) : nullptr;
+        if (!type) {
+            unwritable.push_back(name);
+            continue;
+        }
+        w = w == 0 ? 1 : w;
+        FebArray arr{name, false, type, w, {}, {}};
+        for (std::size_t b = 0; b < n_blocks; ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
+                bool defined = true;
+                for (std::size_t c = 0; c < w && defined; ++c)
+                    defined = !std::isnan(detail::read_double(a, r * w + c));
+                if (!defined)
+                    continue;
+                if (kinds[b] != FebBlockKind::Elements) {
+                    ++off_elements;
+                    continue;
+                }
+                arr.mMembers.push_back(
+                    element_no[static_cast<std::size_t>(bases[b] + static_cast<std::int64_t>(r))]);
+                for (std::size_t c = 0; c < w; ++c)
+                    arr.mValues.push_back(detail::read_double(a, r * w + c));
+            }
+        }
+        if (!arr.mMembers.empty())
+            arrays.push_back(std::move(arr));
+    }
+    if (!unwritable.empty() || off_elements != 0 || rMesh.NumFieldData() != 0) {
+        std::string what;
+        for (const std::string& n : unwritable)
+            what += (what.empty() ? "" : ", ") + n;
+        if (!unwritable.empty())
+            log::warn("FEBio .feb writer: arrays FEBio has no data type for are dropped: {}", what);
+        if (off_elements != 0)
+            log::warn(
+                "FEBio .feb writer: {} cell value(s) on surfaces, edges or discrete sets "
+                "are dropped",
+                off_elements);
+        detail::provenance_note("data-dropped",
+                                "field data, and arrays that are not scalar, vec2, vec3, mat3s "
+                                "or mat3 or lie off the elements, are not written");
     }
 
     // The provenance comment goes inside the root, as in VTU: the root tag stays
@@ -1070,6 +1189,13 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
     if (skipped)
         log::warn("FEBio .feb writer: {} region(s) with nothing FEBio can hold were dropped",
                   skipped);
+    // The sets the MeshData arrays live on.
+    for (const FebArray& a : arrays) {
+        out += std::string("\t\t<") + (a.mNodal ? "NodeSet" : "ElementSet") + " name=\"" +
+               feb_escape("meshdata:" + a.mName) + "\">";
+        feb_append_ids(out, a.mMembers);
+        out += std::string("</") + (a.mNodal ? "NodeSet" : "ElementSet") + ">\n";
+    }
 
     out += "\t</Mesh>\n\t<MeshDomains>\n";
     for (std::size_t b = 0; b < n_blocks; ++b) {
@@ -1081,7 +1207,30 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         out += std::string("\t\t<") + domain + " name=\"" + feb_escape(names[b]) + "\" mat=\"" +
                feb_escape(names[b]) + "\"/>\n";
     }
-    out += "\t</MeshDomains>\n</febio_spec>\n";
+    out += "\t</MeshDomains>\n";
+    if (!arrays.empty()) {
+        out += "\t<MeshData>\n";
+        for (const FebArray& a : arrays) {
+            const char* tag = a.mNodal ? "NodeData" : "ElementData";
+            out += std::string("\t\t<") + tag + " name=\"" + feb_escape(a.mName) + "\" " +
+                   (a.mNodal ? "node_set" : "elem_set") + "=\"" +
+                   feb_escape("meshdata:" + a.mName) + "\" data_type=\"" + a.mType + "\">\n";
+            for (std::size_t m = 0; m < a.mMembers.size(); ++m) {
+                out += std::string("\t\t\t<") + (a.mNodal ? "node" : "e") + " lid=\"";
+                feb_append_int(out, static_cast<std::int64_t>(m + 1));
+                out += "\">";
+                for (std::size_t c = 0; c < a.mWidth; ++c) {
+                    detail::snprintf_c(buf, sizeof(buf), c ? ",%.17g" : "%.17g",
+                                       a.mValues[m * a.mWidth + c]);
+                    out += buf;
+                }
+                out += std::string("</") + (a.mNodal ? "node" : "e") + ">\n";
+            }
+            out += std::string("\t\t</") + tag + ">\n";
+        }
+        out += "\t</MeshData>\n";
+    }
+    out += "</febio_spec>\n";
 
     auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
