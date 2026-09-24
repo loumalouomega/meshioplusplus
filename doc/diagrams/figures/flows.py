@@ -940,6 +940,7 @@ def roadmap_map():
         (
             "§1 format reach",
             [
+                ("d3plot · OP2 halves", "S"),
                 ("Marc · .rst halves", "S"),
                 ("Patran · Femap · MFEM halves", "S"),
                 ("libMesh · Z88 · .fil · Radioss halves", "S"),
