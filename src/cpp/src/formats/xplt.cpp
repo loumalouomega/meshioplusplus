@@ -32,11 +32,13 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/xplt.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
@@ -294,7 +296,10 @@ struct XpltFile {
     std::vector<XpltTop> mStates;
     std::vector<float> mTimes;
     std::vector<std::optional<std::int32_t>> mStatus;
-    std::size_t mMeshBegin = 0, mMeshEnd = 0;
+    // Every mesh section in file order (a remeshed run writes one before the
+    // states that use it), and the mesh each state uses.
+    std::vector<XpltTop> mMeshes;
+    std::vector<std::size_t> mStateMesh;
 
     explicit XpltFile(const std::string& rPath, const ReadOptions& rOptions)
         : mSource(rPath, rOptions.mMmap) {
@@ -331,10 +336,12 @@ struct XpltFile {
                     break;
                 const XpltView view{inflated, mRaw.mSwap};
                 XpltTop top{view.U32(0), pos, true, 8, 8 + view.U32(4)};
-                if (top.mId == kMesh)
+                if (top.mId == kMesh) {
                     ++n_mesh;
-                else if (top.mId == kState)
+                    mMeshes.push_back(top);
+                } else if (top.mId == kState) {
                     AddState(view, top);
+                }
                 pos += used;
                 ++n_top;
                 continue;
@@ -358,10 +365,8 @@ struct XpltFile {
                     xplt_fail("the file does not start with its root section");
                 ReadRoot(top.mBegin, top.mEnd, compressed);
             } else if (id == kMesh) {
-                if (n_mesh++ == 0) {
-                    mMeshBegin = top.mBegin;
-                    mMeshEnd = top.mEnd;
-                }
+                ++n_mesh;
+                mMeshes.push_back(top);
             } else if (id == kState) {
                 AddState(mRaw, top);
             }
@@ -370,8 +375,22 @@ struct XpltFile {
         }
         if (n_mesh == 0)
             xplt_fail("the file has no mesh");
-        if (n_mesh > 1)
-            xplt_fail("the mesh changes between states (remeshing), which is not supported");
+    }
+
+    // A mesh section's payload, inflated into `rStore` when it is compressed.
+    XpltView MeshView(std::size_t Index, std::string& rStore, std::size_t& rBegin,
+                      std::size_t& rEnd) const {
+        const XpltTop& top = mMeshes[Index];
+        if (!top.mCompressed) {
+            rBegin = top.mBegin;
+            rEnd = top.mEnd;
+            return mRaw;
+        }
+        rStore = detail::zlib_inflate(mRaw.mData.substr(top.mOffset), 15, nullptr, "FEBio .xplt");
+        const XpltView view{rStore, mRaw.mSwap};
+        rBegin = 8;
+        rEnd = std::min<std::size_t>(8 + view.U32(4), rStore.size());
+        return view;
     }
 
     void ReadRoot(std::size_t Begin, std::size_t End, bool& rCompressed) {
@@ -451,6 +470,7 @@ struct XpltFile {
         mStates.push_back(rTop);
         mTimes.push_back(time);
         mStatus.push_back(status);
+        mStateMesh.push_back(mMeshes.empty() ? 0 : mMeshes.size() - 1);
     }
 };
 
@@ -476,12 +496,16 @@ std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> xplt_facets(const
     return out;
 }
 
+struct XpltSurface {
+    std::string mName;
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mFacets;  // (nodes, ids)
+    bool mFacetSet = false;  // a facet set (FEBio 4) rather than a data surface
+};
+
 struct XpltRaw {
     std::vector<double> mCoords;
     std::vector<XpltDomain> mDomains;
-    std::vector<
-        std::pair<std::string, std::vector<std::pair<std::size_t, std::vector<std::int64_t>>>>>
-        mSurfaces;
+    std::vector<XpltSurface> mSurfaces;
     std::vector<std::pair<std::string, std::vector<std::int64_t>>> mNodeSets, mElemSets;
     std::map<std::int32_t, std::string> mParts;
 };
@@ -547,9 +571,11 @@ XpltRaw xplt_read_mesh(const XpltView& rView, std::size_t Begin, std::size_t End
                     if (const auto named = rView.Child(hdr->first, hdr->second,
                                                        facetset ? kFacetsetName : kSurfaceName))
                         name = rView.String(named->first, named->second);
-                raw.mSurfaces.emplace_back(
-                    name, xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
-                                      facetset ? kFacet : kFace));
+                raw.mSurfaces.push_back(
+                    {name,
+                     xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
+                                 facetset ? kFacet : kFace),
+                     facetset});
                 return true;
             });
         } else if (Sid == kNodesetSection || Sid == kElementsetSection) {
@@ -597,7 +623,17 @@ struct XpltGroupEntry {
 
 Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
     const XpltFile file(rPath, rOptions);
-    const XpltRaw raw = xplt_read_mesh(file.mRaw, file.mMeshBegin, file.mMeshEnd);
+    // The step first: a remeshed run reads the mesh that step uses.
+    const std::size_t n_states = file.mStates.size();
+    if (n_states == 0 && rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
+        xplt_fail("time step " + std::to_string(rOptions.mTimeStep) +
+                  " is out of range: the file has no states");
+    const std::size_t index = n_states == 0 ? 0 : rOptions.ResolveTimeStep(n_states);
+    std::string mesh_store;
+    std::size_t mesh_begin = 0, mesh_end = 0;
+    const XpltView mesh_view =
+        file.MeshView(n_states == 0 ? 0 : file.mStateMesh[index], mesh_store, mesh_begin, mesh_end);
+    const XpltRaw raw = xplt_read_mesh(mesh_view, mesh_begin, mesh_end);
 
     // --- mesh -----------------------------------------------------------------------
     Mesh mesh;
@@ -679,12 +715,25 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         }
     }
 
+    // Surfaces: a data surface is a block of facet cells per facet type (its
+    // variables live there), plus a side region when its facets lie on the
+    // cells; a facet set is only the side region, or facet blocks when some
+    // facet lies on no cell.
     std::optional<detail::FacetIndex> faces;
-    std::set<std::string> seen;
-    std::vector<std::pair<std::string, std::pair<std::string, std::vector<std::int64_t>>>> extra;
-    for (const auto& [name, facets] : raw.mSurfaces) {
-        if (facets.empty() || !seen.insert(name).second)
+    std::vector<std::vector<std::int64_t>> surface_cells;  // per data surface, per facet
+    std::vector<std::pair<std::string, std::vector<std::int64_t>>> blocks_to_add;  // (type, rows)
+    std::vector<std::int64_t> block_surface;  // data surface id (1-based) of each added block
+    std::set<std::string> seen_sides;
+    std::int64_t surface_id = 0;
+    for (const XpltSurface& surf : raw.mSurfaces) {
+        const std::string& name = surf.mName;
+        if (!surf.mFacetSet)
+            ++surface_id;
+        if (surf.mFacets.empty()) {
+            if (!surf.mFacetSet)
+                surface_cells.emplace_back();
             continue;
+        }
         if (!faces) {
             detail::FacetIndexOptions options;
             options.mSurfaceEdges = false;
@@ -692,7 +741,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         }
         std::vector<std::int64_t> sides;
         bool all = true;
-        for (const auto& [nn, nodes] : facets) {
+        for (const auto& [nn, nodes] : surf.mFacets) {
             const std::size_t corners = std::min(xplt_corners(nn), nodes.size());
             const detail::FacetHit* hit = faces->Find(nodes.data(), corners);
             if (!hit) {
@@ -702,37 +751,62 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             sides.push_back(hit->mFirst.mCell);
             sides.push_back(hit->mFirst.mFacet);
         }
-        if (all) {
+        if (all && seen_sides.insert(name).second) {
             XpltGroupEntry& g = group(RegionKind::Side, name, -1, 2);
             g.mEntries.insert(g.mEntries.end(), sides.begin(), sides.end());
-            continue;
         }
+        if (all && surf.mFacetSet)
+            continue;
+        // Facet blocks, one per facet type in first-seen order; each facet's
+        // global cell is recorded in facet order for the surface's data.
         std::vector<std::string> order;
-        std::map<std::string, std::vector<std::int64_t>> by_type;
-        for (const auto& [nn, nodes] : facets) {
+        std::map<std::string, std::vector<std::size_t>> by_type;  // type -> facet indices
+        for (std::size_t f = 0; f < surf.mFacets.size(); ++f) {
+            const auto& [nn, nodes] = surf.mFacets[f];
             const char* type = xplt_facet_type(nn);
             if (!type || nodes.size() != nn)
                 continue;
             if (!by_type.count(type))
                 order.push_back(type);
-            auto& rows = by_type[type];
-            rows.insert(rows.end(), nodes.begin(), nodes.end());
+            by_type[type].push_back(f);
         }
-        for (const std::string& type : order)
-            extra.push_back({name, {type, by_type[type]}});
+        std::vector<std::int64_t> cells(surf.mFacets.size(), -1);
+        XpltGroupEntry& g = group(RegionKind::Cell, name, -1, 2);
+        for (const std::string& type : order) {
+            std::vector<std::int64_t> rows;
+            for (std::size_t f : by_type[type]) {
+                const auto& nodes = surf.mFacets[f].second;
+                rows.insert(rows.end(), nodes.begin(), nodes.end());
+                cells[f] = base;
+                g.mEntries.push_back(base);
+                ++base;
+            }
+            blocks_to_add.emplace_back(type, std::move(rows));
+            block_surface.push_back(surf.mFacetSet ? 0 : surface_id);
+        }
+        if (!surf.mFacetSet)
+            surface_cells.push_back(std::move(cells));
     }
-    for (const auto& [name, block] : extra) {
-        const auto& [type, flat] = block;
+    const std::size_t n_domain_blocks = mesh.NumCellBlocks();
+    for (const auto& [type, flat] : blocks_to_add) {
         const std::size_t k =
             static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(type)));
-        const std::size_t rows = flat.size() / k;
-        NDArray conn(DType::Int64, {rows, k});
+        NDArray conn(DType::Int64, {flat.size() / k, k});
         std::copy(flat.begin(), flat.end(), conn.As<std::int64_t>());
         mesh.AddCellBlock(type, std::move(conn));
-        XpltGroupEntry& g = group(RegionKind::Cell, name, -1, 2);
-        for (std::size_t r = 0; r < rows; ++r)
-            g.mEntries.push_back(base + static_cast<std::int64_t>(r));
-        base += static_cast<std::int64_t>(rows);
+    }
+    if (rOptions.WantsAnyData() && rOptions.WantsArray("xplt:surface") &&
+        std::any_of(block_surface.begin(), block_surface.end(),
+                    [](std::int64_t v) { return v > 0; })) {
+        std::vector<NDArray> ids;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray a(DType::Int64, {n});
+            const std::int64_t v = b < n_domain_blocks ? 0 : block_surface[b - n_domain_blocks];
+            std::fill(a.As<std::int64_t>(), a.As<std::int64_t>() + n, v);
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData("xplt:surface", std::move(ids));
     }
     for (auto& [key, g] : groups) {
         const RegionKind kind = static_cast<RegionKind>(key.first);
@@ -744,14 +818,8 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
     }
 
     // --- the chosen state --------------------------------------------------------------
-    const std::size_t n_states = file.mStates.size();
-    if (n_states == 0) {
-        if (rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
-            xplt_fail("time step " + std::to_string(rOptions.mTimeStep) +
-                      " is out of range: the file has no states");
+    if (n_states == 0)
         return mesh;
-    }
-    const std::size_t index = rOptions.ResolveTimeStep(n_states);
     const auto scalar = [](double V, DType T) {
         NDArray a(T, {1});
         if (T == DType::Float64)
@@ -815,7 +883,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             const XpltItem& item = items_it->second[static_cast<std::size_t>(var - 1)];
             if (!rOptions.WantsArray(item.mName))
                 return true;
-            if (grp == XpltGroup::Surface || grp == XpltGroup::Edge) {
+            if (grp == XpltGroup::Edge) {
                 skip(item.mName);
                 return true;
             }
@@ -835,7 +903,88 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 std::copy(pValues, pValues + Rows * width, a.As<double>());
                 return a;
             };
-            if (grp == XpltGroup::Global) {
+            if (grp == XpltGroup::Surface) {
+                // Region k is data surface k: per facet (item), one value
+                // (region) -> its facet cells; per surface node (node, in
+                // first-seen order over its facets) or per facet node (mult)
+                // -> averaged at the points, as element-node values are.
+                if (item.mFmt == 1 || item.mFmt == 3) {
+                    std::vector<std::vector<double>> blocks;
+                    for (std::size_t n : sizes)
+                        blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
+                    const auto bases = detail::block_bases(mesh);
+                    bool landed = false;
+                    for (const auto& [rid, values] : regions) {
+                        const std::size_t k = static_cast<std::size_t>(rid) - 1;
+                        if (rid < 1 || k >= surface_cells.size())
+                            continue;
+                        const auto& cells = surface_cells[k];
+                        if (values.size() < (item.mFmt == 3 ? width : cells.size() * width))
+                            continue;
+                        for (std::size_t f = 0; f < cells.size(); ++f) {
+                            if (cells[f] < 0)
+                                continue;
+                            landed = true;
+                            const std::size_t b = static_cast<std::size_t>(
+                                std::upper_bound(bases.begin(), bases.end(), cells[f]) -
+                                bases.begin() - 1);
+                            const std::size_t r = static_cast<std::size_t>(cells[f] - bases[b]);
+                            for (std::size_t w = 0; w < width; ++w)
+                                blocks[b][r * width + w] =
+                                    item.mFmt == 3 ? values[w] : values[f * width + w];
+                        }
+                    }
+                    // A variable on no surface of this mesh gives no array.
+                    if (!landed)
+                        return true;
+                    std::vector<NDArray> arrays;
+                    for (std::size_t b = 0; b < sizes.size(); ++b)
+                        arrays.push_back(make(sizes[b], blocks[b].data()));
+                    mesh.AddCellData(item.mName, std::move(arrays));
+                    return true;
+                }
+                if (item.mFmt != 0 && item.mFmt != 2) {
+                    skip(item.mName);
+                    return true;
+                }
+                const auto sums_of = [&]() -> auto& {
+                    auto [it, fresh] =
+                        sums.try_emplace(item.mName, std::vector<double>(n_points * width, 0.0),
+                                         std::vector<double>(n_points, 0.0));
+                    if (fresh) {
+                        sum_order.push_back(item.mName);
+                        sum_width[item.mName] = width;
+                    }
+                    return it->second;
+                };
+                std::size_t data_surface = 0;
+                for (const XpltSurface& surf : raw.mSurfaces) {
+                    if (surf.mFacetSet)
+                        continue;
+                    ++data_surface;
+                    for (const auto& [rid, values] : regions) {
+                        if (static_cast<std::size_t>(rid) != data_surface)
+                            continue;
+                        std::vector<std::int64_t> nodes;
+                        std::unordered_set<std::int64_t> seen_node;
+                        for (const auto& facet : surf.mFacets)
+                            for (std::int64_t p : facet.second)
+                                if (item.mFmt == 2 || seen_node.insert(p).second)
+                                    nodes.push_back(p);
+                        if (values.size() < nodes.size() * width || nodes.empty())
+                            continue;
+                        auto& [total, count] = sums_of();
+                        for (std::size_t i = 0; i < nodes.size(); ++i) {
+                            const auto p = static_cast<std::size_t>(nodes[i]);
+                            if (p >= n_points)
+                                continue;
+                            for (std::size_t w = 0; w < width; ++w)
+                                total[p * width + w] += values[i * width + w];
+                            count[p] += 1.0;
+                        }
+                    }
+                }
+            } else if (grp == XpltGroup::Global) {
                 if (!regions.empty()) {
                     const auto& v = regions.front().second;
                     NDArray a(DType::Float64, {v.size()});
@@ -927,7 +1076,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         std::string list;
         for (const std::string& s : skipped)
             list += (list.empty() ? "" : ", ") + s;
-        log::warn("FEBio .xplt: surface, edge and material-point variables are not read: {}", list);
+        log::warn("FEBio .xplt: edge and material-point variables are not read: {}", list);
     }
     return mesh;
 }

@@ -257,10 +257,61 @@ TEST(Xplt, ReadsCompressedStatesAndDropsATruncatedLastOne) {
 TEST(Xplt, RefusesWhatItCannotRead) {
     const Plt p;
     EXPECT_THROW(read_xplt(write_plot(plot_chunks(p, 0x08, false), p, false)), ReadError);
-    auto chunks = plot_chunks(p, 0x35, false);
-    chunks.insert(chunks.begin() + 3, chunks[1]);  // a second mesh: remeshing
-    EXPECT_THROW(read_xplt(write_plot(chunks, p, false)), ReadError);
     const std::string junk = temp_path(".xplt");
     std::ofstream(junk, std::ios::binary) << "not a plot file";
     EXPECT_THROW(read_xplt(junk), ReadError);
+}
+
+// The data surface "lid" (the first tet's face 0 1 2) becomes a triangle block
+// carrying the surface variable; a second mesh chunk, as FEBio writes after
+// remeshing, is the mesh of every state after it.
+TEST(Xplt, ReadsSurfaceBlocksAndRemeshedStates) {
+    const Plt p;
+    auto chunks = plot_chunks(p, 0x35, false);
+    const std::string surface =
+        p.Chunk(0x01043000,
+                p.Chunk(0x01043100,
+                        p.Chunk(0x01043101, p.Chunk(0x01043104, p.U32(3) + "lid")) +
+                            p.Chunk(0x01043200, p.Chunk(0x01043201, p.U32(1) + p.U32(3) + p.U32(0) +
+                                                                        p.U32(1) + p.U32(2)))));
+    chunks[1] = p.Chunk(0x01040000, chunks[1].substr(8) + surface);
+    // The remeshed copy: same topology, every node moved by +10 in x.
+    std::string moved = chunks[1];
+    const std::string coords_tag = p.U32(0x01041200);
+    const std::size_t at = moved.find(coords_tag) + 8;
+    for (std::size_t i = 0; i < 5; ++i) {
+        const std::size_t x = at + 16 * i + 4;
+        float v;
+        std::uint32_t u = 0;
+        for (int b = 0; b < 4; ++b)
+            u |= static_cast<std::uint32_t>(static_cast<unsigned char>(moved[x + b])) << (8 * b);
+        std::memcpy(&v, &u, 4);
+        moved.replace(x, 4, p.F32(v + 10));
+    }
+    chunks.insert(chunks.begin() + 3, moved);
+    const std::string path = write_plot(chunks, p, false);
+
+    const Mesh first = read_xplt(path);
+    ASSERT_EQ(first.NumCellBlocks(), 2u);
+    EXPECT_EQ(first.Cells(1).Type(), "triangle");
+    EXPECT_EQ(first.Cells(1).NumCells(), 1u);
+    EXPECT_EQ(detail::read_double(first.CellData("traction", 1), 0), 9.0);
+    EXPECT_TRUE(std::isnan(detail::read_double(first.CellData("traction", 0), 0)));
+    EXPECT_EQ(detail::read_int(first.CellData("xplt:surface", 1), 0), 1);
+    bool lid = false;
+    for (std::size_t r = 0; r < first.NumRegions(); ++r) {
+        const auto& reg = first.Region(r);
+        lid = lid || (reg.mName == "lid" && reg.mKind == RegionKind::Cell && reg.NumEntries() == 1);
+    }
+    EXPECT_TRUE(lid);
+    EXPECT_EQ(detail::read_double(first.Points(), 0), 0.0);
+
+    ReadOptions last;
+    last.mTimeStep = -1;
+    const Mesh second = read_xplt(path, last);
+    EXPECT_EQ(detail::read_int(second.FieldData("xplt:step"), 0), 1);
+    EXPECT_DOUBLE_EQ(detail::read_double(second.PointData("displacement"), 14), 14.0);
+    EXPECT_EQ(detail::read_double(second.CellData("traction", 1), 0), 9.0);
+    EXPECT_EQ(detail::read_double(second.Points(), 0), 10.0);
+    EXPECT_EQ(read_xplt_metadata(path).mTimeValues, (std::vector<double>{0.5, 1.0}));
 }

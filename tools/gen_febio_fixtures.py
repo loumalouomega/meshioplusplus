@@ -411,6 +411,123 @@ def xplt_hex27():
     return "\n".join(lines) + "\n"
 
 
+def _bar_lines(title_vars, extra_mesh=(), boundary=(), loads=(), adaptor=()):
+    """Two hex8 in a row, x in [0, 2], fixed at x=0; the plot variables and
+    any surfaces, boundary conditions, loads or mesh adaptor are the caller's."""
+    nodes = Nodes()
+    grid = {
+        (i, j, k): nodes((i, j, k)) for k in (0, 1) for j in (0, 1) for i in (0, 1, 2)
+    }
+
+    def brick(i):
+        c = [(i, 0, 0), (i + 1, 0, 0), (i + 1, 1, 0), (i, 1, 0)]
+        c += [(x, y, 1) for x, y, _ in c]
+        return [grid[p] for p in c]
+
+    lines = [
+        '<?xml version="1.0" encoding="ISO-8859-1"?>',
+        '<febio_spec version="4.0">',
+        '\t<Module type="solid"/>',
+        _XPLT_CONTROL,
+        "\t<Material>",
+        '\t\t<material id="1" name="m" type="neo-Hookean"><E>1</E><v>0.3</v></material>',
+        "\t</Material>",
+        "\t<Mesh>",
+        "\t\t<Nodes>",
+    ]
+    lines += [f'\t\t\t<node id="{i}">{t}</node>' for i, t in xyz_text(nodes).items()]
+    lines.append("\t\t</Nodes>")
+    lines.append('\t\t<Elements type="hex8" name="bar">')
+    for eid in (1, 2):
+        lines.append(
+            f'\t\t\t<elem id="{eid}">{",".join(map(str, brick(eid - 1)))}</elem>'
+        )
+    lines.append("\t\t</Elements>")
+    for name, x in (("fixed", 0), ("pull", 2)):
+        ids = [grid[(x, j, k)] for j in (0, 1) for k in (0, 1)]
+        lines.append(
+            f'\t\t<NodeSet name="{name}">' + ",".join(map(str, ids)) + "</NodeSet>"
+        )
+    for name, faces in extra_mesh:
+        lines.append(f'\t\t<Surface name="{name}">')
+        for n, face in enumerate(faces, 1):
+            ids = ",".join(str(grid[p]) for p in face)
+            lines.append(f'\t\t\t<quad4 id="{n}">{ids}</quad4>')
+        lines.append("\t\t</Surface>")
+    lines.append("\t</Mesh>")
+    lines.append(
+        '\t<MeshDomains>\n\t\t<SolidDomain name="bar" mat="m"/>\n\t</MeshDomains>'
+    )
+    lines.append("\t<Boundary>")
+    lines.append('\t\t<bc type="zero displacement" node_set="fixed">')
+    lines.append("\t\t\t<x_dof>1</x_dof><y_dof>1</y_dof><z_dof>1</z_dof>\n\t\t</bc>")
+    lines += list(boundary)
+    lines.append("\t</Boundary>")
+    if loads:
+        lines += ["\t<Loads>", *loads, "\t</Loads>"]
+    lines += list(adaptor)
+    lines.append("\t<Output>")
+    lines.append('\t\t<plotfile type="febio">')
+    lines += [f"\t\t\t{v}" for v in title_vars]
+    lines.append("\t\t</plotfile>")
+    lines.append("\t</Output>")
+    lines.append(_XPLT_TAIL)
+    return "\n".join(lines) + "\n"
+
+
+def xplt_surface():
+    """The bar under pressure on its x=2 end (surface "end") and on its top
+    (surface "top", two facets); plots facet, surface and nodal surface
+    variables alongside the displacement."""
+    end = [(2, 0, 0), (2, 1, 0), (2, 1, 1), (2, 0, 1)]
+    top = [
+        [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+        [(1, 0, 1), (2, 0, 1), (2, 1, 1), (1, 1, 1)],
+    ]
+    return _bar_lines(
+        [
+            '<var type="displacement"/>',
+            '<var type="facet area" surface="end"/>',
+            '<var type="facet area" surface="top"/>',
+            '<var type="surface area" surface="top"/>',
+            '<var type="scalar surface load" surface="top"/>',
+            '<var type="nodal surface traction" surface="end"/>',
+        ],
+        extra_mesh=[("end", [end]), ("top", top)],
+        loads=[
+            '\t\t<surface_load type="pressure" surface="end">'
+            '<pressure lc="1">-0.05</pressure></surface_load>',
+            '\t\t<surface_load type="pressure" surface="top">'
+            '<pressure lc="1">0.02</pressure></surface_load>',
+        ],
+    )
+
+
+def xplt_remesh():
+    """The bar pulled 0.1 along x with a hex_refine mesh adaptor that splits
+    elements 1 and 2 after every step, so each state carries a new mesh."""
+    return _bar_lines(
+        ['<var type="displacement"/>', '<var type="stress"/>'],
+        boundary=[
+            '\t\t<bc type="prescribed displacement" node_set="pull">'
+            '<dof>x</dof><value lc="1">0.1</value></bc>'
+        ],
+        adaptor=[
+            "\t<MeshAdaptor>",
+            '\t\t<mesh_adaptor type="hex_refine">',
+            "\t\t\t<max_iters>1</max_iters>",
+            "\t\t\t<max_elements>100</max_elements>",
+            "\t\t\t<max_value>0.5</max_value>",
+            '\t\t\t<criterion type="element_selection">',
+            "\t\t\t\t<element_list>1,2</element_list>",
+            "\t\t\t\t<value>1</value>",
+            "\t\t\t</criterion>",
+            "\t\t</mesh_adaptor>",
+            "\t</MeshAdaptor>",
+        ],
+    )
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     # FEBio models whose plot files are the .xplt fixtures. Run with FEBio
@@ -419,6 +536,8 @@ def main():
         ("xplt_blocks.feb", xplt_blocks(False)),
         ("xplt_blocks_z.feb", xplt_blocks(True)),
         ("xplt_hex27.feb", xplt_hex27()),
+        ("xplt_surface.feb", xplt_surface()),
+        ("xplt_remesh.feb", xplt_remesh()),
     ):
         (OUT / "xplt").mkdir(exist_ok=True)
         with open(OUT / "xplt" / name, "w", newline="\n") as f:
