@@ -23,10 +23,13 @@ Most tables are their own inverse, but not all. MED's `hexahedron27` is not, and
 | `flux` | `tetra`, `tetra10`, `pyramid`, `wedge`, `wedge15`, `hexahedron`, `hexahedron20` | FEconv's FLUX samples: every solid is VTK's element mirrored (base face clockwise); read through these tables all have positive Jacobians and mid-edge nodes at edge midpoints, and equal their I-DEAS UNV twins row for row. `wedge15` has no sample and follows the same rule |
 | `frd` | `hexahedron20`, `wedge15`, `line3` | `ccx` 2.23 output for the same `.inp` |
 | `patran` | `hexahedron20`, `wedge15` | the Patran Reference Manual's Element Library (the vertical mid-edges come before the top ring), with fixtures written from its edge lists (v16.5.0); see [Patran](./formats/patran.md#node-order) |
+| `libmesh` | `hexahedron20`, `hexahedron27`, `wedge15`, `wedge18` | libMesh's own VTK connectivity (`cell_hex20.C`, `cell_hex27.C`, `cell_prism15.C`, `cell_prism18.C`); every element type of libMesh's `tests/meshes/xdrio_elements` samples reads with positive volumes and its higher-order nodes where meshio++'s tables put them (v16.7.0); see [libMesh](./formats/libmesh.md#node-order) |
+| `radioss` | `hexahedron20` | gmsh's `getVertexRAD` for `/BRIC20` (bottom ring, vertical mid-edges, top ring), confirmed by OpenRadioss users (discussion #2809) (v16.7.0); see [Radioss](./formats/radioss.md#node-order) |
+| `z88` | `hexahedron`, `hexahedron20`, `tetra10` | Z88's hexahedra list the face its manual draws on top first (read as-is, every hexahedron of the Z88OS examples has a negative volume), and its tet10 mid-edges run 2-4, 3-4, 1-4 (the mid-edge positions of Z88OS example `b11`); Z88R solves the decks written through these tables (v16.7.0); see [Z88](./formats/z88.md#node-order) |
 | `mphtxt` (also `mphbin`) | `quad`, `pyramid`, `hexahedron`, `triangle6`, `quad9`, `tetra10`, `pyramid14`, `wedge18`, `hexahedron27` | COMSOL's "Mesh Element Numbering Conventions" (corners in tensor order, then the quadratic lattice in lexicographic order), real COMSOL files (deal.II, FEconv, Wolfram FEMAddOns), and AWS Palace's COMSOL-to-gmsh tables composed with the gmsh ones (v16.1.0) |
 | `unv` | `line3`, `triangle6`, `quad8`, `quad9`, `tetra10`, `pyramid13`, `wedge15`, `hexahedron20` | gmsh's `.unv`/`.msh` twins and Salome's SMESH driver |
 
-The gmsh, CGNS, GiD, Exodus and Kratos tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.15](./roadmap.md)).
+The gmsh, CGNS, GiD, Exodus and Kratos tables still live in their own readers. They move here when those formats are next touched ([roadmap §1.12](./roadmap.md)).
 
 ## Self-test
 

@@ -123,7 +123,7 @@ No reader in this library retains any slot a provenance-bearing writer uses. The
 | Tier | Meaning | Formats |
 |---|---|---|
 | `Block` | Arbitrarily many lines | abaqus, ansys*, avsucd, code_aster, elmer (in `mesh.names`), exodus, febio, flac3d, flux, gltf, lsdyna, mfem, mphtxt, nastran, netgen, obj, off, permas, ply, tetgen, triangle, vti, vtp, vtu |
-| `SingleLine` | Exactly one line | ansys, femap (block 100's title), tecplot, vtk/vtk42/vtk51 |
+| `SingleLine` | Exactly one line | ansys, femap (block 100's title), tecplot, vtk/vtk42/vtk51, z88 (the end of `z88i1.txt`'s header line) |
 | `Bounded` | One line, hard byte cap | ensight, openfoam, patran (the 80-column title card), stl (binary only) |
 | `None` | No slot at all | every format `doc/formats.md`'s table marks "—" (mphbin among them: its writer still asks, so `Mode::Required` fails there) |
 

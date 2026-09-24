@@ -133,7 +133,7 @@ for (r in mio_regions(m)) {
 
 ## Selective reads and time steps
 
-Format inference is the shared registry's, the C API's: the extension picks the format, with one content-aware exception since v16.5.0 — a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than `medit`. Formats added to the registry (Patran, Femap and MFEM in v16.5.0) reach this binding with no code change.
+Format inference is the shared registry's, the C API's: the extension picks the format, with two exceptions: a `.mesh` file whose first line names an MFEM mesh is read as `mfem` rather than `medit` (v16.5.0), and Z88's fixed file names (`z88i1.txt`, `z88o2.txt`, …) are `z88` rather than xyz (v16.7.0). Formats added to the registry (Patran, Femap and MFEM in v16.5.0; libMesh, Z88, Abaqus `.fil` and Radioss in v16.7.0) reach this binding with no code change.
 
 `mio_read()` narrows what it materializes, and since v8.6.0 also picks which time step of a multi-step file to decode:
 

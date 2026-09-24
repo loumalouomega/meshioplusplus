@@ -19,6 +19,7 @@
 There are various mesh formats available for representing unstructured meshes. meshio++ can read and write all of the following and smoothly converts between them:
 
 > [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) (`.inp`),
+> [Abaqus results file](https://ceae-server.colorado.edu/v2016/books/usb/pt02ch05s01afi01.html) (`.fil`, ASCII and binary, read-only; every increment is a step, nodal and element results by output location),
 > ANSYS msh (`.msh`),
 > [Ansys MAPDL](https://www.ansys.com) coded database (`.cdb`, `.inp`; degenerate shapes resolved, components as named regions) and results (`.rst`, `.rth`, read-only; nodal solution, every result set is a step),
 > [AVS-UCD](https://lanl.github.io/LaGriT/pages/docs/read_avs.html) (`.avs`),
@@ -42,6 +43,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [I-deas Universal / UNV](https://www.ceas3.uc.edu/sdrluff/) (`.unv`, `.uff`),
 > [ANSYS Fluent interpolation](https://github.com/victorsndvg/FEconv) (`.ip`),
 > [Kratos/MDPA](https://github.com/KratosMultiphysics/Kratos/wiki/Input-data) (`.mdpa`),
+> [libMesh](https://libmesh.github.io/) (`.xda`, `.xdr`, read-only; active cells of refined meshes, subdomains, side sets and node sets as named regions),
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions) and grid functions (`.gf`),
@@ -57,6 +59,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
 > [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
+> [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`, read-only; parts, subsets, groups and surfaces as named regions, `#include` followed),
 > [MSC Patran 2 neutral file](https://hexagon.com/products/patran) (`.pat`, `.out`; named components as regions),
 > [PCD](https://pointclouds.org/documentation/tutorials/pcd_file_format.html) (Point Cloud Library point clouds, `ascii`/`binary`/`binary_compressed`) (`.pcd`),
 > [PERMAS](https://www.intes.de) (`.post`, `.post.gz`, `.dato`, `.dato.gz`),
@@ -78,6 +81,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry) ([TIN](https://en.wikipedia.org/wiki/Triangulated_irregular_network)) (`.wkt`),
 > [XDMF](https://xdmf.org/index.php/XDMF_Model_and_Format) (`.xdmf`, `.xmf`),
 > XYZ point clouds (headerless ASCII: `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt`),
+> [Z88](https://z88.de/) (`z88i1.txt`, recognised by its file name, with its `z88o2.txt` displacements and `z88o3.txt` stresses),
 > [Zarr](https://zarr.dev/) (`.zarr`, the PhysicsNeMo mesh layout).
 
 <p align="center">

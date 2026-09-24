@@ -56,7 +56,7 @@ Every increment is a step: `time_step` selects one (0 = first, negative counts f
 | averaged at the nodes (4) | `point_data` |
 | rebar (3) | skipped |
 
-A single component drops its axis. Section points above 1 (shell and beam layers; continuum elements write 0) get `@sp<k>` appended to the name: `S` holds the first layer and the solids, `S@sp5` the fifth layer. A block with no value for a field holds NaN. A solid's six-component tensors (`S`, `E`, `PE`, `LE`, `EE`, … where the header says three direct and three shear components) are reordered from Abaqus's 11, 22, 33, 12, 13, 23 to meshio++'s `xx yy zz xy yz zx`; every other record keeps Abaqus's component order. Von Mises is `SINV`'s first component when the run wrote invariants; otherwise compute it from `S` with the [tensor-invariants operation](../tensor_invariants.md).
+A single component drops its axis. Section points above 1 (shell and beam layers; continuum elements write 0) get `@sp<k>` appended to the name: `S` holds the first layer and the solids, `S@sp5` the fifth layer. A block with no value for a field holds NaN. A solid's six-component tensors (`S`, `E`, `PE`, `LE`, `EE`, … where the header says three direct and three shear components) are reordered from Abaqus's 11, 22, 33, 12, 13, 23 to meshio++'s `xx yy zz xy yz zx`; every other record keeps Abaqus's component order. Von Mises is `SINV`'s first component when the run wrote invariants; otherwise compute it from `S` with the [tensor-invariants operation](../tensor_invariants.md), after reducing the integration-point axis (for instance to the mean over the points, a `(cells, 6)` array).
 
 ## Validation
 
