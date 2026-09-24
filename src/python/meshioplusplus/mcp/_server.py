@@ -226,11 +226,14 @@ def _register_conversion(server: FastMCP) -> None:
         ghosts: str = "keep",
         grid_functions: Optional[Dict[str, str]] = None,
         write_grid_functions: bool = False,
+        elmer_halo: bool = False,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
         an MFEM .mesh input; write_grid_functions writes the data of an MFEM
-        output as <stem>.<name>.gf files beside it. points_only/arrays/time_step narrow the read; piece
+        output as <stem>.<name>.gf files beside it; elmer_halo adds ElmerGrid's
+        -halo layer to the partitioning an Elmer output writes from
+        partition:part. points_only/arrays/time_step narrow the read; piece
         keeps one partition/block of a partitioned file (VTKHDF, .pvtu/.pvtp,
         or one part of a .pvd step) instead of the merged mesh; ghosts=drop
         removes the ghost cells (halo) of a .pvtu/.pvtp/.pvd. mode selects ascii|binary output where the format
@@ -252,6 +255,7 @@ def _register_conversion(server: FastMCP) -> None:
             ghosts=ghosts,
             grid_functions=grid_functions,
             write_grid_functions=write_grid_functions,
+            elmer_halo=elmer_halo,
         )
 
     @server.tool()

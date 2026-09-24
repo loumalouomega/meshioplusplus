@@ -2977,10 +2977,13 @@ PYBIND11_MODULE(_core, m) {
     });
 
     // Elmer mesh directory writer / reader.
-    m.def("elmer_write", [](const std::string& path, py::object pymesh) {
-        meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
-    });
+    m.def(
+        "elmer_write",
+        [](const std::string& path, py::object pymesh, bool halo) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_elmer(path, meshioplusplus_py::py_to_mesh(pymesh, refs), halo);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("halo") = false);
     m.def(
         "elmer_read",
         [](const std::string& path, bool points_only, py::object arrays, py::object piece,

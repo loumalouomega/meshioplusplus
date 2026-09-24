@@ -349,6 +349,65 @@ def test_partitioned_writers_write_the_same_bytes(tmp_path):
         ), f.name
 
 
+def test_partitioned_write_with_halo(engine, tmp_path):
+    mesh = _split(_box())
+    engine.write(tmp_path / "halo", mesh, halo=True)
+    engine.write(tmp_path / "plain", mesh)
+    pdir = tmp_path / "halo" / "partitioning.2"
+    owned = {1: set(), 2: set()}
+    halo = {1: set(), 2: set()}
+    for part in (1, 2):
+        for line in (pdir / f"part.{part}.elements").read_text().splitlines():
+            ident = line.split()[0]
+            if "/" in ident:
+                no, owner = map(int, ident.split("/"))
+                assert owner != part
+                halo[part].add(no)
+            else:
+                owned[part].add(int(ident))
+    assert halo[1] and halo[2]
+    # a halo copy is an element of the other part
+    assert halo[1] <= owned[2] and halo[2] <= owned[1]
+    # boundaries are those of the plain partitioning
+    for part in (1, 2):
+        name = f"part.{part}.boundary"
+        assert (pdir / name).read_bytes() == (
+            tmp_path / "plain" / "partitioning.2" / name
+        ).read_bytes()
+    # a shared node's owner (first part) uses it through its own elements
+    for part in (1, 2):
+        nodes_of = {}
+        for line in (pdir / f"part.{part}.elements").read_text().splitlines():
+            t = line.split()
+            owner = int(t[0].split("/")[1]) if "/" in t[0] else part
+            for n in t[3:]:
+                nodes_of.setdefault(int(n), set()).add(owner)
+        for line in (pdir / f"part.{part}.shared").read_text().splitlines():
+            n, count, *parts = map(int, line.split())
+            assert count == len(parts) and parts[0] in nodes_of[n]
+    # the merged read keeps each halo element once
+    merged = engine.read(pdir)
+    assert sum(len(c) for c in merged.cells) == sum(len(c) for c in mesh.cells)
+    np.testing.assert_array_equal(
+        np.concatenate(merged.cell_data["partition:part"]),
+        np.concatenate(
+            engine.read(tmp_path / "plain" / "partitioning.2").cell_data[
+                "partition:part"
+            ]
+        ),
+    )
+
+
+def test_halo_writers_write_the_same_bytes(tmp_path):
+    mesh = _split(meshioplusplus.read(MESHES / "tet10_two_bodies"))
+    _core.elmer_write(str(tmp_path / "cpp"), mesh, True)
+    py_elmer.write(tmp_path / "py", mesh, halo=True)
+    for f in sorted((tmp_path / "cpp" / "partitioning.2").iterdir()):
+        assert (
+            f.read_bytes() == (tmp_path / "py" / "partitioning.2" / f.name).read_bytes()
+        ), f.name
+
+
 def test_partitioned_write_refuses_negative_parts(engine, tmp_path):
     mesh = _box()
     mesh.cell_data = {

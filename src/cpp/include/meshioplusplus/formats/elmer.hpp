@@ -89,4 +89,16 @@ MESHIOPLUSPLUS_API Mesh read_elmer(const std::string& rPath, const ReadOptions& 
  */
 MESHIOPLUSPLUS_API void write_elmer(const std::string& rPath, const Mesh& rMesh);
 
+/**
+ * @brief `write_elmer(rPath, rMesh)`, adding ElmerGrid's `-halo` layer to a
+ * partitioned write when @p Halo is true: every bulk element with a whole side
+ * in another part is copied into that part as `id/owner`, as discontinuous
+ * Galerkin solvers need (since v16.11.0). Without `partition:part` it is
+ * ignored.
+ * @param rPath Directory to write (created if absent).
+ * @param rMesh The mesh.
+ * @param Halo Write the halo layer.
+ */
+MESHIOPLUSPLUS_API void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo);
+
 }  // namespace meshioplusplus

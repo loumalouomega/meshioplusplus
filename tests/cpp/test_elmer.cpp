@@ -403,3 +403,39 @@ TEST(Elmer, WritesPartitionsFromPartitionPart) {
     EXPECT_EQ(detail::read_int(back.CellData("partition:part", 0), 1), 1);
     fs::remove_all(dir.parent_path());
 }
+
+TEST(Elmer, WritesTheHaloLayer) {
+    // The two tetrahedra share a face, so each is the other part's halo (ElmerGrid
+    // -halo): copied as `id/owner`, its nodes added to the part and shared with it,
+    // the halo part listed after the owner.
+    Mesh m = two_tets();
+    NDArray tet_parts(DType::Int64, {2});
+    tet_parts.As<std::int64_t>()[0] = 0;
+    tet_parts.As<std::int64_t>()[1] = 1;
+    NDArray tri_parts(DType::Int64, {2});
+    tri_parts.As<std::int64_t>()[0] = 0;
+    tri_parts.As<std::int64_t>()[1] = 0;
+    m.AddCellData("partition:part", {std::move(tet_parts), std::move(tri_parts)});
+    const fs::path dir = fresh_dir() / "mesh";
+    write_elmer(dir.string(), m, true);
+    const fs::path pdir = dir / "partitioning.2";
+    EXPECT_EQ(lines(pdir / "part.1.elements"),
+              (std::vector<std::string>{"1 1 504 1 2 3 4", "2/2 2 504 2 4 3 5"}));
+    EXPECT_EQ(lines(pdir / "part.2.elements"),
+              (std::vector<std::string>{"1/1 1 504 1 2 3 4", "2 2 504 2 4 3 5"}));
+    EXPECT_EQ(lines(pdir / "part.1.shared"),
+              (std::vector<std::string>{"1 2 1 2", "2 2 1 2", "3 2 1 2", "4 2 1 2", "5 2 2 1"}));
+    EXPECT_EQ(lines(pdir / "part.1.header"),
+              (std::vector<std::string>{"5      2      2     ", "2     ", "504    2     ",
+                                        "303    2     ", "5      0     "}));
+    // The merged read keeps each halo element once, with its owner's label.
+    const Mesh back = read_elmer(pdir.string());
+    ASSERT_EQ(back.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(detail::read_int(back.CellData("partition:part", 0), 1), 1);
+    // Without the flag the same mesh writes no halo.
+    const fs::path plain = dir.parent_path() / "plain";
+    write_elmer(plain.string(), m, false);
+    EXPECT_EQ(lines(plain / "partitioning.2" / "part.1.elements"),
+              (std::vector<std::string>{"1 1 504 1 2 3 4"}));
+    fs::remove_all(dir.parent_path());
+}

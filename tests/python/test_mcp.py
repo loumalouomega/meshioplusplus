@@ -249,6 +249,20 @@ def test_elmer_directory_converts_both_ways(tmp_path):
     assert [b.type for b in written.cells] == ["tetra10", "triangle6", "vertex"]
 
 
+def test_elmer_halo_convert(tmp_path):
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / "meshes" / "elmer" / "partitioned"
+    out = tmp_path / "halo"
+    _tools.tool_convert(
+        str(src / "partitioning.2"), str(out), output_format="elmer", elmer_halo=True
+    )
+    elements = (out / "partitioning.2" / "part.2.elements").read_text()
+    assert "1/1 " in elements
+    with pytest.raises(ValueError, match="Elmer"):
+        _tools.tool_convert(str(src), str(tmp_path / "x.vtu"), elmer_halo=True)
+
+
 def test_febio_feb_is_readable_writable_and_converts(tmp_path):
     import pathlib
 

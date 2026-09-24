@@ -608,7 +608,7 @@ class _Ids:
         return ident
 
 
-def write(filename, mesh):
+def write(filename, mesh, halo=False):
     directory = pathlib.Path(filename)
     blocks = mesh.cells
     codes, dims = [], []
@@ -860,17 +860,54 @@ def write(filename, mesh):
 
     if partitioned:
         _write_partitioning(
-            directory, mesh, bases, element_no, n_bulk, bulk_rows, boundary_rows, points
+            directory,
+            mesh,
+            bases,
+            element_no,
+            n_bulk,
+            bulk_rows,
+            boundary_rows,
+            points,
+            halo,
         )
 
 
+def _halo_parts(mesh, bulk_rows, part_of, element_no, users):
+    """ElmerGrid's ``-halo`` layer (``write_elmer`` in elmer.cpp): for each bulk
+    row, the other parts in which one of its sides lies whole (every node of
+    it, mid-side ones included, used by that part's own elements), after
+    ElmerGrid's quick test for enough shared nodes on the element."""
+    halos = []
+    for g, _, code, row in bulk_rows:
+        own = part_of[element_no[g]]
+        shared_nodes = sum(len(users[n]) > 1 for n in row)
+        family = code // 100
+        need = 4 if family == 8 else (3 if 5 <= family <= 7 else 2)
+        halo = []
+        if shared_nodes >= need:
+            f = 0
+            while True:
+                hit = facet_nodes(mesh, g, f)
+                if hit is None:
+                    break
+                side = [n + 1 for n in hit[1]]
+                for q in sorted(users[side[0]]):
+                    if q != own and q not in halo and all(q in users[n] for n in side):
+                        halo.append(q)
+                f += 1
+        halos.append(sorted(halo))
+    return halos
+
+
 def _write_partitioning(
-    directory, mesh, bases, element_no, n_bulk, bulk_rows, boundary_rows, points
+    directory, mesh, bases, element_no, n_bulk, bulk_rows, boundary_rows, points, halo
 ):
-    """ElmerGrid's partitioning.N without halos (``write_elmer`` in elmer.cpp):
+    """ElmerGrid's partitioning.N (``write_elmer`` in elmer.cpp):
     ``partition:part`` (0-based) places each bulk element; a node belongs to
     every part using it and is owned by the lowest; a boundary element goes to
-    each part holding one of its parents, the other parent set to 0."""
+    each part holding one of its parents, the other parent set to 0. With
+    ``halo``, ElmerGrid's ``-halo`` layer too: halo copies as ``id/owner``, their
+    nodes in the part's node list and shared with it."""
     labels = mesh.cell_data["partition:part"]
     part_of = [-1] * (n_bulk + 1)
     n_parts = 0
@@ -888,6 +925,20 @@ def _write_partitioning(
         part = part_of[element_no[g]]
         for n in nodes:
             users.setdefault(n, set()).add(part)
+    halos = (
+        _halo_parts(mesh, bulk_rows, part_of, element_no, users)
+        if halo
+        else [[] for _ in bulk_rows]
+    )
+    # A node a halo copy uses is shared with that part too, listed after the
+    # parts whose own elements use it: a halo part never becomes its owner.
+    extra = {}
+    for (_, _, _, row), parts in zip(bulk_rows, halos):
+        for q in parts:
+            for n in row:
+                if q not in users[n]:
+                    extra.setdefault(n, set()).add(q)
+    all_users = {n: sorted(u) + sorted(extra.get(n, ())) for n, u in users.items()}
     pdir = directory / f"partitioning.{n_parts}"
     pdir.mkdir(parents=True, exist_ok=True)
     pdim = points.shape[1] if points.ndim == 2 else 0
@@ -897,11 +948,15 @@ def _write_partitioning(
         elems, sides, node_lines, shared = [], [], [], []
         bulk_types, side_types = {}, {}
         nodes = set()
-        for g, tag, code, row in bulk_rows:
+        for (g, tag, code, row), halo_of in zip(bulk_rows, halos):
             no = int(element_no[g])
-            if part_of[no] != part:
+            owner = part_of[no]
+            if owner != part and part not in halo_of:
                 continue
-            elems.append(f"{no} {tag} {code} " + " ".join(str(n) for n in row) + "\n")
+            ident = str(no) if owner == part else f"{no}/{owner + 1}"
+            elems.append(
+                f"{ident} {tag} {code} " + " ".join(str(n) for n in row) + "\n"
+            )
             nodes.update(row)
             bulk_types[code] = bulk_types.get(code, 0) + 1
         for side_no, (tag, p1, p2, code, row) in enumerate(boundary_rows, start=1):
@@ -919,7 +974,7 @@ def _write_partitioning(
             row = points[n - 1].tolist()
             xyz = [row[d] if d < pdim else 0.0 for d in range(3)]
             node_lines.append(f"{n} -1 " + " ".join("%.17g" % v for v in xyz) + "\n")
-            parts = sorted(users[n])
+            parts = all_users[n]
             if len(parts) > 1:
                 # `id count owner others`: every part using it but the owner
                 shared.append(

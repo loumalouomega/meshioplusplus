@@ -758,6 +758,10 @@ struct ElmIds {
 }  // namespace
 
 void write_elmer(const std::string& rPath, const Mesh& rMesh) {
+    write_elmer(rPath, rMesh, false);
+}
+
+void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
     const fs::path dir(rPath);
     const std::size_t n_blocks = rMesh.NumCellBlocks();
     int bulk_dim = -1;
@@ -1124,10 +1128,11 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
 
     if (!partitioned)
         return;
-    // --- partitioning.N: ElmerGrid's layout without halos ------------------------
+    // --- partitioning.N: ElmerGrid's layout ----------------------------------------
     // `partition:part` (0-based) places each bulk element; a node belongs to
     // every part using it and is owned by the lowest; a boundary element goes to
-    // each part holding one of its parents, the other parent set to 0.
+    // each part holding one of its parents, the other parent set to 0. With
+    // `Halo`, ElmerGrid's `-halo` layer too.
     std::vector<int> part_of(static_cast<std::size_t>(n_bulk) + 1, -1);
     int n_parts = 0;
     for (const ElmRow& r : bulk_rows) {
@@ -1153,6 +1158,58 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 list.insert(std::upper_bound(list.begin(), list.end(), part), part);
         }
     }
+    // Halo (ElmerGrid `-halo`, the layer discontinuous Galerkin needs): a bulk
+    // element is copied, as `id/owner`, into every other part in which one of
+    // its sides lies whole -- every node of that side (mid-side ones included)
+    // used by that part's own elements. ElmerGrid first asks for enough shared
+    // nodes on the element (four for a hexahedron, three for another solid, two
+    // otherwise); a part's halo nodes join its node list, and a node a halo
+    // copy uses there is shared with that part too -- listed after the parts
+    // whose own elements use it, so a halo part never becomes its owner (the
+    // first part listed; ElmerSolver leaves an owner's dofs to it).
+    std::vector<std::vector<int>> halo_parts(Halo ? bulk_rows.size() : 0);
+    std::vector<std::vector<int>> all_users = users;
+    if (Halo) {
+        std::vector<std::int64_t> side;
+        CellType side_type = CellType::Custom;
+        for (std::size_t i = 0; i < bulk_rows.size(); ++i) {
+            const ElmRow& r = bulk_rows[i];
+            const int own =
+                part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])];
+            std::size_t shared_nodes = 0;
+            for (std::int64_t n : r.mNodes)
+                shared_nodes += users[static_cast<std::size_t>(n)].size() > 1 ? 1 : 0;
+            const int family = r.mCode / 100;
+            const std::size_t need = family == 8 ? 4 : (family >= 5 && family <= 7 ? 3 : 2);
+            if (shared_nodes < need)
+                continue;
+            std::vector<int>& halo = halo_parts[i];
+            for (std::int64_t f = 0; detail::facet_nodes(rMesh, r.mCell, f, side_type, side); ++f) {
+                for (int q : users[static_cast<std::size_t>(side[0] + 1)]) {
+                    if (q == own || std::find(halo.begin(), halo.end(), q) != halo.end())
+                        continue;
+                    bool whole = true;
+                    for (std::int64_t n : side) {
+                        const auto& u = users[static_cast<std::size_t>(n + 1)];
+                        whole = whole && std::binary_search(u.begin(), u.end(), q);
+                    }
+                    if (whole)
+                        halo.push_back(q);
+                }
+            }
+            std::sort(halo.begin(), halo.end());
+            for (int q : halo)
+                for (std::int64_t n : r.mNodes) {
+                    auto& list = all_users[static_cast<std::size_t>(n)];
+                    if (std::find(list.begin(), list.end(), q) == list.end())
+                        list.push_back(q);
+                }
+        }
+        // Owners first (ascending), then the halo parts (ascending).
+        for (std::size_t n = 1; n < all_users.size(); ++n)
+            std::sort(all_users[n].begin() + static_cast<std::ptrdiff_t>(users[n].size()),
+                      all_users[n].end());
+    }
     const fs::path pdir = dir / ("partitioning." + std::to_string(n_parts));
     fs::create_directories(pdir, ec);
     if (!fs::is_directory(pdir, ec))
@@ -1164,11 +1221,18 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         std::map<int, std::int64_t> bulk_types, side_types;
         std::set<std::int64_t> nodes;
         std::int64_t n_elem = 0, n_side = 0, n_shared = 0;
-        for (const ElmRow& r : bulk_rows) {
+        for (std::size_t i = 0; i < bulk_rows.size(); ++i) {
+            const ElmRow& r = bulk_rows[i];
             const std::int64_t no = element_no[static_cast<std::size_t>(r.mCell)];
-            if (part_of[static_cast<std::size_t>(no)] != part)
+            const int owner = part_of[static_cast<std::size_t>(no)];
+            if (owner != part &&
+                (!Halo || !std::binary_search(halo_parts[i].begin(), halo_parts[i].end(), part)))
                 continue;
             elm_append_int(elem_text, no);
+            if (owner != part) {
+                elem_text += '/';
+                elm_append_int(elem_text, owner + 1);
+            }
             elem_text += ' ';
             elm_append_int(elem_text, r.mTag);
             elem_text += ' ';
@@ -1218,7 +1282,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 node_text += buf;
             }
             node_text += '\n';
-            const auto& list = users[static_cast<std::size_t>(n)];
+            const auto& list = all_users[static_cast<std::size_t>(n)];
             if (list.size() < 2)
                 continue;
             // `id count owner others`: every part using it but the owner.
