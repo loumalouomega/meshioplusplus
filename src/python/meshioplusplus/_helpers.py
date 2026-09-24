@@ -9,7 +9,7 @@ from numpy.typing import ArrayLike
 
 from ._common import num_nodes_per_cell
 from ._exceptions import ReadError, WriteError
-from ._files import is_buffer, is_z88_filename
+from ._files import is_buffer, is_d3plot_filename, is_d3plot_member, is_z88_filename
 from ._mesh import CellBlock, Mesh
 
 _LOG = logging.getLogger("meshioplusplus")
@@ -113,6 +113,12 @@ def _filetypes_from_path(path: Path) -> list[str]:
     # Z88's fixed file names come before the generic ``.txt`` (xyz).
     if is_z88_filename(path) and "z88" not in out:
         out = ["z88"] + out
+    # LS-DYNA's state database is named ``d3plot``, with no extension.
+    # ... and its numbered members, which the reader refuses by name.
+    if (
+        is_d3plot_filename(path) or is_d3plot_member(path)
+    ) and "lsdyna_d3plot" not in out:
+        out = ["lsdyna_d3plot"] + out
     if not out:
         raise ReadError(f"Could not deduce file format from path '{path}'.")
     return out

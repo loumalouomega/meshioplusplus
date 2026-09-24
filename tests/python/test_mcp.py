@@ -1887,6 +1887,29 @@ def test_libmesh_z88_fil_radioss_formats(tmp_path):
     assert _dump(_tools.tool_info(str(rad)))["num_points"] == 8
 
 
+def test_d3plot_and_op2_formats(tmp_path):
+    import pathlib
+
+    meshes = pathlib.Path(__file__).parent / "meshes"
+    out = _dump(_tools.tool_formats())
+    for fmt in ("lsdyna_d3plot", "nastran_op2"):
+        assert fmt in out["readable"], fmt
+        assert fmt not in out["writable"], fmt
+    assert out["extensions"][".op2"] == ["nastran_op2"]
+    # d3plot has no extension: the file name and the control block tell.
+    d3plot = meshes / "lsdyna_d3plot" / "generated" / "shell_solid" / "d3plot"
+    assert _dump(_tools.tool_sniff(str(d3plot)))["format"] == "lsdyna_d3plot"
+    last = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(d3plot), last, time_step=-1)
+    mesh = meshioplusplus.read(last)
+    assert "lsdyna:alive" in mesh.cell_data and "displacement" in mesh.point_data
+    op2 = meshes / "nastran_op2" / "mode_solid_shell_bar.op2"
+    assert _dump(_tools.tool_sniff(str(op2)))["format"] == "nastran_op2"
+    mode = str(tmp_path / "mode.vtu")
+    _tools.tool_convert(str(op2), mode, time_step=-1)
+    assert "EIGENVECTOR" in meshioplusplus.read(mode).point_data
+
+
 def test_marc_and_ansys_results_formats(tmp_path):
     import pathlib
 

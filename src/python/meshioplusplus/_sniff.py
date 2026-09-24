@@ -13,7 +13,7 @@ import re
 import struct
 from pathlib import Path
 
-from ._files import is_z88_filename
+from ._files import is_d3plot_filename, is_z88_filename
 
 # Dataset numbers that open an I-DEAS universal file (see sniff.cpp's kUnvIds).
 _UNV_IDS = {
@@ -115,6 +115,53 @@ def _is_patran(head: bytes) -> bool:
 _FIL_KEYS = (1921, 1922, 1900, 1901, 2000)
 
 
+def _is_op2(head):
+    """Nastran OP2 written with PARAM,POST,-1: Fortran blocks (4-byte markers,
+    either byte order) holding a one-word 3, a 3-word date, a one-word 7 and the
+    7-word tape code, in 4- or 8-byte words."""
+    for order in ("<", ">"):
+        blocks = []
+        pos = 0
+        while len(blocks) < 4:
+            if pos + 4 > len(head):
+                break
+            n = struct.unpack(order + "i", head[pos : pos + 4])[0]
+            end = pos + 4 + n
+            if (
+                n <= 0
+                or end + 4 > len(head)
+                or struct.unpack(order + "i", head[end : end + 4])[0] != n
+            ):
+                break
+            blocks.append((pos + 4, n))
+            pos = end + 4
+        if len(blocks) < 4:
+            continue
+        ws = blocks[0][1]
+        if ws not in (4, 8):
+            continue
+        fmt = order + ("i" if ws == 4 else "q")
+
+        def word(b):
+            return struct.unpack(fmt, head[blocks[b][0] : blocks[b][0] + ws])[0]
+
+        if (
+            word(0) == 3
+            and blocks[1][1] == 3 * ws
+            and blocks[2][1] == ws
+            and word(2) == 7
+            and blocks[3][1] == 7 * ws
+        ):
+            return True
+    return False
+
+
+def _is_d3plot(head):
+    from .lsdyna_d3plot._d3plot import is_d3plot
+
+    return is_d3plot(head)
+
+
 def _is_abaqus_fil_binary(head: bytes) -> bool:
     """Abaqus results, binary: a 4096-byte Fortran record whose first words are a
     record length and a key Abaqus writes first; see sniff.cpp."""
@@ -204,6 +251,8 @@ def _sniff_format_py(path) -> str:
     # Z88's input and output files have fixed names.
     if is_z88_filename(path) and path.is_file():
         return "z88"
+    if is_d3plot_filename(path) and path.is_file():
+        return "lsdyna_d3plot"
     try:
         with open(path, "rb") as f:
             head = f.read(512)
@@ -226,6 +275,13 @@ def _sniff_format_py(path) -> str:
         return "libmesh"
     if _is_abaqus_fil_binary(head):
         return "abaqus_fil"
+    # Nastran OP2 (PARAM,POST,-1): a one-word record 3, a 3-word date, a
+    # one-word record 7 and the 7-word tape code, any word size and order.
+    if _is_op2(head):
+        return "nastran_op2"
+    # LS-DYNA d3plot: a plausible 64-word control block, any word size and order.
+    if _is_d3plot(head):
+        return "lsdyna_d3plot"
     # FEBio input: XML whose root is <febio_spec>.
     if b"<febio_spec" in head:
         return "febio"

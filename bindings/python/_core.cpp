@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
 #include "meshioplusplus/formats/libmesh.hpp"
@@ -76,6 +77,7 @@
 #include "meshioplusplus/formats/mphtxt.hpp"
 #include "meshioplusplus/formats/nastran.hpp"
 #include "meshioplusplus/formats/nastran_h5.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/netgen.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
@@ -2899,6 +2901,30 @@ PYBIND11_MODULE(_core, m) {
         py::arg("time_step") = 0);
     m.def("abaqus_fil_time_values",
           [](const std::string& path) { return meshioplusplus::abaqus_fil_time_values(path); });
+
+    // Nastran OP2 result file reader.
+    m.def(
+        "nastran_op2_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_nastran_op2(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("nastran_op2_time_values",
+          [](const std::string& path) { return meshioplusplus::nastran_op2_time_values(path); });
+
+    // LS-DYNA d3plot state database reader.
+    m.def(
+        "lsdyna_d3plot_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_lsdyna_d3plot(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("lsdyna_d3plot_time_values",
+          [](const std::string& path) { return meshioplusplus::lsdyna_d3plot_time_values(path); });
 
     // libMesh .xda/.xdr reader.
     m.def("libmesh_read", [](const std::string& path) {
