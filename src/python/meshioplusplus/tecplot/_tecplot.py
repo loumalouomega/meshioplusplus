@@ -39,6 +39,45 @@ meshio_to_tecplot_order = {
 }
 
 
+def _zone_type(cell_type):
+    if cell_type in meshio_to_tecplot_type:
+        return meshio_to_tecplot_type[cell_type]
+    if cell_type.startswith("polygon"):
+        return "FEPOLYGON"
+    if cell_type.startswith("polyhedron"):
+        return "FEPOLYHEDRON"
+    return None
+
+
+def _face_map(cell):
+    """``tecplot_write_faces``: a polygon or polyhedron block's faces in
+    first-seen order, each shared face once; the first cell to use a face is
+    its left element (its faces are outward), the second its right. Elements
+    1-based, 0 = none."""
+    faces, left, right, seen = [], [], [], {}
+
+    def add(face, c):
+        key = tuple(sorted(face))
+        k = seen.get(key)
+        if k is not None and right[k] == 0:
+            right[k] = c
+            return
+        seen[key] = len(faces)
+        faces.append(face)
+        left.append(c)
+        right.append(0)
+
+    for c, cell_nodes in enumerate(cell.data, start=1):
+        if cell.type.startswith("polyhedron"):
+            for face in cell_nodes:
+                add([int(v) for v in face], c)
+        else:
+            row = [int(v) for v in cell_nodes]
+            for j in range(len(row)):
+                add([row[j], row[(j + 1) % len(row)]], c)
+    return faces, left, right
+
+
 def _load(filename):
     if not is_buffer(filename, "r"):
         with open(filename, "rb") as f:
@@ -73,8 +112,8 @@ def read(filename, time_step=0):
 
 def time_values(filename):
     """The SOLUTIONTIME of each step (empty for a static file)."""
-    variables, zones, _ = _load(filename)
-    return _zones.metadata(zones, variables)[2]
+    variables, zones, source = _load(filename)
+    return _zones.metadata(zones, variables, source)[2]
 
 
 def _zone_title(mesh, bases, block):
@@ -103,7 +142,7 @@ def write(filename, mesh):
     # ``cell_blocks`` (an unsupported type) simply never claims it.
     cell_blocks = []
     for ic, c in enumerate(mesh.cells):
-        if c.type in meshio_only:
+        if _zone_type(c.type) is not None:
             cell_blocks.append(ic)
         else:
             warn(
@@ -164,8 +203,8 @@ def write(filename, mesh):
 
         for bi, ic in enumerate(cell_blocks):
             cell = mesh.cells[ic]
-            zone_type = meshio_to_tecplot_type[cell.type]
-            order = meshio_to_tecplot_order[cell.type]
+            zone_type = _zone_type(cell.type)
+            face_based = zone_type in ("FEPOLYGON", "FEPOLYHEDRON")
             num_cells = len(cell.data)
             title = _zone_title(mesh, bases, ic)
 
@@ -175,6 +214,12 @@ def write(filename, mesh):
             f.write(
                 f'ZONE T = "{title}", NODES = {num_nodes}, ELEMENTS = {num_cells},\n'
             )
+            if face_based:
+                faces, left, right = _face_map(cell)
+                f.write(
+                    f"FACES = {len(faces)}, TOTALNUMFACENODES = {sum(map(len, faces))},\n"
+                    "NUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n"
+                )
             f.write(f"DATAPACKING = BLOCK, ZONETYPE = {zone_type}")
             if bi > 0:
                 f.write(f",\nVARSHARELIST = ([1-{num_shared}] = 1)")
@@ -192,8 +237,24 @@ def write(filename, mesh):
             for j in present:
                 _write_table(f, cell_var_blocks[j][ic])
 
+            if face_based:
+                if zone_type == "FEPOLYHEDRON":
+                    _write_ints(f, [len(face) for face in faces])
+                for face in faces:
+                    f.write(" ".join(str(v + 1) for v in face) + "\n")
+                _write_ints(f, left)
+                _write_ints(f, right)
+                continue
+            order = meshio_to_tecplot_order[cell.type]
             for row in cell.data[:, order]:
                 f.write(" ".join(str(c) for c in row + 1) + "\n")
+
+
+def _write_ints(f, ints, ncol=20):
+    if not len(ints):
+        f.write("\n")
+    for s in range(0, len(ints), ncol):
+        f.write(" ".join(str(v) for v in ints[s : s + ncol]) + "\n")
 
 
 def _write_table(f, data, ncol=20):

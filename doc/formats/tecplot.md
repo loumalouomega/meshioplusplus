@@ -48,9 +48,12 @@ Data itself: `FEBLOCK` reads one variable's full array before moving to the next
 | `ORDERED`, one dimension > 1 | `line` |
 | `ORDERED`, two dimensions > 1 | `quad` |
 | `ORDERED`, `I`, `J`, `K` > 1 | `hexahedron` |
-| `FEPOLYGON` / `FEPOLYHEDRON` | `ReadError` |
+| `FEPOLYGON` | `polygon` (ragged) |
+| `FEPOLYHEDRON` | `polyhedron<N>`, one block per distinct node count |
 
 Ordered zones (since v16.10.0, ASCII and binary) become regular cells over their dimensions longer than one, with `i` varying fastest and corners in VTK order. Their cell-centred variables have `(I-1)(J-1)(K-1)` values, but a binary file stores them over the node dimensions with the last dimension longer than one shortened by one; the ghost values at the ends are dropped. The writer writes FE zones only, so an ordered zone read in is written back as an FE zone of the same cells.
+
+Face-based zones (`FEPOLYGON`/`FEPOLYHEDRON`, since v16.11.0) are described in [Face-based zones](#face-based-zones).
 
 On write, `pyramid`/`wedge` degrade to `FEBRICK` (8-node brick), padding with duplicated corner nodes. Write-side node-order tables:
 
@@ -60,6 +63,18 @@ On write, `pyramid`/`wedge` degrade to `FEBRICK` (8-node brick), padding with du
 | `wedge` | `[0,1,4,3,2,2,5,5]` |
 
 A mesh with several cell blocks — of the same type or mixed — writes one `ZONE` per block (v15.5.0, roadmap §1.1); there is no longer a single-type restriction or a 2D/3D-mixing drop. See [Multiple zones](#multiple-zones).
+
+## Face-based zones
+
+Since v16.11.0 `FEPOLYGON` and `FEPOLYHEDRON` zones are read (ASCII and `.plt`) and written (ASCII). Such a zone has no element connectivity: its header gives `FACES`, `TOTALNUMFACENODES` (optional for polygons, where every face is an edge of two nodes), `NUMCONNECTEDBOUNDARYFACES` and `TOTALNUMBOUNDARYCONNECTIONS`, and after its data comes a face map — the node count of each face (polyhedra only), each face's nodes, then the element on the left and on the right of each face. Its data must be `DATAPACKING=BLOCK`.
+
+Cells are rebuilt from the face map using the Data Format Guide's right-hand rule: a polyhedral face's right-hand normal points at its right element, so the face is outward for its left element and is reversed for its right one; a polygonal face (an edge) walked from its first node to its second has its left element on the left. So every rebuilt polyhedron has outward faces and every polygon is wound counter-clockwise when the file follows the rule. A polygon's ring starts at its first edge in the file and is reversed only when most of its edges disagree with that direction. A neighbour of `0` (ASCII) or `-1` (`.plt`) means none. A negative neighbour points into the boundary-connection section, i.e. at an element of another zone: that face still bounds this zone's cell, and the cross-zone link itself is skipped.
+
+A polygonal zone is one ragged `polygon` block. A polyhedral zone is one `polyhedron<N>` block per distinct node count, in the order the counts first occur (the naming every polyhedral reader uses), so its cells can come out reordered: cell-centred variables, `tecplot:zone` and the zone's region follow each cell into its block. A zone sharing another zone's face map through `CONNECTIVITYSHAREZONE` must match its type and sizes. Cells are not reconstructed into `tetra`/`hexahedron`: a hexahedron in a polyhedral zone stays a `polyhedron8`.
+
+On write, a `polygon*` block becomes an `FEPOLYGON` zone and a `polyhedron*` block an `FEPOLYHEDRON` zone. Each face shared by two cells is written once, with the cell that lists it first as its left element and the second as its right, so a mesh whose faces are wound outward writes a face map that follows the right-hand rule. No boundary connections are written.
+
+Refused with `ReadError`: a missing `FACES` (or `TOTALNUMFACENODES` for polyhedra), `POINT` packing, a face with fewer than two nodes, node or element numbers out of range, an element with fewer than four faces (polyhedra) or whose edges do not close one loop (polygons), and a face map cut short.
 
 ## Multiple zones
 
@@ -75,7 +90,8 @@ Since v16.10.0 the reader decodes the binary format of the Data Format Guide's a
 
 - Header: the title, variable names and zone records (FE and ordered zone types, variable locations, `STRANDID` and `SOLUTIONTIME`). Geometry, text, custom-label, user and auxiliary-data records are skipped. User-defined face-neighbour connections are skipped too.
 - Data: `float`, `double`, `int32`, `int16` and `byte` values; bit-packed variables are refused. Variable sharing, passive variables and connectivity sharing are honoured. FE connectivity is zero-based in the file.
-- Anything else raises `ReadError`: another version, a zone of an unknown type, a polygonal or polyhedral zone, or a file cut short.
+- Face-based zones: the face map is stored as face-node offsets (polyhedra only), face nodes, left and right elements (0-based, `-1` for none), then the boundary connections (whose face count in the zone header includes one extra for "no neighbour"). See [Face-based zones](#face-based-zones).
+- Anything else raises `ReadError`: another version, a zone of an unknown type, or a file cut short.
 
 `.szplt` (SZL) files are a different, undocumented format and are not read; save them as `.plt` in Tecplot. The Python reference reader (`meshioplusplus.tecplot`) reads `.plt` too, value for value like the core.
 
@@ -103,4 +119,4 @@ A transient Tecplot file marks each `ZONE`'s place in a series with `SOLUTIONTIM
 
 - `tests/python/meshes/tecplot/quad_zone_comma.tec` / `quad_zone_space.tec` / `quad_zone_multivar.tec` — a single quad zone (`N=4, E=1, ET=QUADRILATERAL`), `FEBLOCK` packing, one cell-centered variable via `VARLOCATION=([4]=CELLCENTERED)`; the three files vary the delimiter style around zone-header keys (comma vs. plain space vs. an extra variable) to exercise the tolerant zone-header parser. `quad_zone_space.tec` in particular has a zone title that is *literally the string* `"VARLOCATION"` with spaced `=` signs; a quote-and-paren-aware tokenizer (v15.5.0, roadmap §1.1) lets the C++ reader handle it directly — earlier it threw and let the Python reader take over.
 - The C++ core handles FE and ordered zones (BLOCK/POINT packing, `VARLOCATION`, `VARSHARELIST`, `PASSIVEVARLIST`, `CONNECTIVITYSHAREZONE`), writing and reading every zone of a step.
-- `tests/python/meshes/tecplot/plt/` holds `.plt` files written by Tecplot's TecIO library, each beside the ASCII file with the same content (`tools/gen_tecplot_plt_fixtures.py`). No Tecplot licence was available, so no file written by `preplot` or Tecplot 360 itself has been read.
+- `tests/python/meshes/tecplot/plt/` holds `.plt` files written by Tecplot's TecIO library, each beside the ASCII file with the same content (`tools/gen_tecplot_plt_fixtures.py`). `poly_2d` and `poly_3d` are the face-based fixtures (TecIO's `TECPOLYFACE142`/`TECPOLYBCONN142`), including a boundary connection between two polyhedral zones. No Tecplot licence was available, so no file written by `preplot` or Tecplot 360 itself has been read, and ParaView's Tecplot reader does not read face-based zones, so it could not serve as a second opinion on them.

@@ -3064,10 +3064,14 @@ PYBIND11_MODULE(_core, m) {
         return meshioplusplus_py::mesh_to_py(meshioplusplus::read_su2(path));
     });
 
-    // Tecplot writer / reader (.dat/.tec).
+    // Tecplot writer / reader (.dat/.tec). allow_ragged: polygon and polyhedron
+    // blocks become FEPOLYGON / FEPOLYHEDRON zones.
     m.def("tecplot_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::write_tecplot(path, meshioplusplus_py::py_to_mesh(pymesh, refs));
+        meshioplusplus::write_tecplot(path,
+                                      meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                    /*lenient_field_data=*/false,
+                                                                    /*allow_ragged=*/true));
     });
     m.def(
         "tecplot_read",

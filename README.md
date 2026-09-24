@@ -69,7 +69,7 @@ There are various mesh formats available for representing unstructured meshes. m
 > [PhysicsNeMo mesh](https://developer.nvidia.com/physicsnemo) (`.pmsh`, memory-mapped),
 > [PLY](<https://en.wikipedia.org/wiki/PLY_(file_format)>) (`.ply`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
-> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE and ordered zones),
+> [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt` read-only; FE, ordered, polygonal and polyhedral zones),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
 > [Triangle .node/.ele/.poly](https://www.cs.cmu.edu/~quake/triangle.html),
 > [SVG](https://www.w3.org/TR/SVG/) (output only; 2D direct, 3D via skin projection) (`.svg`),

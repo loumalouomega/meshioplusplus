@@ -202,6 +202,10 @@ std::string meshio_to_tecplot(const std::string& rM) {
         return "FETETRAHEDRON";
     if (rM == "pyramid" || rM == "wedge" || rM == "hexahedron")
         return "FEBRICK";
+    if (rM.rfind("polygon", 0) == 0)
+        return "FEPOLYGON";
+    if (rM.rfind("polyhedron", 0) == 0)
+        return "FEPOLYHEDRON";
     return "";
 }
 const std::vector<int>& tecplot_order(const std::string& rM) {
@@ -260,6 +264,16 @@ struct TecplotZone {
     int mRawFaceNeighbors = 0;
     int mMiscFaceNeighbors = 0;
     int mFaceNeighborMode = 0;
+    // Face-based (FEPOLYGON/FEPOLYHEDRON) zones: the face map's sizes. The
+    // boundary counts are as the encoding stores them (a .plt counts one
+    // extra boundary face for "no neighbour" when there is any).
+    std::size_t mNumFaces = 0;
+    std::size_t mTotalFaceNodes = 0;
+    std::size_t mNumBoundaryFaces = 0;
+    std::size_t mNumBoundaryConns = 0;
+
+    bool IsPoly() const { return mTypeName == "FEPOLYGON" || mTypeName == "FEPOLYHEDRON"; }
+    bool IsPolyhedron() const { return mTypeName == "FEPOLYHEDRON"; }
 
     bool Owns(std::size_t Var) const {
         return !mVarShareZone.count(Var) && !mPassiveVars.count(Var);
@@ -292,9 +306,10 @@ std::string tecplot_zone_meshio_type(const TecplotZone& rZ) {
         static const char* const kTypes[] = {"vertex", "line", "quad", "hexahedron"};
         return kTypes[rZ.OrderedDims()];
     }
-    if (rZ.mTypeName == "FEPOLYGON" || rZ.mTypeName == "FEPOLYHEDRON")
-        throw ReadError("Tecplot: " + rZ.mTypeName +
-                        " zones (polygonal/polyhedral) are not supported");
+    if (rZ.mTypeName == "FEPOLYGON")
+        return "polygon";
+    if (rZ.mTypeName == "FEPOLYHEDRON")
+        return "polyhedron";
     const std::string mtype = tecplot_to_meshio(rZ.mTypeName);
     if (mtype.empty())
         throw ReadError("Tecplot: unsupported zone type " + rZ.mTypeName);
@@ -363,16 +378,89 @@ NDArray tecplot_ordered_connectivity(const TecplotZone& rZ) {
     return conn;
 }
 
+/// The face map of an FEPOLYGON/FEPOLYHEDRON zone: every face's nodes and the
+/// two elements it separates, all 0-based. A neighbour in another zone (a
+/// boundary connection) or none at all is -1: only this zone's cells are
+/// assembled from it, and a face with no neighbour on one side still bounds
+/// the cell on the other.
+struct TecplotFaceMap {
+    std::vector<std::int64_t> mStart;  // NumFaces + 1 offsets into mNodes
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mLeft;
+    std::vector<std::int64_t> mRight;
+};
+
+/// Checks and stores a zone's face map from its raw arrays: `rCounts` is empty
+/// for a polygonal zone (every face is an edge), node and element numbers are
+/// 1-based in ASCII (0 = no neighbour) and 0-based in a .plt (-1 = none); a
+/// negative element names a boundary connection, i.e. another zone.
+TecplotFaceMap tecplot_face_map(const TecplotZone& rZ, std::size_t ZoneIdx,
+                                const std::vector<std::int64_t>& rCounts,
+                                std::vector<std::int64_t> Nodes, std::vector<std::int64_t> Left,
+                                std::vector<std::int64_t> Right, bool OneBased) {
+    const std::string where = "Tecplot: zone " + std::to_string(ZoneIdx + 1);
+    const std::int64_t base = OneBased ? 1 : 0;
+    TecplotFaceMap fm;
+    fm.mStart.reserve(rZ.mNumFaces + 1);
+    fm.mStart.push_back(0);
+    for (std::size_t f = 0; f < rZ.mNumFaces; ++f) {
+        const std::int64_t n = rCounts.empty() ? 2 : rCounts[f];
+        if (n < 2)
+            throw ReadError(where + ": face " + std::to_string(f + 1) + " has " +
+                            std::to_string(n) + " nodes");
+        fm.mStart.push_back(fm.mStart.back() + n);
+    }
+    if (static_cast<std::size_t>(fm.mStart.back()) != Nodes.size())
+        throw ReadError(where + ": the face node counts add up to " +
+                        std::to_string(fm.mStart.back()) + ", not TOTALNUMFACENODES " +
+                        std::to_string(Nodes.size()));
+    const auto num_nodes = static_cast<std::int64_t>(rZ.mNumNodes);
+    for (std::int64_t& v : Nodes) {
+        v -= base;
+        if (v < 0 || v >= num_nodes)
+            throw ReadError(where + ": face node " + std::to_string(v + base) + " is out of range");
+    }
+    const auto num_cells = static_cast<std::int64_t>(rZ.mNumCells);
+    for (std::vector<std::int64_t>* pSide : {&Left, &Right}) {
+        for (std::int64_t& e : *pSide) {
+            if (e < 0) {
+                e = -1;  // a boundary connection: the neighbour is in another zone
+                continue;
+            }
+            e -= base;
+            if (e >= num_cells)
+                throw ReadError(where + ": face neighbour " + std::to_string(e + base) +
+                                " is out of range");
+        }
+    }
+    fm.mNodes = std::move(Nodes);
+    fm.mLeft = std::move(Left);
+    fm.mRight = std::move(Right);
+    return fm;
+}
+
+/// How many integers a face-based zone's face map holds after its data: the
+/// node count per face (polyhedra only), the face nodes, the left and the
+/// right elements, then the boundary connections (ASCII: a count per
+/// connected boundary face, then that many elements and as many zones).
+std::size_t tecplot_ascii_face_map_tokens(const TecplotZone& rZ) {
+    std::size_t n = (rZ.IsPolyhedron() ? rZ.mNumFaces : 0) + rZ.mTotalFaceNodes + 2 * rZ.mNumFaces;
+    if (rZ.mNumBoundaryFaces > 0)
+        n += rZ.mNumBoundaryFaces + 2 * rZ.mNumBoundaryConns;
+    return n;
+}
+
 /// A zone's own data -- the variables it neither shares nor leaves passive,
-/// and its own FE connectivity (0-based) -- from wherever the encoding keeps
-/// them.
+/// and its own FE connectivity (0-based) or face map -- from wherever the
+/// encoding keeps them.
 class TecplotSource {
 public:
     virtual ~TecplotSource() = default;
     /// Fills `rCols[v]` for every owned variable `v` and, for an FE zone that
-    /// does not share its connectivity, `rConn`.
+    /// does not share its connectivity, `rConn` (cell-based zones) or `rFaces`
+    /// (face-based zones).
     virtual void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                         NDArray& rConn) const = 0;
+                         NDArray& rConn, TecplotFaceMap& rFaces) const = 0;
 };
 
 // --- ASCII --------------------------------------------------------------------
@@ -505,7 +593,9 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             const std::string& val = tk[k + 2];
             if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
                 key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
-                key == "NV" || key == "I" || key == "J" || key == "K") {
+                key == "NV" || key == "I" || key == "J" || key == "K" || key == "FACES" ||
+                key == "TOTALNUMFACENODES" || key == "NUMCONNECTEDBOUNDARYFACES" ||
+                key == "TOTALNUMBOUNDARYCONNECTIONS") {
                 fields[key] = val;
             } else if (key == "T") {
                 z.mTitle = tecplot_unquote(val);
@@ -563,6 +653,27 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             throw ReadError(z.mOrdered ? "Tecplot: bad I/J/K in an ordered zone"
                                        : "Tecplot: an FE zone needs NODES and ELEMENTS");
         }
+        if (z.IsPoly()) {
+            auto count = [&](const char* pKey, bool Required, std::size_t Default) {
+                const auto it = fields.find(pKey);
+                if (it == fields.end()) {
+                    if (Required)
+                        throw ReadError("Tecplot: a " + z.mTypeName + " zone needs " + pKey);
+                    return Default;
+                }
+                try {
+                    return static_cast<std::size_t>(std::stoull(it->second));
+                } catch (const std::logic_error&) {
+                    throw ReadError(std::string("Tecplot: bad ") + pKey);
+                }
+            };
+            z.mNumFaces = count("FACES", true, 0);
+            z.mTotalFaceNodes = count("TOTALNUMFACENODES", z.IsPolyhedron(), 2 * z.mNumFaces);
+            z.mNumBoundaryFaces = count("NUMCONNECTEDBOUNDARYFACES", false, 0);
+            z.mNumBoundaryConns = count("TOTALNUMBOUNDARYCONNECTIONS", false, 0);
+            if (!z.mBlock)
+                throw ReadError("Tecplot: a " + z.mTypeName + " zone must be DATAPACKING=BLOCK");
+        }
 
         const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
@@ -570,8 +681,17 @@ std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLin
             got += tecplot_tokens(rLines[li]).size();
             ++li;
         }
-        if (!z.mOrdered && z.mConnShareZone < 0)
-            li += z.mNumCells;  // one connectivity line per cell -- none if shared
+        if (!z.mOrdered && z.mConnShareZone < 0) {
+            if (z.IsPoly()) {
+                // The face map is a token stream, not one line per anything.
+                const std::size_t face_tokens = tecplot_ascii_face_map_tokens(z);
+                std::size_t seen = 0;
+                while (seen < face_tokens && li < rLines.size())
+                    seen += tecplot_tokens(rLines[li++]).size();
+            } else {
+                li += z.mNumCells;  // one connectivity line per cell -- none if shared
+            }
+        }
         zones.push_back(std::move(z));
         i = li;
     }
@@ -588,8 +708,8 @@ public:
                        const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
         : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
 
-    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                 NDArray& rConn) const override {
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols, NDArray& rConn,
+                 TecplotFaceMap& rFaces) const override {
         const TecplotZone& z = mrZones[ZoneIdx];
         const std::size_t nv = mNumVariables;
         const std::size_t want = tecplot_ascii_token_count(z, nv);
@@ -625,6 +745,31 @@ public:
         }
         if (z.mOrdered || z.mConnShareZone >= 0)
             return;
+        if (z.IsPoly()) {
+            const std::size_t want_ints = tecplot_ascii_face_map_tokens(z);
+            std::vector<std::int64_t> ints;
+            ints.reserve(want_ints);
+            while (ints.size() < want_ints && li < mrLines.size())
+                for (const auto& t : tecplot_tokens(mrLines[li++]))
+                    ints.push_back(std::strtoll(t.c_str(), nullptr, 10));
+            if (ints.size() < want_ints)
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " face map is truncated");
+            auto take = [&, pos = std::size_t{0}](std::size_t N) mutable {
+                std::vector<std::int64_t> out(ints.begin() + static_cast<std::ptrdiff_t>(pos),
+                                              ints.begin() + static_cast<std::ptrdiff_t>(pos + N));
+                pos += N;
+                return out;
+            };
+            const std::vector<std::int64_t> counts =
+                z.IsPolyhedron() ? take(z.mNumFaces) : std::vector<std::int64_t>{};
+            std::vector<std::int64_t> nodes = take(z.mTotalFaceNodes);
+            std::vector<std::int64_t> left = take(z.mNumFaces);
+            std::vector<std::int64_t> right = take(z.mNumFaces);
+            rFaces = tecplot_face_map(z, ZoneIdx, counts, std::move(nodes), std::move(left),
+                                      std::move(right), true);
+            return;
+        }
         const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
@@ -779,8 +924,19 @@ std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur,
                 z.FinishOrdered();
             } else {
                 const std::int32_t pts = rCur.I32();
-                if (ztype == 6 || ztype == 7)
-                    rCur.Skip(4 * 4);  // faces, face nodes, boundary faces and connections
+                if (ztype == 6 || ztype == 7) {
+                    // faces, face nodes, boundary faces (+1 when any) and connections
+                    std::int32_t counts[4];
+                    for (std::int32_t& c : counts) {
+                        c = rCur.I32();
+                        if (c < 0)
+                            throw ReadError("Tecplot .plt: negative face map size");
+                    }
+                    z.mNumFaces = static_cast<std::size_t>(counts[0]);
+                    z.mTotalFaceNodes = static_cast<std::size_t>(counts[1]);
+                    z.mNumBoundaryFaces = static_cast<std::size_t>(counts[2]);
+                    z.mNumBoundaryConns = static_cast<std::size_t>(counts[3]);
+                }
                 const std::int32_t elems = rCur.I32();
                 if (pts < 0 || elems < 0)
                     throw ReadError("Tecplot .plt: negative node or element count");
@@ -940,7 +1096,22 @@ void tecplot_plt_scan_data(detail::ByteCursor& rCur, const std::vector<std::stri
                 tecplot_plt_skip_face_neighbors(rCur, z);
             continue;
         }
-        const std::string mtype = tecplot_zone_meshio_type(z);  // refuses polygon/polyhedron
+        const std::string mtype = tecplot_zone_meshio_type(z);
+        if (z.IsPoly()) {
+            if (z.mConnShareZone < 0) {
+                // Face node offsets (polyhedra only), face nodes, left and right
+                // elements, then the boundary connections: offsets over the
+                // (already +1) boundary face count plus one, elements and zones.
+                z.mHasConn = true;
+                z.mConnOffset = rCur.Offset();
+                std::size_t n =
+                    (z.IsPolyhedron() ? z.mNumFaces + 1 : 0) + z.mTotalFaceNodes + 2 * z.mNumFaces;
+                if (z.mNumBoundaryFaces > 0)
+                    n += z.mNumBoundaryFaces + 1 + 2 * z.mNumBoundaryConns;
+                rCur.Skip(n * 4);
+            }
+            continue;
+        }
         if (z.mConnShareZone < 0) {
             static const std::map<std::string, std::size_t> kFaces = {
                 {"line", 0}, {"triangle", 3}, {"quad", 4}, {"tetra", 4}, {"hexahedron", 6}};
@@ -961,8 +1132,8 @@ public:
                      const std::vector<TecplotZone>& rZones)
         : mpData(pData), mSize(Size), mBigEndian(BigEndian), mrZones(rZones) {}
 
-    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
-                 NDArray& rConn) const override {
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols, NDArray& rConn,
+                 TecplotFaceMap& rFaces) const override {
         const TecplotZone& z = mrZones[ZoneIdx];
         detail::ByteCursor cur(mpData, mSize, mBigEndian, "Tecplot .plt");
         const bool swap = mBigEndian != (std::endian::native == std::endian::big);
@@ -1016,10 +1187,34 @@ public:
         }
         if (!z.mHasConn)
             return;
+        cur.Seek(z.mConnOffset);
+        if (z.IsPoly()) {
+            auto ints = [&](std::size_t N) {
+                std::vector<std::int64_t> out(N);
+                for (std::int64_t& v : out)
+                    v = cur.I32();
+                return out;
+            };
+            std::vector<std::int64_t> counts;
+            if (z.IsPolyhedron()) {
+                const std::vector<std::int64_t> offsets = ints(z.mNumFaces + 1);
+                if (offsets[0] != 0)
+                    throw ReadError("Tecplot .plt: zone " + std::to_string(ZoneIdx + 1) +
+                                    " face node offsets do not start at 0");
+                counts.resize(z.mNumFaces);
+                for (std::size_t f = 0; f < z.mNumFaces; ++f)
+                    counts[f] = offsets[f + 1] - offsets[f];
+            }
+            std::vector<std::int64_t> nodes = ints(z.mTotalFaceNodes);
+            std::vector<std::int64_t> left = ints(z.mNumFaces);
+            std::vector<std::int64_t> right = ints(z.mNumFaces);
+            rFaces = tecplot_face_map(z, ZoneIdx, counts, std::move(nodes), std::move(left),
+                                      std::move(right), false);
+            return;
+        }
         const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
         rConn = NDArray(DType::Int64, {z.mNumCells, nn});
         std::int64_t* cp = rConn.As<std::int64_t>();
-        cur.Seek(z.mConnOffset);
         for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
             cp[r] = cur.I32();
     }
@@ -1063,6 +1258,125 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<Tecplot
     return steps;
 }
 
+/// One cell block of a zone. A cell-based or ordered zone is one piece over
+/// all its cells; a face-based zone is one ragged `polygon` piece, or one
+/// `polyhedron<N>` piece per distinct node count (the naming every other
+/// polyhedral reader uses), each listing which of the zone's cells it holds.
+struct TecplotPiece {
+    std::string mType;
+    NDArray mConn;                                              // rectangular pieces
+    std::vector<std::vector<std::int64_t>> mRows;               // polygon
+    std::vector<std::vector<std::vector<std::int64_t>>> mPoly;  // polyhedra
+    std::vector<std::size_t> mCells;  // the zone's cells, in order; empty = all of them
+
+    std::size_t NumCells(std::size_t ZoneCells) const {
+        return mCells.empty() ? ZoneCells : mCells.size();
+    }
+    std::size_t Cell(std::size_t Row) const { return mCells.empty() ? Row : mCells[Row]; }
+};
+
+/// The ring of a polygonal element from its edges, directed so the element
+/// lies on their left (Tecplot's convention: walking a face from its first
+/// node to its second, the left element is on the left). The ring starts at
+/// the first edge and follows it; when most edges disagree with that
+/// direction (an inconsistently wound file) it is reversed. Empty when the
+/// edges do not close one loop.
+std::vector<std::int64_t> tecplot_polygon_ring(
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& rEdges) {
+    if (rEdges.size() < 3)
+        return {};
+    std::map<std::int64_t, std::vector<std::int64_t>> adj;
+    std::set<std::pair<std::int64_t, std::int64_t>> directed;
+    for (const auto& [a, b] : rEdges) {
+        adj[a].push_back(b);
+        adj[b].push_back(a);
+        directed.insert({a, b});
+    }
+    for (const auto& [node, nbrs] : adj)
+        if (nbrs.size() != 2)
+            return {};
+    const std::int64_t start = rEdges[0].first;
+    std::vector<std::int64_t> ring = {start, rEdges[0].second};
+    while (ring.size() < rEdges.size()) {
+        const auto& nb = adj[ring.back()];
+        const std::int64_t next = nb[0] != ring[ring.size() - 2] ? nb[0] : nb[1];
+        if (next == start)
+            return {};
+        ring.push_back(next);
+    }
+    const auto& last = adj[ring.back()];
+    if (last[0] != start && last[1] != start)
+        return {};
+    std::size_t agree = 0;
+    for (std::size_t i = 0; i < ring.size(); ++i)
+        agree += directed.count({ring[i], ring[(i + 1) % ring.size()]});
+    if (2 * agree < ring.size())
+        std::reverse(ring.begin() + 1, ring.end());
+    return ring;
+}
+
+/// A face-based zone's cells from its face map. A polyhedral face is wound
+/// with its right-hand normal pointing at the right element, so it is kept
+/// as-is for the left element (outward) and reversed for the right one.
+std::vector<TecplotPiece> tecplot_face_pieces(const TecplotZone& rZ, std::size_t ZoneIdx,
+                                              const TecplotFaceMap& rFm) {
+    const std::string where = "Tecplot: zone " + std::to_string(ZoneIdx + 1);
+    const std::size_t ncells = rZ.mNumCells;
+    std::vector<TecplotPiece> pieces;
+    if (!rZ.IsPolyhedron()) {
+        std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> edges(ncells);
+        for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
+            const std::int64_t a = rFm.mNodes[static_cast<std::size_t>(rFm.mStart[f])];
+            const std::int64_t b = rFm.mNodes[static_cast<std::size_t>(rFm.mStart[f]) + 1];
+            if (rFm.mLeft[f] >= 0)
+                edges[static_cast<std::size_t>(rFm.mLeft[f])].push_back({a, b});
+            if (rFm.mRight[f] >= 0)
+                edges[static_cast<std::size_t>(rFm.mRight[f])].push_back({b, a});
+        }
+        TecplotPiece piece;
+        piece.mType = "polygon";
+        piece.mRows.reserve(ncells);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            std::vector<std::int64_t> ring = tecplot_polygon_ring(edges[c]);
+            if (ring.empty())
+                throw ReadError(where + ": element " + std::to_string(c + 1) +
+                                " is not one closed polygon");
+            piece.mRows.push_back(std::move(ring));
+        }
+        pieces.push_back(std::move(piece));
+        return pieces;
+    }
+    std::vector<std::vector<std::vector<std::int64_t>>> faces(ncells);
+    for (std::size_t f = 0; f + 1 < rFm.mStart.size(); ++f) {
+        const auto b = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f]);
+        const auto e = rFm.mNodes.begin() + static_cast<std::ptrdiff_t>(rFm.mStart[f + 1]);
+        if (rFm.mLeft[f] >= 0)
+            faces[static_cast<std::size_t>(rFm.mLeft[f])].emplace_back(b, e);
+        if (rFm.mRight[f] >= 0)
+            faces[static_cast<std::size_t>(rFm.mRight[f])].emplace_back(
+                std::make_reverse_iterator(e), std::make_reverse_iterator(b));
+    }
+    std::map<std::size_t, std::size_t> piece_of;  // node count -> piece
+    for (std::size_t c = 0; c < ncells; ++c) {
+        if (faces[c].size() < 4)
+            throw ReadError(where + ": element " + std::to_string(c + 1) + " has " +
+                            std::to_string(faces[c].size()) + " faces");
+        std::set<std::int64_t> distinct;
+        for (const auto& fc : faces[c])
+            distinct.insert(fc.begin(), fc.end());
+        const auto [it, fresh] = piece_of.emplace(distinct.size(), pieces.size());
+        if (fresh) {
+            pieces.emplace_back();
+            pieces.back().mType = "polyhedron" + std::to_string(distinct.size());
+        }
+        pieces[it->second].mPoly.push_back(std::move(faces[c]));
+        pieces[it->second].mCells.push_back(c);
+    }
+    if (pieces.size() == 1)
+        pieces[0].mCells.clear();  // every cell, in order
+    return pieces;
+}
+
 /// One zone's resolved data columns, connectivity and topology -- shared by
 /// every step that references it (a zone can be VARSHARELIST'd or
 /// CONNECTIVITYSHAREZONE'd from more than one later zone), so it is decoded
@@ -1071,7 +1385,9 @@ struct TecplotDecodedZone {
     std::vector<std::vector<double>> mCols;  // per variable; length NumNodes or NumCells
     std::vector<int> mCellCentered;
     std::string mMeshioType;
-    NDArray mConn;  // (NumCells, NodesPerCell) int64, 0-based
+    NDArray mConn;                      // (NumCells, NodesPerCell) int64, 0-based
+    TecplotFaceMap mFaces;              // face-based zones
+    std::vector<TecplotPiece> mPieces;  // face-based zones; else one block from mConn
     std::size_t mNumNodes = 0;
     std::size_t mNumCells = 0;
 };
@@ -1094,7 +1410,7 @@ public:
         TecplotDecodedZone result;
         result.mMeshioType = tecplot_zone_meshio_type(z);
         result.mCols.resize(mNumVariables);
-        mrSource.OwnData(ZoneIdx, result.mCols, result.mConn);
+        mrSource.OwnData(ZoneIdx, result.mCols, result.mConn, result.mFaces);
         for (std::size_t k = 0; k < mNumVariables; ++k) {
             const auto share = z.mVarShareZone.find(k);
             if (share != z.mVarShareZone.end()) {
@@ -1107,9 +1423,18 @@ public:
         if (z.mOrdered) {
             result.mConn = tecplot_ordered_connectivity(z);
         } else if (z.mConnShareZone >= 0) {
-            CheckSource(static_cast<std::size_t>(z.mConnShareZone), ZoneIdx);
-            result.mConn = Zone(static_cast<std::size_t>(z.mConnShareZone), Depth + 1).mConn;
+            const auto src = static_cast<std::size_t>(z.mConnShareZone);
+            CheckSource(src, ZoneIdx);
+            const TecplotDecodedZone& from = Zone(src, Depth + 1);
+            if (mrZones[src].mTypeName != z.mTypeName || mrZones[src].mNumCells != z.mNumCells ||
+                (z.IsPoly() && mrZones[src].mNumNodes != z.mNumNodes))
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " shares the connectivity of a different zone type or size");
+            result.mConn = from.mConn;
+            result.mFaces = from.mFaces;
         }
+        if (z.IsPoly())
+            result.mPieces = tecplot_face_pieces(z, ZoneIdx, result.mFaces);
         result.mCellCentered = z.mCellCentered;
         result.mNumNodes = z.mNumNodes;
         result.mNumCells = z.mNumCells;
@@ -1252,13 +1577,50 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     }
     mesh.AssignPoints(std::move(pts));
 
+    // The step's cell blocks: one per zone, or one per piece of a face-based
+    // zone, in zone order.
+    struct BlockRef {
+        std::size_t mZone;            // position in rZoneIdxs
+        const TecplotPiece* mpPiece;  // nullptr: the zone's whole mConn
+        std::size_t mNumCells;
+    };
+    std::vector<BlockRef> refs;
     for (std::size_t k = 0; k < decoded.size(); ++k) {
         const TecplotDecodedZone& d = *decoded[k];
-        NDArray conn = d.mConn;  // deep copy: offset in place below
-        std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t j = 0; j < conn.Size(); ++j)
-            cp[j] += static_cast<std::int64_t>(point_offset[k]);
-        mesh.AddCellBlock(d.mMeshioType, std::move(conn));
+        if (d.mPieces.empty()) {
+            refs.push_back({k, nullptr, d.mNumCells});
+            continue;
+        }
+        for (const TecplotPiece& piece : d.mPieces)
+            refs.push_back({k, &piece, piece.NumCells(d.mNumCells)});
+    }
+    auto zone_cell = [](const BlockRef& rRef, std::size_t Row) {
+        return rRef.mpPiece ? rRef.mpPiece->Cell(Row) : Row;
+    };
+
+    for (const BlockRef& ref : refs) {
+        const TecplotDecodedZone& d = *decoded[ref.mZone];
+        const auto off = static_cast<std::int64_t>(point_offset[ref.mZone]);
+        if (!ref.mpPiece) {
+            NDArray conn = d.mConn;  // deep copy: offset in place below
+            std::int64_t* cp = conn.As<std::int64_t>();
+            for (std::size_t j = 0; j < conn.Size(); ++j)
+                cp[j] += off;
+            mesh.AddCellBlock(d.mMeshioType, std::move(conn));
+        } else if (!ref.mpPiece->mRows.empty()) {
+            std::vector<std::vector<std::int64_t>> rows = ref.mpPiece->mRows;
+            for (auto& row : rows)
+                for (std::int64_t& v : row)
+                    v += off;
+            mesh.AddPolygonBlock(ref.mpPiece->mType, std::move(rows));
+        } else {
+            std::vector<std::vector<std::vector<std::int64_t>>> cells = ref.mpPiece->mPoly;
+            for (auto& cell : cells)
+                for (auto& face : cell)
+                    for (std::int64_t& v : face)
+                        v += off;
+            mesh.AddPolyhedronBlock(ref.mpPiece->mType, std::move(cells));
+        }
     }
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -1272,14 +1634,16 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
         }
         if (any_cc) {
             std::vector<NDArray> blk;
-            blk.reserve(decoded.size());
-            for (const TecplotDecodedZone* d : decoded) {
-                NDArray arr(DType::Float64, {d->mNumCells});
+            blk.reserve(refs.size());
+            for (const BlockRef& ref : refs) {
+                const TecplotDecodedZone& d = *decoded[ref.mZone];
+                NDArray arr(DType::Float64, {ref.mNumCells});
                 double* ap = arr.As<double>();
-                if (d->mCellCentered[k])
-                    std::memcpy(ap, d->mCols[k].data(), d->mNumCells * sizeof(double));
+                if (d.mCellCentered[k])
+                    for (std::size_t r = 0; r < ref.mNumCells; ++r)
+                        ap[r] = d.mCols[k][zone_cell(ref, r)];
                 else
-                    std::fill(ap, ap + d->mNumCells, nan);
+                    std::fill(ap, ap + ref.mNumCells, nan);
                 blk.push_back(std::move(arr));
             }
             mesh.AddCellData(rVariables[k], std::move(blk));
@@ -1297,11 +1661,11 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     }
 
     std::vector<NDArray> zone_ids;
-    zone_ids.reserve(decoded.size());
-    for (std::size_t k = 0; k < decoded.size(); ++k) {
-        NDArray zn(DType::Int64, {decoded[k]->mNumCells});
+    zone_ids.reserve(refs.size());
+    for (const BlockRef& ref : refs) {
+        NDArray zn(DType::Int64, {ref.mNumCells});
         std::int64_t* zp = zn.As<std::int64_t>();
-        std::fill(zp, zp + decoded[k]->mNumCells, static_cast<std::int64_t>(rZoneIdxs[k]));
+        std::fill(zp, zp + ref.mNumCells, static_cast<std::int64_t>(rZoneIdxs[ref.mZone]));
         zone_ids.push_back(std::move(zn));
     }
     mesh.AddCellData("tecplot:zone", std::move(zone_ids));
@@ -1320,8 +1684,11 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
 
         NDArray entries(DType::Int64, {decoded[k]->mNumCells});
         std::int64_t* ep = entries.As<std::int64_t>();
-        for (std::size_t r = 0; r < decoded[k]->mNumCells; ++r)
-            ep[r] = detail::block_row_to_global(bases, k, static_cast<std::int64_t>(r));
+        std::size_t n = 0;
+        for (std::size_t b = 0; b < refs.size(); ++b)
+            if (refs[b].mZone == k)
+                for (std::size_t r = 0; r < refs[b].mNumCells; ++r)
+                    ep[n++] = detail::block_row_to_global(bases, b, static_cast<std::int64_t>(r));
         mesh.AddRegion(Region(unique, RegionKind::Cell, -1, static_cast<std::int64_t>(rZoneIdxs[k]),
                               std::move(entries)));
     }
@@ -1406,10 +1773,22 @@ MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& 
     std::vector<std::size_t> offset;
     std::vector<bool> owns;
     meta.mNumPoints = tecplot_point_layout(first_step, file.mZones, xi, offset, owns);
+    TecplotDecoder decoder(file.mZones, file.mVariables.size(), *file.mSource);
     for (std::size_t idx : first_step) {
+        const TecplotZone& z = file.mZones[idx];
+        if (z.IsPolyhedron()) {  // its blocks depend on its cells' node counts
+            const TecplotDecodedZone& d = decoder.Zone(idx);
+            for (const TecplotPiece& piece : d.mPieces) {
+                CellBlockInfo block;
+                block.mType = piece.mType;
+                block.mNumCells = piece.NumCells(d.mNumCells);
+                meta.mCellBlocks.push_back(std::move(block));
+            }
+            continue;
+        }
         CellBlockInfo block;
-        block.mType = tecplot_zone_meshio_type(file.mZones[idx]);
-        block.mNumCells = file.mZones[idx].mNumCells;
+        block.mType = tecplot_zone_meshio_type(z);
+        block.mNumCells = z.mNumCells;
         meta.mCellBlocks.push_back(std::move(block));
     }
     meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
@@ -1430,6 +1809,64 @@ Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
 Mesh read_tecplot(const std::string& rPath) {
     return read_tecplot(rPath, ReadOptions{});
 }
+
+namespace {
+
+/// The face map of a polygon or polyhedron block for a face-based zone:
+/// faces in first-seen order (cells in order, each cell's faces in order),
+/// a face shared by two cells written once. A cell's face is outward, so
+/// that cell is its left element (right-hand normal towards the right one);
+/// the second cell to use it becomes the right element. Elements 1-based,
+/// 0 = none. Twin of `_tecplot._face_map`.
+struct TecplotWriteFaces {
+    std::vector<std::vector<std::int64_t>> mFaces;
+    std::vector<std::int64_t> mLeft;
+    std::vector<std::int64_t> mRight;
+};
+
+template <class TCellView>
+TecplotWriteFaces tecplot_write_faces(const TCellView& rCb) {
+    TecplotWriteFaces out;
+    std::map<std::vector<std::int64_t>, std::size_t> seen;
+    auto add = [&](std::vector<std::int64_t> Face, std::int64_t Cell) {
+        std::vector<std::int64_t> key = Face;
+        std::sort(key.begin(), key.end());
+        const auto it = seen.find(key);
+        if (it != seen.end() && out.mRight[it->second] == 0) {
+            out.mRight[it->second] = Cell;
+            return;
+        }
+        seen[key] = out.mFaces.size();
+        out.mFaces.push_back(std::move(Face));
+        out.mLeft.push_back(Cell);
+        out.mRight.push_back(0);
+    };
+    const std::size_t n = rCb.NumCells();
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t c = 0; c < n; ++c)
+            for (std::size_t f = 0; f < rCb.NumFaces(c); ++f) {
+                const auto [ptr, size] = rCb.Face(c, f);
+                add(std::vector<std::int64_t>(ptr, ptr + size), static_cast<std::int64_t>(c + 1));
+            }
+        return out;
+    }
+    const NDArray* pConn = rCb.IsRagged() ? nullptr : &rCb.Conn();
+    const std::size_t k = rCb.IsRagged() ? 0 : rCb.NodesPerCell();
+    for (std::size_t c = 0; c < n; ++c) {
+        std::vector<std::int64_t> row;
+        if (pConn) {
+            for (std::size_t j = 0; j < k; ++j)
+                row.push_back(detail::read_int(*pConn, c * k + j));
+        } else {
+            row.assign(rCb.Row(c), rCb.Row(c) + rCb.RowSize(c));
+        }
+        for (std::size_t j = 0; j < row.size(); ++j)
+            add({row[j], row[(j + 1) % row.size()]}, static_cast<std::int64_t>(c + 1));
+    }
+    return out;
+}
+
+}  // namespace
 
 // Writes one Tecplot ZONE per cell block (no single-type restriction). Zone
 // 1 carries the coordinates and every nodal field; later zones reuse them
@@ -1564,8 +2001,19 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
                 passive.push_back(j);
         }
 
+        const bool face_based = ztype == "FEPOLYGON" || ztype == "FEPOLYHEDRON";
+        TecplotWriteFaces faces;
+        std::size_t total_face_nodes = 0;
+        if (face_based) {
+            faces = tecplot_write_faces(cb);
+            for (const auto& f : faces.mFaces)
+                total_face_nodes += f.size();
+        }
         os << "ZONE T = \"" << title << "\", NODES = " << num_nodes
            << ", ELEMENTS = " << num_cells << ",\n";
+        if (face_based)
+            os << "FACES = " << faces.mFaces.size() << ", TOTALNUMFACENODES = " << total_face_nodes
+               << ",\nNUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n";
         os << "DATAPACKING = BLOCK, ZONETYPE = " << ztype;
         if (bi > 0)
             os << ",\nVARSHARELIST = ([1-" << num_shared << "] = 1)";
@@ -1595,6 +2043,26 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             write_column(col);
         }
 
+        if (face_based) {
+            auto write_ints = [&](const std::vector<std::int64_t>& rInts) {
+                for (std::size_t i = 0; i < rInts.size(); ++i)
+                    os << rInts[i] << ((i + 1) % 20 == 0 || i + 1 == rInts.size() ? '\n' : ' ');
+                if (rInts.empty())
+                    os << "\n";
+            };
+            if (ztype == "FEPOLYHEDRON") {
+                std::vector<std::int64_t> counts;
+                for (const auto& f : faces.mFaces)
+                    counts.push_back(static_cast<std::int64_t>(f.size()));
+                write_ints(counts);
+            }
+            for (const auto& f : faces.mFaces)
+                for (std::size_t j = 0; j < f.size(); ++j)
+                    os << (f[j] + 1) << (j + 1 == f.size() ? '\n' : ' ');
+            write_ints(faces.mLeft);
+            write_ints(faces.mRight);
+            continue;
+        }
         const NDArray& conn = cb.Conn();
         const std::size_t k = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         for (std::size_t r = 0; r < num_cells; ++r) {
