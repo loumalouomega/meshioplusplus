@@ -260,7 +260,9 @@ class _Reader:
                 members.extend(self.node_sets[other])
             else:
                 members.append(self.node(_int(c.get("id", ""), "node id")))
-        self.group(name, "point")["e"].extend(members)
+        # meshio++'s own MeshData sets (`meshdata:<array>`) carry an array, not a group
+        if not name.startswith("meshdata:"):
+            self.group(name, "point")["e"].extend(members)
         self.node_sets.setdefault(name, []).extend(members)
 
     def read_element_set(self, eset):
@@ -268,7 +270,8 @@ class _Reader:
         members = [self.element(i) for i in _id_list(eset.text)]
         for c in eset:
             members.append(self.element(_int(c.get("id", ""), "element id")))
-        self.group(name, "cell")["e"].extend(members)
+        if not name.startswith("meshdata:"):
+            self.group(name, "cell")["e"].extend(members)
         self.elem_sets.setdefault(name, []).extend(members)
 
     def facet(self, f):
@@ -555,6 +558,81 @@ def _all_on_edges(mesh, line, dims):
     return True
 
 
+_DATA_TYPES = {1: "scalar", 2: "vec2", 3: "vec3", 6: "mat3s", 9: "mat3"}
+
+
+def _mesh_data_arrays(mesh, blocks, kinds, bases, element_no):
+    """[(name, nodal, data_type, width, members, values)]: every point array over
+    the nodes where it is defined, every cell array over the <Elements> cells
+    where it is (``write_febio``)."""
+    arrays, unwritable = [], []
+    off_elements = 0
+    for name in sorted(mesh.point_data):
+        a = np.asarray(mesh.point_data[name], dtype=np.float64)
+        width = int(np.prod(a.shape[1:])) if a.ndim >= 1 else 0
+        if a.ndim == 0 or width not in _DATA_TYPES:
+            unwritable.append(name)
+            continue
+        flat = a.reshape(len(a), width)
+        members, values = [], []
+        for p, row in enumerate(flat.tolist()):
+            if any(np.isnan(v) for v in row):
+                continue
+            members.append(p + 1)
+            values.extend(row)
+        if members:
+            arrays.append((name, True, _DATA_TYPES[width], width, members, values))
+    for name in sorted(mesh.cell_data):
+        data = mesh.cell_data[name]
+        width, ok = 0, True
+        for b, block in enumerate(blocks):
+            if len(block) == 0:
+                continue
+            a = np.asarray(data[b])
+            if a.ndim == 0:
+                ok = False
+                continue
+            wb = int(np.prod(a.shape[1:]))
+            if width == 0:
+                width = wb
+            elif width != wb:
+                ok = False
+        width = width or 1
+        if not ok or width not in _DATA_TYPES:
+            unwritable.append(name)
+            continue
+        members, values = [], []
+        for b, block in enumerate(blocks):
+            flat = np.asarray(data[b], dtype=np.float64).reshape(len(block), width)
+            for r, row in enumerate(flat.tolist()):
+                if any(np.isnan(v) for v in row):
+                    continue
+                if kinds[b] != "elements":
+                    off_elements += 1
+                    continue
+                members.append(int(element_no[bases[b] + r]))
+                values.extend(row)
+        if members:
+            arrays.append((name, False, _DATA_TYPES[width], width, members, values))
+    if unwritable or off_elements or mesh.field_data:
+        if unwritable:
+            warn(
+                "FEBio .feb writer: arrays FEBio has no data type for are dropped: "
+                + ", ".join(unwritable)
+            )
+        if off_elements:
+            warn(
+                f"FEBio .feb writer: {off_elements} cell value(s) on surfaces, edges or "
+                "discrete sets are dropped"
+            )
+        _provenance.note(
+            "data-dropped",
+            "field data, and arrays that are not scalar, vec2, vec3, mat3s or mat3 or "
+            "lie off the elements, are not written",
+        )
+    return arrays
+
+
 def write(filename, mesh):
     blocks = mesh.cells
     dims = []
@@ -650,12 +728,7 @@ def write(filename, mesh):
             "cells-dropped",
             f"{dropped_vertices} vertex cell(s) have no FEBio element",
         )
-    if mesh.point_data or mesh.cell_data or mesh.field_data:
-        warn(
-            "FEBio .feb writer: data arrays are not written (MeshData is not "
-            "supported yet)"
-        )
-        _provenance.note("data-dropped", "the .feb writer does not write MeshData")
+    arrays = _mesh_data_arrays(mesh, blocks, kinds, bases, element_no)
 
     out = [
         '<?xml version="1.0" encoding="ISO-8859-1"?>\n<febio_spec version="4.0">\n',
@@ -761,6 +834,13 @@ def write(filename, mesh):
             "were dropped"
         )
 
+    # the sets the MeshData arrays live on
+    for name, nodal, _, _, members, _ in arrays:
+        tag = "NodeSet" if nodal else "ElementSet"
+        out.append(
+            f'\t\t<{tag} name="{_escape("meshdata:" + name)}">{_ids(members)}</{tag}>\n'
+        )
+
     out.append("\t</Mesh>\n\t<MeshDomains>\n")
     for b in range(len(blocks)):
         if kinds[b] != "elements":
@@ -768,6 +848,22 @@ def write(filename, mesh):
         domain = {3: "SolidDomain", 2: "ShellDomain"}.get(dims[b], "BeamDomain")
         name = _escape(names[b])
         out.append(f'\t\t<{domain} name="{name}" mat="{name}"/>\n')
-    out.append("\t</MeshDomains>\n</febio_spec>\n")
+    out.append("\t</MeshDomains>\n")
+    if arrays:
+        out.append("\t<MeshData>\n")
+        for name, nodal, dtype, width, members, values in arrays:
+            tag = "NodeData" if nodal else "ElementData"
+            where = "node_set" if nodal else "elem_set"
+            item = "node" if nodal else "e"
+            out.append(
+                f'\t\t<{tag} name="{_escape(name)}" {where}="{_escape("meshdata:" + name)}" '
+                f'data_type="{dtype}">\n'
+            )
+            for m in range(len(members)):
+                row = ",".join("%.17g" % v for v in values[m * width : (m + 1) * width])
+                out.append(f'\t\t\t<{item} lid="{m + 1}">{row}</{item}>\n')
+            out.append(f"\t\t</{tag}>\n")
+        out.append("\t</MeshData>\n")
+    out.append("</febio_spec>\n")
     with open(filename, "wb") as fh:
         fh.write("".join(out).encode())

@@ -27,15 +27,11 @@
  * payload (`20xx` = float32 nodes / int32 cells, `30xx` = float64 / int64).
  * All connectivity and zone-header integers in both ASCII and binary bodies
  * are **hexadecimal** — the format's defining quirk. Section `10` gives node
- * blocks (`zone-id first last type ND`), section `12` gives cell blocks
- * (`zone-id first last zone-type element-type`; `zone-type == 0` is a dead
- * zone producing no cells; `element-type == 0` is a "mixed" zone that is
- * structurally skipped, Fluent's own heterogeneous-cell encoding being
- * unresolved here), and section `13` gives boundary faces. All zones are
- * folded into one flat cell list, then every connectivity array has the
- * first point-zone's `first` index subtracted so numbering normalizes to 0.
- * `point_data`/`cell_data`/`field_data` are always empty for this format —
- * it carries geometry and zone/boundary structure only.
+ * blocks, `13` the faces (nodes plus the cells `c0 c1` on either side) and `12`
+ * the cell zones. The reader rebuilds each cell from its faces, keeps boundary
+ * faces as surface cells, and records each cell's zone in
+ * `cell_data["ansys:zone"]` with one named cell region per zone; a legacy
+ * meshio file (cell sections with connectivity bodies) is read as cells only.
  *
  * See doc/formats/ansys.md for the full section grammar and the
  * element-type/face-type code tables.
@@ -51,23 +47,23 @@
 namespace meshioplusplus {
 
 /**
- * @brief Write `mesh` as a Fluent .msh file.
+ * @brief Write `mesh` as a Fluent .msh file in Fluent's face-based layout.
  *
- * Emits, in order: a `(1 "...")` header, `(2 DIM)`, a `(10 (0 1 N 0))` node-
- * count declaration, a `(12 (0 1 N 0))` cell-count declaration, one node
- * block (`10` ascii or `3010` binary), then one cell block per meshio++ cell
- * type using the fixed reverse map `triangle:1, tetra:2, quad:3,
- * hexahedron:4, pyramid:5, wedge:6` (ascii section `12`, binary `2012`
- * int32 or `3012` int64). No face (`13`) sections, and no `mixed`/polyhedral
- * cell support, are ever emitted.
+ * The cells are the blocks of the highest dimension (2 or 3), in cell zones
+ * from `cell_data["ansys:zone"]` (else one per block). Every face is written
+ * once with its nodes and the cells `c0 c1` on either side: 3-D faces from
+ * `detail/face_mesh.hpp` with the right-hand normal into `c0`, 2-D edges with
+ * `c0` on the left. Interior faces form one zone; a boundary face is in the
+ * wall zone of the lower-dimensional block (or `ansys:zone`) whose facet
+ * matches it, the rest in a default wall. Zone names (`45` sections) come from
+ * the regions. Polygons and polyhedra are written as element type 7.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param binary write node/cell bodies as binary (`true`, `20xx`/`30xx`
- *        prefixed sections) or ASCII (`false`)
- * @throws WriteError if `mesh` is not 2D or 3D, or if a cell block's type
- *         has no entry in the meshio++ -> Ansys type-code map ("illegal
- *         cell type")
+ * @param binary write the node section as `3010` (float64) and the face
+ *        sections as `2013` (int32), or everything ASCII (`false`)
+ * @throws WriteError if the points are not 2-D or 3-D, the mesh has no 2-D or
+ *         3-D cells, or a binary id does not fit 32 bits
  */
 MESHIOPLUSPLUS_API void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
 

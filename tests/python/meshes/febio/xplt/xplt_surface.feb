@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<febio_spec version="4.0">
+	<Module type="solid"/>
+	<Control>
+		<analysis>STATIC</analysis>
+		<time_steps>3</time_steps>
+		<step_size>0.333333333333</step_size>
+		<plot_zero_state>1</plot_zero_state>
+		<solver type="solid">
+			<symmetric_stiffness>symmetric</symmetric_stiffness>
+		</solver>
+	</Control>
+	<Material>
+		<material id="1" name="m" type="neo-Hookean"><E>1</E><v>0.3</v></material>
+	</Material>
+	<Mesh>
+		<Nodes>
+			<node id="1">0,0,0</node>
+			<node id="2">1,0,0</node>
+			<node id="3">2,0,0</node>
+			<node id="4">0,1,0</node>
+			<node id="5">1,1,0</node>
+			<node id="6">2,1,0</node>
+			<node id="7">0,0,1</node>
+			<node id="8">1,0,1</node>
+			<node id="9">2,0,1</node>
+			<node id="10">0,1,1</node>
+			<node id="11">1,1,1</node>
+			<node id="12">2,1,1</node>
+		</Nodes>
+		<Elements type="hex8" name="bar">
+			<elem id="1">1,2,5,4,7,8,11,10</elem>
+			<elem id="2">2,3,6,5,8,9,12,11</elem>
+		</Elements>
+		<NodeSet name="fixed">1,7,4,10</NodeSet>
+		<NodeSet name="pull">3,9,6,12</NodeSet>
+		<Surface name="end">
+			<quad4 id="1">3,6,12,9</quad4>
+		</Surface>
+		<Surface name="top">
+			<quad4 id="1">7,8,11,10</quad4>
+			<quad4 id="2">8,9,12,11</quad4>
+		</Surface>
+	</Mesh>
+	<MeshDomains>
+		<SolidDomain name="bar" mat="m"/>
+	</MeshDomains>
+	<Boundary>
+		<bc type="zero displacement" node_set="fixed">
+			<x_dof>1</x_dof><y_dof>1</y_dof><z_dof>1</z_dof>
+		</bc>
+	</Boundary>
+	<Loads>
+		<surface_load type="pressure" surface="end"><pressure lc="1">-0.05</pressure></surface_load>
+		<surface_load type="pressure" surface="top"><pressure lc="1">0.02</pressure></surface_load>
+	</Loads>
+	<Output>
+		<plotfile type="febio">
+			<var type="displacement"/>
+			<var type="facet area" surface="end"/>
+			<var type="facet area" surface="top"/>
+			<var type="surface area" surface="top"/>
+			<var type="scalar surface load" surface="top"/>
+			<var type="nodal surface traction" surface="end"/>
+		</plotfile>
+	</Output>
+	<LoadData>
+		<load_controller id="1" type="loadcurve">
+			<interpolate>LINEAR</interpolate>
+			<points>
+				<pt>0,0</pt>
+				<pt>1,1</pt>
+			</points>
+		</load_controller>
+	</LoadData>
+</febio_spec>

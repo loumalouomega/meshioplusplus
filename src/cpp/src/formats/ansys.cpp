@@ -24,7 +24,9 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -34,6 +36,9 @@
 
 // Project includes
 #include "meshioplusplus/formats/ansys.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/cell_index.hpp"
+#include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -618,106 +623,496 @@ Mesh read_ansys(const std::string& rPath) {
     return mesh;
 }
 
+namespace {
+
+// One face of the written mesh: its nodes (0-based) wound so Fluent reads the
+// right cells on either side, and the compact ids of those cells (-1: none).
+struct FlFace {
+    std::vector<std::int64_t> mNodes;
+    std::int64_t mC0 = -1;
+    std::int64_t mC1 = -1;
+};
+
+struct FlZone {
+    std::int64_t mId = 0;
+    std::string mType;                  // fluid, interior, wall
+    std::vector<std::int64_t> mGlobal;  // the mesh cells it stands for (for its name)
+    int mDim = 0;                       // their dimension
+    std::vector<std::size_t> mMembers;  // compact cells or faces, in order
+};
+
+// Fluent element types of the cell zones (12) and the corners a cell keeps.
+int fl_element_type(const std::string& rType) {
+    if (rType.rfind("triangle", 0) == 0)
+        return 1;
+    if (rType.rfind("tetra", 0) == 0)
+        return 2;
+    if (rType.rfind("quad", 0) == 0)
+        return 3;
+    if (rType.rfind("hexahedron", 0) == 0)
+        return 4;
+    if (rType.rfind("pyramid", 0) == 0)
+        return 5;
+    if (rType.rfind("wedge", 0) == 0)
+        return 6;
+    return 7;  // polyhedral (3-D) or polygonal (2-D): defined by its faces
+}
+
+bool fl_is_linear(const std::string& rType) {
+    static const char* const kLinear[] = {"triangle", "tetra", "quad",    "hexahedron",
+                                          "pyramid",  "wedge", "polygon", "line"};
+    for (const char* t : kLinear)
+        if (rType == t)
+            return true;
+    return rType.rfind("polygon", 0) == 0 || rType.rfind("polyhedron", 0) == 0;
+}
+
+// The corner ring of a 2-D cell (a surface facet in 3-D, a cell in 2-D).
+std::vector<std::int64_t> fl_ring(const Mesh::CellView& rBlock, std::size_t Cell) {
+    std::vector<std::int64_t> ring;
+    if (rBlock.IsRagged()) {
+        const std::int64_t* p = rBlock.Row(Cell);
+        ring.assign(p, p + rBlock.RowSize(Cell));
+        return ring;
+    }
+    const std::string& t = rBlock.Type();
+    const std::size_t npc = rBlock.NodesPerCell();
+    std::size_t corners = npc;
+    if (t.rfind("triangle", 0) == 0)
+        corners = 3;
+    else if (t.rfind("quad", 0) == 0)
+        corners = 4;
+    else if (t.rfind("line", 0) == 0)
+        corners = 2;
+    const NDArray& conn = rBlock.Conn();
+    for (std::size_t k = 0; k < corners && k < npc; ++k)
+        ring.push_back(detail::read_int(conn, Cell * npc + k));
+    return ring;
+}
+
+int fl_dimension(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    if (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0)
+        return 2;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+std::string fl_hex(std::int64_t V) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%llx", static_cast<unsigned long long>(V));
+    return buf;
+}
+
+// A Fluent zone name: no blanks or parentheses.
+std::string fl_name(std::string rName) {
+    for (char& c : rName)
+        if (c == ' ' || c == '\t' || c == '(' || c == ')' || c == '"')
+            c = '_';
+    return rName.empty() ? std::string("zone") : rName;
+}
+
+}  // namespace
+
 void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim != 2 && pdim != 3)
+        throw WriteError("Fluent: can only write points of dimension 2 or 3");
+
+    // The cells are the blocks of the mesh's highest dimension (2 or 3); the
+    // blocks one dimension lower name boundary zones; anything else is dropped.
+    int dim = 0;
+    for (const auto cb : rMesh.CellRange())
+        dim = std::max(dim, fl_dimension(cb));
+    if (dim < 2)
+        throw WriteError("Fluent: the mesh has no 2-D or 3-D cells");
+    if (dim == 3 && pdim != 3)
+        throw WriteError("Fluent: 3-D cells need 3-D points");
+    // A 2-D Fluent mesh lies in the xy plane: z is dropped only when it is 0.
+    if (dim == 2 && pdim == 3)
+        for (std::size_t i = 0; i < npoints; ++i)
+            if (detail::read_double(points, i * 3 + 2) != 0.0)
+                throw WriteError("Fluent: a 2-D mesh must lie in the z = 0 plane (point " +
+                                 std::to_string(i) +
+                                 " has z != 0); Fluent has no 3-D surface meshes");
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const bool has_zone = rMesh.HasCellData("ansys:zone");
+    auto zone_value = [&](std::size_t Block, std::size_t Cell, std::int64_t& rOut) {
+        if (!has_zone)
+            return false;
+        const NDArray& z = rMesh.CellData("ansys:zone", Block);
+        if (Cell >= z.Size())
+            return false;
+        rOut = detail::read_int(z, Cell);
+        return rOut > 0;
+    };
+
+    // ---- faces and cells ----------------------------------------------------
+    std::vector<FlFace> faces;
+    std::vector<std::int64_t> cell_to_global;  // compact cell -> global cell
+    std::vector<std::size_t> cell_block;       // compact cell -> block
+    std::vector<std::size_t> surface_blocks;   // blocks of dimension dim - 1
+    std::size_t dropped_blocks = 0, quadratic = 0;
+    if (dim == 3) {
+        const detail::GlobalFaces g = detail::build_global_faces(rMesh);
+        if (g.mNumUnorientable != 0)
+            log::warn(
+                "Fluent: {} cell(s) are not closed, orientable solids; their faces are "
+                "written as found",
+                g.mNumUnorientable);
+        if (g.mNumNonManifold != 0)
+            log::warn("Fluent: {} face(s) are shared by more than two cells", g.mNumNonManifold);
+        cell_to_global = g.mCellToGlobal;
+        cell_block.resize(g.NumCells());
+        for (std::size_t c = 0; c < g.NumCells(); ++c)
+            cell_block[c] = static_cast<std::size_t>(
+                std::upper_bound(bases.begin(), bases.end(), g.mCellToGlobal[c]) - bases.begin() -
+                1);
+        faces.resize(g.NumFaces());
+        for (std::size_t f = 0; f < g.NumFaces(); ++f) {
+            // Stored outward from the owner; Fluent's normal points into c0.
+            const std::int64_t* ring = g.Face(f);
+            faces[f].mNodes.assign(std::make_reverse_iterator(ring + g.FaceSize(f)),
+                                   std::make_reverse_iterator(ring));
+            faces[f].mC0 = g.mOwner[f];
+            faces[f].mC1 = g.mNeighbour[f];
+        }
+        for (std::size_t b : g.mNonCellBlocks)
+            (fl_dimension(rMesh.Cells(b)) == 2 ? surface_blocks.push_back(b)
+                                               : void(++dropped_blocks));
+    } else {
+        // Each 2-D cell counter-clockwise (in x-y); an edge a -> b of its ring
+        // has it on the left, where Fluent puts c0.
+        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_of;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const int d = fl_dimension(cb);
+            if (d != 2) {
+                (d == 1 ? surface_blocks.push_back(b) : void(++dropped_blocks));
+                continue;
+            }
+            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                std::vector<std::int64_t> ring = fl_ring(cb, i);
+                double area = 0.0;
+                for (std::size_t k = 0; k < ring.size(); ++k) {
+                    const std::size_t p = static_cast<std::size_t>(ring[k]);
+                    const std::size_t q = static_cast<std::size_t>(ring[(k + 1) % ring.size()]);
+                    area += detail::read_double(points, p * pdim) *
+                                detail::read_double(points, q * pdim + 1) -
+                            detail::read_double(points, q * pdim) *
+                                detail::read_double(points, p * pdim + 1);
+                }
+                if (area < 0.0)
+                    std::reverse(ring.begin(), ring.end());
+                const std::int64_t cell = static_cast<std::int64_t>(cell_to_global.size());
+                cell_to_global.push_back(bases[b] + static_cast<std::int64_t>(i));
+                cell_block.push_back(b);
+                for (std::size_t k = 0; k < ring.size(); ++k) {
+                    const std::int64_t a = ring[k], e = ring[(k + 1) % ring.size()];
+                    const auto key = std::minmax(a, e);
+                    const auto it = edge_of.find(key);
+                    if (it == edge_of.end()) {
+                        edge_of.emplace(key, faces.size());
+                        faces.push_back({{a, e}, cell, -1});
+                    } else if (faces[it->second].mC1 < 0) {
+                        faces[it->second].mC1 = cell;
+                    }
+                }
+            }
+        }
+    }
+    if (cell_to_global.empty())
+        throw WriteError("Fluent: the mesh has no cells Fluent can hold");
+    if (dropped_blocks != 0)
+        log::warn("Fluent: {} cell block(s) of other dimensions are not written", dropped_blocks);
+    for (std::size_t b : std::set<std::size_t>(cell_block.begin(), cell_block.end()))
+        quadratic += fl_is_linear(rMesh.Cells(b).Type()) ? 0 : 1;
+    if (quadratic != 0)
+        log::warn("Fluent: cells are linear; the mid-side nodes of {} block(s) are not used",
+                  quadratic);
+
+    // ---- zones ---------------------------------------------------------------
+    // ansys:zone values are kept as zone ids (the reader writes them); a block
+    // without one, the interior faces, the leftover boundary faces and the
+    // nodes get fresh ids.
+    std::set<std::int64_t> used;
+    std::vector<std::int64_t> cell_zone_id(cell_to_global.size(), 0);
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c) {
+        std::int64_t z = 0;
+        if (zone_value(cell_block[c],
+                       static_cast<std::size_t>(cell_to_global[c] - bases[cell_block[c]]), z)) {
+            cell_zone_id[c] = z;
+            used.insert(z);
+        }
+    }
+    const std::set<std::int64_t> cell_ids_used = used;
+    std::map<std::pair<std::size_t, std::size_t>, std::int64_t> surface_explicit;  // (block, cell)
+    for (std::size_t b : surface_blocks) {
+        const auto cb = rMesh.Cells(b);
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            std::int64_t z = 0;
+            if (zone_value(b, i, z) && cell_ids_used.count(z) == 0) {
+                surface_explicit[{b, i}] = z;
+                used.insert(z);
+            }
+        }
+    }
+    std::int64_t next = used.empty() ? 1 : *used.rbegin() + 1;
+    auto fresh = [&]() {
+        while (used.count(next))
+            ++next;
+        used.insert(next);
+        return next++;
+    };
+    std::map<std::size_t, std::int64_t> block_zone;  // a block without ansys:zone
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c)
+        if (cell_zone_id[c] == 0) {
+            auto it = block_zone.find(cell_block[c]);
+            if (it == block_zone.end())
+                it = block_zone.emplace(cell_block[c], fresh()).first;
+            cell_zone_id[c] = it->second;
+        }
+
+    // Cell zones in first-seen order; Fluent numbers cells zone by zone.
+    std::vector<FlZone> cell_zones;
+    std::map<std::int64_t, std::size_t> cell_zone_pos;
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c) {
+        auto it = cell_zone_pos.find(cell_zone_id[c]);
+        if (it == cell_zone_pos.end()) {
+            it = cell_zone_pos.emplace(cell_zone_id[c], cell_zones.size()).first;
+            cell_zones.push_back({cell_zone_id[c], "fluid", {}, dim, {}});
+        }
+        cell_zones[it->second].mMembers.push_back(c);
+        cell_zones[it->second].mGlobal.push_back(cell_to_global[c]);
+    }
+    std::vector<std::int64_t> fluent_cell(cell_to_global.size(), 0);
+    {
+        std::int64_t id = 1;
+        for (const FlZone& z : cell_zones)
+            for (std::size_t c : z.mMembers)
+                fluent_cell[c] = id++;
+    }
+
+    // Boundary faces: the facet cell that matches one names its zone.
+    std::vector<std::int64_t> face_zone(faces.size(), 0);
+    std::vector<FlZone> face_zones;
+    face_zones.push_back({fresh(), "interior", {}, dim - 1, {}});
+    std::map<std::int64_t, std::size_t> face_zone_pos;
+    std::unordered_map<std::string, std::size_t> face_by_key;
+    auto key_of = [](std::vector<std::int64_t> rIds) {
+        std::sort(rIds.begin(), rIds.end());
+        std::string k;
+        for (std::int64_t v : rIds)
+            k += std::to_string(v) + ",";
+        return k;
+    };
+    for (std::size_t f = 0; f < faces.size(); ++f)
+        if (faces[f].mC1 < 0)
+            face_by_key.emplace(key_of(faces[f].mNodes), f);
+    std::size_t unmatched = 0;
+    for (std::size_t b : surface_blocks) {
+        const auto cb = rMesh.Cells(b);
+        std::int64_t block_id = 0;
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            const auto it = face_by_key.find(key_of(fl_ring(cb, i)));
+            if (it == face_by_key.end()) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t f = it->second;
+            if (face_zone[f] != 0)
+                continue;
+            std::int64_t z = 0;
+            const auto e = surface_explicit.find({b, i});
+            if (e != surface_explicit.end()) {
+                z = e->second;
+            } else {
+                if (block_id == 0)
+                    block_id = fresh();
+                z = block_id;
+            }
+            face_zone[f] = z;
+            auto pos = face_zone_pos.find(z);
+            if (pos == face_zone_pos.end()) {
+                pos = face_zone_pos.emplace(z, face_zones.size()).first;
+                face_zones.push_back({z, "wall", {}, dim - 1, {}});
+            }
+            face_zones[pos->second].mGlobal.push_back(bases[b] + static_cast<std::int64_t>(i));
+        }
+    }
+    if (unmatched != 0)
+        log::warn(
+            "Fluent: {} facet cell(s) are not on the boundary of the cells and are not "
+            "written",
+            unmatched);
+    std::int64_t default_wall = 0;
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+        if (faces[f].mC1 >= 0) {
+            face_zones[0].mMembers.push_back(f);
+            continue;
+        }
+        if (face_zone[f] == 0) {
+            if (default_wall == 0) {
+                default_wall = fresh();
+                face_zone_pos.emplace(default_wall, face_zones.size());
+                face_zones.push_back({default_wall, "wall", {}, dim - 1, {}});
+            }
+            face_zone[f] = default_wall;
+        }
+        face_zones[face_zone_pos.at(face_zone[f])].mMembers.push_back(f);
+    }
+    const std::int64_t node_zone = fresh();
+
+    // Zone names: a region the reader would have made (same tag and
+    // dimension), else a region with exactly these cells, else type_<id>.
+    auto zone_name = [&](const FlZone& rZ) {
+        std::vector<std::int64_t> want = rZ.mGlobal;
+        std::sort(want.begin(), want.end());
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+            const meshioplusplus::Region& reg = rMesh.Region(r);
+            if (reg.mKind == RegionKind::Cell && reg.mTag == rZ.mId && reg.mDim == rZ.mDim)
+                return fl_name(reg.mName);
+        }
+        if (!want.empty())
+            for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+                const meshioplusplus::Region& reg = rMesh.Region(r);
+                if (reg.mKind != RegionKind::Cell || reg.NumEntries() != want.size())
+                    continue;
+                if (std::equal(want.begin(), want.end(), reg.Entries()))
+                    return fl_name(reg.mName);
+            }
+        return rZ.mType + "_" + std::to_string(rZ.mId);
+    };
+
+    if (rMesh.NumPointData() != 0 || rMesh.NumCellData() > (has_zone ? 1u : 0u) ||
+        rMesh.NumFieldData() != 0)
+        detail::provenance_note("data-dropped", "a Fluent mesh file holds no data arrays");
+
+    // ---- write -------------------------------------------------------------------
     auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-
-    const std::size_t npoints = rMesh.NumPoints();
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
-    if (dim != 2 && dim != 3)
-        throw WriteError("ANSYS: can only write dimension 2 or 3");
-
-    static const std::unordered_map<std::string, int> meshio_to_ansys = {
-        {"triangle", 1},   {"tetra", 2},   {"quad", 3},
-        {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
-
-    char hbuf[128];
+    const std::size_t odim = static_cast<std::size_t>(dim);
+    const std::size_t ncells = cell_to_global.size();
     fh << "(1 \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\")\n";
-    std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
-    fh << hbuf;
+    fh << "(2 " << odim << ")\n";
+    fh << "(10 (0 1 " << fl_hex(static_cast<std::int64_t>(npoints)) << " 0 " << odim << "))\n";
+    fh << "(13 (0 1 " << fl_hex(static_cast<std::int64_t>(faces.size())) << " 0))\n";
+    fh << "(12 (0 1 " << fl_hex(static_cast<std::int64_t>(ncells)) << " 0))\n";
 
-    const std::size_t first_node_index = 1;
-    std::snprintf(hbuf, sizeof(hbuf), "(10 (0 %zx %zx 0))\n", first_node_index, npoints);
-    fh << hbuf;
-
-    std::size_t total_cells = 0;
-    for (const auto cb : rMesh.CellRange())
-        total_cells += cb.NumCells();
-    std::snprintf(hbuf, sizeof(hbuf), "(12 (0 1 %zx 0))\n", total_cells);
-    fh << hbuf;
-
-    // Nodes
-    const char* nkey = binary ? "3010" : "10";
-    std::snprintf(hbuf, sizeof(hbuf), "(%s (1 %zx %zx 1 %zx)(\n", nkey, first_node_index, npoints,
-                  dim);
-    fh << hbuf;
+    // Nodes.
+    fh << "(" << (binary ? "3010" : "10") << " (" << fl_hex(node_zone) << " 1 "
+       << fl_hex(static_cast<std::int64_t>(npoints)) << " 1 " << odim << ")"
+       << (binary ? "\n(" : "(");
     if (binary) {
         for (std::size_t i = 0; i < npoints; ++i)
-            for (std::size_t c = 0; c < dim; ++c) {
-                double v = detail::read_double(points, i * dim + c);
+            for (std::size_t c = 0; c < odim; ++c) {
+                const double v = detail::read_double(points, i * pdim + c);
                 fh.write(reinterpret_cast<const char*>(&v), 8);
             }
-        fh << "\n)";
-        fh << "End of Binary Section 3010)\n";
+        fh << ")\nEnd of Binary Section 3010)\n";
     } else {
-        char cbuf[32];
+        fh << "\n";
+        char buf[32];
         for (std::size_t i = 0; i < npoints; ++i) {
-            for (std::size_t c = 0; c < dim; ++c) {
-                detail::snprintf_c(cbuf, sizeof(cbuf), "%.16e",
-                                   detail::read_double(points, i * dim + c));
-                fh << cbuf << (c + 1 == dim ? "" : " ");
+            for (std::size_t c = 0; c < odim; ++c) {
+                detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                                   detail::read_double(points, i * pdim + c));
+                fh << buf << (c + 1 == odim ? "\n" : " ");
             }
-            fh << "\n";
         }
         fh << "))\n";
     }
 
-    // Cells
-    std::size_t first_index = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        auto it = meshio_to_ansys.find(cb.Type());
-        if (it == meshio_to_ansys.end())
-            throw WriteError("ANSYS: illegal cell type '" + cb.Type() + "'");
-        int ansys_type = it->second;
-        std::size_t n = cb.NumCells();
-        const NDArray& conn = cb.Conn();
-        std::size_t ncols = detail::cols(conn);
-        std::size_t last_index = first_index + n - 1;
-        bool is_i32 = (conn.Dtype() == DType::Int32);
-        const char* ckey = binary ? (is_i32 ? "2012" : "3012") : "12";
-        std::snprintf(hbuf, sizeof(hbuf), "(%s (1 %zx %zx 1 %d)(\n", ckey, first_index, last_index,
-                      ansys_type);
-        fh << hbuf;
+    auto write_ints = [&](const char* pKey, const std::string& rHead,
+                          const std::vector<std::vector<std::int64_t>>& rRows) {
+        fh << "(" << (binary ? std::string("20") + pKey : std::string(pKey)) << " (" << rHead << ")"
+           << (binary ? "\n(" : "(");
         if (binary) {
-            for (std::size_t r = 0; r < n; ++r)
-                for (std::size_t c = 0; c < ncols; ++c) {
-                    std::int64_t v = detail::read_int(conn, r * ncols + c) + 1;
-                    if (is_i32) {
-                        std::int32_t v32 = static_cast<std::int32_t>(v);
-                        fh.write(reinterpret_cast<const char*>(&v32), 4);
-                    } else
-                        fh.write(reinterpret_cast<const char*>(&v), 8);
+            for (const auto& row : rRows)
+                for (std::int64_t v : row) {
+                    if (v > std::numeric_limits<std::int32_t>::max())
+                        throw WriteError("Fluent: an id does not fit a binary 32-bit section");
+                    const std::int32_t w = static_cast<std::int32_t>(v);
+                    fh.write(reinterpret_cast<const char*>(&w), 4);
                 }
-            fh << "\n)";
-            std::snprintf(hbuf, sizeof(hbuf), "End of Binary Section %s)\n", ckey);
-            fh << hbuf;
-        } else {
-            char cbuf[24];
-            for (std::size_t r = 0; r < n; ++r) {
-                for (std::size_t c = 0; c < ncols; ++c) {
-                    std::snprintf(
-                        cbuf, sizeof(cbuf), "%llx",
-                        static_cast<unsigned long long>(detail::read_int(conn, r * ncols + c) + 1));
-                    fh << cbuf << (c + 1 == ncols ? "" : " ");
-                }
-                fh << "\n";
-            }
-            fh << "))\n";
+            fh << ")\nEnd of Binary Section 20" << pKey << ")\n";
+            return;
         }
-        first_index = last_index + 1;
+        fh << "\n";
+        for (const auto& row : rRows) {
+            for (std::size_t k = 0; k < row.size(); ++k)
+                fh << fl_hex(row[k]) << (k + 1 == row.size() ? "\n" : " ");
+        }
+        fh << "))\n";
+    };
+
+    // Cell zones: one element type in the header, or 0 and a type per cell.
+    std::int64_t first = 1;
+    for (const FlZone& z : cell_zones) {
+        std::vector<int> types;
+        for (std::size_t c : z.mMembers)
+            types.push_back(fl_element_type(rMesh.Cells(cell_block[c]).Type()));
+        const bool mixed =
+            std::any_of(types.begin(), types.end(), [&](int t) { return t != types.front(); });
+        const std::int64_t last = first + static_cast<std::int64_t>(z.mMembers.size()) - 1;
+        const std::string head = fl_hex(z.mId) + " " + fl_hex(first) + " " + fl_hex(last) + " 1 " +
+                                 fl_hex(mixed ? 0 : types.front());
+        if (!mixed) {
+            fh << "(12 (" << head << "))\n";
+        } else {
+            std::vector<std::vector<std::int64_t>> rows;
+            for (int t : types)
+                rows.push_back({t});
+            write_ints("12", head, rows);
+        }
+        first = last + 1;
     }
+
+    // Face zones: interior (bc 2) first, then the walls (bc 3). A zone of one
+    // face size lists bare nodes; a mixed one leads each face with its size.
+    first = 1;
+    for (const FlZone& z : face_zones) {
+        if (z.mMembers.empty())
+            continue;
+        const std::size_t size0 = faces[z.mMembers.front()].mNodes.size();
+        bool uniform = true;
+        std::size_t largest = 0;
+        for (std::size_t f : z.mMembers) {
+            uniform = uniform && faces[f].mNodes.size() == size0;
+            largest = std::max(largest, faces[f].mNodes.size());
+        }
+        const int ftype =
+            uniform && size0 >= 2 && size0 <= 4 ? static_cast<int>(size0) : (largest > 4 ? 5 : 0);
+        const std::int64_t last = first + static_cast<std::int64_t>(z.mMembers.size()) - 1;
+        const std::string head = fl_hex(z.mId) + " " + fl_hex(first) + " " + fl_hex(last) + " " +
+                                 (z.mType == "interior" ? "2" : "3") + " " + fl_hex(ftype);
+        std::vector<std::vector<std::int64_t>> rows;
+        rows.reserve(z.mMembers.size());
+        for (std::size_t f : z.mMembers) {
+            std::vector<std::int64_t> row;
+            if (ftype == 0 || ftype == 5)
+                row.push_back(static_cast<std::int64_t>(faces[f].mNodes.size()));
+            for (std::int64_t n : faces[f].mNodes)
+                row.push_back(n + 1);
+            row.push_back(fluent_cell[static_cast<std::size_t>(faces[f].mC0)]);
+            row.push_back(faces[f].mC1 < 0 ? 0
+                                           : fluent_cell[static_cast<std::size_t>(faces[f].mC1)]);
+            rows.push_back(std::move(row));
+        }
+        write_ints("13", head, rows);
+        first = last + 1;
+    }
+
+    for (const FlZone& z : cell_zones)
+        fh << "(45 (" << z.mId << " fluid " << zone_name(z) << ")())\n";
+    for (const FlZone& z : face_zones)
+        if (!z.mMembers.empty())
+            fh << "(45 (" << z.mId << " " << z.mType << " " << zone_name(z) << ")())\n";
+    if (!fh)
+        throw WriteError("Fluent: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus

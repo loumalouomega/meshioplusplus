@@ -25,10 +25,12 @@
  * with `/INDEX/NASTRAN/RESULT/...` giving each result table's row range per
  * result domain. Read-only.
  *
- *  - `/NASTRAN/INPUT/NODE/GRID` gives the points, in file order. Coordinates are
- *    taken as written: a GRID with `CP != 0` is kept in its local system with a
- *    warning, and `CP`/`CD` become the point data `nastran:cp`/`nastran:cd` when
- *    any is non-zero. SPOINT/EPOINT scalar points are not points.
+ *  - `/NASTRAN/INPUT/NODE/GRID` gives the points, in file order, moved to the
+ *    basic system through the `COORDINATE_SYSTEM` CORD1R/C/S and CORD2R/C/S
+ *    tables when `CP != 0` (`detail/nastran_model.hpp`); nodal vectors and grid
+ *    point forces of a GRID with `CD != 0` are rotated to basic. `CP`/`CD`
+ *    become the point data `nastran:cp`/`nastran:cd` when any is non-zero.
+ *    SPOINT/EPOINT scalar points are not points.
  *  - Every `/NASTRAN/INPUT/ELEMENT/<CARD>` table with a cell type becomes up to two
  *    cell blocks (linear, then quadratic: a quadratic card with no mid-side nodes
  *    is linear, one with only some is read as linear with a warning). Integer
@@ -48,8 +50,12 @@
  *  - `/NASTRAN/RESULT/ELEMENTAL/<G>/<T>` tables with one row per element become
  *    cell data `<G>:<M>` per float member (the first entry of an array member:
  *    the centre of a solid's or a corner-output shell's values), NaN elsewhere.
- *  - Tables with several rows per entity (per-ply `_COMP`, `GRID_FORCE`) are
- *    skipped with a warning.
+ *  - The other values of an element are `(cells, columns)` cell data with
+ *    `field_data["nastran:layout:<name>"]`: `<G>:<M>@corner` (the corners, at
+ *    the GRID's position in the cell), `<G>:<M>@ply` (`_COMP` plies),
+ *    `<G>:<M>@station` (beam and bar stations) and `GRID_FORCE:<M>` (per
+ *    element node); `GRID_FORCE` rows of no element are point data
+ *    `GRID_FORCE:<label>:<M>`. Other repeated rows are skipped with a warning.
  *
  * A `.h5` without `/NASTRAN/INPUT/NODE/GRID`, or one whose `/NASTRAN` `VERSION`
  * attribute does not name MSC, is refused: other vendors' HDF5 schemas differ.

@@ -62,7 +62,9 @@ def test_engines_read_every_state_alike(path):
 
 def test_the_block_model(engine):
     mesh = engine.read(XPLT / "xplt_blocks.xplt", time_step=-1)
-    assert [c.type for c in mesh.cells] == ["hexahedron", "hexahedron", "quad"]
+    # Two hexes, the shell, and the data surface "end" as a facet block.
+    assert [c.type for c in mesh.cells] == ["hexahedron", "hexahedron", "quad", "quad"]
+    assert [a.tolist() for a in mesh.cell_data["xplt:surface"]] == [[0], [0], [0], [1]]
     got = {(r.name, r.kind): r for r in mesh.regions}
     # Domains: solid ones by name, the nameless shell by its element set.
     assert got[("left", "cell")].tag == 1 and got[("right", "cell")].tag == 2
@@ -78,8 +80,74 @@ def test_the_block_model(engine):
     assert mesh.point_data["nodal stress"].shape == (12, 6)
     assert mesh.field_data["meshio:time"].tolist() == [pytest.approx(1.0)]
     assert mesh.field_data["xplt:step"].tolist() == [3]
-    # The surface traction is surface data: not read.
-    assert "surface traction" not in mesh.point_data
+    # FEBio 4.12 writes the pressure-loaded surface's traction record empty:
+    # a variable on no surface gives no array.
+    assert "surface traction" not in mesh.cell_data
+    assert got[("end", "cell")].entries.tolist() == [3]
+
+
+def _facet_areas(points, rows):
+    """Areas of planar quads as two triangles."""
+    p = points[rows]
+    a = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+    b = np.cross(p[:, 2] - p[:, 0], p[:, 3] - p[:, 0])
+    return 0.5 * (np.linalg.norm(a, axis=1) + np.linalg.norm(b, axis=1))
+
+
+def test_surface_variables_ride_on_facet_blocks(engine):
+    path = XPLT / "xplt_surface.xplt"
+    for k in range(4):
+        mesh = engine.read(path, time_step=k)
+        # The bar, then one facet block per data surface: "end", "top".
+        assert [(c.type, len(c.data)) for c in mesh.cells] == [
+            ("hexahedron", 2),
+            ("quad", 1),
+            ("quad", 2),
+        ]
+        assert [a.tolist() for a in mesh.cell_data["xplt:surface"]] == [
+            [0, 0],
+            [1],
+            [2, 2],
+        ]
+        got = {(r.name, r.kind): r for r in mesh.regions}
+        assert got[("end", "cell")].entries.tolist() == [2]
+        assert got[("top", "cell")].entries.tolist() == [3, 4]
+        assert got[("end", "side")].entries.tolist() == [[1, 1]]
+        # FEBio's facet areas are those of the deformed facets.
+        deformed = mesh.points + mesh.point_data["displacement"]
+        area = mesh.cell_data["facet area"]
+        # FEBio 4.12 plots a variable on one surface only: "facet area" is
+        # asked for on both, but only "top" has it.
+        assert np.isnan(area[0]).all() and np.isnan(area[1]).all()
+        np.testing.assert_allclose(
+            area[2], _facet_areas(deformed, mesh.cells[2].data), rtol=1e-6
+        )
+        # A region variable holds one value per surface, on each facet.
+        total = mesh.cell_data["surface area"]
+        assert np.isnan(total[1]).all()
+        np.testing.assert_allclose(total[2], area[2].sum(), rtol=1e-6)
+    assert area[2][0] > 1.0  # the top was stretched
+
+
+def test_remeshed_states_carry_their_own_mesh(engine):
+    path = XPLT / "xplt_remesh.xplt"
+    sizes = []
+    for k, t in enumerate(py_xplt.time_values(path)):
+        mesh = engine.read(path, time_step=k)
+        sizes.append((len(mesh.points), len(mesh.cells[0].data)))
+        assert mesh.cell_data["stress"][0].shape == (len(mesh.cells[0].data), 6)
+        # The pulled end moved 0.1 t along x, however refined the mesh is.
+        end = np.isclose(mesh.points[:, 0], 2)
+        np.testing.assert_allclose(
+            mesh.point_data["displacement"][end, 0], 0.1 * t, atol=1e-6
+        )
+    # FEBio's log: 12, 45, 78 and 111 nodes after each hex_refine pass.
+    assert [n for n, _ in sizes] == [12, 45, 78, 111]
+    assert sizes[1][1] == 16
+    # Metadata describes the first mesh.
+    info = meshioplusplus.read_metadata(path)
+    assert info["time_values"] == pytest.approx([0, 1 / 3, 2 / 3, 1], abs=1e-6)
+    assert len(list(meshioplusplus.read_sequence(path))) == 4
 
 
 def test_compressed_file_reads_like_the_uncompressed_one():

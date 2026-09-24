@@ -353,6 +353,9 @@ std::string sniff_format(const std::string& rPath) {
     // --- binary magics ---
     if (sniff_is_mphbin(head))
         return "mphbin";
+    // Tecplot binary (.plt): "#!TDV" and a three-character version.
+    if (head.size() >= 5 && head.compare(0, 5, "#!TDV") == 0)
+        return "tecplot";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))

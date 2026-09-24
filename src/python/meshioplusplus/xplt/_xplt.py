@@ -351,7 +351,9 @@ def _mesh_section(reader, start, stop, version):
                 hdr = reader.child(c, d, SURFACE_HDR)
                 named = reader.child(*hdr, SURFACE_NAME) if hdr else None
                 name = reader.string(*named) if named else ""
-                mesh["surfaces"].append((name, _facets(reader, c, d, FACE_LIST, FACE)))
+                mesh["surfaces"].append(
+                    (name, _facets(reader, c, d, FACE_LIST, FACE), False)
+                )
         elif sid == FACETSET_SECTION:
             for sid2, c, d in reader.chunks(a, b):
                 if sid2 != FACETSET:
@@ -360,7 +362,7 @@ def _mesh_section(reader, start, stop, version):
                 named = reader.child(*hdr, FACETSET_NAME) if hdr else None
                 name = reader.string(*named) if named else ""
                 mesh["surfaces"].append(
-                    (name, _facets(reader, c, d, FACETSET_LIST, FACET))
+                    (name, _facets(reader, c, d, FACETSET_LIST, FACET), True)
                 )
         elif sid in (NODESET_SECTION, ELEMENTSET_SECTION):
             item, hdr_tag, name_tag, list_tag = (
@@ -408,15 +410,23 @@ def _parse(filename):
     dictionary = (
         _dictionary(reader, *found) if found else {g: [] for g in DIC_GROUPS.values()}
     )
-    meshes = [t for t in top[1:] if t[1] == MESH]
+    # A remeshed run writes a mesh section before the states that use it.
+    meshes, states, state_mesh = [], [], []
+    for t in top[1:]:
+        if t[1] == MESH:
+            meshes.append(t)
+        elif t[1] == STATE:
+            states.append(t)
+            state_mesh.append(max(len(meshes) - 1, 0))
     if not meshes:
         _fail("the file has no mesh")
-    if len(meshes) > 1:
-        _fail("the mesh changes between states (remeshing), which is not supported")
-    mreader, _, c, d = meshes[0]
-    mesh = _mesh_section(mreader, c, d, version)
-    states = [t for t in top[1:] if t[1] == STATE]
-    return version, dictionary, mesh, states
+    return version, dictionary, (meshes, state_mesh), states
+
+
+def _mesh_of(parsed, index):
+    version, _, (meshes, state_mesh), states = parsed
+    mreader, _, c, d = meshes[state_mesh[index] if states else 0]
+    return _mesh_section(mreader, c, d, version)
 
 
 def _state_time(state):
@@ -434,7 +444,21 @@ def time_values(filename):
 
 
 def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
-    _, dictionary, raw, states = _parse(str(filename))
+    parsed = _parse(str(filename))
+    _, dictionary, _, states = parsed
+    # the step first: a remeshed run reads the mesh that step uses
+    index = 0
+    if not states:
+        if time_step not in (0, -1):
+            _fail(f"time step {time_step} is out of range: the file has no states")
+    else:
+        n = len(states)
+        index = time_step + n if time_step < 0 else time_step
+        if not 0 <= index < n:
+            raise ReadError(
+                f"time step {time_step} is out of range: the file has {n} step(s)"
+            )
+    raw = _mesh_of(parsed, index)
 
     # -- mesh ---------------------------------------------------------------------
     cells = []
@@ -480,13 +504,22 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
         entry = regions.setdefault(("cell", name), [-1, -1, []])
         entry[2].extend(elem_index[i] for i in members if i in elem_index)
 
+    # Surfaces: a data surface is a block of facet cells per facet type (its
+    # variables live there) plus a side region when its facets lie on the cells;
+    # a facet set is only the side region, or facet blocks when some facet lies
+    # on no cell.
     faces = None
-    extra = []
-    seen = set()
-    for name, facets in raw["surfaces"]:
-        if name in seen or not facets:
+    surface_cells = []  # per data surface, the global cell of each facet
+    extra = []  # (type, rows, data surface id or 0)
+    seen_sides = set()
+    surface_id = 0
+    for name, facets, facet_set in raw["surfaces"]:
+        if not facet_set:
+            surface_id += 1
+        if not facets:
+            if not facet_set:
+                surface_cells.append([])
             continue
-        seen.add(name)
         if faces is None:
             faces = FacetIndex(mesh, surface_edges=False)
         sides = []
@@ -496,22 +529,39 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
                 sides = None
                 break
             sides.append(hit.first)
-        if sides is not None:
+        if sides is not None and name not in seen_sides:
+            seen_sides.add(name)
             regions.setdefault(("side", name), [-1, 2, []])[2].extend(sides)
+        if sides is not None and facet_set:
             continue
         by_type = {}
-        for nn, nodes in facets:
+        for f, (nn, nodes) in enumerate(facets):
             cell_type = _FACET_TYPES.get(nn)
-            if cell_type is None:
+            if cell_type is None or len(nodes) != nn:
                 continue
-            by_type.setdefault(cell_type, []).append(nodes)
-        for cell_type, rows in by_type.items():
-            extra.append((cell_type, rows, name))
-    for cell_type, rows, name in extra:
-        mesh.cells.append(CellBlock(cell_type, np.array(rows, dtype=np.int64)))
+            by_type.setdefault(cell_type, []).append(f)
+        cells_of = [-1] * len(facets)
         entry = regions.setdefault(("cell", name), [-1, 2, []])
-        entry[2].extend(range(base, base + len(rows)))
-        base += len(rows)
+        for cell_type, members in by_type.items():
+            rows = []
+            for f in members:
+                rows.append(facets[f][1])
+                cells_of[f] = base
+                entry[2].append(base)
+                base += 1
+            extra.append((cell_type, rows, 0 if facet_set else surface_id))
+        if not facet_set:
+            surface_cells.append(cells_of)
+    n_domain_blocks = len(mesh.cells)
+    for cell_type, rows, _ in extra:
+        mesh.cells.append(CellBlock(cell_type, np.array(rows, dtype=np.int64)))
+    wants_ids = not points_only and (arrays is None or "xplt:surface" in arrays)
+    if wants_ids and any(sid > 0 for _, _, sid in extra):
+        ids = [
+            np.zeros(len(c.data), dtype=np.int64) for c in mesh.cells[:n_domain_blocks]
+        ]
+        ids += [np.full(len(rows), sid, dtype=np.int64) for _, rows, sid in extra]
+        mesh.cell_data["xplt:surface"] = ids
 
     kind_order = {"point": 0, "cell": 1, "side": 2}
     out = []
@@ -525,15 +575,7 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
 
     # -- the chosen state -------------------------------------------------------------
     if not states:
-        if time_step not in (0, -1):
-            _fail(f"time step {time_step} is out of range: the file has no states")
         return mesh
-    n = len(states)
-    index = time_step + n if time_step < 0 else time_step
-    if not 0 <= index < n:
-        raise ReadError(
-            f"time step {time_step} is out of range: the file has {n} step(s)"
-        )
     mesh.time_values = [_state_time(s)[0] for s in states]
     time, status = _state_time(states[index])
     mesh.field_data["meshio:time"] = np.array([time], dtype=np.float64)
@@ -543,7 +585,11 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
     if points_only:
         return mesh
     wanted = None if arrays is None else set(arrays)
-    _read_state(states[index], dictionary, mesh, file_conn, wanted)
+    data_surfaces = [
+        facets for _, facets, facet_set in raw["surfaces"] if not facet_set
+    ]
+    surfaces = list(zip(data_surfaces, surface_cells))
+    _read_state(states[index], dictionary, mesh, file_conn, wanted, surfaces)
     return mesh
 
 
@@ -552,7 +598,7 @@ def _dim(cell_type):
     return {"line": 1, "triangle": 2, "quad": 2}.get(family, 3)
 
 
-def _read_state(state, dictionary, mesh, file_conn, wanted):
+def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=()):
     reader, _, a, b = state
     found = reader.child(a, b, STATE_DATA)
     if found is None:
@@ -575,7 +621,7 @@ def _read_state(state, dictionary, mesh, file_conn, wanted):
             name, fmt, width = items[var - 1]
             if wanted is not None and name not in wanted:
                 continue
-            if group in ("surface", "edge"):
+            if group == "edge":
                 if name not in skipped:
                     skipped.append(name)
                 continue
@@ -586,7 +632,60 @@ def _read_state(state, dictionary, mesh, file_conn, wanted):
                 (rid, reader.f32s(g, h).astype(np.float64))
                 for rid, g, h in reader.chunks(*data)
             ]
-            if group == "global":
+            if group == "surface":
+                # region k is data surface k: per facet (item) or one value
+                # (region) -> its facet cells; per surface node (node, first
+                # seen over its facets) or per facet node (mult) -> averaged
+                # at the points
+                if fmt in ("item", "region"):
+                    bases = np.concatenate([[0], np.cumsum(sizes)])
+                    blocks = [np.full((n, width), np.nan) for n in sizes]
+                    landed = False
+                    for rid, values in regions:
+                        k = rid - 1
+                        if not 0 <= k < len(surfaces):
+                            continue
+                        cells = surfaces[k][1]
+                        need = width if fmt == "region" else len(cells) * width
+                        if len(values) < need:
+                            continue
+                        for f, cell in enumerate(cells):
+                            if cell < 0:
+                                continue
+                            landed = True
+                            bk = int(np.searchsorted(bases, cell, side="right")) - 1
+                            row = (
+                                values[:width]
+                                if fmt == "region"
+                                else values[f * width : (f + 1) * width]
+                            )
+                            blocks[bk][cell - bases[bk]] = row
+                    # a variable on no surface of this mesh gives no array
+                    if landed:
+                        mesh.cell_data[name] = [
+                            blk[:, 0].copy() if width == 1 else blk for blk in blocks
+                        ]
+                elif fmt in ("node", "mult"):
+                    for k, (facets, _) in enumerate(surfaces):
+                        for rid, values in regions:
+                            if rid != k + 1:
+                                continue
+                            flat = [p for _, nodes in facets for p in nodes]
+                            nodes = flat if fmt == "mult" else list(dict.fromkeys(flat))
+                            if not nodes or len(values) < len(nodes) * width:
+                                continue
+                            total, count = point_sums.setdefault(
+                                name, (np.zeros((n_points, width)), np.zeros(n_points))
+                            )
+                            rows = values[: len(nodes) * width].reshape(
+                                len(nodes), width
+                            )
+                            keep = [i for i, p in enumerate(nodes) if p < n_points]
+                            np.add.at(total, [nodes[i] for i in keep], rows[keep])
+                            np.add.at(count, [nodes[i] for i in keep], 1)
+                elif name not in skipped:
+                    skipped.append(name)
+            elif group == "global":
                 for _, values in regions[:1]:
                     mesh.field_data[name] = values
             elif group == "node":
@@ -648,6 +747,6 @@ def _read_state(state, dictionary, mesh, file_conn, wanted):
         mesh.point_data[name] = values[:, 0] if values.shape[1] == 1 else values
     if skipped:
         warn(
-            "FEBio .xplt: surface, edge and material-point variables are not read: "
+            "FEBio .xplt: edge and material-point variables are not read: "
             + ", ".join(skipped)
         )

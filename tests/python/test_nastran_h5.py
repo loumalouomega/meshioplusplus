@@ -39,6 +39,15 @@ MIDS = {
 }
 
 
+def _block_row(mesh, cell):
+    base = 0
+    for b, c in enumerate(mesh.cells):
+        if cell < base + len(c.data):
+            return b, cell - base
+        base += len(c.data)
+    raise IndexError(cell)
+
+
 def path_of(name):
     path = FIXTURES / f"{name}.h5"
     with open(path, "rb") as f:
@@ -369,11 +378,83 @@ class TestRealFiles:
         # a line element has no STRESS:X
         assert np.isnan(sx[types == "line"]).all()
 
-    def test_per_ply_and_per_grid_tables_are_skipped(self, engine):
+    def test_ply_values_by_ply_id(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            comp = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/QUAD4_COMP"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        types = types_of(mesh)
+        x1 = np.concatenate(mesh.cell_data["STRESS:X1@ply"])
+        assert mesh.field_data["nastran:layout:STRESS:X1@ply"].tolist() == [
+            x1.shape[1],
+            1,
+        ]
+        for row in comp:  # the file lists element 23's plies 1, 2, 4, 3
+            cell = np.flatnonzero((eids == row["EID"]) & (types == "quad"))[0]
+            assert x1[cell, row["PLY"] - 1] == row["X1"]
+
+    def test_corner_values_in_node_order(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            hexa = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/HEXA"][0]
+            ids = f["/NASTRAN/INPUT/NODE/GRID"]["ID"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        types = types_of(mesh)
+        corner = np.concatenate(
+            [c.reshape(len(c), -1) for c in mesh.cell_data["STRESS:X@corner"]]
+        )
+        cell = np.flatnonzero((eids == hexa["EID"]) & (types == "hexahedron"))[0]
+        b, i = _block_row(mesh, cell)
+        nodes = ids[mesh.cells[b].data[i]].tolist()
+        for k in range(1, 9):  # entry 0 is the centre; GRID(k) says which corner
+            assert corner[cell, nodes.index(hexa["GRID"][k])] == hexa["X"][k]
+
+    def test_beam_and_bar_stations(self, engine):
+        path = path_of("static_elements")
+        mesh = engine(path)
+        with h5py.File(path) as f:
+            beam = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/BEAM"][0]
+            bars = f["/NASTRAN/RESULT/ELEMENTAL/STRESS/BARS"][()]
+        eids = np.concatenate(mesh.cell_data["nastran:eid"])
+        xc = np.concatenate([c for c in mesh.cell_data["STRESS:XC@station"]])
+        sd = np.concatenate([c for c in mesh.cell_data["STRESS:SD@station"]])
+        cell = np.flatnonzero(eids == beam["EID"])[0]
+        output = [k for k in range(11) if k == 0 or beam["GRID"][k] or beam["SD"][k]]
+        for k in range(11):
+            if k in output:
+                assert xc[cell, k] == beam["XC"][k] and sd[cell, k] == beam["SD"][k]
+            else:  # a station that was not output stays NaN
+                assert np.isnan(xc[cell, k])
+        # BARS: one row per station, in order
+        cell = np.flatnonzero(eids == bars["EID"][0])[0]
+        rows = bars[bars["EID"] == bars["EID"][0]]
+        assert sd[cell, : len(rows)].tolist() == rows["SD"].tolist()
+
+    def test_grid_point_forces_balance(self, engine):
+        """GRID_FORCE: element rows per element node, the others by GRID; at every
+        GRID the element forces, applied loads and SPC forces add up to *TOTALS*."""
         mesh = engine(path_of("static_elements"))
-        assert not any(k.startswith("GRID_FORCE") for k in mesh.point_data)
-        # the _COMP tables would have given STRESS:PLY-shaped members
-        assert "STRESS:L1" not in mesh.cell_data
+        npts = len(mesh.points)
+        for m in ("F1", "F2", "F3", "M1", "M2", "M3"):
+            total = np.zeros(npts)
+            for b, c in enumerate(mesh.cells):
+                values = mesh.cell_data[f"GRID_FORCE:{m}"][b]
+                width = values.shape[1]
+                for i, row in enumerate(c.data):
+                    for k, p in enumerate(row[:width]):
+                        if not np.isnan(values[i, k]):
+                            total[p] += values[i, k]
+            for label in ("APP-LOAD", "F-OF-SPC"):
+                extra = mesh.point_data.get(f"GRID_FORCE:{label}:{m}")
+                if extra is not None:
+                    total += np.nan_to_num(extra)
+            ref = mesh.point_data[f"GRID_FORCE:TOTALS:{m}"]
+            ok = ~np.isnan(ref)
+            # springs and dampers (no cell) contribute too: compare where none acts
+            close = np.isclose(total[ok], ref[ok], atol=1e-6 * np.abs(total).max())
+            assert close.mean() > 0.5, m
 
     def test_partial_mid_side_nodes_read_as_linear(self, engine):
         # the fixtures' CTRIA6 lists [6, 4, 60, 0, 65, 64]
@@ -533,7 +614,9 @@ class TestBuiltFiles:
             engine(path, time_step=1)
         assert _sequence.num_steps(path) == 1
 
-    def test_local_coordinates_are_kept_and_flagged(self, engine, tmp_path):
+    def test_an_undefined_system_keeps_coordinates_and_flags_them(
+        self, engine, tmp_path
+    ):
         path = write_msc(tmp_path / "cp.h5", UNIT_HEX, cp={2: 5})
         mesh = engine(path)
         np.testing.assert_array_equal(mesh.points[1], [1, 0, 0])
@@ -625,3 +708,64 @@ class TestRegistration:
 
     def test_core_has_the_function(self):
         assert hasattr(_core, "nastran_h5_read")
+
+
+# --- coordinate systems ---------------------------------------------------------------
+
+
+def _cord_probe(tmp_path):
+    """``static_elements.h5`` with the GRIDs and systems of ``cord_reference.npz``
+    (see tools/gen_nastran_cord_reference.py): a tilted CORD2C, a CORD2S defined
+    in it and a CORD1R through three GRIDs, one of them in the CORD2C."""
+    ref = np.load(FIXTURES / "cord_reference.npz")
+    path = tmp_path / "cord_probe.h5"
+    path.write_bytes(pathlib.Path(path_of("static_elements")).read_bytes())
+    with h5py.File(path, "r+") as f:
+        grid = f["NASTRAN/INPUT/NODE/GRID"][()]
+        grid["X"] = ref["x_local"]
+        grid["CP"] = ref["cp"]
+        grid["CD"] = ref["cd"]
+        del f["NASTRAN/INPUT/NODE/GRID"]
+        f["NASTRAN/INPUT/NODE/GRID"] = grid
+        cs = f["NASTRAN/INPUT/COORDINATE_SYSTEM"]
+        dtype = cs["CORD2R"].dtype
+        for name in list(cs):
+            del cs[name]
+        for row, ctype in zip(ref["cord2"], ref["cord2_type"]):
+            table = np.zeros(1, dtype)
+            table[0] = (int(row[0]), int(row[1]), *row[2:].tolist(), 1)
+            cs["CORD2" + "RCS"[int(ctype) - 1]] = table
+        c1 = np.zeros(
+            1,
+            [
+                ("CID", "<i8"),
+                ("G1", "<i8"),
+                ("G2", "<i8"),
+                ("G3", "<i8"),
+                ("DOMAIN_ID", "<i8"),
+            ],
+        )
+        c1[0] = (*ref["cord1r"][0].tolist(), 1)
+        cs["CORD1R"] = c1
+    return path, ref
+
+
+def test_coordinate_systems_match_pynastran(engine, tmp_path):
+    path, ref = _cord_probe(tmp_path)
+    mesh = engine(path)
+    np.testing.assert_allclose(mesh.points, ref["xyz_basic"], rtol=0, atol=1e-13)
+    np.testing.assert_array_equal(mesh.point_data["nastran:cp"], ref["cp"])
+    np.testing.assert_array_equal(mesh.point_data["nastran:cd"], ref["cd"])
+    disp = np.hstack(
+        [mesh.point_data["DISPLACEMENT"], mesh.point_data["DISPLACEMENT_ROT"]]
+    )
+    np.testing.assert_allclose(disp, ref["displacement_basic"], rtol=0, atol=1e-15)
+
+
+def test_coordinate_systems_engines_agree(tmp_path):
+    path, _ = _cord_probe(tmp_path)
+    a = _core.nastran_h5_read(str(path))
+    b = py_nh5.read(path)
+    np.testing.assert_array_equal(a.points, b.points)
+    for name in ("DISPLACEMENT", "DISPLACEMENT_ROT", "SPC_FORCE", "APPLIED_LOAD"):
+        np.testing.assert_array_equal(a.point_data[name], b.point_data[name])

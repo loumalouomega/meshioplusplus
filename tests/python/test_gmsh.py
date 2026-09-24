@@ -118,9 +118,26 @@ def test_gmsh41(mesh, binary, tmp_path):
 
 
 def test_generic_io(tmp_path):
-    helpers.generic_io(tmp_path / "test.msh")
-    # With additional, insignificant suffix:
-    helpers.generic_io(tmp_path / "test.0.msh")
+    """A `.msh` written without a format and without gmsh tags is Fluent's
+    (the first `.msh` candidate): it reads back as the same planar triangles,
+    rebuilt from their faces, so compare them as point sets."""
+    mesh = helpers.tri_mesh
+    # With additional, insignificant suffix too:
+    for path in (tmp_path / "test.msh", tmp_path / "test.0.msh"):
+        meshioplusplus.write_points_cells(path, mesh.points, mesh.cells)
+        out = meshioplusplus.read(path)
+        dim = out.points.shape[1]
+        assert (mesh.points[:, dim:] == 0).all()
+
+        def triangles(m, pts):
+            return sorted(
+                tuple(sorted(map(tuple, pts[row].tolist())))
+                for block in m.cells
+                if block.type == "triangle"
+                for row in block.data
+            )
+
+        assert triangles(out, out.points) == triangles(mesh, mesh.points[:, :dim])
 
 
 @pytest.mark.parametrize(

@@ -281,6 +281,21 @@ def test_febio_xplt_states_convert_to_vtu(tmp_path):
     assert "displacement" in written.point_data
 
 
+def test_tecplot_plt_is_readable_and_converts_its_last_step(tmp_path):
+    import pathlib
+
+    plt = pathlib.Path(__file__).parent / "meshes" / "tecplot" / "plt" / "transient.plt"
+    out = _dump(_tools.tool_formats())
+    assert out["extensions"][".plt"] == ["tecplot"]
+    info = _dump(_tools.tool_info(str(plt)))
+    assert len(info["time_values"]) == 3
+    target = str(tmp_path / "last.vtu")
+    _tools.tool_convert(str(plt), target, time_step=-1)
+    ascii_twin = meshioplusplus.read(plt.with_suffix(".dat"), time_step=-1)
+    written = meshioplusplus.read(target)
+    assert len(written.points) == len(ascii_twin.points)
+
+
 def test_optistruct_components_survive_convert(tmp_path):
     import pathlib
 

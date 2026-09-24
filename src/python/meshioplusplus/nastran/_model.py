@@ -3,6 +3,8 @@
 ids to regions. The Python twin of ``src/cpp/src/detail/nastran_model.cpp``.
 """
 
+import math
+
 import numpy as np
 
 from .._common import warn
@@ -10,7 +12,14 @@ from .._exceptions import ReadError
 from .._mesh import CellBlock
 from .._regions import Region
 
-__all__ = ["CARDS", "add_cells", "frame_point_data"]
+__all__ = [
+    "CARDS",
+    "CoordCard",
+    "CoordSystems",
+    "add_cells",
+    "apply_frames",
+    "rotate_to_basic",
+]
 
 # Nastran numbers the hex20/wedge15 mid-side nodes bottom, vertical, top;
 # meshio++ (VTK) numbers them bottom, top, vertical: conn[k] = G[perm[k]].
@@ -174,19 +183,189 @@ def add_cells(cards, grid_index, scalar_points, ptype, who):
     return cells, cell_data, regions, cell_index, offsets, sizes
 
 
-def frame_point_data(point_data, frame, values, who):
-    """Keep a GRID's CP/CD column as ``nastran:cp``/``nastran:cd`` when any is set."""
-    v = np.asarray(values, dtype=np.int64)
-    nonzero = int(np.count_nonzero(v))
-    if nonzero == 0:
-        return
-    if frame == "CP":
+# Degrees to radians; one constant so both engines round the same way.
+_DEGREE = 3.14159265358979323846 / 180.0
+
+
+class CoordCard:
+    """One CORD1R/C/S (``grids``) or CORD2R/C/S (``rid`` and ``abc``) card."""
+
+    def __init__(self, cid, ctype, rid=0, abc=None, grids=None):
+        self.cid = int(cid)
+        self.type = int(ctype)  # 1 rectangular, 2 cylindrical, 3 spherical
+        self.rid = int(rid)
+        self.abc = [float(v) for v in abc] if abc is not None else None
+        self.grids = [int(g) for g in grids] if grids is not None else None
+
+
+def _local_to_cartesian(ctype, p):
+    if ctype == 2:
+        t = p[1] * _DEGREE
+        return [p[0] * math.cos(t), p[0] * math.sin(t), p[2]]
+    if ctype == 3:
+        t = p[1] * _DEGREE
+        f = p[2] * _DEGREE
+        return [
+            p[0] * math.sin(t) * math.cos(f),
+            p[0] * math.sin(t) * math.sin(f),
+            p[0] * math.cos(t),
+        ]
+    return [p[0], p[1], p[2]]
+
+
+def _system_from_points(ctype, a, b, c):
+    z = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+    nz = math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2])
+    if not nz > 0.0:
+        return None
+    ez = [z[0] / nz, z[1] / nz, z[2] / nz]
+    v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
+    y = [
+        ez[1] * v[2] - ez[2] * v[1],
+        ez[2] * v[0] - ez[0] * v[2],
+        ez[0] * v[1] - ez[1] * v[0],
+    ]
+    ny = math.sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2])
+    if not ny > 0.0:
+        return None
+    ey = [y[0] / ny, y[1] / ny, y[2] / ny]
+    ex = [
+        ey[1] * ez[2] - ey[2] * ez[1],
+        ey[2] * ez[0] - ey[0] * ez[2],
+        ey[0] * ez[1] - ey[1] * ez[0],
+    ]
+    return (ctype, list(a), [ex, ey, ez])
+
+
+class CoordSystems:
+    """Resolved systems: type, origin and axes (rows x, y, z) in basic."""
+
+    def __init__(self):
+        self.systems = {
+            0: (1, [0.0, 0.0, 0.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+        }
+
+    def has(self, cid):
+        return cid in self.systems
+
+    def to_basic(self, cid, local):
+        ctype, o, ax = self.systems[cid]
+        c = _local_to_cartesian(ctype, local)
+        return [
+            o[k] + ax[0][k] * c[0] + ax[1][k] * c[1] + ax[2][k] * c[2] for k in range(3)
+        ]
+
+    def vector_to_basic(self, cid, point, v):
+        ctype, o, ax = self.systems[cid]
+        w = [v[0], v[1], v[2]]
+        if ctype in (2, 3):
+            d = [point[0] - o[0], point[1] - o[1], point[2] - o[2]]
+            L = [ax[j][0] * d[0] + ax[j][1] * d[1] + ax[j][2] * d[2] for j in range(3)]
+            ph = math.atan2(L[1], L[0])
+            cp = math.cos(ph)
+            sp = math.sin(ph)
+            if ctype == 2:
+                w[0] = v[0] * cp - v[1] * sp
+                w[1] = v[0] * sp + v[1] * cp
+            else:
+                th = math.atan2(math.sqrt(L[0] * L[0] + L[1] * L[1]), L[2])
+                ct = math.cos(th)
+                st = math.sin(th)
+                er = [st * cp, st * sp, ct]
+                et = [ct * cp, ct * sp, -st]
+                ep = [-sp, cp, 0.0]
+                w = [v[0] * er[k] + v[1] * et[k] + v[2] * ep[k] for k in range(3)]
+        return [ax[0][k] * w[0] + ax[1][k] * w[1] + ax[2][k] * w[2] for k in range(3)]
+
+
+def apply_frames(points, point_data, cards, ids, cp, cd, who):
+    """``nastran_apply_frames``: move CP != 0 GRIDs to basic (``points`` in
+    place), keep ``nastran:cp``/``nastran:cd``, and return the systems."""
+    systems = CoordSystems()
+    cp = np.asarray(cp, dtype=np.int64)
+    cd = np.asarray(cd, dtype=np.int64)
+    any_cp = bool(np.count_nonzero(cp))
+    any_cd = bool(np.count_nonzero(cd))
+    if not any_cp and not any_cd:
+        return systems
+
+    pending = {}
+    duplicates = 0
+    for c in cards:
+        if c.cid <= 0:
+            continue
+        if c.cid in pending:
+            duplicates += 1
+        else:
+            pending[c.cid] = c
+    if duplicates:
         warn(
-            f"{who}: {nonzero} GRID(s) have CP != 0; their coordinates are kept in the "
-            "local system, not transformed"
+            f"{who}: {duplicates} coordinate system(s) are defined more than once; "
+            "the first definition is used"
         )
-    else:
+    index = {int(g): i for i, g in enumerate(ids)}
+    resolved = cp == 0
+    cpl = cp.tolist()
+    degenerate = set()
+    progress = True
+    while progress:
+        progress = False
+        for i in range(len(cpl)):
+            if resolved[i] or not systems.has(cpl[i]):
+                continue
+            points[i] = systems.to_basic(cpl[i], points[i].tolist())
+            resolved[i] = True
+            progress = True
+        for cid in sorted(pending):
+            c = pending[cid]
+            if c.grids is not None:
+                rows = [index.get(g) for g in c.grids]
+                if any(r is None or not resolved[r] for r in rows):
+                    continue
+                a, b, p = (points[r].tolist() for r in rows)
+            elif systems.has(c.rid):
+                a = systems.to_basic(c.rid, c.abc[0:3])
+                b = systems.to_basic(c.rid, c.abc[3:6])
+                p = systems.to_basic(c.rid, c.abc[6:9])
+            else:
+                continue
+            sys = _system_from_points(c.type, a, b, p)
+            if sys is None:
+                degenerate.add(cid)
+            else:
+                systems.systems[cid] = sys
+            del pending[cid]
+            progress = True
+    if degenerate:
         warn(
-            f"{who}: {nonzero} GRID(s) have CD != 0; their results are in the local output system"
+            f"{who}: {len(degenerate)} coordinate system(s) have coincident or collinear "
+            "defining points and are ignored"
         )
-    point_data["nastran:" + frame.lower()] = v
+    kept = [c for c, r in zip(cpl, resolved) if c != 0 and not r]
+    if kept:
+        ids_text = ", ".join(str(c) for c in sorted(set(kept)))
+        warn(
+            f"{who}: {len(kept)} GRID(s) are in coordinate system(s) {ids_text} that cannot "
+            "be resolved; their coordinates are kept as written"
+        )
+    if any_cp:
+        point_data["nastran:cp"] = cp
+    if any_cd:
+        unresolved = sum(1 for c in cd.tolist() if c > 0 and not systems.has(c))
+        if unresolved:
+            warn(
+                f"{who}: {unresolved} GRID(s) have an output system (CD) that cannot be "
+                "resolved; their results stay in it"
+            )
+        point_data["nastran:cd"] = cd
+    return systems
+
+
+def rotate_to_basic(systems, cd, point, values):
+    """Rotate consecutive triplets of ``values`` (a list, in place) from system
+    ``cd`` at ``point`` to basic; False when there is nothing to do."""
+    if cd <= 0 or not systems.has(cd):
+        return False
+    for k in range(0, len(values), 3):
+        values[k : k + 3] = systems.vector_to_basic(cd, point, values[k : k + 3])
+    return True

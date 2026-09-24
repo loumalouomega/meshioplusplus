@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/fortran_records.hpp"
 #include "meshioplusplus/detail/nastran_model.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
@@ -53,6 +54,7 @@ namespace fs = std::filesystem;
 
 const std::string kOp2Who = "Nastran OP2";
 const double kOp2Nan = std::numeric_limits<double>::quiet_NaN();
+constexpr std::size_t kOp2Npos = std::numeric_limits<std::size_t>::max();
 
 [[noreturn]] void op2_fail(const std::string& rMessage) {
     throw ReadError(kOp2Who + ": " + rMessage);
@@ -393,7 +395,53 @@ struct Op2Grids {
     std::vector<std::int64_t> mIds, mCp, mCd;
     std::vector<double> mXyz;
     std::unordered_set<std::int64_t> mScalarPoints;
+    std::vector<detail::NastranCoordCard> mCords;
 };
+
+// CORD1R/C/S entries are `cid, type, 1|2, g1, g2, g3` (6 words); CORD2R/C/S
+// entries `cid, type, 2, rid, a1..c3` (13 words, the coordinates in the
+// file's precision) or, in 32-bit files, 22 words with the coordinates as
+// doubles (NX's GEOM1N). Returns false when no layout fits.
+bool op2_cord_rows(const Op2Words& rW, const std::string& rRaw, int Type, bool ByGrids,
+                   std::vector<detail::NastranCoordCard>& rOut) {
+    const auto ws = static_cast<std::size_t>(rW.mWs);
+    const char* body = rRaw.data() + 3 * ws;
+    const std::size_t nwords = (rRaw.size() - 3 * ws) / ws;
+    const std::vector<std::size_t> layouts =
+        ByGrids ? std::vector<std::size_t>{6} : std::vector<std::size_t>{13, 22};
+    for (std::size_t size : layouts) {
+        if ((size == 22 && ws != 4) || nwords == 0 || nwords % size)
+            continue;
+        std::vector<detail::NastranCoordCard> cards(nwords / size);
+        bool ok = true;
+        for (std::size_t i = 0; i < cards.size() && ok; ++i) {
+            const char* e = body + i * size * ws;
+            detail::NastranCoordCard& c = cards[i];
+            c.mCid = rW.Int(e);
+            c.mType = Type;
+            c.mByGrids = ByGrids;
+            ok = c.mCid > 0;
+            if (ByGrids) {
+                // The two flag words vary (pyNastran has seen 1 or 2 for a CORD1C).
+                for (int k = 0; k < 3; ++k) {
+                    c.mGrids[k] = rW.Int(e + (3 + k) * ws);
+                    ok = ok && c.mGrids[k] > 0;
+                }
+            } else {
+                ok = ok && rW.Int(e + ws) == Type;
+                c.mRid = rW.Int(e + 3 * ws);
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = size == 13 ? rW.Float(e + (4 + k) * ws) : rW.Double(e + 16 + 8 * k);
+                ok = ok && c.mRid >= 0;
+            }
+        }
+        if (!ok)
+            continue;
+        rOut.insert(rOut.end(), cards.begin(), cards.end());
+        return true;
+    }
+    return false;
+}
 
 // Entries are `id, cp, x, y, z, cd, ps, seid`: 8 words, the coordinates in the
 // file's precision; or, in 32-bit files, 11 words with the coordinates as
@@ -442,7 +490,20 @@ Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTable
             if (!op2_grid_rows(w, r.mRaw, r.mK3, g))
                 log::warn("{}: a GRID record of {} words matches no GRID layout; skipped", kOp2Who,
                           r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
+            continue;
         }
+        // CORD1C/R/S and CORD2C/R/S, keyed (1701, 17), (1801, 18), (1901, 19),
+        // (2001, 20), (2101, 21), (2201, 22).
+        static const std::map<std::pair<std::int64_t, std::int64_t>, std::pair<int, bool>> kCords =
+            {{{1701, 17}, {2, true}},  {{1801, 18}, {1, true}},  {{1901, 19}, {3, true}},
+             {{2001, 20}, {2, false}}, {{2101, 21}, {1, false}}, {{2201, 22}, {3, false}}};
+        const auto cord = kCords.find({r.mK1, r.mK2});
+        if (cord != kCords.end() &&
+            !op2_cord_rows(w, r.mRaw, cord->second.first, cord->second.second, g.mCords))
+            log::warn(
+                "{}: a coordinate system record ({}, {}) of {} words matches no layout; "
+                "skipped",
+                kOp2Who, r.mK1, r.mK2, r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
     }
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2", "GEOM1"}))
         if ((r.mK1 == 5551 && r.mK2 == 49) || (r.mK1 == 707 && r.mK2 == 7)) {
@@ -699,8 +760,26 @@ std::string op2_element_type_name(std::int64_t Type) {
 
 using Op2Layout = std::vector<std::pair<std::size_t, std::string>>;  // (word, member)
 
-std::optional<Op2Layout> op2_element_layout(std::int64_t Type, std::int64_t NumWide,
-                                            std::int64_t SCode) {
+// How an element table's entries hold their values.
+enum class Op2Values {
+    Row,      // one entry per element, members at fixed words
+    Ply,      // one entry per ply of a composite element: word 1 is the ply
+    Station,  // one entry per station along a bar (CBAR type 100), in order
+    Blocks,   // one entry per element made of node blocks, each led by its GRID:
+              // the centre then the corners, or a beam's stations
+};
+
+struct Op2ElementLayout {
+    Op2Values mKind = Op2Values::Row;
+    Op2Layout mMembers;       // Blocks: the word within a block (its GRID is word 0)
+    std::size_t mFirst = 0;   // Blocks: word of the first block
+    std::size_t mBlock = 0;   // Blocks: words per block
+    std::size_t mBlocks = 1;  // Blocks: blocks per element
+    bool mStations = false;   // Blocks: beam stations rather than centre + corners
+};
+
+std::optional<Op2ElementLayout> op2_element_layout(std::int64_t Type, std::int64_t NumWide,
+                                                   std::int64_t SCode) {
     static const char* plate[16] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
                                     "MINOR1", nullptr,  "FD2",    "X2",   "Y2",     "TXY2",
                                     "ANGLE2", "MAJOR2", "MINOR2", nullptr};
@@ -738,32 +817,93 @@ std::optional<Op2Layout> op2_element_layout(std::int64_t Type, std::int64_t NumW
                 return 0;
         }
     };
-    Op2Layout out;
+    Op2ElementLayout out;
+    auto rows = [&](Op2Layout rMembers) {
+        out.mMembers = std::move(rMembers);
+        return out;
+    };
     if ((Type == 1 || Type == 10) && NumWide == 5)
-        return Op2Layout{{1, "A"}, {2, "MSA"}, {3, "T"}, {4, "MST"}};
+        return rows({{1, "A"}, {2, "MSA"}, {3, "T"}, {4, "MST"}});
     if (Type == 3 && NumWide == 5)
-        return Op2Layout{{1, "AS"}, {2, "MSA"}, {3, "TS"}, {4, "MST"}};
+        return rows({{1, "AS"}, {2, "MSA"}, {3, "TS"}, {4, "MST"}});
     if (Type == 4 && NumWide == 4)
-        return Op2Layout{{1, "TMAX"}, {2, "TAVG"}, {3, "MS"}};
+        return rows({{1, "TMAX"}, {2, "TAVG"}, {3, "MS"}});
     if (Type == 34 && NumWide == 16) {
         for (std::size_t k = 0; k < 15; ++k)
-            out.emplace_back(1 + k, bar[k]);
+            out.mMembers.emplace_back(1 + k, bar[k]);
         return out;
     }
-    const bool centroid_plate = (Type == 33 || Type == 74) && NumWide == 17;
-    const std::int64_t cn = corner_nodes(Type);
-    if (centroid_plate || (cn && NumWide == 2 + 17 * cn)) {
-        const std::size_t base = centroid_plate ? 1 : 3;
+    // CBAR stations (100): sd, the four fibres, axial, max, min, margin.
+    if (Type == 100 && NumWide == 10) {
+        out.mKind = Op2Values::Station;
+        return rows({{1, "SD"},
+                     {2, "XC"},
+                     {3, "XD"},
+                     {4, "XE"},
+                     {5, "XF"},
+                     {6, "AX"},
+                     {7, "MAX"},
+                     {8, "MIN"},
+                     {9, "MS"}});
+    }
+    // Composite shells (QUAD4, QUAD8, TRIA3, TRIA6; NX QUADR, TRIAR): one entry
+    // per ply, the MSC HDF5 names.
+    if ((Type == 95 || Type == 96 || Type == 97 || Type == 98 || Type == 232 || Type == 233) &&
+        NumWide == 11) {
+        out.mKind = Op2Values::Ply;
+        return rows({{2, "X1"},
+                     {3, "Y1"},
+                     {4, "T1"},
+                     {5, "L1"},
+                     {6, "L2"},
+                     {7, "ANGLE"},
+                     {8, "MAJOR"},
+                     {9, "MINOR"},
+                     {10, vm}});
+    }
+    // CBEAM (2): 11 stations of grid, sd, the four fibres, max, min and margins.
+    if (Type == 2 && NumWide == 111) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 1;
+        out.mBlock = 10;
+        out.mBlocks = 11;
+        out.mStations = true;
+        return rows({{1, "SD"},
+                     {2, "XC"},
+                     {3, "XD"},
+                     {4, "XE"},
+                     {5, "XF"},
+                     {6, "MAX"},
+                     {7, "MIN"},
+                     {8, "MST"},
+                     {9, "MSC"}});
+    }
+    if ((Type == 33 || Type == 74) && NumWide == 17) {
         for (std::size_t k = 0; k < 16; ++k)
-            out.emplace_back(base + k,
-                             plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
+            out.mMembers.emplace_back(
+                1 + k, plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
+        return out;
+    }
+    const std::int64_t cn = corner_nodes(Type);
+    if (cn && NumWide == 2 + 17 * cn) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 2;
+        out.mBlock = 17;
+        out.mBlocks = static_cast<std::size_t>(cn);
+        for (std::size_t k = 0; k < 16; ++k)
+            out.mMembers.emplace_back(
+                1 + k, plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
         return out;
     }
     const std::int64_t sn = solid_nodes(Type);
     if (sn && NumWide == 4 + 21 * sn) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 4;
+        out.mBlock = 21;
+        out.mBlocks = static_cast<std::size_t>(sn);
         const std::string octa = (SCode & 1) ? "VON_MISES" : "OCT_SHEAR";
         for (const auto& [word, name] : solid)
-            out.emplace_back(4 + word, name ? std::string(name) : octa);
+            out.mMembers.emplace_back(word, name ? std::string(name) : octa);
         return out;
     }
     return std::nullopt;
@@ -793,9 +933,11 @@ struct Op2Step {
 struct Op2Block {
     std::size_t mStep;
     bool mNodal;
+    bool mBasic = false;  // BOUG*: already in the basic system
     std::string mBase;  // nodal: point data name; element: STRESS/STRAIN
-    Op2Layout mLayout;
+    Op2ElementLayout mLayout;
     std::size_t mNumWide = 8;
+    bool mGridForce = false;  // OGPFB: grid point forces
     const Op2Record* mRecord;
 };
 
@@ -839,10 +981,17 @@ private:
         const Op2Words& w = mStream.Words();
         const auto ws = static_cast<std::size_t>(w.mWs);
         std::map<std::tuple<std::int64_t, std::int64_t, std::int64_t>, std::size_t> step_index;
+        struct Deferred {
+            std::tuple<std::int64_t, std::int64_t, std::int64_t> mKey;
+            Op2Block mBlock;
+            std::string mTable;
+        };
+        std::vector<Deferred> deferred;
         for (const Op2Table& t : mTables) {
             const bool nodal = op2_starts(t.mName, {"OUG", "BOUG", "OQG", "OQMG", "OPG"});
             const bool elemental = op2_starts(t.mName, {"OES", "OSTR"});
-            if (!nodal && !elemental) {
+            const bool grid_force = op2_starts(t.mName, {"OGPF"});
+            if (!nodal && !elemental && !grid_force) {
                 if (!t.mName.empty() && t.mName[0] == 'O')
                     Skip(t.mName);
                 continue;
@@ -880,8 +1029,17 @@ private:
                     Skip(t.mName + " (SORT2)");
                     continue;
                 }
-                Op2Block block{0, nodal, {}, {}, 8, &rec};
-                if (nodal) {
+                Op2Block block{0, nodal, op2_starts(t.mName, {"BOUG"}), {}, {}, 8, false, &rec};
+                if (grid_force) {
+                    if (table_code != 19 || num_wide != 10) {
+                        Skip(t.mName + " (table code " + std::to_string(table_code) + ", " +
+                             std::to_string(num_wide) + " words)");
+                        continue;
+                    }
+                    block.mGridForce = true;
+                    block.mBase = "GRID_FORCE";
+                    block.mNumWide = 10;
+                } else if (nodal) {
                     const char* base = op2_nodal_name(table_code);
                     // MPC forces share the SPC forces' table code; the name tells.
                     if (op2_starts(t.mName, {"OQMG"}) && (table_code == 3 || table_code == 39))
@@ -920,6 +1078,10 @@ private:
                 const std::int64_t w5 = word(4);
                 const auto key = std::make_tuple(subcase, analysis, w5);
                 auto it = step_index.find(key);
+                if (grid_force) {
+                    deferred.push_back({key, std::move(block), t.mName});
+                    continue;
+                }
                 if (it == step_index.end()) {
                     it = step_index.emplace(key, mSteps.size()).first;
                     const bool moded = analysis == 2 || analysis == 8 || analysis == 9;
@@ -930,6 +1092,27 @@ private:
                 block.mStep = it->second;
                 mBlocks.push_back(std::move(block));
             }
+        }
+        // Grid point forces join a step the other tables made, never a new one:
+        // MSC writes 0 in their word 5 where the other tables of a static step
+        // write the load set, and a buckling run's forces carry analysis 2.
+        for (Deferred& d : deferred) {
+            auto it = step_index.find(d.mKey);
+            if (it == step_index.end()) {
+                std::size_t same = 0;
+                for (auto s = step_index.begin(); s != step_index.end(); ++s)
+                    if (std::get<0>(s->first) == std::get<0>(d.mKey) &&
+                        std::get<1>(s->first) == std::get<1>(d.mKey)) {
+                        it = s;
+                        ++same;
+                    }
+                if (same != 1) {
+                    Skip(d.mTable + " (no matching step)");
+                    continue;
+                }
+            }
+            d.mBlock.mStep = it->second;
+            mBlocks.push_back(std::move(d.mBlock));
         }
     }
 };
@@ -972,6 +1155,8 @@ std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::str
 
 struct Op2Model {
     Mesh mMesh;
+    detail::NastranCoordSystems mSystems;
+    std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
     std::vector<std::size_t> mOffsets, mSizes;
@@ -1018,8 +1203,8 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
     NDArray points(DType::Float64, {g.mIds.size(), 3});
     std::copy(g.mXyz.begin(), g.mXyz.end(), points.As<double>());
     m.mMesh.AssignPoints(std::move(points));
-    detail::nastran_add_frame(m.mMesh, "CP", g.mCp, kOp2Who);
-    detail::nastran_add_frame(m.mMesh, "CD", g.mCd, kOp2Who);
+    m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
+    m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
     const detail::NastranCells cells =
@@ -1075,6 +1260,35 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     // name -> (components, values)
     std::map<std::string, std::pair<std::size_t, std::vector<double>>> point_arrays;
     std::map<std::string, std::vector<double>> cell_arrays;
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
+    // Multi-valued cell arrays (per ply, station, corner or element node):
+    // (cell, column, value), laid out once every block is read; the first value
+    // of a cell and column wins, as for the centre values.
+    struct Wide {
+        std::vector<std::size_t> mCell, mCol;
+        std::vector<double> mValue;
+    };
+    std::map<std::string, Wide> wide;
+    auto push = [&](const std::string& rName, std::size_t Cell, std::size_t Col, double V) {
+        Wide& e = wide[rName];
+        e.mCell.push_back(Cell);
+        e.mCol.push_back(Col);
+        e.mValue.push_back(V);
+    };
+    // The position of point `Point` in the connectivity of global cell `Cell`.
+    auto node_position = [&](std::size_t Cell, std::size_t Point) -> std::size_t {
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), Cell) -
+            model.mOffsets.begin() - 1);
+        const NDArray& conn = mesh.Cells(b).Conn();
+        const std::size_t width = conn.Shape()[1];
+        const std::size_t row = Cell - model.mOffsets[b];
+        for (std::size_t k = 0; k < width; ++k)
+            if (static_cast<std::size_t>(detail::read_int(conn, row * width + k)) == Point)
+                return k;
+        return kOp2Npos;
+    };
     for (const Op2Block& b : r.mBlocks) {
         if (b.mStep != index)
             continue;
@@ -1105,28 +1319,131 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
                     const auto p = model.mGridIndex.find(w.Int(row) / 10);
                     if (p == model.mGridIndex.end() || !std::isnan(values[p->second * nc]))
                         continue;
+                    double* dst = values.data() + p->second * nc;
                     for (std::size_t c = 0; c < nc; ++c)
-                        values[p->second * nc + c] = w.Float(row + (c0 + c) * ws);
+                        dst[c] = w.Float(row + (c0 + c) * ws);
+                    // Results are in the GRID's output system (CD) unless the table is BOUG*.
+                    if (nc == 3 && !b.mBasic && !model.mCd.empty())
+                        detail::nastran_rotate_to_basic(model.mSystems, model.mCd[p->second],
+                                                        basic + 3 * p->second, dst, 1);
+                }
+            }
+        } else if (b.mGridForce) {
+            // Entries: grid*10+device, element (0 for the totals, applied loads,
+            // SPC forces, ...), its 8-character name, F1 F2 F3 M1 M2 M3 in the
+            // GRID's output system (CD). Element rows become (cells, nodes) in
+            // the cell's node order; the others point data named after the label.
+            if (nwords % 10)
+                op2_fail("a " + b.mBase + " record is not a whole number of entries");
+            static const char* members[6] = {"F1", "F2", "F3", "M1", "M2", "M3"};
+            for (std::size_t r0 = 0; r0 < nwords / 10; ++r0) {
+                const char* row = raw.data() + r0 * 10 * ws;
+                const auto p = model.mGridIndex.find(w.Int(row) / 10);
+                if (p == model.mGridIndex.end())
+                    continue;
+                double v[6];
+                for (std::size_t c = 0; c < 6; ++c)
+                    v[c] = w.Float(row + (4 + c) * ws);
+                if (!model.mCd.empty())
+                    detail::nastran_rotate_to_basic(model.mSystems, model.mCd[p->second],
+                                                    basic + 3 * p->second, v, 2);
+                const std::int64_t eid = w.Int(row + ws);
+                if (eid > 0) {
+                    const auto c = model.mCellIndex.find(eid);
+                    if (c == model.mCellIndex.end())
+                        continue;
+                    const std::size_t pos = node_position(c->second, p->second);
+                    if (pos == kOp2Npos)
+                        continue;
+                    for (std::size_t k = 0; k < 6; ++k) {
+                        const std::string name = b.mBase + ":" + members[k];
+                        if (rOpts.WantsArray(name))
+                            push(name, c->second, pos, v[k]);
+                    }
+                    continue;
+                }
+                std::string label;
+                for (std::size_t k = 0; k < 2 * ws; ++k) {
+                    const char ch = row[2 * ws + k];
+                    if (ch != ' ' && ch != '*' && ch != '\0')
+                        label += ch;
+                }
+                for (std::size_t k = 0; k < 6; ++k) {
+                    const std::string name = b.mBase + ":" + label + ":" + members[k];
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto it = point_arrays.find(name);
+                    if (it == point_arrays.end())
+                        it = point_arrays
+                                 .emplace(name, std::make_pair(std::size_t{1},
+                                                               std::vector<double>(npts, kOp2Nan)))
+                                 .first;
+                    if (std::isnan(it->second.second[p->second]))
+                        it->second.second[p->second] = v[k];
                 }
             }
         } else {
             const std::size_t nw = b.mNumWide;
             if (nwords % nw)
                 op2_fail("a " + b.mBase + " record is not a whole number of elements");
-            for (const auto& [word, member] : b.mLayout) {
-                const std::string name = b.mBase + ":" + member;
-                if (!rOpts.WantsArray(name))
+            const Op2ElementLayout& lay = b.mLayout;
+            std::unordered_map<std::int64_t, std::size_t> stations;  // CBAR: stations seen
+            for (std::size_t r0 = 0; r0 < nwords / nw; ++r0) {
+                const char* row = raw.data() + r0 * nw * ws;
+                const std::int64_t eid = w.Int(row) / 10;
+                const auto c = model.mCellIndex.find(eid);
+                const std::size_t station = lay.mKind == Op2Values::Station ? stations[eid]++ : 0;
+                if (c == model.mCellIndex.end())
                     continue;
-                auto it = cell_arrays.find(name);
-                if (it == cell_arrays.end())
-                    it = cell_arrays.emplace(name, std::vector<double>(ncells, kOp2Nan)).first;
-                std::vector<double>& values = it->second;
-                for (std::size_t r0 = 0; r0 < nwords / nw; ++r0) {
-                    const char* row = raw.data() + r0 * nw * ws;
-                    const auto c = model.mCellIndex.find(w.Int(row) / 10);
-                    if (c == model.mCellIndex.end() || !std::isnan(values[c->second]))
+                const std::size_t cell = c->second;
+                if (lay.mKind == Op2Values::Ply || lay.mKind == Op2Values::Station) {
+                    const bool ply = lay.mKind == Op2Values::Ply;
+                    const std::int64_t ply_id = ply ? w.Int(row + ws) : 1;
+                    if (ply_id < 1)
                         continue;
-                    values[c->second] = w.Float(row + word * ws);
+                    const std::size_t col = ply ? static_cast<std::size_t>(ply_id - 1) : station;
+                    const char* suffix = ply ? "@ply" : "@station";
+                    for (const auto& [word, member] : lay.mMembers) {
+                        const std::string name = b.mBase + ":" + member + suffix;
+                        if (rOpts.WantsArray(name))
+                            push(name, cell, col, w.Float(row + word * ws));
+                    }
+                    continue;
+                }
+                // Row: the values; Blocks: the first block's (the centre, or end A).
+                const std::size_t base = lay.mKind == Op2Values::Blocks ? lay.mFirst : 0;
+                for (const auto& [word, member] : lay.mMembers) {
+                    const std::string name = b.mBase + ":" + member;
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto it = cell_arrays.find(name);
+                    if (it == cell_arrays.end())
+                        it = cell_arrays.emplace(name, std::vector<double>(ncells, kOp2Nan)).first;
+                    if (std::isnan(it->second[cell]))
+                        it->second[cell] = w.Float(row + (base + word) * ws);
+                }
+                if (lay.mKind != Op2Values::Blocks)
+                    continue;
+                for (std::size_t k = lay.mStations ? 0 : 1; k < lay.mBlocks; ++k) {
+                    const char* block = row + (lay.mFirst + k * lay.mBlock) * ws;
+                    std::size_t col = k;
+                    // A beam station with no GRID and no distance was not output.
+                    if (lay.mStations && k > 0 && w.Int(block) == 0 && w.Float(block + ws) == 0.0)
+                        continue;
+                    if (!lay.mStations) {
+                        const auto g = model.mGridIndex.find(w.Int(block));
+                        if (g == model.mGridIndex.end())
+                            continue;
+                        col = node_position(cell, g->second);
+                        if (col == kOp2Npos)
+                            continue;
+                    }
+                    const char* suffix = lay.mStations ? "@station" : "@corner";
+                    for (const auto& [word, member] : lay.mMembers) {
+                        const std::string name = b.mBase + ":" + member + suffix;
+                        if (rOpts.WantsArray(name))
+                            push(name, cell, col, w.Float(block + word * ws));
+                    }
                 }
             }
         }
@@ -1148,6 +1465,31 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
             per_block.push_back(std::move(a));
         }
         mesh.AddCellData(name, std::move(per_block));
+    }
+    for (const auto& [name, e] : wide) {
+        std::size_t width = 0;
+        for (std::size_t col : e.mCol)
+            width = std::max(width, col + 1);
+        std::vector<NDArray> per_block;
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b], width});
+            std::fill(a.As<double>(), a.As<double>() + a.Size(), kOp2Nan);
+            per_block.push_back(std::move(a));
+        }
+        for (std::size_t i = 0; i < e.mCell.size(); ++i) {
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), e.mCell[i]) -
+                model.mOffsets.begin() - 1);
+            double& slot =
+                per_block[b].As<double>()[(e.mCell[i] - model.mOffsets[b]) * width + e.mCol[i]];
+            if (std::isnan(slot))
+                slot = e.mValue[i];
+        }
+        mesh.AddCellData(name, std::move(per_block));
+        NDArray layout(DType::Int64, {std::size_t{2}});
+        layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(width);
+        layout.As<std::int64_t>()[1] = 1;
+        mesh.AddFieldData("nastran:layout:" + name, std::move(layout));
     }
     return mesh;
 }

@@ -554,6 +554,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // .poly defaults to triangle.
         {".dat", "tecplot"},
         {".tec", "tecplot"},
+        {".plt", "tecplot"},
         {".ele", "tetgen"},
         {".node", "tetgen"},
         {".poly", "triangle"},

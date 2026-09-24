@@ -2764,6 +2764,59 @@ step('d3plot is found by its file name, its states across the family; .op2 by ex
     assert.throws(() => m.readMesh('/results.op2'), /Nastran OP2: the file has no GEOM1 GRID records/);
 });
 
+step('a binary Tecplot .plt reads through the tecplot reader (v16.10.0)', () => {
+    // #!TDV112, little-endian: one FE triangle zone of X, Y (doubles).
+    const bytes = [];
+    const dv = (n, set) => {
+        const b = new DataView(new ArrayBuffer(n));
+        set(b);
+        bytes.push(new Uint8Array(b.buffer));
+    };
+    const i32 = (v) => dv(4, (b) => b.setInt32(0, v, true));
+    const f32 = (v) => dv(4, (b) => b.setFloat32(0, v, true));
+    const f64 = (v) => dv(8, (b) => b.setFloat64(0, v, true));
+    const str = (s) => {
+        for (const c of s) i32(c.charCodeAt(0));
+        i32(0);
+    };
+    bytes.push(new TextEncoder().encode('#!TDV112'));
+    i32(1); // byte order
+    i32(0); // full file
+    str('smoke');
+    i32(2);
+    str('X');
+    str('Y');
+    f32(299.0); // zone record
+    str('tri');
+    i32(-1); // parent zone
+    i32(-1); // static strand
+    f64(0.0); // solution time
+    i32(-1);
+    i32(2); // FETRIANGLE
+    i32(0); // nodal variables
+    i32(0); // raw face neighbours
+    i32(0); // misc face neighbours
+    i32(3); // nodes
+    i32(1); // elements
+    i32(0), i32(0), i32(0);
+    i32(0); // no auxiliary data
+    f32(357.0); // end of header
+    f32(299.0); // zone data
+    i32(2), i32(2); // double X, Y
+    i32(0); // no passive variables
+    i32(0); // no variable sharing
+    i32(-1); // no connectivity sharing
+    [0, 1, 0, 1].forEach(f64); // min/max pairs
+    [0, 1, 0, 0, 0, 1].forEach(f64); // X then Y
+    [0, 1, 2].forEach(i32); // zero-based connectivity
+    const plt = new Uint8Array(bytes.reduce((n, b) => n + b.length, 0));
+    bytes.reduce((at, b) => (plt.set(b, at), at + b.length), 0);
+    m.FS.writeFile('/field.plt', plt);
+    const mesh = m.readMesh('/field.plt');
+    assert.deepEqual(mesh.cells.map((c) => c.type), ['triangle']);
+    assert.equal(mesh.points.length, 3 * mesh.dim);
+});
+
 step('a Marc deck named .dat reads as Marc, a Tecplot .dat as Tecplot; .t19 is Marc\'s post file', () => {
     const pad = (v, w) => String(v).padStart(w, ' ');
     let deck = 'title               smoke\nend\nconnectivity\n' + pad(1, 5) + '\n';

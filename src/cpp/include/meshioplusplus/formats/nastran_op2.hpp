@@ -25,8 +25,8 @@
  * then records separated by marker triples `[-k, 1, 0]` and closed by `0`.
  *
  * The mesh comes from the geometry tables, as `nastran_h5` builds it
- * (`detail/nastran_model.hpp`): `GEOM1` GRIDs are the points (CP/CD frames kept
- * as `nastran:cp`/`nastran:cd` with a warning, coordinates not transformed),
+ * (`detail/nastran_model.hpp`): `GEOM1` GRIDs are the points (moved to basic
+ * through the GEOM1 CORD records when `CP != 0`; `nastran:cp`/`nastran:cd`),
  * `GEOM2` element records the cells (`nastran:eid`, `nastran:pid`; CONM2 as
  * `vertex`; records with no cell type are named in a warning) and `EPT` the
  * property card of each region `<PTYPE>_<pid>`. Without GRID records the input
@@ -41,13 +41,18 @@
  *  - `OUG*`/`BOUG*`, `OQG*`, `OQMG*`, `OPG*` real SORT1 tables as point data
  *    `DISPLACEMENT`, `EIGENVECTOR`, `VELOCITY`, `ACCELERATION`, `SPC_FORCE`,
  *    `MPC_FORCE`, `APPLIED_LOAD` (each with a `_ROT` twin) and `TEMPERATURE`,
- *    NaN for points without a value;
+ *    NaN for points without a value, rotated from each GRID's `CD` to basic
+ *    (not `BOUG*`, which is basic already);
  *  - `OES*`/`OSTR*` real SORT1 stress and strain of rods (1, 3, 10), shear
  *    panels (4), bars (34), shells (33, 74, and the centre of 64, 70, 75, 82,
  *    144) and solids (39, 67, 68, 255) as cell data `STRESS:<M>`/`STRAIN:<M>`
  *    named like `nastran_h5`'s members (`X1`, `TXY1`, `X`, `TZX`, `A`...) plus
- *    the derived values (`VON_MISES1`, `MAJOR1`, `PRINCIPAL_A`...), centre
- *    values only, NaN on cells without them.
+ *    the derived values (`VON_MISES1`, `MAJOR1`, `PRINCIPAL_A`...), the centre
+ *    value NaN on cells without it; corner, ply (95-98, 232, 233) and station
+ *    (CBEAM 2, CBAR 100) values as `<name>@corner|@ply|@station` with
+ *    `nastran:layout:<name>`, as `nastran_h5`;
+ *  - `OGPFB*` grid point forces as `GRID_FORCE:<M>` per element node and
+ *    `GRID_FORCE:<label>:<M>` point data.
  * Complex, random and SORT2 tables, other element types and other tables are
  * skipped with a warning naming them.
  *

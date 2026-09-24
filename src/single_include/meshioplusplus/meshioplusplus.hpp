@@ -10253,7 +10253,9 @@ MESHIOPLUSPLUS_API std::vector<MeshPart> carve_by_region(const Mesh& rMesh,
  * when every mid-side node is given), `cell_data["nastran:eid"]` and
  * `["nastran:pid"]`, and one cell region per property id named
  * `<PTYPE>_<pid>` (`PID_<pid>` when the property card is unknown). An element
- * on a scalar point is dropped; one on an undefined GRID is an error.
+ * on a scalar point is dropped; one on an undefined GRID is an error. GRIDs
+ * given in local coordinate systems (CP) are moved to the basic system, and
+ * results in a GRID's output system (CD) can be rotated to basic.
  *
  * Python twin: `src/python/meshioplusplus/nastran/_model.py`.
  */
@@ -10321,14 +10323,75 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
                                const std::map<std::int64_t, std::string>& rPtype,
                                const std::string& rWho);
 
+/** @brief One coordinate system card: CORD1R/C/S (three GRIDs) or CORD2R/C/S. */
+struct NastranCoordCard {
+    std::int64_t mCid = 0;
+    int mType = 1;          ///< 1 rectangular, 2 cylindrical, 3 spherical
+    bool mByGrids = false;  ///< CORD1*: `mGrids`; CORD2*: `mRid` and `mAbc`
+    std::int64_t mRid = 0;
+    double mAbc[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};  ///< A (origin), B (on +z), C (in the xz plane)
+    std::int64_t mGrids[3] = {0, 0, 0};            ///< origin, +z and xz-plane GRIDs
+};
+
 /**
- * @brief Keep a GRID output or definition frame as point data when any is set:
- *        `nastran:cp` (coordinates stay in the local system) or `nastran:cd`
- *        (results are in the local output system), with a warning.
- * @param rFrame "CP" or "CD"
+ * @brief Resolved coordinate systems: each an origin and axes in the basic
+ *        system, and its type.
+ *
+ * Local coordinates are rectangular (x, y, z), cylindrical (r, theta, z) or
+ * spherical (r, theta, phi), angles in degrees, theta of a spherical system
+ * measured from its z axis.
  */
-void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
-                       const std::vector<std::int64_t>& rValues, const std::string& rWho);
+class NastranCoordSystems {
+public:
+    struct System {
+        int mType = 1;
+        double mOrigin[3] = {0, 0, 0};
+        double mAxes[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  ///< rows: x, y, z axis in basic
+    };
+
+    NastranCoordSystems();
+    bool Has(std::int64_t Cid) const { return mSystems.count(Cid) != 0; }
+    /** @brief Local coordinates of system @p Cid (which must exist) to basic. */
+    void ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const;
+    /**
+     * @brief A vector given in the components of system @p Cid at the point
+     *        @p pBasicPoint (the local basis of a cylindrical or spherical
+     *        system depends on it) to basic components, in place.
+     */
+    void VectorToBasic(std::int64_t Cid, const double* pBasicPoint, double* pVector) const;
+    void Add(std::int64_t Cid, const System& rSystem) { mSystems[Cid] = rSystem; }
+
+private:
+    std::map<std::int64_t, System> mSystems;
+};
+
+/**
+ * @brief Move GRID points to the basic system and keep their frames.
+ *
+ * Resolves @p rCards (in any order: a CORD2 through its reference system, a
+ * CORD1 through its GRIDs, which may themselves be in local systems), then
+ * turns every point with CP != 0 into basic coordinates. `nastran:cp` and
+ * `nastran:cd` are added as point data when any value is non-zero. A GRID
+ * whose system cannot be resolved (undefined, circular or degenerate) keeps
+ * its coordinates as written, with a warning.
+ *
+ * @param rMesh a mesh whose points are the GRIDs, as written, in @p rIds order
+ * @return the resolved systems, for the CD components of nodal results
+ */
+NastranCoordSystems nastran_apply_frames(Mesh& rMesh, const std::vector<NastranCoordCard>& rCards,
+                                         const std::vector<std::int64_t>& rIds,
+                                         const std::vector<std::int64_t>& rCp,
+                                         const std::vector<std::int64_t>& rCd,
+                                         const std::string& rWho);
+
+/**
+ * @brief Rotate a point's result vectors from its CD system to basic, in place.
+ *
+ * @param pValues `Count` consecutive triplets (e.g. translations then rotations)
+ * @return false (values untouched) when @p Cd is 0 or not a resolved system
+ */
+bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t Cd,
+                             const double* pBasicPoint, double* pValues, std::size_t Count);
 
 /**
  * @brief Read a bulk-data deck as `read_nastran` does, also returning the GRID
@@ -10744,7 +10807,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 16
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 9
+#define MESHIOPLUSPLUS_VERSION_MINOR 10
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -10754,7 +10817,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "16.9.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "16.10.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -13712,15 +13775,11 @@ MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPat
  * payload (`20xx` = float32 nodes / int32 cells, `30xx` = float64 / int64).
  * All connectivity and zone-header integers in both ASCII and binary bodies
  * are **hexadecimal** — the format's defining quirk. Section `10` gives node
- * blocks (`zone-id first last type ND`), section `12` gives cell blocks
- * (`zone-id first last zone-type element-type`; `zone-type == 0` is a dead
- * zone producing no cells; `element-type == 0` is a "mixed" zone that is
- * structurally skipped, Fluent's own heterogeneous-cell encoding being
- * unresolved here), and section `13` gives boundary faces. All zones are
- * folded into one flat cell list, then every connectivity array has the
- * first point-zone's `first` index subtracted so numbering normalizes to 0.
- * `point_data`/`cell_data`/`field_data` are always empty for this format —
- * it carries geometry and zone/boundary structure only.
+ * blocks, `13` the faces (nodes plus the cells `c0 c1` on either side) and `12`
+ * the cell zones. The reader rebuilds each cell from its faces, keeps boundary
+ * faces as surface cells, and records each cell's zone in
+ * `cell_data["ansys:zone"]` with one named cell region per zone; a legacy
+ * meshio file (cell sections with connectivity bodies) is read as cells only.
  *
  * See doc/formats/ansys.md for the full section grammar and the
  * element-type/face-type code tables.
@@ -13734,23 +13793,23 @@ MESHIOPLUSPLUS_API MeshMetadata read_abaqus_fil_metadata(const std::string& rPat
 namespace meshioplusplus {
 
 /**
- * @brief Write `mesh` as a Fluent .msh file.
+ * @brief Write `mesh` as a Fluent .msh file in Fluent's face-based layout.
  *
- * Emits, in order: a `(1 "...")` header, `(2 DIM)`, a `(10 (0 1 N 0))` node-
- * count declaration, a `(12 (0 1 N 0))` cell-count declaration, one node
- * block (`10` ascii or `3010` binary), then one cell block per meshio++ cell
- * type using the fixed reverse map `triangle:1, tetra:2, quad:3,
- * hexahedron:4, pyramid:5, wedge:6` (ascii section `12`, binary `2012`
- * int32 or `3012` int64). No face (`13`) sections, and no `mixed`/polyhedral
- * cell support, are ever emitted.
+ * The cells are the blocks of the highest dimension (2 or 3), in cell zones
+ * from `cell_data["ansys:zone"]` (else one per block). Every face is written
+ * once with its nodes and the cells `c0 c1` on either side: 3-D faces from
+ * `detail/face_mesh.hpp` with the right-hand normal into `c0`, 2-D edges with
+ * `c0` on the left. Interior faces form one zone; a boundary face is in the
+ * wall zone of the lower-dimensional block (or `ansys:zone`) whose facet
+ * matches it, the rest in a default wall. Zone names (`45` sections) come from
+ * the regions. Polygons and polyhedra are written as element type 7.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @param binary write node/cell bodies as binary (`true`, `20xx`/`30xx`
- *        prefixed sections) or ASCII (`false`)
- * @throws WriteError if `mesh` is not 2D or 3D, or if a cell block's type
- *         has no entry in the meshio++ -> Ansys type-code map ("illegal
- *         cell type")
+ * @param binary write the node section as `3010` (float64) and the face
+ *        sections as `2013` (int32), or everything ASCII (`false`)
+ * @throws WriteError if the points are not 2-D or 3-D, the mesh has no 2-D or
+ *         3-D cells, or a binary id does not fit 32 bits
  */
 MESHIOPLUSPLUS_API void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary);
 
@@ -17451,10 +17510,12 @@ MESHIOPLUSPLUS_API Mesh read_nastran(const std::string& rPath);
  * with `/INDEX/NASTRAN/RESULT/...` giving each result table's row range per
  * result domain. Read-only.
  *
- *  - `/NASTRAN/INPUT/NODE/GRID` gives the points, in file order. Coordinates are
- *    taken as written: a GRID with `CP != 0` is kept in its local system with a
- *    warning, and `CP`/`CD` become the point data `nastran:cp`/`nastran:cd` when
- *    any is non-zero. SPOINT/EPOINT scalar points are not points.
+ *  - `/NASTRAN/INPUT/NODE/GRID` gives the points, in file order, moved to the
+ *    basic system through the `COORDINATE_SYSTEM` CORD1R/C/S and CORD2R/C/S
+ *    tables when `CP != 0` (`detail/nastran_model.hpp`); nodal vectors and grid
+ *    point forces of a GRID with `CD != 0` are rotated to basic. `CP`/`CD`
+ *    become the point data `nastran:cp`/`nastran:cd` when any is non-zero.
+ *    SPOINT/EPOINT scalar points are not points.
  *  - Every `/NASTRAN/INPUT/ELEMENT/<CARD>` table with a cell type becomes up to two
  *    cell blocks (linear, then quadratic: a quadratic card with no mid-side nodes
  *    is linear, one with only some is read as linear with a warning). Integer
@@ -17474,8 +17535,12 @@ MESHIOPLUSPLUS_API Mesh read_nastran(const std::string& rPath);
  *  - `/NASTRAN/RESULT/ELEMENTAL/<G>/<T>` tables with one row per element become
  *    cell data `<G>:<M>` per float member (the first entry of an array member:
  *    the centre of a solid's or a corner-output shell's values), NaN elsewhere.
- *  - Tables with several rows per entity (per-ply `_COMP`, `GRID_FORCE`) are
- *    skipped with a warning.
+ *  - The other values of an element are `(cells, columns)` cell data with
+ *    `field_data["nastran:layout:<name>"]`: `<G>:<M>@corner` (the corners, at
+ *    the GRID's position in the cell), `<G>:<M>@ply` (`_COMP` plies),
+ *    `<G>:<M>@station` (beam and bar stations) and `GRID_FORCE:<M>` (per
+ *    element node); `GRID_FORCE` rows of no element are point data
+ *    `GRID_FORCE:<label>:<M>`. Other repeated rows are skipped with a warning.
  *
  * A `.h5` without `/NASTRAN/INPUT/NODE/GRID`, or one whose `/NASTRAN` `VERSION`
  * attribute does not name MSC, is refused: other vendors' HDF5 schemas differ.
@@ -17525,8 +17590,8 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPat
  * then records separated by marker triples `[-k, 1, 0]` and closed by `0`.
  *
  * The mesh comes from the geometry tables, as `nastran_h5` builds it
- * (`detail/nastran_model.hpp`): `GEOM1` GRIDs are the points (CP/CD frames kept
- * as `nastran:cp`/`nastran:cd` with a warning, coordinates not transformed),
+ * (`detail/nastran_model.hpp`): `GEOM1` GRIDs are the points (moved to basic
+ * through the GEOM1 CORD records when `CP != 0`; `nastran:cp`/`nastran:cd`),
  * `GEOM2` element records the cells (`nastran:eid`, `nastran:pid`; CONM2 as
  * `vertex`; records with no cell type are named in a warning) and `EPT` the
  * property card of each region `<PTYPE>_<pid>`. Without GRID records the input
@@ -17541,13 +17606,18 @@ MESHIOPLUSPLUS_API MeshMetadata read_nastran_h5_metadata(const std::string& rPat
  *  - `OUG*`/`BOUG*`, `OQG*`, `OQMG*`, `OPG*` real SORT1 tables as point data
  *    `DISPLACEMENT`, `EIGENVECTOR`, `VELOCITY`, `ACCELERATION`, `SPC_FORCE`,
  *    `MPC_FORCE`, `APPLIED_LOAD` (each with a `_ROT` twin) and `TEMPERATURE`,
- *    NaN for points without a value;
+ *    NaN for points without a value, rotated from each GRID's `CD` to basic
+ *    (not `BOUG*`, which is basic already);
  *  - `OES*`/`OSTR*` real SORT1 stress and strain of rods (1, 3, 10), shear
  *    panels (4), bars (34), shells (33, 74, and the centre of 64, 70, 75, 82,
  *    144) and solids (39, 67, 68, 255) as cell data `STRESS:<M>`/`STRAIN:<M>`
  *    named like `nastran_h5`'s members (`X1`, `TXY1`, `X`, `TZX`, `A`...) plus
- *    the derived values (`VON_MISES1`, `MAJOR1`, `PRINCIPAL_A`...), centre
- *    values only, NaN on cells without them.
+ *    the derived values (`VON_MISES1`, `MAJOR1`, `PRINCIPAL_A`...), the centre
+ *    value NaN on cells without it; corner, ply (95-98, 232, 233) and station
+ *    (CBEAM 2, CBAR 100) values as `<name>@corner|@ply|@station` with
+ *    `nastran:layout:<name>`, as `nastran_h5`;
+ *  - `OGPFB*` grid point forces as `GRID_FORCE:<M>` per element node and
+ *    `GRID_FORCE:<label>:<M>` point data.
  * Complex, random and SORT2 tables, other element types and other tables are
  * skipped with a warning naming them.
  *
@@ -18925,38 +18995,30 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
 // ===== begin src/cpp/include/meshioplusplus/formats/tecplot.hpp =====
 /**
  * @file tecplot.hpp
- * @brief Tecplot ASCII finite-element (.dat/.tec) C++ reader/writer,
- *        single-zone only.
+ * @brief Tecplot reader (ASCII `.dat`/`.tec` and binary `.plt`) and ASCII
+ *        writer.
  *
- * A Tecplot FE file is a `VARIABLES = "X" "Y" "Z" ...` list followed by one
- * or more `ZONE T="..." N=<nodes> E=<elements> F=FEPOINT|FEBLOCK
- * ET=TRIANGLE|FEQUADRILATERAL|FETETRAHEDRON|FEBRICK [SOLUTIONTIME=<t>]
- * [STRANDID=<id>] [VARLOCATION=(...)]` blocks. meshio++ writes a **single**
- * FE zone; on read, `ReadOptions::mTimeStep` (since v11.3.0) selects one zone
- * of a transient file's timeline -- every zone sharing the first zone's
- * `STRANDID` (or, absent one, every zone with a `SOLUTIONTIME` at all),
- * sorted by `SOLUTIONTIME`. With no `SOLUTIONTIME` anywhere, only the first
- * zone is read, as before (several static, non-transient zones are a
- * documented roadmap remainder, not concatenated or errored on).
- * `VARLOCATION=([a-b]=CELLCENTERED)` (1-based,
- * inclusive ranges) marks cell-centered variables, otherwise cell-centered-
- * ness is inferred from `NV=`. `FEBLOCK` packing reads one variable's full
- * array before the next; `FEPOINT` reads one full-variable-tuple row per
- * node. `X`/`x` (and optional `Y`/`Z`) become point coordinates; everything
- * else becomes point_data or cell_data, keyed by the raw variable name (no
- * `tecplot:` prefix).
+ * Reading: both encodings decode into one zone model. The binary form is the
+ * Data Format Guide's appendix A (`#!TDV112`, either byte order); a file is
+ * binary when it starts with `#!TDV`, whatever its extension. Every zone of the
+ * selected step becomes its own cell block and a Cell region named after the
+ * zone title (`zone_<k>` otherwise), with `cell_data["tecplot:zone"]` holding
+ * the zone index. FE zones map LINESEG/TRIANGLE/QUADRILATERAL/TETRAHEDRON/BRICK
+ * to line/triangle/quad/tetra/hexahedron; ORDERED zones become lines, quads or
+ * hexahedra over their dimensions longer than one (VTK corner order, `i`
+ * fastest). FEPOLYGON/FEPOLYHEDRON zones are refused with a `ReadError`.
+ * VARSHARELIST, PASSIVEVARLIST (NaN) and CONNECTIVITYSHAREZONE are resolved;
+ * a zone reuses an earlier zone's points only when all its nodal variables
+ * are shared from it. `X`/`Y` (and `Z`) are the coordinates; every other
+ * variable is point data where a zone stores it at the nodes and cell data
+ * where it stores it cell-centred. `ReadOptions::mTimeStep` selects one
+ * distinct SOLUTIONTIME of a transient file (the zones sharing the first
+ * zone's strand); a file without SOLUTIONTIME is one step holding every zone.
  *
- * Zone type -> meshio++ type: LINESEG/FELINESEG->line,
- * TRIANGLE/FETRIANGLE->triangle, QUADRILATERAL/FEQUADRILATERAL->quad,
- * TETRAHEDRON/FETETRAHEDRON->tetra, BRICK/FEBRICK->hexahedron. On write,
- * pyramid/wedge/hexahedron all degrade to an 8-node FEBRICK zone, padding
- * with duplicated corner nodes (pyramid: `[0,1,2,3,4,4,4,4]`; wedge:
- * `[0,1,4,3,2,2,5,5]`).
- *
- * The multi-cell-type write path (Python degrades everything into a single
- * FEQUADRILATERAL/FEBRICK zone via "order_2" padding tables) exists **only
- * in the Python writer**: the C++ writer throws WriteError as soon as more
- * than one distinct cell type is present, forcing the Python fallback.
+ * Writing: ASCII only, one FEBLOCK zone per cell block, later zones sharing
+ * the first zone's coordinates and nodal fields through VARSHARELIST;
+ * pyramid/wedge/hexahedron degrade to an 8-node FEBRICK (pyramid:
+ * `[0,1,2,3,4,4,4,4]`; wedge: `[0,1,4,3,2,2,5,5]`).
  */
 
 // System includes
@@ -18967,35 +19029,29 @@ MESHIOPLUSPLUS_API void write_svg(const std::string& rPath, const Mesh& rMesh, c
 namespace meshioplusplus {
 
 /**
- * @brief Write a mesh as a single Tecplot FE zone.
+ * @brief Write a mesh as Tecplot ASCII, one FE zone per supported cell block.
  *
- * Emits `VARIABLES`/`ZONE` headers for the one supported cell type present
- * (line/triangle/quad/tetra/hexahedron, with pyramid/wedge padded into
- * FEBRICK), then FEBLOCK-packed coordinate/point_data/cell_data columns
- * (data wrapped at 20 values per line) and 1-based connectivity.
+ * Emits `VARIABLES`/`ZONE` headers, FEBLOCK-packed coordinate/point_data/
+ * cell_data columns (wrapped at 20 values per line) and 1-based
+ * connectivity; later zones share the first zone's coordinates and nodal
+ * fields through VARSHARELIST.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
- * @throws WriteError if the mesh contains **more than one** distinct cell
- *         type (the Python fallback handles that case by degrading
- *         everything into one FEQUADRILATERAL/FEBRICK zone)
+ * @throws WriteError if no cell block has a Tecplot FE type
  */
 MESHIOPLUSPLUS_API void write_tecplot(const std::string& rPath, const Mesh& rMesh);
 
 /**
- * @brief Read a Tecplot ASCII file's first FE zone.
+ * @brief Read a Tecplot ASCII or binary (`.plt`) file's first step.
  *
- * Parses the `VARIABLES` list and every `ZONE` header (tolerating multi-line
- * continuation and a quoted `T="..."` title), then the selected zone's
- * FEBLOCK or FEPOINT data body and 1-based connectivity.
+ * See the file comment for how zones become cell blocks, regions and data.
  *
  * @param rPath filesystem path to read
  * @return the read Mesh
- * @throws ReadError if `X`/`x` is missing, a zone header uses an unsupported
- *         `F=`/`ZONETYPE=` combination, or the header/data otherwise doesn't
- *         parse (e.g. an adversarial zone title that is literally the string
- *         `"VARLOCATION"`) — the shim then falls back to the more tolerant
- *         Python reader.
+ * @throws ReadError if `X` or `Y` is missing, a zone is polygonal/polyhedral,
+ *         a `.plt` is not version 112 or is truncated, or the file otherwise
+ *         does not parse
  * @note point_data/cell_data keys are the raw Tecplot variable names (no
  *       prefix); `X`/`Y`/`Z` are reserved for coordinates.
  */
@@ -19018,13 +19074,11 @@ MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath, const ReadOptions
  *        decoding any zone's data body.
  *
  * A native metadata path (`MeshMetadata::mFellBackToFullRead` is `false`):
- * every `ZONE` header is scanned for its `N=`/`E=`/`SOLUTIONTIME=`/
- * `STRANDID=`, using the same token-budget walk `read_tecplot` uses to skip
- * from one zone's header to the next, but without decoding the tokens
- * themselves. `mCellBlocks`/`mNumPoints` describe the timeline's first zone
- * (transient zones typically share topology); `mTimeValues` is the resolved
- * timeline's `SOLUTIONTIME`s in the same sorted order `mTimeStep` indexes
- * into -- empty when no zone carries one.
+ * every zone header is scanned (the ASCII token-budget walk, or the binary
+ * header and data-section offsets) without decoding any values. `mCellBlocks`/`mNumPoints` describe
+ * the timeline's first zone (transient zones typically share topology); `mTimeValues` is the
+ * resolved timeline's `SOLUTIONTIME`s in the same sorted order `mTimeStep` indexes into -- empty
+ * when no zone carries one.
  *
  * @param rPath filesystem path to read
  * @param rOptions unused (metadata carries no timestep of its own to select)
@@ -20931,14 +20985,20 @@ private:
  *    else the element set holding exactly its elements, else its part), tagged
  *    with its part id. hex27 goes through the `"febio"` node-order table.
  *  - Node sets, element sets and surfaces become `Point`, `Cell` and `Side`
- *    regions, as in `.feb`.
+ *    regions, as in `.feb`. Each data surface is also a block of facet cells
+ *    per facet type, after the domains, with a `Cell` region named after it
+ *    and `cell_data["xplt:surface"]` (its 1-based id, 0 on the domains).
+ *  - A remeshed run writes a new mesh before the states that use it; each
+ *    state is read on its own mesh. Metadata describes the first.
  *  - `ReadOptions::mTimeStep` picks the state. Its time is
  *    `field_data["meshio:time"]`, its index `"xplt:step"`, its status
  *    `"xplt:status"`. Nodal variables are point data; per-element variables
  *    (`FMT_ITEM`) cell data, NaN on domains without them; per-region ones
  *    (`FMT_REGION`) cell data repeated over the domain; per-element-node ones
  *    (`FMT_NODE`, `FMT_MULT`) point data, averaged over the elements sharing a
- *    node. Global variables are field data. Surface, edge and material-point
+ *    node. Global variables are field data. Surface variables live on the facet
+ *    cells the same way (per facet, per surface, or averaged per facet node);
+ *    one on no surface of the mesh gives no array. Edge and material-point
  *    variables are not read (a warning names them).
  *  - Symmetric tensors keep FEBio's 6 components (xx, yy, zz, xy, yz, xz).
  *
@@ -20960,7 +21020,7 @@ namespace meshioplusplus {
  *        downgrades tet5/tet15 domains
  * @return the mesh with the chosen state's data
  * @throws ReadError for a bad magic, an unsupported plot version, a
- *         truncated mesh, a remeshed file, or an out-of-range time step
+ *         truncated mesh, or an out-of-range time step
  */
 MESHIOPLUSPLUS_API Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions = {});
 
@@ -49000,9 +49060,11 @@ std::vector<MeshPart> carve_by_region(const Mesh& rMesh, const std::string& rCal
 // ===== end src/cpp/src/detail/mesh_carve.cpp =====
 // ===== begin src/cpp/src/detail/nastran_model.cpp =====
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -49191,22 +49253,246 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
     return out;
 }
 
-void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
-                       const std::vector<std::int64_t>& rValues, const std::string& rWho) {
-    const auto nonzero =
-        std::count_if(rValues.begin(), rValues.end(), [](std::int64_t c) { return c != 0; });
-    if (nonzero == 0)
-        return;
-    if (rFrame == "CP")
+namespace {
+
+// Degrees to radians; one constant so both engines round the same way.
+constexpr double kNmDegree = 3.14159265358979323846 / 180.0;
+
+void nm_local_to_cartesian(int Type, const double* pLocal, double* pOut) {
+    if (Type == 2) {
+        const double t = pLocal[1] * kNmDegree;
+        pOut[0] = pLocal[0] * std::cos(t);
+        pOut[1] = pLocal[0] * std::sin(t);
+        pOut[2] = pLocal[2];
+    } else if (Type == 3) {
+        const double t = pLocal[1] * kNmDegree;
+        const double f = pLocal[2] * kNmDegree;
+        pOut[0] = pLocal[0] * std::sin(t) * std::cos(f);
+        pOut[1] = pLocal[0] * std::sin(t) * std::sin(f);
+        pOut[2] = pLocal[0] * std::cos(t);
+    } else {
+        pOut[0] = pLocal[0];
+        pOut[1] = pLocal[1];
+        pOut[2] = pLocal[2];
+    }
+}
+
+// A system from its origin A, a point B on +z and a point C in the xz plane,
+// all in basic; false when they do not span one.
+bool nm_system_from_points(int Type, const double* pA, const double* pB, const double* pC,
+                           NastranCoordSystems::System& rOut) {
+    const double z[3] = {pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]};
+    const double nz = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+    if (!(nz > 0.0))
+        return false;
+    const double ez[3] = {z[0] / nz, z[1] / nz, z[2] / nz};
+    const double v[3] = {pC[0] - pA[0], pC[1] - pA[1], pC[2] - pA[2]};
+    const double y[3] = {ez[1] * v[2] - ez[2] * v[1], ez[2] * v[0] - ez[0] * v[2],
+                         ez[0] * v[1] - ez[1] * v[0]};
+    const double ny = std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+    if (!(ny > 0.0))
+        return false;
+    const double ey[3] = {y[0] / ny, y[1] / ny, y[2] / ny};
+    const double ex[3] = {ey[1] * ez[2] - ey[2] * ez[1], ey[2] * ez[0] - ey[0] * ez[2],
+                          ey[0] * ez[1] - ey[1] * ez[0]};
+    rOut.mType = Type;
+    for (int k = 0; k < 3; ++k) {
+        rOut.mOrigin[k] = pA[k];
+        rOut.mAxes[k] = ex[k];
+        rOut.mAxes[3 + k] = ey[k];
+        rOut.mAxes[6 + k] = ez[k];
+    }
+    return true;
+}
+
+}  // namespace
+
+NastranCoordSystems::NastranCoordSystems() {
+    mSystems[0] = System{};
+}
+
+void NastranCoordSystems::ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const {
+    const System& s = mSystems.at(Cid);
+    double c[3];
+    nm_local_to_cartesian(s.mType, pLocal, c);
+    for (int k = 0; k < 3; ++k)
+        pBasic[k] =
+            s.mOrigin[k] + s.mAxes[k] * c[0] + s.mAxes[3 + k] * c[1] + s.mAxes[6 + k] * c[2];
+}
+
+void NastranCoordSystems::VectorToBasic(std::int64_t Cid, const double* pBasicPoint,
+                                        double* pVector) const {
+    const System& s = mSystems.at(Cid);
+    double w[3] = {pVector[0], pVector[1], pVector[2]};
+    if (s.mType == 2 || s.mType == 3) {
+        const double d[3] = {pBasicPoint[0] - s.mOrigin[0], pBasicPoint[1] - s.mOrigin[1],
+                             pBasicPoint[2] - s.mOrigin[2]};
+        double l[3];
+        for (int j = 0; j < 3; ++j)
+            l[j] = s.mAxes[3 * j] * d[0] + s.mAxes[3 * j + 1] * d[1] + s.mAxes[3 * j + 2] * d[2];
+        const double ph = std::atan2(l[1], l[0]);
+        const double cp = std::cos(ph);
+        const double sp = std::sin(ph);
+        if (s.mType == 2) {
+            w[0] = pVector[0] * cp - pVector[1] * sp;
+            w[1] = pVector[0] * sp + pVector[1] * cp;
+        } else {
+            const double th = std::atan2(std::sqrt(l[0] * l[0] + l[1] * l[1]), l[2]);
+            const double ct = std::cos(th);
+            const double st = std::sin(th);
+            const double er[3] = {st * cp, st * sp, ct};
+            const double et[3] = {ct * cp, ct * sp, -st};
+            const double ep[3] = {-sp, cp, 0.0};
+            for (int k = 0; k < 3; ++k)
+                w[k] = pVector[0] * er[k] + pVector[1] * et[k] + pVector[2] * ep[k];
+        }
+    }
+    for (int k = 0; k < 3; ++k)
+        pVector[k] = s.mAxes[k] * w[0] + s.mAxes[3 + k] * w[1] + s.mAxes[6 + k] * w[2];
+}
+
+NastranCoordSystems nastran_apply_frames(Mesh& rMesh, const std::vector<NastranCoordCard>& rCards,
+                                         const std::vector<std::int64_t>& rIds,
+                                         const std::vector<std::int64_t>& rCp,
+                                         const std::vector<std::int64_t>& rCd,
+                                         const std::string& rWho) {
+    NastranCoordSystems systems;
+    const std::size_t n = rIds.size();
+    const bool any_cp = std::any_of(rCp.begin(), rCp.end(), [](std::int64_t c) { return c != 0; });
+    const bool any_cd = std::any_of(rCd.begin(), rCd.end(), [](std::int64_t c) { return c != 0; });
+    if (!any_cp && !any_cd)
+        return systems;
+
+    // First definition of each CID wins; later ones are reported.
+    std::map<std::int64_t, const NastranCoordCard*> pending;
+    std::size_t duplicates = 0;
+    for (const NastranCoordCard& c : rCards) {
+        if (c.mCid <= 0)
+            continue;
+        if (!pending.emplace(c.mCid, &c).second)
+            ++duplicates;
+    }
+    if (duplicates != 0)
         log::warn(
-            "{}: {} GRID(s) have CP != 0; their coordinates are kept in the local system, not "
-            "transformed",
-            rWho, nonzero);
-    else
-        log::warn("{}: {} GRID(s) have CD != 0; their results are in the local output system", rWho,
-                  nonzero);
-    rMesh.AddPointData(std::string("nastran:") + (rFrame == "CP" ? "cp" : "cd"),
-                       nm_int_array(rValues));
+            "{}: {} coordinate system(s) are defined more than once; the first definition "
+            "is used",
+            rWho, duplicates);
+
+    NDArray points = rMesh.Points();  // deep copy: moved to basic below, then reassigned
+    double* xyz = points.As<double>();
+    std::unordered_map<std::int64_t, std::size_t> index;
+    index.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        index.emplace(rIds[i], i);
+    std::vector<char> resolved(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        resolved[i] = rCp[i] == 0 ? 1 : 0;
+
+    // A CORD2 needs its reference system, a CORD1 its three GRIDs, and a GRID
+    // its CP system: resolve whatever is ready until nothing changes.
+    std::set<std::int64_t> degenerate;
+    for (bool progress = true; progress;) {
+        progress = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (resolved[i] || !systems.Has(rCp[i]))
+                continue;
+            double local[3] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+            systems.ToBasic(rCp[i], local, xyz + 3 * i);
+            resolved[i] = 1;
+            progress = true;
+        }
+        for (auto it = pending.begin(); it != pending.end();) {
+            const NastranCoordCard& c = *it->second;
+            double a[3], b[3], p[3];
+            bool ready = false;
+            if (c.mByGrids) {
+                std::size_t g[3];
+                ready = true;
+                for (int k = 0; k < 3 && ready; ++k) {
+                    const auto found = index.find(c.mGrids[k]);
+                    ready = found != index.end() && resolved[found->second];
+                    if (ready)
+                        g[k] = found->second;
+                }
+                if (ready)
+                    for (int k = 0; k < 3; ++k) {
+                        a[k] = xyz[3 * g[0] + k];
+                        b[k] = xyz[3 * g[1] + k];
+                        p[k] = xyz[3 * g[2] + k];
+                    }
+            } else if (systems.Has(c.mRid)) {
+                ready = true;
+                systems.ToBasic(c.mRid, c.mAbc, a);
+                systems.ToBasic(c.mRid, c.mAbc + 3, b);
+                systems.ToBasic(c.mRid, c.mAbc + 6, p);
+            }
+            if (!ready) {
+                ++it;
+                continue;
+            }
+            NastranCoordSystems::System sys;
+            if (nm_system_from_points(c.mType, a, b, p, sys))
+                systems.Add(c.mCid, sys);
+            else
+                degenerate.insert(c.mCid);
+            it = pending.erase(it);
+            progress = true;
+        }
+    }
+    if (!degenerate.empty())
+        log::warn(
+            "{}: {} coordinate system(s) have coincident or collinear defining points and "
+            "are ignored",
+            rWho, degenerate.size());
+
+    std::size_t moved = 0, kept = 0;
+    std::set<std::int64_t> missing;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (rCp[i] == 0)
+            continue;
+        if (resolved[i]) {
+            ++moved;
+        } else {
+            ++kept;
+            missing.insert(rCp[i]);
+        }
+    }
+    if (kept != 0) {
+        std::string ids;
+        for (std::int64_t c : missing)
+            ids += (ids.empty() ? "" : ", ") + std::to_string(c);
+        log::warn(
+            "{}: {} GRID(s) are in coordinate system(s) {} that cannot be resolved; their "
+            "coordinates are kept as written",
+            rWho, kept, ids);
+    }
+    if (moved != 0) {
+        log::info("{}: moved {} GRID(s) from local coordinate systems to basic", rWho, moved);
+        rMesh.AssignPoints(std::move(points));
+    }
+    if (any_cp)
+        rMesh.AddPointData("nastran:cp", nm_int_array(rCp));
+    if (any_cd) {
+        std::size_t unresolved = 0;
+        for (std::int64_t c : rCd)
+            unresolved += (c > 0 && !systems.Has(c)) ? 1 : 0;
+        if (unresolved != 0)
+            log::warn(
+                "{}: {} GRID(s) have an output system (CD) that cannot be resolved; their "
+                "results stay in it",
+                rWho, unresolved);
+        rMesh.AddPointData("nastran:cd", nm_int_array(rCd));
+    }
+    return systems;
+}
+
+bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t Cd,
+                             const double* pBasicPoint, double* pValues, std::size_t Count) {
+    if (Cd <= 0 || !rSystems.Has(Cd))
+        return false;
+    for (std::size_t k = 0; k < Count; ++k)
+        rSystems.VectorToBasic(Cd, pBasicPoint, pValues + 3 * k);
+    return true;
 }
 
 }  // namespace detail
@@ -55254,7 +55540,9 @@ MeshMetadata read_abaqus_fil_metadata(const std::string& rPath, const ReadOption
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -55839,106 +56127,496 @@ Mesh read_ansys(const std::string& rPath) {
     return mesh;
 }
 
+namespace {
+
+// One face of the written mesh: its nodes (0-based) wound so Fluent reads the
+// right cells on either side, and the compact ids of those cells (-1: none).
+struct FlFace {
+    std::vector<std::int64_t> mNodes;
+    std::int64_t mC0 = -1;
+    std::int64_t mC1 = -1;
+};
+
+struct FlZone {
+    std::int64_t mId = 0;
+    std::string mType;                  // fluid, interior, wall
+    std::vector<std::int64_t> mGlobal;  // the mesh cells it stands for (for its name)
+    int mDim = 0;                       // their dimension
+    std::vector<std::size_t> mMembers;  // compact cells or faces, in order
+};
+
+// Fluent element types of the cell zones (12) and the corners a cell keeps.
+int fl_element_type(const std::string& rType) {
+    if (rType.rfind("triangle", 0) == 0)
+        return 1;
+    if (rType.rfind("tetra", 0) == 0)
+        return 2;
+    if (rType.rfind("quad", 0) == 0)
+        return 3;
+    if (rType.rfind("hexahedron", 0) == 0)
+        return 4;
+    if (rType.rfind("pyramid", 0) == 0)
+        return 5;
+    if (rType.rfind("wedge", 0) == 0)
+        return 6;
+    return 7;  // polyhedral (3-D) or polygonal (2-D): defined by its faces
+}
+
+bool fl_is_linear(const std::string& rType) {
+    static const char* const kLinear[] = {"triangle", "tetra", "quad",    "hexahedron",
+                                          "pyramid",  "wedge", "polygon", "line"};
+    for (const char* t : kLinear)
+        if (rType == t)
+            return true;
+    return rType.rfind("polygon", 0) == 0 || rType.rfind("polyhedron", 0) == 0;
+}
+
+// The corner ring of a 2-D cell (a surface facet in 3-D, a cell in 2-D).
+std::vector<std::int64_t> fl_ring(const Mesh::CellView& rBlock, std::size_t Cell) {
+    std::vector<std::int64_t> ring;
+    if (rBlock.IsRagged()) {
+        const std::int64_t* p = rBlock.Row(Cell);
+        ring.assign(p, p + rBlock.RowSize(Cell));
+        return ring;
+    }
+    const std::string& t = rBlock.Type();
+    const std::size_t npc = rBlock.NodesPerCell();
+    std::size_t corners = npc;
+    if (t.rfind("triangle", 0) == 0)
+        corners = 3;
+    else if (t.rfind("quad", 0) == 0)
+        corners = 4;
+    else if (t.rfind("line", 0) == 0)
+        corners = 2;
+    const NDArray& conn = rBlock.Conn();
+    for (std::size_t k = 0; k < corners && k < npc; ++k)
+        ring.push_back(detail::read_int(conn, Cell * npc + k));
+    return ring;
+}
+
+int fl_dimension(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    if (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0)
+        return 2;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+std::string fl_hex(std::int64_t V) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "%llx", static_cast<unsigned long long>(V));
+    return buf;
+}
+
+// A Fluent zone name: no blanks or parentheses.
+std::string fl_name(std::string rName) {
+    for (char& c : rName)
+        if (c == ' ' || c == '\t' || c == '(' || c == ')' || c == '"')
+            c = '_';
+    return rName.empty() ? std::string("zone") : rName;
+}
+
+}  // namespace
+
 void write_ansys(const std::string& rPath, const Mesh& rMesh, bool binary) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim != 2 && pdim != 3)
+        throw WriteError("Fluent: can only write points of dimension 2 or 3");
+
+    // The cells are the blocks of the mesh's highest dimension (2 or 3); the
+    // blocks one dimension lower name boundary zones; anything else is dropped.
+    int dim = 0;
+    for (const auto cb : rMesh.CellRange())
+        dim = std::max(dim, fl_dimension(cb));
+    if (dim < 2)
+        throw WriteError("Fluent: the mesh has no 2-D or 3-D cells");
+    if (dim == 3 && pdim != 3)
+        throw WriteError("Fluent: 3-D cells need 3-D points");
+    // A 2-D Fluent mesh lies in the xy plane: z is dropped only when it is 0.
+    if (dim == 2 && pdim == 3)
+        for (std::size_t i = 0; i < npoints; ++i)
+            if (detail::read_double(points, i * 3 + 2) != 0.0)
+                throw WriteError("Fluent: a 2-D mesh must lie in the z = 0 plane (point " +
+                                 std::to_string(i) +
+                                 " has z != 0); Fluent has no 3-D surface meshes");
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const bool has_zone = rMesh.HasCellData("ansys:zone");
+    auto zone_value = [&](std::size_t Block, std::size_t Cell, std::int64_t& rOut) {
+        if (!has_zone)
+            return false;
+        const NDArray& z = rMesh.CellData("ansys:zone", Block);
+        if (Cell >= z.Size())
+            return false;
+        rOut = detail::read_int(z, Cell);
+        return rOut > 0;
+    };
+
+    // ---- faces and cells ----------------------------------------------------
+    std::vector<FlFace> faces;
+    std::vector<std::int64_t> cell_to_global;  // compact cell -> global cell
+    std::vector<std::size_t> cell_block;       // compact cell -> block
+    std::vector<std::size_t> surface_blocks;   // blocks of dimension dim - 1
+    std::size_t dropped_blocks = 0, quadratic = 0;
+    if (dim == 3) {
+        const detail::GlobalFaces g = detail::build_global_faces(rMesh);
+        if (g.mNumUnorientable != 0)
+            log::warn(
+                "Fluent: {} cell(s) are not closed, orientable solids; their faces are "
+                "written as found",
+                g.mNumUnorientable);
+        if (g.mNumNonManifold != 0)
+            log::warn("Fluent: {} face(s) are shared by more than two cells", g.mNumNonManifold);
+        cell_to_global = g.mCellToGlobal;
+        cell_block.resize(g.NumCells());
+        for (std::size_t c = 0; c < g.NumCells(); ++c)
+            cell_block[c] = static_cast<std::size_t>(
+                std::upper_bound(bases.begin(), bases.end(), g.mCellToGlobal[c]) - bases.begin() -
+                1);
+        faces.resize(g.NumFaces());
+        for (std::size_t f = 0; f < g.NumFaces(); ++f) {
+            // Stored outward from the owner; Fluent's normal points into c0.
+            const std::int64_t* ring = g.Face(f);
+            faces[f].mNodes.assign(std::make_reverse_iterator(ring + g.FaceSize(f)),
+                                   std::make_reverse_iterator(ring));
+            faces[f].mC0 = g.mOwner[f];
+            faces[f].mC1 = g.mNeighbour[f];
+        }
+        for (std::size_t b : g.mNonCellBlocks)
+            (fl_dimension(rMesh.Cells(b)) == 2 ? surface_blocks.push_back(b)
+                                               : void(++dropped_blocks));
+    } else {
+        // Each 2-D cell counter-clockwise (in x-y); an edge a -> b of its ring
+        // has it on the left, where Fluent puts c0.
+        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_of;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const int d = fl_dimension(cb);
+            if (d != 2) {
+                (d == 1 ? surface_blocks.push_back(b) : void(++dropped_blocks));
+                continue;
+            }
+            for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+                std::vector<std::int64_t> ring = fl_ring(cb, i);
+                double area = 0.0;
+                for (std::size_t k = 0; k < ring.size(); ++k) {
+                    const std::size_t p = static_cast<std::size_t>(ring[k]);
+                    const std::size_t q = static_cast<std::size_t>(ring[(k + 1) % ring.size()]);
+                    area += detail::read_double(points, p * pdim) *
+                                detail::read_double(points, q * pdim + 1) -
+                            detail::read_double(points, q * pdim) *
+                                detail::read_double(points, p * pdim + 1);
+                }
+                if (area < 0.0)
+                    std::reverse(ring.begin(), ring.end());
+                const std::int64_t cell = static_cast<std::int64_t>(cell_to_global.size());
+                cell_to_global.push_back(bases[b] + static_cast<std::int64_t>(i));
+                cell_block.push_back(b);
+                for (std::size_t k = 0; k < ring.size(); ++k) {
+                    const std::int64_t a = ring[k], e = ring[(k + 1) % ring.size()];
+                    const auto key = std::minmax(a, e);
+                    const auto it = edge_of.find(key);
+                    if (it == edge_of.end()) {
+                        edge_of.emplace(key, faces.size());
+                        faces.push_back({{a, e}, cell, -1});
+                    } else if (faces[it->second].mC1 < 0) {
+                        faces[it->second].mC1 = cell;
+                    }
+                }
+            }
+        }
+    }
+    if (cell_to_global.empty())
+        throw WriteError("Fluent: the mesh has no cells Fluent can hold");
+    if (dropped_blocks != 0)
+        log::warn("Fluent: {} cell block(s) of other dimensions are not written", dropped_blocks);
+    for (std::size_t b : std::set<std::size_t>(cell_block.begin(), cell_block.end()))
+        quadratic += fl_is_linear(rMesh.Cells(b).Type()) ? 0 : 1;
+    if (quadratic != 0)
+        log::warn("Fluent: cells are linear; the mid-side nodes of {} block(s) are not used",
+                  quadratic);
+
+    // ---- zones ---------------------------------------------------------------
+    // ansys:zone values are kept as zone ids (the reader writes them); a block
+    // without one, the interior faces, the leftover boundary faces and the
+    // nodes get fresh ids.
+    std::set<std::int64_t> used;
+    std::vector<std::int64_t> cell_zone_id(cell_to_global.size(), 0);
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c) {
+        std::int64_t z = 0;
+        if (zone_value(cell_block[c],
+                       static_cast<std::size_t>(cell_to_global[c] - bases[cell_block[c]]), z)) {
+            cell_zone_id[c] = z;
+            used.insert(z);
+        }
+    }
+    const std::set<std::int64_t> cell_ids_used = used;
+    std::map<std::pair<std::size_t, std::size_t>, std::int64_t> surface_explicit;  // (block, cell)
+    for (std::size_t b : surface_blocks) {
+        const auto cb = rMesh.Cells(b);
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            std::int64_t z = 0;
+            if (zone_value(b, i, z) && cell_ids_used.count(z) == 0) {
+                surface_explicit[{b, i}] = z;
+                used.insert(z);
+            }
+        }
+    }
+    std::int64_t next = used.empty() ? 1 : *used.rbegin() + 1;
+    auto fresh = [&]() {
+        while (used.count(next))
+            ++next;
+        used.insert(next);
+        return next++;
+    };
+    std::map<std::size_t, std::int64_t> block_zone;  // a block without ansys:zone
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c)
+        if (cell_zone_id[c] == 0) {
+            auto it = block_zone.find(cell_block[c]);
+            if (it == block_zone.end())
+                it = block_zone.emplace(cell_block[c], fresh()).first;
+            cell_zone_id[c] = it->second;
+        }
+
+    // Cell zones in first-seen order; Fluent numbers cells zone by zone.
+    std::vector<FlZone> cell_zones;
+    std::map<std::int64_t, std::size_t> cell_zone_pos;
+    for (std::size_t c = 0; c < cell_to_global.size(); ++c) {
+        auto it = cell_zone_pos.find(cell_zone_id[c]);
+        if (it == cell_zone_pos.end()) {
+            it = cell_zone_pos.emplace(cell_zone_id[c], cell_zones.size()).first;
+            cell_zones.push_back({cell_zone_id[c], "fluid", {}, dim, {}});
+        }
+        cell_zones[it->second].mMembers.push_back(c);
+        cell_zones[it->second].mGlobal.push_back(cell_to_global[c]);
+    }
+    std::vector<std::int64_t> fluent_cell(cell_to_global.size(), 0);
+    {
+        std::int64_t id = 1;
+        for (const FlZone& z : cell_zones)
+            for (std::size_t c : z.mMembers)
+                fluent_cell[c] = id++;
+    }
+
+    // Boundary faces: the facet cell that matches one names its zone.
+    std::vector<std::int64_t> face_zone(faces.size(), 0);
+    std::vector<FlZone> face_zones;
+    face_zones.push_back({fresh(), "interior", {}, dim - 1, {}});
+    std::map<std::int64_t, std::size_t> face_zone_pos;
+    std::unordered_map<std::string, std::size_t> face_by_key;
+    auto key_of = [](std::vector<std::int64_t> rIds) {
+        std::sort(rIds.begin(), rIds.end());
+        std::string k;
+        for (std::int64_t v : rIds)
+            k += std::to_string(v) + ",";
+        return k;
+    };
+    for (std::size_t f = 0; f < faces.size(); ++f)
+        if (faces[f].mC1 < 0)
+            face_by_key.emplace(key_of(faces[f].mNodes), f);
+    std::size_t unmatched = 0;
+    for (std::size_t b : surface_blocks) {
+        const auto cb = rMesh.Cells(b);
+        std::int64_t block_id = 0;
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            const auto it = face_by_key.find(key_of(fl_ring(cb, i)));
+            if (it == face_by_key.end()) {
+                ++unmatched;
+                continue;
+            }
+            const std::size_t f = it->second;
+            if (face_zone[f] != 0)
+                continue;
+            std::int64_t z = 0;
+            const auto e = surface_explicit.find({b, i});
+            if (e != surface_explicit.end()) {
+                z = e->second;
+            } else {
+                if (block_id == 0)
+                    block_id = fresh();
+                z = block_id;
+            }
+            face_zone[f] = z;
+            auto pos = face_zone_pos.find(z);
+            if (pos == face_zone_pos.end()) {
+                pos = face_zone_pos.emplace(z, face_zones.size()).first;
+                face_zones.push_back({z, "wall", {}, dim - 1, {}});
+            }
+            face_zones[pos->second].mGlobal.push_back(bases[b] + static_cast<std::int64_t>(i));
+        }
+    }
+    if (unmatched != 0)
+        log::warn(
+            "Fluent: {} facet cell(s) are not on the boundary of the cells and are not "
+            "written",
+            unmatched);
+    std::int64_t default_wall = 0;
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+        if (faces[f].mC1 >= 0) {
+            face_zones[0].mMembers.push_back(f);
+            continue;
+        }
+        if (face_zone[f] == 0) {
+            if (default_wall == 0) {
+                default_wall = fresh();
+                face_zone_pos.emplace(default_wall, face_zones.size());
+                face_zones.push_back({default_wall, "wall", {}, dim - 1, {}});
+            }
+            face_zone[f] = default_wall;
+        }
+        face_zones[face_zone_pos.at(face_zone[f])].mMembers.push_back(f);
+    }
+    const std::int64_t node_zone = fresh();
+
+    // Zone names: a region the reader would have made (same tag and
+    // dimension), else a region with exactly these cells, else type_<id>.
+    auto zone_name = [&](const FlZone& rZ) {
+        std::vector<std::int64_t> want = rZ.mGlobal;
+        std::sort(want.begin(), want.end());
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+            const meshioplusplus::Region& reg = rMesh.Region(r);
+            if (reg.mKind == RegionKind::Cell && reg.mTag == rZ.mId && reg.mDim == rZ.mDim)
+                return fl_name(reg.mName);
+        }
+        if (!want.empty())
+            for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+                const meshioplusplus::Region& reg = rMesh.Region(r);
+                if (reg.mKind != RegionKind::Cell || reg.NumEntries() != want.size())
+                    continue;
+                if (std::equal(want.begin(), want.end(), reg.Entries()))
+                    return fl_name(reg.mName);
+            }
+        return rZ.mType + "_" + std::to_string(rZ.mId);
+    };
+
+    if (rMesh.NumPointData() != 0 || rMesh.NumCellData() > (has_zone ? 1u : 0u) ||
+        rMesh.NumFieldData() != 0)
+        detail::provenance_note("data-dropped", "a Fluent mesh file holds no data arrays");
+
+    // ---- write -------------------------------------------------------------------
     auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!fh)
         throw WriteError("Could not open file for writing: " + rPath);
-
-    const std::size_t npoints = rMesh.NumPoints();
-    const NDArray& points = rMesh.Points();
-    const std::size_t dim = points.Shape().size() >= 2 ? points.Shape()[1] : 0;
-    if (dim != 2 && dim != 3)
-        throw WriteError("ANSYS: can only write dimension 2 or 3");
-
-    static const std::unordered_map<std::string, int> meshio_to_ansys = {
-        {"triangle", 1},   {"tetra", 2},   {"quad", 3},
-        {"hexahedron", 4}, {"pyramid", 5}, {"wedge", 6}};
-
-    char hbuf[128];
+    const std::size_t odim = static_cast<std::size_t>(dim);
+    const std::size_t ncells = cell_to_global.size();
     fh << "(1 \"" << detail::provenance_lines(detail::SlotTier::SingleLine)[0] << "\")\n";
-    std::snprintf(hbuf, sizeof(hbuf), "(2 %zu)\n", dim);
-    fh << hbuf;
+    fh << "(2 " << odim << ")\n";
+    fh << "(10 (0 1 " << fl_hex(static_cast<std::int64_t>(npoints)) << " 0 " << odim << "))\n";
+    fh << "(13 (0 1 " << fl_hex(static_cast<std::int64_t>(faces.size())) << " 0))\n";
+    fh << "(12 (0 1 " << fl_hex(static_cast<std::int64_t>(ncells)) << " 0))\n";
 
-    const std::size_t first_node_index = 1;
-    std::snprintf(hbuf, sizeof(hbuf), "(10 (0 %zx %zx 0))\n", first_node_index, npoints);
-    fh << hbuf;
-
-    std::size_t total_cells = 0;
-    for (const auto cb : rMesh.CellRange())
-        total_cells += cb.NumCells();
-    std::snprintf(hbuf, sizeof(hbuf), "(12 (0 1 %zx 0))\n", total_cells);
-    fh << hbuf;
-
-    // Nodes
-    const char* nkey = binary ? "3010" : "10";
-    std::snprintf(hbuf, sizeof(hbuf), "(%s (1 %zx %zx 1 %zx)(\n", nkey, first_node_index, npoints,
-                  dim);
-    fh << hbuf;
+    // Nodes.
+    fh << "(" << (binary ? "3010" : "10") << " (" << fl_hex(node_zone) << " 1 "
+       << fl_hex(static_cast<std::int64_t>(npoints)) << " 1 " << odim << ")"
+       << (binary ? "\n(" : "(");
     if (binary) {
         for (std::size_t i = 0; i < npoints; ++i)
-            for (std::size_t c = 0; c < dim; ++c) {
-                double v = detail::read_double(points, i * dim + c);
+            for (std::size_t c = 0; c < odim; ++c) {
+                const double v = detail::read_double(points, i * pdim + c);
                 fh.write(reinterpret_cast<const char*>(&v), 8);
             }
-        fh << "\n)";
-        fh << "End of Binary Section 3010)\n";
+        fh << ")\nEnd of Binary Section 3010)\n";
     } else {
-        char cbuf[32];
+        fh << "\n";
+        char buf[32];
         for (std::size_t i = 0; i < npoints; ++i) {
-            for (std::size_t c = 0; c < dim; ++c) {
-                detail::snprintf_c(cbuf, sizeof(cbuf), "%.16e",
-                                   detail::read_double(points, i * dim + c));
-                fh << cbuf << (c + 1 == dim ? "" : " ");
+            for (std::size_t c = 0; c < odim; ++c) {
+                detail::snprintf_c(buf, sizeof(buf), "%.16e",
+                                   detail::read_double(points, i * pdim + c));
+                fh << buf << (c + 1 == odim ? "\n" : " ");
             }
-            fh << "\n";
         }
         fh << "))\n";
     }
 
-    // Cells
-    std::size_t first_index = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        auto it = meshio_to_ansys.find(cb.Type());
-        if (it == meshio_to_ansys.end())
-            throw WriteError("ANSYS: illegal cell type '" + cb.Type() + "'");
-        int ansys_type = it->second;
-        std::size_t n = cb.NumCells();
-        const NDArray& conn = cb.Conn();
-        std::size_t ncols = detail::cols(conn);
-        std::size_t last_index = first_index + n - 1;
-        bool is_i32 = (conn.Dtype() == DType::Int32);
-        const char* ckey = binary ? (is_i32 ? "2012" : "3012") : "12";
-        std::snprintf(hbuf, sizeof(hbuf), "(%s (1 %zx %zx 1 %d)(\n", ckey, first_index, last_index,
-                      ansys_type);
-        fh << hbuf;
+    auto write_ints = [&](const char* pKey, const std::string& rHead,
+                          const std::vector<std::vector<std::int64_t>>& rRows) {
+        fh << "(" << (binary ? std::string("20") + pKey : std::string(pKey)) << " (" << rHead << ")"
+           << (binary ? "\n(" : "(");
         if (binary) {
-            for (std::size_t r = 0; r < n; ++r)
-                for (std::size_t c = 0; c < ncols; ++c) {
-                    std::int64_t v = detail::read_int(conn, r * ncols + c) + 1;
-                    if (is_i32) {
-                        std::int32_t v32 = static_cast<std::int32_t>(v);
-                        fh.write(reinterpret_cast<const char*>(&v32), 4);
-                    } else
-                        fh.write(reinterpret_cast<const char*>(&v), 8);
+            for (const auto& row : rRows)
+                for (std::int64_t v : row) {
+                    if (v > std::numeric_limits<std::int32_t>::max())
+                        throw WriteError("Fluent: an id does not fit a binary 32-bit section");
+                    const std::int32_t w = static_cast<std::int32_t>(v);
+                    fh.write(reinterpret_cast<const char*>(&w), 4);
                 }
-            fh << "\n)";
-            std::snprintf(hbuf, sizeof(hbuf), "End of Binary Section %s)\n", ckey);
-            fh << hbuf;
-        } else {
-            char cbuf[24];
-            for (std::size_t r = 0; r < n; ++r) {
-                for (std::size_t c = 0; c < ncols; ++c) {
-                    std::snprintf(
-                        cbuf, sizeof(cbuf), "%llx",
-                        static_cast<unsigned long long>(detail::read_int(conn, r * ncols + c) + 1));
-                    fh << cbuf << (c + 1 == ncols ? "" : " ");
-                }
-                fh << "\n";
-            }
-            fh << "))\n";
+            fh << ")\nEnd of Binary Section 20" << pKey << ")\n";
+            return;
         }
-        first_index = last_index + 1;
+        fh << "\n";
+        for (const auto& row : rRows) {
+            for (std::size_t k = 0; k < row.size(); ++k)
+                fh << fl_hex(row[k]) << (k + 1 == row.size() ? "\n" : " ");
+        }
+        fh << "))\n";
+    };
+
+    // Cell zones: one element type in the header, or 0 and a type per cell.
+    std::int64_t first = 1;
+    for (const FlZone& z : cell_zones) {
+        std::vector<int> types;
+        for (std::size_t c : z.mMembers)
+            types.push_back(fl_element_type(rMesh.Cells(cell_block[c]).Type()));
+        const bool mixed =
+            std::any_of(types.begin(), types.end(), [&](int t) { return t != types.front(); });
+        const std::int64_t last = first + static_cast<std::int64_t>(z.mMembers.size()) - 1;
+        const std::string head = fl_hex(z.mId) + " " + fl_hex(first) + " " + fl_hex(last) + " 1 " +
+                                 fl_hex(mixed ? 0 : types.front());
+        if (!mixed) {
+            fh << "(12 (" << head << "))\n";
+        } else {
+            std::vector<std::vector<std::int64_t>> rows;
+            for (int t : types)
+                rows.push_back({t});
+            write_ints("12", head, rows);
+        }
+        first = last + 1;
     }
+
+    // Face zones: interior (bc 2) first, then the walls (bc 3). A zone of one
+    // face size lists bare nodes; a mixed one leads each face with its size.
+    first = 1;
+    for (const FlZone& z : face_zones) {
+        if (z.mMembers.empty())
+            continue;
+        const std::size_t size0 = faces[z.mMembers.front()].mNodes.size();
+        bool uniform = true;
+        std::size_t largest = 0;
+        for (std::size_t f : z.mMembers) {
+            uniform = uniform && faces[f].mNodes.size() == size0;
+            largest = std::max(largest, faces[f].mNodes.size());
+        }
+        const int ftype =
+            uniform && size0 >= 2 && size0 <= 4 ? static_cast<int>(size0) : (largest > 4 ? 5 : 0);
+        const std::int64_t last = first + static_cast<std::int64_t>(z.mMembers.size()) - 1;
+        const std::string head = fl_hex(z.mId) + " " + fl_hex(first) + " " + fl_hex(last) + " " +
+                                 (z.mType == "interior" ? "2" : "3") + " " + fl_hex(ftype);
+        std::vector<std::vector<std::int64_t>> rows;
+        rows.reserve(z.mMembers.size());
+        for (std::size_t f : z.mMembers) {
+            std::vector<std::int64_t> row;
+            if (ftype == 0 || ftype == 5)
+                row.push_back(static_cast<std::int64_t>(faces[f].mNodes.size()));
+            for (std::int64_t n : faces[f].mNodes)
+                row.push_back(n + 1);
+            row.push_back(fluent_cell[static_cast<std::size_t>(faces[f].mC0)]);
+            row.push_back(faces[f].mC1 < 0 ? 0
+                                           : fluent_cell[static_cast<std::size_t>(faces[f].mC1)]);
+            rows.push_back(std::move(row));
+        }
+        write_ints("13", head, rows);
+        first = last + 1;
+    }
+
+    for (const FlZone& z : cell_zones)
+        fh << "(45 (" << z.mId << " fluid " << zone_name(z) << ")())\n";
+    for (const FlZone& z : face_zones)
+        if (!z.mMembers.empty())
+            fh << "(45 (" << z.mId << " " << z.mType << " " << zone_name(z) << ")())\n";
+    if (!fh)
+        throw WriteError("Fluent: failed writing " + rPath);
 }
 
 }  // namespace meshioplusplus
@@ -61935,10 +62613,13 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/dolfin.cpp =====
 // ===== begin src/cpp/src/formats/elmer.cpp =====
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -62092,97 +62773,258 @@ struct ElmMesh {
     bool mHasParts = false;
 };
 
-void elm_read_nodes(const fs::path& rFile, ElmMesh& rMesh) {
-    elm_for_each_line(rFile, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
+// A binary mesh file as ElmerGrid -bin writes it and ElmerSolver reads it
+// (fem/src/MeshIO.F90, stream access): 32-bit native-endian integers and 64-bit
+// (`.bin`) or 32-bit (`.sbin`, nodes only) reals, no separators. The byte order
+// is taken from the first record's id, which is small and positive.
+class ElmBinary {
+public:
+    explicit ElmBinary(const fs::path& rFile) : mFile(rFile) {
+        auto in = detail::make_classic_ifstream(rFile.string(), std::ios::binary);
+        if (!in)
+            throw ReadError("Elmer mesh: cannot open " + rFile.string());
+        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (mData.size() >= 4) {
+            std::uint32_t v;
+            std::memcpy(&v, mData.data(), 4);
+            const auto plausible = [](std::uint32_t x) {
+                return x >= 1 && x < (std::uint32_t{1} << 30);
+            };
+            // The byte order giving the smaller positive id wins (a big-endian 1
+            // read little-endian is 2^24, still a possible id).
+            const std::uint32_t w = detail::bswap32(v);
+            mSwap = plausible(w) && (!plausible(v) || w < v);
+        }
+    }
+
+    bool AtEnd() const { return mPos >= mData.size(); }
+    std::size_t Record() const { return mRecord; }
+    void NextRecord() { ++mRecord; }
+
+    std::int32_t Int() {
+        std::uint32_t v;
+        Take(&v, 4);
+        return static_cast<std::int32_t>(mSwap ? detail::bswap32(v) : v);
+    }
+    double Real(bool Single) {
+        if (Single) {
+            std::uint32_t v;
+            Take(&v, 4);
+            if (mSwap)
+                v = detail::bswap32(v);
+            return std::bit_cast<float>(v);
+        }
+        std::uint64_t v;
+        Take(&v, 8);
+        if (mSwap)
+            v = detail::bswap64(v);
+        return std::bit_cast<double>(v);
+    }
+
+private:
+    void Take(void* pOut, std::size_t N) {
+        if (mPos + N > mData.size())
+            elm_fail(mFile, mRecord + 1, "the binary file ends inside a record");
+        std::memcpy(pOut, mData.data() + mPos, N);
+        mPos += N;
+    }
+
+    fs::path mFile;
+    std::string mData;
+    std::size_t mPos = 0;
+    std::size_t mRecord = 0;
+    bool mSwap = false;
+};
+
+// Which form of `<stem>` a mesh directory holds: the text file, `.bin` or
+// (nodes only) `.sbin`.
+enum class ElmForm { Text, Binary, SingleBinary };
+
+ElmForm elm_form(const fs::path& rDir, const std::string& rStem, bool Nodes) {
+    std::error_code ec;
+    if (fs::is_regular_file(rDir / rStem, ec))
+        return ElmForm::Text;
+    if (fs::is_regular_file(rDir / (rStem + ".bin"), ec))
+        return ElmForm::Binary;
+    if (Nodes && fs::is_regular_file(rDir / (rStem + ".sbin"), ec))
+        return ElmForm::SingleBinary;
+    throw ReadError("Elmer mesh: missing " + (rDir / rStem).string());
+}
+
+// `mesh.nodes` (`id part x y z`) or its binary form (`id x y z`).
+void elm_read_nodes(const fs::path& rDir, const std::string& rStem, ElmMesh& rMesh) {
+    auto add = [&](std::int64_t Id, const double* pXyz) {
+        // A shared node is listed by every part that uses it: keep the first.
+        if (!rMesh.mNodeIndex.emplace(Id, static_cast<std::int64_t>(rMesh.mNodeIds.size())).second)
+            return;
+        rMesh.mNodeIds.push_back(Id);
+        rMesh.mCoords.insert(rMesh.mCoords.end(), pXyz, pXyz + 3);
+    };
+    const ElmForm form = elm_form(rDir, rStem, true);
+    if (form != ElmForm::Text) {
+        const fs::path file = rDir / (rStem + (form == ElmForm::Binary ? ".bin" : ".sbin"));
+        ElmBinary bin(file);
+        while (!bin.AtEnd()) {
+            const std::int64_t id = bin.Int();
+            if (id <= 0)
+                elm_fail(file, bin.Record() + 1, "bad node id " + std::to_string(id));
+            double xyz[3];
+            for (double& v : xyz)
+                v = bin.Real(form == ElmForm::SingleBinary);
+            add(id, xyz);
+            bin.NextRecord();
+        }
+        return;
+    }
+    const fs::path file = rDir / rStem;
+    elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
         if (rTok.size() < 5)
-            elm_fail(rFile, Line, "a node line needs `id part x y z`");
+            elm_fail(file, Line, "a node line needs `id part x y z`");
         const auto id = elm_int(rTok[0]);
         if (!id)
-            elm_fail(rFile, Line, "bad node id '" + std::string(rTok[0]) + "'");
+            elm_fail(file, Line, "bad node id '" + std::string(rTok[0]) + "'");
         double xyz[3];
         for (std::size_t d = 0; d < 3; ++d) {
             const std::string text(rTok[2 + d]);
             const char* end = nullptr;
             xyz[d] = detail::parse_double(text.c_str(), end);
             if (end != text.c_str() + text.size())
-                elm_fail(rFile, Line, "bad coordinate '" + text + "'");
+                elm_fail(file, Line, "bad coordinate '" + text + "'");
         }
-        // A shared node is listed by every part that uses it: keep the first.
-        if (!rMesh.mNodeIndex.emplace(*id, static_cast<std::int64_t>(rMesh.mNodeIds.size())).second)
-            return;
-        rMesh.mNodeIds.push_back(*id);
-        rMesh.mCoords.insert(rMesh.mCoords.end(), xyz, xyz + 3);
+        add(*id, xyz);
     });
 }
 
 // `mesh.elements` (`id body type nodes`) or `mesh.boundary` (`id boundary
-// parent1 parent2 type nodes`). `Part` is the 0-based part the file belongs
-// to, -1 for a serial mesh. Bulk elements are keyed by id, boundary elements by
-// (id, nodes), so a merged partitioned mesh holds each once.
-void elm_read_elements(const fs::path& rFile, bool Boundary, int Part, bool Lenient,
-                       ElmRecords& rOut, std::unordered_map<std::int64_t, std::size_t>& rSeen,
+// parent1 parent2 type nodes`); their binary forms add the owning part after the
+// id (`id part body type nodes`, `id part boundary parent1 parent2 type nodes`).
+// `Part` is the 0-based part the file belongs to, -1 for a serial mesh. Bulk
+// elements are keyed by id, boundary elements by (id, nodes), so a merged
+// partitioned mesh holds each once.
+void elm_read_elements(const fs::path& rDir, const std::string& rStem, bool Boundary, int Part,
+                       bool Lenient, ElmRecords& rOut,
+                       std::unordered_map<std::int64_t, std::size_t>& rSeen,
                        std::set<std::pair<std::int64_t, std::vector<std::int64_t>>>& rSeenSides) {
-    const std::size_t lead = Boundary ? 5 : 3;
     std::size_t skipped = 0;
-    std::vector<std::int64_t> nodes;
-    elm_for_each_line(rFile, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
-        if (rTok.size() < lead)
-            elm_fail(rFile, Line,
-                     Boundary ? "a boundary line needs `id boundary parent1 parent2 type nodes`"
-                              : "an element line needs `id body type nodes`");
-        const auto id = elm_id(rTok[0]);
-        const auto tag = elm_int(rTok[1]);
-        const auto code = elm_int(rTok[lead - 1]);
-        if (!id || !tag || !code)
-            elm_fail(rFile, Line, "malformed line");
-        const std::size_t count = static_cast<std::size_t>(*code % 100);
-        if (rTok.size() != lead + count)
-            elm_fail(
-                rFile, Line,
-                "type " + std::to_string(*code) + " needs " + std::to_string(count) + " nodes");
-        if (!elm_type_of(static_cast<int>(*code))) {
+    // One record: `Owner` is the 1-based part a halo copy names, -1 otherwise.
+    auto accept = [&](const fs::path& rFile, std::size_t Line, std::int64_t Id, int Owner,
+                      std::int64_t Tag, std::int64_t Parent, int Code,
+                      std::vector<std::int64_t>& rNodes) {
+        if (!elm_type_of(Code)) {
             if (!Lenient)
                 elm_fail(rFile, Line,
-                         "element type " + std::to_string(*code) + " has no meshio++ cell type");
+                         "element type " + std::to_string(Code) + " has no meshio++ cell type");
             ++skipped;
             return;
         }
-        nodes.clear();
-        for (std::size_t k = 0; k < count; ++k) {
-            const auto n = elm_int(rTok[lead + k]);
-            if (!n)
-                elm_fail(rFile, Line, "bad node id '" + std::string(rTok[lead + k]) + "'");
-            nodes.push_back(*n);
-        }
-        const int part = id->mOwner > 0 ? id->mOwner - 1 : Part;
+        const int part = Owner > 0 ? Owner - 1 : Part;
         if (Part >= 0) {
             if (Boundary) {
-                std::vector<std::int64_t> key = nodes;
+                std::vector<std::int64_t> key = rNodes;
                 std::sort(key.begin(), key.end());
-                if (!rSeenSides.emplace(*tag, std::move(key)).second)
+                if (!rSeenSides.emplace(Tag, std::move(key)).second)
                     return;
             } else {
-                const auto [it, fresh] = rSeen.emplace(id->mId, rOut.Size());
+                const auto [it, fresh] = rSeen.emplace(Id, rOut.Size());
                 if (!fresh) {
-                    // A halo copy names its owner; the owner's own copy has no
-                    // `/part`. Either way the owner wins.
-                    if (id->mOwner < 0)
+                    // A halo copy names its owner; the owner's own copy does
+                    // not. Either way the owner wins.
+                    if (Owner < 0)
                         rOut.mParts[it->second] = Part;
                     return;
                 }
             }
         }
-        rOut.mIds.push_back(id->mId);
-        rOut.mTags.push_back(*tag);
-        rOut.mCodes.push_back(static_cast<int>(*code));
+        rOut.mIds.push_back(Id);
+        rOut.mTags.push_back(Tag);
+        rOut.mCodes.push_back(Code);
         rOut.mParts.push_back(part);
-        rOut.mParents.push_back(Boundary ? elm_int(rTok[2]).value_or(0) : 0);
-        rOut.mNodes.insert(rOut.mNodes.end(), nodes.begin(), nodes.end());
+        rOut.mParents.push_back(Boundary ? Parent : 0);
+        rOut.mNodes.insert(rOut.mNodes.end(), rNodes.begin(), rNodes.end());
         rOut.mOffsets.push_back(rOut.mNodes.size());
-    });
+    };
+
+    std::vector<std::int64_t> nodes;
+    const ElmForm form = elm_form(rDir, rStem, false);
+    if (form == ElmForm::Binary) {
+        const fs::path file = rDir / (rStem + ".bin");
+        ElmBinary bin(file);
+        while (!bin.AtEnd()) {
+            const std::size_t line = bin.Record() + 1;
+            const std::int64_t id = bin.Int();
+            const std::int32_t owner = bin.Int();
+            const std::int64_t tag = bin.Int();
+            const std::int64_t parent = Boundary ? bin.Int() : 0;
+            if (Boundary)
+                bin.Int();  // the second parent
+            const std::int32_t code = bin.Int();
+            if (id <= 0 || code <= 100)
+                elm_fail(file, line, "malformed record");
+            nodes.resize(static_cast<std::size_t>(code % 100));
+            for (std::int64_t& n : nodes)
+                n = bin.Int();
+            accept(file, line, id, owner > 0 ? owner : -1, tag, parent, code, nodes);
+            bin.NextRecord();
+        }
+    } else {
+        const fs::path file = rDir / rStem;
+        const std::size_t lead = Boundary ? 5 : 3;
+        elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
+            if (rTok.size() < lead)
+                elm_fail(file, Line,
+                         Boundary ? "a boundary line needs `id boundary parent1 parent2 type nodes`"
+                                  : "an element line needs `id body type nodes`");
+            const auto id = elm_id(rTok[0]);
+            const auto tag = elm_int(rTok[1]);
+            const auto code = elm_int(rTok[lead - 1]);
+            if (!id || !tag || !code)
+                elm_fail(file, Line, "malformed line");
+            const std::size_t count = static_cast<std::size_t>(*code % 100);
+            if (rTok.size() != lead + count)
+                elm_fail(
+                    file, Line,
+                    "type " + std::to_string(*code) + " needs " + std::to_string(count) + " nodes");
+            if (!elm_type_of(static_cast<int>(*code)) && !Lenient)
+                elm_fail(file, Line,
+                         "element type " + std::to_string(*code) + " has no meshio++ cell type");
+            nodes.clear();
+            for (std::size_t k = 0; k < count; ++k) {
+                const auto n = elm_int(rTok[lead + k]);
+                if (!n)
+                    elm_fail(file, Line, "bad node id '" + std::string(rTok[lead + k]) + "'");
+                nodes.push_back(*n);
+            }
+            accept(file, Line, id->mId, id->mOwner, *tag,
+                   Boundary ? elm_int(rTok[2]).value_or(0) : 0, static_cast<int>(*code), nodes);
+        });
+    }
     if (skipped)
         log::warn("Elmer mesh: {} element(s) of types with no meshio++ cell type skipped in {}",
-                  skipped, rFile.string());
+                  skipped, (rDir / rStem).string());
+}
+
+// Calls `rOnElement(id, owner)` for every bulk element of `<stem>`, text or
+// binary (`owner`: the 1-based part a halo copy names, -1 otherwise).
+template <class F>
+void elm_for_each_element_id(const fs::path& rDir, const std::string& rStem, F&& rOnElement) {
+    if (elm_form(rDir, rStem, false) == ElmForm::Binary) {
+        ElmBinary bin(rDir / (rStem + ".bin"));
+        while (!bin.AtEnd()) {
+            const std::int64_t id = bin.Int();
+            const std::int32_t owner = bin.Int();
+            bin.Int();  // body
+            const std::int32_t code = bin.Int();
+            for (int k = 0; k < code % 100; ++k)
+                bin.Int();
+            rOnElement(id, owner > 0 ? owner : -1);
+            bin.NextRecord();
+        }
+        return;
+    }
+    elm_for_each_line(rDir / rStem, [&](const std::vector<std::string_view>& rTok, std::size_t) {
+        if (const auto id = elm_id(rTok[0]))
+            rOnElement(id->mId, id->mOwner);
+    });
 }
 
 void elm_read_names(const fs::path& rFile, ElmMesh& rMesh) {
@@ -62241,25 +63083,12 @@ std::vector<fs::path> elm_partition_dirs(const fs::path& rDir) {
     return out;
 }
 
-void elm_check_text(const fs::path& rDir, const std::string& rStem) {
-    std::error_code ec;
-    if (fs::is_regular_file(rDir / rStem, ec))
-        return;
-    if (fs::is_regular_file(rDir / (rStem + ".bin"), ec))
-        throw ReadError("Elmer mesh: " + (rDir / rStem).string() +
-                        " is only present in ElmerGrid's binary form, which is not supported; "
-                        "write the mesh without -bin");
-    throw ReadError("Elmer mesh: missing " + (rDir / rStem).string());
-}
-
 void elm_read_serial(const fs::path& rDir, bool Lenient, ElmMesh& rMesh) {
-    for (const char* stem : {"mesh.nodes", "mesh.elements", "mesh.boundary"})
-        elm_check_text(rDir, stem);
     std::unordered_map<std::int64_t, std::size_t> seen;
     std::set<std::pair<std::int64_t, std::vector<std::int64_t>>> seen_sides;
-    elm_read_nodes(rDir / "mesh.nodes", rMesh);
-    elm_read_elements(rDir / "mesh.elements", false, -1, Lenient, rMesh.mBulk, seen, seen_sides);
-    elm_read_elements(rDir / "mesh.boundary", true, -1, Lenient, rMesh.mBoundary, seen, seen_sides);
+    elm_read_nodes(rDir, "mesh.nodes", rMesh);
+    elm_read_elements(rDir, "mesh.elements", false, -1, Lenient, rMesh.mBulk, seen, seen_sides);
+    elm_read_elements(rDir, "mesh.boundary", true, -1, Lenient, rMesh.mBoundary, seen, seen_sides);
     elm_read_names(rDir / "mesh.names", rMesh);
 }
 
@@ -62270,12 +63099,10 @@ void elm_read_parts(const fs::path& rDir, std::size_t First, std::size_t Last, b
     std::set<std::pair<std::int64_t, std::vector<std::int64_t>>> seen_sides;
     for (std::size_t p = First; p <= Last; ++p) {
         const std::string stem = "part." + std::to_string(p + 1);
-        for (const char* ext : {".nodes", ".elements", ".boundary"})
-            elm_check_text(rDir, stem + ext);
-        elm_read_nodes(rDir / (stem + ".nodes"), rMesh);
-        elm_read_elements(rDir / (stem + ".elements"), false, static_cast<int>(p), Lenient,
+        elm_read_nodes(rDir, stem + ".nodes", rMesh);
+        elm_read_elements(rDir, stem + ".elements", false, static_cast<int>(p), Lenient,
                           rMesh.mBulk, seen, seen_sides);
-        elm_read_elements(rDir / (stem + ".boundary"), true, static_cast<int>(p), Lenient,
+        elm_read_elements(rDir, stem + ".boundary", true, static_cast<int>(p), Lenient,
                           rMesh.mBoundary, seen, seen_sides);
     }
     rMesh.mHasParts = true;
@@ -62289,17 +63116,15 @@ void elm_label_serial(const fs::path& rPartDir, ElmMesh& rMesh) {
     const std::size_t parts = elm_count_parts(rPartDir);
     std::unordered_map<std::int64_t, int> part_of;
     for (std::size_t p = 0; p < parts; ++p) {
-        const fs::path file = rPartDir / ("part." + std::to_string(p + 1) + ".elements");
+        const std::string stem = "part." + std::to_string(p + 1) + ".elements";
         std::error_code ec;
-        if (!fs::is_regular_file(file, ec))
+        if (!fs::is_regular_file(rPartDir / stem, ec) &&
+            !fs::is_regular_file(rPartDir / (stem + ".bin"), ec))
             return;
-        elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t) {
-            const auto id = elm_id(rTok[0]);
-            if (!id)
-                return;
-            const int owner = id->mOwner > 0 ? id->mOwner - 1 : static_cast<int>(p);
-            if (id->mOwner < 0 || part_of.find(id->mId) == part_of.end())
-                part_of[id->mId] = owner;
+        elm_for_each_element_id(rPartDir, stem, [&](std::int64_t Id, int Owner) {
+            const int owner = Owner > 0 ? Owner - 1 : static_cast<int>(p);
+            if (Owner < 0 || part_of.find(Id) == part_of.end())
+                part_of[Id] = owner;
         });
     }
     std::vector<int> labels(rMesh.mBulk.Size(), -1);
@@ -62616,7 +63441,9 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(point_regions) +
                                                        " point region(s) have no Elmer equivalent");
     }
-    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() > 0) {
+    const bool partitioned = rMesh.HasCellData("partition:part");
+    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() >
+        (partitioned ? 1u : 0u)) {
         log::warn(
             "Elmer mesh writer: an Elmer mesh holds no data arrays; point, cell and field "
             "data dropped");
@@ -62691,7 +63518,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
     if (!fs::is_directory(dir, ec))
         throw WriteError("Elmer mesh writer: cannot create directory " + dir.string());
     for (const auto& entry : fs::directory_iterator(dir, ec))
-        if (entry.path().filename().string().rfind("partitioning.", 0) == 0)
+        if (entry.path().filename().string().rfind("partitioning.", 0) == 0 && !partitioned)
             log::warn(
                 "Elmer mesh writer: {} is left over from an earlier mesh and no longer "
                 "matches it",
@@ -62715,10 +63542,19 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
     }
     elm_write_file(dir / "mesh.nodes", out);
 
-    // Bulk elements, then boundary elements.
+    // Bulk elements, then boundary elements. Each row is also kept (cell, and
+    // the text after the id) for the partitioned copy.
     std::string elements, boundary;
     std::int64_t n_boundary = 0;
+    struct ElmRow {
+        std::int64_t mCell;  // bulk: global cell; boundary: -1
+        std::int64_t mTag, mP1, mP2;
+        int mCode;
+        std::vector<std::int64_t> mNodes;  // 1-based
+    };
+    std::vector<ElmRow> bulk_rows, boundary_rows;
     std::vector<std::int64_t> corners, row;
+    std::int64_t last_p1 = 0, last_p2 = 0;
     for (std::size_t b = 0; b < n_blocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const NDArray& conn = cb.Conn();
@@ -62739,6 +63575,8 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 for (std::size_t c = 0; c < n_corners; ++c)
                     corners.push_back(detail::read_int(conn, r * k + c));
                 const auto [p1, p2] = parents_of(corners, dims[b]);
+                last_p1 = p1;
+                last_p2 = p2;
                 orphans += p1 == 0 ? 1 : 0;
                 elm_append_int(text, ++n_boundary);
                 text += ' ';
@@ -62750,13 +63588,23 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
             }
             text += ' ';
             elm_append_int(text, codes[b]);
+            ElmRow kept{bulk ? g : -1, cell_id[static_cast<std::size_t>(g)], 0, 0, codes[b], {}};
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
                 text += ' ';
-                elm_append_int(text, detail::read_int(conn, r * k + src) + 1);
+                const std::int64_t node = detail::read_int(conn, r * k + src) + 1;
+                elm_append_int(text, node);
+                kept.mNodes.push_back(node);
             }
             text += '\n';
             ++type_counts[codes[b]];
+            if (partitioned) {
+                if (!bulk) {
+                    kept.mP1 = last_p1;
+                    kept.mP2 = last_p2;
+                }
+                (bulk ? bulk_rows : boundary_rows).push_back(std::move(kept));
+            }
         }
     }
     // Side regions: each facet one more boundary element.
@@ -62784,13 +63632,17 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         elm_append_int(boundary, p2);
         boundary += ' ';
         elm_append_int(boundary, code);
+        ElmRow kept{-1, side_ids[s], p1, p2, code, {}};
         for (std::size_t j = 0; j < row.size(); ++j) {
             const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
             boundary += ' ';
             elm_append_int(boundary, row[src] + 1);
+            kept.mNodes.push_back(row[src] + 1);
         }
         boundary += '\n';
         ++type_counts[code];
+        if (partitioned)
+            boundary_rows.push_back(std::move(kept));
     }
     if (bad_facets)
         log::warn("Elmer mesh writer: {} side region entr(ies) name no facet and were dropped",
@@ -62848,6 +63700,151 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         }
     }
     elm_write_file(dir / "mesh.names", out);
+
+    if (!partitioned)
+        return;
+    // --- partitioning.N: ElmerGrid's layout without halos ------------------------
+    // `partition:part` (0-based) places each bulk element; a node belongs to
+    // every part using it and is owned by the lowest; a boundary element goes to
+    // each part holding one of its parents, the other parent set to 0.
+    std::vector<int> part_of(static_cast<std::size_t>(n_bulk) + 1, -1);
+    int n_parts = 0;
+    for (const ElmRow& r : bulk_rows) {
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(bases.begin(), bases.end(), r.mCell) - bases.begin() - 1);
+        const NDArray& labels = rMesh.CellData("partition:part", b);
+        const std::int64_t label =
+            detail::read_int(labels, static_cast<std::size_t>(r.mCell - bases[b]));
+        if (label < 0)
+            throw WriteError("Elmer mesh writer: partition:part has a negative part for cell " +
+                             std::to_string(r.mCell));
+        part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])] =
+            static_cast<int>(label);
+        n_parts = std::max(n_parts, static_cast<int>(label) + 1);
+    }
+    std::vector<std::vector<int>> users(npts + 1);  // node (1-based) -> parts, ascending
+    for (const ElmRow& r : bulk_rows) {
+        const int part =
+            part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])];
+        for (std::int64_t n : r.mNodes) {
+            auto& list = users[static_cast<std::size_t>(n)];
+            if (std::find(list.begin(), list.end(), part) == list.end())
+                list.insert(std::upper_bound(list.begin(), list.end(), part), part);
+        }
+    }
+    const fs::path pdir = dir / ("partitioning." + std::to_string(n_parts));
+    fs::create_directories(pdir, ec);
+    if (!fs::is_directory(pdir, ec))
+        throw WriteError("Elmer mesh writer: cannot create directory " + pdir.string());
+    std::size_t empty_parts = 0;
+    for (int part = 0; part < n_parts; ++part) {
+        const std::string stem = "part." + std::to_string(part + 1);
+        std::string elem_text, node_text, shared_text, side_text;
+        std::map<int, std::int64_t> bulk_types, side_types;
+        std::set<std::int64_t> nodes;
+        std::int64_t n_elem = 0, n_side = 0, n_shared = 0;
+        for (const ElmRow& r : bulk_rows) {
+            const std::int64_t no = element_no[static_cast<std::size_t>(r.mCell)];
+            if (part_of[static_cast<std::size_t>(no)] != part)
+                continue;
+            elm_append_int(elem_text, no);
+            elem_text += ' ';
+            elm_append_int(elem_text, r.mTag);
+            elem_text += ' ';
+            elm_append_int(elem_text, r.mCode);
+            for (std::int64_t n : r.mNodes) {
+                elem_text += ' ';
+                elm_append_int(elem_text, n);
+                nodes.insert(n);
+            }
+            elem_text += '\n';
+            ++n_elem;
+            ++bulk_types[r.mCode];
+        }
+        std::int64_t side_no = 0;
+        for (const ElmRow& r : boundary_rows) {
+            ++side_no;
+            const auto in_part = [&](std::int64_t P) {
+                return P > 0 && part_of[static_cast<std::size_t>(P)] == part;
+            };
+            if (!in_part(r.mP1) && !in_part(r.mP2))
+                continue;
+            elm_append_int(side_text, side_no);
+            side_text += ' ';
+            elm_append_int(side_text, r.mTag);
+            side_text += ' ';
+            elm_append_int(side_text, in_part(r.mP1) ? r.mP1 : 0);
+            side_text += ' ';
+            elm_append_int(side_text, in_part(r.mP2) ? r.mP2 : 0);
+            side_text += ' ';
+            elm_append_int(side_text, r.mCode);
+            for (std::int64_t n : r.mNodes) {
+                side_text += ' ';
+                elm_append_int(side_text, n);
+            }
+            side_text += '\n';
+            ++n_side;
+            ++side_types[r.mCode];
+        }
+        for (std::int64_t n : nodes) {
+            elm_append_int(node_text, n);
+            node_text += " -1";
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double v = d < pdim ? detail::read_double(
+                                                points, static_cast<std::size_t>(n - 1) * pdim + d)
+                                          : 0.0;
+                detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
+                node_text += buf;
+            }
+            node_text += '\n';
+            const auto& list = users[static_cast<std::size_t>(n)];
+            if (list.size() < 2)
+                continue;
+            // `id count owner others`: every part using it but the owner.
+            elm_append_int(shared_text, n);
+            shared_text += ' ';
+            elm_append_int(shared_text, static_cast<std::int64_t>(list.size()));
+            shared_text += ' ';
+            elm_append_int(shared_text, list.front() + 1);
+            for (std::size_t k = 1; k < list.size(); ++k) {
+                shared_text += ' ';
+                elm_append_int(shared_text, list[k] + 1);
+            }
+            shared_text += '\n';
+            ++n_shared;
+        }
+        empty_parts += n_elem == 0 ? 1 : 0;
+        std::string header;
+        elm_append_padded(header, static_cast<std::int64_t>(nodes.size()));
+        header += ' ';
+        elm_append_padded(header, n_elem);
+        header += ' ';
+        elm_append_padded(header, n_side);
+        header += '\n';
+        elm_append_padded(header, static_cast<std::int64_t>(bulk_types.size() + side_types.size()));
+        header += '\n';
+        for (const auto* types : {&bulk_types, &side_types})
+            for (const auto& [code, count] : *types) {
+                elm_append_padded(header, code);
+                header += ' ';
+                elm_append_padded(header, count);
+                header += '\n';
+            }
+        elm_append_padded(header, n_shared);
+        header += ' ';
+        elm_append_padded(header, 0);
+        header += '\n';
+        elm_write_file(pdir / (stem + ".header"), header);
+        elm_write_file(pdir / (stem + ".nodes"), node_text);
+        elm_write_file(pdir / (stem + ".elements"), elem_text);
+        elm_write_file(pdir / (stem + ".boundary"), side_text);
+        elm_write_file(pdir / (stem + ".shared"), shared_text);
+    }
+    if (empty_parts)
+        log::warn(
+            "Elmer mesh writer: {} of the {} parts in partition:part hold no element; "
+            "ElmerSolver needs every part populated",
+            empty_parts, n_parts);
 }
 
 }  // namespace meshioplusplus
@@ -66089,8 +67086,11 @@ struct FebReader {
                 members.push_back(Node(feb_need_int(c.attribute("id").value(), "node id")));
             }
         }
-        FebGroup& g = Group(name, RegionKind::Point);
-        g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        // meshio++'s own MeshData sets (`meshdata:<array>`) carry an array, not a group.
+        if (name.rfind("meshdata:", 0) != 0) {
+            FebGroup& g = Group(name, RegionKind::Point);
+            g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        }
         auto& ordered = mNodeSets[name];
         ordered.insert(ordered.end(), members.begin(), members.end());
     }
@@ -66103,8 +67103,10 @@ struct FebReader {
         for (const pugi::xml_node& c : rSet.children())
             if (c.type() == pugi::node_element)
                 members.push_back(Element(feb_need_int(c.attribute("id").value(), "element id")));
-        FebGroup& g = Group(name, RegionKind::Cell);
-        g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        if (name.rfind("meshdata:", 0) != 0) {
+            FebGroup& g = Group(name, RegionKind::Cell);
+            g.mEntries.insert(g.mEntries.end(), members.begin(), members.end());
+        }
         auto& ordered = mElemSets[name];
         ordered.insert(ordered.end(), members.begin(), members.end());
     }
@@ -66602,9 +67604,123 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("cells-dropped", std::to_string(dropped_vertices) +
                                                      " vertex cell(s) have no FEBio element");
     }
-    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() > 0) {
-        log::warn("FEBio .feb writer: data arrays are not written (MeshData is not supported yet)");
-        detail::provenance_note("data-dropped", "the .feb writer does not write MeshData");
+    // MeshData: every point array over the nodes where it is defined, every cell
+    // array over the <Elements> cells where it is; each on its own set,
+    // `meshdata:<name>`, which the reader recognises and makes no region of.
+    struct FebArray {
+        std::string mName;
+        bool mNodal = true;
+        std::string mType;
+        std::size_t mWidth = 1;
+        std::vector<std::int64_t> mMembers;  // 1-based node or element numbers
+        std::vector<double> mValues;         // mMembers.size() * mWidth
+    };
+    std::vector<FebArray> arrays;
+    std::vector<std::string> unwritable;
+    auto data_type = [](std::size_t Width) -> const char* {
+        switch (Width) {
+            case 1:
+                return "scalar";
+            case 2:
+                return "vec2";
+            case 3:
+                return "vec3";
+            case 6:
+                return "mat3s";
+            case 9:
+                return "mat3";
+            default:
+                return nullptr;
+        }
+    };
+    auto width_of = [](const NDArray& rA) {
+        std::size_t w = 1;
+        for (std::size_t k = 1; k < rA.Shape().size(); ++k)
+            w *= rA.Shape()[k];
+        return w;
+    };
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t w = width_of(a);
+        const char* type = data_type(w);
+        if (!type || a.Shape().empty()) {
+            unwritable.push_back(name);
+            continue;
+        }
+        FebArray arr{name, true, type, w, {}, {}};
+        for (std::size_t p = 0; p < rMesh.NumPoints(); ++p) {
+            bool defined = true;
+            for (std::size_t c = 0; c < w && defined; ++c)
+                defined = !std::isnan(detail::read_double(a, p * w + c));
+            if (!defined)
+                continue;
+            arr.mMembers.push_back(static_cast<std::int64_t>(p + 1));
+            for (std::size_t c = 0; c < w; ++c)
+                arr.mValues.push_back(detail::read_double(a, p * w + c));
+        }
+        if (!arr.mMembers.empty())
+            arrays.push_back(std::move(arr));
+    }
+    std::size_t off_elements = 0;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::size_t w = 0;
+        bool ok = true;
+        for (std::size_t b = 0; b < n_blocks && ok; ++b) {
+            if (rMesh.Cells(b).NumCells() == 0)
+                continue;
+            const NDArray& a = rMesh.CellData(name, b);
+            if (a.Shape().empty()) {
+                ok = false;
+                continue;
+            }
+            const std::size_t wb = width_of(a);
+            if (w == 0)
+                w = wb;
+            else if (w != wb)
+                ok = false;
+        }
+        const char* type = ok ? data_type(w == 0 ? 1 : w) : nullptr;
+        if (!type) {
+            unwritable.push_back(name);
+            continue;
+        }
+        w = w == 0 ? 1 : w;
+        FebArray arr{name, false, type, w, {}, {}};
+        for (std::size_t b = 0; b < n_blocks; ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
+                bool defined = true;
+                for (std::size_t c = 0; c < w && defined; ++c)
+                    defined = !std::isnan(detail::read_double(a, r * w + c));
+                if (!defined)
+                    continue;
+                if (kinds[b] != FebBlockKind::Elements) {
+                    ++off_elements;
+                    continue;
+                }
+                arr.mMembers.push_back(
+                    element_no[static_cast<std::size_t>(bases[b] + static_cast<std::int64_t>(r))]);
+                for (std::size_t c = 0; c < w; ++c)
+                    arr.mValues.push_back(detail::read_double(a, r * w + c));
+            }
+        }
+        if (!arr.mMembers.empty())
+            arrays.push_back(std::move(arr));
+    }
+    if (!unwritable.empty() || off_elements != 0 || rMesh.NumFieldData() != 0) {
+        std::string what;
+        for (const std::string& n : unwritable)
+            what += (what.empty() ? "" : ", ") + n;
+        if (!unwritable.empty())
+            log::warn("FEBio .feb writer: arrays FEBio has no data type for are dropped: {}", what);
+        if (off_elements != 0)
+            log::warn(
+                "FEBio .feb writer: {} cell value(s) on surfaces, edges or discrete sets "
+                "are dropped",
+                off_elements);
+        detail::provenance_note("data-dropped",
+                                "field data, and arrays that are not scalar, vec2, vec3, mat3s "
+                                "or mat3 or lie off the elements, are not written");
     }
 
     // The provenance comment goes inside the root, as in VTU: the root tag stays
@@ -66754,6 +67870,13 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
     if (skipped)
         log::warn("FEBio .feb writer: {} region(s) with nothing FEBio can hold were dropped",
                   skipped);
+    // The sets the MeshData arrays live on.
+    for (const FebArray& a : arrays) {
+        out += std::string("\t\t<") + (a.mNodal ? "NodeSet" : "ElementSet") + " name=\"" +
+               feb_escape("meshdata:" + a.mName) + "\">";
+        feb_append_ids(out, a.mMembers);
+        out += std::string("</") + (a.mNodal ? "NodeSet" : "ElementSet") + ">\n";
+    }
 
     out += "\t</Mesh>\n\t<MeshDomains>\n";
     for (std::size_t b = 0; b < n_blocks; ++b) {
@@ -66765,7 +67888,30 @@ void write_febio(const std::string& rPath, const Mesh& rMesh) {
         out += std::string("\t\t<") + domain + " name=\"" + feb_escape(names[b]) + "\" mat=\"" +
                feb_escape(names[b]) + "\"/>\n";
     }
-    out += "\t</MeshDomains>\n</febio_spec>\n";
+    out += "\t</MeshDomains>\n";
+    if (!arrays.empty()) {
+        out += "\t<MeshData>\n";
+        for (const FebArray& a : arrays) {
+            const char* tag = a.mNodal ? "NodeData" : "ElementData";
+            out += std::string("\t\t<") + tag + " name=\"" + feb_escape(a.mName) + "\" " +
+                   (a.mNodal ? "node_set" : "elem_set") + "=\"" +
+                   feb_escape("meshdata:" + a.mName) + "\" data_type=\"" + a.mType + "\">\n";
+            for (std::size_t m = 0; m < a.mMembers.size(); ++m) {
+                out += std::string("\t\t\t<") + (a.mNodal ? "node" : "e") + " lid=\"";
+                feb_append_int(out, static_cast<std::int64_t>(m + 1));
+                out += "\">";
+                for (std::size_t c = 0; c < a.mWidth; ++c) {
+                    detail::snprintf_c(buf, sizeof(buf), c ? ",%.17g" : "%.17g",
+                                       a.mValues[m * a.mWidth + c]);
+                    out += buf;
+                }
+                out += std::string("</") + (a.mNodal ? "node" : "e") + ">\n";
+            }
+            out += std::string("\t\t</") + tag + ">\n";
+        }
+        out += "\t</MeshData>\n";
+    }
+    out += "</febio_spec>\n";
 
     auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!f)
@@ -88970,6 +90116,56 @@ std::vector<double> nh5_float_member(hid_t file, const std::string& rPath,
     return out;
 }
 
+/** A float member as double, every entry: (Count * width) values and the width. */
+std::vector<double> nh5_float_member_all(hid_t file, const std::string& rPath,
+                                         const std::string& rMember, std::size_t Row0,
+                                         std::size_t Count, std::size_t& rWidth) {
+    const DType as = DType::Float64;
+    const NDArray a = h5::read_compound_member(file, rPath, rMember, Row0, Count, &as);
+    rWidth = Count == 0 ? 1 : a.Size() / Count;
+    const double* p = a.As<double>();
+    return std::vector<double>(p, p + a.Size());
+}
+
+/** A fixed-length string member, trailing blanks and NULs removed. */
+std::vector<std::string> nh5_string_member(hid_t file, const std::string& rPath,
+                                           const std::string& rMember, std::size_t Row0,
+                                           std::size_t Count) {
+    h5::Hid d(H5Dopen2(file, rPath.c_str(), H5P_DEFAULT), H5Dclose);
+    h5::Hid ftype(H5Dget_type(d), H5Tclose);
+    const int index = H5Tget_member_index(ftype, rMember.c_str());
+    if (index < 0)
+        nh5_fail(rPath + " has no " + rMember + " column");
+    h5::Hid mtype(H5Tget_member_type(ftype, static_cast<unsigned>(index)), H5Tclose);
+    if (H5Tget_class(mtype) != H5T_STRING || H5Tis_variable_str(mtype) > 0)
+        nh5_fail(rPath + " " + rMember + " is not a fixed-length string");
+    const std::size_t len = H5Tget_size(mtype);
+    std::vector<std::string> out(Count);
+    if (Count == 0)
+        return out;
+    h5::Hid str(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(str, len);
+    H5Tset_strpad(str, H5T_STR_NULLPAD);
+    h5::Hid mem_type(H5Tcreate(H5T_COMPOUND, len), H5Tclose);
+    if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, str) < 0)
+        nh5_fail("could not build a memory type for " + rPath + " " + rMember);
+    h5::Hid space(H5Dget_space(d), H5Sclose);
+    const hsize_t start = Row0;
+    const hsize_t count = Count;
+    H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+    h5::Hid mem(H5Screate_simple(1, &count, nullptr), H5Sclose);
+    std::vector<char> buf(len * Count);
+    if (H5Dread(d, mem_type, mem, space, H5P_DEFAULT, buf.data()) < 0)
+        nh5_fail("failed reading " + rPath + " " + rMember);
+    for (std::size_t i = 0; i < Count; ++i) {
+        std::string v(buf.data() + i * len, len);
+        while (!v.empty() && (v.back() == ' ' || v.back() == '\0'))
+            v.pop_back();
+        out[i] = std::move(v);
+    }
+    return out;
+}
+
 bool nh5_is_float(const h5::CompoundMember& rM) {
     return rM.mNumeric && (rM.mDtype == DType::Float32 || rM.mDtype == DType::Float64);
 }
@@ -89205,6 +90401,59 @@ std::vector<std::pair<std::string, std::vector<std::string>>> nh5_nodal_outputs(
     return out;
 }
 
+/** The CORD1R/C/S and CORD2R/C/S tables of /NASTRAN/INPUT/COORDINATE_SYSTEM. */
+std::vector<detail::NastranCoordCard> nh5_coord_cards(hid_t File) {
+    constexpr const char* kDir = "/NASTRAN/INPUT/COORDINATE_SYSTEM";
+    std::vector<detail::NastranCoordCard> out;
+    static const std::pair<const char*, int> kTables[] = {
+        {"CORD2R", 1}, {"CORD2C", 2}, {"CORD2S", 3}, {"CORD1R", 1}, {"CORD1C", 2}, {"CORD1S", 3}};
+    for (const auto& [name, type] : kTables) {
+        const std::string path = std::string(kDir) + "/" + name;
+        if (!nh5_is_dataset(File, path))
+            continue;
+        const auto members = h5::compound_members(File, path);
+        const std::size_t n = nh5_rows(File, path);
+        const bool by_grids = name[4] == '1';
+        const std::vector<const char*> needed =
+            by_grids ? std::vector<const char*>{"CID", "G1", "G2", "G3"}
+                     : std::vector<const char*>{"CID", "RID", "A1", "A2", "A3", "B1",
+                                                "B2",  "B3",  "C1", "C2", "C3"};
+        bool complete = true;
+        for (const char* m : needed)
+            complete = complete && nh5_has_member(members, m);
+        if (!complete) {
+            log::warn("MSC Nastran HDF5: {} lacks the expected columns; its systems are not read",
+                      path);
+            continue;
+        }
+        const auto cid = nh5_int_member(File, path, "CID", 0, n);
+        std::vector<std::vector<std::int64_t>> ints;
+        std::vector<std::vector<double>> reals;
+        for (std::size_t k = 1; k < needed.size(); ++k) {
+            if (by_grids || k == 1)
+                ints.push_back(nh5_int_member(File, path, needed[k], 0, n));
+            else
+                reals.push_back(nh5_float_member(File, path, needed[k], 0, n));
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            detail::NastranCoordCard c;
+            c.mCid = cid[i];
+            c.mType = type;
+            c.mByGrids = by_grids;
+            if (by_grids) {
+                for (int k = 0; k < 3; ++k)
+                    c.mGrids[k] = ints[static_cast<std::size_t>(k)][i];
+            } else {
+                c.mRid = ints[0][i];
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = reals[k][i];
+            }
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
 std::string nh5_join(const std::vector<std::string>& rV) {
     std::string out;
     for (const std::string& s : rV)
@@ -89221,6 +90470,8 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
 
     // --- points ---------------------------------------------------------------
     const std::size_t npts = file.mGridIds.size();
+    detail::NastranCoordSystems systems;
+    std::vector<std::int64_t> cd;
     {
         const DType as = DType::Float64;
         NDArray x = h5::read_compound_member(f, kNh5Grid, "X", 0, npts, &as);
@@ -89228,11 +90479,16 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             nh5_fail("GRID X is not a 3-vector");
         mesh.AssignPoints(std::move(x));
         const auto members = h5::compound_members(f, kNh5Grid);
-        for (const char* frame : {"CP", "CD"})
-            if (nh5_has_member(members, frame))
-                detail::nastran_add_frame(mesh, frame, nh5_int_member(f, kNh5Grid, frame, 0, npts),
-                                          "MSC Nastran HDF5");
+        auto frame = [&](const char* pName) {
+            return nh5_has_member(members, pName) ? nh5_int_member(f, kNh5Grid, pName, 0, npts)
+                                                  : std::vector<std::int64_t>(npts, 0);
+        };
+        cd = frame("CD");
+        systems = detail::nastran_apply_frames(mesh, nh5_coord_cards(f), file.mGridIds, frame("CP"),
+                                               cd, "MSC Nastran HDF5");
     }
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
 
     // --- cells and property regions ------------------------------------------------
     std::vector<detail::NastranCardRows> cards;
@@ -89321,11 +90577,228 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
     // Elemental arrays accumulate across tables: <G>:<M> -> per-global-cell values.
     std::map<std::string, std::vector<double>> cell_arrays;
     std::vector<std::string> cell_order;
+    // Multi-valued cell arrays (per ply, per station, per corner or element
+    // node) gather (cell, column, value) and are laid out once every table is
+    // read, as (cells, columns) with NaN where a cell has no value.
+    struct Wide {
+        std::vector<std::size_t> mCell, mCol;
+        std::vector<double> mValue;
+    };
+    std::map<std::string, Wide> wide;
+    auto push = [&](const std::string& rName, std::size_t Cell, std::size_t Col, double V) {
+        Wide& w = wide[rName];
+        w.mCell.push_back(Cell);
+        w.mCol.push_back(Col);
+        w.mValue.push_back(V);
+    };
+    // The position of GRID `Grid` in the connectivity of global cell `Cell`.
+    constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
+    auto node_position = [&](std::size_t Cell, std::int64_t Grid) -> std::size_t {
+        const auto g = file.mGridIndex.find(Grid);
+        if (g == file.mGridIndex.end())
+            return npos;
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), Cell) -
+            model.mOffsets.begin() - 1);
+        const NDArray& conn = mesh.Cells(b).Conn();
+        const std::size_t width = conn.Shape()[1];
+        const std::size_t row = Cell - model.mOffsets[b];
+        for (std::size_t k = 0; k < width; ++k)
+            if (static_cast<std::size_t>(detail::read_int(conn, row * width + k)) == g->second)
+                return k;
+        return npos;
+    };
+    auto has_int_member = [](const Nh5ResultTable& rT, const char* pName, std::size_t Dims) {
+        for (const h5::CompoundMember& m : rT.mMembers)
+            if (m.mName == pName && m.mNumeric && m.mDtype != DType::Float32 &&
+                m.mDtype != DType::Float64 && m.mDims.size() == Dims)
+                return true;
+        return false;
+    };
+    auto starts = [](const std::string& rName, const char* pPrefix) {
+        return rName.rfind(pPrefix, 0) == 0;
+    };
+
+    // The tables with several values per element or node: false when `rT` is not one.
+    auto read_multi = [&](const Nh5ResultTable& rT, std::size_t Row0, std::size_t Count) -> bool {
+        const bool ply = !rT.mNodal && has_int_member(rT, "PLY", 0);
+        const bool bars = !rT.mNodal && (rT.mName == "BARS" || rT.mName == "BARS_CPLX");
+        const bool arrays = !rT.mNodal && has_int_member(rT, "GRID", 1);
+        const bool grid_force = rT.mNodal && rT.mName == "GRID_FORCE" &&
+                                has_int_member(rT, "EID", 0) &&
+                                nh5_has_member(rT.mMembers, "ELNAME");
+        if (!ply && !bars && !arrays && !grid_force)
+            return false;
+        std::vector<std::string> floats;
+        for (const h5::CompoundMember& m : rT.mMembers)
+            if (nh5_is_float(m) && m.mName != rT.mKey && m.mName != "DOMAIN_ID")
+                floats.push_back(m.mName);
+        const auto keys = nh5_int_member(f, rT.mPath, rT.mKey, Row0, Count);
+
+        if (grid_force) {
+            // Element rows (EID > 0) are the forces on each element node, as
+            // (cells, nodes) in the cell's node order; the others (*TOTALS*,
+            // APP-LOAD, F-OF-SPC, ...) are point data named after ELNAME.
+            // Both are in the GRID's output system (CD), rotated to basic.
+            const auto eids = nh5_int_member(f, rT.mPath, "EID", Row0, Count);
+            const auto elname = nh5_string_member(f, rT.mPath, "ELNAME", Row0, Count);
+            std::vector<std::vector<double>> v;
+            for (const std::string& m : floats)
+                v.push_back(nh5_float_member(f, rT.mPath, m, Row0, Count));
+            const bool triplets = floats.size() == 6;
+            std::map<std::string, std::vector<double>> totals;
+            std::vector<std::string> total_order;
+            for (std::size_t r = 0; r < Count; ++r) {
+                const auto g = file.mGridIndex.find(keys[r]);
+                if (g == file.mGridIndex.end())
+                    continue;
+                const std::size_t p = g->second;
+                std::vector<double> row(floats.size());
+                for (std::size_t c = 0; c < floats.size(); ++c)
+                    row[c] = v[c][r];
+                if (triplets)
+                    detail::nastran_rotate_to_basic(systems, cd[p], basic + 3 * p, row.data(), 2);
+                if (eids[r] > 0) {
+                    const auto c = cell_index.find(eids[r]);
+                    if (c == cell_index.end())
+                        continue;
+                    const std::size_t pos = node_position(c->second, keys[r]);
+                    if (pos == npos)
+                        continue;
+                    for (std::size_t k = 0; k < floats.size(); ++k) {
+                        const std::string name = rT.mName + ":" + floats[k];
+                        if (rOpts.WantsArray(name))
+                            push(name, c->second, pos, row[k]);
+                    }
+                    continue;
+                }
+                std::string label;
+                for (char ch : elname[r])
+                    if (ch != ' ' && ch != '*')
+                        label += ch;
+                for (std::size_t k = 0; k < floats.size(); ++k) {
+                    const std::string name = rT.mName + ":" + label + ":" + floats[k];
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto& values = totals[name];
+                    if (values.empty()) {
+                        values.assign(npts, std::numeric_limits<double>::quiet_NaN());
+                        total_order.push_back(name);
+                    }
+                    values[p] = row[k];
+                }
+            }
+            for (const std::string& name : total_order) {
+                NDArray a(DType::Float64, {npts});
+                std::copy(totals[name].begin(), totals[name].end(), a.As<double>());
+                mesh.AddPointData(name, std::move(a));
+            }
+            return true;
+        }
+
+        std::vector<std::size_t> target(Count, npos);
+        for (std::size_t r = 0; r < Count; ++r) {
+            const auto c = cell_index.find(keys[r]);
+            if (c != cell_index.end())
+                target[r] = c->second;
+        }
+        if (ply || bars) {
+            // One row per ply (column PLY - 1) or per station along a bar
+            // (columns in row order).
+            std::vector<std::size_t> column(Count, 0);
+            if (ply) {
+                const auto plies = nh5_int_member(f, rT.mPath, "PLY", Row0, Count);
+                for (std::size_t r = 0; r < Count; ++r)
+                    column[r] = plies[r] >= 1 ? static_cast<std::size_t>(plies[r] - 1) : npos;
+            } else {
+                std::unordered_map<std::int64_t, std::size_t> seen;
+                for (std::size_t r = 0; r < Count; ++r)
+                    column[r] = seen[keys[r]]++;
+            }
+            const std::string suffix = ply ? "@ply" : "@station";
+            for (const std::string& m : floats) {
+                const std::string name = rT.mGroup + ":" + m + suffix;
+                if (!rOpts.WantsArray(name))
+                    continue;
+                const auto v = nh5_float_member(f, rT.mPath, m, Row0, Count);
+                for (std::size_t r = 0; r < Count; ++r)
+                    if (target[r] != npos && column[r] != npos)
+                        push(name, target[r], column[r], v[r]);
+            }
+            return true;
+        }
+
+        // One row per element with arrays: entry 0 is the centre (or end A of
+        // a beam), which stays the plain `<G>:<M>` value. A BEAM's entries are
+        // its 11 stations; the others' entries 1.. are corners, placed at their
+        // GRID's position in the cell.
+        {
+            std::unordered_set<std::int64_t> once;
+            for (std::int64_t k : keys)
+                if (!once.insert(k).second) {
+                    log::warn("MSC Nastran HDF5: {} has several rows per element; skipped",
+                              rT.mPath);
+                    return true;
+                }
+        }
+        const bool beam = starts(rT.mName, "BEAM");
+        std::size_t gw = 1;
+        const auto grids = nh5_int_member(f, rT.mPath, "GRID", Row0, Count, &gw);
+        // A beam station with no GRID and no distance (SD) was not output.
+        std::size_t sw = 0;
+        const auto sd = beam && nh5_has_member(rT.mMembers, "SD")
+                            ? nh5_float_member_all(f, rT.mPath, "SD", Row0, Count, sw)
+                            : std::vector<double>();
+        for (const std::string& m : floats) {
+            const std::string centre = rT.mGroup + ":" + m;
+            const std::string name = centre + (beam ? "@station" : "@corner");
+            const bool want_centre = rOpts.WantsArray(centre);
+            const bool want_wide = rOpts.WantsArray(name);
+            if (!want_centre && !want_wide)
+                continue;
+            std::size_t w = 1;
+            const auto v = nh5_float_member_all(f, rT.mPath, m, Row0, Count, w);
+            if (want_centre) {
+                auto& values = cell_arrays[centre];
+                if (values.empty()) {
+                    values.assign(ncells, std::numeric_limits<double>::quiet_NaN());
+                    cell_order.push_back(centre);
+                }
+                for (std::size_t r = 0; r < Count; ++r)
+                    if (target[r] != npos)
+                        values[target[r]] = v[r * w];
+            }
+            if (!want_wide || w < 2)
+                continue;
+            for (std::size_t r = 0; r < Count; ++r) {
+                if (target[r] == npos)
+                    continue;
+                for (std::size_t k = beam ? 0 : 1; k < w; ++k) {
+                    std::size_t col = k;
+                    if (beam && k > 0 && w == gw && sw == w && grids[r * gw + k] == 0 &&
+                        sd[r * sw + k] == 0.0)
+                        continue;
+                    if (!beam) {
+                        if (w != gw || grids[r * gw + k] <= 0)
+                            continue;
+                        col = node_position(target[r], grids[r * gw + k]);
+                        if (col == npos)
+                            continue;
+                    }
+                    push(name, target[r], col, v[r * w + k]);
+                }
+            }
+        }
+        return true;
+    };
+
     for (const Nh5ResultTable& t : file.mTables) {
         const auto it = t.mIndex.find(dom.mId);
         if (it == t.mIndex.end())
             continue;
         const auto [row0, count] = it->second;
+        if (read_multi(t, row0, count))
+            continue;
 
         // Which outputs of this table are wanted, before any payload is read.
         std::vector<std::pair<std::string, std::vector<std::string>>> outputs;
@@ -89362,7 +90835,6 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             }
         }
         // Row -> target index (point or global cell), or npos when not in the mesh.
-        constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
         std::vector<std::size_t> target(count, npos);
         std::size_t mapped = 0;
         for (std::size_t r = 0; r < count; ++r) {
@@ -89393,6 +90865,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
                         if (target[r] != npos)
                             out[target[r] * nc + c] = v[r];
                 }
+                // Vector results are in each GRID's output system (CD).
+                if (nc == 3)
+                    for (std::size_t r = 0; r < count; ++r)
+                        if (target[r] != npos)
+                            detail::nastran_rotate_to_basic(systems, cd[target[r]],
+                                                            basic + 3 * target[r],
+                                                            out + 3 * target[r], 1);
                 used_point_names.push_back(name);
                 mesh.AddPointData(name, std::move(data));
             } else {
@@ -89420,6 +90899,29 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             per_block.push_back(std::move(a));
         }
         mesh.AddCellData(name, std::move(per_block));
+    }
+    for (const auto& [name, w] : wide) {
+        std::size_t width = 0;
+        for (std::size_t col : w.mCol)
+            width = std::max(width, col + 1);
+        std::vector<NDArray> per_block;
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b], width});
+            std::fill(a.As<double>(), a.As<double>() + a.Size(), nan);
+            per_block.push_back(std::move(a));
+        }
+        for (std::size_t i = 0; i < w.mCell.size(); ++i) {
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), w.mCell[i]) -
+                model.mOffsets.begin() - 1);
+            per_block[b].As<double>()[(w.mCell[i] - model.mOffsets[b]) * width + w.mCol[i]] =
+                w.mValue[i];
+        }
+        mesh.AddCellData(name, std::move(per_block));
+        NDArray layout(DType::Int64, {std::size_t{2}});
+        layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(width);
+        layout.As<std::int64_t>()[1] = 1;
+        mesh.AddFieldData("nastran:layout:" + name, std::move(layout));
     }
     return mesh;
 }
@@ -89471,6 +90973,7 @@ namespace fs = std::filesystem;
 
 const std::string kOp2Who = "Nastran OP2";
 const double kOp2Nan = std::numeric_limits<double>::quiet_NaN();
+constexpr std::size_t kOp2Npos = std::numeric_limits<std::size_t>::max();
 
 [[noreturn]] void op2_fail(const std::string& rMessage) {
     throw ReadError(kOp2Who + ": " + rMessage);
@@ -89811,7 +91314,53 @@ struct Op2Grids {
     std::vector<std::int64_t> mIds, mCp, mCd;
     std::vector<double> mXyz;
     std::unordered_set<std::int64_t> mScalarPoints;
+    std::vector<detail::NastranCoordCard> mCords;
 };
+
+// CORD1R/C/S entries are `cid, type, 1|2, g1, g2, g3` (6 words); CORD2R/C/S
+// entries `cid, type, 2, rid, a1..c3` (13 words, the coordinates in the
+// file's precision) or, in 32-bit files, 22 words with the coordinates as
+// doubles (NX's GEOM1N). Returns false when no layout fits.
+bool op2_cord_rows(const Op2Words& rW, const std::string& rRaw, int Type, bool ByGrids,
+                   std::vector<detail::NastranCoordCard>& rOut) {
+    const auto ws = static_cast<std::size_t>(rW.mWs);
+    const char* body = rRaw.data() + 3 * ws;
+    const std::size_t nwords = (rRaw.size() - 3 * ws) / ws;
+    const std::vector<std::size_t> layouts =
+        ByGrids ? std::vector<std::size_t>{6} : std::vector<std::size_t>{13, 22};
+    for (std::size_t size : layouts) {
+        if ((size == 22 && ws != 4) || nwords == 0 || nwords % size)
+            continue;
+        std::vector<detail::NastranCoordCard> cards(nwords / size);
+        bool ok = true;
+        for (std::size_t i = 0; i < cards.size() && ok; ++i) {
+            const char* e = body + i * size * ws;
+            detail::NastranCoordCard& c = cards[i];
+            c.mCid = rW.Int(e);
+            c.mType = Type;
+            c.mByGrids = ByGrids;
+            ok = c.mCid > 0;
+            if (ByGrids) {
+                // The two flag words vary (pyNastran has seen 1 or 2 for a CORD1C).
+                for (int k = 0; k < 3; ++k) {
+                    c.mGrids[k] = rW.Int(e + (3 + k) * ws);
+                    ok = ok && c.mGrids[k] > 0;
+                }
+            } else {
+                ok = ok && rW.Int(e + ws) == Type;
+                c.mRid = rW.Int(e + 3 * ws);
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = size == 13 ? rW.Float(e + (4 + k) * ws) : rW.Double(e + 16 + 8 * k);
+                ok = ok && c.mRid >= 0;
+            }
+        }
+        if (!ok)
+            continue;
+        rOut.insert(rOut.end(), cards.begin(), cards.end());
+        return true;
+    }
+    return false;
+}
 
 // Entries are `id, cp, x, y, z, cd, ps, seid`: 8 words, the coordinates in the
 // file's precision; or, in 32-bit files, 11 words with the coordinates as
@@ -89860,7 +91409,20 @@ Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTable
             if (!op2_grid_rows(w, r.mRaw, r.mK3, g))
                 log::warn("{}: a GRID record of {} words matches no GRID layout; skipped", kOp2Who,
                           r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
+            continue;
         }
+        // CORD1C/R/S and CORD2C/R/S, keyed (1701, 17), (1801, 18), (1901, 19),
+        // (2001, 20), (2101, 21), (2201, 22).
+        static const std::map<std::pair<std::int64_t, std::int64_t>, std::pair<int, bool>> kCords =
+            {{{1701, 17}, {2, true}},  {{1801, 18}, {1, true}},  {{1901, 19}, {3, true}},
+             {{2001, 20}, {2, false}}, {{2101, 21}, {1, false}}, {{2201, 22}, {3, false}}};
+        const auto cord = kCords.find({r.mK1, r.mK2});
+        if (cord != kCords.end() &&
+            !op2_cord_rows(w, r.mRaw, cord->second.first, cord->second.second, g.mCords))
+            log::warn(
+                "{}: a coordinate system record ({}, {}) of {} words matches no layout; "
+                "skipped",
+                kOp2Who, r.mK1, r.mK2, r.mRaw.size() / static_cast<std::size_t>(w.mWs) - 3);
     }
     for (const Op2CardRecord& r : op2_geometry_records(rS, rTables, {"GEOM2", "GEOM1"}))
         if ((r.mK1 == 5551 && r.mK2 == 49) || (r.mK1 == 707 && r.mK2 == 7)) {
@@ -90117,8 +91679,26 @@ std::string op2_element_type_name(std::int64_t Type) {
 
 using Op2Layout = std::vector<std::pair<std::size_t, std::string>>;  // (word, member)
 
-std::optional<Op2Layout> op2_element_layout(std::int64_t Type, std::int64_t NumWide,
-                                            std::int64_t SCode) {
+// How an element table's entries hold their values.
+enum class Op2Values {
+    Row,      // one entry per element, members at fixed words
+    Ply,      // one entry per ply of a composite element: word 1 is the ply
+    Station,  // one entry per station along a bar (CBAR type 100), in order
+    Blocks,   // one entry per element made of node blocks, each led by its GRID:
+              // the centre then the corners, or a beam's stations
+};
+
+struct Op2ElementLayout {
+    Op2Values mKind = Op2Values::Row;
+    Op2Layout mMembers;       // Blocks: the word within a block (its GRID is word 0)
+    std::size_t mFirst = 0;   // Blocks: word of the first block
+    std::size_t mBlock = 0;   // Blocks: words per block
+    std::size_t mBlocks = 1;  // Blocks: blocks per element
+    bool mStations = false;   // Blocks: beam stations rather than centre + corners
+};
+
+std::optional<Op2ElementLayout> op2_element_layout(std::int64_t Type, std::int64_t NumWide,
+                                                   std::int64_t SCode) {
     static const char* plate[16] = {"FD1",    "X1",     "Y1",     "TXY1", "ANGLE1", "MAJOR1",
                                     "MINOR1", nullptr,  "FD2",    "X2",   "Y2",     "TXY2",
                                     "ANGLE2", "MAJOR2", "MINOR2", nullptr};
@@ -90156,32 +91736,93 @@ std::optional<Op2Layout> op2_element_layout(std::int64_t Type, std::int64_t NumW
                 return 0;
         }
     };
-    Op2Layout out;
+    Op2ElementLayout out;
+    auto rows = [&](Op2Layout rMembers) {
+        out.mMembers = std::move(rMembers);
+        return out;
+    };
     if ((Type == 1 || Type == 10) && NumWide == 5)
-        return Op2Layout{{1, "A"}, {2, "MSA"}, {3, "T"}, {4, "MST"}};
+        return rows({{1, "A"}, {2, "MSA"}, {3, "T"}, {4, "MST"}});
     if (Type == 3 && NumWide == 5)
-        return Op2Layout{{1, "AS"}, {2, "MSA"}, {3, "TS"}, {4, "MST"}};
+        return rows({{1, "AS"}, {2, "MSA"}, {3, "TS"}, {4, "MST"}});
     if (Type == 4 && NumWide == 4)
-        return Op2Layout{{1, "TMAX"}, {2, "TAVG"}, {3, "MS"}};
+        return rows({{1, "TMAX"}, {2, "TAVG"}, {3, "MS"}});
     if (Type == 34 && NumWide == 16) {
         for (std::size_t k = 0; k < 15; ++k)
-            out.emplace_back(1 + k, bar[k]);
+            out.mMembers.emplace_back(1 + k, bar[k]);
         return out;
     }
-    const bool centroid_plate = (Type == 33 || Type == 74) && NumWide == 17;
-    const std::int64_t cn = corner_nodes(Type);
-    if (centroid_plate || (cn && NumWide == 2 + 17 * cn)) {
-        const std::size_t base = centroid_plate ? 1 : 3;
+    // CBAR stations (100): sd, the four fibres, axial, max, min, margin.
+    if (Type == 100 && NumWide == 10) {
+        out.mKind = Op2Values::Station;
+        return rows({{1, "SD"},
+                     {2, "XC"},
+                     {3, "XD"},
+                     {4, "XE"},
+                     {5, "XF"},
+                     {6, "AX"},
+                     {7, "MAX"},
+                     {8, "MIN"},
+                     {9, "MS"}});
+    }
+    // Composite shells (QUAD4, QUAD8, TRIA3, TRIA6; NX QUADR, TRIAR): one entry
+    // per ply, the MSC HDF5 names.
+    if ((Type == 95 || Type == 96 || Type == 97 || Type == 98 || Type == 232 || Type == 233) &&
+        NumWide == 11) {
+        out.mKind = Op2Values::Ply;
+        return rows({{2, "X1"},
+                     {3, "Y1"},
+                     {4, "T1"},
+                     {5, "L1"},
+                     {6, "L2"},
+                     {7, "ANGLE"},
+                     {8, "MAJOR"},
+                     {9, "MINOR"},
+                     {10, vm}});
+    }
+    // CBEAM (2): 11 stations of grid, sd, the four fibres, max, min and margins.
+    if (Type == 2 && NumWide == 111) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 1;
+        out.mBlock = 10;
+        out.mBlocks = 11;
+        out.mStations = true;
+        return rows({{1, "SD"},
+                     {2, "XC"},
+                     {3, "XD"},
+                     {4, "XE"},
+                     {5, "XF"},
+                     {6, "MAX"},
+                     {7, "MIN"},
+                     {8, "MST"},
+                     {9, "MSC"}});
+    }
+    if ((Type == 33 || Type == 74) && NumWide == 17) {
         for (std::size_t k = 0; k < 16; ++k)
-            out.emplace_back(base + k,
-                             plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
+            out.mMembers.emplace_back(
+                1 + k, plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
+        return out;
+    }
+    const std::int64_t cn = corner_nodes(Type);
+    if (cn && NumWide == 2 + 17 * cn) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 2;
+        out.mBlock = 17;
+        out.mBlocks = static_cast<std::size_t>(cn);
+        for (std::size_t k = 0; k < 16; ++k)
+            out.mMembers.emplace_back(
+                1 + k, plate[k] ? std::string(plate[k]) : vm + std::to_string(1 + k / 8));
         return out;
     }
     const std::int64_t sn = solid_nodes(Type);
     if (sn && NumWide == 4 + 21 * sn) {
+        out.mKind = Op2Values::Blocks;
+        out.mFirst = 4;
+        out.mBlock = 21;
+        out.mBlocks = static_cast<std::size_t>(sn);
         const std::string octa = (SCode & 1) ? "VON_MISES" : "OCT_SHEAR";
         for (const auto& [word, name] : solid)
-            out.emplace_back(4 + word, name ? std::string(name) : octa);
+            out.mMembers.emplace_back(word, name ? std::string(name) : octa);
         return out;
     }
     return std::nullopt;
@@ -90211,9 +91852,11 @@ struct Op2Step {
 struct Op2Block {
     std::size_t mStep;
     bool mNodal;
+    bool mBasic = false;  // BOUG*: already in the basic system
     std::string mBase;  // nodal: point data name; element: STRESS/STRAIN
-    Op2Layout mLayout;
+    Op2ElementLayout mLayout;
     std::size_t mNumWide = 8;
+    bool mGridForce = false;  // OGPFB: grid point forces
     const Op2Record* mRecord;
 };
 
@@ -90257,10 +91900,17 @@ private:
         const Op2Words& w = mStream.Words();
         const auto ws = static_cast<std::size_t>(w.mWs);
         std::map<std::tuple<std::int64_t, std::int64_t, std::int64_t>, std::size_t> step_index;
+        struct Deferred {
+            std::tuple<std::int64_t, std::int64_t, std::int64_t> mKey;
+            Op2Block mBlock;
+            std::string mTable;
+        };
+        std::vector<Deferred> deferred;
         for (const Op2Table& t : mTables) {
             const bool nodal = op2_starts(t.mName, {"OUG", "BOUG", "OQG", "OQMG", "OPG"});
             const bool elemental = op2_starts(t.mName, {"OES", "OSTR"});
-            if (!nodal && !elemental) {
+            const bool grid_force = op2_starts(t.mName, {"OGPF"});
+            if (!nodal && !elemental && !grid_force) {
                 if (!t.mName.empty() && t.mName[0] == 'O')
                     Skip(t.mName);
                 continue;
@@ -90298,8 +91948,17 @@ private:
                     Skip(t.mName + " (SORT2)");
                     continue;
                 }
-                Op2Block block{0, nodal, {}, {}, 8, &rec};
-                if (nodal) {
+                Op2Block block{0, nodal, op2_starts(t.mName, {"BOUG"}), {}, {}, 8, false, &rec};
+                if (grid_force) {
+                    if (table_code != 19 || num_wide != 10) {
+                        Skip(t.mName + " (table code " + std::to_string(table_code) + ", " +
+                             std::to_string(num_wide) + " words)");
+                        continue;
+                    }
+                    block.mGridForce = true;
+                    block.mBase = "GRID_FORCE";
+                    block.mNumWide = 10;
+                } else if (nodal) {
                     const char* base = op2_nodal_name(table_code);
                     // MPC forces share the SPC forces' table code; the name tells.
                     if (op2_starts(t.mName, {"OQMG"}) && (table_code == 3 || table_code == 39))
@@ -90338,6 +91997,10 @@ private:
                 const std::int64_t w5 = word(4);
                 const auto key = std::make_tuple(subcase, analysis, w5);
                 auto it = step_index.find(key);
+                if (grid_force) {
+                    deferred.push_back({key, std::move(block), t.mName});
+                    continue;
+                }
                 if (it == step_index.end()) {
                     it = step_index.emplace(key, mSteps.size()).first;
                     const bool moded = analysis == 2 || analysis == 8 || analysis == 9;
@@ -90348,6 +92011,27 @@ private:
                 block.mStep = it->second;
                 mBlocks.push_back(std::move(block));
             }
+        }
+        // Grid point forces join a step the other tables made, never a new one:
+        // MSC writes 0 in their word 5 where the other tables of a static step
+        // write the load set, and a buckling run's forces carry analysis 2.
+        for (Deferred& d : deferred) {
+            auto it = step_index.find(d.mKey);
+            if (it == step_index.end()) {
+                std::size_t same = 0;
+                for (auto s = step_index.begin(); s != step_index.end(); ++s)
+                    if (std::get<0>(s->first) == std::get<0>(d.mKey) &&
+                        std::get<1>(s->first) == std::get<1>(d.mKey)) {
+                        it = s;
+                        ++same;
+                    }
+                if (same != 1) {
+                    Skip(d.mTable + " (no matching step)");
+                    continue;
+                }
+            }
+            d.mBlock.mStep = it->second;
+            mBlocks.push_back(std::move(d.mBlock));
         }
     }
 };
@@ -90390,6 +92074,8 @@ std::pair<std::string, std::vector<std::string>> op2_sibling_deck(const std::str
 
 struct Op2Model {
     Mesh mMesh;
+    detail::NastranCoordSystems mSystems;
+    std::vector<std::int64_t> mCd;  // per point; empty for a deck-built model
     std::unordered_map<std::int64_t, std::size_t> mGridIndex;
     std::unordered_map<std::int64_t, std::size_t> mCellIndex;
     std::vector<std::size_t> mOffsets, mSizes;
@@ -90436,8 +92122,8 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
     NDArray points(DType::Float64, {g.mIds.size(), 3});
     std::copy(g.mXyz.begin(), g.mXyz.end(), points.As<double>());
     m.mMesh.AssignPoints(std::move(points));
-    detail::nastran_add_frame(m.mMesh, "CP", g.mCp, kOp2Who);
-    detail::nastran_add_frame(m.mMesh, "CD", g.mCd, kOp2Who);
+    m.mSystems = detail::nastran_apply_frames(m.mMesh, g.mCords, g.mIds, g.mCp, g.mCd, kOp2Who);
+    m.mCd = g.mCd;
     const std::unordered_set<std::int64_t> grids(g.mIds.begin(), g.mIds.end());
     const auto cards = op2_read_elements(rR.mStream, rR.mTables, grids);
     const detail::NastranCells cells =
@@ -90493,6 +92179,35 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
     // name -> (components, values)
     std::map<std::string, std::pair<std::size_t, std::vector<double>>> point_arrays;
     std::map<std::string, std::vector<double>> cell_arrays;
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
+    // Multi-valued cell arrays (per ply, station, corner or element node):
+    // (cell, column, value), laid out once every block is read; the first value
+    // of a cell and column wins, as for the centre values.
+    struct Wide {
+        std::vector<std::size_t> mCell, mCol;
+        std::vector<double> mValue;
+    };
+    std::map<std::string, Wide> wide;
+    auto push = [&](const std::string& rName, std::size_t Cell, std::size_t Col, double V) {
+        Wide& e = wide[rName];
+        e.mCell.push_back(Cell);
+        e.mCol.push_back(Col);
+        e.mValue.push_back(V);
+    };
+    // The position of point `Point` in the connectivity of global cell `Cell`.
+    auto node_position = [&](std::size_t Cell, std::size_t Point) -> std::size_t {
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), Cell) -
+            model.mOffsets.begin() - 1);
+        const NDArray& conn = mesh.Cells(b).Conn();
+        const std::size_t width = conn.Shape()[1];
+        const std::size_t row = Cell - model.mOffsets[b];
+        for (std::size_t k = 0; k < width; ++k)
+            if (static_cast<std::size_t>(detail::read_int(conn, row * width + k)) == Point)
+                return k;
+        return kOp2Npos;
+    };
     for (const Op2Block& b : r.mBlocks) {
         if (b.mStep != index)
             continue;
@@ -90523,28 +92238,131 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
                     const auto p = model.mGridIndex.find(w.Int(row) / 10);
                     if (p == model.mGridIndex.end() || !std::isnan(values[p->second * nc]))
                         continue;
+                    double* dst = values.data() + p->second * nc;
                     for (std::size_t c = 0; c < nc; ++c)
-                        values[p->second * nc + c] = w.Float(row + (c0 + c) * ws);
+                        dst[c] = w.Float(row + (c0 + c) * ws);
+                    // Results are in the GRID's output system (CD) unless the table is BOUG*.
+                    if (nc == 3 && !b.mBasic && !model.mCd.empty())
+                        detail::nastran_rotate_to_basic(model.mSystems, model.mCd[p->second],
+                                                        basic + 3 * p->second, dst, 1);
+                }
+            }
+        } else if (b.mGridForce) {
+            // Entries: grid*10+device, element (0 for the totals, applied loads,
+            // SPC forces, ...), its 8-character name, F1 F2 F3 M1 M2 M3 in the
+            // GRID's output system (CD). Element rows become (cells, nodes) in
+            // the cell's node order; the others point data named after the label.
+            if (nwords % 10)
+                op2_fail("a " + b.mBase + " record is not a whole number of entries");
+            static const char* members[6] = {"F1", "F2", "F3", "M1", "M2", "M3"};
+            for (std::size_t r0 = 0; r0 < nwords / 10; ++r0) {
+                const char* row = raw.data() + r0 * 10 * ws;
+                const auto p = model.mGridIndex.find(w.Int(row) / 10);
+                if (p == model.mGridIndex.end())
+                    continue;
+                double v[6];
+                for (std::size_t c = 0; c < 6; ++c)
+                    v[c] = w.Float(row + (4 + c) * ws);
+                if (!model.mCd.empty())
+                    detail::nastran_rotate_to_basic(model.mSystems, model.mCd[p->second],
+                                                    basic + 3 * p->second, v, 2);
+                const std::int64_t eid = w.Int(row + ws);
+                if (eid > 0) {
+                    const auto c = model.mCellIndex.find(eid);
+                    if (c == model.mCellIndex.end())
+                        continue;
+                    const std::size_t pos = node_position(c->second, p->second);
+                    if (pos == kOp2Npos)
+                        continue;
+                    for (std::size_t k = 0; k < 6; ++k) {
+                        const std::string name = b.mBase + ":" + members[k];
+                        if (rOpts.WantsArray(name))
+                            push(name, c->second, pos, v[k]);
+                    }
+                    continue;
+                }
+                std::string label;
+                for (std::size_t k = 0; k < 2 * ws; ++k) {
+                    const char ch = row[2 * ws + k];
+                    if (ch != ' ' && ch != '*' && ch != '\0')
+                        label += ch;
+                }
+                for (std::size_t k = 0; k < 6; ++k) {
+                    const std::string name = b.mBase + ":" + label + ":" + members[k];
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto it = point_arrays.find(name);
+                    if (it == point_arrays.end())
+                        it = point_arrays
+                                 .emplace(name, std::make_pair(std::size_t{1},
+                                                               std::vector<double>(npts, kOp2Nan)))
+                                 .first;
+                    if (std::isnan(it->second.second[p->second]))
+                        it->second.second[p->second] = v[k];
                 }
             }
         } else {
             const std::size_t nw = b.mNumWide;
             if (nwords % nw)
                 op2_fail("a " + b.mBase + " record is not a whole number of elements");
-            for (const auto& [word, member] : b.mLayout) {
-                const std::string name = b.mBase + ":" + member;
-                if (!rOpts.WantsArray(name))
+            const Op2ElementLayout& lay = b.mLayout;
+            std::unordered_map<std::int64_t, std::size_t> stations;  // CBAR: stations seen
+            for (std::size_t r0 = 0; r0 < nwords / nw; ++r0) {
+                const char* row = raw.data() + r0 * nw * ws;
+                const std::int64_t eid = w.Int(row) / 10;
+                const auto c = model.mCellIndex.find(eid);
+                const std::size_t station = lay.mKind == Op2Values::Station ? stations[eid]++ : 0;
+                if (c == model.mCellIndex.end())
                     continue;
-                auto it = cell_arrays.find(name);
-                if (it == cell_arrays.end())
-                    it = cell_arrays.emplace(name, std::vector<double>(ncells, kOp2Nan)).first;
-                std::vector<double>& values = it->second;
-                for (std::size_t r0 = 0; r0 < nwords / nw; ++r0) {
-                    const char* row = raw.data() + r0 * nw * ws;
-                    const auto c = model.mCellIndex.find(w.Int(row) / 10);
-                    if (c == model.mCellIndex.end() || !std::isnan(values[c->second]))
+                const std::size_t cell = c->second;
+                if (lay.mKind == Op2Values::Ply || lay.mKind == Op2Values::Station) {
+                    const bool ply = lay.mKind == Op2Values::Ply;
+                    const std::int64_t ply_id = ply ? w.Int(row + ws) : 1;
+                    if (ply_id < 1)
                         continue;
-                    values[c->second] = w.Float(row + word * ws);
+                    const std::size_t col = ply ? static_cast<std::size_t>(ply_id - 1) : station;
+                    const char* suffix = ply ? "@ply" : "@station";
+                    for (const auto& [word, member] : lay.mMembers) {
+                        const std::string name = b.mBase + ":" + member + suffix;
+                        if (rOpts.WantsArray(name))
+                            push(name, cell, col, w.Float(row + word * ws));
+                    }
+                    continue;
+                }
+                // Row: the values; Blocks: the first block's (the centre, or end A).
+                const std::size_t base = lay.mKind == Op2Values::Blocks ? lay.mFirst : 0;
+                for (const auto& [word, member] : lay.mMembers) {
+                    const std::string name = b.mBase + ":" + member;
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto it = cell_arrays.find(name);
+                    if (it == cell_arrays.end())
+                        it = cell_arrays.emplace(name, std::vector<double>(ncells, kOp2Nan)).first;
+                    if (std::isnan(it->second[cell]))
+                        it->second[cell] = w.Float(row + (base + word) * ws);
+                }
+                if (lay.mKind != Op2Values::Blocks)
+                    continue;
+                for (std::size_t k = lay.mStations ? 0 : 1; k < lay.mBlocks; ++k) {
+                    const char* block = row + (lay.mFirst + k * lay.mBlock) * ws;
+                    std::size_t col = k;
+                    // A beam station with no GRID and no distance was not output.
+                    if (lay.mStations && k > 0 && w.Int(block) == 0 && w.Float(block + ws) == 0.0)
+                        continue;
+                    if (!lay.mStations) {
+                        const auto g = model.mGridIndex.find(w.Int(block));
+                        if (g == model.mGridIndex.end())
+                            continue;
+                        col = node_position(cell, g->second);
+                        if (col == kOp2Npos)
+                            continue;
+                    }
+                    const char* suffix = lay.mStations ? "@station" : "@corner";
+                    for (const auto& [word, member] : lay.mMembers) {
+                        const std::string name = b.mBase + ":" + member + suffix;
+                        if (rOpts.WantsArray(name))
+                            push(name, cell, col, w.Float(block + word * ws));
+                    }
                 }
             }
         }
@@ -90566,6 +92384,31 @@ Mesh read_nastran_op2(const std::string& rPath, const ReadOptions& rOpts) {
             per_block.push_back(std::move(a));
         }
         mesh.AddCellData(name, std::move(per_block));
+    }
+    for (const auto& [name, e] : wide) {
+        std::size_t width = 0;
+        for (std::size_t col : e.mCol)
+            width = std::max(width, col + 1);
+        std::vector<NDArray> per_block;
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b], width});
+            std::fill(a.As<double>(), a.As<double>() + a.Size(), kOp2Nan);
+            per_block.push_back(std::move(a));
+        }
+        for (std::size_t i = 0; i < e.mCell.size(); ++i) {
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), e.mCell[i]) -
+                model.mOffsets.begin() - 1);
+            double& slot =
+                per_block[b].As<double>()[(e.mCell[i] - model.mOffsets[b]) * width + e.mCol[i]];
+            if (std::isnan(slot))
+                slot = e.mValue[i];
+        }
+        mesh.AddCellData(name, std::move(per_block));
+        NDArray layout(DType::Int64, {std::size_t{2}});
+        layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(width);
+        layout.As<std::int64_t>()[1] = 1;
+        mesh.AddFieldData("nastran:layout:" + name, std::move(layout));
     }
     return mesh;
 }
@@ -98968,6 +100811,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 // ===== end src/cpp/src/formats/svg.cpp =====
 // ===== begin src/cpp/src/formats/tecplot.cpp =====
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -98975,6 +100819,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
@@ -99160,119 +101005,246 @@ const std::vector<int>& tecplot_order(const std::string& rM) {
 
 namespace {
 
-// One ZONE header's parsed fields, its data section's line range, and its
-// transient identity (SOLUTIONTIME/STRANDID). Shared by read_tecplot (which
-// decodes exactly one zone's data) and read_tecplot_metadata (which decodes
-// none): both start from the same tecplot_scan_zones pass, so which zone the
-// data-decoding step picks and which zones the metadata's timeline lists can
-// never drift against each other.
-struct TecplotZoneHeader {
-    std::map<std::string, std::string> mFields;  // NODES/N/ELEMENTS/E/DATAPACKING/ZONETYPE/F/ET/NV
-    std::string mVarloc;
-    std::string mTitle;  // T="...", unquoted; empty if not given
+// The zone model both the ASCII and the binary (.plt) reader decode into: a
+// zone's header fields normalised (0-based sharing, ordered I/J/K, per-variable
+// location), so the sharing resolution, the ordered connectivity, the
+// timeline and the mesh assembly below are one code path for both encodings.
+// read_tecplot and read_tecplot_metadata start from the same scan, so which
+// zones a step holds and which zones the metadata lists never drift.
+struct TecplotZone {
+    std::string mTitle;                 // unquoted; empty if not given
+    std::string mTypeName = "ORDERED";  // ORDERED, FELINESEG, ..., FEPOLYHEDRON
+    bool mOrdered = false;
+    std::size_t mI = 1, mJ = 1, mK = 1;
+    std::size_t mNumNodes = 0;
+    std::size_t mNumCells = 0;
+    std::vector<int> mCellCentered;  // per variable
+    // Variable index -> the 0-based zone it is shared from (VARSHARELIST):
+    // that variable has no data of its own here.
+    std::map<std::size_t, std::size_t> mVarShareZone;
+    // Variables with no data anywhere for this zone (PASSIVEVARLIST).
+    std::set<std::size_t> mPassiveVars;
+    // 0-based zone this zone's connectivity is shared from, or -1.
+    long long mConnShareZone = -1;
     bool mHasSolutionTime = false;
     double mSolutionTime = 0.0;
     bool mHasStrandId = false;
     int mStrandId = 0;
+
+    // ASCII: BLOCK (else POINT) packing and the first data line.
+    bool mBlock = true;
     std::size_t mDataStart = 0;
-    std::size_t mNumNodes = 0;
-    std::size_t mNumCells = 0;
-    // Variable index (0-based) -> the 1-based zone number it is shared from
-    // (VARSHARELIST=([m,n]=z)): that variable has no data of its own here.
-    std::map<std::size_t, std::size_t> mVarShareZone;
-    // Variable indices with no data anywhere for this zone (PASSIVEVARLIST).
-    std::set<std::size_t> mPassiveVars;
-    // 1-based zone number this zone's connectivity is shared from
-    // (CONNECTIVITYSHAREZONE=z), or 0 for its own.
-    std::size_t mConnShareZone = 0;
+    // Binary: where each owned variable's values start and their data format
+    // (1 float, 2 double, 3 int32, 4 int16, 5 byte), and the connectivity.
+    std::map<std::size_t, std::pair<std::size_t, int>> mVarData;
+    std::size_t mConnOffset = 0;
+    bool mHasConn = false;
+    int mRawFaceNeighbors = 0;
+    int mMiscFaceNeighbors = 0;
+    int mFaceNeighborMode = 0;
+
+    bool Owns(std::size_t Var) const {
+        return !mVarShareZone.count(Var) && !mPassiveVars.count(Var);
+    }
+    std::size_t DataLength(std::size_t Var) const {
+        return mCellCentered[Var] ? mNumCells : mNumNodes;
+    }
+    // Node and cell counts of an ordered zone: lines, quads or hexahedra over
+    // the dimensions longer than one; a single point is one vertex.
+    void FinishOrdered() {
+        mNumNodes = mI * mJ * mK;
+        std::size_t cells = 1;
+        bool any = false;
+        for (std::size_t d : {mI, mJ, mK}) {
+            if (d > 1) {
+                cells *= d - 1;
+                any = true;
+            }
+        }
+        mNumCells = any ? cells : 1;
+    }
+    std::size_t OrderedDims() const {
+        return static_cast<std::size_t>(mI > 1) + static_cast<std::size_t>(mJ > 1) +
+               static_cast<std::size_t>(mK > 1);
+    }
 };
 
-std::string tecplot_zone_field(const TecplotZoneHeader& rZ, const char* pA, const char* pB) {
-    auto it = rZ.mFields.find(pA);
-    if (it != rZ.mFields.end())
-        return it->second;
-    it = rZ.mFields.find(pB);
-    return it != rZ.mFields.end() ? it->second : std::string();
+std::string tecplot_zone_meshio_type(const TecplotZone& rZ) {
+    if (rZ.mOrdered) {
+        static const char* const kTypes[] = {"vertex", "line", "quad", "hexahedron"};
+        return kTypes[rZ.OrderedDims()];
+    }
+    if (rZ.mTypeName == "FEPOLYGON" || rZ.mTypeName == "FEPOLYHEDRON")
+        throw ReadError("Tecplot: " + rZ.mTypeName +
+                        " zones (polygonal/polyhedral) are not supported");
+    const std::string mtype = tecplot_to_meshio(rZ.mTypeName);
+    if (mtype.empty())
+        throw ReadError("Tecplot: unsupported zone type " + rZ.mTypeName);
+    return mtype;
 }
 
-// The zone's element type and, for FEBLOCK data, which variables are
-// cell-centered -- the same derivation whether or not this zone's data is
-// ever decoded.
-void tecplot_zone_format(const TecplotZoneHeader& rZ, std::size_t NumVariables, bool& rFeblock,
-                         std::string& rZtype, std::vector<int>& rCellCentered) {
-    std::string fmt;
-    if (rZ.mFields.count("F")) {
-        fmt = tecplot_upper(rZ.mFields.at("F"));
-        rZtype = rZ.mFields.count("ET") ? rZ.mFields.at("ET") : "";
-    } else {
-        fmt = "FE" + tecplot_upper(tecplot_zone_field(rZ, "DATAPACKING", ""));
-        rZtype = tecplot_zone_field(rZ, "ZONETYPE", "");
-    }
-    rFeblock = (fmt == "FEBLOCK");
+std::size_t tecplot_nodes_per_cell(const std::string& rMeshioType) {
+    if (rMeshioType == "vertex")
+        return 1;
+    if (rMeshioType == "line")
+        return 2;
+    if (rMeshioType == "triangle")
+        return 3;
+    if (rMeshioType == "quad" || rMeshioType == "tetra")
+        return 4;
+    return 8;
+}
 
-    rCellCentered.assign(NumVariables, 0);
-    if (!rFeblock)
-        return;
-    if (rZ.mFields.count("NV")) {
-        int nv = std::stoi(rZ.mFields.at("NV"));
+/// The cells of an ordered zone over its node index `i + I*(j + J*k)`, in VTK
+/// corner order and `i` fastest (the order of its cell-centred values). Unit
+/// dimensions are dropped first, so a J- or JK-ordered zone meshes like an I-
+/// or IJ-ordered one.
+NDArray tecplot_ordered_connectivity(const TecplotZone& rZ) {
+    const std::size_t dims[3] = {rZ.mI, rZ.mJ, rZ.mK};
+    const std::size_t stride[3] = {1, rZ.mI, rZ.mI * rZ.mJ};
+    std::vector<std::size_t> n, s;
+    for (int a = 0; a < 3; ++a) {
+        if (dims[a] > 1) {
+            n.push_back(dims[a]);
+            s.push_back(stride[a]);
+        }
+    }
+    if (n.empty()) {
+        NDArray conn(DType::Int64, {1, 1});
+        conn.As<std::int64_t>()[0] = 0;
+        return conn;
+    }
+    const std::size_t npc = std::size_t{1} << n.size();
+    NDArray conn(DType::Int64, {rZ.mNumCells, npc});
+    std::int64_t* cp = conn.As<std::int64_t>();
+    const std::size_t ni = n[0] - 1;
+    const std::size_t nj = n.size() > 1 ? n[1] - 1 : 1;
+    const std::size_t nk = n.size() > 2 ? n[2] - 1 : 1;
+    const std::size_t sj = n.size() > 1 ? s[1] : 0;
+    const std::size_t sk = n.size() > 2 ? s[2] : 0;
+    std::size_t c = 0;
+    for (std::size_t k = 0; k < nk; ++k) {
+        for (std::size_t j = 0; j < nj; ++j) {
+            for (std::size_t i = 0; i < ni; ++i, ++c) {
+                const std::size_t b = i * s[0] + j * sj + k * sk;
+                std::int64_t* row = cp + c * npc;
+                if (n.size() == 1) {
+                    row[0] = static_cast<std::int64_t>(b);
+                    row[1] = static_cast<std::int64_t>(b + s[0]);
+                    continue;
+                }
+                const std::size_t q[4] = {b, b + s[0], b + s[0] + sj, b + sj};
+                for (int m = 0; m < 4; ++m)
+                    row[m] = static_cast<std::int64_t>(q[m]);
+                if (n.size() == 3)
+                    for (int m = 0; m < 4; ++m)
+                        row[4 + m] = static_cast<std::int64_t>(q[m] + sk);
+            }
+        }
+    }
+    return conn;
+}
+
+/// A zone's own data -- the variables it neither shares nor leaves passive,
+/// and its own FE connectivity (0-based) -- from wherever the encoding keeps
+/// them.
+class TecplotSource {
+public:
+    virtual ~TecplotSource() = default;
+    /// Fills `rCols[v]` for every owned variable `v` and, for an FE zone that
+    /// does not share its connectivity, `rConn`.
+    virtual void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
+                         NDArray& rConn) const = 0;
+};
+
+// --- ASCII --------------------------------------------------------------------
+
+/// The zone type, packing and cell-centred variables from its header fields.
+/// `F=` is the old form (FEPOINT/FEBLOCK with `ET=`, or POINT/BLOCK for an
+/// ordered zone); otherwise ZONETYPE (default ORDERED) and DATAPACKING
+/// (default BLOCK, as the Data Format Guide specifies).
+void tecplot_ascii_zone_kind(TecplotZone& rZ, const std::map<std::string, std::string>& rFields,
+                             const std::string& rVarloc, std::size_t NumVariables) {
+    auto field = [&](const char* pKey, const char* pDefault) {
+        const auto it = rFields.find(pKey);
+        return tecplot_upper(it != rFields.end() ? it->second : std::string(pDefault));
+    };
+    const std::string f = field("F", "");
+    if (!f.empty()) {
+        if (f == "FEPOINT" || f == "FEBLOCK") {
+            const std::string et = field("ET", "");
+            rZ.mTypeName = et.rfind("FE", 0) == 0 ? et : "FE" + et;
+            rZ.mBlock = f == "FEBLOCK";
+        } else {
+            rZ.mTypeName = "ORDERED";
+            rZ.mBlock = f == "BLOCK";
+        }
+    } else {
+        rZ.mTypeName = field("ZONETYPE", "ORDERED");
+        rZ.mBlock = field("DATAPACKING", "BLOCK") == "BLOCK";
+    }
+    rZ.mOrdered = rZ.mTypeName == "ORDERED";
+
+    rZ.mCellCentered.assign(NumVariables, 0);
+    if (!rZ.mBlock)
+        return;  // POINT packing is nodal only
+    if (rFields.count("NV") && !rZ.mOrdered) {
+        const int nv = std::stoi(rFields.at("NV"));
         for (std::size_t k = static_cast<std::size_t>(nv); k < NumVariables; ++k)
-            rCellCentered[k] = 1;
-    } else if (!rZ.mVarloc.empty()) {
-        std::string vc = rZ.mVarloc.substr(1, rZ.mVarloc.size() - 2);  // strip outer ()
+            rZ.mCellCentered[k] = 1;
+    } else if (!rVarloc.empty()) {
+        const std::string vc = rVarloc.substr(1, rVarloc.size() - 2);  // strip outer ()
         for (const std::string& entry : tecplot_split_entries(vc)) {
             const std::size_t eq = entry.find('=');
             if (eq == std::string::npos)
                 continue;
-            const std::string rng = entry.substr(0, eq);
-            const std::string loc = tecplot_upper(entry.substr(eq + 1));
-            if (loc != "CELLCENTERED")
+            if (tecplot_upper(entry.substr(eq + 1)) != "CELLCENTERED")
                 continue;
-            for (std::size_t idx : tecplot_parse_ranges(rng))
+            for (std::size_t idx : tecplot_parse_ranges(entry.substr(0, eq)))
                 if (idx < NumVariables)
-                    rCellCentered[idx] = 1;
+                    rZ.mCellCentered[idx] = 1;
         }
     }
 }
 
-// How many numeric tokens this zone's data block holds, in file order --
-// FEBLOCK is one run per *owned, active* variable (cell-centered ones
-// NumCells long, the rest NumNodes long); a variable this zone shares from an
-// earlier one (VARSHARELIST) or carries nowhere (PASSIVEVARLIST) has no data
-// here at all, so it contributes nothing to the budget. POINT/FEPOINT has no
-// such sharing (it is NumNodes rows of NumVariables each, always).
-std::size_t tecplot_zone_data_token_count(const TecplotZoneHeader& rZ, std::size_t NumVariables,
-                                          bool Feblock, const std::vector<int>& rCellCentered) {
-    if (!Feblock)
+// How many numeric tokens this zone's data block holds: BLOCK is one run per
+// *owned* variable (cell-centred ones NumCells long, the rest NumNodes long);
+// a shared or passive variable has no data here. POINT is NumNodes rows of
+// every variable.
+std::size_t tecplot_ascii_token_count(const TecplotZone& rZ, std::size_t NumVariables) {
+    if (!rZ.mBlock)
         return rZ.mNumNodes * NumVariables;
     std::size_t total = 0;
-    for (std::size_t k = 0; k < NumVariables; ++k) {
-        if (rZ.mVarShareZone.count(k) || rZ.mPassiveVars.count(k))
-            continue;
-        total += rCellCentered[k] ? rZ.mNumCells : rZ.mNumNodes;
-    }
+    for (std::size_t k = 0; k < NumVariables; ++k)
+        if (rZ.Owns(k))
+            total += rZ.DataLength(k);
     return total;
 }
 
-// One pass over every line, splitting VARIABLES from every ZONE header (not
-// just the first) and locating each zone's data section by actually counting
-// off its own token budget plus its connectivity lines -- Tecplot ASCII has
-// no fixed tokens-per-line convention, so this is the only reliable way to
-// find where one zone's data ends and the next one's header begins.
-std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>& rLines,
-                                                  std::vector<std::string>& rVariables) {
-    std::vector<TecplotZoneHeader> zones;
+// One pass over every line, splitting VARIABLES from every ZONE header and
+// locating each zone's data section by counting off its own token budget plus
+// its connectivity lines -- Tecplot ASCII has no fixed tokens-per-line
+// convention, so this is the only reliable way to find where one zone's data
+// ends and the next one's header begins. Anything else (TEXT, GEOMETRY,
+// DATASETAUXDATA, face-neighbour lines) is skipped.
+std::vector<TecplotZone> tecplot_scan_zones(const std::vector<std::string>& rLines,
+                                            std::vector<std::string>& rVariables) {
+    std::vector<TecplotZone> zones;
     std::size_t i = 0;
-    for (; i < rLines.size(); ++i) {
-        std::string u = tecplot_upper(rLines[i]);
+    while (i < rLines.size()) {
+        const std::string u = tecplot_upper(rLines[i]);
         if (u.rfind("VARIABLES", 0) == 0) {
             std::string joined = rLines[i];
-            while (i + 1 < rLines.size() && tecplot_strip(rLines[i + 1])[0] == '"')
+            while (i + 1 < rLines.size() && rLines[i + 1][0] == '"')
                 joined += " " + rLines[++i];
-            std::string rhs = joined.substr(joined.find('=') + 1);
+            rVariables.clear();
+            const std::string rhs = joined.substr(joined.find('=') + 1);
             std::size_t p = 0;
             while (p < rhs.size()) {
                 if (rhs[p] == '"') {
                     std::size_t q = rhs.find('"', p + 1);
+                    if (q == std::string::npos)
+                        q = rhs.size();
                     rVariables.push_back(rhs.substr(p + 1, q - p - 1));
                     p = q + 1;
                 } else if (std::isspace((unsigned char)rhs[p]) || rhs[p] == ',') {
@@ -99285,12 +101257,15 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
                     p = q;
                 }
             }
+            ++i;
             continue;
         }
-        if (u.rfind("ZONE", 0) != 0)
+        if (u.rfind("ZONE", 0) != 0) {
+            ++i;
             continue;
+        }
 
-        TecplotZoneHeader z;
+        TecplotZone z;
         std::string joined = rLines[i];
         while (i + 1 < rLines.size() && !is_float_token(tecplot_tokens(rLines[i + 1])[0]))
             joined += " " + rLines[++i];
@@ -99300,8 +101275,10 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
         // where a quoted or parenthesized VALUE is already one token (so a
         // title like T = "VARLOCATION" cannot be mistaken for the field of
         // the same name).
+        std::map<std::string, std::string> fields;
+        std::string varloc;
         const std::vector<std::string> tk = tecplot_header_tokens(joined);
-        for (std::size_t k = 1; k + 2 < tk.size(); k += 3) {
+        for (std::size_t k = 1; k + 2 < tk.size();) {
             if (tk[k + 1] != "=") {
                 ++k;  // resync: not a KEY = VALUE triple after all
                 continue;
@@ -99310,8 +101287,8 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
             const std::string& val = tk[k + 2];
             if (key == "NODES" || key == "N" || key == "ELEMENTS" || key == "E" ||
                 key == "DATAPACKING" || key == "ZONETYPE" || key == "F" || key == "ET" ||
-                key == "NV") {
-                z.mFields[key] = val;
+                key == "NV" || key == "I" || key == "J" || key == "K") {
+                fields[key] = val;
             } else if (key == "T") {
                 z.mTitle = tecplot_unquote(val);
             } else if (key == "SOLUTIONTIME") {
@@ -99321,47 +101298,64 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
                 z.mStrandId = std::stoi(val);
                 z.mHasStrandId = true;
             } else if (key == "VARLOCATION") {
-                z.mVarloc = val;
-                z.mVarloc.erase(std::remove(z.mVarloc.begin(), z.mVarloc.end(), ' '),
-                                z.mVarloc.end());
+                varloc = val;
+                varloc.erase(std::remove(varloc.begin(), varloc.end(), ' '), varloc.end());
             } else if (key == "VARSHARELIST") {
-                std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
+                const std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
                 for (const std::string& entry : tecplot_split_entries(inner)) {
                     const std::size_t eq = entry.find('=');
-                    if (eq == std::string::npos)
-                        continue;
-                    const std::size_t zoneno =
-                        static_cast<std::size_t>(std::stoul(entry.substr(eq + 1)));
+                    // No zone number: shared from the previous zone.
+                    const long long src = eq == std::string::npos
+                                              ? static_cast<long long>(zones.size()) - 1
+                                              : std::stoll(entry.substr(eq + 1)) - 1;
+                    if (src < 0)
+                        throw ReadError("Tecplot: VARSHARELIST names no earlier zone");
                     for (std::size_t idx : tecplot_parse_ranges(entry.substr(0, eq)))
-                        z.mVarShareZone[idx] = zoneno;
+                        z.mVarShareZone[idx] = static_cast<std::size_t>(src);
                 }
             } else if (key == "PASSIVEVARLIST") {
-                std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
+                const std::string inner = val.substr(1, val.size() - 2);  // strip outer ()
                 for (std::size_t idx : tecplot_parse_ranges(inner))
                     z.mPassiveVars.insert(idx);
             } else if (key == "CONNECTIVITYSHAREZONE") {
-                z.mConnShareZone = static_cast<std::size_t>(std::stoul(val));
+                z.mConnShareZone = std::stoll(val) - 1;
             }
+            k += 3;
         }
-        z.mNumNodes = std::stoull(tecplot_zone_field(z, "NODES", "N"));
-        z.mNumCells = std::stoull(tecplot_zone_field(z, "ELEMENTS", "E"));
+        if (rVariables.empty())
+            throw ReadError("Tecplot: no VARIABLES");
+        tecplot_ascii_zone_kind(z, fields, varloc, rVariables.size());
+        try {
+            if (z.mOrdered) {
+                z.mI = fields.count("I") ? std::stoull(fields.at("I")) : 1;
+                z.mJ = fields.count("J") ? std::stoull(fields.at("J")) : 1;
+                z.mK = fields.count("K") ? std::stoull(fields.at("K")) : 1;
+                z.FinishOrdered();
+            } else {
+                auto get = [&](const char* pA, const char* pB) {
+                    auto it = fields.find(pA);
+                    if (it == fields.end())
+                        it = fields.find(pB);
+                    return it == fields.end() ? std::string() : it->second;
+                };
+                z.mNumNodes = std::stoull(get("NODES", "N"));
+                z.mNumCells = std::stoull(get("ELEMENTS", "E"));
+            }
+        } catch (const std::logic_error&) {
+            throw ReadError(z.mOrdered ? "Tecplot: bad I/J/K in an ordered zone"
+                                       : "Tecplot: an FE zone needs NODES and ELEMENTS");
+        }
 
-        bool feblock = false;
-        std::string ztype;
-        std::vector<int> cell_centered;
-        tecplot_zone_format(z, rVariables.size(), feblock, ztype, cell_centered);
-        const std::size_t want =
-            tecplot_zone_data_token_count(z, rVariables.size(), feblock, cell_centered);
-
+        const std::size_t want = tecplot_ascii_token_count(z, rVariables.size());
         std::size_t li = z.mDataStart, got = 0;
         while (got < want && li < rLines.size()) {
             got += tecplot_tokens(rLines[li]).size();
             ++li;
         }
-        if (z.mConnShareZone == 0)
+        if (!z.mOrdered && z.mConnShareZone < 0)
             li += z.mNumCells;  // one connectivity line per cell -- none if shared
-        zones.push_back(z);
-        i = li - 1;  // the for-loop's ++i resumes scanning right after
+        zones.push_back(std::move(z));
+        i = li;
     }
     if (rVariables.empty())
         throw ReadError("Tecplot: no VARIABLES");
@@ -99370,17 +101364,465 @@ std::vector<TecplotZoneHeader> tecplot_scan_zones(const std::vector<std::string>
     return zones;
 }
 
+class TecplotAsciiSource final : public TecplotSource {
+public:
+    TecplotAsciiSource(const std::vector<std::string>& rLines,
+                       const std::vector<TecplotZone>& rZones, std::size_t NumVariables)
+        : mrLines(rLines), mrZones(rZones), mNumVariables(NumVariables) {}
+
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
+                 NDArray& rConn) const override {
+        const TecplotZone& z = mrZones[ZoneIdx];
+        const std::size_t nv = mNumVariables;
+        const std::size_t want = tecplot_ascii_token_count(z, nv);
+        std::vector<double> flat;
+        flat.reserve(want);
+        std::size_t li = z.mDataStart;
+        while (flat.size() < want && li < mrLines.size()) {
+            for (const auto& t : tecplot_tokens(mrLines[li]))
+                flat.push_back(detail::parse_double(t));
+            ++li;
+        }
+        if (flat.size() < want)
+            throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                            " has fewer values than its header announces");
+        if (z.mBlock) {
+            std::size_t off = 0;
+            for (std::size_t k = 0; k < nv; ++k) {
+                if (!z.Owns(k))
+                    continue;
+                const std::size_t n = z.DataLength(k);
+                rCols[k].assign(flat.begin() + static_cast<std::ptrdiff_t>(off),
+                                flat.begin() + static_cast<std::ptrdiff_t>(off + n));
+                off += n;
+            }
+        } else {
+            for (std::size_t k = 0; k < nv; ++k) {
+                if (!z.Owns(k))
+                    continue;
+                rCols[k].resize(z.mNumNodes);
+                for (std::size_t r = 0; r < z.mNumNodes; ++r)
+                    rCols[k][r] = flat[r * nv + k];
+            }
+        }
+        if (z.mOrdered || z.mConnShareZone >= 0)
+            return;
+        const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
+        rConn = NDArray(DType::Int64, {z.mNumCells, nn});
+        std::int64_t* cp = rConn.As<std::int64_t>();
+        for (std::size_t c = 0; c < z.mNumCells; ++c) {
+            if (li >= mrLines.size())
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " connectivity is truncated");
+            const auto t = tecplot_tokens(mrLines[li++]);
+            if (t.size() < nn)
+                throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                                " has a short connectivity line");
+            for (std::size_t j = 0; j < nn; ++j)
+                cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
+        }
+    }
+
+private:
+    const std::vector<std::string>& mrLines;
+    const std::vector<TecplotZone>& mrZones;
+    std::size_t mNumVariables;
+};
+
+// --- binary (.plt) --------------------------------------------------------------
+//
+// Appendix A of the Data Format Guide ("Binary Data File Format"), #!TDV112.
+// Facts checked against files TecIO (the library preplot is built on) wrote,
+// in both byte orders:
+// * every header string is int32 per character, 0-terminated;
+// * a zone record's strand is 0-based (-1 static), its "not used" word -1;
+// * a geometry record carries coordinate system, scope and draw order before
+//   its anchor (the order TecIO's own reader expects for V112);
+// * the data section repeats the 299.0 marker per zone, then per-variable data
+//   formats, the passive and sharing lists, the connectivity share zone and
+//   one min/max pair per owned variable before the values;
+// * a cell-centred variable of an ordered zone is stored over the node
+//   dimensions with the last one longer than 1 shortened by one (note 5), so
+//   the other directions carry a ghost value at their end: I-1 values for an
+//   I-ordered zone, I*(J-1) for IJ, I*J*(K-1) for IJK;
+// * FE connectivity is zero-based int32.
+
+constexpr float kTecplotZoneMarker = 299.0F;
+constexpr float kTecplotGeometryMarker = 399.0F;
+constexpr float kTecplotTextMarker = 499.0F;
+constexpr float kTecplotLabelMarker = 599.0F;
+constexpr float kTecplotUserRecMarker = 699.0F;
+constexpr float kTecplotDataSetAuxMarker = 799.0F;
+constexpr float kTecplotVarAuxMarker = 899.0F;
+constexpr float kTecplotEohMarker = 357.0F;
+
+bool tecplot_is_plt(const char* pData, std::size_t Size) {
+    return Size >= 5 && std::memcmp(pData, "#!TDV", 5) == 0;
+}
+
+std::string tecplot_plt_string(detail::ByteCursor& rCur) {
+    std::string s;
+    for (std::int32_t c = rCur.I32(); c != 0; c = rCur.I32())
+        s += static_cast<char>(c);
+    return s;
+}
+
+void tecplot_plt_skip_geometry(detail::ByteCursor& rCur) {
+    const std::int32_t coord_sys = rCur.I32();  // 4 = Grid3D: polylines carry Z too
+    rCur.Skip(2 * 4);                           // scope, draw order
+    rCur.Skip(3 * 8);                           // anchor
+    rCur.Skip(4 * 4);                           // zone, color, fill color, is filled
+    const std::int32_t gtype = rCur.I32();
+    rCur.Skip(4);              // line pattern
+    rCur.Skip(2 * 8);          // pattern length, line thickness
+    rCur.Skip(3 * 4);          // ellipse points, arrowhead style and attachment
+    rCur.Skip(2 * 8);          // arrowhead size and angle
+    tecplot_plt_string(rCur);  // macro function command
+    const std::size_t width = rCur.I32() == 2 ? 8 : 4;
+    rCur.Skip(4);  // clipping
+    if (gtype == 0) {
+        const std::int32_t lines = rCur.I32();
+        for (std::int32_t l = 0; l < lines; ++l) {
+            const std::size_t n = static_cast<std::size_t>(rCur.I32());
+            rCur.Skip((coord_sys == 4 ? 3 : 2) * n * width);
+        }
+    } else if (gtype == 1 || gtype == 4) {
+        rCur.Skip(2 * width);  // rectangle / ellipse
+    } else if (gtype == 2 || gtype == 3) {
+        rCur.Skip(width);  // square / circle
+    } else {
+        throw ReadError("Tecplot .plt: unknown geometry type " + std::to_string(gtype));
+    }
+}
+
+void tecplot_plt_skip_text(detail::ByteCursor& rCur) {
+    rCur.Skip(2 * 4);          // coordinate system, scope
+    rCur.Skip(3 * 8);          // anchor
+    rCur.Skip(2 * 4);          // font, height units
+    rCur.Skip(8);              // height
+    rCur.Skip(4);              // box type
+    rCur.Skip(2 * 8);          // box margin, line width
+    rCur.Skip(2 * 4);          // box outline, fill colors
+    rCur.Skip(2 * 8);          // angle, line spacing
+    rCur.Skip(3 * 4);          // anchor, zone, color
+    tecplot_plt_string(rCur);  // macro function command
+    rCur.Skip(4);              // clipping
+    tecplot_plt_string(rCur);  // the text
+}
+
+// The header section: variables and every zone record, up to the 357.0 marker.
+std::vector<TecplotZone> tecplot_plt_header(detail::ByteCursor& rCur,
+                                            std::vector<std::string>& rVariables) {
+    rCur.Skip(4);              // FileType: full, grid or solution -- all read the same way
+    tecplot_plt_string(rCur);  // title
+    const std::int32_t nvar = rCur.I32();
+    if (nvar <= 0)
+        throw ReadError("Tecplot .plt: bad variable count " + std::to_string(nvar));
+    for (std::int32_t v = 0; v < nvar; ++v)
+        rVariables.push_back(tecplot_plt_string(rCur));
+    const std::size_t nv = rVariables.size();
+
+    static const char* const kTypes[] = {"ORDERED",         "FELINESEG",     "FETRIANGLE",
+                                         "FEQUADRILATERAL", "FETETRAHEDRON", "FEBRICK",
+                                         "FEPOLYGON",       "FEPOLYHEDRON"};
+    std::vector<TecplotZone> zones;
+    for (;;) {
+        const float marker = rCur.F32();
+        if (marker == kTecplotZoneMarker) {
+            TecplotZone z;
+            z.mTitle = tecplot_plt_string(rCur);
+            rCur.Skip(4);  // parent zone
+            const std::int32_t strand = rCur.I32();
+            const double time = rCur.F64();
+            rCur.Skip(4);  // not used (-1)
+            const std::int32_t ztype = rCur.I32();
+            if (ztype < 0 || ztype > 7)
+                throw ReadError("Tecplot .plt: unknown zone type " + std::to_string(ztype));
+            z.mTypeName = kTypes[ztype];
+            z.mOrdered = ztype == 0;
+            z.mCellCentered.assign(nv, 0);
+            if (rCur.I32() == 1)
+                for (std::size_t v = 0; v < nv; ++v)
+                    z.mCellCentered[v] = rCur.I32() == 1 ? 1 : 0;
+            z.mRawFaceNeighbors = rCur.I32();
+            z.mMiscFaceNeighbors = rCur.I32();
+            if (z.mMiscFaceNeighbors != 0) {
+                z.mFaceNeighborMode = rCur.I32();
+                if (!z.mOrdered)
+                    rCur.Skip(4);  // FE face neighbours completely specified
+            }
+            if (z.mOrdered) {
+                const std::int32_t I = rCur.I32(), J = rCur.I32(), K = rCur.I32();
+                if (I < 1 || J < 1 || K < 1)
+                    throw ReadError("Tecplot .plt: bad I/J/K in an ordered zone");
+                z.mI = static_cast<std::size_t>(I);
+                z.mJ = static_cast<std::size_t>(J);
+                z.mK = static_cast<std::size_t>(K);
+                z.FinishOrdered();
+            } else {
+                const std::int32_t pts = rCur.I32();
+                if (ztype == 6 || ztype == 7)
+                    rCur.Skip(4 * 4);  // faces, face nodes, boundary faces and connections
+                const std::int32_t elems = rCur.I32();
+                if (pts < 0 || elems < 0)
+                    throw ReadError("Tecplot .plt: negative node or element count");
+                z.mNumNodes = static_cast<std::size_t>(pts);
+                z.mNumCells = static_cast<std::size_t>(elems);
+                rCur.Skip(3 * 4);  // I/J/K cell dimensions, unused
+            }
+            while (rCur.I32() == 1) {  // auxiliary name/value pairs
+                tecplot_plt_string(rCur);
+                rCur.Skip(4);
+                tecplot_plt_string(rCur);
+            }
+            // The file's strands are 0-based (-1 static); only the grouping by
+            // strand matters, so the ASCII STRANDID's 1-based numbering is moot.
+            z.mHasSolutionTime = strand != -1 || time != 0.0;
+            z.mSolutionTime = time;
+            z.mHasStrandId = strand >= 0;
+            z.mStrandId = strand;
+            zones.push_back(std::move(z));
+        } else if (marker == kTecplotGeometryMarker) {
+            tecplot_plt_skip_geometry(rCur);
+        } else if (marker == kTecplotTextMarker) {
+            tecplot_plt_skip_text(rCur);
+        } else if (marker == kTecplotLabelMarker) {
+            const std::int32_t n = rCur.I32();
+            for (std::int32_t l = 0; l < n; ++l)
+                tecplot_plt_string(rCur);
+        } else if (marker == kTecplotUserRecMarker) {
+            tecplot_plt_string(rCur);
+        } else if (marker == kTecplotDataSetAuxMarker) {
+            tecplot_plt_string(rCur);
+            rCur.Skip(4);
+            tecplot_plt_string(rCur);
+        } else if (marker == kTecplotVarAuxMarker) {
+            rCur.Skip(4);
+            tecplot_plt_string(rCur);
+            rCur.Skip(4);
+            tecplot_plt_string(rCur);
+        } else if (marker == kTecplotEohMarker) {
+            break;
+        } else {
+            throw ReadError("Tecplot .plt: unexpected header marker " + std::to_string(marker) +
+                            " at byte " + std::to_string(rCur.Offset() - 4));
+        }
+    }
+    if (zones.empty())
+        throw ReadError("Tecplot: no ZONE");
+    return zones;
+}
+
+std::size_t tecplot_plt_format_width(int Format) {
+    switch (Format) {
+        case 1:
+        case 3:
+            return 4;
+        case 2:
+            return 8;
+        case 4:
+            return 2;
+        case 5:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/// The stored dimensions (and length) of an ordered zone's cell-centred
+/// variable: the node dimensions with the last one longer than 1 shortened.
+std::size_t tecplot_plt_ordered_cc_stored(const TecplotZone& rZ, std::size_t* pStored) {
+    std::size_t dims[3] = {rZ.mI, rZ.mJ, rZ.mK};
+    for (int a = 2; a >= 0; --a) {
+        if (dims[a] > 1) {
+            --dims[a];
+            break;
+        }
+    }
+    for (int a = 0; a < 3; ++a)
+        pStored[a] = dims[a];
+    return dims[0] * dims[1] * dims[2];
+}
+
+void tecplot_plt_skip_face_neighbors(detail::ByteCursor& rCur, const TecplotZone& rZ) {
+    for (int c = 0; c < rZ.mMiscFaceNeighbors; ++c) {
+        switch (rZ.mFaceNeighborMode) {
+            case 0:  // local one-to-one: cz, fz, cz
+                rCur.Skip(3 * 4);
+                break;
+            case 2:  // global one-to-one: cz, fz, ZZ, CZ
+                rCur.Skip(4 * 4);
+                break;
+            case 1:
+            case 3: {  // one-to-many: cz, fz, oz, nz, then nz cells (or zone/cell pairs)
+                rCur.Skip(3 * 4);
+                const std::int32_t nz = rCur.I32();
+                if (nz < 0)
+                    throw ReadError("Tecplot .plt: bad face-neighbour count");
+                rCur.Skip(static_cast<std::size_t>(nz) * (rZ.mFaceNeighborMode == 1 ? 4 : 8));
+                break;
+            }
+            default:
+                throw ReadError("Tecplot .plt: unknown face-neighbour mode " +
+                                std::to_string(rZ.mFaceNeighborMode));
+        }
+    }
+}
+
+// Walks every zone's data section, recording where each owned variable and the
+// connectivity start, and the sharing a binary file keeps here, not in the
+// header.
+void tecplot_plt_scan_data(detail::ByteCursor& rCur, const std::vector<std::string>& rVariables,
+                           std::vector<TecplotZone>& rZones) {
+    const std::size_t nv = rVariables.size();
+    for (std::size_t zi = 0; zi < rZones.size(); ++zi) {
+        TecplotZone& z = rZones[zi];
+        const float marker = rCur.F32();
+        if (marker != kTecplotZoneMarker)
+            throw ReadError("Tecplot .plt: expected the data marker of zone " +
+                            std::to_string(zi + 1) + ", got " + std::to_string(marker));
+        std::vector<int> formats(nv);
+        for (std::size_t v = 0; v < nv; ++v)
+            formats[v] = rCur.I32();
+        if (rCur.I32() != 0)
+            for (std::size_t v = 0; v < nv; ++v)
+                if (rCur.I32() != 0)
+                    z.mPassiveVars.insert(v);
+        if (rCur.I32() != 0) {
+            for (std::size_t v = 0; v < nv; ++v) {
+                const std::int32_t src = rCur.I32();
+                if (src >= 0)
+                    z.mVarShareZone[v] = static_cast<std::size_t>(src);
+            }
+        }
+        z.mConnShareZone = rCur.I32();
+        std::size_t owned = 0;
+        for (std::size_t v = 0; v < nv; ++v)
+            owned += z.Owns(v) ? 1 : 0;
+        rCur.Skip(owned * 2 * 8);  // min/max pairs
+        for (std::size_t v = 0; v < nv; ++v) {
+            if (!z.Owns(v))
+                continue;
+            if (formats[v] == 6)
+                throw ReadError("Tecplot .plt: variable '" + rVariables[v] +
+                                "' is BIT-packed, which is not supported");
+            const std::size_t width = tecplot_plt_format_width(formats[v]);
+            if (width == 0)
+                throw ReadError("Tecplot .plt: unknown data format " + std::to_string(formats[v]));
+            std::size_t n = z.DataLength(v);
+            if (z.mOrdered && z.mCellCentered[v]) {
+                std::size_t stored[3];
+                n = tecplot_plt_ordered_cc_stored(z, stored);
+            }
+            z.mVarData[v] = {rCur.Offset(), formats[v]};
+            rCur.Skip(n * width);
+        }
+        if (z.mOrdered) {
+            if (z.mConnShareZone < 0 && z.mMiscFaceNeighbors != 0)
+                tecplot_plt_skip_face_neighbors(rCur, z);
+            continue;
+        }
+        const std::string mtype = tecplot_zone_meshio_type(z);  // refuses polygon/polyhedron
+        if (z.mConnShareZone < 0) {
+            static const std::map<std::string, std::size_t> kFaces = {
+                {"line", 0}, {"triangle", 3}, {"quad", 4}, {"tetra", 4}, {"hexahedron", 6}};
+            z.mHasConn = true;
+            z.mConnOffset = rCur.Offset();
+            rCur.Skip(tecplot_nodes_per_cell(mtype) * z.mNumCells * 4);
+            if (z.mRawFaceNeighbors != 0)
+                rCur.Skip(kFaces.at(mtype) * z.mNumCells * 4);
+            if (z.mMiscFaceNeighbors != 0)
+                tecplot_plt_skip_face_neighbors(rCur, z);
+        }
+    }
+}
+
+class TecplotPltSource final : public TecplotSource {
+public:
+    TecplotPltSource(const char* pData, std::size_t Size, bool BigEndian,
+                     const std::vector<TecplotZone>& rZones)
+        : mpData(pData), mSize(Size), mBigEndian(BigEndian), mrZones(rZones) {}
+
+    void OwnData(std::size_t ZoneIdx, std::vector<std::vector<double>>& rCols,
+                 NDArray& rConn) const override {
+        const TecplotZone& z = mrZones[ZoneIdx];
+        detail::ByteCursor cur(mpData, mSize, mBigEndian, "Tecplot .plt");
+        const bool swap = mBigEndian != (std::endian::native == std::endian::big);
+        for (const auto& [v, where] : z.mVarData) {
+            const auto [offset, format] = where;
+            std::size_t stored[3] = {0, 0, 0};
+            const bool ghosts = z.mOrdered && z.mCellCentered[v];
+            const std::size_t n =
+                ghosts ? tecplot_plt_ordered_cc_stored(z, stored) : z.DataLength(v);
+            std::vector<double> raw(n);
+            cur.Seek(offset);
+            for (std::size_t r = 0; r < n; ++r) {
+                switch (format) {
+                    case 1:
+                        raw[r] = cur.F32();
+                        break;
+                    case 2:
+                        raw[r] = cur.F64();
+                        break;
+                    case 3:
+                        raw[r] = cur.I32();
+                        break;
+                    case 4: {
+                        std::uint16_t u;
+                        std::memcpy(&u, cur.Bytes(2).data(), 2);
+                        if (swap)
+                            u = detail::bswap16(u);
+                        raw[r] = static_cast<std::int16_t>(u);
+                        break;
+                    }
+                    default:
+                        raw[r] = static_cast<unsigned char>(cur.Bytes(1)[0]);
+                        break;
+                }
+            }
+            if (!ghosts) {
+                rCols[v] = std::move(raw);
+                continue;
+            }
+            // Keep i < I-1, j < J-1, k < K-1 (index 0 of a unit dimension).
+            const std::size_t keep_i = z.mI > 1 ? z.mI - 1 : 1;
+            const std::size_t keep_j = z.mJ > 1 ? z.mJ - 1 : 1;
+            const std::size_t keep_k = z.mK > 1 ? z.mK - 1 : 1;
+            std::vector<double>& col = rCols[v];
+            col.clear();
+            col.reserve(z.mNumCells);
+            for (std::size_t k = 0; k < keep_k; ++k)
+                for (std::size_t j = 0; j < keep_j; ++j)
+                    for (std::size_t i = 0; i < keep_i; ++i)
+                        col.push_back(raw[i + stored[0] * (j + stored[1] * k)]);
+        }
+        if (!z.mHasConn)
+            return;
+        const std::size_t nn = tecplot_nodes_per_cell(tecplot_zone_meshio_type(z));
+        rConn = NDArray(DType::Int64, {z.mNumCells, nn});
+        std::int64_t* cp = rConn.As<std::int64_t>();
+        cur.Seek(z.mConnOffset);
+        for (std::size_t r = 0; r < z.mNumCells * nn; ++r)
+            cp[r] = cur.I32();
+    }
+
+private:
+    const char* mpData;
+    std::size_t mSize;
+    bool mBigEndian;
+    const std::vector<TecplotZone>& mrZones;
+};
+
+// --- shared -------------------------------------------------------------------------
+
 // One entry per step, each the zone indices (file order preserved) that make
-// up that step's mesh: several parts at once, exactly like read_tecplot's
-// eventual Mesh. A non-transient file (no zone carries SOLUTIONTIME) is a
-// single "step" listing every zone -- the several-static-parts case. A
-// transient file's steps are its distinct SOLUTIONTIME values, ascending,
-// each grouping every zone at that time sharing zones[0]'s STRANDID when any
-// zone carries one (SOLUTIONTIME with no STRANDID at all groups every zone
-// together); a zone with no SOLUTIONTIME in an otherwise transient file
-// belongs to no step and is dropped.
-std::vector<std::vector<std::size_t>> tecplot_timeline(
-    const std::vector<TecplotZoneHeader>& rZones) {
+// up that step's mesh. A non-transient file (the first zone carries no
+// SOLUTIONTIME) is a single "step" listing every zone -- the several-static-
+// parts case. A transient file's steps are its distinct SOLUTIONTIME values,
+// ascending, each grouping every zone at that time sharing zones[0]'s strand
+// when both carry one; a zone with no SOLUTIONTIME in an otherwise transient
+// file belongs to no step and is dropped.
+std::vector<std::vector<std::size_t>> tecplot_timeline(const std::vector<TecplotZone>& rZones) {
     if (!rZones[0].mHasSolutionTime) {
         std::vector<std::size_t> all(rZones.size());
         for (std::size_t k = 0; k < rZones.size(); ++k)
@@ -99403,12 +101845,12 @@ std::vector<std::vector<std::size_t>> tecplot_timeline(
     return steps;
 }
 
-/// One zone's decoded data columns, connectivity and topology -- shared by
+/// One zone's resolved data columns, connectivity and topology -- shared by
 /// every step that references it (a zone can be VARSHARELIST'd or
 /// CONNECTIVITYSHAREZONE'd from more than one later zone), so it is decoded
 /// once and cached.
 struct TecplotDecodedZone {
-    std::vector<std::vector<double>> mCols;  // per-variable; length NumNodes or NumCells
+    std::vector<std::vector<double>> mCols;  // per variable; length NumNodes or NumCells
     std::vector<int> mCellCentered;
     std::string mMeshioType;
     NDArray mConn;  // (NumCells, NodesPerCell) int64, 0-based
@@ -99416,133 +101858,88 @@ struct TecplotDecodedZone {
     std::size_t mNumCells = 0;
 };
 
-/// Decodes zone `ZoneIdx`, resolving VARSHARELIST/CONNECTIVITYSHAREZONE by
-/// recursively decoding (and caching) whichever earlier zone they name.
-const TecplotDecodedZone& tecplot_decode_zone(std::size_t ZoneIdx,
-                                              const std::vector<TecplotZoneHeader>& rZones,
-                                              const std::vector<std::string>& rVariables,
-                                              const std::vector<std::string>& rLines,
-                                              std::map<std::size_t, TecplotDecodedZone>& rCache) {
-    const auto found = rCache.find(ZoneIdx);
-    if (found != rCache.end())
-        return found->second;
+class TecplotDecoder {
+public:
+    TecplotDecoder(const std::vector<TecplotZone>& rZones, std::size_t NumVariables,
+                   const TecplotSource& rSource)
+        : mrZones(rZones), mNumVariables(NumVariables), mrSource(rSource) {}
 
-    const TecplotZoneHeader& z = rZones[ZoneIdx];
-    bool feblock = false;
-    std::string ztype;
-    std::vector<int> cell_centered;
-    tecplot_zone_format(z, rVariables.size(), feblock, ztype, cell_centered);
-    const std::string mtype = tecplot_to_meshio(ztype);
-    if (mtype.empty())
-        throw ReadError("Tecplot: unsupported zone type " + ztype);
-
-    std::vector<std::size_t> ndata(rVariables.size());
-    for (std::size_t k = 0; k < rVariables.size(); ++k)
-        ndata[k] = cell_centered[k] ? z.mNumCells : z.mNumNodes;
-    const std::size_t want =
-        tecplot_zone_data_token_count(z, rVariables.size(), feblock, cell_centered);
-    const std::size_t want_full = feblock ? want : z.mNumNodes * rVariables.size();
-
-    std::vector<double> flat;
-    flat.reserve(want_full);
-    std::size_t li = z.mDataStart;
-    while (flat.size() < want_full && li < rLines.size()) {
-        for (const auto& t : tecplot_tokens(rLines[li]))
-            flat.push_back(detail::parse_double(t));
-        ++li;
-    }
-
-    std::vector<std::vector<double>> cols(rVariables.size());
-    if (feblock) {
-        std::size_t off = 0;
-        for (std::size_t k = 0; k < rVariables.size(); ++k) {
+    /// Decodes zone `ZoneIdx`, resolving VARSHARELIST/CONNECTIVITYSHAREZONE by
+    /// recursively decoding (and caching) whichever zone they name.
+    const TecplotDecodedZone& Zone(std::size_t ZoneIdx, std::size_t Depth = 0) {
+        const auto found = mCache.find(ZoneIdx);
+        if (found != mCache.end())
+            return found->second;
+        if (Depth > mrZones.size())
+            throw ReadError("Tecplot: circular VARSHARELIST/CONNECTIVITYSHAREZONE");
+        const TecplotZone& z = mrZones[ZoneIdx];
+        TecplotDecodedZone result;
+        result.mMeshioType = tecplot_zone_meshio_type(z);
+        result.mCols.resize(mNumVariables);
+        mrSource.OwnData(ZoneIdx, result.mCols, result.mConn);
+        for (std::size_t k = 0; k < mNumVariables; ++k) {
             const auto share = z.mVarShareZone.find(k);
             if (share != z.mVarShareZone.end()) {
-                const TecplotDecodedZone& src =
-                    tecplot_decode_zone(share->second - 1, rZones, rVariables, rLines, rCache);
-                cols[k] = src.mCols[k];
+                CheckSource(share->second, ZoneIdx);
+                result.mCols[k] = Zone(share->second, Depth + 1).mCols[k];
             } else if (z.mPassiveVars.count(k)) {
-                cols[k].assign(ndata[k], std::numeric_limits<double>::quiet_NaN());
-            } else {
-                cols[k].assign(flat.begin() + static_cast<std::ptrdiff_t>(off),
-                               flat.begin() + static_cast<std::ptrdiff_t>(off + ndata[k]));
-                off += ndata[k];
+                result.mCols[k].assign(z.DataLength(k), std::numeric_limits<double>::quiet_NaN());
             }
         }
-    } else {
-        const std::size_t nv = rVariables.size();
-        for (std::size_t k = 0; k < nv; ++k)
-            cols[k].resize(z.mNumNodes);
-        for (std::size_t r = 0; r < z.mNumNodes; ++r)
-            for (std::size_t k = 0; k < nv; ++k)
-                cols[k][r] = flat[r * nv + k];
-    }
-
-    std::size_t nn;
-    if (mtype == "line")
-        nn = 2;
-    else if (mtype == "triangle")
-        nn = 3;
-    else if (mtype == "quad" || mtype == "tetra")
-        nn = 4;
-    else
-        nn = 8;
-
-    NDArray conn;
-    if (z.mConnShareZone != 0) {
-        const TecplotDecodedZone& src =
-            tecplot_decode_zone(z.mConnShareZone - 1, rZones, rVariables, rLines, rCache);
-        conn = src.mConn;
-    } else {
-        conn = NDArray(DType::Int64, {z.mNumCells, nn});
-        std::int64_t* cp = conn.As<std::int64_t>();
-        for (std::size_t c = 0; c < z.mNumCells; ++c) {
-            auto t = tecplot_tokens(rLines.at(li++));
-            for (std::size_t j = 0; j < nn; ++j)
-                cp[c * nn + j] = std::strtoll(t[j].c_str(), nullptr, 10) - 1;
+        if (z.mOrdered) {
+            result.mConn = tecplot_ordered_connectivity(z);
+        } else if (z.mConnShareZone >= 0) {
+            CheckSource(static_cast<std::size_t>(z.mConnShareZone), ZoneIdx);
+            result.mConn = Zone(static_cast<std::size_t>(z.mConnShareZone), Depth + 1).mConn;
         }
+        result.mCellCentered = z.mCellCentered;
+        result.mNumNodes = z.mNumNodes;
+        result.mNumCells = z.mNumCells;
+        const auto [inserted, _] = mCache.emplace(ZoneIdx, std::move(result));
+        return inserted->second;
     }
 
-    TecplotDecodedZone result;
-    result.mCols = std::move(cols);
-    result.mCellCentered = std::move(cell_centered);
-    result.mMeshioType = mtype;
-    result.mConn = std::move(conn);
-    result.mNumNodes = z.mNumNodes;
-    result.mNumCells = z.mNumCells;
-    const auto [inserted, _] = rCache.emplace(ZoneIdx, std::move(result));
-    return inserted->second;
-}
+private:
+    void CheckSource(std::size_t Src, std::size_t ZoneIdx) const {
+        if (Src >= mrZones.size() || Src == ZoneIdx)
+            throw ReadError("Tecplot: zone " + std::to_string(ZoneIdx + 1) +
+                            " shares from bad zone " + std::to_string(Src + 1));
+    }
 
-/// Resolves the zone whose data literally *is* `ZoneIdx`'s point set: itself,
-/// unless X (and Y, and Z when 3-D) are all VARSHARELIST'd from the very same
-/// earlier zone, in which case the chain is followed to that zone's own
-/// origin. A zone that shares only some of its coordinate variables, or
-/// shares them from different zones, is not literally the same point set --
-/// it owns its own (possibly duplicated) points, same as no sharing at all.
-/// Tecplot itself requires VARSHARELIST partners to agree on NODES, so this
-/// only matters for zones that concatenate several element-type zones over
-/// one shared point cloud (a common hybrid-mesh export shape), not for the
+    const std::vector<TecplotZone>& mrZones;
+    std::size_t mNumVariables;
+    const TecplotSource& mrSource;
+    std::map<std::size_t, TecplotDecodedZone> mCache;
+};
+
+/// The zone whose points zone `ZoneIdx` literally reuses: itself, unless every
+/// one of its nodal variables (coordinates and fields alike) is shared from
+/// one earlier zone, in which case the chain is followed to that zone's own
+/// origin. A zone that shares only its coordinates but carries its own nodal
+/// values keeps its own copy of the points, so no value is lost. Tecplot
+/// itself requires VARSHARELIST partners to agree on NODES, so this only
+/// matters for zones that concatenate several element-type zones over one
+/// shared point cloud (a common hybrid-mesh export shape), not for the
 /// zones-as-a-timeline case, where sharing spans different steps.
-std::size_t tecplot_points_origin_zone(std::size_t ZoneIdx,
-                                       const std::vector<TecplotZoneHeader>& rZones, int Xi,
-                                       int Yi, int Zi) {
+std::size_t tecplot_points_origin_zone(std::size_t ZoneIdx, const std::vector<TecplotZone>& rZones,
+                                       int Xi) {
     std::set<std::size_t> seen;
     std::size_t cur = ZoneIdx;
     while (seen.insert(cur).second) {
-        const TecplotZoneHeader& z = rZones[cur];
+        const TecplotZone& z = rZones[cur];
         const auto it_x = z.mVarShareZone.find(static_cast<std::size_t>(Xi));
         if (it_x == z.mVarShareZone.end())
             return cur;
-        const auto it_y = z.mVarShareZone.find(static_cast<std::size_t>(Yi));
-        if (it_y == z.mVarShareZone.end() || it_y->second != it_x->second)
-            return cur;
-        if (Zi >= 0) {
-            const auto it_z = z.mVarShareZone.find(static_cast<std::size_t>(Zi));
-            if (it_z == z.mVarShareZone.end() || it_z->second != it_x->second)
+        for (std::size_t v = 0; v < z.mCellCentered.size(); ++v) {
+            if (z.mCellCentered[v])
+                continue;
+            const auto it = z.mVarShareZone.find(v);
+            if (it == z.mVarShareZone.end() || it->second != it_x->second)
                 return cur;
         }
-        cur = it_x->second - 1;
+        cur = it_x->second;
+        if (cur >= rZones.size())
+            return ZoneIdx;
     }
     return ZoneIdx;  // cycle guard: fall back to owning its own points
 }
@@ -99562,52 +101959,63 @@ void tecplot_xyz_indices(const std::vector<std::string>& rVariables, int& rXi, i
     }
 }
 
-/// Builds one step's Mesh by concatenating every zone in `rZoneIdxs`: one
-/// cell block per zone (never merged by type -- each zone is its own named
-/// part), points offset per zone (zones are not welded), point/cell data
-/// concatenated per variable (a PASSIVEVARLIST zone already decoded to NaN
-/// for that variable, so every zone contributes a value), `tecplot:zone`
-/// naming each cell's zone, and one Cell region per zone (named by its own
-/// title when it has one, de-duplicated, else `zone_<i>`).
-Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
-                             const std::vector<TecplotZoneHeader>& rZones,
-                             const std::vector<std::string>& rVariables,
-                             const std::vector<std::string>& rLines,
-                             std::map<std::size_t, TecplotDecodedZone>& rCache) {
-    int xi = -1, yi = -1, zi = -1;
-    tecplot_xyz_indices(rVariables, xi, yi, zi);
-    const std::size_t ndim = (zi >= 0) ? 3 : 2;
-
-    std::vector<const TecplotDecodedZone*> decoded;
-    decoded.reserve(rZoneIdxs.size());
-    for (std::size_t idx : rZoneIdxs) {
-        const TecplotDecodedZone& d =
-            tecplot_decode_zone(idx, rZones, rVariables, rLines, rCache);
-        decoded.push_back(&d);
-    }
-
-    // A zone whose X (and Y, Z) are all VARSHARELIST'd from an earlier zone
-    // in this same step literally reuses that zone's points -- it gets no
-    // new point block and its connectivity is offset the same as its
-    // origin's, instead of being appended and offset as an independent part.
+/// Per zone of a step: its point offset and whether it owns its points (a zone
+/// reusing an earlier zone's points of the same step contributes none).
+/// Returns the step's point count.
+std::size_t tecplot_point_layout(const std::vector<std::size_t>& rZoneIdxs,
+                                 const std::vector<TecplotZone>& rZones, int Xi,
+                                 std::vector<std::size_t>& rOffset, std::vector<bool>& rOwns) {
     std::map<std::size_t, std::size_t> idx_to_pos;
     for (std::size_t k = 0; k < rZoneIdxs.size(); ++k)
         idx_to_pos.emplace(rZoneIdxs[k], k);
-    std::vector<std::size_t> point_offset(decoded.size());
-    std::vector<bool> owns_points(decoded.size());
-    std::size_t total_points = 0;
-    for (std::size_t k = 0; k < decoded.size(); ++k) {
-        const std::size_t origin = tecplot_points_origin_zone(rZoneIdxs[k], rZones, xi, yi, zi);
+    rOffset.assign(rZoneIdxs.size(), 0);
+    rOwns.assign(rZoneIdxs.size(), true);
+    std::size_t total = 0;
+    for (std::size_t k = 0; k < rZoneIdxs.size(); ++k) {
+        const std::size_t origin =
+            Xi < 0 ? rZoneIdxs[k] : tecplot_points_origin_zone(rZoneIdxs[k], rZones, Xi);
         const auto it = idx_to_pos.find(origin);
         if (origin != rZoneIdxs[k] && it != idx_to_pos.end() && it->second < k) {
-            point_offset[k] = point_offset[it->second];
-            owns_points[k] = false;
+            rOffset[k] = rOffset[it->second];
+            rOwns[k] = false;
         } else {
-            point_offset[k] = total_points;
-            owns_points[k] = true;
-            total_points += decoded[k]->mNumNodes;
+            rOffset[k] = total;
+            total += rZones[rZoneIdxs[k]].mNumNodes;
         }
     }
+    return total;
+}
+
+/// Builds one step's Mesh by concatenating every zone in `rZoneIdxs`: one
+/// cell block per zone (never merged by type -- each zone is its own named
+/// part), points offset per zone (zones are not welded unless one reuses
+/// another's points outright), a variable as cell data where a zone stores it
+/// cell-centred and as point data where it stores it at the nodes (both, NaN
+/// where absent, when zones disagree), `tecplot:zone` naming each cell's
+/// zone, and one Cell region per zone (named by its own title when it has
+/// one, de-duplicated, else `zone_<i>`).
+Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
+                             const std::vector<TecplotZone>& rZones,
+                             const std::vector<std::string>& rVariables,
+                             const TecplotSource& rSource) {
+    int xi = -1, yi = -1, zi = -1;
+    tecplot_xyz_indices(rVariables, xi, yi, zi);
+    if (xi < 0)
+        throw ReadError("Tecplot: variable 'X' not found");
+    if (yi < 0)
+        throw ReadError("Tecplot: variable 'Y' not found");
+    const std::size_t ndim = (zi >= 0) ? 3 : 2;
+
+    TecplotDecoder decoder(rZones, rVariables.size(), rSource);
+    std::vector<const TecplotDecodedZone*> decoded;
+    decoded.reserve(rZoneIdxs.size());
+    for (std::size_t idx : rZoneIdxs)
+        decoded.push_back(&decoder.Zone(idx));
+
+    std::vector<std::size_t> point_offset;
+    std::vector<bool> owns_points;
+    const std::size_t total_points =
+        tecplot_point_layout(rZoneIdxs, rZones, xi, point_offset, owns_points);
 
     Mesh mesh;
     NDArray pts(DType::Float64, {total_points, ndim});
@@ -99635,24 +102043,37 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
         mesh.AddCellBlock(d.mMeshioType, std::move(conn));
     }
 
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     for (std::size_t k = 0; k < rVariables.size(); ++k) {
         if (static_cast<int>(k) == xi || static_cast<int>(k) == yi || static_cast<int>(k) == zi)
             continue;
-        if (decoded[0]->mCellCentered[k]) {
+        bool any_cc = false, all_cc = true;
+        for (const TecplotDecodedZone* d : decoded) {
+            any_cc = any_cc || d->mCellCentered[k];
+            all_cc = all_cc && d->mCellCentered[k];
+        }
+        if (any_cc) {
             std::vector<NDArray> blk;
             blk.reserve(decoded.size());
             for (const TecplotDecodedZone* d : decoded) {
-                NDArray arr(DType::Float64, {d->mCols[k].size()});
-                std::memcpy(arr.Data(), d->mCols[k].data(), d->mCols[k].size() * sizeof(double));
+                NDArray arr(DType::Float64, {d->mNumCells});
+                double* ap = arr.As<double>();
+                if (d->mCellCentered[k])
+                    std::memcpy(ap, d->mCols[k].data(), d->mNumCells * sizeof(double));
+                else
+                    std::fill(ap, ap + d->mNumCells, nan);
                 blk.push_back(std::move(arr));
             }
             mesh.AddCellData(rVariables[k], std::move(blk));
-        } else {
-            std::vector<double> col;
-            for (const TecplotDecodedZone* d : decoded)
-                col.insert(col.end(), d->mCols[k].begin(), d->mCols[k].end());
-            NDArray arr(DType::Float64, {col.size()});
-            std::memcpy(arr.Data(), col.data(), col.size() * sizeof(double));
+        }
+        if (!all_cc) {
+            NDArray arr(DType::Float64, {total_points});
+            double* ap = arr.As<double>();
+            std::fill(ap, ap + total_points, nan);
+            for (std::size_t z = 0; z < decoded.size(); ++z)
+                if (owns_points[z] && !decoded[z]->mCellCentered[k])
+                    std::memcpy(ap + point_offset[z], decoded[z]->mCols[k].data(),
+                                decoded[z]->mNumNodes * sizeof(double));
             mesh.AddPointData(rVariables[k], std::move(arr));
         }
     }
@@ -99674,9 +102095,8 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
         if (name.empty())
             name = "zone_" + std::to_string(k);
         std::string unique = name;
-        for (int suffix = 2; std::find(used_names.begin(), used_names.end(), unique) !=
-                             used_names.end();
-            ++suffix)
+        for (int suffix = 2;
+             std::find(used_names.begin(), used_names.end(), unique) != used_names.end(); ++suffix)
             unique = name + "_" + std::to_string(suffix);
         used_names.push_back(unique);
 
@@ -99690,78 +102110,103 @@ Mesh tecplot_build_step_mesh(const std::vector<std::size_t>& rZoneIdxs,
     return mesh;
 }
 
+/// A parsed file: its variables, zones and data source, ASCII or binary.
+struct TecplotFile {
+    std::vector<std::string> mVariables;
+    std::vector<TecplotZone> mZones;
+    std::vector<std::string> mLines;           // ASCII
+    std::unique_ptr<detail::FileSource> mRaw;  // binary
+    std::unique_ptr<TecplotSource> mSource;
+};
+
+void tecplot_open(const std::string& rPath, const ReadOptions& rOptions, TecplotFile& rFile) {
+    bool binary = false;
+    {
+        auto probe = detail::make_classic_ifstream(rPath, std::ios::binary);
+        if (!probe)
+            throw ReadError("Could not open file: " + rPath);
+        char head[5] = {0, 0, 0, 0, 0};
+        probe.read(head, 5);
+        binary = tecplot_is_plt(head, static_cast<std::size_t>(probe.gcount()));
+    }
+    if (!binary) {
+        auto in = detail::make_classic_ifstream(rPath);
+        if (!in)
+            throw ReadError("Could not open file: " + rPath);
+        std::string l;
+        while (std::getline(in, l)) {
+            std::string s = tecplot_strip(l);
+            if (s.empty() || s[0] == '#')
+                continue;
+            rFile.mLines.push_back(std::move(s));
+        }
+        rFile.mZones = tecplot_scan_zones(rFile.mLines, rFile.mVariables);
+        rFile.mSource = std::make_unique<TecplotAsciiSource>(rFile.mLines, rFile.mZones,
+                                                             rFile.mVariables.size());
+        return;
+    }
+    rFile.mRaw = std::make_unique<detail::FileSource>(rPath, rOptions.mMmap);
+    const char* data = rFile.mRaw->Data();
+    const std::size_t size = rFile.mRaw->Size();
+    const std::string version = size >= 8 ? std::string(data + 5, 3) : std::string();
+    if (version != "112")
+        throw ReadError("Tecplot .plt: version '" + version +
+                        "' is not supported (only #!TDV112, written by Tecplot 360 2009 and "
+                        "later, is read)");
+    // The int32 1 after the magic fixes the byte order.
+    bool big_endian = false;
+    {
+        detail::ByteCursor little(data, size, false, "Tecplot .plt");
+        little.Seek(8);
+        if (little.I32() != 1) {
+            detail::ByteCursor big(data, size, true, "Tecplot .plt");
+            big.Seek(8);
+            if (big.I32() != 1)
+                throw ReadError("Tecplot .plt: bad byte-order word");
+            big_endian = true;
+        }
+    }
+    detail::ByteCursor cur(data, size, big_endian, "Tecplot .plt");
+    cur.Seek(12);
+    rFile.mZones = tecplot_plt_header(cur, rFile.mVariables);
+    tecplot_plt_scan_data(cur, rFile.mVariables, rFile.mZones);
+    rFile.mSource = std::make_unique<TecplotPltSource>(data, size, big_endian, rFile.mZones);
+}
+
 }  // namespace
 
-MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& /*rOptions*/) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
-        std::string s = tecplot_strip(l);
-        if (s.empty() || s[0] == '#')
-            continue;
-        lines.push_back(s);
-    }
-
-    std::vector<std::string> variables;
-    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
-    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(zones);
+MeshMetadata read_tecplot_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    TecplotFile file;
+    tecplot_open(rPath, rOptions, file);
+    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(file.mZones);
 
     MeshMetadata meta;
     meta.mFormat = "tecplot";
     const std::vector<std::size_t>& first_step = timeline[0];
     int xi = -1, yi = -1, zi = -1;
-    tecplot_xyz_indices(variables, xi, yi, zi);
-    std::map<std::size_t, std::size_t> idx_to_pos;
-    for (std::size_t k = 0; k < first_step.size(); ++k)
-        idx_to_pos.emplace(first_step[k], k);
-    std::size_t total_points = 0;
-    for (std::size_t k = 0; k < first_step.size(); ++k) {
-        const std::size_t idx = first_step[k];
-        const std::size_t origin = tecplot_points_origin_zone(idx, zones, xi, yi, zi);
-        const auto it = idx_to_pos.find(origin);
-        const bool shares_earlier =
-            origin != idx && it != idx_to_pos.end() && it->second < k;
-        if (!shares_earlier)
-            total_points += zones[idx].mNumNodes;
-        bool feblock = false;
-        std::string ztype;
-        std::vector<int> cell_centered;
-        tecplot_zone_format(zones[idx], variables.size(), feblock, ztype, cell_centered);
+    tecplot_xyz_indices(file.mVariables, xi, yi, zi);
+    std::vector<std::size_t> offset;
+    std::vector<bool> owns;
+    meta.mNumPoints = tecplot_point_layout(first_step, file.mZones, xi, offset, owns);
+    for (std::size_t idx : first_step) {
         CellBlockInfo block;
-        block.mType = tecplot_to_meshio(ztype);
-        block.mNumCells = zones[idx].mNumCells;
+        block.mType = tecplot_zone_meshio_type(file.mZones[idx]);
+        block.mNumCells = file.mZones[idx].mNumCells;
         meta.mCellBlocks.push_back(std::move(block));
     }
-    meta.mNumPoints = total_points;
     meta.mPointDim = 0;  // not knowable without decoding X/Y/Z columns
-    if (zones[0].mHasSolutionTime)
+    if (file.mZones[0].mHasSolutionTime)
         for (const std::vector<std::size_t>& step : timeline)
-            meta.mTimeValues.push_back(zones[step[0]].mSolutionTime);
+            meta.mTimeValues.push_back(file.mZones[step[0]].mSolutionTime);
     return meta;
 }
 
 Mesh read_tecplot(const std::string& rPath, const ReadOptions& rOptions) {
-    auto in = detail::make_classic_ifstream(rPath);
-    if (!in)
-        throw ReadError("Could not open file: " + rPath);
-    std::vector<std::string> lines;
-    std::string l;
-    while (std::getline(in, l)) {
-        std::string s = tecplot_strip(l);
-        if (s.empty() || s[0] == '#')
-            continue;
-        lines.push_back(s);
-    }
-
-    std::vector<std::string> variables;
-    const std::vector<TecplotZoneHeader> zones = tecplot_scan_zones(lines, variables);
-    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(zones);
+    TecplotFile file;
+    tecplot_open(rPath, rOptions, file);
+    const std::vector<std::vector<std::size_t>> timeline = tecplot_timeline(file.mZones);
     const std::size_t step = rOptions.ResolveTimeStep(timeline.size());
-    std::map<std::size_t, TecplotDecodedZone> cache;
-    return tecplot_build_step_mesh(timeline[step], zones, variables, lines, cache);
+    return tecplot_build_step_mesh(timeline[step], file.mZones, file.mVariables, *file.mSource);
 }
 
 Mesh read_tecplot(const std::string& rPath) {
@@ -110495,6 +112940,7 @@ bool XdmfTimeSeriesWriter::Finalized() const {
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -110746,7 +113192,10 @@ struct XpltFile {
     std::vector<XpltTop> mStates;
     std::vector<float> mTimes;
     std::vector<std::optional<std::int32_t>> mStatus;
-    std::size_t mMeshBegin = 0, mMeshEnd = 0;
+    // Every mesh section in file order (a remeshed run writes one before the
+    // states that use it), and the mesh each state uses.
+    std::vector<XpltTop> mMeshes;
+    std::vector<std::size_t> mStateMesh;
 
     explicit XpltFile(const std::string& rPath, const ReadOptions& rOptions)
         : mSource(rPath, rOptions.mMmap) {
@@ -110783,10 +113232,12 @@ struct XpltFile {
                     break;
                 const XpltView view{inflated, mRaw.mSwap};
                 XpltTop top{view.U32(0), pos, true, 8, 8 + view.U32(4)};
-                if (top.mId == kMesh)
+                if (top.mId == kMesh) {
                     ++n_mesh;
-                else if (top.mId == kState)
+                    mMeshes.push_back(top);
+                } else if (top.mId == kState) {
                     AddState(view, top);
+                }
                 pos += used;
                 ++n_top;
                 continue;
@@ -110810,10 +113261,8 @@ struct XpltFile {
                     xplt_fail("the file does not start with its root section");
                 ReadRoot(top.mBegin, top.mEnd, compressed);
             } else if (id == kMesh) {
-                if (n_mesh++ == 0) {
-                    mMeshBegin = top.mBegin;
-                    mMeshEnd = top.mEnd;
-                }
+                ++n_mesh;
+                mMeshes.push_back(top);
             } else if (id == kState) {
                 AddState(mRaw, top);
             }
@@ -110822,8 +113271,22 @@ struct XpltFile {
         }
         if (n_mesh == 0)
             xplt_fail("the file has no mesh");
-        if (n_mesh > 1)
-            xplt_fail("the mesh changes between states (remeshing), which is not supported");
+    }
+
+    // A mesh section's payload, inflated into `rStore` when it is compressed.
+    XpltView MeshView(std::size_t Index, std::string& rStore, std::size_t& rBegin,
+                      std::size_t& rEnd) const {
+        const XpltTop& top = mMeshes[Index];
+        if (!top.mCompressed) {
+            rBegin = top.mBegin;
+            rEnd = top.mEnd;
+            return mRaw;
+        }
+        rStore = detail::zlib_inflate(mRaw.mData.substr(top.mOffset), 15, nullptr, "FEBio .xplt");
+        const XpltView view{rStore, mRaw.mSwap};
+        rBegin = 8;
+        rEnd = std::min<std::size_t>(8 + view.U32(4), rStore.size());
+        return view;
     }
 
     void ReadRoot(std::size_t Begin, std::size_t End, bool& rCompressed) {
@@ -110903,6 +113366,7 @@ struct XpltFile {
         mStates.push_back(rTop);
         mTimes.push_back(time);
         mStatus.push_back(status);
+        mStateMesh.push_back(mMeshes.empty() ? 0 : mMeshes.size() - 1);
     }
 };
 
@@ -110928,12 +113392,16 @@ std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> xplt_facets(const
     return out;
 }
 
+struct XpltSurface {
+    std::string mName;
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> mFacets;  // (nodes, ids)
+    bool mFacetSet = false;  // a facet set (FEBio 4) rather than a data surface
+};
+
 struct XpltRaw {
     std::vector<double> mCoords;
     std::vector<XpltDomain> mDomains;
-    std::vector<
-        std::pair<std::string, std::vector<std::pair<std::size_t, std::vector<std::int64_t>>>>>
-        mSurfaces;
+    std::vector<XpltSurface> mSurfaces;
     std::vector<std::pair<std::string, std::vector<std::int64_t>>> mNodeSets, mElemSets;
     std::map<std::int32_t, std::string> mParts;
 };
@@ -110999,9 +113467,11 @@ XpltRaw xplt_read_mesh(const XpltView& rView, std::size_t Begin, std::size_t End
                     if (const auto named = rView.Child(hdr->first, hdr->second,
                                                        facetset ? kFacetsetName : kSurfaceName))
                         name = rView.String(named->first, named->second);
-                raw.mSurfaces.emplace_back(
-                    name, xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
-                                      facetset ? kFacet : kFace));
+                raw.mSurfaces.push_back(
+                    {name,
+                     xplt_facets(rView, C, D, facetset ? kFacetsetList : kFaceList,
+                                 facetset ? kFacet : kFace),
+                     facetset});
                 return true;
             });
         } else if (Sid == kNodesetSection || Sid == kElementsetSection) {
@@ -111049,7 +113519,17 @@ struct XpltGroupEntry {
 
 Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
     const XpltFile file(rPath, rOptions);
-    const XpltRaw raw = xplt_read_mesh(file.mRaw, file.mMeshBegin, file.mMeshEnd);
+    // The step first: a remeshed run reads the mesh that step uses.
+    const std::size_t n_states = file.mStates.size();
+    if (n_states == 0 && rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
+        xplt_fail("time step " + std::to_string(rOptions.mTimeStep) +
+                  " is out of range: the file has no states");
+    const std::size_t index = n_states == 0 ? 0 : rOptions.ResolveTimeStep(n_states);
+    std::string mesh_store;
+    std::size_t mesh_begin = 0, mesh_end = 0;
+    const XpltView mesh_view =
+        file.MeshView(n_states == 0 ? 0 : file.mStateMesh[index], mesh_store, mesh_begin, mesh_end);
+    const XpltRaw raw = xplt_read_mesh(mesh_view, mesh_begin, mesh_end);
 
     // --- mesh -----------------------------------------------------------------------
     Mesh mesh;
@@ -111131,12 +113611,25 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         }
     }
 
+    // Surfaces: a data surface is a block of facet cells per facet type (its
+    // variables live there), plus a side region when its facets lie on the
+    // cells; a facet set is only the side region, or facet blocks when some
+    // facet lies on no cell.
     std::optional<detail::FacetIndex> faces;
-    std::set<std::string> seen;
-    std::vector<std::pair<std::string, std::pair<std::string, std::vector<std::int64_t>>>> extra;
-    for (const auto& [name, facets] : raw.mSurfaces) {
-        if (facets.empty() || !seen.insert(name).second)
+    std::vector<std::vector<std::int64_t>> surface_cells;  // per data surface, per facet
+    std::vector<std::pair<std::string, std::vector<std::int64_t>>> blocks_to_add;  // (type, rows)
+    std::vector<std::int64_t> block_surface;  // data surface id (1-based) of each added block
+    std::set<std::string> seen_sides;
+    std::int64_t surface_id = 0;
+    for (const XpltSurface& surf : raw.mSurfaces) {
+        const std::string& name = surf.mName;
+        if (!surf.mFacetSet)
+            ++surface_id;
+        if (surf.mFacets.empty()) {
+            if (!surf.mFacetSet)
+                surface_cells.emplace_back();
             continue;
+        }
         if (!faces) {
             detail::FacetIndexOptions options;
             options.mSurfaceEdges = false;
@@ -111144,7 +113637,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         }
         std::vector<std::int64_t> sides;
         bool all = true;
-        for (const auto& [nn, nodes] : facets) {
+        for (const auto& [nn, nodes] : surf.mFacets) {
             const std::size_t corners = std::min(xplt_corners(nn), nodes.size());
             const detail::FacetHit* hit = faces->Find(nodes.data(), corners);
             if (!hit) {
@@ -111154,37 +113647,62 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             sides.push_back(hit->mFirst.mCell);
             sides.push_back(hit->mFirst.mFacet);
         }
-        if (all) {
+        if (all && seen_sides.insert(name).second) {
             XpltGroupEntry& g = group(RegionKind::Side, name, -1, 2);
             g.mEntries.insert(g.mEntries.end(), sides.begin(), sides.end());
-            continue;
         }
+        if (all && surf.mFacetSet)
+            continue;
+        // Facet blocks, one per facet type in first-seen order; each facet's
+        // global cell is recorded in facet order for the surface's data.
         std::vector<std::string> order;
-        std::map<std::string, std::vector<std::int64_t>> by_type;
-        for (const auto& [nn, nodes] : facets) {
+        std::map<std::string, std::vector<std::size_t>> by_type;  // type -> facet indices
+        for (std::size_t f = 0; f < surf.mFacets.size(); ++f) {
+            const auto& [nn, nodes] = surf.mFacets[f];
             const char* type = xplt_facet_type(nn);
             if (!type || nodes.size() != nn)
                 continue;
             if (!by_type.count(type))
                 order.push_back(type);
-            auto& rows = by_type[type];
-            rows.insert(rows.end(), nodes.begin(), nodes.end());
+            by_type[type].push_back(f);
         }
-        for (const std::string& type : order)
-            extra.push_back({name, {type, by_type[type]}});
+        std::vector<std::int64_t> cells(surf.mFacets.size(), -1);
+        XpltGroupEntry& g = group(RegionKind::Cell, name, -1, 2);
+        for (const std::string& type : order) {
+            std::vector<std::int64_t> rows;
+            for (std::size_t f : by_type[type]) {
+                const auto& nodes = surf.mFacets[f].second;
+                rows.insert(rows.end(), nodes.begin(), nodes.end());
+                cells[f] = base;
+                g.mEntries.push_back(base);
+                ++base;
+            }
+            blocks_to_add.emplace_back(type, std::move(rows));
+            block_surface.push_back(surf.mFacetSet ? 0 : surface_id);
+        }
+        if (!surf.mFacetSet)
+            surface_cells.push_back(std::move(cells));
     }
-    for (const auto& [name, block] : extra) {
-        const auto& [type, flat] = block;
+    const std::size_t n_domain_blocks = mesh.NumCellBlocks();
+    for (const auto& [type, flat] : blocks_to_add) {
         const std::size_t k =
             static_cast<std::size_t>(cell_type_num_nodes(cell_type_from_name(type)));
-        const std::size_t rows = flat.size() / k;
-        NDArray conn(DType::Int64, {rows, k});
+        NDArray conn(DType::Int64, {flat.size() / k, k});
         std::copy(flat.begin(), flat.end(), conn.As<std::int64_t>());
         mesh.AddCellBlock(type, std::move(conn));
-        XpltGroupEntry& g = group(RegionKind::Cell, name, -1, 2);
-        for (std::size_t r = 0; r < rows; ++r)
-            g.mEntries.push_back(base + static_cast<std::int64_t>(r));
-        base += static_cast<std::int64_t>(rows);
+    }
+    if (rOptions.WantsAnyData() && rOptions.WantsArray("xplt:surface") &&
+        std::any_of(block_surface.begin(), block_surface.end(),
+                    [](std::int64_t v) { return v > 0; })) {
+        std::vector<NDArray> ids;
+        for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b) {
+            const std::size_t n = mesh.Cells(b).NumCells();
+            NDArray a(DType::Int64, {n});
+            const std::int64_t v = b < n_domain_blocks ? 0 : block_surface[b - n_domain_blocks];
+            std::fill(a.As<std::int64_t>(), a.As<std::int64_t>() + n, v);
+            ids.push_back(std::move(a));
+        }
+        mesh.AddCellData("xplt:surface", std::move(ids));
     }
     for (auto& [key, g] : groups) {
         const RegionKind kind = static_cast<RegionKind>(key.first);
@@ -111196,14 +113714,8 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
     }
 
     // --- the chosen state --------------------------------------------------------------
-    const std::size_t n_states = file.mStates.size();
-    if (n_states == 0) {
-        if (rOptions.mTimeStep != 0 && rOptions.mTimeStep != -1)
-            xplt_fail("time step " + std::to_string(rOptions.mTimeStep) +
-                      " is out of range: the file has no states");
+    if (n_states == 0)
         return mesh;
-    }
-    const std::size_t index = rOptions.ResolveTimeStep(n_states);
     const auto scalar = [](double V, DType T) {
         NDArray a(T, {1});
         if (T == DType::Float64)
@@ -111267,7 +113779,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
             const XpltItem& item = items_it->second[static_cast<std::size_t>(var - 1)];
             if (!rOptions.WantsArray(item.mName))
                 return true;
-            if (grp == XpltGroup::Surface || grp == XpltGroup::Edge) {
+            if (grp == XpltGroup::Edge) {
                 skip(item.mName);
                 return true;
             }
@@ -111287,7 +113799,88 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
                 std::copy(pValues, pValues + Rows * width, a.As<double>());
                 return a;
             };
-            if (grp == XpltGroup::Global) {
+            if (grp == XpltGroup::Surface) {
+                // Region k is data surface k: per facet (item), one value
+                // (region) -> its facet cells; per surface node (node, in
+                // first-seen order over its facets) or per facet node (mult)
+                // -> averaged at the points, as element-node values are.
+                if (item.mFmt == 1 || item.mFmt == 3) {
+                    std::vector<std::vector<double>> blocks;
+                    for (std::size_t n : sizes)
+                        blocks.emplace_back(n * width, std::numeric_limits<double>::quiet_NaN());
+                    const auto bases = detail::block_bases(mesh);
+                    bool landed = false;
+                    for (const auto& [rid, values] : regions) {
+                        const std::size_t k = static_cast<std::size_t>(rid) - 1;
+                        if (rid < 1 || k >= surface_cells.size())
+                            continue;
+                        const auto& cells = surface_cells[k];
+                        if (values.size() < (item.mFmt == 3 ? width : cells.size() * width))
+                            continue;
+                        for (std::size_t f = 0; f < cells.size(); ++f) {
+                            if (cells[f] < 0)
+                                continue;
+                            landed = true;
+                            const std::size_t b = static_cast<std::size_t>(
+                                std::upper_bound(bases.begin(), bases.end(), cells[f]) -
+                                bases.begin() - 1);
+                            const std::size_t r = static_cast<std::size_t>(cells[f] - bases[b]);
+                            for (std::size_t w = 0; w < width; ++w)
+                                blocks[b][r * width + w] =
+                                    item.mFmt == 3 ? values[w] : values[f * width + w];
+                        }
+                    }
+                    // A variable on no surface of this mesh gives no array.
+                    if (!landed)
+                        return true;
+                    std::vector<NDArray> arrays;
+                    for (std::size_t b = 0; b < sizes.size(); ++b)
+                        arrays.push_back(make(sizes[b], blocks[b].data()));
+                    mesh.AddCellData(item.mName, std::move(arrays));
+                    return true;
+                }
+                if (item.mFmt != 0 && item.mFmt != 2) {
+                    skip(item.mName);
+                    return true;
+                }
+                const auto sums_of = [&]() -> auto& {
+                    auto [it, fresh] =
+                        sums.try_emplace(item.mName, std::vector<double>(n_points * width, 0.0),
+                                         std::vector<double>(n_points, 0.0));
+                    if (fresh) {
+                        sum_order.push_back(item.mName);
+                        sum_width[item.mName] = width;
+                    }
+                    return it->second;
+                };
+                std::size_t data_surface = 0;
+                for (const XpltSurface& surf : raw.mSurfaces) {
+                    if (surf.mFacetSet)
+                        continue;
+                    ++data_surface;
+                    for (const auto& [rid, values] : regions) {
+                        if (static_cast<std::size_t>(rid) != data_surface)
+                            continue;
+                        std::vector<std::int64_t> nodes;
+                        std::unordered_set<std::int64_t> seen_node;
+                        for (const auto& facet : surf.mFacets)
+                            for (std::int64_t p : facet.second)
+                                if (item.mFmt == 2 || seen_node.insert(p).second)
+                                    nodes.push_back(p);
+                        if (values.size() < nodes.size() * width || nodes.empty())
+                            continue;
+                        auto& [total, count] = sums_of();
+                        for (std::size_t i = 0; i < nodes.size(); ++i) {
+                            const auto p = static_cast<std::size_t>(nodes[i]);
+                            if (p >= n_points)
+                                continue;
+                            for (std::size_t w = 0; w < width; ++w)
+                                total[p * width + w] += values[i * width + w];
+                            count[p] += 1.0;
+                        }
+                    }
+                }
+            } else if (grp == XpltGroup::Global) {
                 if (!regions.empty()) {
                     const auto& v = regions.front().second;
                     NDArray a(DType::Float64, {v.size()});
@@ -111379,7 +113972,7 @@ Mesh read_xplt(const std::string& rPath, const ReadOptions& rOptions) {
         std::string list;
         for (const std::string& s : skipped)
             list += (list.empty() ? "" : ", ") + s;
-        log::warn("FEBio .xplt: surface, edge and material-point variables are not read: {}", list);
+        log::warn("FEBio .xplt: edge and material-point variables are not read: {}", list);
     }
     return mesh;
 }
@@ -134323,6 +136916,9 @@ std::string sniff_format(const std::string& rPath) {
     // --- binary magics ---
     if (sniff_is_mphbin(head))
         return "mphbin";
+    // Tecplot binary (.plt): "#!TDV" and a three-character version.
+    if (head.size() >= 5 && head.compare(0, 5, "#!TDV") == 0)
+        return "tecplot";
     // FEBio plot file: the magic 0x00464542, in either byte order.
     if (head.size() >= 4 && (head.compare(0, 4, std::string("BEF\0", 4)) == 0 ||
                              head.compare(0, 4, std::string("\0FEB", 4)) == 0))
@@ -138401,6 +140997,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         // .poly defaults to triangle.
         {".dat", "tecplot"},
         {".tec", "tecplot"},
+        {".plt", "tecplot"},
         {".ele", "tetgen"},
         {".node", "tetgen"},
         {".poly", "triangle"},

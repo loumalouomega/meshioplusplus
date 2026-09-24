@@ -3602,7 +3602,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // Ansys/Fluent writer / reader (.msh, ascii + binary).
     m.def("ansys_write", [](const std::string& path, py::object pymesh, bool binary) {
         meshioplusplus_py::PyMeshRefs refs;
-        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        // Faces carry polyhedra and polygons, so ragged blocks are welcome.
+        meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         meshioplusplus::write_ansys(path, cpp, binary);
     });
     m.def("ansys_read", [](const std::string& path) {

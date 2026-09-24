@@ -39,18 +39,28 @@ Boundary faces are kept as surface cells (`triangle`, `quad`, `polygon<N>`, or `
 
 ### Legacy layout
 
-A cell section whose element type has a fixed node count **and** a body is meshio's own layout: the body is the connectivity, `npc` hexadecimal ids per cell. That is what the writer produces, and such a file reads as it always did, cells only, with no zone data or regions. Fluent itself never writes it and cannot read it.
+A cell section whose element type has a fixed node count **and** a body is meshio's own layout: the body is the connectivity, `npc` hexadecimal ids per cell. Such a file reads as it always did, cells only, with no zone data or regions. Fluent itself never writes it and cannot read it; meshio++ wrote it before v16.10.0.
 
-Write emits, in order:
+## Writing
+
+Since v16.10.0 the writer emits Fluent's own face-based layout, which Fluent, `vtkFLUENTReader` and this reader read (**breaking**: it wrote the legacy layout above before):
 
 ```
-(1 "meshio++ VERSION")
-(2 DIM)
-(10 (0 1 N_POINTS 0))                          -- node-count declaration
-(12 (0 1 TOTAL_CELLS 0))                       -- cell-count declaration
-(10|3010 (1 1 N 1 DIM)( DATA ))                -- node block
-(12|2012|3012 (1 FIRST LAST 1 ANSYS_TYPE)( DATA ))   -- per cell block
+(1 "meshio++ VERSION")  (2 DIM)
+(10 (0 1 N_NODES 0 DIM))  (13 (0 1 N_FACES 0))  (12 (0 1 N_CELLS 0))
+(10|3010 (NODE_ZONE 1 N_NODES 1 DIM)( coordinates ))
+(12 (ZONE FIRST LAST 1 ELEMENT_TYPE))                      -- one per cell zone
+(13|2013 (ZONE FIRST LAST BC_TYPE FACE_TYPE)( faces ))     -- interior, then walls
+(45 (ZONE fluid|interior|wall NAME)())
 ```
+
+- **Cells** are the blocks of the mesh's highest dimension, 3 or 2. A 2-D mesh is written with 2-D points, so it must lie in the z = 0 plane (a `WriteError` otherwise: Fluent has no 3-D surface meshes). Each lower-dimensional block may name boundary zones (below); blocks of other dimensions are dropped with a warning. Quadratic cells are written by their corners, with a warning.
+- **Cell zones** come from `cell_data["ansys:zone"]` (the reader's), else one zone per block. Cells are numbered zone by zone. A zone of one cell type gets its element-type code; a zone of mixed types gets code 0 and the list of each cell's type; polyhedra (3-D) and polygons (2-D) are code 7.
+- **Faces.** Every face is written once, with its nodes and the cells `c0 c1` on either side (0 for none). The 3-D faces come from the shared face builder (`detail/face_mesh.hpp`) that the OpenFOAM and CGNS writers use, ordered so their right-hand normal points into `c0`; 2-D faces are the cell edges with `c0` on the left of `n0 → n1`. These are the conventions of files written by ANSYS Meshing and GAMBIT. Face types are 2, 3 and 4 by node count, 0 (mixed) with a leading count, or 5 (polygonal) for a polyhedron's faces.
+- **Face zones.** The faces between two cells are one `interior` zone (bc-type 2). A boundary face is in the `wall` zone (bc-type 3) of the lower-dimensional block, or `ansys:zone` value, of the facet cell that matches it by its nodes. The boundary faces no facet cell matches are one default wall. A facet cell on no boundary face is dropped with a warning.
+- **Ids and names.** `ansys:zone` values are kept as zone ids; every other zone (the interior, the default wall, the node zone, blocks without `ansys:zone`) gets the next free id. A zone's `(45 ...)` name is the region the reader would have made for it (same tag and dimension), else a `cell` region with exactly its cells, else `<type>_<id>`; blanks and parentheses become `_`. So a Fluent mesh read and written back keeps its zones, ids and names.
+- **Binary** (`binary=True`) writes the node section as `3010` (float64) and the face sections as `2013` (int32) with the `End of Binary Section` framing Fluent writes; an id beyond 32 bits is a `WriteError`.
+- Data arrays other than `ansys:zone` are dropped with a provenance note: a Fluent mesh file holds none.
 
 ## Cell types
 
@@ -67,7 +77,7 @@ Element-type codes of a `12` section:
 | 6 | `wedge` | 6 |
 | 7 | polyhedron | — |
 
-On read the type comes from the faces, not from this code. meshio++ → Ansys codes on write: `triangle:1, tetra:2, quad:3, hexahedron:4, pyramid:5, wedge:6` (no writer support for mixed or polyhedral zones).
+On read the type comes from the faces, not from this code. On write: `triangle:1, tetra:2, quad:3, hexahedron:4, pyramid:5, wedge:6`, polygons and polyhedra `7`, and `0` for a zone of mixed types.
 
 ## Data mapping
 
@@ -81,11 +91,9 @@ On read the type comes from the faces, not from this code. meshio++ → Ansys co
 - Out-of-order node zones, a missing blank in `(13(`, GAMBIT's boundary rows with `c0 = 0`, bodyless binary declarations and binary mixed face zones are all accepted; before v16.6.0 each of them failed.
 - A leading node count is assumed for polygonal rows in a mixed face zone (the samples only have fixed-size rows there).
 - Hanging-node trees (`(58 ...)`/`(59 ...)`), periodic shadows and cell-tree data are skipped.
-- The writer still emits the legacy layout; a face-based writer that Fluent reads is on the [roadmap](../roadmap.md).
-- 2D/3D validity (`dim in {2,3}`) is only checked on write.
 
 ## Notes
 
 - `tests/python/meshes/ansys/cells3d.msh`, `tgrid2d.msh`, `gambit2d.msh` and `binary3d.msh`, generated by `tools/gen_feconv_quirk_fixtures.py`, hold cells known only through their faces: two tetrahedra sharing a face, a hexahedron, a wedge, a pyramid and a polyhedron; 2-D TGrid and GAMBIT variants; binary sections. Tests check positive volumes, outward boundary and polyhedron faces, zones, regions and C++/Python parity. The 29 Fluent meshes of FEconv's `examples/` (GPL, not committed) read identically in both engines, all cells positively oriented; `ansys_mesh.msh` gives the same 224 tetrahedra as its I-DEAS UNV twin (`tests/python/test_feconv_examples.py`, with `MESHIOPLUSPLUS_FECONV_DIR` set).
-- The legacy write-read round trip is tested for synthetic meshes (`empty_mesh`, `tri_mesh`, `tri_mesh_2d`, `quad_mesh`, `tri_quad_mesh`, `tet_mesh`, `hex_mesh`, `pyramid_mesh`, `wedge_mesh`), ASCII and binary.
+- The writer is tested by write-read round trips (cells, volumes, zones and names, ASCII and binary, 2-D and 3-D, mixed zones, polyhedra) and by C++/Python byte parity. Outside the repository, `vtkFLUENTReader` read every output with the original cell counts and volumes, including FEconv's real meshes (up to 97k tetrahedra) re-written through meshio++. Fluent itself was not available.
 - `.msh` is shared with [`gmsh`](./gmsh.md) and [`freefem`](./freefem.md); on auto-detection `ansys` is tried first. Pass `file_format` to disambiguate.

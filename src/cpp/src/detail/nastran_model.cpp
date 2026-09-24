@@ -16,9 +16,11 @@
 //
 // System includes
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -213,22 +215,246 @@ NastranCells nastran_add_cells(Mesh& rMesh, const std::vector<NastranCardRows>& 
     return out;
 }
 
-void nastran_add_frame(Mesh& rMesh, const std::string& rFrame,
-                       const std::vector<std::int64_t>& rValues, const std::string& rWho) {
-    const auto nonzero =
-        std::count_if(rValues.begin(), rValues.end(), [](std::int64_t c) { return c != 0; });
-    if (nonzero == 0)
-        return;
-    if (rFrame == "CP")
+namespace {
+
+// Degrees to radians; one constant so both engines round the same way.
+constexpr double kNmDegree = 3.14159265358979323846 / 180.0;
+
+void nm_local_to_cartesian(int Type, const double* pLocal, double* pOut) {
+    if (Type == 2) {
+        const double t = pLocal[1] * kNmDegree;
+        pOut[0] = pLocal[0] * std::cos(t);
+        pOut[1] = pLocal[0] * std::sin(t);
+        pOut[2] = pLocal[2];
+    } else if (Type == 3) {
+        const double t = pLocal[1] * kNmDegree;
+        const double f = pLocal[2] * kNmDegree;
+        pOut[0] = pLocal[0] * std::sin(t) * std::cos(f);
+        pOut[1] = pLocal[0] * std::sin(t) * std::sin(f);
+        pOut[2] = pLocal[0] * std::cos(t);
+    } else {
+        pOut[0] = pLocal[0];
+        pOut[1] = pLocal[1];
+        pOut[2] = pLocal[2];
+    }
+}
+
+// A system from its origin A, a point B on +z and a point C in the xz plane,
+// all in basic; false when they do not span one.
+bool nm_system_from_points(int Type, const double* pA, const double* pB, const double* pC,
+                           NastranCoordSystems::System& rOut) {
+    const double z[3] = {pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]};
+    const double nz = std::sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]);
+    if (!(nz > 0.0))
+        return false;
+    const double ez[3] = {z[0] / nz, z[1] / nz, z[2] / nz};
+    const double v[3] = {pC[0] - pA[0], pC[1] - pA[1], pC[2] - pA[2]};
+    const double y[3] = {ez[1] * v[2] - ez[2] * v[1], ez[2] * v[0] - ez[0] * v[2],
+                         ez[0] * v[1] - ez[1] * v[0]};
+    const double ny = std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+    if (!(ny > 0.0))
+        return false;
+    const double ey[3] = {y[0] / ny, y[1] / ny, y[2] / ny};
+    const double ex[3] = {ey[1] * ez[2] - ey[2] * ez[1], ey[2] * ez[0] - ey[0] * ez[2],
+                          ey[0] * ez[1] - ey[1] * ez[0]};
+    rOut.mType = Type;
+    for (int k = 0; k < 3; ++k) {
+        rOut.mOrigin[k] = pA[k];
+        rOut.mAxes[k] = ex[k];
+        rOut.mAxes[3 + k] = ey[k];
+        rOut.mAxes[6 + k] = ez[k];
+    }
+    return true;
+}
+
+}  // namespace
+
+NastranCoordSystems::NastranCoordSystems() {
+    mSystems[0] = System{};
+}
+
+void NastranCoordSystems::ToBasic(std::int64_t Cid, const double* pLocal, double* pBasic) const {
+    const System& s = mSystems.at(Cid);
+    double c[3];
+    nm_local_to_cartesian(s.mType, pLocal, c);
+    for (int k = 0; k < 3; ++k)
+        pBasic[k] =
+            s.mOrigin[k] + s.mAxes[k] * c[0] + s.mAxes[3 + k] * c[1] + s.mAxes[6 + k] * c[2];
+}
+
+void NastranCoordSystems::VectorToBasic(std::int64_t Cid, const double* pBasicPoint,
+                                        double* pVector) const {
+    const System& s = mSystems.at(Cid);
+    double w[3] = {pVector[0], pVector[1], pVector[2]};
+    if (s.mType == 2 || s.mType == 3) {
+        const double d[3] = {pBasicPoint[0] - s.mOrigin[0], pBasicPoint[1] - s.mOrigin[1],
+                             pBasicPoint[2] - s.mOrigin[2]};
+        double l[3];
+        for (int j = 0; j < 3; ++j)
+            l[j] = s.mAxes[3 * j] * d[0] + s.mAxes[3 * j + 1] * d[1] + s.mAxes[3 * j + 2] * d[2];
+        const double ph = std::atan2(l[1], l[0]);
+        const double cp = std::cos(ph);
+        const double sp = std::sin(ph);
+        if (s.mType == 2) {
+            w[0] = pVector[0] * cp - pVector[1] * sp;
+            w[1] = pVector[0] * sp + pVector[1] * cp;
+        } else {
+            const double th = std::atan2(std::sqrt(l[0] * l[0] + l[1] * l[1]), l[2]);
+            const double ct = std::cos(th);
+            const double st = std::sin(th);
+            const double er[3] = {st * cp, st * sp, ct};
+            const double et[3] = {ct * cp, ct * sp, -st};
+            const double ep[3] = {-sp, cp, 0.0};
+            for (int k = 0; k < 3; ++k)
+                w[k] = pVector[0] * er[k] + pVector[1] * et[k] + pVector[2] * ep[k];
+        }
+    }
+    for (int k = 0; k < 3; ++k)
+        pVector[k] = s.mAxes[k] * w[0] + s.mAxes[3 + k] * w[1] + s.mAxes[6 + k] * w[2];
+}
+
+NastranCoordSystems nastran_apply_frames(Mesh& rMesh, const std::vector<NastranCoordCard>& rCards,
+                                         const std::vector<std::int64_t>& rIds,
+                                         const std::vector<std::int64_t>& rCp,
+                                         const std::vector<std::int64_t>& rCd,
+                                         const std::string& rWho) {
+    NastranCoordSystems systems;
+    const std::size_t n = rIds.size();
+    const bool any_cp = std::any_of(rCp.begin(), rCp.end(), [](std::int64_t c) { return c != 0; });
+    const bool any_cd = std::any_of(rCd.begin(), rCd.end(), [](std::int64_t c) { return c != 0; });
+    if (!any_cp && !any_cd)
+        return systems;
+
+    // First definition of each CID wins; later ones are reported.
+    std::map<std::int64_t, const NastranCoordCard*> pending;
+    std::size_t duplicates = 0;
+    for (const NastranCoordCard& c : rCards) {
+        if (c.mCid <= 0)
+            continue;
+        if (!pending.emplace(c.mCid, &c).second)
+            ++duplicates;
+    }
+    if (duplicates != 0)
         log::warn(
-            "{}: {} GRID(s) have CP != 0; their coordinates are kept in the local system, not "
-            "transformed",
-            rWho, nonzero);
-    else
-        log::warn("{}: {} GRID(s) have CD != 0; their results are in the local output system", rWho,
-                  nonzero);
-    rMesh.AddPointData(std::string("nastran:") + (rFrame == "CP" ? "cp" : "cd"),
-                       nm_int_array(rValues));
+            "{}: {} coordinate system(s) are defined more than once; the first definition "
+            "is used",
+            rWho, duplicates);
+
+    NDArray points = rMesh.Points();  // deep copy: moved to basic below, then reassigned
+    double* xyz = points.As<double>();
+    std::unordered_map<std::int64_t, std::size_t> index;
+    index.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        index.emplace(rIds[i], i);
+    std::vector<char> resolved(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        resolved[i] = rCp[i] == 0 ? 1 : 0;
+
+    // A CORD2 needs its reference system, a CORD1 its three GRIDs, and a GRID
+    // its CP system: resolve whatever is ready until nothing changes.
+    std::set<std::int64_t> degenerate;
+    for (bool progress = true; progress;) {
+        progress = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (resolved[i] || !systems.Has(rCp[i]))
+                continue;
+            double local[3] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+            systems.ToBasic(rCp[i], local, xyz + 3 * i);
+            resolved[i] = 1;
+            progress = true;
+        }
+        for (auto it = pending.begin(); it != pending.end();) {
+            const NastranCoordCard& c = *it->second;
+            double a[3], b[3], p[3];
+            bool ready = false;
+            if (c.mByGrids) {
+                std::size_t g[3];
+                ready = true;
+                for (int k = 0; k < 3 && ready; ++k) {
+                    const auto found = index.find(c.mGrids[k]);
+                    ready = found != index.end() && resolved[found->second];
+                    if (ready)
+                        g[k] = found->second;
+                }
+                if (ready)
+                    for (int k = 0; k < 3; ++k) {
+                        a[k] = xyz[3 * g[0] + k];
+                        b[k] = xyz[3 * g[1] + k];
+                        p[k] = xyz[3 * g[2] + k];
+                    }
+            } else if (systems.Has(c.mRid)) {
+                ready = true;
+                systems.ToBasic(c.mRid, c.mAbc, a);
+                systems.ToBasic(c.mRid, c.mAbc + 3, b);
+                systems.ToBasic(c.mRid, c.mAbc + 6, p);
+            }
+            if (!ready) {
+                ++it;
+                continue;
+            }
+            NastranCoordSystems::System sys;
+            if (nm_system_from_points(c.mType, a, b, p, sys))
+                systems.Add(c.mCid, sys);
+            else
+                degenerate.insert(c.mCid);
+            it = pending.erase(it);
+            progress = true;
+        }
+    }
+    if (!degenerate.empty())
+        log::warn(
+            "{}: {} coordinate system(s) have coincident or collinear defining points and "
+            "are ignored",
+            rWho, degenerate.size());
+
+    std::size_t moved = 0, kept = 0;
+    std::set<std::int64_t> missing;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (rCp[i] == 0)
+            continue;
+        if (resolved[i]) {
+            ++moved;
+        } else {
+            ++kept;
+            missing.insert(rCp[i]);
+        }
+    }
+    if (kept != 0) {
+        std::string ids;
+        for (std::int64_t c : missing)
+            ids += (ids.empty() ? "" : ", ") + std::to_string(c);
+        log::warn(
+            "{}: {} GRID(s) are in coordinate system(s) {} that cannot be resolved; their "
+            "coordinates are kept as written",
+            rWho, kept, ids);
+    }
+    if (moved != 0) {
+        log::info("{}: moved {} GRID(s) from local coordinate systems to basic", rWho, moved);
+        rMesh.AssignPoints(std::move(points));
+    }
+    if (any_cp)
+        rMesh.AddPointData("nastran:cp", nm_int_array(rCp));
+    if (any_cd) {
+        std::size_t unresolved = 0;
+        for (std::int64_t c : rCd)
+            unresolved += (c > 0 && !systems.Has(c)) ? 1 : 0;
+        if (unresolved != 0)
+            log::warn(
+                "{}: {} GRID(s) have an output system (CD) that cannot be resolved; their "
+                "results stay in it",
+                rWho, unresolved);
+        rMesh.AddPointData("nastran:cd", nm_int_array(rCd));
+    }
+    return systems;
+}
+
+bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t Cd,
+                             const double* pBasicPoint, double* pValues, std::size_t Count) {
+    if (Cd <= 0 || !rSystems.Has(Cd))
+        return false;
+    for (std::size_t k = 0; k < Count; ++k)
+        rSystems.VectorToBasic(Cd, pBasicPoint, pValues + 3 * k);
+    return true;
 }
 
 }  // namespace detail

@@ -21,6 +21,8 @@ mesh.point_data["DISPLACEMENT"]          # (n, 3) translations
 mesh.point_data["DISPLACEMENT_ROT"]      # (n, 3) rotations
 mode3.point_data["EIGENVECTOR"]          # a mode shape
 mesh.cell_data["STRESS:X"]               # per block, NaN where the card has no such output
+mesh.cell_data["STRESS:X@corner"]        # (cells, corners): the corner values of solids and shells
+mesh.cell_data["STRESS:X1@ply"]          # (cells, plies): composite ply stresses
 mesh.field_data["nastran:subcase"], mesh.field_data["meshio:time"]
 
 meshioplusplus.nastran_h5.time_values("job.h5")   # every step's TIME_FREQ_EIGR
@@ -44,7 +46,7 @@ The schema grows with every MSC release. The reader relies on nothing specific t
 
 ## The model
 
-- **Points** are the `GRID` rows, in file order. Their coordinates are taken **as written**. A GRID whose `CP` is not 0 is given in a local coordinate system, which is not applied: a warning names how many, and `point_data["nastran:cp"]` keeps the system id (only when some CP is non-zero). A non-zero `CD` (the system the results are output in) gets a warning and `point_data["nastran:cd"]` the same way. `SPOINT`/`EPOINT` scalar points are not points.
+- **Points** are the `GRID` rows, in file order, in the basic coordinate system; see [Coordinate systems](#coordinate-systems). `SPOINT`/`EPOINT` scalar points are not points.
 - **Cells.** Each `/NASTRAN/INPUT/ELEMENT/<card>` table with a cell type gives up to two cell blocks, in card-name order:
 
 | Card | Cell type | Quadratic |
@@ -66,6 +68,12 @@ The schema grows with every MSC release. The reader relies on nothing specific t
 - **Skipped cards.** Scalar-point elements (`CELAS*`, `CDAMP*`, `CMASS*`) and any card with no cell type (`CHBDYE`, `CBUSH1D`...) are skipped with one warning listing them. An element that connects a SPOINT is skipped too; one that names a GRID the file does not define is an error.
 - **Cell data.** `nastran:eid` (the element id) and `nastran:pid` (the property id, -1 for a card without one, such as `CONM2` or `CONROD`), integer, per block.
 - **Regions.** One [cell region](../regions.md) per property id, named after the property card that defines it (`PSHELL_4`, `PSOLID_2`, or `PID_<n>` when no card does; a flat table such as `PSHELL` wins over a grouped one such as `PCOMP/IDENTITY` for an id both define), with the property id as its tag and the highest cell dimension among its cells as its dimension.
+
+## Coordinate systems
+
+Since v16.10.0 a GRID whose `CP` is not 0 is moved from its local system to the basic one, and every nodal vector result of a GRID whose `CD` is not 0 (the system its results are output in) is rotated to basic at that point. The systems are the `CORD1R`/`CORD1C`/`CORD1S` and `CORD2R`/`CORD2C`/`CORD2S` tables of `/NASTRAN/INPUT/COORDINATE_SYSTEM`. They are resolved in any order: a `CORD1*` through its three GRIDs (which may lie in another local system) and a `CORD2*` through its reference system. Cylindrical `(r, θ, z)` and spherical `(r, θ, φ)` coordinates, in degrees, are converted to the system's Cartesian axes first. A vector at a point of a cylindrical or spherical system is rotated by the local axes at that point, so the rotation differs from point to point.
+
+What is rotated: every nodal table with `X, Y, Z` members (and its `RX, RY, RZ` rotations) and all of `GRID_FORCE`. Scalar tables, element results (in the element's own system) and complex tables stay as written. `point_data["nastran:cp"]` and `["nastran:cd"]` still record the system ids when any is non-zero, and an info line says how many GRIDs moved. A system that cannot be resolved (a missing `CORD*` card, or a cycle) leaves its GRIDs and their results as written, with a warning naming the ids. The bulk-data [`nastran`](./nastran.md) reader does not apply `CP`.
 
 ## Results and steps
 
@@ -96,21 +104,32 @@ Each `/NASTRAN/RESULT/NODAL/<T>` table with at most one row per node and domain 
 | a lone `VALUE` (`TEMPERATURE`) | `<T>` `(n,)` |
 | any other float member `M` (`KINETIC_ENERGY`'s `KET1`...) | `<T>:<M>` `(n,)` |
 
-A point the table has no row for is NaN. MSC writes rows for SPOINTs into the same tables (a `EIGENVECTOR` of 40 GRIDs and 3 SPOINTs has 43 rows per mode); those rows are dropped. `GRID_FORCE`, which has one row per (node, element), is skipped with a warning.
+A point the table has no row for is NaN. MSC writes rows for SPOINTs into the same tables (a `EIGENVECTOR` of 40 GRIDs and 3 SPOINTs has 43 rows per mode); those rows are dropped. `GRID_FORCE`, which has one row per (node, element), is read as described under [Several values per element](#several-values-per-element).
 
 ### Element results
 
-Each `/NASTRAN/RESULT/ELEMENTAL/<G>/<T>` table (`<G>` is `STRESS`, `STRAIN`, `ELEMENT_FORCE`, `ENERGY`...) with at most one row per element and domain becomes cell data, one array per float member `M`, named `<G>:<M>` and shared by every table of the group: `STRESS:X` holds the `X` of the `HEXA`, `PENTA` and `TETRA` tables alike, `STRESS:X1` the fibre-1 stress of the shell tables. A member that is an array (a solid's `X(9)`: the centre and then each corner; a corner-output shell's `(5)`; a beam's 11 stations) contributes its **first** entry, which is the centre for solids and `CEN` shells and end A for a beam. A cell whose card has no such member is NaN. Rows are joined to cells by `EID` (`ID` for the `ENERGY` tables). Per-ply `_COMP` tables, with one row per ply, are skipped with a warning.
+Each `/NASTRAN/RESULT/ELEMENTAL/<G>/<T>` table (`<G>` is `STRESS`, `STRAIN`, `ELEMENT_FORCE`, `ENERGY`...) with at most one row per element and domain becomes cell data, one array per float member `M`, named `<G>:<M>` and shared by every table of the group: `STRESS:X` holds the `X` of the `HEXA`, `PENTA` and `TETRA` tables alike, `STRESS:X1` the fibre-1 stress of the shell tables. A member that is an array (a solid's `X(9)`: the centre and then each corner; a corner-output shell's `(5)`; a beam's 11 stations) contributes its **first** entry to `<G>:<M>`, which is the centre for solids and `CEN` shells and end A for a beam; its other entries are read as described next. A cell whose card has no such member is NaN. Rows are joined to cells by `EID` (`ID` for the `ENERGY` tables).
+
+### Several values per element
+
+Since v16.10.0 the values beyond the centre are read too. They are added beside `<G>:<M>`, which keeps the centre value, as `(cells, columns)` cell data, NaN-padded, with `field_data["nastran:layout:<name>"] = [columns, 1]`:
+
+| Array | Source | Column |
+|---|---|---|
+| `<G>:<M>@corner` | the corner entries of a solid's or corner-output shell's array member | the GRID's position in the cell's connectivity |
+| `<G>:<M>@ply` | the per-ply rows of a `_COMP` table | `PLY - 1` |
+| `<G>:<M>@station` | a `BEAM` table's 11 stations, and the `SD` rows of `BARS` | the station; stations not output stay NaN |
+| `GRID_FORCE:<M>` (`F1`...`M3`) | the element rows of `GRID_FORCE` | the GRID's position in the cell's connectivity |
+
+The `GRID_FORCE` rows that belong to no element (`*TOTALS*`, `APP-LOAD`, `F-OF-SPC`...) become point data `GRID_FORCE:<label>:<M>`, the label being the row's `ELNAME` without blanks and asterisks (`GRID_FORCE:TOTALS:F1`). A cell whose card has no such values is NaN in every column. A table with repeated rows of another kind (`ENERGY`'s summary row with ID 100000000) is still skipped with a warning.
 
 `CONM2` elements are not matched by element results: they have none, and MSC accepts a `CONM2` sharing its id with a structural element. Any other id shared by two cards gets a warning, and the results go to the first.
 
 ## What is not read
 
-- **Coordinate systems.** `CP`/`CD` are recorded, not applied (above).
 - **Everything outside `/NASTRAN/INPUT/NODE`, `/ELEMENT`, `/PROPERTY` and `/NASTRAN/RESULT/NODAL`, `/ELEMENTAL`**: loads, constraints, materials, the eigenvalue summary, optimization and aerodynamic results.
-- **Per-ply, per-station and per-grid values** beyond the first entry of an array member.
 - **Other vendors' HDF5 schemas**, refused as above until a file is in hand. OP2 files are read by [`nastran_op2`](./nastran_op2.md), with the same mesh and member names; OP4 and punch files are not read.
 
 ## Verification
 
-The test suite reads six files MSC Nastran 2020 wrote (SOL 101, 103, 105, 107, 108 and 159, from the [pyNastran](https://github.com/SteveDoyle2/pyNastran) repository, BSD 3-Clause, credited in `tests/python/meshes/nastran_h5/README.md`). Every translation and rotation vector of every domain — 38 tables, the SOL 103 eigenvectors included — equals pyNastran 1.4.1's own reading of the same file bit for bit, and a `.vtu` sequence converted from the SOL 103 file, read back by ParaView, carries the same eigenvectors. The two engines agree exactly on every array of every step of every file, and every solid has a positive volume.
+The test suite reads six files MSC Nastran 2020 wrote (SOL 101, 103, 105, 107, 108 and 159, from the [pyNastran](https://github.com/SteveDoyle2/pyNastran) repository, BSD 3-Clause, credited in `tests/python/meshes/nastran_h5/README.md`). Every translation and rotation vector of every domain — 38 tables, the SOL 103 eigenvectors included — equals pyNastran 1.4.1's own reading of the same file bit for bit, and a `.vtu` sequence converted from the SOL 103 file, read back by ParaView, carries the same eigenvectors. The two engines agree exactly on every array of every step of every file, and every solid has a positive volume. The corner, ply, station and grid point force values match pyNastran's on the same files. The coordinate systems are checked on a probe derived from a real file, with GRIDs in a tilted `CORD2C`, a `CORD2S` defined in it and a `CORD1R` through GRIDs of the `CORD2C` (`tools/gen_nastran_cord_reference.py`): points match pyNastran's to 1e-16 and displacements to 4e-16, compared with upstream pyNastran's rotation matrices, because 1.4.1 composes cylindrical and spherical ones the wrong way round.

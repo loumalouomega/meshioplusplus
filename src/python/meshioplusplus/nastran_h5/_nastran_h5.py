@@ -9,12 +9,14 @@ one cell region per property id), and every result domain an
 ``/NASTRAN/RESULT/ELEMENTAL`` tables cell data. See ``doc/formats/nastran_h5.md``.
 """
 
+import bisect
+
 import numpy as np
 
 from .._common import warn
 from .._exceptions import ReadError
 from .._mesh import Mesh
-from ..nastran._model import CARDS, add_cells, frame_point_data
+from ..nastran._model import CARDS, CoordCard, add_cells, apply_frames, rotate_to_basic
 
 __all__ = ["read", "time_values"]
 
@@ -312,6 +314,52 @@ def _resolve_step(time_step, count):
     return step
 
 
+_COORD_TABLES = (
+    ("CORD2R", 1),
+    ("CORD2C", 2),
+    ("CORD2S", 3),
+    ("CORD1R", 1),
+    ("CORD1C", 2),
+    ("CORD1S", 3),
+)
+
+
+def _coord_cards(f):
+    """The CORD1R/C/S and CORD2R/C/S tables of /NASTRAN/INPUT/COORDINATE_SYSTEM."""
+    import h5py
+
+    out = []
+    for name, ctype in _COORD_TABLES:
+        path = "/NASTRAN/INPUT/COORDINATE_SYSTEM/" + name
+        if not isinstance(f.get(path), h5py.Dataset):
+            continue
+        ds = f[path]
+        by_grids = name[4] == "1"
+        needed = (
+            ["CID", "G1", "G2", "G3"]
+            if by_grids
+            else ["CID", "RID", "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"]
+        )
+        if not all(m in ds.dtype.names for m in needed):
+            warn(
+                f"MSC Nastran HDF5: {path} lacks the expected columns; its systems are not read"
+            )
+            continue
+        rows = ds[()]
+        for r in rows:
+            if by_grids:
+                out.append(
+                    CoordCard(r["CID"], ctype, grids=[r["G1"], r["G2"], r["G3"]])
+                )
+            else:
+                out.append(
+                    CoordCard(
+                        r["CID"], ctype, rid=r["RID"], abc=[r[m] for m in needed[2:]]
+                    )
+                )
+    return out
+
+
 def read(filename, points_only=False, arrays=None, time_step=0):
     nf = _File(filename)
     try:
@@ -326,9 +374,15 @@ def _read(nf, points_only, arrays, time_step):
     npts = len(grid)
     points = np.asarray(grid["X"], dtype=np.float64).reshape(npts, 3)
     point_data = {}
-    for frame in ("CP", "CD"):
-        if frame in grid.dtype.names:
-            frame_point_data(point_data, frame, grid[frame], "MSC Nastran HDF5")
+    names = grid.dtype.names
+    zeros = np.zeros(npts, dtype=np.int64)
+    cp = np.asarray(grid["CP"], dtype=np.int64) if "CP" in names else zeros
+    cd = np.asarray(grid["CD"], dtype=np.int64) if "CD" in names else zeros
+    ids = np.asarray(grid["ID"], dtype=np.int64)
+    systems = apply_frames(
+        points, point_data, _coord_cards(f), ids, cp, cd, "MSC Nastran HDF5"
+    )
+    cdl = cd.tolist()
 
     cells, cell_data, regions, cell_index, offsets, sizes = add_cells(
         _read_cards(nf),
@@ -359,12 +413,29 @@ def _read(nf, points_only, arrays, time_step):
 
     used_point_names = []
     cell_arrays = {}
+    wide = {}  # name -> [(cell, column, value)], laid out once every table is read
+    ctx = {
+        "f": f,
+        "nf": nf,
+        "mesh": mesh,
+        "wants": wants,
+        "cell_index": cell_index,
+        "offsets": offsets,
+        "ncells": ncells,
+        "cell_arrays": cell_arrays,
+        "wide": wide,
+        "systems": systems,
+        "cd": cdl,
+        "points": points,
+    }
     for t in nf.tables:
         rng = t["index"].get(dom["domain"])
         if rng is None:
             continue
         row0, count = rng
         ds = f[t["path"]]
+        if _read_multi(ctx, t, ds, row0, count):
+            continue
         if t["nodal"]:
             outputs = []
             for name, members in _nodal_outputs(t, ds):
@@ -405,6 +476,11 @@ def _read(nf, points_only, arrays, time_step):
                 data = np.full((npts, nc), _NAN)
                 for c, m in enumerate(members):
                     data[dst, c] = _first(rows[m])[src]
+                if nc == 3:  # vector results are in each GRID's output system (CD)
+                    for p in dst.tolist():
+                        v = data[p].tolist()
+                        if rotate_to_basic(systems, cdl[p], points[p].tolist(), v):
+                            data[p] = v
                 used_point_names.append(name)
                 mesh.point_data[name] = data[:, 0] if nc == 1 else data
             else:
@@ -416,7 +492,196 @@ def _read(nf, points_only, arrays, time_step):
         mesh.cell_data[name] = [
             values[offsets[b] : offsets[b] + sizes[b]] for b in range(len(sizes))
         ]
+    for name, entries in wide.items():
+        width = max(col for _, col, _ in entries) + 1
+        blocks = [np.full((sizes[b], width), _NAN) for b in range(len(sizes))]
+        for cell, col, value in entries:
+            b = bisect.bisect_right(offsets, cell) - 1
+            blocks[b][cell - offsets[b], col] = value
+        mesh.cell_data[name] = blocks
+        mesh.field_data["nastran:layout:" + name] = np.array([width, 1], dtype=np.int64)
     return mesh
+
+
+def _int_member(ds, name, ndim):
+    """Whether ``ds`` has an integer member ``name`` of ``ndim`` array dimensions."""
+    if name not in _names(ds):
+        return False
+    t = ds.dtype.fields[name][0]
+    base = t.base if t.subdtype else t
+    return base.kind in "iu" and len(t.shape) == ndim
+
+
+def _node_position(ctx, cell, grid):
+    """The position of GRID ``grid`` in the connectivity of global cell ``cell``."""
+    p = ctx["nf"].grid_index.get(grid)
+    if p is None:
+        return None
+    offsets = ctx["offsets"]
+    b = bisect.bisect_right(offsets, cell) - 1
+    row = ctx["mesh"].cells[b].data[cell - offsets[b]].tolist()
+    return row.index(p) if p in row else None
+
+
+def _read_multi(ctx, t, ds, row0, count):
+    """The tables with several values per element or node; False when ``t`` is
+    not one (``read_multi`` in nastran_h5.cpp)."""
+    names = _names(ds)
+    nodal = t["nodal"]
+    ply = not nodal and _int_member(ds, "PLY", 0)
+    bars = not nodal and t["name"] in ("BARS", "BARS_CPLX")
+    arrays = not nodal and _int_member(ds, "GRID", 1)
+    grid_force = (
+        nodal
+        and t["name"] == "GRID_FORCE"
+        and _int_member(ds, "EID", 0)
+        and "ELNAME" in names
+    )
+    if not (ply or bars or arrays or grid_force):
+        return False
+    wants = ctx["wants"]
+    wide = ctx["wide"]
+    cell_index = ctx["cell_index"]
+    floats = [m for m in names if m not in (t["key"], "DOMAIN_ID") and _is_float(ds, m)]
+    rows = ds[row0 : row0 + count]
+    keys = np.asarray(rows[t["key"]], dtype=np.int64).tolist()
+
+    def push(name, cell, col, value):
+        wide.setdefault(name, []).append((cell, col, value))
+
+    if grid_force:
+        # Element rows (EID > 0): forces on each element node, (cells, nodes) in
+        # the cell's node order; the others: point data named after ELNAME.
+        # Both in the GRID's output system (CD), rotated to basic.
+        grid_index = ctx["nf"].grid_index
+        eids = np.asarray(rows["EID"], dtype=np.int64).tolist()
+        elname = [
+            (v.decode("ascii", "replace") if isinstance(v, bytes) else str(v)).rstrip(
+                " \x00"
+            )
+            for v in rows["ELNAME"]
+        ]
+        values = [np.asarray(rows[m], dtype=np.float64).tolist() for m in floats]
+        triplets = len(floats) == 6
+        npts = len(ctx["points"])
+        totals = {}
+        for r in range(count):
+            p = grid_index.get(keys[r])
+            if p is None:
+                continue
+            row = [values[c][r] for c in range(len(floats))]
+            if triplets:
+                rotate_to_basic(
+                    ctx["systems"], ctx["cd"][p], ctx["points"][p].tolist(), row
+                )
+            if eids[r] > 0:
+                cell = cell_index.get(eids[r])
+                if cell is None:
+                    continue
+                pos = _node_position(ctx, cell, keys[r])
+                if pos is None:
+                    continue
+                for k, m in enumerate(floats):
+                    name = f"{t['name']}:{m}"
+                    if wants(name):
+                        push(name, cell, pos, row[k])
+                continue
+            label = elname[r].replace(" ", "").replace("*", "")
+            for k, m in enumerate(floats):
+                name = f"{t['name']}:{label}:{m}"
+                if not wants(name):
+                    continue
+                if name not in totals:
+                    totals[name] = np.full(npts, _NAN)
+                totals[name][p] = row[k]
+        for name, arr in totals.items():
+            ctx["mesh"].point_data[name] = arr
+        return True
+
+    target = [cell_index.get(k) for k in keys]
+    if ply or bars:
+        # One row per ply (column PLY - 1) or per station along a bar (columns in
+        # row order).
+        if ply:
+            column = [
+                p - 1 if p >= 1 else None
+                for p in np.asarray(rows["PLY"], dtype=np.int64).tolist()
+            ]
+        else:
+            seen = {}
+            column = []
+            for k in keys:
+                column.append(seen.get(k, 0))
+                seen[k] = column[-1] + 1
+        suffix = "@ply" if ply else "@station"
+        for m in floats:
+            name = f"{t['group']}:{m}{suffix}"
+            if not wants(name):
+                continue
+            v = _first(rows[m]).tolist()
+            for r in range(count):
+                if target[r] is not None and column[r] is not None:
+                    push(name, target[r], column[r], v[r])
+        return True
+
+    # One row per element with arrays: entry 0 is the centre (end A of a beam),
+    # the plain <G>:<M> value; a BEAM's entries are its stations, the others'
+    # entries 1.. are corners placed at their GRID's position in the cell.
+    if len(set(keys)) != len(keys):
+        warn(f"MSC Nastran HDF5: {t['path']} has several rows per element; skipped")
+        return True
+    beam = t["name"].startswith("BEAM")
+    grids = np.asarray(rows["GRID"], dtype=np.int64)
+    gw = grids.shape[1] if grids.ndim == 2 else 1
+    grids = grids.reshape(count, -1).tolist()
+    # A beam station with no GRID and no distance (SD) was not output.
+    sd = (
+        np.asarray(rows["SD"], dtype=np.float64).reshape(count, -1).tolist()
+        if beam and "SD" in names
+        else None
+    )
+    for m in floats:
+        centre = f"{t['group']}:{m}"
+        name = centre + ("@station" if beam else "@corner")
+        want_centre = wants(centre)
+        want_wide = wants(name)
+        if not (want_centre or want_wide):
+            continue
+        v = np.asarray(rows[m], dtype=np.float64).reshape(count, -1)
+        w = v.shape[1]
+        v = v.tolist()
+        if want_centre:
+            values = ctx["cell_arrays"].get(centre)
+            if values is None:
+                values = ctx["cell_arrays"][centre] = np.full(ctx["ncells"], _NAN)
+            for r in range(count):
+                if target[r] is not None:
+                    values[target[r]] = v[r][0]
+        if not want_wide or w < 2:
+            continue
+        for r in range(count):
+            if target[r] is None:
+                continue
+            for k in range(0 if beam else 1, w):
+                col = k
+                if (
+                    beam
+                    and k > 0
+                    and w == gw
+                    and sd is not None
+                    and len(sd[r]) == w
+                    and grids[r][k] == 0
+                    and sd[r][k] == 0.0
+                ):
+                    continue
+                if not beam:
+                    if w != gw or grids[r][k] <= 0:
+                        continue
+                    col = _node_position(ctx, target[r], grids[r][k])
+                    if col is None:
+                        continue
+                push(name, target[r], col, v[r][k])
+    return True
 
 
 def time_values(filename):

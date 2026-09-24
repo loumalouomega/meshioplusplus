@@ -38,6 +38,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #include "meshioplusplus/detail/nastran_model.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -125,6 +126,56 @@ std::vector<double> nh5_float_member(hid_t file, const std::string& rPath,
     std::vector<double> out(Count);
     for (std::size_t i = 0; i < Count; ++i)
         out[i] = p[i * width];
+    return out;
+}
+
+/** A float member as double, every entry: (Count * width) values and the width. */
+std::vector<double> nh5_float_member_all(hid_t file, const std::string& rPath,
+                                         const std::string& rMember, std::size_t Row0,
+                                         std::size_t Count, std::size_t& rWidth) {
+    const DType as = DType::Float64;
+    const NDArray a = h5::read_compound_member(file, rPath, rMember, Row0, Count, &as);
+    rWidth = Count == 0 ? 1 : a.Size() / Count;
+    const double* p = a.As<double>();
+    return std::vector<double>(p, p + a.Size());
+}
+
+/** A fixed-length string member, trailing blanks and NULs removed. */
+std::vector<std::string> nh5_string_member(hid_t file, const std::string& rPath,
+                                           const std::string& rMember, std::size_t Row0,
+                                           std::size_t Count) {
+    h5::Hid d(H5Dopen2(file, rPath.c_str(), H5P_DEFAULT), H5Dclose);
+    h5::Hid ftype(H5Dget_type(d), H5Tclose);
+    const int index = H5Tget_member_index(ftype, rMember.c_str());
+    if (index < 0)
+        nh5_fail(rPath + " has no " + rMember + " column");
+    h5::Hid mtype(H5Tget_member_type(ftype, static_cast<unsigned>(index)), H5Tclose);
+    if (H5Tget_class(mtype) != H5T_STRING || H5Tis_variable_str(mtype) > 0)
+        nh5_fail(rPath + " " + rMember + " is not a fixed-length string");
+    const std::size_t len = H5Tget_size(mtype);
+    std::vector<std::string> out(Count);
+    if (Count == 0)
+        return out;
+    h5::Hid str(H5Tcopy(H5T_C_S1), H5Tclose);
+    H5Tset_size(str, len);
+    H5Tset_strpad(str, H5T_STR_NULLPAD);
+    h5::Hid mem_type(H5Tcreate(H5T_COMPOUND, len), H5Tclose);
+    if (!mem_type.Valid() || H5Tinsert(mem_type, rMember.c_str(), 0, str) < 0)
+        nh5_fail("could not build a memory type for " + rPath + " " + rMember);
+    h5::Hid space(H5Dget_space(d), H5Sclose);
+    const hsize_t start = Row0;
+    const hsize_t count = Count;
+    H5Sselect_hyperslab(space, H5S_SELECT_SET, &start, nullptr, &count, nullptr);
+    h5::Hid mem(H5Screate_simple(1, &count, nullptr), H5Sclose);
+    std::vector<char> buf(len * Count);
+    if (H5Dread(d, mem_type, mem, space, H5P_DEFAULT, buf.data()) < 0)
+        nh5_fail("failed reading " + rPath + " " + rMember);
+    for (std::size_t i = 0; i < Count; ++i) {
+        std::string v(buf.data() + i * len, len);
+        while (!v.empty() && (v.back() == ' ' || v.back() == '\0'))
+            v.pop_back();
+        out[i] = std::move(v);
+    }
     return out;
 }
 
@@ -363,6 +414,59 @@ std::vector<std::pair<std::string, std::vector<std::string>>> nh5_nodal_outputs(
     return out;
 }
 
+/** The CORD1R/C/S and CORD2R/C/S tables of /NASTRAN/INPUT/COORDINATE_SYSTEM. */
+std::vector<detail::NastranCoordCard> nh5_coord_cards(hid_t File) {
+    constexpr const char* kDir = "/NASTRAN/INPUT/COORDINATE_SYSTEM";
+    std::vector<detail::NastranCoordCard> out;
+    static const std::pair<const char*, int> kTables[] = {
+        {"CORD2R", 1}, {"CORD2C", 2}, {"CORD2S", 3}, {"CORD1R", 1}, {"CORD1C", 2}, {"CORD1S", 3}};
+    for (const auto& [name, type] : kTables) {
+        const std::string path = std::string(kDir) + "/" + name;
+        if (!nh5_is_dataset(File, path))
+            continue;
+        const auto members = h5::compound_members(File, path);
+        const std::size_t n = nh5_rows(File, path);
+        const bool by_grids = name[4] == '1';
+        const std::vector<const char*> needed =
+            by_grids ? std::vector<const char*>{"CID", "G1", "G2", "G3"}
+                     : std::vector<const char*>{"CID", "RID", "A1", "A2", "A3", "B1",
+                                                "B2",  "B3",  "C1", "C2", "C3"};
+        bool complete = true;
+        for (const char* m : needed)
+            complete = complete && nh5_has_member(members, m);
+        if (!complete) {
+            log::warn("MSC Nastran HDF5: {} lacks the expected columns; its systems are not read",
+                      path);
+            continue;
+        }
+        const auto cid = nh5_int_member(File, path, "CID", 0, n);
+        std::vector<std::vector<std::int64_t>> ints;
+        std::vector<std::vector<double>> reals;
+        for (std::size_t k = 1; k < needed.size(); ++k) {
+            if (by_grids || k == 1)
+                ints.push_back(nh5_int_member(File, path, needed[k], 0, n));
+            else
+                reals.push_back(nh5_float_member(File, path, needed[k], 0, n));
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            detail::NastranCoordCard c;
+            c.mCid = cid[i];
+            c.mType = type;
+            c.mByGrids = by_grids;
+            if (by_grids) {
+                for (int k = 0; k < 3; ++k)
+                    c.mGrids[k] = ints[static_cast<std::size_t>(k)][i];
+            } else {
+                c.mRid = ints[0][i];
+                for (std::size_t k = 0; k < 9; ++k)
+                    c.mAbc[k] = reals[k][i];
+            }
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
 std::string nh5_join(const std::vector<std::string>& rV) {
     std::string out;
     for (const std::string& s : rV)
@@ -379,6 +483,8 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
 
     // --- points ---------------------------------------------------------------
     const std::size_t npts = file.mGridIds.size();
+    detail::NastranCoordSystems systems;
+    std::vector<std::int64_t> cd;
     {
         const DType as = DType::Float64;
         NDArray x = h5::read_compound_member(f, kNh5Grid, "X", 0, npts, &as);
@@ -386,11 +492,16 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             nh5_fail("GRID X is not a 3-vector");
         mesh.AssignPoints(std::move(x));
         const auto members = h5::compound_members(f, kNh5Grid);
-        for (const char* frame : {"CP", "CD"})
-            if (nh5_has_member(members, frame))
-                detail::nastran_add_frame(mesh, frame, nh5_int_member(f, kNh5Grid, frame, 0, npts),
-                                          "MSC Nastran HDF5");
+        auto frame = [&](const char* pName) {
+            return nh5_has_member(members, pName) ? nh5_int_member(f, kNh5Grid, pName, 0, npts)
+                                                  : std::vector<std::int64_t>(npts, 0);
+        };
+        cd = frame("CD");
+        systems = detail::nastran_apply_frames(mesh, nh5_coord_cards(f), file.mGridIds, frame("CP"),
+                                               cd, "MSC Nastran HDF5");
     }
+    const NDArray basic_points = mesh.Points();
+    const double* basic = basic_points.As<double>();
 
     // --- cells and property regions ------------------------------------------------
     std::vector<detail::NastranCardRows> cards;
@@ -479,11 +590,228 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
     // Elemental arrays accumulate across tables: <G>:<M> -> per-global-cell values.
     std::map<std::string, std::vector<double>> cell_arrays;
     std::vector<std::string> cell_order;
+    // Multi-valued cell arrays (per ply, per station, per corner or element
+    // node) gather (cell, column, value) and are laid out once every table is
+    // read, as (cells, columns) with NaN where a cell has no value.
+    struct Wide {
+        std::vector<std::size_t> mCell, mCol;
+        std::vector<double> mValue;
+    };
+    std::map<std::string, Wide> wide;
+    auto push = [&](const std::string& rName, std::size_t Cell, std::size_t Col, double V) {
+        Wide& w = wide[rName];
+        w.mCell.push_back(Cell);
+        w.mCol.push_back(Col);
+        w.mValue.push_back(V);
+    };
+    // The position of GRID `Grid` in the connectivity of global cell `Cell`.
+    constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
+    auto node_position = [&](std::size_t Cell, std::int64_t Grid) -> std::size_t {
+        const auto g = file.mGridIndex.find(Grid);
+        if (g == file.mGridIndex.end())
+            return npos;
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), Cell) -
+            model.mOffsets.begin() - 1);
+        const NDArray& conn = mesh.Cells(b).Conn();
+        const std::size_t width = conn.Shape()[1];
+        const std::size_t row = Cell - model.mOffsets[b];
+        for (std::size_t k = 0; k < width; ++k)
+            if (static_cast<std::size_t>(detail::read_int(conn, row * width + k)) == g->second)
+                return k;
+        return npos;
+    };
+    auto has_int_member = [](const Nh5ResultTable& rT, const char* pName, std::size_t Dims) {
+        for (const h5::CompoundMember& m : rT.mMembers)
+            if (m.mName == pName && m.mNumeric && m.mDtype != DType::Float32 &&
+                m.mDtype != DType::Float64 && m.mDims.size() == Dims)
+                return true;
+        return false;
+    };
+    auto starts = [](const std::string& rName, const char* pPrefix) {
+        return rName.rfind(pPrefix, 0) == 0;
+    };
+
+    // The tables with several values per element or node: false when `rT` is not one.
+    auto read_multi = [&](const Nh5ResultTable& rT, std::size_t Row0, std::size_t Count) -> bool {
+        const bool ply = !rT.mNodal && has_int_member(rT, "PLY", 0);
+        const bool bars = !rT.mNodal && (rT.mName == "BARS" || rT.mName == "BARS_CPLX");
+        const bool arrays = !rT.mNodal && has_int_member(rT, "GRID", 1);
+        const bool grid_force = rT.mNodal && rT.mName == "GRID_FORCE" &&
+                                has_int_member(rT, "EID", 0) &&
+                                nh5_has_member(rT.mMembers, "ELNAME");
+        if (!ply && !bars && !arrays && !grid_force)
+            return false;
+        std::vector<std::string> floats;
+        for (const h5::CompoundMember& m : rT.mMembers)
+            if (nh5_is_float(m) && m.mName != rT.mKey && m.mName != "DOMAIN_ID")
+                floats.push_back(m.mName);
+        const auto keys = nh5_int_member(f, rT.mPath, rT.mKey, Row0, Count);
+
+        if (grid_force) {
+            // Element rows (EID > 0) are the forces on each element node, as
+            // (cells, nodes) in the cell's node order; the others (*TOTALS*,
+            // APP-LOAD, F-OF-SPC, ...) are point data named after ELNAME.
+            // Both are in the GRID's output system (CD), rotated to basic.
+            const auto eids = nh5_int_member(f, rT.mPath, "EID", Row0, Count);
+            const auto elname = nh5_string_member(f, rT.mPath, "ELNAME", Row0, Count);
+            std::vector<std::vector<double>> v;
+            for (const std::string& m : floats)
+                v.push_back(nh5_float_member(f, rT.mPath, m, Row0, Count));
+            const bool triplets = floats.size() == 6;
+            std::map<std::string, std::vector<double>> totals;
+            std::vector<std::string> total_order;
+            for (std::size_t r = 0; r < Count; ++r) {
+                const auto g = file.mGridIndex.find(keys[r]);
+                if (g == file.mGridIndex.end())
+                    continue;
+                const std::size_t p = g->second;
+                std::vector<double> row(floats.size());
+                for (std::size_t c = 0; c < floats.size(); ++c)
+                    row[c] = v[c][r];
+                if (triplets)
+                    detail::nastran_rotate_to_basic(systems, cd[p], basic + 3 * p, row.data(), 2);
+                if (eids[r] > 0) {
+                    const auto c = cell_index.find(eids[r]);
+                    if (c == cell_index.end())
+                        continue;
+                    const std::size_t pos = node_position(c->second, keys[r]);
+                    if (pos == npos)
+                        continue;
+                    for (std::size_t k = 0; k < floats.size(); ++k) {
+                        const std::string name = rT.mName + ":" + floats[k];
+                        if (rOpts.WantsArray(name))
+                            push(name, c->second, pos, row[k]);
+                    }
+                    continue;
+                }
+                std::string label;
+                for (char ch : elname[r])
+                    if (ch != ' ' && ch != '*')
+                        label += ch;
+                for (std::size_t k = 0; k < floats.size(); ++k) {
+                    const std::string name = rT.mName + ":" + label + ":" + floats[k];
+                    if (!rOpts.WantsArray(name))
+                        continue;
+                    auto& values = totals[name];
+                    if (values.empty()) {
+                        values.assign(npts, std::numeric_limits<double>::quiet_NaN());
+                        total_order.push_back(name);
+                    }
+                    values[p] = row[k];
+                }
+            }
+            for (const std::string& name : total_order) {
+                NDArray a(DType::Float64, {npts});
+                std::copy(totals[name].begin(), totals[name].end(), a.As<double>());
+                mesh.AddPointData(name, std::move(a));
+            }
+            return true;
+        }
+
+        std::vector<std::size_t> target(Count, npos);
+        for (std::size_t r = 0; r < Count; ++r) {
+            const auto c = cell_index.find(keys[r]);
+            if (c != cell_index.end())
+                target[r] = c->second;
+        }
+        if (ply || bars) {
+            // One row per ply (column PLY - 1) or per station along a bar
+            // (columns in row order).
+            std::vector<std::size_t> column(Count, 0);
+            if (ply) {
+                const auto plies = nh5_int_member(f, rT.mPath, "PLY", Row0, Count);
+                for (std::size_t r = 0; r < Count; ++r)
+                    column[r] = plies[r] >= 1 ? static_cast<std::size_t>(plies[r] - 1) : npos;
+            } else {
+                std::unordered_map<std::int64_t, std::size_t> seen;
+                for (std::size_t r = 0; r < Count; ++r)
+                    column[r] = seen[keys[r]]++;
+            }
+            const std::string suffix = ply ? "@ply" : "@station";
+            for (const std::string& m : floats) {
+                const std::string name = rT.mGroup + ":" + m + suffix;
+                if (!rOpts.WantsArray(name))
+                    continue;
+                const auto v = nh5_float_member(f, rT.mPath, m, Row0, Count);
+                for (std::size_t r = 0; r < Count; ++r)
+                    if (target[r] != npos && column[r] != npos)
+                        push(name, target[r], column[r], v[r]);
+            }
+            return true;
+        }
+
+        // One row per element with arrays: entry 0 is the centre (or end A of
+        // a beam), which stays the plain `<G>:<M>` value. A BEAM's entries are
+        // its 11 stations; the others' entries 1.. are corners, placed at their
+        // GRID's position in the cell.
+        {
+            std::unordered_set<std::int64_t> once;
+            for (std::int64_t k : keys)
+                if (!once.insert(k).second) {
+                    log::warn("MSC Nastran HDF5: {} has several rows per element; skipped",
+                              rT.mPath);
+                    return true;
+                }
+        }
+        const bool beam = starts(rT.mName, "BEAM");
+        std::size_t gw = 1;
+        const auto grids = nh5_int_member(f, rT.mPath, "GRID", Row0, Count, &gw);
+        // A beam station with no GRID and no distance (SD) was not output.
+        std::size_t sw = 0;
+        const auto sd = beam && nh5_has_member(rT.mMembers, "SD")
+                            ? nh5_float_member_all(f, rT.mPath, "SD", Row0, Count, sw)
+                            : std::vector<double>();
+        for (const std::string& m : floats) {
+            const std::string centre = rT.mGroup + ":" + m;
+            const std::string name = centre + (beam ? "@station" : "@corner");
+            const bool want_centre = rOpts.WantsArray(centre);
+            const bool want_wide = rOpts.WantsArray(name);
+            if (!want_centre && !want_wide)
+                continue;
+            std::size_t w = 1;
+            const auto v = nh5_float_member_all(f, rT.mPath, m, Row0, Count, w);
+            if (want_centre) {
+                auto& values = cell_arrays[centre];
+                if (values.empty()) {
+                    values.assign(ncells, std::numeric_limits<double>::quiet_NaN());
+                    cell_order.push_back(centre);
+                }
+                for (std::size_t r = 0; r < Count; ++r)
+                    if (target[r] != npos)
+                        values[target[r]] = v[r * w];
+            }
+            if (!want_wide || w < 2)
+                continue;
+            for (std::size_t r = 0; r < Count; ++r) {
+                if (target[r] == npos)
+                    continue;
+                for (std::size_t k = beam ? 0 : 1; k < w; ++k) {
+                    std::size_t col = k;
+                    if (beam && k > 0 && w == gw && sw == w && grids[r * gw + k] == 0 &&
+                        sd[r * sw + k] == 0.0)
+                        continue;
+                    if (!beam) {
+                        if (w != gw || grids[r * gw + k] <= 0)
+                            continue;
+                        col = node_position(target[r], grids[r * gw + k]);
+                        if (col == npos)
+                            continue;
+                    }
+                    push(name, target[r], col, v[r * w + k]);
+                }
+            }
+        }
+        return true;
+    };
+
     for (const Nh5ResultTable& t : file.mTables) {
         const auto it = t.mIndex.find(dom.mId);
         if (it == t.mIndex.end())
             continue;
         const auto [row0, count] = it->second;
+        if (read_multi(t, row0, count))
+            continue;
 
         // Which outputs of this table are wanted, before any payload is read.
         std::vector<std::pair<std::string, std::vector<std::string>>> outputs;
@@ -520,7 +848,6 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             }
         }
         // Row -> target index (point or global cell), or npos when not in the mesh.
-        constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
         std::vector<std::size_t> target(count, npos);
         std::size_t mapped = 0;
         for (std::size_t r = 0; r < count; ++r) {
@@ -551,6 +878,13 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
                         if (target[r] != npos)
                             out[target[r] * nc + c] = v[r];
                 }
+                // Vector results are in each GRID's output system (CD).
+                if (nc == 3)
+                    for (std::size_t r = 0; r < count; ++r)
+                        if (target[r] != npos)
+                            detail::nastran_rotate_to_basic(systems, cd[target[r]],
+                                                            basic + 3 * target[r],
+                                                            out + 3 * target[r], 1);
                 used_point_names.push_back(name);
                 mesh.AddPointData(name, std::move(data));
             } else {
@@ -578,6 +912,29 @@ Mesh read_nastran_h5(const std::string& rPath, const ReadOptions& rOpts) {
             per_block.push_back(std::move(a));
         }
         mesh.AddCellData(name, std::move(per_block));
+    }
+    for (const auto& [name, w] : wide) {
+        std::size_t width = 0;
+        for (std::size_t col : w.mCol)
+            width = std::max(width, col + 1);
+        std::vector<NDArray> per_block;
+        for (std::size_t b = 0; b < model.mSizes.size(); ++b) {
+            NDArray a(DType::Float64, {model.mSizes[b], width});
+            std::fill(a.As<double>(), a.As<double>() + a.Size(), nan);
+            per_block.push_back(std::move(a));
+        }
+        for (std::size_t i = 0; i < w.mCell.size(); ++i) {
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(model.mOffsets.begin(), model.mOffsets.end(), w.mCell[i]) -
+                model.mOffsets.begin() - 1);
+            per_block[b].As<double>()[(w.mCell[i] - model.mOffsets[b]) * width + w.mCol[i]] =
+                w.mValue[i];
+        }
+        mesh.AddCellData(name, std::move(per_block));
+        NDArray layout(DType::Int64, {std::size_t{2}});
+        layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(width);
+        layout.As<std::int64_t>()[1] = 1;
+        mesh.AddFieldData("nastran:layout:" + name, std::move(layout));
     }
     return mesh;
 }

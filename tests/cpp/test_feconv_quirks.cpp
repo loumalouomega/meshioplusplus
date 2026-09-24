@@ -276,15 +276,38 @@ TEST(FeconvQuirks, FluentTwoDimensionalFromEdges) {
     EXPECT_EQ(m.Cells(1).Type(), "line");
 }
 
-TEST(FeconvQuirks, FluentLegacyConnectivityRoundTrips) {
+TEST(FeconvQuirks, FluentLegacyConnectivityStillReads) {
+    // meshio's old layout (a cell section with a connectivity body), which
+    // meshio++ no longer writes: read as cells only.
+    const std::string body =
+        "(2 3)\n(10 (0 1 4 0))\n(10 (1 1 4 1 3)(\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n))\n"
+        "(12 (0 1 1 0))\n(12 (1 1 1 1 2)(\n1 2 3 4\n))\n";
+    const Mesh m = meshioplusplus::read_ansys(fq_write_file(body, ".msh"));
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    EXPECT_EQ(m.Cells(0).Type(), "tetra");
+    EXPECT_EQ(fq_row(m, 0, 0), (std::vector<std::int64_t>{0, 1, 2, 3}));
+    EXPECT_FALSE(m.HasCellData("ansys:zone"));
+}
+
+TEST(FeconvQuirks, FluentFaceWriterRoundTrips) {
+    // The writer emits faces with c0/c1; the reader rebuilds the cells from
+    // them and keeps the boundary faces as a wall zone.
     const Mesh src = mt::tet_mesh();
     for (bool binary : {false, true}) {
         const std::string path = mt::temp_path(".msh");
         meshioplusplus::write_ansys(path, src, binary);
         const Mesh m = meshioplusplus::read_ansys(path);
-        ASSERT_EQ(m.NumCellBlocks(), src.NumCellBlocks());
+        ASSERT_GE(m.NumCellBlocks(), 2u);
         EXPECT_EQ(m.Cells(0).Type(), "tetra");
-        EXPECT_EQ(fq_row(m, 0, 0), fq_row(src, 0, 0));
-        EXPECT_FALSE(m.HasCellData("ansys:zone"));
+        ASSERT_EQ(m.Cells(0).NumCells(), src.Cells(0).NumCells());
+        for (std::size_t c = 0; c < src.Cells(0).NumCells(); ++c) {
+            auto a = fq_row(m, 0, c), b = fq_row(src, 0, c);
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            EXPECT_EQ(a, b);
+        }
+        EXPECT_EQ(m.Cells(1).Type(), "triangle");
+        EXPECT_TRUE(m.HasCellData("ansys:zone"));
+        EXPECT_EQ(m.NumRegions(), 2u);  // the fluid zone and the default wall
     }
 }

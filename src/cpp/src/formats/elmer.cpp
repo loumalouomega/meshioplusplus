@@ -20,10 +20,13 @@
 
 // System includes
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
@@ -37,6 +40,7 @@
 // Project includes
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
@@ -190,97 +194,258 @@ struct ElmMesh {
     bool mHasParts = false;
 };
 
-void elm_read_nodes(const fs::path& rFile, ElmMesh& rMesh) {
-    elm_for_each_line(rFile, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
+// A binary mesh file as ElmerGrid -bin writes it and ElmerSolver reads it
+// (fem/src/MeshIO.F90, stream access): 32-bit native-endian integers and 64-bit
+// (`.bin`) or 32-bit (`.sbin`, nodes only) reals, no separators. The byte order
+// is taken from the first record's id, which is small and positive.
+class ElmBinary {
+public:
+    explicit ElmBinary(const fs::path& rFile) : mFile(rFile) {
+        auto in = detail::make_classic_ifstream(rFile.string(), std::ios::binary);
+        if (!in)
+            throw ReadError("Elmer mesh: cannot open " + rFile.string());
+        mData.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (mData.size() >= 4) {
+            std::uint32_t v;
+            std::memcpy(&v, mData.data(), 4);
+            const auto plausible = [](std::uint32_t x) {
+                return x >= 1 && x < (std::uint32_t{1} << 30);
+            };
+            // The byte order giving the smaller positive id wins (a big-endian 1
+            // read little-endian is 2^24, still a possible id).
+            const std::uint32_t w = detail::bswap32(v);
+            mSwap = plausible(w) && (!plausible(v) || w < v);
+        }
+    }
+
+    bool AtEnd() const { return mPos >= mData.size(); }
+    std::size_t Record() const { return mRecord; }
+    void NextRecord() { ++mRecord; }
+
+    std::int32_t Int() {
+        std::uint32_t v;
+        Take(&v, 4);
+        return static_cast<std::int32_t>(mSwap ? detail::bswap32(v) : v);
+    }
+    double Real(bool Single) {
+        if (Single) {
+            std::uint32_t v;
+            Take(&v, 4);
+            if (mSwap)
+                v = detail::bswap32(v);
+            return std::bit_cast<float>(v);
+        }
+        std::uint64_t v;
+        Take(&v, 8);
+        if (mSwap)
+            v = detail::bswap64(v);
+        return std::bit_cast<double>(v);
+    }
+
+private:
+    void Take(void* pOut, std::size_t N) {
+        if (mPos + N > mData.size())
+            elm_fail(mFile, mRecord + 1, "the binary file ends inside a record");
+        std::memcpy(pOut, mData.data() + mPos, N);
+        mPos += N;
+    }
+
+    fs::path mFile;
+    std::string mData;
+    std::size_t mPos = 0;
+    std::size_t mRecord = 0;
+    bool mSwap = false;
+};
+
+// Which form of `<stem>` a mesh directory holds: the text file, `.bin` or
+// (nodes only) `.sbin`.
+enum class ElmForm { Text, Binary, SingleBinary };
+
+ElmForm elm_form(const fs::path& rDir, const std::string& rStem, bool Nodes) {
+    std::error_code ec;
+    if (fs::is_regular_file(rDir / rStem, ec))
+        return ElmForm::Text;
+    if (fs::is_regular_file(rDir / (rStem + ".bin"), ec))
+        return ElmForm::Binary;
+    if (Nodes && fs::is_regular_file(rDir / (rStem + ".sbin"), ec))
+        return ElmForm::SingleBinary;
+    throw ReadError("Elmer mesh: missing " + (rDir / rStem).string());
+}
+
+// `mesh.nodes` (`id part x y z`) or its binary form (`id x y z`).
+void elm_read_nodes(const fs::path& rDir, const std::string& rStem, ElmMesh& rMesh) {
+    auto add = [&](std::int64_t Id, const double* pXyz) {
+        // A shared node is listed by every part that uses it: keep the first.
+        if (!rMesh.mNodeIndex.emplace(Id, static_cast<std::int64_t>(rMesh.mNodeIds.size())).second)
+            return;
+        rMesh.mNodeIds.push_back(Id);
+        rMesh.mCoords.insert(rMesh.mCoords.end(), pXyz, pXyz + 3);
+    };
+    const ElmForm form = elm_form(rDir, rStem, true);
+    if (form != ElmForm::Text) {
+        const fs::path file = rDir / (rStem + (form == ElmForm::Binary ? ".bin" : ".sbin"));
+        ElmBinary bin(file);
+        while (!bin.AtEnd()) {
+            const std::int64_t id = bin.Int();
+            if (id <= 0)
+                elm_fail(file, bin.Record() + 1, "bad node id " + std::to_string(id));
+            double xyz[3];
+            for (double& v : xyz)
+                v = bin.Real(form == ElmForm::SingleBinary);
+            add(id, xyz);
+            bin.NextRecord();
+        }
+        return;
+    }
+    const fs::path file = rDir / rStem;
+    elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
         if (rTok.size() < 5)
-            elm_fail(rFile, Line, "a node line needs `id part x y z`");
+            elm_fail(file, Line, "a node line needs `id part x y z`");
         const auto id = elm_int(rTok[0]);
         if (!id)
-            elm_fail(rFile, Line, "bad node id '" + std::string(rTok[0]) + "'");
+            elm_fail(file, Line, "bad node id '" + std::string(rTok[0]) + "'");
         double xyz[3];
         for (std::size_t d = 0; d < 3; ++d) {
             const std::string text(rTok[2 + d]);
             const char* end = nullptr;
             xyz[d] = detail::parse_double(text.c_str(), end);
             if (end != text.c_str() + text.size())
-                elm_fail(rFile, Line, "bad coordinate '" + text + "'");
+                elm_fail(file, Line, "bad coordinate '" + text + "'");
         }
-        // A shared node is listed by every part that uses it: keep the first.
-        if (!rMesh.mNodeIndex.emplace(*id, static_cast<std::int64_t>(rMesh.mNodeIds.size())).second)
-            return;
-        rMesh.mNodeIds.push_back(*id);
-        rMesh.mCoords.insert(rMesh.mCoords.end(), xyz, xyz + 3);
+        add(*id, xyz);
     });
 }
 
 // `mesh.elements` (`id body type nodes`) or `mesh.boundary` (`id boundary
-// parent1 parent2 type nodes`). `Part` is the 0-based part the file belongs
-// to, -1 for a serial mesh. Bulk elements are keyed by id, boundary elements by
-// (id, nodes), so a merged partitioned mesh holds each once.
-void elm_read_elements(const fs::path& rFile, bool Boundary, int Part, bool Lenient,
-                       ElmRecords& rOut, std::unordered_map<std::int64_t, std::size_t>& rSeen,
+// parent1 parent2 type nodes`); their binary forms add the owning part after the
+// id (`id part body type nodes`, `id part boundary parent1 parent2 type nodes`).
+// `Part` is the 0-based part the file belongs to, -1 for a serial mesh. Bulk
+// elements are keyed by id, boundary elements by (id, nodes), so a merged
+// partitioned mesh holds each once.
+void elm_read_elements(const fs::path& rDir, const std::string& rStem, bool Boundary, int Part,
+                       bool Lenient, ElmRecords& rOut,
+                       std::unordered_map<std::int64_t, std::size_t>& rSeen,
                        std::set<std::pair<std::int64_t, std::vector<std::int64_t>>>& rSeenSides) {
-    const std::size_t lead = Boundary ? 5 : 3;
     std::size_t skipped = 0;
-    std::vector<std::int64_t> nodes;
-    elm_for_each_line(rFile, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
-        if (rTok.size() < lead)
-            elm_fail(rFile, Line,
-                     Boundary ? "a boundary line needs `id boundary parent1 parent2 type nodes`"
-                              : "an element line needs `id body type nodes`");
-        const auto id = elm_id(rTok[0]);
-        const auto tag = elm_int(rTok[1]);
-        const auto code = elm_int(rTok[lead - 1]);
-        if (!id || !tag || !code)
-            elm_fail(rFile, Line, "malformed line");
-        const std::size_t count = static_cast<std::size_t>(*code % 100);
-        if (rTok.size() != lead + count)
-            elm_fail(
-                rFile, Line,
-                "type " + std::to_string(*code) + " needs " + std::to_string(count) + " nodes");
-        if (!elm_type_of(static_cast<int>(*code))) {
+    // One record: `Owner` is the 1-based part a halo copy names, -1 otherwise.
+    auto accept = [&](const fs::path& rFile, std::size_t Line, std::int64_t Id, int Owner,
+                      std::int64_t Tag, std::int64_t Parent, int Code,
+                      std::vector<std::int64_t>& rNodes) {
+        if (!elm_type_of(Code)) {
             if (!Lenient)
                 elm_fail(rFile, Line,
-                         "element type " + std::to_string(*code) + " has no meshio++ cell type");
+                         "element type " + std::to_string(Code) + " has no meshio++ cell type");
             ++skipped;
             return;
         }
-        nodes.clear();
-        for (std::size_t k = 0; k < count; ++k) {
-            const auto n = elm_int(rTok[lead + k]);
-            if (!n)
-                elm_fail(rFile, Line, "bad node id '" + std::string(rTok[lead + k]) + "'");
-            nodes.push_back(*n);
-        }
-        const int part = id->mOwner > 0 ? id->mOwner - 1 : Part;
+        const int part = Owner > 0 ? Owner - 1 : Part;
         if (Part >= 0) {
             if (Boundary) {
-                std::vector<std::int64_t> key = nodes;
+                std::vector<std::int64_t> key = rNodes;
                 std::sort(key.begin(), key.end());
-                if (!rSeenSides.emplace(*tag, std::move(key)).second)
+                if (!rSeenSides.emplace(Tag, std::move(key)).second)
                     return;
             } else {
-                const auto [it, fresh] = rSeen.emplace(id->mId, rOut.Size());
+                const auto [it, fresh] = rSeen.emplace(Id, rOut.Size());
                 if (!fresh) {
-                    // A halo copy names its owner; the owner's own copy has no
-                    // `/part`. Either way the owner wins.
-                    if (id->mOwner < 0)
+                    // A halo copy names its owner; the owner's own copy does
+                    // not. Either way the owner wins.
+                    if (Owner < 0)
                         rOut.mParts[it->second] = Part;
                     return;
                 }
             }
         }
-        rOut.mIds.push_back(id->mId);
-        rOut.mTags.push_back(*tag);
-        rOut.mCodes.push_back(static_cast<int>(*code));
+        rOut.mIds.push_back(Id);
+        rOut.mTags.push_back(Tag);
+        rOut.mCodes.push_back(Code);
         rOut.mParts.push_back(part);
-        rOut.mParents.push_back(Boundary ? elm_int(rTok[2]).value_or(0) : 0);
-        rOut.mNodes.insert(rOut.mNodes.end(), nodes.begin(), nodes.end());
+        rOut.mParents.push_back(Boundary ? Parent : 0);
+        rOut.mNodes.insert(rOut.mNodes.end(), rNodes.begin(), rNodes.end());
         rOut.mOffsets.push_back(rOut.mNodes.size());
-    });
+    };
+
+    std::vector<std::int64_t> nodes;
+    const ElmForm form = elm_form(rDir, rStem, false);
+    if (form == ElmForm::Binary) {
+        const fs::path file = rDir / (rStem + ".bin");
+        ElmBinary bin(file);
+        while (!bin.AtEnd()) {
+            const std::size_t line = bin.Record() + 1;
+            const std::int64_t id = bin.Int();
+            const std::int32_t owner = bin.Int();
+            const std::int64_t tag = bin.Int();
+            const std::int64_t parent = Boundary ? bin.Int() : 0;
+            if (Boundary)
+                bin.Int();  // the second parent
+            const std::int32_t code = bin.Int();
+            if (id <= 0 || code <= 100)
+                elm_fail(file, line, "malformed record");
+            nodes.resize(static_cast<std::size_t>(code % 100));
+            for (std::int64_t& n : nodes)
+                n = bin.Int();
+            accept(file, line, id, owner > 0 ? owner : -1, tag, parent, code, nodes);
+            bin.NextRecord();
+        }
+    } else {
+        const fs::path file = rDir / rStem;
+        const std::size_t lead = Boundary ? 5 : 3;
+        elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t Line) {
+            if (rTok.size() < lead)
+                elm_fail(file, Line,
+                         Boundary ? "a boundary line needs `id boundary parent1 parent2 type nodes`"
+                                  : "an element line needs `id body type nodes`");
+            const auto id = elm_id(rTok[0]);
+            const auto tag = elm_int(rTok[1]);
+            const auto code = elm_int(rTok[lead - 1]);
+            if (!id || !tag || !code)
+                elm_fail(file, Line, "malformed line");
+            const std::size_t count = static_cast<std::size_t>(*code % 100);
+            if (rTok.size() != lead + count)
+                elm_fail(
+                    file, Line,
+                    "type " + std::to_string(*code) + " needs " + std::to_string(count) + " nodes");
+            if (!elm_type_of(static_cast<int>(*code)) && !Lenient)
+                elm_fail(file, Line,
+                         "element type " + std::to_string(*code) + " has no meshio++ cell type");
+            nodes.clear();
+            for (std::size_t k = 0; k < count; ++k) {
+                const auto n = elm_int(rTok[lead + k]);
+                if (!n)
+                    elm_fail(file, Line, "bad node id '" + std::string(rTok[lead + k]) + "'");
+                nodes.push_back(*n);
+            }
+            accept(file, Line, id->mId, id->mOwner, *tag,
+                   Boundary ? elm_int(rTok[2]).value_or(0) : 0, static_cast<int>(*code), nodes);
+        });
+    }
     if (skipped)
         log::warn("Elmer mesh: {} element(s) of types with no meshio++ cell type skipped in {}",
-                  skipped, rFile.string());
+                  skipped, (rDir / rStem).string());
+}
+
+// Calls `rOnElement(id, owner)` for every bulk element of `<stem>`, text or
+// binary (`owner`: the 1-based part a halo copy names, -1 otherwise).
+template <class F>
+void elm_for_each_element_id(const fs::path& rDir, const std::string& rStem, F&& rOnElement) {
+    if (elm_form(rDir, rStem, false) == ElmForm::Binary) {
+        ElmBinary bin(rDir / (rStem + ".bin"));
+        while (!bin.AtEnd()) {
+            const std::int64_t id = bin.Int();
+            const std::int32_t owner = bin.Int();
+            bin.Int();  // body
+            const std::int32_t code = bin.Int();
+            for (int k = 0; k < code % 100; ++k)
+                bin.Int();
+            rOnElement(id, owner > 0 ? owner : -1);
+            bin.NextRecord();
+        }
+        return;
+    }
+    elm_for_each_line(rDir / rStem, [&](const std::vector<std::string_view>& rTok, std::size_t) {
+        if (const auto id = elm_id(rTok[0]))
+            rOnElement(id->mId, id->mOwner);
+    });
 }
 
 void elm_read_names(const fs::path& rFile, ElmMesh& rMesh) {
@@ -339,25 +504,12 @@ std::vector<fs::path> elm_partition_dirs(const fs::path& rDir) {
     return out;
 }
 
-void elm_check_text(const fs::path& rDir, const std::string& rStem) {
-    std::error_code ec;
-    if (fs::is_regular_file(rDir / rStem, ec))
-        return;
-    if (fs::is_regular_file(rDir / (rStem + ".bin"), ec))
-        throw ReadError("Elmer mesh: " + (rDir / rStem).string() +
-                        " is only present in ElmerGrid's binary form, which is not supported; "
-                        "write the mesh without -bin");
-    throw ReadError("Elmer mesh: missing " + (rDir / rStem).string());
-}
-
 void elm_read_serial(const fs::path& rDir, bool Lenient, ElmMesh& rMesh) {
-    for (const char* stem : {"mesh.nodes", "mesh.elements", "mesh.boundary"})
-        elm_check_text(rDir, stem);
     std::unordered_map<std::int64_t, std::size_t> seen;
     std::set<std::pair<std::int64_t, std::vector<std::int64_t>>> seen_sides;
-    elm_read_nodes(rDir / "mesh.nodes", rMesh);
-    elm_read_elements(rDir / "mesh.elements", false, -1, Lenient, rMesh.mBulk, seen, seen_sides);
-    elm_read_elements(rDir / "mesh.boundary", true, -1, Lenient, rMesh.mBoundary, seen, seen_sides);
+    elm_read_nodes(rDir, "mesh.nodes", rMesh);
+    elm_read_elements(rDir, "mesh.elements", false, -1, Lenient, rMesh.mBulk, seen, seen_sides);
+    elm_read_elements(rDir, "mesh.boundary", true, -1, Lenient, rMesh.mBoundary, seen, seen_sides);
     elm_read_names(rDir / "mesh.names", rMesh);
 }
 
@@ -368,12 +520,10 @@ void elm_read_parts(const fs::path& rDir, std::size_t First, std::size_t Last, b
     std::set<std::pair<std::int64_t, std::vector<std::int64_t>>> seen_sides;
     for (std::size_t p = First; p <= Last; ++p) {
         const std::string stem = "part." + std::to_string(p + 1);
-        for (const char* ext : {".nodes", ".elements", ".boundary"})
-            elm_check_text(rDir, stem + ext);
-        elm_read_nodes(rDir / (stem + ".nodes"), rMesh);
-        elm_read_elements(rDir / (stem + ".elements"), false, static_cast<int>(p), Lenient,
+        elm_read_nodes(rDir, stem + ".nodes", rMesh);
+        elm_read_elements(rDir, stem + ".elements", false, static_cast<int>(p), Lenient,
                           rMesh.mBulk, seen, seen_sides);
-        elm_read_elements(rDir / (stem + ".boundary"), true, static_cast<int>(p), Lenient,
+        elm_read_elements(rDir, stem + ".boundary", true, static_cast<int>(p), Lenient,
                           rMesh.mBoundary, seen, seen_sides);
     }
     rMesh.mHasParts = true;
@@ -387,17 +537,15 @@ void elm_label_serial(const fs::path& rPartDir, ElmMesh& rMesh) {
     const std::size_t parts = elm_count_parts(rPartDir);
     std::unordered_map<std::int64_t, int> part_of;
     for (std::size_t p = 0; p < parts; ++p) {
-        const fs::path file = rPartDir / ("part." + std::to_string(p + 1) + ".elements");
+        const std::string stem = "part." + std::to_string(p + 1) + ".elements";
         std::error_code ec;
-        if (!fs::is_regular_file(file, ec))
+        if (!fs::is_regular_file(rPartDir / stem, ec) &&
+            !fs::is_regular_file(rPartDir / (stem + ".bin"), ec))
             return;
-        elm_for_each_line(file, [&](const std::vector<std::string_view>& rTok, std::size_t) {
-            const auto id = elm_id(rTok[0]);
-            if (!id)
-                return;
-            const int owner = id->mOwner > 0 ? id->mOwner - 1 : static_cast<int>(p);
-            if (id->mOwner < 0 || part_of.find(id->mId) == part_of.end())
-                part_of[id->mId] = owner;
+        elm_for_each_element_id(rPartDir, stem, [&](std::int64_t Id, int Owner) {
+            const int owner = Owner > 0 ? Owner - 1 : static_cast<int>(p);
+            if (Owner < 0 || part_of.find(Id) == part_of.end())
+                part_of[Id] = owner;
         });
     }
     std::vector<int> labels(rMesh.mBulk.Size(), -1);
@@ -714,7 +862,9 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(point_regions) +
                                                        " point region(s) have no Elmer equivalent");
     }
-    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() > 0) {
+    const bool partitioned = rMesh.HasCellData("partition:part");
+    if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() >
+        (partitioned ? 1u : 0u)) {
         log::warn(
             "Elmer mesh writer: an Elmer mesh holds no data arrays; point, cell and field "
             "data dropped");
@@ -789,7 +939,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
     if (!fs::is_directory(dir, ec))
         throw WriteError("Elmer mesh writer: cannot create directory " + dir.string());
     for (const auto& entry : fs::directory_iterator(dir, ec))
-        if (entry.path().filename().string().rfind("partitioning.", 0) == 0)
+        if (entry.path().filename().string().rfind("partitioning.", 0) == 0 && !partitioned)
             log::warn(
                 "Elmer mesh writer: {} is left over from an earlier mesh and no longer "
                 "matches it",
@@ -813,10 +963,19 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
     }
     elm_write_file(dir / "mesh.nodes", out);
 
-    // Bulk elements, then boundary elements.
+    // Bulk elements, then boundary elements. Each row is also kept (cell, and
+    // the text after the id) for the partitioned copy.
     std::string elements, boundary;
     std::int64_t n_boundary = 0;
+    struct ElmRow {
+        std::int64_t mCell;  // bulk: global cell; boundary: -1
+        std::int64_t mTag, mP1, mP2;
+        int mCode;
+        std::vector<std::int64_t> mNodes;  // 1-based
+    };
+    std::vector<ElmRow> bulk_rows, boundary_rows;
     std::vector<std::int64_t> corners, row;
+    std::int64_t last_p1 = 0, last_p2 = 0;
     for (std::size_t b = 0; b < n_blocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const NDArray& conn = cb.Conn();
@@ -837,6 +996,8 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
                 for (std::size_t c = 0; c < n_corners; ++c)
                     corners.push_back(detail::read_int(conn, r * k + c));
                 const auto [p1, p2] = parents_of(corners, dims[b]);
+                last_p1 = p1;
+                last_p2 = p2;
                 orphans += p1 == 0 ? 1 : 0;
                 elm_append_int(text, ++n_boundary);
                 text += ' ';
@@ -848,13 +1009,23 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
             }
             text += ' ';
             elm_append_int(text, codes[b]);
+            ElmRow kept{bulk ? g : -1, cell_id[static_cast<std::size_t>(g)], 0, 0, codes[b], {}};
             for (std::size_t j = 0; j < k; ++j) {
                 const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
                 text += ' ';
-                elm_append_int(text, detail::read_int(conn, r * k + src) + 1);
+                const std::int64_t node = detail::read_int(conn, r * k + src) + 1;
+                elm_append_int(text, node);
+                kept.mNodes.push_back(node);
             }
             text += '\n';
             ++type_counts[codes[b]];
+            if (partitioned) {
+                if (!bulk) {
+                    kept.mP1 = last_p1;
+                    kept.mP2 = last_p2;
+                }
+                (bulk ? bulk_rows : boundary_rows).push_back(std::move(kept));
+            }
         }
     }
     // Side regions: each facet one more boundary element.
@@ -882,13 +1053,17 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         elm_append_int(boundary, p2);
         boundary += ' ';
         elm_append_int(boundary, code);
+        ElmRow kept{-1, side_ids[s], p1, p2, code, {}};
         for (std::size_t j = 0; j < row.size(); ++j) {
             const std::size_t src = order ? static_cast<std::size_t>(order->mFromMeshio[j]) : j;
             boundary += ' ';
             elm_append_int(boundary, row[src] + 1);
+            kept.mNodes.push_back(row[src] + 1);
         }
         boundary += '\n';
         ++type_counts[code];
+        if (partitioned)
+            boundary_rows.push_back(std::move(kept));
     }
     if (bad_facets)
         log::warn("Elmer mesh writer: {} side region entr(ies) name no facet and were dropped",
@@ -946,6 +1121,151 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh) {
         }
     }
     elm_write_file(dir / "mesh.names", out);
+
+    if (!partitioned)
+        return;
+    // --- partitioning.N: ElmerGrid's layout without halos ------------------------
+    // `partition:part` (0-based) places each bulk element; a node belongs to
+    // every part using it and is owned by the lowest; a boundary element goes to
+    // each part holding one of its parents, the other parent set to 0.
+    std::vector<int> part_of(static_cast<std::size_t>(n_bulk) + 1, -1);
+    int n_parts = 0;
+    for (const ElmRow& r : bulk_rows) {
+        const std::size_t b = static_cast<std::size_t>(
+            std::upper_bound(bases.begin(), bases.end(), r.mCell) - bases.begin() - 1);
+        const NDArray& labels = rMesh.CellData("partition:part", b);
+        const std::int64_t label =
+            detail::read_int(labels, static_cast<std::size_t>(r.mCell - bases[b]));
+        if (label < 0)
+            throw WriteError("Elmer mesh writer: partition:part has a negative part for cell " +
+                             std::to_string(r.mCell));
+        part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])] =
+            static_cast<int>(label);
+        n_parts = std::max(n_parts, static_cast<int>(label) + 1);
+    }
+    std::vector<std::vector<int>> users(npts + 1);  // node (1-based) -> parts, ascending
+    for (const ElmRow& r : bulk_rows) {
+        const int part =
+            part_of[static_cast<std::size_t>(element_no[static_cast<std::size_t>(r.mCell)])];
+        for (std::int64_t n : r.mNodes) {
+            auto& list = users[static_cast<std::size_t>(n)];
+            if (std::find(list.begin(), list.end(), part) == list.end())
+                list.insert(std::upper_bound(list.begin(), list.end(), part), part);
+        }
+    }
+    const fs::path pdir = dir / ("partitioning." + std::to_string(n_parts));
+    fs::create_directories(pdir, ec);
+    if (!fs::is_directory(pdir, ec))
+        throw WriteError("Elmer mesh writer: cannot create directory " + pdir.string());
+    std::size_t empty_parts = 0;
+    for (int part = 0; part < n_parts; ++part) {
+        const std::string stem = "part." + std::to_string(part + 1);
+        std::string elem_text, node_text, shared_text, side_text;
+        std::map<int, std::int64_t> bulk_types, side_types;
+        std::set<std::int64_t> nodes;
+        std::int64_t n_elem = 0, n_side = 0, n_shared = 0;
+        for (const ElmRow& r : bulk_rows) {
+            const std::int64_t no = element_no[static_cast<std::size_t>(r.mCell)];
+            if (part_of[static_cast<std::size_t>(no)] != part)
+                continue;
+            elm_append_int(elem_text, no);
+            elem_text += ' ';
+            elm_append_int(elem_text, r.mTag);
+            elem_text += ' ';
+            elm_append_int(elem_text, r.mCode);
+            for (std::int64_t n : r.mNodes) {
+                elem_text += ' ';
+                elm_append_int(elem_text, n);
+                nodes.insert(n);
+            }
+            elem_text += '\n';
+            ++n_elem;
+            ++bulk_types[r.mCode];
+        }
+        std::int64_t side_no = 0;
+        for (const ElmRow& r : boundary_rows) {
+            ++side_no;
+            const auto in_part = [&](std::int64_t P) {
+                return P > 0 && part_of[static_cast<std::size_t>(P)] == part;
+            };
+            if (!in_part(r.mP1) && !in_part(r.mP2))
+                continue;
+            elm_append_int(side_text, side_no);
+            side_text += ' ';
+            elm_append_int(side_text, r.mTag);
+            side_text += ' ';
+            elm_append_int(side_text, in_part(r.mP1) ? r.mP1 : 0);
+            side_text += ' ';
+            elm_append_int(side_text, in_part(r.mP2) ? r.mP2 : 0);
+            side_text += ' ';
+            elm_append_int(side_text, r.mCode);
+            for (std::int64_t n : r.mNodes) {
+                side_text += ' ';
+                elm_append_int(side_text, n);
+            }
+            side_text += '\n';
+            ++n_side;
+            ++side_types[r.mCode];
+        }
+        for (std::int64_t n : nodes) {
+            elm_append_int(node_text, n);
+            node_text += " -1";
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double v = d < pdim ? detail::read_double(
+                                                points, static_cast<std::size_t>(n - 1) * pdim + d)
+                                          : 0.0;
+                detail::snprintf_c(buf, sizeof(buf), " %.17g", v);
+                node_text += buf;
+            }
+            node_text += '\n';
+            const auto& list = users[static_cast<std::size_t>(n)];
+            if (list.size() < 2)
+                continue;
+            // `id count owner others`: every part using it but the owner.
+            elm_append_int(shared_text, n);
+            shared_text += ' ';
+            elm_append_int(shared_text, static_cast<std::int64_t>(list.size()));
+            shared_text += ' ';
+            elm_append_int(shared_text, list.front() + 1);
+            for (std::size_t k = 1; k < list.size(); ++k) {
+                shared_text += ' ';
+                elm_append_int(shared_text, list[k] + 1);
+            }
+            shared_text += '\n';
+            ++n_shared;
+        }
+        empty_parts += n_elem == 0 ? 1 : 0;
+        std::string header;
+        elm_append_padded(header, static_cast<std::int64_t>(nodes.size()));
+        header += ' ';
+        elm_append_padded(header, n_elem);
+        header += ' ';
+        elm_append_padded(header, n_side);
+        header += '\n';
+        elm_append_padded(header, static_cast<std::int64_t>(bulk_types.size() + side_types.size()));
+        header += '\n';
+        for (const auto* types : {&bulk_types, &side_types})
+            for (const auto& [code, count] : *types) {
+                elm_append_padded(header, code);
+                header += ' ';
+                elm_append_padded(header, count);
+                header += '\n';
+            }
+        elm_append_padded(header, n_shared);
+        header += ' ';
+        elm_append_padded(header, 0);
+        header += '\n';
+        elm_write_file(pdir / (stem + ".header"), header);
+        elm_write_file(pdir / (stem + ".nodes"), node_text);
+        elm_write_file(pdir / (stem + ".elements"), elem_text);
+        elm_write_file(pdir / (stem + ".boundary"), side_text);
+        elm_write_file(pdir / (stem + ".shared"), shared_text);
+    }
+    if (empty_parts)
+        log::warn(
+            "Elmer mesh writer: {} of the {} parts in partition:part hold no element; "
+            "ElmerSolver needs every part populated",
+            empty_parts, n_parts);
 }
 
 }  // namespace meshioplusplus

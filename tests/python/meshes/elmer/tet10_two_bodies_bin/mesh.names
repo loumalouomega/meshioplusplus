@@ -1,0 +1,7 @@
+! ----- names for bodies -----
+$ left = 1
+$ right = 2
+! ----- names for boundaries -----
+$ outer = 2
+$ interface = 3
+$ corner = 4

@@ -94,6 +94,162 @@ _BAR = dict(
 )
 
 
+_COMPOSITE = dict(
+    zip(
+        ["o11", "o22", "t12", "t1z", "t2z", "angle", "major", "minor", "max_shear"]
+        + ["e11", "e22", "e12", "e1z", "e2z", "von_mises"],
+        ["X1", "Y1", "T1", "L1", "L2", "ANGLE", "MAJOR", "MINOR", "MAX_SHEAR"]
+        + ["X1", "Y1", "T1", "L1", "L2", "VON_MISES"],
+    )
+)
+_BEAM = dict(
+    zip(
+        ["sxc", "sxd", "sxe", "sxf", "smax", "smin", "MS_tension", "MS_compression"],
+        ["XC", "XD", "XE", "XF", "MAX", "MIN", "MST", "MSC"],
+    )
+)
+_GPF = dict(
+    zip(["f1", "f2", "f3", "m1", "m2", "m3"], ["F1", "F2", "F3", "M1", "M2", "M3"])
+)
+
+
+def _put(out, base, ids, cols, values):
+    out[base + "|ids"] = np.asarray(ids, dtype=np.int64)
+    out[base + "|cols"] = np.asarray(cols, dtype=np.float64)
+    out[base] = np.asarray(values, dtype=np.float64)
+
+
+def _wide(model, stem, out):
+    """The multi-valued results: composite plies (``|cols`` = ply id), plate and
+    solid corners (``|cols`` = GRID id), CBEAM stations (``|cols`` = station
+    distance) and grid point forces (``|cols`` = GRID id; element 0 rows by GRID
+    under ``GRID_FORCE:<label>``)."""
+    for group in ("stress", "strain"):
+        container = getattr(model.op2_results, group)
+        for attr in sorted(dir(container)):
+            if attr.startswith("_") or not attr.endswith("_" + group):
+                continue
+            results = getattr(container, attr)
+            if not isinstance(results, dict):
+                continue
+            etype = attr.split("_")[0]
+            composite = "_composite_" in attr
+            for key, obj in results.items():
+                if not hasattr(obj, "data") or getattr(obj, "is_complex", False):
+                    continue
+                sub, ana = _key(key)
+                ana = int(obj.analysis_code) if ana is None else ana
+                heads = [str(h) for h in obj.get_headers()]
+                if composite and hasattr(obj, "element_layer"):
+                    mapping, suffix = _COMPOSITE, "@ply"
+                    eids, cols = obj.element_layer[:, 0], obj.element_layer[:, 1]
+                    fibers = [None] * len(eids)
+                elif etype == "cbeam" and hasattr(obj, "xxb"):
+                    mapping, suffix = _BEAM, "@station"
+                    eids, cols = obj.element_node[:, 0], obj.xxb
+                    fibers = [None] * len(eids)
+                elif hasattr(obj, "element_node") and etype in (
+                    "ctetra",
+                    "chexa",
+                    "cpenta",
+                    "cpyram",
+                    "cquad4",
+                    "cquad8",
+                    "ctria6",
+                    "ctriar",
+                    "cquadr",
+                ):
+                    en = obj.element_node
+                    plate = etype not in ("ctetra", "chexa", "cpenta", "cpyram")
+                    mapping, suffix = (_PLATE if plate else _SOLID), "@corner"
+                    keep = np.where(en[:, 1] != 0)[0]
+                    if len(keep) == 0:
+                        continue
+                    eids, cols = en[keep, 0], en[keep, 1]
+                    if plate:
+                        seen = {}
+                        fibers = []
+                        for e, n in zip(eids.tolist(), cols.tolist()):
+                            seen[(e, n)] = seen.get((e, n), 0) + 1
+                            fibers.append(seen[(e, n)])
+                    else:
+                        fibers = [None] * len(eids)
+                    rows = keep
+                else:
+                    continue
+                if suffix != "@corner":
+                    rows = np.arange(len(eids))
+                for it, _t in enumerate(np.atleast_1d(obj._times)):
+                    tag = _tag(obj, ana, it)
+                    for c, h in enumerate(heads):
+                        member = mapping.get(h)
+                        if member is None:
+                            continue
+                        by_name = {}
+                        for r, e, col, fib in zip(
+                            rows.tolist(), eids.tolist(), cols.tolist(), fibers
+                        ):
+                            nm = f"{group.upper()}:{member}{fib if fib else ''}{suffix}"
+                            entry = by_name.setdefault(nm, ([], [], []))
+                            entry[0].append(e)
+                            entry[1].append(col)
+                            entry[2].append(obj.data[it, r, c])
+                        for nm, (es, cs, vs) in by_name.items():
+                            _put(
+                                out,
+                                f"{stem}|{sub}|{ana}|{tag}|{nm}|{etype}",
+                                es,
+                                cs,
+                                vs,
+                            )
+                    if etype == "cbeam" and suffix == "@station":
+                        _put(
+                            out,
+                            f"{stem}|{sub}|{ana}|{_tag(obj, ana, it)}|{group.upper()}:SD@station|{etype}",
+                            eids,
+                            cols,
+                            cols,
+                        )
+    for key, obj in getattr(model, "grid_point_forces", {}).items():
+        sub, ana = _key(key)
+        ana = int(obj.analysis_code) if ana is None else ana
+        ne = obj.node_element
+        names = [str(n).replace(" ", "").replace("*", "") for n in obj.element_names]
+        for it, _t in enumerate(np.atleast_1d(obj._times)):
+            tag = _tag(obj, ana, it)
+            ne_it = ne[it] if ne.ndim == 3 else ne
+            names_it = (
+                names
+                if np.ndim(obj.element_names) == 1
+                else [
+                    str(n).replace(" ", "").replace("*", "")
+                    for n in obj.element_names[it]
+                ]
+            )
+            for c, h in enumerate(obj.get_headers()):
+                member = _GPF.get(str(h))
+                if member is None:
+                    continue
+                elem = {}
+                other = {}
+                for r, (nid, eid) in enumerate(ne_it.tolist()):
+                    v = obj.data[it, r, c]
+                    if eid > 0:
+                        entry = elem.setdefault(f"GRID_FORCE:{member}", ([], [], []))
+                        entry[0].append(eid)
+                        entry[1].append(nid)
+                        entry[2].append(v)
+                    else:
+                        entry = other.setdefault(
+                            f"GRID_FORCE:{names_it[r]}:{member}", ([], [], [])
+                        )
+                        entry[0].append(nid)
+                        entry[1].append(nid)
+                        entry[2].append(v)
+                for nm, (es, cs, vs) in list(elem.items()) + list(other.items()):
+                    _put(out, f"{stem}|{sub}|{ana}|{tag}|{nm}|gpf", es, cs, vs)
+
+
 def _strip_geometry(src, dst):
     """Copy an OP2 without its GEOM*/EPT* tables (4-byte-word files only)."""
     data = open(src, "rb").read()
@@ -281,6 +437,7 @@ def freeze():
                                 base = f"{stem}|{sub}|{ana}|{tag}|{nm}|{etype}"
                                 out[base + "|ids"] = np.asarray(es, dtype=np.int64)
                                 out[base] = np.asarray(vs, dtype=np.float64)
+        _wide(model, stem, out)
         print(stem, "done")
     np.savez_compressed(os.path.join(OUT, "pynastran_reference.npz"), **out)
 

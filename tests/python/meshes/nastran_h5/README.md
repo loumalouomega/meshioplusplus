@@ -16,6 +16,8 @@ They come unmodified from the [pyNastran](https://github.com/SteveDoyle2/pyNastr
 
 The eigenvectors and displacements were checked against pyNastran 1.4.1's own `.h5` reader (`pyNastran/dev/h5`): identical, bit for bit, on every GRID of every domain. `pynastran_reference.npz` freezes that reading (node ids and six components per nodal vector table and domain, 38 tables), so `test_nastran_h5.py` repeats the check without pyNastran installed; `tools/gen_nastran_h5_reference.py` regenerates it. The `.op2` files next to them upstream come from a 2017 run of a different model revision, so they are *not* a reference for these files.
 
+`cord_reference.npz` puts GRIDs of `static_elements.h5` in local systems (a tilted CORD2C, a CORD2S defined in it, a CORD1R through three GRIDs): the coordinates, CP, CD and systems `test_nastran_h5.py` writes into a copy of the file, and pyNastran's basic positions and displacements (`tools/gen_nastran_cord_reference.py`).
+
 ## pyNastran licence
 
 Copyright (c) 2011-2026 Steven Doyle.

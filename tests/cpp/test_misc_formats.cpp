@@ -19,11 +19,13 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
@@ -169,15 +171,47 @@ TEST(Flac3d, AsciiAndBinary) {
 }
 
 TEST(Ansys, AsciiAndBinary) {
+    // The Fluent writer emits faces; reading rebuilds the same cells (their
+    // node sets, as points) and adds the boundary facets.
+    auto cell_sets = [](const mt::Mesh& rM, std::size_t Dim) {
+        std::vector<std::vector<std::vector<double>>> out;
+        const auto& pts = rM.Points();
+        const std::size_t pd = rM.PointDim();
+        for (const auto cb : rM.CellRange()) {
+            const std::string& t = cb.Type();
+            const bool vol = t == "tetra" || t == "hexahedron" || t == "wedge" || t == "pyramid";
+            const bool surf = t == "triangle" || t == "quad";
+            if ((Dim == 3 && !vol) || (Dim == 2 && !surf))
+                continue;
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                std::vector<std::vector<double>> nodes;
+                for (std::size_t k = 0; k < cb.NodesPerCell(); ++k) {
+                    const auto p = static_cast<std::size_t>(
+                        meshioplusplus::detail::read_int(cb.Conn(), c * cb.NodesPerCell() + k));
+                    std::vector<double> xyz;
+                    for (std::size_t d = 0; d < Dim; ++d)
+                        xyz.push_back(meshioplusplus::detail::read_double(pts, p * pd + d));
+                    nodes.push_back(xyz);
+                }
+                std::sort(nodes.begin(), nodes.end());
+                out.push_back(nodes);
+            }
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
     for (bool binary : {false, true}) {
-        auto w = [=](const std::string& p, const mt::Mesh& m) {
-            meshioplusplus::write_ansys(p, m, binary);
-        };
-        auto r = [](const std::string& p) { return meshioplusplus::read_ansys(p); };
-        mt::roundtrip(w, r, mt::tri_mesh_2d(), ".msh");
-        mt::roundtrip(w, r, mt::tet_mesh(), ".msh");
-        mt::roundtrip(w, r, mt::hex_mesh(), ".msh");
-        mt::roundtrip(w, r, mt::tri_quad_mesh(), ".msh");
+        for (const auto& [src, dim] : {std::make_pair(mt::tri_mesh_2d(), std::size_t{2}),
+                                       std::make_pair(mt::tet_mesh(), std::size_t{3}),
+                                       std::make_pair(mt::hex_mesh(), std::size_t{3}),
+                                       std::make_pair(mt::tri_quad_mesh(), std::size_t{2})}) {
+            const std::string path = mt::temp_path(".msh");
+            meshioplusplus::write_ansys(path, src, binary);
+            const mt::Mesh out = meshioplusplus::read_ansys(path);
+            EXPECT_EQ(out.PointDim(), dim);
+            EXPECT_EQ(cell_sets(out, dim), cell_sets(src, dim));
+            EXPECT_TRUE(out.HasCellData("ansys:zone"));
+        }
     }
 }
 
