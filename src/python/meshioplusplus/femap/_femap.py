@@ -244,12 +244,29 @@ def _read_properties(c, f):
         pid = c.int(head, 0, "property id")
         f.properties[pid] = _title(c.next("a property title"))
         c.next("property flags")
+        values = 0
         for per_line, what in ((8, "laminate count"), (5, "property value count")):
             count = c.int(c.fields(what), 0, what)
             if count < 0:
                 c.fail(f"negative {what}")
             for _ in range((count + per_line - 1) // per_line):
                 c.next(what)
+            values = count
+        # Femap 2401 follows the values with as many integers, five to a line
+        # (function references): a repeat of the value count before a line of
+        # several integers.
+        if c.remaining() >= 2 and values > 0:
+            fl = _fields(c.peek())
+            nxt = _fields(c.peek(1))
+            if (
+                len(fl) == 1
+                and _parse_int(fl[0]) == values
+                and len(nxt) > 1
+                and all(_parse_int(v) is not None for v in nxt)
+            ):
+                c.next("a function count")
+                for _ in range((values + 4) // 5):
+                    c.next("a function reference")
         while not c.at_end():
             fl = _fields(c.peek())
             count = _parse_int(fl[0]) if len(fl) == 1 else None
@@ -423,8 +440,8 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     f = _parse(filename)
     if not f.node_ids:
         raise ReadError(
-            f"Femap neutral: '{filename}' holds no nodes (block 403); a results-only file "
-            "needs its model"
+            f"Femap neutral: '{filename}' holds no nodes (block 403): a geometry-only or "
+            "results-only file has no mesh to read"
         )
     node_index = {}
     for p, nid in enumerate(f.node_ids):

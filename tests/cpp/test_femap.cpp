@@ -207,3 +207,22 @@ TEST(Femap, ErrorsNameTheCulprit) {
         "7,124,1,1,0,1,0,0,\n1,2,0,0,0,0,0,0,0,0,\n   -1\n",
         "ends inside");
 }
+
+TEST(Femap, ReadsThe2401PropertyLayout) {
+    // Femap 2401 follows a property's values with as many integers, five to a
+    // line (function references); earlier versions go straight to the outline
+    // counts.
+    std::string body = tet10_file();
+    const std::string old402 =
+        "   402\n5,110,1,25,1,0,\nSOLID PART\n0,0,0,0,\n2,\n0,0,\n3,\n1.,2.,3.,\n0,\n0,\n";
+    const std::string new402 =
+        "   402\n5,110,1,25,1,0,\nSOLID PART\n0,0,0,0,\n2,\n0,0,\n7,\n1.,2.,3.,0.,0.,\n0.,0.,\n"
+        "7,\n0,0,0,0,0,\n0,0,\n0,\n0,\n";
+    const std::size_t at = body.find(old402);
+    ASSERT_NE(at, std::string::npos);
+    body.replace(at, old402.size(), new402);
+    body.replace(body.find("9.3,"), 4, "24.1,");
+    const Mesh mesh = meshioplusplus::read_femap(write_file(body));
+    EXPECT_NE(mesh.FindRegion("SOLID PART", RegionKind::Cell), Mesh::npos);
+    EXPECT_EQ(mesh.Cells(0).Type(), "tetra10");
+}

@@ -1,0 +1,50 @@
+Tahoe Version 2.1 License Agreement
+
+Copyright (c) 2014, Regents of the University of Colorado
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may
+be used to endorse or promote products derived from this software without specific
+prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT
+SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
+---
+
+Modifications Copyright (c) 2026, Saman Seifi (Boston University)
+
+This fork includes the following modifications to the original Tahoe 2.1 source:
+  - Replacement of the legacy Makefile build system with CMake
+  - C++11 two-phase template name lookup fixes across toolbox headers
+  - Compiler warning cleanup (-Wwrite-strings, -Wformat, -Wformat-overflow,
+    -Wformat-extra-args, C++-only flags guarded from C compilation units)
+  - Replacement of #pragma message directives with standard comments
+
+These modifications are distributed under the same BSD 3-Clause license terms
+as the original work above.
+
+---
+
+Third-party components bundled in this repository carry their own licenses:
+  - expat/   : MIT License (see expat/expat/expat-1.95.7/COPYING)
+  - spooles/ : Public Domain
+  - f2c/     : Public Domain (AT&T Bell Labs / Lucent Technologies)

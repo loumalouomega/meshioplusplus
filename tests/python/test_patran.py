@@ -284,3 +284,66 @@ def test_extension_and_sniffing(tmp_path):
         "25 this is not a header card at all, just text\n"
     )
     assert meshioplusplus.sniff_format(tmp_path / "not_patran") != "patran"
+
+
+REAL = sorted((MESHES / "real").glob("*.out")) + sorted((MESHES / "real").glob("*.pat"))
+
+
+@pytest.mark.parametrize("path", REAL, ids=[p.name for p in REAL])
+def test_real_exports(engine, path):
+    """Files written by P3/PATRAN 3.0 and PATRAN 2.5 (WARP3D's and Tahoe's
+    examples, see meshes/patran/real/README.md): both engines agree and every
+    cell is positively oriented."""
+    mesh = engine.read(path)
+    _same(mesh, py_patran.read(path))
+    assert mesh.cells
+    for cell_type, data in _blocks(mesh):
+        for row in data:
+            assert _is_valid(mesh.points[row], cell_type), (path.name, cell_type)
+
+
+def test_real_export_components_are_regions(engine):
+    # Tahoe's square: 4 x 4 nodes on [-1, 1]^2 (P3/PATRAN 3.0), with named
+    # components (packet 21) for the edges, two corners and the whole square.
+    mesh = engine.read(MESHES / "real" / "tahoe_square.pat")
+    regions = {(r.kind, r.name): np.asarray(r.entries) for r in mesh.regions}
+    assert sorted(regions) == [
+        ("cell", "SQUARE"),
+        ("point", "BOTTOM"),
+        ("point", "CORNER1"),
+        ("point", "CORNER2"),
+        ("point", "SQUARE"),
+        ("point", "TOP"),
+    ]
+    assert len(regions[("cell", "SQUARE")]) == 9
+    y = mesh.points[:, 1]
+    np.testing.assert_array_equal(y[regions[("point", "BOTTOM")]], [y.min()] * 4)
+    np.testing.assert_array_equal(y[regions[("point", "TOP")]], [y.max()] * 4)
+
+
+def test_quad9_and_triangle7(engine, tmp_path):
+    # Patran's QUAD9 and TRI7 list corners, mid-edges, then the centre: the
+    # meshio++ order. Checked on a P3/PATRAN 3.0 export outside the repository
+    # (Tahoe's cyl.out: every QUAD9 mid-edge node within 3 % of its edge's
+    # midpoint on the curved surface).
+    xy = [[0, 0], [2, 0], [2, 2], [0, 2], [1, 0], [2, 1], [1, 2], [0, 1], [1, 1]]
+    xy += [[4, 0], [3, 1], [3, 0], [3, 1.5], [8 / 3, 2 / 3]]  # 12 is unused
+    points = np.array([p + [0.0] for p in xy], dtype=float)
+    mesh = meshioplusplus.Mesh(
+        points,
+        [
+            ("quad9", np.array([[0, 1, 2, 3, 4, 5, 6, 7, 8]])),
+            ("triangle7", np.array([[1, 9, 2, 11, 10, 5, 13]])),
+        ],
+    )
+    assert _is_valid(points[mesh.cells[0].data[0]], "quad9")
+    path = tmp_path / "mesh.pat"
+    engine.write(path, mesh)
+    # Packet 02 headers (I2,8I8): the shape code IV is the third field.
+    headers = [line.split() for line in path.read_text().splitlines()]
+    headers = [h for h in headers if len(h) == 9 and all(v.isdigit() for v in h)]
+    assert [int(h[2]) for h in headers if h[0] == "2"] == [4, 3]
+    back = engine.read(path)
+    assert [b.type for b in back.cells] == ["quad9", "triangle7"]
+    for x, y in zip(back.cells, mesh.cells):
+        np.testing.assert_array_equal(x.data, y.data)

@@ -287,6 +287,33 @@ def test_skipped_topologies_and_element_node_lists(engine, tmp_path, capfd):
     assert [(t, len(d)) for t, d in _blocks(mesh)] == [("line", 1)]
 
 
+def _property(pid, title, values, functions):
+    """A 402 record: flags, ten laminate slots, then `values` reals and, when
+    `functions`, the Femap 2401 list of as many integers five to a line."""
+    lines = [f"{pid},110,0,21,4,0,1,", title, "0,0,0,0,0,0,0,0,", "10,"]
+    lines += ["0,0,0,0,0,0,0,0,", "0,0,", f"{values},"]
+    lines += ["0.,0.,0.,0.,0.,"] * ((values + 4) // 5)
+    if functions:
+        lines += [f"{values},"] + ["0,0,0,0,0,"] * ((values + 4) // 5)
+    return lines + ["0,", "0,"]
+
+
+@pytest.mark.parametrize("version", ["11.1", "24.1"])
+def test_property_layouts(engine, tmp_path, version):
+    # Femap 2401 (a real, unlicensed export was checked outside the repository)
+    # adds a list of per-value function references to each 402 record.
+    functions = version == "24.1"
+    props = (
+        402,
+        _property(1, "Ribs", 110, functions) + _property(2, "Skin", 110, functions),
+    )
+    path = tmp_path / "m.neu"
+    path.write_text(_neu((100, ["<NULL>", f"{version},"]), props, _NODES, _bar()))
+    mesh = engine.read(path)
+    assert [(t, len(d)) for t, d in _blocks(mesh)] == [("line", 1)]
+    assert ("cell", "Ribs") in {(r.kind, r.name) for r in mesh.regions}
+
+
 def test_extension_and_sniffing(tmp_path):
     assert meshioplusplus._helpers._filetypes_from_path(pathlib.Path("x.neu")) == [
         "femap"

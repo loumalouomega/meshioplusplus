@@ -372,9 +372,26 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
                                              static_cast<std::int64_t>(PerLine);
                  ++k)
                 c.Next(pWhat);
+            return count;
         };
         skip_counted(8, "laminate count");
-        skip_counted(5, "property value count");
+        const std::int64_t values = skip_counted(5, "property value count");
+        // Femap 2401 follows the values with as many integers, five to a line
+        // (function references): a repeat of the value count before a line of
+        // several integers.
+        if (c.Remaining() >= 2 && values > 0) {
+            const std::vector<std::string> f = fn_fields(c.Peek());
+            const std::vector<std::string> next = fn_fields(c.Peek(1));
+            std::int64_t count = 0, v = 0;
+            bool ints = next.size() > 1;
+            for (const std::string& t : next)
+                ints = ints && fn_parse_int(t, v);
+            if (f.size() == 1 && fn_parse_int(f[0], count) && count == values && ints) {
+                c.Next("a function count");
+                for (std::int64_t k = 0; k < (values + 4) / 5; ++k)
+                    c.Next("a function reference");
+            }
+        }
         // Outline counts (6.0 and 8.1 on): a line with one integer, then that many lines.
         while (!c.AtEnd()) {
             const std::vector<std::string> f = fn_fields(c.Peek());
@@ -598,7 +615,8 @@ Mesh read_femap(const std::string& rPath, const ReadOptions& rOpts) {
     const FnFile f = fn_parse(rPath);
     if (f.mNodeIds.empty())
         throw ReadError("Femap neutral: '" + rPath +
-                        "' holds no nodes (block 403); a results-only file needs its model");
+                        "' holds no nodes (block 403): a geometry-only or results-only file has no "
+                        "mesh to read");
 
     // --- points -----------------------------------------------------------------
     std::unordered_map<std::int64_t, std::int64_t> node_index;

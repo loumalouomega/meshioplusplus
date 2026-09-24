@@ -88,6 +88,13 @@ license: MIT
 # suite of pybaqus (https://github.com/cristobaltapia/pybaqus, Copyright (c) 2020
 # Cristóbal Tapia Camú, MIT), redistributed unmodified with the licence text beside them
 # in that directory's README.md; no code is copied.
+# tests/python/meshes/patran/real/ holds Patran neutral files written by P3/PATRAN 3.0 and
+# PATRAN 2.5: warp3d_test_25.out and warp3d_test_28.out from WARP3D's example problems
+# (https://github.com/rhdodds/warp3d, Copyright (c) 2011 University of Illinois at
+# Urbana-Champaign, University of Illinois/NCSA Open Source License) and tahoe_square.pat
+# from Tahoe's benchmarks (https://github.com/samanseifi/Tahoe, Copyright (c) 2014 Regents
+# of the University of Colorado, BSD-3-Clause), redistributed unmodified (renamed) with
+# both licence texts beside them (LICENSE.warp3d, LICENSE.tahoe); no code is copied.
 # tests/python/meshes/z88/cantilever/z88o2.txt and z88o3.txt were written by the Z88R
 # solver of Z88OS V15 (https://github.com/LSCAD/Z88OS) for the deck
 # tools/gen_z88_fixtures.py writes; no Z88OS file or code is included.

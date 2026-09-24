@@ -35,8 +35,8 @@ Neither `read` nor `write` takes extra options. Both engines (the C++ core and t
 | Shape (`IV`) | Nodes | meshio++ type |
 |---|---|---|
 | 2 bar | 2 / 3 | `line` / `line3` |
-| 3 tri | 3 / 6 | `triangle` / `triangle6` |
-| 4 quad | 4 / 8 | `quad` / `quad8` |
+| 3 tri | 3 / 6 / 7 | `triangle` / `triangle6` / `triangle7` |
+| 4 quad | 4 / 8 / 9 | `quad` / `quad8` / `quad9` |
 | 5 tet | 4 / 10 | `tetra` / `tetra10` |
 | 6 pyramid | 5 / 13 | `pyramid` / `pyramid13` |
 | 7 wedge | 6 / 15 | `wedge` / `wedge15` |
@@ -46,7 +46,7 @@ Any other shape and node count (a 27-node hex, a point element) is skipped with 
 
 ## Node order
 
-Linear cells, `line3`, `triangle6`, `quad8`, `tetra10` and `pyramid13` use meshio++'s (VTK's) order. **`hexahedron20` and `wedge15` do not.** Patran lists the bottom ring of mid-edge nodes, then the **vertical** mid-edges, then the top ring, where VTK puts the vertical ones last. They use the `"patran"` tables of the [node-ordering registry](../node_ordering.md). The order is the Patran Reference Manual's Element Library. The fixtures are written from its edge lists by `tools/gen_patran_fixtures.py`, and the tests check that every mid-edge node lands on its meshio++ edge midpoint.
+Linear cells, `line3`, `triangle6`, `triangle7`, `quad8`, `quad9`, `tetra10` and `pyramid13` use meshio++'s (VTK's) order (the 7- and 9-node faces add their centre last). **`hexahedron20` and `wedge15` do not.** Patran lists the bottom ring of mid-edge nodes, then the **vertical** mid-edges, then the top ring, where VTK puts the vertical ones last. They use the `"patran"` tables of the [node-ordering registry](../node_ordering.md). The order is the Patran Reference Manual's Element Library. The fixtures are written from its edge lists by `tools/gen_patran_fixtures.py`, and the tests check that every mid-edge node lands on its meshio++ edge midpoint.
 
 ## Writing
 
@@ -54,7 +54,7 @@ Linear cells, `line3`, `triangle6`, `quad8`, `tetra10` and `pyramid13` use meshi
 - Coordinates are written `E16.9`, so **they keep ten significant digits**: a round trip is exact to about `1e-9` relative, not bit for bit.
 - The element property comes from `patran:property`, else 1.
 - Component names are limited to 12 characters (the `A12` name card). A longer or colliding name is truncated, with a numbered suffix if needed, and a warning.
-- **Dropped, with a warning and a provenance note:** cells with no Patran shape (vertices, `quad9`, `hexahedron27`, polygons…), side regions, and every data array other than `patran:property`. More than 99,999,999 nodes or elements do not fit the `I8` id fields and are a `WriteError`.
+- **Dropped, with a warning and a provenance note:** cells with no Patran shape (vertices, `hexahedron27`, polygons…), side regions, and every data array other than `patran:property`. More than 99,999,999 nodes or elements do not fit the `I8` id fields and are a `WriteError`.
 
 ## Errors
 
@@ -62,6 +62,6 @@ A truncated packet, a malformed field, a node or element id defined twice, or an
 
 ## Notes
 
-- **Verification.** Patran, Cubit and ANSA were not available. The reader and writer follow the Patran 2 Neutral File guide and the Element Library, and the fixtures are written from them, so a file from a real Cubit or Patran export has not been read yet. That check stays in the [roadmap](../roadmap.md).
+- **Verification.** Patran, Cubit and ANSA were not available. The reader and writer follow the Patran 2 Neutral File guide and the Element Library, and the generated fixtures are written from them. Real exports were then read (v16.11.0): P3/PATRAN 3.0 and PATRAN 2.5 files from WARP3D's examples (hexahedra) and Tahoe's benchmarks (quadrilaterals with named components; a 2,409-node model with bars, 9-node quadrilaterals and seven components), and a CUBIT 13.2 export (node sets, no end packet). Every cell is positively oriented and the components land on the right entities; the 9-node quadrilaterals are why `quad9` and `triangle7` were added. Three of them are committed under `tests/python/meshes/patran/real/` with their licences. No ANSA or HyperMesh export was found.
 - The pyramid shape code (`6`) and the component entity code for a pyramid (`10`) come from Patran's results template, not from the packet 02 documentation.
 - **Not read:** loads and boundary conditions (packets 06–08, 10…), materials and properties, and the result files `.nod`/`.els`/`.dis`.
