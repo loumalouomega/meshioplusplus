@@ -41,11 +41,14 @@
  *    axes) and `RF_<DOF label>`; NaN where a node has none.
  *  - Element nodal stresses and strains (`S`, `EPEL`, `EPPL`, `EPCR`, `EPTH`:
  *    `xx yy zz xy yz xz`, rotated from the element system by its Euler angles)
- *    are cell data per element node, `(cells, nodes, 6)` with NaN at nodes that
- *    carry none (midside nodes), and point data averaged over the elements at
- *    each corner node; a layered shell's top surface is `<name>@top`. Element
- *    nodal forces are cell data `ENF`, `(cells, nodes, DOFs)` in the set's DOF
- *    order. Line and point elements carry none.
+ *    are cell data per element node, `(cells, nodes * 6)` flattened
+ *    point-major with the widest block's node count in every block (NaN at nodes
+ *    that carry none, midside nodes, and past a narrower cell's nodes;
+ *    `field_data["ansys:layout:<name>"]` is `[nodes, 6]`), and point data
+ *    averaged over the elements at each corner node; a layered shell's top
+ *    surface is `<name>@top`. Element nodal forces are cell data `ENF`,
+ *    `(cells, nodes * DOFs)` in the set's DOF order. Line and point elements
+ *    carry none.
  *  - The main file of a distributed solve (`<job>0.rst`) reads its partial
  *    files (`<job>1.rst` ...) with it, merged by node number; another partial
  *    file is refused. Of a cyclic-symmetry model only the base sector is read;

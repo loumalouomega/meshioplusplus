@@ -1128,15 +1128,14 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
             for (const MarcColumn& c : marc_columns(codes)) {
                 if (!rOptions.WantsArray(c.mName))
                     continue;
+                // With several integration points, flattened point-major so that
+                // any writer holds it; its (points, components) is the layout.
+                const std::size_t width = ns * c.mWidth;
                 std::vector<NDArray> per_block;
                 for (std::size_t bi = 0; bi < mesh.NumCellBlocks(); ++bi) {
                     const std::size_t rows = mesh.Cells(bi).NumCells();
-                    std::vector<std::size_t> shape{rows};
-                    if (ns > 1)
-                        shape.push_back(ns);
-                    if (c.mWidth > 1)
-                        shape.push_back(c.mWidth);
-                    NDArray a(DType::Float64, shape);
+                    NDArray a = width > 1 ? NDArray(DType::Float64, {rows, width})
+                                          : NDArray(DType::Float64, {rows});
                     std::fill(a.As<double>(), a.As<double>() + a.Size(),
                               std::numeric_limits<double>::quiet_NaN());
                     per_block.push_back(std::move(a));
@@ -1147,10 +1146,16 @@ Mesh marc_read_t19(const std::string& rPath, const ReadOptions& rOptions) {
                         continue;
                     double* target =
                         per_block[static_cast<std::size_t>(locs[e].mBlock)].As<double>() +
-                        static_cast<std::size_t>(locs[e].mRow) * ns * c.mWidth;
+                        static_cast<std::size_t>(locs[e].mRow) * width;
                     for (std::size_t p = 0; p < ns; ++p)
                         for (std::size_t j = 0; j < c.mWidth; ++j)
                             target[p * c.mWidth + j] = values[(e * ns + p) * np + c.mFirst + j];
+                }
+                if (ns > 1) {
+                    NDArray layout(DType::Int64, {2});
+                    layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(ns);
+                    layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(c.mWidth);
+                    mesh.AddFieldData("marc:layout:" + c.mName, std::move(layout));
                 }
                 mesh.AddCellData(c.mName, std::move(per_block));
             }

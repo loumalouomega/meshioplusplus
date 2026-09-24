@@ -38,8 +38,10 @@
  *    modal, harmonic or buckling analysis) is `field_data["meshio:time"]` with
  *    `"marc:increment"` and `"marc:subincrement"`; nodal vectors are point data
  *    named as the file names them; element post codes are cell data per
- *    integration point, `(cells, points[, 6])` (the point axis dropped when an
- *    element has one), a tensor's six codes combined as `xx yy zz xy yz zx`.
+ *    integration point, `(cells, points * components)` flattened point-major
+ *    with `field_data["marc:layout:<name>"]` = `[points, components]`
+ *    (`(cells[, components])` and no layout when an element has one), a
+ *    tensor's six codes combined as `xx yy zz xy yz zx`.
  *    Increments that remesh the model are refused.
  * See doc/formats/marc.md.
  */

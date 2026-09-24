@@ -964,12 +964,14 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
     std::vector<std::string> types(n_blocks);
     std::vector<std::size_t> rows_of(n_blocks), width_of(n_blocks);
     std::vector<const std::int64_t*> conn(n_blocks);
+    std::size_t npc = 0;  // the widest block's node count: every array's
     for (std::size_t b = 0; b < n_blocks; ++b) {
         const auto view = mesh.Cells(b);
         types[b] = view.Type();
         rows_of[b] = view.NumCells();
         width_of[b] = view.NodesPerCell();
         conn[b] = view.Conn().template As<std::int64_t>();
+        npc = std::max(npc, width_of[b]);
     }
     struct Accumulator {
         std::vector<NDArray> mCells;
@@ -982,8 +984,10 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         if (it != tensors.end())
             return it->second;
         Accumulator a;
+        // (cells, nodes, 6) flattened point-major, NaN-padded to the widest
+        // block, so that any writer holds it.
         for (std::size_t b = 0; b < n_blocks; ++b) {
-            NDArray arr(DType::Float64, {rows_of[b], width_of[b], 6});
+            NDArray arr(DType::Float64, {rows_of[b], npc * 6});
             std::fill(arr.As<double>(), arr.As<double>() + arr.Size(),
                       std::numeric_limits<double>::quiet_NaN());
             a.mCells.push_back(std::move(arr));
@@ -1081,7 +1085,7 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
                     if (!rOptions.WantsArray(key))
                         continue;
                     Accumulator& acc = accumulator(key);
-                    double* target = acc.mCells[b].As<double>() + row * width_of[b] * 6;
+                    double* target = acc.mCells[b].As<double>() + row * npc * 6;
                     for (std::size_t j = 0; j < loc.mSlots.size() && j < width_of[b]; ++j) {
                         const auto slot = static_cast<std::size_t>(loc.mSlots[j]);
                         if (slot >= nodstr)
@@ -1109,7 +1113,7 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
                     rEnfDofs = dofs;
                     for (std::size_t bb = 0; bb < n_blocks; ++bb)
                         enf.push_back([&] {
-                            NDArray arr(DType::Float64, {rows_of[bb], width_of[bb], enf_width});
+                            NDArray arr(DType::Float64, {rows_of[bb], npc * enf_width});
                             std::fill(arr.As<double>(), arr.As<double>() + arr.Size(),
                                       std::numeric_limits<double>::quiet_NaN());
                             return arr;
@@ -1117,7 +1121,7 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
                 }
                 if (dofs.size() != enf_width)
                     continue;
-                double* target = enf[b].As<double>() + row * width_of[b] * enf_width;
+                double* target = enf[b].As<double>() + row * npc * enf_width;
                 for (std::size_t j = 0; j < loc.mSlots.size() && j < width_of[b]; ++j) {
                     const auto slot = static_cast<std::size_t>(loc.mSlots[j]);
                     if (slot < nodfor)
@@ -1127,7 +1131,14 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
             }
         }
     }
+    const auto layout = [&](const std::string& rName, std::size_t Components) {
+        NDArray a(DType::Int64, {2});
+        a.As<std::int64_t>()[0] = static_cast<std::int64_t>(npc);
+        a.As<std::int64_t>()[1] = static_cast<std::int64_t>(Components);
+        mesh.AddFieldData("ansys:layout:" + rName, std::move(a));
+    };
     for (auto& [name, acc] : tensors) {
+        layout(name, 6);
         NDArray mean(DType::Float64, {n_points, 6});
         double* m = mean.As<double>();
         for (std::size_t point = 0; point < n_points; ++point)
@@ -1138,8 +1149,10 @@ void rst_elements(RstModel& rModel, std::size_t Index, const ReadOptions& rOptio
         mesh.AddCellData(name, std::move(acc.mCells));
         mesh.AddPointData(name, std::move(mean));
     }
-    if (!enf.empty())
+    if (!enf.empty()) {
+        layout("ENF", enf_width);
         mesh.AddCellData("ENF", std::move(enf));
+    }
 }
 
 // The full rotor: the base sector's cells (element numbers up to csEls) and
@@ -1328,8 +1341,12 @@ Mesh rst_expand_cyclic(const RstModel& rModel, const std::vector<std::int64_t>& 
                 for (std::size_t k = 0; k < count; ++k)
                     std::memcpy(d + (i * count + k) * item, s + kept_rows[kb][k] * item, item);
                 if (src.Dtype() == DType::Float64) {
-                    // Per element node: width = nodes * components.
-                    const std::size_t comps = shape.size() >= 3 ? shape.back() : width;
+                    // Per element node, flattened: width = nodes * components.
+                    std::size_t comps = width;
+                    if (rst_is_tensor(name, nullptr) && width % 6 == 0)
+                        comps = 6;
+                    else if (name == "ENF" && !rEnfDofs.empty() && width % rEnfDofs.size() == 0)
+                        comps = rEnfDofs.size();
                     spin(name, i, dst.As<double>() + i * count * width, count * (width / comps),
                          comps, name == "ENF" ? &rEnfDofs : nullptr);
                 }

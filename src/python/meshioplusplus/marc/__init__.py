@@ -38,8 +38,9 @@ def read_t19(filename, points_only=False, arrays=None, time_step=0):
     ``field_data["meshio:time"]``, with ``marc:increment`` and
     ``marc:subincrement``. Nodal vectors are point data named as the file names
     them (``Displacement``, ``Reaction Force`` ...); element post codes are cell
-    data per integration point, a stress or strain tensor's six codes combined
-    into one ``xx yy zz xy yz zx`` array.
+    data per integration point, ``(cells, points * components)`` flattened
+    point-major with ``field_data["marc:layout:<name>"]``, a stress or strain
+    tensor's six codes combined into one ``xx yy zz xy yz zx`` array.
     """
     if not is_buffer(filename, "r"):
         try:

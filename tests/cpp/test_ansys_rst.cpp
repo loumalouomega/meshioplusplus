@@ -321,7 +321,9 @@ TEST(AnsysRst, SyntheticElementSolution) {
     // The brick's element x axis is the global y axis: xx <-> yy, xy -> -xy,
     // yz -> xz, xz -> -yz.
     const auto& s_brick = mesh.CellData("S", 0);
-    ASSERT_EQ(s_brick.Shape(), (std::vector<std::size_t>{1, 8, 6}));
+    // (cells, nodes * 6) with every block at the brick's eight nodes.
+    ASSERT_EQ(s_brick.Shape(), (std::vector<std::size_t>{1, 48}));
+    EXPECT_EQ(meshioplusplus::detail::read_int(mesh.FieldData("ansys:layout:S"), 0), 8);
     for (int i = 0; i < 8; ++i) {
         const auto t = brick_stress(i);
         const double expected[6] = {t[1], t[0], t[2], -t[3], t[5], -t[4]};
@@ -347,7 +349,7 @@ TEST(AnsysRst, SyntheticElementSolution) {
     EXPECT_EQ(read_point(mesh, "S@top", 0), 110.0);
     EXPECT_TRUE(std::isnan(read_point(mesh, "S@top", 4 * 6)));
     const auto& forces = mesh.CellData("ENF", 0);
-    ASSERT_EQ(forces.Shape(), (std::vector<std::size_t>{1, 8, 4}));
+    ASSERT_EQ(forces.Shape(), (std::vector<std::size_t>{1, 32}));
     EXPECT_EQ(read_double(forces, 7 * 4), 7.0);
     EXPECT_EQ(read_double(forces, 7 * 4 + 3), -7.0);
     // Reactions: node 1's UZ, node 2's TEMP; node 3's UX in its rotated axes.

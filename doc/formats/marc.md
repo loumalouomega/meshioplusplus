@@ -91,7 +91,7 @@ The formatted post file (post file revision 9 or later, Volume D's PLDUMP2000) i
 | the increment and sub-increment numbers (517) | `field_data["marc:increment"]`, `"marc:subincrement"` |
 | each nodal vector (524): `Displacement`, `Reaction Force`, `Temperature` ... | point data under the file's name, `(points, components)` or `(points,)` |
 | the imaginary part of a complex harmonic vector | point data `<name>@imag` |
-| element post codes at the integration points (523) | cell data `(cells, points)` per code, `(cells, points, 6)` per tensor; the point axis is dropped when elements have one |
+| element post codes at the integration points (523) | cell data per code, flattened point-major as the [Abaqus `.fil`](./abaqus_fil.md) reader does so that every writer holds it: `(cells, points × components)` with `field_data["marc:layout:<name>"] = [points, components]`; `(cells, components)` or `(cells,)` when elements have one integration point, with no layout |
 
 **Element post codes.** Each code is named by its label in the file, or else by its meaning in Volume C's Table 3-3 (`Equivalent Von Mises Stress` for 17, `Temperature` for 9 ...), or `post code <n>`. A tensor (codes 301 total strain, 311 stress, 321 plastic strain, 341 Cauchy stress, 401 elastic strain, 411 global stress ... written as six consecutive codes) becomes one six-component array, components 11 22 33 12 23 31, that is `xx yy zz xy yz zx`; the order is checked on a real Marc post file, whose von Mises stress (code 17) matches its stress tensor's. A code of layer `n` (code + 1000 n) gets the suffix `@layer<n>`. A cell whose element has no cell (a skipped type) drops its values.
 

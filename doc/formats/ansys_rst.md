@@ -20,7 +20,9 @@ meshioplusplus.ansys_rst.time_values("file.rst")      # every set's time or freq
 for time, mesh in meshioplusplus.read_sequence("file.rst"):
     ...
 mesh.point_data["S"]      # stresses averaged at the corner nodes
-mesh.cell_data["S"][0]    # per element node: (cells, nodes, 6), NaN at midside nodes
+mesh.cell_data["S"][0]    # per element node: (cells, nodes * 6), NaN at midside nodes
+layout = mesh.field_data["ansys:layout:S"]           # [nodes, 6]
+per_node = mesh.cell_data["S"][0].reshape(-1, *layout)
 
 meshioplusplus.read("file0.rst")                      # a distributed solve: file0..fileN.rst
 rotor = meshioplusplus.read("sector.rst", file_format="ansys_rst_cyclic")
@@ -58,10 +60,10 @@ Integer, `int16`, `float32` and `float64` records are read, dense or bit- and wi
 | other DOFs (`TEMP`, `PRES`, `VOLT`, `MAG`, `CURR` ...) | scalar point data under the DOF's label |
 | reaction forces of `UX UY UZ` and `ROTX ROTY ROTZ` | point data `RF` and `RMOM`, rotated to the global axes; NaN at nodes with none |
 | reactions of other DOFs (`TEMP` ...) | scalar point data `RF_<DOF>` (`RF_TEMP` is the reaction heat flow) |
-| element nodal stresses (`ENS`) | `S`: cell data per element node `(cells, nodes, 6)` and point data `(points, 6)` averaged at the corner nodes, `xx yy zz xy yz xz` |
+| element nodal stresses (`ENS`) | `S`: cell data per element node `(cells, nodes × 6)`, flattened point-major with `field_data["ansys:layout:S"] = [nodes, 6]`, and point data `(points, 6)` averaged at the corner nodes; components `xx yy zz xy yz xz` |
 | elastic, plastic, creep and thermal strains (`EEL`, `EPL`, `ECR`, `ETH`) | `EPEL`, `EPPL`, `EPCR`, `EPTH`, laid out as `S` (engineering shear strains, as MAPDL stores them) |
 | the top surface of a layered shell (SHELL181/281 with `KEYOPT(8)=0`) | `S@top`, `EPEL@top` ... beside the bottom surface's `S`, `EPEL` ... |
-| element nodal forces (`ENF`) | cell data `ENF`, `(cells, nodes, DOFs)` in the set's DOF order |
+| element nodal forces (`ENF`) | cell data `ENF`, `(cells, nodes × DOFs)` in the set's DOF order, with `ansys:layout:ENF` |
 
 **Rotated nodes.** MAPDL stores a node's solution in its nodal coordinate system, whose axes are the global ones turned about Z by THXY, then about the new X by THYZ, then about the newest Y by THZX. meshio++ rotates each vector DOF to the global axes, `v_global = Rz(THXY) Rx(THYZ) Ry(THZX) v_nodal`. pymapdl-reader applies the three turns in the opposite order, which agrees with this only for nodes rotated about a single axis, as every node in the test fixtures is.
 
@@ -71,7 +73,7 @@ Integer, `int16`, `float32` and `float64` records are read, dense or bit- and wi
 
 An element's stresses and strains are stored at its corner nodes (`nodstr` of them, the corners of a quadratic element), in the element's coordinate system. meshio++ rotates each tensor to the global axes by the element's Euler angles (`EUL`, one set for the element or one per node, MAPDL's 3-1-2 convention) and places it on the cell's node the record's node became, degenerate shapes included. Midside nodes carry no value (NaN).
 
-- **Cell data** keeps each element's own values, discontinuous across elements: `cell_data["S"]` has one `(cells, nodes, 6)` array per block.
+- **Cell data** keeps each element's own values, discontinuous across elements. So that every writer (VTU, XDMF ...) can hold them, the arrays follow the convention of the [Abaqus `.fil`](./abaqus_fil.md) reader: rectangular, as wide in every cell block, flattened point-major. `cell_data["S"]` has one `(cells, nodes × 6)` array per block, where `nodes` is the node count of the widest block (a mesh of 20-node bricks and 8-node shells has 20, the shells' last twelve NaN); column `node × 6 + component` holds the cell's `node`-th node, in the cell's node order. `field_data["ansys:layout:S"]` is `[nodes, 6]`, so `a.reshape(len(a), *layout)` restores `(cells, nodes, 6)`.
 - **Point data** averages them at each corner node over the elements that have a value there, as pymapdl-reader's `nodal_stress` and `nodal_elastic_strain` do (their seventh item, the equivalent strain, is not kept). Midside nodes are NaN.
 - A negative entry `-n` in an element's pointer table is a record of `n` zeros that MAPDL did not write (unloaded elements of a cyclic model do this): it reads as zeros and counts in the average.
 - **Layered shells.** SHELL181 and SHELL281 with `KEYOPT(8)=0` store the bottom surface, then the top: the bottom is `S`, `EPEL` ..., the top `S@top`, `EPEL@top` ... (NaN in cells of other types).

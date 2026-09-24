@@ -181,9 +181,15 @@ def test_post_file(engine):
         np.testing.assert_allclose(u, expected, rtol=1e-6)
         rf = mesh.point_data["Reaction Force"]
         assert rf.shape == (12, 3) and (rf[[0, 3, 4, 7]] < 0).all()
-        stress = mesh.cell_data["Stress"][0]
+        # Eight integration points: flattened point-major, with the layout.
+        assert mesh.cell_data["Stress"][0].shape == (2, 48)
+        np.testing.assert_array_equal(mesh.field_data["marc:layout:Stress"], [8, 6])
+        np.testing.assert_array_equal(
+            mesh.field_data["marc:layout:Equivalent Von Mises Stress"], [8, 1]
+        )
+        stress = mesh.cell_data["Stress"][0].reshape(2, 8, 6)
         mises = mesh.cell_data["Equivalent Von Mises Stress"][0]
-        assert stress.shape == (2, 8, 6) and mises.shape == (2, 8)
+        assert mises.shape == (2, 8)
         for e in range(2):
             for ip in range(8):
                 t = gen.t19_stress(step, e + 1, ip)

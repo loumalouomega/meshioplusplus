@@ -692,6 +692,9 @@ class _Model:
             if wanted is None or k[0] in wanted or k[0] + _TOP in wanted
         ]
         want_enf = wanted is None or "ENF" in wanted
+        # Every array is (cells, nodes, components) with the widest block's node
+        # count, NaN-padded; flattened point-major below so any writer holds it.
+        npc = max((blk.data.shape[1] for blk in blocks), default=0)
         cells, sums, counts = {}, {}, {}
         enf_cells = None
         layout = self.deck["layout"]
@@ -747,7 +750,7 @@ class _Model:
                         target = cells.get(key)
                         if target is None:
                             target = cells[key] = [
-                                np.full((len(blk.data), blk.data.shape[1], 6), np.nan)
+                                np.full((len(blk.data), npc, 6), np.nan)
                                 for blk in blocks
                             ]
                             sums[key] = np.zeros((n_points, 6))
@@ -766,9 +769,7 @@ class _Model:
                     values = values[: nodfor * len(dofs)].reshape(nodfor, len(dofs))
                     if enf_cells is None:
                         enf_cells = [
-                            np.full(
-                                (len(blk.data), blk.data.shape[1], len(dofs)), np.nan
-                            )
+                            np.full((len(blk.data), npc, len(dofs)), np.nan)
                             for blk in blocks
                         ]
                     if enf_cells[b].shape[2] != len(dofs):
@@ -777,13 +778,16 @@ class _Model:
                         if slot < nodfor:
                             enf_cells[b][row, j] = values[slot]
         for key, target in cells.items():
-            mesh.cell_data[key] = target
+            mesh.cell_data[key] = [a.reshape(len(a), -1) for a in target]
+            mesh.field_data["ansys:layout:" + key] = np.array([npc, 6], dtype=np.int64)
             with np.errstate(invalid="ignore", divide="ignore"):
                 mean = sums[key] / counts[key][:, None]
             mean[counts[key] == 0] = np.nan
             mesh.point_data[key] = mean
         if enf_cells is not None:
-            mesh.cell_data["ENF"] = enf_cells
+            mesh.cell_data["ENF"] = [a.reshape(len(a), -1) for a in enf_cells]
+            width = enf_cells[0].shape[2]
+            mesh.field_data["ansys:layout:ENF"] = np.array([npc, width], dtype=np.int64)
 
 
 def _rotate(vec, angles):
@@ -920,13 +924,13 @@ def _expand_cyclic(model, dofs):
     def spin(values, name, i, last_axis_dofs=None):
         q = rotations[i]
         v = np.array(values, dtype=np.float64, copy=True)
-        if v.shape[-1] == 6 and name in _TENSOR_NAMES:
+        if name in _TENSOR_NAMES and v.size % 6 == 0:
             _rotate_tensors(v, q, _TENSOR_NAMES[name])
         elif v.shape[-1] == 3 and v.ndim == 2 and name in _VECTOR_NAMES:
             _rotate_vectors(v, q)
         elif last_axis_dofs is not None:
             column = {c: j for j, c in enumerate(last_axis_dofs)}
-            flat = v.reshape(-1, v.shape[-1])
+            flat = v.reshape(-1, len(last_axis_dofs))
             for triple in ((1, 2, 3), (4, 5, 6)):
                 if all(c in column for c in triple):
                     idx = [column[c] for c in triple]

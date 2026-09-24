@@ -247,10 +247,14 @@ def test_static_solid186_stresses(engine):
     np.testing.assert_array_equal(
         mesh.point_data["S"][rows], ref["beam_static_bc.rst/0/stress"]
     )
-    cells = mesh.cell_data["S"][0]
-    assert cells.shape == (40, 20, 6)
+    # Per element node, flattened point-major: (cells, nodes * 6), and its
+    # (nodes, components) is the layout.
+    assert mesh.cell_data["S"][0].shape == (40, 120)
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:S"], [20, 6])
+    cells = mesh.cell_data["S"][0].reshape(40, 20, 6)
     assert np.isfinite(cells[:, :8]).all() and np.isnan(cells[:, 8:]).all()
-    assert mesh.cell_data["ENF"][0].shape == (40, 20, 3)
+    assert mesh.cell_data["ENF"][0].shape == (40, 60)
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:ENF"], [20, 3])
     assert np.isfinite(mesh.cell_data["ENF"][0]).all()
     # Nodal equilibrium: at each node the element nodal forces sum to minus the
     # reaction, or to minus the applied load (FX 20, FY 30, FZ 40 at three
@@ -677,14 +681,22 @@ def test_synthetic_element_solution(engine, tmp_path):
         m = q @ np.array([[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]) @ q.T
         return [m[0, 0], m[1, 1], m[2, 2], m[0, 1], m[1, 2], m[0, 2]]
 
+    # Every block's arrays have the brick's eight nodes; the quad's last four
+    # are NaN.
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:S"], [8, 6])
+
+    def cell(name, block):
+        return mesh.cell_data[name][block][0].reshape(8, -1)
+
     brick = np.array([to_global(_brick_stress(i)) for i in range(8)])
-    np.testing.assert_allclose(mesh.cell_data["S"][0][0], brick, atol=1e-12)
-    np.testing.assert_array_equal(mesh.cell_data["EPEL"][0][0], np.zeros((8, 6)))
+    np.testing.assert_allclose(cell("S", 0), brick, atol=1e-12)
+    np.testing.assert_array_equal(cell("EPEL", 0), np.zeros((8, 6)))
     assert np.isnan(mesh.cell_data["EPEL"][1]).all()  # the shell has none
     shell_bottom = np.array([_shell_stress(i, 0) for i in range(4)])
     shell_top = np.array([_shell_stress(i, 1) for i in range(4)])
-    np.testing.assert_array_equal(mesh.cell_data["S"][1][0], shell_bottom)
-    np.testing.assert_array_equal(mesh.cell_data["S@top"][1][0], shell_top)
+    np.testing.assert_array_equal(cell("S", 1)[:4], shell_bottom)
+    assert np.isnan(cell("S", 1)[4:]).all()
+    np.testing.assert_array_equal(cell("S@top", 1)[:4], shell_top)
     assert np.isnan(mesh.cell_data["S@top"][0]).all()
 
     # Averaged at the nodes: the bottom face (nodes 1-4) with the shell's bottom.
@@ -696,7 +708,8 @@ def test_synthetic_element_solution(engine, tmp_path):
     np.testing.assert_array_equal(mesh.point_data["S@top"], top)
     np.testing.assert_array_equal(mesh.point_data["EPEL"][4:], np.zeros((4, 6)))
 
-    forces = mesh.cell_data["ENF"][0][0]
+    np.testing.assert_array_equal(mesh.field_data["ansys:layout:ENF"], [8, 4])
+    forces = cell("ENF", 0)
     np.testing.assert_array_equal(forces, [[i, 0.0, 0.0, -i] for i in range(8)])
     assert np.isnan(mesh.cell_data["ENF"][1]).all()
 
@@ -731,3 +744,17 @@ def test_refusals(engine, tmp_path, options, match):
     cut.write_bytes((RST / "beam44.rst").read_bytes()[:5000])
     with pytest.raises(meshioplusplus.ReadError, match="outside the file|past the end"):
         engine.read(cut)
+
+
+@pytest.mark.parametrize("ext", ["vtu", "xdmf"])
+def test_element_results_are_writable(tmp_path, ext):
+    """Per-element-node arrays are rectangular and as wide in every block
+    (quad8 and hexahedron20 here), so the writers hold them: they round-trip."""
+    mesh = meshioplusplus.read(DIST / "file0.rst")
+    assert len({a.shape[1] for a in mesh.cell_data["S"]}) == 1
+    target = tmp_path / f"out.{ext}"
+    meshioplusplus.write(target, mesh)
+    back = meshioplusplus.read(target)
+    for name in ("S", "EPEL", "ENF"):
+        for a, b in zip(mesh.cell_data[name], back.cell_data[name]):
+            np.testing.assert_array_equal(a, b)

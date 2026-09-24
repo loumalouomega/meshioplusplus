@@ -20,9 +20,10 @@ def read(filename, points_only=False, arrays=None, time_step=0, lenient=False):
     Reaction forces are ``RF`` and ``RMOM`` (global axes) and ``RF_<DOF>``.
     Element nodal stresses and strains (``S``, ``EPEL``, ``EPPL``, ``EPCR``,
     ``EPTH``: ``xx yy zz xy yz xz``, rotated to the global axes; a layered
-    shell's top surface as ``<name>@top``) are cell data per element node and
-    point data averaged over the elements at each corner node; element nodal
-    forces are cell data ``ENF``. The main file of a distributed solve
+    shell's top surface as ``<name>@top``) are cell data per element node,
+    ``(cells, nodes * components)`` flattened point-major with the layout in
+    ``field_data["ansys:layout:<name>"]``, and point data averaged over the
+    elements at each corner node; element nodal forces are cell data ``ENF``. The main file of a distributed solve
     (``file0.rst``) reads its partial files with it. ``lenient`` skips elements
     whose type has no meshio++ cell.
     """

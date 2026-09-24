@@ -791,9 +791,10 @@ class _Post:
 
 
 def _element_arrays(codes, values, nstres):
-    """``{name: (per-element array)}`` from ``values`` (elements x IPs x
+    """``{name: (elements, points[, 6])}`` from ``values`` (elements x IPs x
     codes): six consecutive codes ``c .. c + 5`` of a tensor become one
-    ``xx yy zz xy yz zx`` array; a layer (code + 1000 x layer) is ``@layer<n>``."""
+    ``xx yy zz xy yz zx`` array; a layer (code + 1000 x layer) is ``@layer<n>``.
+    With one integration point the point axis is dropped."""
     out = {}
     k = 0
     while k < len(codes):
@@ -873,6 +874,14 @@ def read_t19(filename, points_only=False, arrays=None, time_step=0):
             for name, data in _element_arrays(codes, values, nstres).items():
                 if wanted is not None and name not in wanted:
                     continue
+                if nstres > 1:
+                    # Flattened point-major, so that any writer holds it; its
+                    # (points, components) is the layout.
+                    comps = data.shape[2] if data.ndim == 3 else 1
+                    data = data.reshape(len(data), nstres * comps)
+                    mesh.field_data["marc:layout:" + name] = np.array(
+                        [nstres, comps], dtype=np.int64
+                    )
                 per_block = []
                 for b_index, cell_block in enumerate(mesh.cells):
                     shape = (len(cell_block.data),) + data.shape[1:]
