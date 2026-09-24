@@ -82,7 +82,7 @@ A parallel MFEM run saves one file per rank, `<prefix>.000000`, `<prefix>.000001
 - `piece=k` (`mfem.read(path, piece=k)`, `ReadOptions::mPiece` in C++) reads rank k alone.
 - A rank's grid function is named by one of its files: `{"u": "sol.000000"}` reads `sol.000000`, `sol.000001`, … with the mesh.
 
-Non-conforming parallel meshes are refused.
+**Non-conforming parallel meshes** (v16.12.0). `ParMesh::ParPrint` of a non-conforming mesh writes each rank's refinement tree as an `MFEM NC mesh` with a `rank` and the neighbouring ranks' leaves as ghosts. Each rank is read as its own leaves in MFEM's local order and numbering (see [Non-conforming meshes](#non-conforming-meshes)), so its grid function applies; the vertices its ghosts share are merged by position, and only the boundary faces of its own leaves are kept. `ParMesh::Save` writes such a mesh as plain rank meshes with hanging nodes, merged like the conforming ones, except that where the interface between two ranks is itself non-conforming, their interface faces do not match each other and stay as boundary cells.
 
 ## Grid functions
 

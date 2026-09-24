@@ -506,33 +506,85 @@ def _read_groups(lex, f):
 
 # MFEM's Hilbert-curve child orders and states (mesh/ncmesh_tables.hpp)
 _QUAD_HILBERT_ORDER = [
-    (0, 1, 2, 3), (0, 3, 2, 1), (1, 2, 3, 0), (1, 0, 3, 2),
-    (2, 3, 0, 1), (2, 1, 0, 3), (3, 0, 1, 2), (3, 2, 1, 0),
+    (0, 1, 2, 3),
+    (0, 3, 2, 1),
+    (1, 2, 3, 0),
+    (1, 0, 3, 2),
+    (2, 3, 0, 1),
+    (2, 1, 0, 3),
+    (3, 0, 1, 2),
+    (3, 2, 1, 0),
 ]
 _QUAD_HILBERT_STATE = [
-    (1, 0, 0, 5), (0, 1, 1, 4), (3, 2, 2, 7), (2, 3, 3, 6),
-    (5, 4, 4, 1), (4, 5, 5, 0), (7, 6, 6, 3), (6, 7, 7, 2),
+    (1, 0, 0, 5),
+    (0, 1, 1, 4),
+    (3, 2, 2, 7),
+    (2, 3, 3, 6),
+    (5, 4, 4, 1),
+    (4, 5, 5, 0),
+    (7, 6, 6, 3),
+    (6, 7, 7, 2),
 ]
 _HEX_HILBERT_ORDER = [
-    (0, 1, 2, 3, 7, 6, 5, 4), (0, 3, 7, 4, 5, 6, 2, 1), (0, 4, 5, 1, 2, 6, 7, 3),
-    (1, 0, 3, 2, 6, 7, 4, 5), (1, 2, 6, 5, 4, 7, 3, 0), (1, 5, 4, 0, 3, 7, 6, 2),
-    (2, 1, 5, 6, 7, 4, 0, 3), (2, 3, 0, 1, 5, 4, 7, 6), (2, 6, 7, 3, 0, 4, 5, 1),
-    (3, 0, 4, 7, 6, 5, 1, 2), (3, 2, 1, 0, 4, 5, 6, 7), (3, 7, 6, 2, 1, 5, 4, 0),
-    (4, 0, 1, 5, 6, 2, 3, 7), (4, 5, 6, 7, 3, 2, 1, 0), (4, 7, 3, 0, 1, 2, 6, 5),
-    (5, 1, 0, 4, 7, 3, 2, 6), (5, 4, 7, 6, 2, 3, 0, 1), (5, 6, 2, 1, 0, 3, 7, 4),
-    (6, 2, 3, 7, 4, 0, 1, 5), (6, 5, 1, 2, 3, 0, 4, 7), (6, 7, 4, 5, 1, 0, 3, 2),
-    (7, 3, 2, 6, 5, 1, 0, 4), (7, 4, 0, 3, 2, 1, 5, 6), (7, 6, 5, 4, 0, 1, 2, 3),
+    (0, 1, 2, 3, 7, 6, 5, 4),
+    (0, 3, 7, 4, 5, 6, 2, 1),
+    (0, 4, 5, 1, 2, 6, 7, 3),
+    (1, 0, 3, 2, 6, 7, 4, 5),
+    (1, 2, 6, 5, 4, 7, 3, 0),
+    (1, 5, 4, 0, 3, 7, 6, 2),
+    (2, 1, 5, 6, 7, 4, 0, 3),
+    (2, 3, 0, 1, 5, 4, 7, 6),
+    (2, 6, 7, 3, 0, 4, 5, 1),
+    (3, 0, 4, 7, 6, 5, 1, 2),
+    (3, 2, 1, 0, 4, 5, 6, 7),
+    (3, 7, 6, 2, 1, 5, 4, 0),
+    (4, 0, 1, 5, 6, 2, 3, 7),
+    (4, 5, 6, 7, 3, 2, 1, 0),
+    (4, 7, 3, 0, 1, 2, 6, 5),
+    (5, 1, 0, 4, 7, 3, 2, 6),
+    (5, 4, 7, 6, 2, 3, 0, 1),
+    (5, 6, 2, 1, 0, 3, 7, 4),
+    (6, 2, 3, 7, 4, 0, 1, 5),
+    (6, 5, 1, 2, 3, 0, 4, 7),
+    (6, 7, 4, 5, 1, 0, 3, 2),
+    (7, 3, 2, 6, 5, 1, 0, 4),
+    (7, 4, 0, 3, 2, 1, 5, 6),
+    (7, 6, 5, 4, 0, 1, 2, 3),
 ]
 _HEX_HILBERT_STATE = [
-    (1, 2, 2, 7, 7, 21, 21, 17), (2, 0, 0, 22, 22, 16, 16, 8), (0, 1, 1, 15, 15, 6, 6, 23),
-    (4, 5, 5, 10, 10, 18, 18, 14), (5, 3, 3, 19, 19, 13, 13, 11), (3, 4, 4, 12, 12, 9, 9, 20),
-    (8, 7, 7, 17, 17, 23, 23, 2), (6, 8, 8, 0, 0, 15, 15, 22), (7, 6, 6, 21, 21, 1, 1, 16),
-    (11, 10, 10, 14, 14, 20, 20, 5), (9, 11, 11, 3, 3, 12, 12, 19), (10, 9, 9, 18, 18, 4, 4, 13),
-    (13, 14, 14, 5, 5, 19, 19, 10), (14, 12, 12, 20, 20, 11, 11, 4), (12, 13, 13, 9, 9, 3, 3, 18),
-    (16, 17, 17, 2, 2, 22, 22, 7), (17, 15, 15, 23, 23, 8, 8, 1), (15, 16, 16, 6, 6, 0, 0, 21),
-    (20, 19, 19, 11, 11, 14, 14, 3), (18, 20, 20, 4, 4, 10, 10, 12), (19, 18, 18, 13, 13, 5, 5, 9),
-    (23, 22, 22, 8, 8, 17, 17, 0), (21, 23, 23, 1, 1, 7, 7, 15), (22, 21, 21, 16, 16, 2, 2, 6),
+    (1, 2, 2, 7, 7, 21, 21, 17),
+    (2, 0, 0, 22, 22, 16, 16, 8),
+    (0, 1, 1, 15, 15, 6, 6, 23),
+    (4, 5, 5, 10, 10, 18, 18, 14),
+    (5, 3, 3, 19, 19, 13, 13, 11),
+    (3, 4, 4, 12, 12, 9, 9, 20),
+    (8, 7, 7, 17, 17, 23, 23, 2),
+    (6, 8, 8, 0, 0, 15, 15, 22),
+    (7, 6, 6, 21, 21, 1, 1, 16),
+    (11, 10, 10, 14, 14, 20, 20, 5),
+    (9, 11, 11, 3, 3, 12, 12, 19),
+    (10, 9, 9, 18, 18, 4, 4, 13),
+    (13, 14, 14, 5, 5, 19, 19, 10),
+    (14, 12, 12, 20, 20, 11, 11, 4),
+    (12, 13, 13, 9, 9, 3, 3, 18),
+    (16, 17, 17, 2, 2, 22, 22, 7),
+    (17, 15, 15, 23, 23, 8, 8, 1),
+    (15, 16, 16, 6, 6, 0, 0, 21),
+    (20, 19, 19, 11, 11, 14, 14, 3),
+    (18, 20, 20, 4, 4, 10, 10, 12),
+    (19, 18, 18, 13, 13, 5, 5, 9),
+    (23, 22, 22, 8, 8, 17, 17, 0),
+    (21, 23, 23, 1, 1, 7, 7, 15),
+    (22, 21, 21, 16, 16, 2, 2, 6),
 ]
+
+
+def _facets(geom):
+    """The local vertex lists of an element's facets (edges in 2-D, faces in
+    3-D; the vertices of a segment)."""
+    if geom == 1:
+        return [(0,), (1,)]
+    return list(_GEOMS[geom][4 if _GEOMS[geom][2] == 2 else 5])
 
 
 def _parse_nc(lex, filename, scaled):
@@ -541,6 +593,7 @@ def _parse_nc(lex, filename, scaled):
     ``vertex_parents``; only the leaves of the file's own rank."""
     f = {
         "nc": True,
+        "interface": [],
         "parallel": False,
         "rank": 0,
         "groups": [],
@@ -604,7 +657,9 @@ def _parse_nc(lex, filename, scaled):
                 p2 = lex.int("a parent")
                 parents[vid] = (p1, p2, lex.real("a scale") if scaled else 0.5)
         elif text == "root_state":
-            root_states = [lex.int("a root state") for _ in range(lex.int("a root count"))]
+            root_states = [
+                lex.int("a root state") for _ in range(lex.int("a root count"))
+            ]
         elif text == "coordinates":
             n = lex.int("a vertex count")
             if n < 0:
@@ -665,9 +720,15 @@ def _parse_nc(lex, filename, scaled):
                 ordered.append(e)
             continue
         if geom == 3 and ref == 3 and 0 <= state < 8:
-            kids = [(ids[_QUAD_HILBERT_ORDER[state][i]], _QUAD_HILBERT_STATE[state][i]) for i in range(4)]
+            kids = [
+                (ids[_QUAD_HILBERT_ORDER[state][i]], _QUAD_HILBERT_STATE[state][i])
+                for i in range(4)
+            ]
         elif geom == 5 and ref == 7 and 0 <= state < 24:
-            kids = [(ids[_HEX_HILBERT_ORDER[state][i]], _HEX_HILBERT_STATE[state][i]) for i in range(8)]
+            kids = [
+                (ids[_HEX_HILBERT_ORDER[state][i]], _HEX_HILBERT_STATE[state][i])
+                for i in range(8)
+            ]
         else:
             kids = [(c, state) for c in ids]
         stack.extend(reversed(kids))
@@ -677,6 +738,13 @@ def _parse_nc(lex, filename, scaled):
         warn(
             f"MFEM mesh: {ghosts} ghost element(s) of other ranks in {filename} dropped"
         )
+    if ghosts:  # a rank of a parallel mesh: only the boundary of its own leaves
+        faces = set()
+        for e in leaves:
+            geom, ids = elements[e][2], elements[e][4]
+            for fv in _facets(geom):
+                faces.add(tuple(sorted(ids[k] for k in fv)))
+        f["boundary"] = [b for b in f["boundary"] if tuple(sorted(b[2])) in faces]
     # MFEM's vertex numbers (NCMesh::UpdateVertices): the top-level vertices
     # of the rank's leaves by node id, then the others as the leaves (ghosts
     # included) meet them
@@ -697,6 +765,13 @@ def _parse_nc(lex, filename, scaled):
                 numbered.add(v)
                 order.append(v)
     index = {vid: k for k, vid in enumerate(order)}
+    # A rank of a parallel mesh: the vertices its ghosts share with it (where it
+    # meets its neighbours).
+    ghost_ids = {
+        v for e in ordered if elements[e][0] != my_rank for v in elements[e][4]
+    }
+    f["interface"] = sorted(index[v] for v in ghost_ids if v in local)
+    f["rank"] = my_rank
     pos = {}
 
     def position(vid, visiting=()):
@@ -2026,11 +2101,6 @@ def _read_parallel(filename, first, grid_functions, piece):
     files = []
     for r in selected:
         f = first if paths[r] == str(filename) else _parse(paths[r])
-        if f["nc"]:
-            raise ReadError(
-                f"MFEM mesh: {paths[r]} is a non-conforming rank; parallel "
-                "non-conforming meshes are not read"
-            )
         if f["parallel"] and len(paths) > 1 and f["rank"] != r:
             raise ReadError(f"MFEM mesh: {paths[r]} holds rank {f['rank']}")
         if not f["parallel"]:
@@ -2090,6 +2160,10 @@ def _read_parallel(filename, first, grid_functions, piece):
                         nglobal += 1
                         global_xyz.append(None)
                     glob[v] = by_group[key]
+        elif f["nc"]:
+            # a non-conforming rank (ParPrint): the vertices its ghosts share
+            for v in f["interface"]:
+                candidate[v] = True
         else:
             for _, _, verts, _ in f["boundary"]:
                 for v in verts:

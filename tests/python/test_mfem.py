@@ -565,7 +565,7 @@ def test_grid_function_mismatch_is_an_error(engine, tmp_path):
 PARALLEL = MESHES / "parallel"
 PARALLEL_REFERENCE = np.load(PARALLEL / "reference.npz")
 # case -> (ranks, merged point count of the conforming mesh)
-PARALLEL_CASES = {"star-p2": (4, 361), "beam-tet": (3, 153)}
+PARALLEL_CASES = {"star-p2": (4, 361), "beam-tet": (3, 153), "star-nc": (3, 1355)}
 # MFEM's VTK cell type -> ours (it writes order-1 and order-2 cells as VTK
 # Lagrange too)
 _PARALLEL_TYPES = {
@@ -614,8 +614,12 @@ def test_parallel_mesh_merges_its_ranks(engine, name, layout):
             )
     # the interface faces a ParMesh::Save rank lists as boundary are gone
     boundary = sum(len(b.data) for b in mesh.cells if b.dim < mesh.cells[0].dim)
-    # (serial MFEM: star 40, beam-tet 272 boundary elements once refined)
-    serial_boundary = {"star-p2": 40, "beam-tet": 272}[name]
+    # (serial MFEM: star 40, beam-tet 272 boundary elements once refined; the
+    # non-conforming star 74 -- but where a Save rank's interface is
+    # non-conforming, its pieces match no other rank's and stay: 30 of them)
+    serial_boundary = {"star-p2": 40, "beam-tet": 272, "star-nc": 74}[name]
+    if name == "star-nc" and layout == "mesh":
+        serial_boundary += 30
     assert boundary == serial_boundary
 
 

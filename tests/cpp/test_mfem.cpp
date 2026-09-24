@@ -422,3 +422,27 @@ TEST(Mfem, BernsteinAndSerendipityNodesAreCoefficients) {
     EXPECT_NEAR(coord(ser, detail::read_int(s, 4), 1), -0.1, 1e-15);
     EXPECT_NEAR(coord(ser, detail::read_int(s, 8), 1), 0.45, 1e-15);
 }
+
+// Two unit squares over two ranks as ParMesh::ParPrint writes a non-conforming
+// mesh: each rank's refinement tree, its own leaf and the other's as a ghost,
+// every boundary edge listed by both. The leaves merge at their shared edge.
+TEST(Mfem, ParallelNonConformingRanksMerge) {
+    const std::string dir = mt::temp_path("_pncmesh");
+    std::filesystem::create_directories(dir);
+    for (int r = 0; r < 2; ++r)
+        std::ofstream(dir + "/m.00000" + std::to_string(r))
+            << "MFEM NC mesh v1.0\ndimension\n2\nrank\n"
+            << r
+            << "\nelements\n2\n0 1 3 0 0 1 4 3\n1 2 3 0 1 2 5 4\n"
+               "boundary\n6\n1 1 0 1\n1 1 1 2\n2 1 2 5\n1 1 5 4\n1 1 4 3\n3 1 3 0\n"
+               "coordinates\n6\n2\n0 0\n1 0\n2 0\n0 1\n1 1\n2 1\n";
+    const Mesh mesh = meshioplusplus::read_mfem(dir + "/m.000000");
+    EXPECT_EQ(mesh.NumPoints(), 6u);
+    ASSERT_EQ(mesh.NumCellBlocks(), 2u);
+    EXPECT_EQ(mesh.Cells(0).NumCells(), 2u);
+    EXPECT_EQ(mesh.Cells(1).NumCells(), 6u);  // each rank's own boundary, once
+    const auto& parts = mesh.CellData("partition:part", 0);
+    EXPECT_EQ(detail::read_int(parts, 0), 0);
+    EXPECT_EQ(detail::read_int(parts, 1), 1);
+    std::filesystem::remove_all(dir);
+}

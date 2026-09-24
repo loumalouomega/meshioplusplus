@@ -618,7 +618,10 @@ struct MfNurbs;
 
 struct MfFile {
     std::shared_ptr<const MfNurbs> mpNurbs;  // a NURBS mesh: everything is there
-    bool mNonConforming = false;             // read from an `MFEM NC mesh`: its leaves
+    bool mNonConforming = false;
+    // A rank of a parallel non-conforming mesh (ParPrint): the vertices its
+    // ghost elements share with it, where it meets the other ranks.
+    std::vector<std::int64_t> mInterface;  // read from an `MFEM NC mesh`: its leaves
     // One rank of a parallel mesh (ParMesh::Print): its rank (group 0's only
     // member), and per communication group its ranks and shared vertices
     // (local ids, in the order every rank of the group lists them).
@@ -881,8 +884,38 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
         if (elements[e].mRank == my_rank)
             leaves.push_back(e);
     const std::size_t ghosts = ordered.size() - leaves.size();
-    if (ghosts)
+    if (ghosts) {
         log::warn("MFEM mesh: {} ghost element(s) of other ranks in {} dropped", ghosts, rPath);
+        // a rank of a parallel mesh: only the boundary of its own leaves
+        std::set<std::vector<std::int64_t>> faces;
+        for (std::size_t e : leaves) {
+            const NcElement& el = elements[e];
+            const MfGeom& g = geoms[static_cast<std::size_t>(el.mGeom)];
+            std::vector<std::vector<int>> facets;
+            if (el.mGeom == 1)
+                facets = {{0}, {1}};
+            else if (g.mDim == 2)
+                for (const auto& ed : g.mEdges)
+                    facets.push_back({ed[0], ed[1]});
+            else
+                facets = g.mFaces;
+            for (const auto& fv : facets) {
+                std::vector<std::int64_t> key;
+                for (int k : fv)
+                    key.push_back(el.mIds[static_cast<std::size_t>(k)]);
+                std::sort(key.begin(), key.end());
+                faces.insert(std::move(key));
+            }
+        }
+        std::vector<MfElement> kept;
+        for (MfElement& b : f.mBoundary) {
+            std::vector<std::int64_t> key = b.mVertices;
+            std::sort(key.begin(), key.end());
+            if (faces.count(key))
+                kept.push_back(std::move(b));
+        }
+        f.mBoundary = std::move(kept);
+    }
 
     // MFEM's vertex numbers (NCMesh::UpdateVertices): the top-level vertices of
     // the rank's leaves by node id, then the others as the leaves (ghosts
@@ -911,6 +944,14 @@ MfFile mf_parse_nc(MfLexer& rLex, const std::string& rPath, bool Scaled) {
     for (const MfElement& b : f.mBoundary)
         for (std::int64_t id : b.mVertices)
             number(id);
+    f.mRank = my_rank;
+    for (std::size_t e : ordered)
+        if (elements[e].mRank != my_rank)
+            for (std::int64_t id : elements[e].mIds)
+                if (local.count(id))
+                    f.mInterface.push_back(index.at(id));
+    std::sort(f.mInterface.begin(), f.mInterface.end());
+    f.mInterface.erase(std::unique(f.mInterface.begin(), f.mInterface.end()), f.mInterface.end());
     std::map<std::int64_t, std::array<double, 3>> pos;
     std::set<std::int64_t> visiting;
     std::function<std::array<double, 3>(std::int64_t)> position = [&](std::int64_t Id) {
@@ -3246,10 +3287,6 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
     for (std::size_t r : selected) {
         files.push_back(paths[r] == rPath ? First : mf_parse(paths[r]));
         MfFile& f = files.back();
-        if (f.mNonConforming)
-            throw ReadError("MFEM mesh: " + paths[r] +
-                            " is a non-conforming rank; parallel non-conforming meshes are not "
-                            "read");
         if (f.mParallel && paths.size() > 1 && f.mRank != static_cast<std::int64_t>(r))
             throw ReadError("MFEM mesh: " + paths[r] + " holds rank " + std::to_string(f.mRank));
         if (!f.mParallel)
@@ -3338,6 +3375,10 @@ Mesh mf_read_parallel(const std::string& rPath, MfFile First,
                     }
                     part.mGlobal[static_cast<std::size_t>(v)] = it->second;
                 }
+        } else if (f.mNonConforming) {
+            // a non-conforming rank (ParPrint): the vertices its ghosts share
+            for (std::int64_t v : f.mInterface)
+                candidate[static_cast<std::size_t>(v)] = true;
         } else {
             for (const MfElement& b : f.mBoundary)
                 for (std::int64_t v : b.mVertices)

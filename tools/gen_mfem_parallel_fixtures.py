@@ -16,6 +16,10 @@ MFEM (BSD-3-Clause) was configured with ``-DMFEM_USE_MPI=YES
   over 4 ranks, with an order-2 field ``u``.
 * ``beam-tet``: MFEM's ``beam-tet.mesh`` refined once, linear, over 3 ranks, with
   an order-1 field ``u``.
+* ``star-nc``: MFEM's ``star.mesh`` refined once, made non-conforming and refined
+  twice more in bands, over 3 ranks, with an order-2 field ``u``: its
+  ``.pmesh.NNNNNN`` files are ``MFEM NC mesh`` files (ParPrint of a
+  non-conforming mesh), each rank's refinement tree with its ghosts.
 
 Each has both layouts: ``<case>.mesh.NNNNNN`` (``ParMesh::Save``) and
 ``<case>.pmesh.NNNNNN`` (``ParMesh::ParPrint``, with communication groups). For
@@ -35,7 +39,11 @@ import numpy as np
 
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE.parent / "tests" / "python" / "meshes" / "mfem" / "parallel"
-CASES = [("star-p2", "star", 2, 2, 4), ("beam-tet", "beam-tet", 0, 1, 3)]
+CASES = [
+    ("star-p2", "star", 2, 2, 4, False),
+    ("beam-tet", "beam-tet", 0, 1, 3, False),
+    ("star-nc", "star", 0, 2, 3, True),
+]
 
 
 def _vtu_cells(path):
@@ -81,7 +89,7 @@ def main():
             ],
             check=True,
         )
-        for name, source, curve, u_order, ranks in CASES:
+        for name, source, curve, u_order, ranks, nc in CASES:
             prefix = tmp / name
             subprocess.run(
                 [
@@ -94,7 +102,8 @@ def main():
                     str(prefix),
                     str(curve),
                     str(u_order),
-                ],
+                ]
+                + (["nc"] if nc else []),
                 check=True,
             )
             for r in range(ranks):
