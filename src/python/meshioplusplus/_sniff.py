@@ -263,6 +263,9 @@ def _sniff_format_py(path) -> str:
     stripped = head.lstrip()
     if _is_mphbin(head):
         return "mphbin"
+    # Tecplot binary (.plt): "#!TDV" and a three-character version.
+    if head[:5] == b"#!TDV":
+        return "tecplot"
     # FEBio plot file: the magic 0x00464542, in either byte order.
     if head[:4] in (b"BEF\x00", b"\x00FEB"):
         return "xplt"

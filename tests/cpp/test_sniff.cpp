@@ -64,6 +64,7 @@ TEST(Sniff, RecognizesKnownSignatures) {
         {std::string("\0\0\0\0\1\0\0\0\1\0\0\0\5\0\0\0m\0\0\0", 20), "mphbin"},
         {"<?xml version=\"1.0\"?>\n<febio_spec version=\"4.0\">", "febio"},
         {std::string("BEF\0\0\0\0\1", 8), "xplt"},
+        {std::string("#!TDV112\1\0\0\0", 12), "tecplot"},
         {"25       0       0       1       0       0       0       0       0\ntitle\n", "patran"},
         {"26       0       0       1      33       7       1       2       0\r\n", "patran"},
         {"25 this is not a header card at all, just text\n", ""},

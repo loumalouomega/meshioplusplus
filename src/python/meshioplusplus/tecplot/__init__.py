@@ -7,24 +7,21 @@ from ._tecplot import write as _py_write
 
 
 def read(filename, time_step: int = 0):
-    """Read a Tecplot ASCII file (C++ core for real file paths, Python fallback).
+    """Read a Tecplot ASCII (``.dat``/``.tec``) or binary (``.plt``) file (C++
+    core for real file paths, Python fallback).
 
-    ``time_step`` selects one zone of a transient (``SOLUTIONTIME``/
+    Every zone of the selected step is a cell block and a Cell region;
+    ``time_step`` selects one step of a transient (``SOLUTIONTIME``/
     ``STRANDID``) file's timeline (0 = first, negative counts from the end),
-    resolved the same way the C API/Fortran/Julia/R/WASM surfaces do -- see
-    :func:`meshioplusplus.tecplot.read`'s C++ counterpart, ``read_tecplot``.
-    A non-default value forces the C++ path (the Python reference has no
-    transient-zone support) and re-raises rather than silently falling back.
+    resolved the same way the C API/Fortran/Julia/R/WASM surfaces do.
     """
     if not is_buffer(filename, "r"):
         try:
             return _core.tecplot_read(str(filename), time_step)
         except Exception as exc:
-            if time_step:
-                raise
             if not core_declined(exc, "tecplot", "read", filename):
                 raise
-    return _py_read(filename)
+    return _py_read(filename, time_step)
 
 
 def write(filename, mesh):
@@ -39,6 +36,6 @@ def write(filename, mesh):
     return _py_write(filename, mesh)
 
 
-register_format("tecplot", [".dat", ".tec"], read, {"tecplot": write})
+register_format("tecplot", [".dat", ".tec", ".plt"], read, {"tecplot": write})
 
 __all__ = ["read", "write"]

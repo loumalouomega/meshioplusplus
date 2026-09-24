@@ -173,7 +173,6 @@ _NO_TWIN_FOR = [
     ("ensight", {"time_step": 1}),
     ("gmsh", {"time_step": 1}),
     ("med", {"time_step": 1}),
-    ("tecplot", {"time_step": 1}),
     ("xdmf", {"time_step": 1}),
     ("openfoam", {"region": "fluid"}),
     ("openfoam", {"time_step": 1}),

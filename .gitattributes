@@ -114,6 +114,11 @@ tests/python/meshes/febio/*.feb -filter -diff -merge text
 # .mphbin twin above.
 tests/python/meshes/febio/xplt/*.feb -filter -diff -merge text
 tests/python/meshes/febio/xplt/*.xplt binary
+# Tecplot binary/ASCII twins written by tools/gen_tecplot_plt_fixtures.py (TecIO for
+# the .plt): a few KB each, kept out of LFS like the ones above. The .tec rule above
+# does not match these .dat files.
+tests/python/meshes/tecplot/plt/*.plt binary
+tests/python/meshes/tecplot/plt/*.dat -filter -diff -merge text
 # Ansys .cdb decks from mapdl-archive (see that directory's README.md): small text kept
 # out of LFS like the ones above, and byte-for-byte (-text), since two carry the CRLF
 # line endings their writers produced and the reader must handle.
