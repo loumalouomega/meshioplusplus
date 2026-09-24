@@ -297,3 +297,33 @@ def test_extension_and_sniffing(tmp_path):
     path = tmp_path / "no_extension"
     path.write_bytes((MESHES / "mystran_results.neu").read_bytes())
     assert meshioplusplus.sniff_format(path) == "femap"
+
+
+def test_writer_writes_output_sets(engine, tmp_path):
+    """Point and cell data are written as one output set (450) of nodal and
+    elemental vectors (451), a vector per component, and read back; the set
+    takes femap:set and the step time."""
+    mesh = engine.read(MESHES / "v82_results.neu")
+    mesh.point_data["vec"] = np.column_stack(
+        [mesh.points[:, 0], mesh.points[:, 1], np.full(len(mesh.points), np.nan)]
+    )
+    mesh.field_data["meshio:time"] = np.array(2.5)
+    mesh.field_data["femap:set"] = np.array(7)
+    engine.write(tmp_path / "r.neu", mesh)
+    text = (tmp_path / "r.neu").read_text()
+    assert "\n   450\n" in text and "\n   451\n" in text
+    back = engine.read(tmp_path / "r.neu")
+    assert float(back.field_data["meshio:time"]) == 2.5
+    assert int(back.field_data["femap:set"]) == 7
+    for name, values in mesh.point_data.items():
+        if name == "vec":
+            continue
+        np.testing.assert_array_equal(back.point_data[name], values)
+    for name, blocks in mesh.cell_data.items():
+        if name.startswith("femap:"):
+            continue
+        for x, y in zip(blocks, back.cell_data[name]):
+            np.testing.assert_array_equal(x, y)
+    # a vector per component; a NaN is simply not written, and reads back NaN
+    np.testing.assert_array_equal(back.point_data["vec_0"], mesh.points[:, 0])
+    assert np.isnan(back.point_data["vec_2"]).all()

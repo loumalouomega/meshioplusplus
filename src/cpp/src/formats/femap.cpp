@@ -17,6 +17,7 @@
 // System includes
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ios>
@@ -886,11 +887,79 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
         detail::provenance_note("regions-dropped", std::to_string(side_regions) +
                                                        " side region(s) have no Femap group");
     }
-    const std::size_t other_data = rMesh.NumPointData() + rMesh.NumFieldData() +
-                                   rMesh.NumCellData() - (has_prop ? 1 : 0) - (has_type ? 1 : 0);
-    if (other_data) {
-        log::warn("Femap neutral writer: results are not written; data arrays dropped");
-        detail::provenance_note("data-dropped", "the Femap neutral writer writes the mesh only");
+    // Results: one output set (450) of vectors (451), a point array per
+    // component as nodal vectors, a cell array per component as elemental ones.
+    struct FnOutVector {
+        std::string mTitle;
+        int mEntity;  // 7 nodes, 8 elements
+        std::vector<std::pair<std::int64_t, double>> mValues;
+    };
+    std::vector<FnOutVector> vectors;
+    std::vector<std::string> unwritable;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (a.Shape().size() > 2 || a.Shape().empty() || a.Shape()[0] != npts) {
+            unwritable.push_back(name);
+            continue;
+        }
+        const std::size_t nc = a.Shape().size() == 2 ? a.Shape()[1] : 1;
+        for (std::size_t c = 0; c < nc; ++c) {
+            FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 7, {}};
+            for (std::size_t p = 0; p < npts; ++p) {
+                const double x = detail::read_double(a, p * nc + c);
+                if (!std::isnan(x))
+                    v.mValues.emplace_back(static_cast<std::int64_t>(p + 1), x);
+            }
+            vectors.push_back(std::move(v));
+        }
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (name.rfind("femap:", 0) == 0)
+            continue;
+        std::size_t nc = 0;
+        bool ok = true;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks() && ok; ++b) {
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t c = a.Shape().size() == 2 ? a.Shape()[1] : 1;
+            ok = a.Shape().size() >= 1 && a.Shape().size() <= 2 &&
+                 a.Shape()[0] == rMesh.Cells(b).NumCells() && (nc == 0 || c == nc);
+            nc = c;
+        }
+        if (!ok || nc == 0) {
+            unwritable.push_back(name);
+            continue;
+        }
+        for (std::size_t c = 0; c < nc; ++c) {
+            FnOutVector v{nc == 1 ? name : name + "_" + std::to_string(c), 8, {}};
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                const NDArray& a = rMesh.CellData(name, b);
+                for (std::size_t r = 0; r < rMesh.Cells(b).NumCells(); ++r) {
+                    const std::size_t g = block_start[b] + r;
+                    const double x = detail::read_double(a, r * nc + c);
+                    if (label[g] && !std::isnan(x))
+                        v.mValues.emplace_back(label[g], x);
+                }
+            }
+            vectors.push_back(std::move(v));
+        }
+    }
+    std::int64_t set_id = 1;
+    double set_value = 0.0;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        const NDArray& a = rMesh.FieldData(name);
+        if (name == "femap:set" && a.Size() == 1)
+            set_id = std::max<std::int64_t>(1, detail::read_int(a, 0));
+        else if (name == kSequenceTimeKey && a.Size() == 1)
+            set_value = detail::read_double(a, 0);
+        else
+            unwritable.push_back(name);
+    }
+    if (!unwritable.empty()) {
+        std::string list;
+        for (const std::string& n : unwritable)
+            list += (list.empty() ? "" : ", ") + n;
+        log::warn("Femap neutral writer: arrays with no Femap output vector dropped: {}", list);
+        detail::provenance_note("data-dropped", "arrays with no Femap output vector: " + list);
     }
 
     // Properties: the cells of each, and a title from the cell region the reader
@@ -1048,6 +1117,53 @@ void write_femap(const std::string& rPath, const Mesh& rMesh) {
                 out += "-1,\n";
             }
             out += "-1,\n";
+        }
+        fn_block_close(out);
+    }
+
+    if (!vectors.empty()) {
+        fn_block_open(out, 450);
+        out += std::to_string(set_id) + ",\nmeshio++\n0,1,\n";
+        fn_append_real(out, set_value);
+        out += ",\n0,\n";
+        fn_block_close(out);
+        fn_block_open(out, 451);
+        for (std::size_t k = 0; k < vectors.size(); ++k) {
+            const FnOutVector& v = vectors[k];
+            double lo = 0.0, hi = 0.0, absmax = 0.0;
+            std::int64_t id_lo = 0, id_hi = 0;
+            for (std::size_t j = 0; j < v.mValues.size(); ++j) {
+                const auto& [id, x] = v.mValues[j];
+                if (j == 0 || x < lo) {
+                    lo = x;
+                    id_lo = id;
+                }
+                if (j == 0 || x > hi) {
+                    hi = x;
+                    id_hi = id;
+                }
+                absmax = std::max(absmax, std::fabs(x));
+            }
+            out += std::to_string(set_id) + "," + std::to_string(k + 1) + ",1,\n" +
+                   fn_clean_title(v.mTitle) + "\n";
+            fn_append_real(out, lo);
+            out += ',';
+            fn_append_real(out, hi);
+            out += ',';
+            fn_append_real(out, absmax);
+            out += ",\n0,0,0,0,0,0,0,0,0,0,\n0,0,0,0,0,0,0,0,0,0,\n";
+            out += std::to_string(id_lo) + "," + std::to_string(id_hi) + ",0," +
+                   std::to_string(v.mEntity) + ",\n0,0,1,\n";
+            for (const auto& [id, x] : v.mValues) {
+                out += std::to_string(id) + ',';
+                fn_append_real(out, x);
+                out += ",\n";
+            }
+            out += "-1,0.,\n";
+            if (out.size() > (1u << 20)) {
+                f << out;
+                out.clear();
+            }
         }
         fn_block_close(out);
     }

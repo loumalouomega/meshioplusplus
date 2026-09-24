@@ -41,7 +41,9 @@
 
 namespace {
 
+using meshioplusplus::DType;
 using meshioplusplus::Mesh;
+using meshioplusplus::NDArray;
 using meshioplusplus::ReadError;
 using meshioplusplus::ReadOptions;
 using meshioplusplus::RegionKind;
@@ -152,10 +154,23 @@ TEST(Femap, OutputSetsAreSteps) {
 }
 
 TEST(Femap, RoundTripsThroughItsOwnWriter) {
-    const Mesh mesh = meshioplusplus::read_femap(write_file(tet10_file()));
+    Mesh mesh = meshioplusplus::read_femap(write_file(tet10_file()));
+    // Results: a nodal scalar and an elemental 2-vector, written as an output set.
+    NDArray t(DType::Float64, {mesh.NumPoints()});
+    for (std::size_t p = 0; p < mesh.NumPoints(); ++p)
+        t.As<double>()[p] = 0.5 * static_cast<double>(p);
+    mesh.AddPointData("T", std::move(t));
+    NDArray s(DType::Float64, {mesh.Cells(0).NumCells(), 2});
+    for (std::size_t k = 0; k < s.Size(); ++k)
+        s.As<double>()[k] = 10.0 + static_cast<double>(k);
+    mesh.AddCellData("S", {std::move(s)});
     const std::string out = mt::temp_path(".neu");
     meshioplusplus::write_femap(out, mesh);
     const Mesh back = meshioplusplus::read_femap(out);
+    ASSERT_TRUE(back.HasPointData("T"));
+    EXPECT_DOUBLE_EQ(detail::read_double(back.PointData("T"), 3), 1.5);
+    ASSERT_TRUE(back.HasCellData("S_1"));
+    EXPECT_DOUBLE_EQ(detail::read_double(back.CellData("S_1", 0), 0), 11.0);
     ASSERT_EQ(back.NumPoints(), mesh.NumPoints());
     for (std::size_t k = 0; k < mesh.NumPoints() * 3; ++k)
         EXPECT_DOUBLE_EQ(detail::read_double(back.Points(), k),
