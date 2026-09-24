@@ -173,8 +173,11 @@ TEST(Radioss, OldFormatColumnsAndRefusals) {
     EXPECT_EQ(mesh.Cells(0).Type(), "hexahedron");
     EXPECT_EQ(detail::read_int(mesh.FieldData("radioss:version"), 0), 44);
 
-    EXPECT_THROW(meshioplusplus::read_radioss(write_deck("#RADIOSS ENGINE\n/RUN/r/1\n")),
-                 ReadError);
+    // An engine deck read on its own: no mesh, its run controls.
+    const Mesh engine =
+        meshioplusplus::read_radioss(write_deck("#RADIOSS ENGINE\n/RUN/r/1\n   10.5\n/END\n"));
+    EXPECT_EQ(engine.NumPoints(), 0u);
+    EXPECT_DOUBLE_EQ(detail::read_double(engine.FieldData("radioss:engine:RUN/r/1"), 0), 10.5);
     const std::string missing = "#RADIOSS STARTER\n/BEGIN\nr\n" + ints({2019, 0}) + "\n\n/NODE\n" +
                                 node(1, 0, 0, 0) + "/TRUSS/1\n" + ints({1, 1, 2}) + "/END\n";
     EXPECT_THROW(meshioplusplus::read_radioss(write_deck(missing)), ReadError);
@@ -223,4 +226,46 @@ TEST(Radioss, UnitsBoxesGeneratorsAndSurfaces) {
     EXPECT_EQ(entries("outside", RegionKind::Side), 10u);
     EXPECT_EQ(entries("first free", RegionKind::Side), 5u);
     EXPECT_EQ(entries("second free", RegionKind::Side), 5u);
+}
+
+// A 4.1 deck (the version on the #RADIOSS STARTER line, titles in the
+// keywords), a node block in its own /UNIT, a box along a fixed skew turned
+// 45 degrees, a shell surface by box and an analytical plane; the engine deck
+// beside the starter adds its controls.
+TEST(Radioss, Version4UnitsSkewedBoxesAndEngineDeck) {
+    auto r16 = [](double V) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%16.9f", V);
+        return std::string(b);
+    };
+    std::string v4 = "#RADIOSS STARTER      41TEST                  0\n/NODE\n";
+    const double c[6][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {2, 0}, {2, 1}};
+    for (int k = 0; k < 6; ++k)
+        v4 += std::string(7, ' ') + std::to_string(k + 1) + r16(c[k][0]) + r16(c[k][1]) + r16(0.0) +
+              "\n";
+    v4 += "/SHELL/1\n" + ints({1, 1, 2, 3, 4}, 8) + ints({2, 2, 5, 6, 3}, 8);
+    v4 += "/PART/1/PLATE\n" + ints({1, 1}, 8);
+    v4 +=
+        "/SKEW/FIX/3/turned\n" + r16(1) + r16(1) + r16(0) + "\n" + r16(-1) + r16(1) + r16(0) + "\n";
+    v4 += "/BOX/RECTA/5/along\n" + ints({0, 0, 3}, 8) + r16(0.1) + r16(-0.3) + r16(-0.1) + "\n" +
+          r16(0.0) + r16(2.5) + r16(0.1) + "\n";
+    v4 += "/GRNOD/BOX/30/skewed\n" + ints({5}, 8);
+    v4 += "/SURF/BOX2/31/touching\n" + ints({5}, 8);
+    v4 += "/SURF/PLANE/32/floor\n" + r16(0) + r16(0) + r16(0) + "\n" + r16(0) + r16(0) + r16(1) +
+          "\n/END\n";
+    fs::path dir;
+    const std::string path = write_deck(v4, &dir);
+    std::ofstream(dir / "deck_0001.rad") << "#RADIOSS ENGINE\n/ANIM/DT\n0.0 0.25\n/END\n";
+    const Mesh mesh = meshioplusplus::read_radioss(path);
+    EXPECT_EQ(detail::read_int(mesh.FieldData("radioss:version"), 0), 41);
+    EXPECT_NE(mesh.FindRegion("PLATE", RegionKind::Cell), Mesh::npos);
+    // (0,0) (0,1) (1,1) lie in the skewed box, (1,0) (2,0) (2,1) do not
+    const std::size_t skewed = mesh.FindRegion("skewed", RegionKind::Point);
+    ASSERT_NE(skewed, Mesh::npos);
+    EXPECT_EQ(mesh.Region(skewed).NumEntries(), 3u);
+    const std::size_t touching = mesh.FindRegion("touching", RegionKind::Side);
+    ASSERT_NE(touching, Mesh::npos);
+    EXPECT_EQ(mesh.Region(touching).NumEntries(), 2u);  // both shells touch it
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.FieldData("radioss:surf_plane:32"), 5), 1.0);
+    EXPECT_DOUBLE_EQ(detail::read_double(mesh.FieldData("radioss:engine:ANIM/DT"), 1), 0.25);
 }
