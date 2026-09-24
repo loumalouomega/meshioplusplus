@@ -8,7 +8,10 @@ A ``.fil`` file is a sequence of records ``[length, key, attributes...]`` of
 records of ``I``/``D``/``A`` items on 80-column lines (ASCII). The model records
 (1901 nodes, 1900/1990 elements, 1931-1934 sets, 1940 labels) make the mesh;
 every increment (2000 ... 2001) is a step whose nodal and element records become
-point and cell data named by their Abaqus identifier.
+point and cell data named by their Abaqus identifier. An eigenvalue step's
+modes (1980) are steps of their own; contact surfaces (1501/1502) are side
+regions and contact output (1503-15xx) point data; energies (1999), modal
+dynamics quantities (301-310) and element matrices (1001-1031) are field data.
 """
 
 import struct
@@ -21,7 +24,7 @@ from .._files import open_file
 from .._fortran_records import fortran_records, sniff_fortran_records
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region
-from ..abaqus._abaqus import abaqus_to_meshio_type
+from ..abaqus._abaqus import _face_index, abaqus_to_meshio_type
 
 __all__ = ["read", "time_values"]
 
@@ -120,7 +123,119 @@ _ELEMENT_NAMES = {
     410: "THEP",
     411: "PEP",
     412: "CEP",
+    # Abaqus/Explicit only
+    421: "CKE",
+    422: "CKLE",
+    423: "CKLS",
+    424: "CKSTAT",
+    441: "CKEMAG",
+    476: "EMSF",
+    477: "EDT",
+    507: "CFAILST",
+    559: "CDMG",
+    560: "CDIF",
+    561: "CDIM",
+    562: "CDIP",
 }
+# Records 301-310, per increment of a mode-based dynamic step.
+_MODAL_NAMES = dict(
+    zip(
+        range(301, 311), ("GU", "GV", "GA", "BM", "GPU", "GPV", "GPA", "SNE", "KE", "T")
+    )
+)
+# Record 1999's attributes: Standard's, and Explicit's where they differ.
+_ENERGY_NAMES = (
+    "ALLKE",
+    "ALLSE",
+    "ALLWK",
+    "ALLPD",
+    "ALLCD",
+    "ALLVD",
+    "ALLKL",
+    "ALLAE",
+    "ALLQB",
+    "ALLEE",
+    "ALLIE",
+    "ETOTAL",
+    "ALLFD",
+    "ALLJD",
+    "ALLSD",
+    "ALLDMD",
+)
+_EXPLICIT_ENERGY_NAMES = (
+    "ALLKE",
+    "ALLSE",
+    "ALLWK",
+    "ALLPD",
+    "ALLCD",
+    "ALLVD",
+    None,
+    "ALLAE",
+    "ALLDC",
+    None,
+    "ALLIE",
+    "ETOTAL",
+    "ALLFD",
+    None,
+    "DMASS",
+    "ALLDMD",
+    "ALLIHE",
+    "ALLHF",
+)
+# Contact output (records 1511-1592, after a 1504 node header).
+_CONTACT_NAMES = {
+    1511: "CSTRESS",
+    1512: "CDSTRESS",
+    1521: "CDISP",
+    1522: "CFN",
+    1523: "CFS",
+    1524: "CAREA",
+    1526: "CMN",
+    1527: "CMS",
+    1528: "HFL",
+    1529: "HFLA",
+    1530: "HTL",
+    1531: "HTLA",
+    1532: "SFDR",
+    1533: "SFDRA",
+    1534: "SFDRT",
+    1535: "SFDRTA",
+    1536: "WEIGHT",
+    1537: "SJD",
+    1538: "SJDA",
+    1539: "SJDT",
+    1540: "SJDTA",
+    1541: "ECD",
+    1542: "ECDA",
+    1543: "ECDT",
+    1544: "ECDTA",
+    1545: "PFL",
+    1546: "PFLA",
+    1547: "PTL",
+    1548: "PTLA",
+    1549: "TPFL",
+    1550: "TPTL",
+    1570: "DBT",
+    1571: "DBSF",
+    1572: "DBS",
+    1573: "XN",
+    1574: "XS",
+    1575: "CFT",
+    1576: "CMT",
+    1577: "XT",
+    1578: "CTRQ",
+    1592: "PPRESS",
+}
+# Element matrix records: the field data stem of each.
+_MATRIX_NAMES = {
+    1002: "matrix_dofs",
+    1011: "stiffness",
+    1012: "stiffness",
+    1021: "mass",
+    1022: "mass",
+    1031: "load",
+}
+_EXPLICIT_PROCEDURES = (17, 21, 74)
 
 _SOLID = ("C3D", "DC3D", "AC3D", "COH3D", "SC", "CCL")
 _PLANAR = (
@@ -355,7 +470,21 @@ def _increments(d):
             out[-1]["end"] = r
     if out and out[-1]["end"] is None:
         out[-1]["end"] = len(d.records)
-    return out
+    # An eigenvalue step writes one increment whose modes each start with a
+    # 1980 record: every mode becomes an increment of its own.
+    split = []
+    for inc in out:
+        modes = [r for r in range(inc["begin"], inc["end"]) if d.records[r][0] == 1980]
+        if not modes:
+            split.append(inc)
+            continue
+        for k, r in enumerate(modes):
+            split.append(
+                dict(
+                    inc, begin=r, end=modes[k + 1] if k + 1 < len(modes) else inc["end"]
+                )
+            )
+    return split
 
 
 def time_values(filename):
@@ -385,7 +514,41 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     elements = []
     sets = []
     labels = {}
+    surfaces = []  # (name, type, [(element, face key)])
+    matrices = {}  # kind -> (values, index rows)
+    matrix_element = 0
+    last_matrix_key = 0
     for key, w in d.records:
+        if key != last_matrix_key and not 1001 <= key <= 1043:
+            last_matrix_key = 0
+        if key == 1501 and w:
+            surfaces.append(
+                (d.text(w[0]).strip(" \0"), d.int(w[2]) if len(w) > 2 else 1, [])
+            )
+            continue
+        if key == 1502:
+            if surfaces and len(w) >= 2:
+                surfaces[-1][2].append((d.int(w[0]), d.int(w[1])))
+            continue
+        if key == 1001:
+            matrix_element = d.int(w[0]) if w else 0
+            last_matrix_key = 0
+            continue
+        if key in _MATRIX_NAMES:
+            values, index = matrices.setdefault(_MATRIX_NAMES[key], ([], []))
+            flag = 1 if key in (1011, 1021) else 0
+            first = 0
+            if key == 1031:
+                flag = d.int(w[0]) if w else 0
+                first = 1
+            continued = key == last_matrix_key and index
+            if not continued:
+                index.append([matrix_element, len(values), 0, flag])
+            for x in w[0 if continued else first :]:
+                values.append(float(d.int(x)) if key == 1002 else d.real(x))
+            index[-1][2] = len(values) - index[-1][1]
+            last_matrix_key = key
+            continue
         if key == 1901 and w:
             node_labels.append(d.int(w[0]))
             coords.append(
@@ -498,7 +661,43 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             f"Abaqus .fil: sets name {missing} node(s) or element(s) that are not in "
             "the mesh"
         )
+    unplaced = 0
+    for name, _, facets in surfaces:
+        if name.isdigit() and int(name) in labels:
+            name = labels[int(name)]
+        entries = []
+        dim = -1
+        for label, face in facets:
+            c = element_index.get(label)
+            if c is None or not 1 <= face <= 8:
+                unplaced += 1
+                continue
+            b = int(np.searchsorted(block_start, c, side="right")) - 1
+            key = "SPOS" if face == 7 else ("SNEG" if face == 8 else f"S{face}")
+            facet = _face_index(order_of_types[b], key)
+            if facet is None:
+                unplaced += 1
+                continue
+            entries.append((c, facet))
+            dim = max(dim, cell_dim[c] - 1)
+        regions.append(
+            Region(
+                name, "side", np.array(entries, dtype=np.int64).reshape(-1, 2), dim, -1
+            )
+        )
+    if unplaced:
+        warn(
+            f"Abaqus .fil: {unplaced} contact surface facet(s) name no element face of "
+            "the mesh"
+        )
     mesh.regions = regions
+    for kind in sorted(matrices):
+        values, index = matrices[kind]
+        dtype = np.int64 if kind == "matrix_dofs" else np.float64
+        mesh.field_data["abaqus:" + kind] = np.array(values, dtype=dtype)
+        mesh.field_data["abaqus:" + kind + ":index"] = np.array(
+            index, dtype=np.int64
+        ).reshape(-1, 4)
 
     increments = _increments(d)
     mesh.time_values = [inc["total"] for inc in increments]
@@ -522,10 +721,56 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     skipped_keys = set()
     nodal_mode = False
     header = None
+    rebar = ""
+    explicit = inc["procedure"] in _EXPLICIT_PROCEDURES
+    modal_rows = {}
+    contact = False
+    contact_node = 0
     for key, w in d.records[inc["begin"] : inc["end"]]:
+        if key == 1980:  # a mode: number, eigenvalue, mass, damping, factors
+            fd = mesh.field_data
+            if len(w) > 0:
+                fd["abaqus:mode"] = np.array(d.int(w[0]), dtype=np.int64)
+            if len(w) > 1:
+                fd["abaqus:eigenvalue"] = np.array(d.real(w[1]))
+            if len(w) > 2:
+                fd["abaqus:generalized_mass"] = np.array(d.real(w[2]))
+            if len(w) > 3:
+                fd["abaqus:composite_damping"] = np.array(d.real(w[3]))
+            pairs = [(d.real(w[k]), d.real(w[k + 1])) for k in range(4, len(w) - 1, 2)]
+            if pairs:
+                fd["abaqus:participation_factor"] = np.array([p[0] for p in pairs])
+                fd["abaqus:effective_mass"] = np.array([p[1] for p in pairs])
+            continue
+        if key == 1999:  # total energies
+            names = _EXPLICIT_ENERGY_NAMES if explicit else _ENERGY_NAMES
+            for k, x in enumerate(w):
+                if k < len(names) and names[k]:
+                    mesh.field_data["abaqus:" + names[k]] = np.array(d.real(x))
+            continue
+        if key in _MODAL_NAMES:  # generalized quantities per mode
+            row = [
+                float(d.int(x)) if key == 304 and k == 0 else d.real(x)
+                for k, x in enumerate(w)
+                if not (key == 304 and k == 7)  # BM's base name
+            ]
+            modal_rows.setdefault(_MODAL_NAMES[key], []).append(row)
+            continue
+        if key == 1503:  # contact output request: the node records follow
+            contact = True
+            continue
+        if key == 1504:
+            contact_node = d.int(w[0]) if w else 0
+            continue
+        if contact and 1505 <= key <= 1599:
+            name = _CONTACT_NAMES.get(key, f"key_{key}")
+            if wants(name):
+                nodal.setdefault(name, {})[contact_node] = [d.real(x) for x in w]
+            continue
         if key == 1911:
             nodal_mode = bool(w) and d.int(w[0]) == 1
             header = None
+            contact = False
             continue
         if key == 1:
             header = (
@@ -533,9 +778,17 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                 if len(w) >= 4
                 else None
             )
+            rebar = ""
+            if header is not None and header[3] == 3 and len(w) > 4:
+                rebar = d.text(w[4]).strip(" \0")
+                if rebar.isdigit() and int(rebar) in labels:
+                    rebar = labels[int(rebar)]
             continue
         if 1900 <= key <= 2001 or _skipped_key(key):
-            if not 1900 <= key <= 2001:
+            # model records, and those read from the whole file (surfaces,
+            # element matrices) are not skipped results
+            whole_file = 1001 <= key <= 1043 or key in (1501, 1502)
+            if not 1900 <= key <= 2001 and not whole_file:
                 skipped_keys.add(key)
             continue
         if nodal_mode:
@@ -546,11 +799,20 @@ def read(filename, points_only=False, arrays=None, time_step=0):
                 continue
             nodal.setdefault(name, {})[d.int(w[0])] = [d.real(x) for x in w[1:]]
             continue
-        if header is None or header[3] == 3:
+        if header is None:
             skipped_keys.add(key)
             continue
         elem, point, section, location = header
-        name = _ELEMENT_NAMES.get(key, f"key_{key}")
+        if key == 79:
+            name = "ERV" if explicit else "RATIO"
+        else:
+            name = _ELEMENT_NAMES.get(key, f"key_{key}")
+        # Rebar values are per integration point of the element, named by the rebar.
+        if location == 3:
+            name += f"@rebar:{rebar}"
+            location = 0
+        elif location == 5:  # the whole element: one value set, like a centroid
+            location = 1
         # Continuum elements write section point 0, shells and beams 1..n: the
         # first one shares the plain name, the others are "@sp<k>".
         if section > 1:
@@ -566,6 +828,12 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             f"Abaqus .fil: {len(skipped_keys)} record key(s) outside the nodal and "
             f"element results skipped (first: {min(skipped_keys)})"
         )
+    for g, rows in modal_rows.items():  # one row per record, NaN-padded
+        width = max(len(r) for r in rows)
+        a = np.full((len(rows), width), np.nan)
+        for k, r in enumerate(rows):
+            a[k, : len(r)] = r
+        mesh.field_data["abaqus:" + g] = a[0] if len(rows) == 1 else a
 
     npts = len(node_labels)
 

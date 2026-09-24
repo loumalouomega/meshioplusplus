@@ -32,6 +32,17 @@ big-endian) hold the same model and results:
 Every value is a closed-form function of its (node, element, point, component,
 increment), repeated in ``expected`` below, so tests check them exactly.
 
+``extras.fil`` (ASCII) and ``extras_le.fil`` (binary) hold the same model and
+the records no public file carries: a contact surface (1501/1502) on faces S2
+and S6, element matrices (1001, 1002, a symmetric stiffness 1011 split over two
+records, 1021, 1031); a frequency step (procedure 41) whose two modes each open
+with a 1980 record (eigenvalue, generalized mass, damping, participation
+factors and effective masses) before their ``U``; a modal dynamic increment
+(92) with 301/302/304/308, total energies (1999), ``S`` of a rebar ``RB1``
+(location 3), ``ELEN`` of a whole element (location 5) and contact output
+(1503, 1504, 1511 ``CSTRESS``, 1521 ``CDISP``); and an Explicit increment (17)
+with its energies and key 79 (``ERV``).
+
 ``pybaqus/*.fil`` are real Abaqus 2023 ASCII results from pybaqus's test suite
 (MIT, Cristóbal Tapia Camú), copied unmodified; see README.md.
 
@@ -235,6 +246,97 @@ def records():
     return out
 
 
+def extras():
+    """Every record of ``extras.fil``: the records the base model lacks."""
+    nodes, elements = model()
+    I = lambda v: ("I", v)  # noqa: E731,E741
+    D = lambda v: ("D", float(v))  # noqa: E731
+    A = lambda v: ("A", v.ljust(8)[:8])  # noqa: E731
+    out = []
+
+    def rec(key, *items):
+        out.append([I(key)] + list(items))
+
+    for label, etype, conn in elements:
+        if etype == "C3D20R":
+            rec(1900, I(label), A(etype), *[I(n) for n in conn[:10]])
+            rec(1990, *[I(n) for n in conn[10:]])
+        else:
+            rec(1900, I(label), A(etype), *[I(n) for n in conn])
+    for label in sorted(nodes):
+        rec(1901, I(label), *[D(x) for x in nodes[label]])
+    hexa = elements[1][2]
+    rec(1501, A("CSURF"), I(3), I(1), I(2), I(0))
+    rec(1502, I(1), I(2), I(4), *[I(n) for n in elements[0][2][4:8]])
+    rec(1502, I(2), I(6), I(4), *[I(hexa[k]) for k in (3, 7, 4, 0)])
+    rec(1004, I(128))
+    rec(1001, I(2), A("C3D8R"), I(8), *[I(n) for n in hexa])
+    rec(1002, I(1), I(2), I(3))
+    ksym = [float(k + 1) for k in range(24 * 25 // 2)]
+    rec(1011, *[D(v) for v in ksym[:200]])
+    rec(1011, *[D(v) for v in ksym[200:]])
+    rec(1021, *[D(0.5 * v) for v in ksym[:36]])
+    rec(1031, I(1), *[D(-v) for v in range(24)])
+
+    def increment(total, procedure, step, inc):
+        sub = "".ljust(80)
+        rec(
+            2000,
+            D(total),
+            D(total),
+            D(0.0),
+            D(0.0),
+            I(procedure),
+            I(step),
+            I(inc),
+            I(0),
+            D(0.0),
+            D(0.0),
+            D(0.1),
+            *[A(sub[8 * k : 8 * k + 8]) for k in range(10)],
+        )
+
+    increment(0.0, 41, 1, 1)
+    for mode in (1, 2):
+        pf = [0.1 * mode * c for c in range(1, 7)]
+        rec(
+            1980,
+            I(mode),
+            D(100.0 * mode),
+            D(2.0 * mode),
+            D(0.0),
+            *[x for c in range(6) for x in (D(pf[c]), D(pf[c] ** 2))],
+        )
+        rec(1911, I(1), A(""))
+        for n in sorted(nodes):
+            rec(101, I(n), *[D(mode * n + 0.1 * c) for c in range(3)])
+    rec(2001)
+    increment(1.0, 92, 2, 1)
+    rec(301, D(0.25), D(-0.5))
+    rec(302, D(1.25), D(-1.5))
+    rec(304, I(3), D(0.0), D(9.81), D(0.0), D(0.0), D(0.0), D(0.0), A("BASE"))
+    rec(308, D(4.0), D(8.0))
+    rec(1999, *[D(k + 1) for k in range(16)])
+    rec(1911, I(0), A(""), A(""))
+    rec(1, I(1), I(1), I(0), I(3), A("RB1"), I(1), I(0), I(0), I(0))
+    rec(11, D(123.0))
+    rec(1, I(2), I(0), I(0), I(5), A(""), I(0), I(0), I(0), I(0))
+    rec(19, D(0.75))
+    rec(1503, I(0), A("CSURF"), A("MASTER"), A(""))
+    for n, base in ((5, 1.0), (6, 2.0)):
+        rec(1504, I(n), I(3))
+        rec(1511, D(base), D(0.1 * base), D(0.2 * base))
+        rec(1521, D(-base), D(0.0), D(0.0))
+    rec(2001)
+    increment(2.0, 17, 3, 1)
+    rec(1999, *[D(10.0 + k) for k in range(18)])
+    rec(1911, I(0), A(""), A(""))
+    rec(1, I(2), I(1), I(0), I(0), A(""), I(3), I(3), I(0), I(0))
+    rec(79, D(0.5))
+    rec(2001)
+    return out
+
+
 def ascii_bytes(recs):
     text = []
     line = ""
@@ -286,7 +388,6 @@ def binary_bytes(recs, order):
             rec_words += [b"\0" * 8] * pad
         words += rec_words
     words += [b"\0" * 8] * ((512 - len(words) % 512) % 512)
-    assert len(words) > 1024, "the fixture must span several blocks"
     out = bytearray()
     marker = struct.pack(order + "i", 4096)
     for b in range(0, len(words), 512):
@@ -300,6 +401,10 @@ def main():
     (OUT / "model.fil").write_bytes(ascii_bytes(recs))
     (OUT / "model_le.fil").write_bytes(binary_bytes(recs, "<"))
     (OUT / "model_be.fil").write_bytes(binary_bytes(recs, ">"))
+    assert len((OUT / "model_le.fil").read_bytes()) > 2 * 4104, "several blocks"
+    more = extras()
+    (OUT / "extras.fil").write_bytes(ascii_bytes(more))
+    (OUT / "extras_le.fil").write_bytes(binary_bytes(more, "<"))
 
 
 if __name__ == "__main__":

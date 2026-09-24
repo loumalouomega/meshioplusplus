@@ -45,6 +45,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/region.hpp"
+#include "abaqus_face.hpp"
 
 namespace meshioplusplus {
 
@@ -282,25 +283,148 @@ const char* fil_nodal_name(std::int64_t Key) {
 
 const char* fil_element_name(std::int64_t Key) {
     static const std::unordered_map<std::int64_t, const char*> m = {
-        {2, "TEMP"},     {3, "LOADS"},  {4, "FLUXS"},  {5, "SDV"},     {6, "VOIDR"},  {7, "FOUND"},
-        {8, "COORD"},    {9, "FV"},     {10, "NFLUX"}, {11, "S"},      {12, "SINV"},  {13, "SF"},
-        {14, "ENER"},    {15, "NFORC"}, {17, "JK"},    {18, "POR"},    {19, "ELEN"},  {21, "E"},
-        {22, "PE"},      {23, "CE"},    {24, "IE"},    {25, "EE"},     {26, "CRACK"}, {27, "STH"},
-        {28, "HFL"},     {29, "SE"},    {30, "DG"},    {31, "CONF"},   {32, "SJP"},   {35, "SAT"},
-        {36, "SS"},      {38, "CONC"},  {39, "MFL"},   {42, "SPE"},    {45, "PEQC"},  {47, "SEPE"},
-        {48, "TSHR"},    {50, "EPG"},   {51, "EFLX"},  {61, "STATUS"}, {73, "PEEQ"},  {74, "PRESS"},
-        {75, "MISES"},   {76, "IVOL"},  {77, "SVOL"},  {78, "EVOL"},   {83, "SSAVG"}, {86, "ALPHA"},
-        {87, "UVARM"},   {88, "THE"},   {89, "LE"},    {90, "NE"},     {91, "ER"},    {401, "SP"},
-        {402, "ALPHAP"}, {403, "EP"},   {404, "NEP"},  {405, "LEP"},   {406, "ERP"},  {407, "DGP"},
-        {408, "EEP"},    {409, "IEP"},  {410, "THEP"}, {411, "PEP"},   {412, "CEP"},
+        {2, "TEMP"},
+        {3, "LOADS"},
+        {4, "FLUXS"},
+        {5, "SDV"},
+        {6, "VOIDR"},
+        {7, "FOUND"},
+        {8, "COORD"},
+        {9, "FV"},
+        {10, "NFLUX"},
+        {11, "S"},
+        {12, "SINV"},
+        {13, "SF"},
+        {14, "ENER"},
+        {15, "NFORC"},
+        {17, "JK"},
+        {18, "POR"},
+        {19, "ELEN"},
+        {21, "E"},
+        {22, "PE"},
+        {23, "CE"},
+        {24, "IE"},
+        {25, "EE"},
+        {26, "CRACK"},
+        {27, "STH"},
+        {28, "HFL"},
+        {29, "SE"},
+        {30, "DG"},
+        {31, "CONF"},
+        {32, "SJP"},
+        {35, "SAT"},
+        {36, "SS"},
+        {38, "CONC"},
+        {39, "MFL"},
+        {42, "SPE"},
+        {45, "PEQC"},
+        {47, "SEPE"},
+        {48, "TSHR"},
+        {50, "EPG"},
+        {51, "EFLX"},
+        {61, "STATUS"},
+        {73, "PEEQ"},
+        {74, "PRESS"},
+        {75, "MISES"},
+        {76, "IVOL"},
+        {77, "SVOL"},
+        {78, "EVOL"},
+        {83, "SSAVG"},
+        {86, "ALPHA"},
+        {87, "UVARM"},
+        {88, "THE"},
+        {89, "LE"},
+        {90, "NE"},
+        {91, "ER"},
+        {401, "SP"},
+        {402, "ALPHAP"},
+        {403, "EP"},
+        {404, "NEP"},
+        {405, "LEP"},
+        {406, "ERP"},
+        {407, "DGP"},
+        {408, "EEP"},
+        {409, "IEP"},
+        {410, "THEP"},
+        {411, "PEP"},
+        {412, "CEP"},
+        // Abaqus/Explicit only
+        {421, "CKE"},
+        {422, "CKLE"},
+        {423, "CKLS"},
+        {424, "CKSTAT"},
+        {441, "CKEMAG"},
+        {476, "EMSF"},
+        {477, "EDT"},
+        {507, "CFAILST"},
+        {559, "CDMG"},
+        {560, "CDIF"},
+        {561, "CDIM"},
+        {562, "CDIP"},
     };
     const auto it = m.find(Key);
     return it == m.end() ? nullptr : it->second;
 }
 
-// Keys that are neither nodal nor element results of a step.
+// Keys read elsewhere (modal, energies, contact, element matrices) or not at
+// all (contour integrals, cavity radiation, section output...): none is a
+// nodal or element result.
 bool fil_is_skipped_key(std::int64_t Key) {
     return (Key >= 301 && Key <= 310) || Key >= 1000;
+}
+
+// Records 301-310, per increment of a mode-based dynamic step.
+const char* fil_modal_name(std::int64_t Key) {
+    static const char* const names[] = {"GU",  "GV",  "GA",  "BM", "GPU",
+                                        "GPV", "GPA", "SNE", "KE", "T"};
+    return Key >= 301 && Key <= 310 ? names[Key - 301] : nullptr;
+}
+
+// Record 1999's attributes: Standard's and, where they differ, Explicit's
+// (7 unused, 9 ALLDC, 15 DMASS, 17-18 heat energies).
+const char* fil_energy_name(std::size_t Index, bool Explicit) {
+    static const char* const standard[] = {"ALLKE", "ALLSE", "ALLWK", "ALLPD", "ALLCD", "ALLVD",
+                                           "ALLKL", "ALLAE", "ALLQB", "ALLEE", "ALLIE", "ETOTAL",
+                                           "ALLFD", "ALLJD", "ALLSD", "ALLDMD"};
+    static const char* const explicit_[] = {"ALLKE", "ALLSE", "ALLWK", "ALLPD",  "ALLCD",  "ALLVD",
+                                            nullptr, "ALLAE", "ALLDC", nullptr,  "ALLIE",  "ETOTAL",
+                                            "ALLFD", nullptr, "DMASS", "ALLDMD", "ALLIHE", "ALLHF"};
+    if (Explicit)
+        return Index < 18 ? explicit_[Index] : nullptr;
+    return Index < 16 ? standard[Index] : nullptr;
+}
+
+// Contact output (records 1511-1578, after a 1504 node header).
+const char* fil_contact_name(std::int64_t Key) {
+    static const std::unordered_map<std::int64_t, const char*> m = {
+        {1511, "CSTRESS"}, {1512, "CDSTRESS"}, {1521, "CDISP"}, {1522, "CFN"},   {1523, "CFS"},
+        {1524, "CAREA"},   {1526, "CMN"},      {1527, "CMS"},   {1528, "HFL"},   {1529, "HFLA"},
+        {1530, "HTL"},     {1531, "HTLA"},     {1532, "SFDR"},  {1533, "SFDRA"}, {1534, "SFDRT"},
+        {1535, "SFDRTA"},  {1536, "WEIGHT"},   {1537, "SJD"},   {1538, "SJDA"},  {1539, "SJDT"},
+        {1540, "SJDTA"},   {1541, "ECD"},      {1542, "ECDA"},  {1543, "ECDT"},  {1544, "ECDTA"},
+        {1545, "PFL"},     {1546, "PFLA"},     {1547, "PTL"},   {1548, "PTLA"},  {1549, "TPFL"},
+        {1550, "TPTL"},    {1570, "DBT"},      {1571, "DBSF"},  {1572, "DBS"},   {1573, "XN"},
+        {1574, "XS"},      {1575, "CFT"},      {1576, "CMT"},   {1577, "XT"},    {1578, "CTRQ"},
+        {1592, "PPRESS"},
+    };
+    const auto it = m.find(Key);
+    return it == m.end() ? nullptr : it->second;
+}
+
+// Element matrix records (1011-1031): the field data stem of each.
+const char* fil_matrix_name(std::int64_t Key) {
+    switch (Key) {
+        case 1011:
+        case 1012:
+            return "stiffness";
+        case 1021:
+        case 1022:
+            return "mass";
+        case 1031:
+            return "load";
+        default:
+            return nullptr;
+    }
 }
 
 // --- the model --------------------------------------------------------------------
@@ -310,6 +434,31 @@ struct FilIncrement {
     double mTotalTime = 0.0, mStepTime = 0.0;
     std::int64_t mProcedure = 0, mStep = 0, mIncrement = 0;
 };
+
+// An eigenvalue step writes one increment whose modes each start with a 1980
+// record: every mode becomes an increment of its own, from its 1980 record to
+// the next one.
+std::vector<FilIncrement> fil_split_modes(const FilData& rData,
+                                          const std::vector<FilIncrement>& rIncrements) {
+    std::vector<FilIncrement> out;
+    for (const FilIncrement& inc : rIncrements) {
+        std::vector<std::size_t> modes;
+        for (std::size_t r = inc.mBegin; r < inc.mEnd; ++r)
+            if (rData.mRecords[r].mKey == 1980)
+                modes.push_back(r);
+        if (modes.empty()) {
+            out.push_back(inc);
+            continue;
+        }
+        for (std::size_t k = 0; k < modes.size(); ++k) {
+            FilIncrement m = inc;
+            m.mBegin = modes[k];
+            m.mEnd = k + 1 < modes.size() ? modes[k + 1] : inc.mEnd;
+            out.push_back(m);
+        }
+    }
+    return out;
+}
 
 std::vector<FilIncrement> fil_increments(const FilData& rData) {
     std::vector<FilIncrement> out;
@@ -339,7 +488,7 @@ std::vector<FilIncrement> fil_increments(const FilData& rData) {
     }
     if (!out.empty() && out.back().mEnd == 0)
         out.back().mEnd = rData.mRecords.size();
-    return out;
+    return fil_split_modes(rData, out);
 }
 
 NDArray fil_scalar(DType Type, double Value) {
@@ -361,6 +510,24 @@ struct FilSet {
     std::string mName;
     bool mNodes;
     std::vector<std::int64_t> mLabels;
+};
+
+bool fil_is_explicit(std::int64_t Procedure) {
+    return Procedure == 17 || Procedure == 21 || Procedure == 74;
+}
+
+// A contact surface (records 1501, 1502): its facets as (element, face key).
+struct FilSurface {
+    std::string mName;
+    std::int64_t mType = 1;  // 1 deformable, 2 rigid
+    std::vector<std::pair<std::int64_t, std::int64_t>> mFacets;
+};
+
+// Element matrices of one kind (records 1011-1031): the values of every
+// element one after the other, and per element (label, offset, count, flag).
+struct FilMatrices {
+    std::vector<double> mValues;
+    std::vector<std::int64_t> mIndex;
 };
 
 // One element result: the values of every (element, point) the step lists.
@@ -387,9 +554,62 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
     std::vector<FilElement> elements;
     std::vector<FilSet> sets;
     std::unordered_map<std::int64_t, std::string> labels;  // 1940
+    std::vector<FilSurface> surfaces;
+    std::map<std::string, FilMatrices> matrices;  // stiffness, mass, load, dofs
+    std::int64_t matrix_element = 0, last_matrix_key = 0;
     for (const FilRecord& rec : data.mRecords) {
         const auto& w = rec.mWords;
+        if (rec.mKey != last_matrix_key && (rec.mKey < 1001 || rec.mKey > 1043))
+            last_matrix_key = 0;
         switch (rec.mKey) {
+            case 1501: {  // contact surface: name, dimension, type, facet count, node
+                if (w.empty())
+                    break;
+                FilSurface surf{fil_trim(fil_word_text(w[0], sw)), 1, {}};
+                if (w.size() > 2)
+                    surf.mType = fil_word_int(w[2], sw);
+                surfaces.push_back(std::move(surf));
+                break;
+            }
+            case 1502:  // a facet: element, face key, node count, nodes
+                if (!surfaces.empty() && w.size() >= 2)
+                    surfaces.back().mFacets.emplace_back(fil_word_int(w[0], sw),
+                                                         fil_word_int(w[1], sw));
+                break;
+            case 1001:  // element matrix header: element, type, nodes
+                matrix_element = w.empty() ? 0 : fil_word_int(w[0], sw);
+                last_matrix_key = 0;
+                break;
+            case 1002:
+            case 1011:
+            case 1012:
+            case 1021:
+            case 1022:
+            case 1031: {
+                const std::string kind =
+                    rec.mKey == 1002 ? "matrix_dofs" : fil_matrix_name(rec.mKey);
+                FilMatrices& m = matrices[kind];
+                std::size_t first = 0;
+                std::int64_t flag = rec.mKey == 1011 || rec.mKey == 1021 ? 1 : 0;
+                if (rec.mKey == 1031) {  // a load case, then the loads
+                    flag = w.empty() ? 0 : fil_word_int(w[0], sw);
+                    first = 1;
+                }
+                const bool continued = rec.mKey == last_matrix_key && !m.mIndex.empty();
+                if (!continued) {
+                    m.mIndex.insert(
+                        m.mIndex.end(),
+                        {matrix_element, static_cast<std::int64_t>(m.mValues.size()), 0, flag});
+                }
+                for (std::size_t k = continued ? 0 : first; k < w.size(); ++k)
+                    m.mValues.push_back(rec.mKey == 1002
+                                            ? static_cast<double>(fil_word_int(w[k], sw))
+                                            : fil_word_real(w[k], sw));
+                m.mIndex[m.mIndex.size() - 2] =
+                    static_cast<std::int64_t>(m.mValues.size()) - m.mIndex[m.mIndex.size() - 3];
+                last_matrix_key = rec.mKey;
+                break;
+            }
             case 1901: {
                 if (w.empty())
                     break;
@@ -543,6 +763,63 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         log::warn("Abaqus .fil: sets name {} node(s) or element(s) that are not in the mesh",
                   missing);
 
+    // Contact surfaces -> side regions (cell, local facet); rigid surfaces and
+    // facets of unknown elements are left out.
+    std::size_t unplaced = 0;
+    for (const FilSurface& surf : surfaces) {
+        std::string name = surf.mName;
+        if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos) {
+            const auto it = labels.find(std::stoll(name));
+            if (it != labels.end())
+                name = it->second;
+        }
+        std::vector<std::int64_t> entries;
+        int dim = -1;
+        for (const auto& [label, face] : surf.mFacets) {
+            const auto it = element_index.find(label);
+            if (it == element_index.end() || face < 1 || face > 8) {
+                ++unplaced;
+                continue;
+            }
+            const std::size_t c = it->second;
+            const std::size_t b = static_cast<std::size_t>(
+                std::upper_bound(block_start.begin(), block_start.end(), c) - block_start.begin() -
+                1);
+            const std::string key = face == 7   ? "SPOS"
+                                    : face == 8 ? "SNEG"
+                                                : "S" + std::to_string(face);
+            const int facet = detail::abaqus_face_index(block_types[b], key);
+            if (facet < 0) {
+                ++unplaced;
+                continue;
+            }
+            entries.push_back(static_cast<std::int64_t>(c));
+            entries.push_back(facet);
+            dim = std::max(dim, cell_dim[c] - 1);
+        }
+        NDArray a(DType::Int64, {entries.size() / 2, 2});
+        std::copy(entries.begin(), entries.end(), a.As<std::int64_t>());
+        mesh.AddRegion(Region(name, RegionKind::Side, dim, -1, std::move(a)));
+    }
+    if (unplaced)
+        log::warn("Abaqus .fil: {} contact surface facet(s) name no element face of the mesh",
+                  unplaced);
+    for (const auto& [kind, m] : matrices) {
+        const std::size_t rows = m.mIndex.size() / 4;
+        const bool dofs = kind == "matrix_dofs";
+        NDArray values(dofs ? DType::Int64 : DType::Float64, {m.mValues.size()});
+        for (std::size_t k = 0; k < m.mValues.size(); ++k) {
+            if (dofs)
+                values.As<std::int64_t>()[k] = static_cast<std::int64_t>(m.mValues[k]);
+            else
+                values.As<double>()[k] = m.mValues[k];
+        }
+        NDArray index(DType::Int64, {rows, 4});
+        std::copy(m.mIndex.begin(), m.mIndex.end(), index.As<std::int64_t>());
+        mesh.AddFieldData("abaqus:" + kind, std::move(values));
+        mesh.AddFieldData("abaqus:" + kind + ":index", std::move(index));
+    }
+
     // --- the selected increment ----------------------------------------------------
     const std::vector<FilIncrement> increments = fil_increments(data);
     if (increments.empty()) {
@@ -573,12 +850,89 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
         int mLocation;
     };
     std::optional<Header> header;
+    std::string rebar;  // the rebar the element header names
+    const bool explicit_run = fil_is_explicit(inc.mProcedure);
+    std::map<std::string, std::vector<std::vector<double>>> modal_rows;  // 301-310
+    std::vector<std::string> modal_order;
+    std::int64_t contact_node = 0;
+    bool contact = false;
     for (std::size_t r = inc.mBegin; r < inc.mEnd; ++r) {
         const FilRecord& rec = data.mRecords[r];
         const auto& w = rec.mWords;
+        if (rec.mKey == 1980) {  // a mode: number, eigenvalue, mass, damping, factors
+            if (w.size() > 0)
+                mesh.AddFieldData(
+                    "abaqus:mode",
+                    fil_scalar(DType::Int64, static_cast<double>(fil_word_int(w[0], sw))));
+            if (w.size() > 1)
+                mesh.AddFieldData("abaqus:eigenvalue",
+                                  fil_scalar(DType::Float64, fil_word_real(w[1], sw)));
+            if (w.size() > 2)
+                mesh.AddFieldData("abaqus:generalized_mass",
+                                  fil_scalar(DType::Float64, fil_word_real(w[2], sw)));
+            if (w.size() > 3)
+                mesh.AddFieldData("abaqus:composite_damping",
+                                  fil_scalar(DType::Float64, fil_word_real(w[3], sw)));
+            std::vector<double> factor, mass;
+            for (std::size_t k = 4; k + 1 < w.size(); k += 2) {
+                factor.push_back(fil_word_real(w[k], sw));
+                mass.push_back(fil_word_real(w[k + 1], sw));
+            }
+            if (!factor.empty()) {
+                NDArray f(DType::Float64, {factor.size()}), m(DType::Float64, {mass.size()});
+                std::copy(factor.begin(), factor.end(), f.As<double>());
+                std::copy(mass.begin(), mass.end(), m.As<double>());
+                mesh.AddFieldData("abaqus:participation_factor", std::move(f));
+                mesh.AddFieldData("abaqus:effective_mass", std::move(m));
+            }
+            continue;
+        }
+        if (rec.mKey == 1999) {  // total energies
+            for (std::size_t k = 0; k < w.size(); ++k)
+                if (const char* e = fil_energy_name(k, explicit_run))
+                    mesh.AddFieldData(std::string("abaqus:") + e,
+                                      fil_scalar(DType::Float64, fil_word_real(w[k], sw)));
+            continue;
+        }
+        if (const char* g = fil_modal_name(rec.mKey)) {  // generalized quantities per mode
+            std::vector<double> row;
+            for (std::size_t k = 0; k < w.size(); ++k)
+                if (!(rec.mKey == 304 && k == 7))  // BM's base name
+                    row.push_back(rec.mKey == 304 && k == 0
+                                      ? static_cast<double>(fil_word_int(w[k], sw))
+                                      : fil_word_real(w[k], sw));
+            auto [it, fresh] = modal_rows.emplace(g, std::vector<std::vector<double>>{});
+            if (fresh)
+                modal_order.push_back(g);
+            it->second.push_back(std::move(row));
+            continue;
+        }
+        if (rec.mKey == 1503) {  // contact output request: the node records follow
+            contact = true;
+            continue;
+        }
+        if (rec.mKey == 1504) {
+            contact_node = w.empty() ? 0 : fil_word_int(w[0], sw);
+            continue;
+        }
+        if (contact && rec.mKey >= 1505 && rec.mKey <= 1599) {
+            const char* known = fil_contact_name(rec.mKey);
+            const std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+            if (!rOpts.WantsArray(name))
+                continue;
+            std::vector<double> v;
+            for (const FilWord& x : w)
+                v.push_back(fil_word_real(x, sw));
+            auto [it, fresh] = nodal.emplace(name, decltype(nodal)::mapped_type{});
+            if (fresh)
+                nodal_order.push_back(name);
+            it->second[contact_node] = std::move(v);
+            continue;
+        }
         if (rec.mKey == 1911) {
             nodal_mode = !w.empty() && fil_word_int(w[0], sw) == 1;
             header.reset();
+            contact = false;
             continue;
         }
         if (rec.mKey == 1) {
@@ -588,10 +942,20 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             }
             header = Header{fil_word_int(w[0], sw), fil_word_int(w[1], sw), fil_word_int(w[2], sw),
                             static_cast<int>(fil_word_int(w[3], sw))};
+            rebar = header->mLocation == 3 && w.size() > 4 ? fil_trim(fil_word_text(w[4], sw)) : "";
+            if (!rebar.empty() && rebar.find_first_not_of("0123456789") == std::string::npos) {
+                const auto it = labels.find(std::stoll(rebar));
+                if (it != labels.end())
+                    rebar = it->second;
+            }
             continue;
         }
         if ((rec.mKey >= 1900 && rec.mKey <= 2001) || fil_is_skipped_key(rec.mKey)) {
-            if (rec.mKey < 1900 || rec.mKey > 2001)
+            // model records, and those read from the whole file (surfaces,
+            // element matrices) are not skipped results
+            const bool whole_file =
+                (rec.mKey >= 1001 && rec.mKey <= 1043) || rec.mKey == 1501 || rec.mKey == 1502;
+            if ((rec.mKey < 1900 || rec.mKey > 2001) && !whole_file)
                 skipped_keys.insert(rec.mKey);
             continue;
         }
@@ -611,22 +975,28 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             it->second[fil_word_int(w[0], sw)] = std::move(v);
             continue;
         }
-        if (!header || header->mLocation == 3) {  // no header, or rebar
+        if (!header) {
             skipped_keys.insert(rec.mKey);
             continue;
         }
-        const char* known = fil_element_name(rec.mKey);
+        const char* known =
+            rec.mKey == 79 ? (explicit_run ? "ERV" : "RATIO") : fil_element_name(rec.mKey);
         std::string name = known ? known : "key_" + std::to_string(rec.mKey);
+        // Rebar values are per integration point of the element, named by the rebar.
+        if (header->mLocation == 3)
+            name += "@rebar:" + rebar;
         // Continuum elements write section point 0, shells and beams 1..n: the
         // first one shares the plain name, the others are `@sp<k>`.
         if (header->mSection > 1)
             name += "@sp" + std::to_string(header->mSection);
         if (!rOpts.WantsArray(name))
             continue;
-        const auto key = std::make_pair(name, header->mLocation);
+        const int location =
+            header->mLocation == 3 ? 0 : (header->mLocation == 5 ? 1 : header->mLocation);
+        const auto key = std::make_pair(name, location);
         auto [fit, ffresh] = field_of.emplace(key, fields.size());
         if (ffresh)
-            fields.push_back({name, header->mLocation, {}});
+            fields.push_back({name, location, {}});
         std::vector<double> v;
         for (const FilWord& x : w)
             v.push_back(fil_word_real(x, sw));
@@ -637,6 +1007,19 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             "Abaqus .fil: {} record key(s) outside the nodal and element results skipped "
             "(first: {})",
             skipped_keys.size(), *skipped_keys.begin());
+    for (const std::string& g : modal_order) {  // one row per record, NaN-padded
+        const auto& rows = modal_rows[g];
+        std::size_t width = 0;
+        for (const auto& row : rows)
+            width = std::max(width, row.size());
+        NDArray a(DType::Float64, rows.size() == 1 ? std::vector<std::size_t>{width}
+                                                   : std::vector<std::size_t>{rows.size(), width});
+        double* d = a.As<double>();
+        std::fill(d, d + rows.size() * width, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t k = 0; k < rows.size(); ++k)
+            std::copy(rows[k].begin(), rows[k].end(), d + k * width);
+        mesh.AddFieldData("abaqus:" + g, std::move(a));
+    }
 
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const std::size_t npts = node_labels.size();
