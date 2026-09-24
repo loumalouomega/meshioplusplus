@@ -1,6 +1,6 @@
 # Abaqus (`.inp`)
 
-The [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) input-deck format: keyword-driven ASCII (`*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`, `*INCLUDE`, …).
+The [Abaqus](https://help.3ds.com/2024/english/dssimulia_established/SIMACAEMODRefMap/simamod-c-inputsyntax.htm) input-deck format: keyword-driven ASCII (`*NODE`, `*ELEMENT`, `*NSET`, `*ELSET`, `*INCLUDE`, …). Results come in the separate `.fil` file, the [`abaqus_fil`](./abaqus_fil.md) format.
 
 | | |
 |---|---|
@@ -42,12 +42,12 @@ The Abaqus element-type table is large (trusses, beams, shells, solids); a repre
 | `T2D2`, `T3D2`, `B21`, `B31` | `line` | `C3D8`, `C3D8R`, `S4`, `CPS4` | `hexahedron`* / `quad` |
 | `T2D3`, `T3D3`, `B22`, `B32` | `line3` | `C3D20`, `C3D20R` | `hexahedron20` |
 | `CPS3`, `STRI3`, `S3` | `triangle` | `C3D4` | `tetra` |
-| `STRI65`, `CPE6` | `triangle6` | `C3D4H` | `tetra4`** |
+| `STRI65`, `CPE6` | `triangle6` | `C3D4H` | `tetra`** |
 | `S8R`, `S8R5` | `quad8` | `C3D10`, `C3D10M` | `tetra10` |
 | `S9R5` | `quad9` | `C3D6` | `wedge` |
 | | | `C3D15` | `wedge15` |
 
-(*`C3D8*` → `hexahedron`, `S4`/`CPS4`/etc. → `quad`; both map to distinct meshio++ types depending on whether the card is a solid or shell element. **`C3D4H` maps to the type string `"tetra4"`, not `"tetra"` — this is an asymmetric entry relative to `C3D4`→`tetra` and doesn't round-trip through meshio++'s standard type vocabulary; noted here as a known table quirk rather than a deliberate feature.)
+(*`C3D8*` → `hexahedron`, `S4`/`CPS4`/etc. → `quad`; both map to distinct meshio++ types depending on whether the card is a solid or shell element. **`C3D4H` mapped to the invalid type string `"tetra4"` before v16.7.0; it is `tetra` now, and the writer still names a `tetra` `C3D4`.)
 
 The reverse map (meshio++ → Abaqus) is lossy: several Abaqus names collapse to one meshio++ type, so the writer always emits whichever Abaqus name happens to be *last* in the internal table for that meshio++ type — the originating keyword is not preserved through a read→write round trip.
 

@@ -64,9 +64,10 @@ LS-DYNA has no tetra, pyramid or wedge card: they are hexahedra with repeated no
 | pyramid | `n1 n2 n3 n4 n5 n5 n5 n5` | `pyramid` | this form |
 | wedge | `n1 n2 n3 n4 n5 n5 n6 n6` | `wedge (n1 n5 n2 n4 n6 n3)` | this form |
 | wedge | `n1 n2 n3 n3 n5 n6 n7 n7` | `wedge (n1 n2 n3 n5 n6 n7)` | |
+| wedge | any side edge collapsed in both faces, e.g. `n1 n2 n3 n1 n5 n6 n7 n5` | `wedge (n1 n2 n3 n5 n6 n7)`, the faces' cyclic order kept | |
 | shell triangle | `n1 n2 n3 n3` | `triangle` | this form |
 
-Both wedge spellings are read because both occur in real decks (the second is what most preprocessors write). The node order is mapped so that the reading has a positive volume in the meshio++ convention; the tests check this numerically. A degenerate pattern not in the table stays a `hexahedron`.
+The wedge spellings are read because they occur in real decks (the second is what most preprocessors write; the edge-collapsed form, added in v16.7.0 and shared with the [Radioss](./radioss.md) reader, is what Radioss decks use). The node order is mapped so that the reading has a positive volume in the meshio++ convention; the tests check this numerically. A degenerate pattern not in the table stays a `hexahedron`.
 
 ## Parts and sets
 

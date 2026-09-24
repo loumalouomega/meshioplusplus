@@ -35,6 +35,10 @@
 #include "meshioplusplus/formats/lsdyna.hpp"
 #include "meshioplusplus/formats/code_aster.hpp"
 #include "meshioplusplus/formats/patran.hpp"
+#include "meshioplusplus/formats/libmesh.hpp"
+#include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "meshioplusplus/formats/z88.hpp"
+#include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/formats/elmer.hpp"
 #include "meshioplusplus/formats/febio.hpp"
 #include "meshioplusplus/formats/femap.hpp"
@@ -2882,6 +2886,43 @@ PYBIND11_MODULE(_core, m) {
     });
     m.def("femap_time_values",
           [](const std::string& path) { return meshioplusplus::femap_time_values(path); });
+
+    // Abaqus results file (.fil) reader.
+    m.def(
+        "abaqus_fil_read",
+        [](const std::string& path, bool points_only, py::object arrays, int time_step) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_abaqus_fil(
+                path, core_read_options(points_only, arrays, time_step)));
+        },
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("time_step") = 0);
+    m.def("abaqus_fil_time_values",
+          [](const std::string& path) { return meshioplusplus::abaqus_fil_time_values(path); });
+
+    // libMesh .xda/.xdr reader.
+    m.def("libmesh_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_libmesh(path));
+    });
+
+    // OpenRadioss starter deck (.rad) reader.
+    m.def("radioss_read", [](const std::string& path) {
+        return meshioplusplus_py::mesh_to_py(meshioplusplus::read_radioss(path));
+    });
+
+    // Z88 structure file (z88i1.txt) reader / writer, with its results.
+    m.def(
+        "z88_read",
+        [](const std::string& path, bool results) {
+            return meshioplusplus_py::mesh_to_py(meshioplusplus::read_z88(path, results));
+        },
+        py::arg("path"), py::arg("results") = true);
+    m.def(
+        "z88_write",
+        [](const std::string& path, py::object pymesh, bool stubs) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::write_z88(path, meshioplusplus_py::py_to_mesh(pymesh, refs), stubs);
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("stubs") = false);
 
     // MSC Patran 2 neutral file (.pat/.out) writer / reader.
     m.def("patran_write", [](const std::string& path, py::object pymesh) {

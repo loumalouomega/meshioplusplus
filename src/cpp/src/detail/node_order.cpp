@@ -102,6 +102,35 @@ const std::vector<NodeOrderSource>& node_order_sources() {
         {"patran", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
         {"patran", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        // libMesh `.xda`/`.xdr`: HEX20/HEX27 list the vertical mid-edges before
+        // the top ring (and HEX27 its face centres bottom, y-, x+, y+, x-, top),
+        // PRISM15/PRISM18 likewise; taken from libMesh's own VTK connectivity
+        // (cell_hex20.C, cell_hex27.C, cell_prism15.C, cell_prism18.C). Every
+        // other libMesh type is in meshio++'s order.
+        {"libmesh", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        {"libmesh", "hexahedron27", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,
+                                                  9,  10, 11, 16, 17, 18, 19, 12, 13,
+                                                  14, 15, 24, 22, 21, 23, 20, 25, 26}},
+        {"libmesh", "wedge15", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11}},
+        {"libmesh",
+         "wedge18",
+         D::ToMeshio,
+         {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 9, 10, 11, 15, 16, 17}},
+        // OpenRadioss `/BRIC20`: the bottom ring, the vertical mid-edges, then
+        // the top ring (gmsh's `getVertexRAD`, confirmed by OpenRadioss users in
+        // its discussion #2809). `/TETRA10` is in meshio++'s order.
+        {"radioss", "hexahedron20", D::ToMeshio, {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,
+                                                  10, 11, 16, 17, 18, 19, 12, 13, 14, 15}},
+        // Z88 `z88i1.txt`: hexahedra list the face 1-2-3-4 the Z88 manual draws
+        // on top first (so read as-is their Jacobian is negative: checked on
+        // every hex of the Z88OS examples), and tet10's last three mid-edge
+        // nodes run 2-4, 3-4, 1-4 (checked against the mid-edge positions of
+        // Z88OS example b11). Every other Z88 type is in meshio++'s order.
+        {"z88", "hexahedron", D::ToMeshio, {4, 5, 6, 7, 0, 1, 2, 3}},
+        {"z88", "hexahedron20", D::ToMeshio, {4,  5,  6, 7, 0,  1,  2,  3,  12, 13,
+                                              14, 15, 8, 9, 10, 11, 16, 17, 18, 19}},
+        {"z88", "tetra10", D::ToMeshio, {0, 1, 2, 3, 4, 5, 6, 9, 7, 8}},
         // Elmer mesh directory: the vertical mid-edge nodes of the 820/827
         // bricks come before the top ring, and the 827 mid-height face centres
         // run y-, x+, y+, x- (ElmerSolver's elements.def reference coordinates;

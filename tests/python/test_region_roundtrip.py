@@ -387,6 +387,7 @@ def test_side_regions_are_the_new_capability():
 PHASE_2 = {
     "xdmf": "XDMF Sets",
     "vtu": "no native set concept — a convention has to be chosen, not invented silently",
+    "z88": "a Z88 structure file has no groups at all (materials are element ranges in z88mat.txt)",
 }
 
 

@@ -28,6 +28,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
@@ -40,6 +41,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/degenerate_solid.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -217,21 +219,17 @@ const std::vector<CardField>& lsd_layout_segment() {
 // -- degenerate hexahedra -------------------------------------------------------
 
 // The cell type and meshio++-ordered nodes of an 8-node LS-DYNA solid. There is no
-// tetra, pyramid or wedge card: they are hexahedra with repeated nodes, checked
-// most-degenerate first. Twin of `_collapse_solid` in lsdyna/_lsdyna.py.
+// tetra, pyramid or wedge card: they are hexahedra with repeated nodes
+// (detail/degenerate_solid). Twin of `_collapse_solid` in lsdyna/_lsdyna.py.
 std::pair<LsdType, std::vector<std::int64_t>> lsd_collapse_solid(
     const std::array<std::int64_t, 8>& n) {
-    if (n[3] == n[4] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Tetra, {n[0], n[1], n[2], n[3]}};
-    if (n[2] == n[3] && n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Tetra, {n[0], n[1], n[2], n[4]}};
-    if (n[4] == n[5] && n[5] == n[6] && n[6] == n[7])
-        return {LsdType::Pyramid, {n[0], n[1], n[2], n[3], n[4]}};
-    if (n[2] == n[3] && n[6] == n[7])
-        return {LsdType::Wedge, {n[0], n[1], n[2], n[4], n[5], n[6]}};
-    if (n[4] == n[5] && n[6] == n[7])
-        return {LsdType::Wedge, {n[0], n[4], n[1], n[3], n[6], n[2]}};
-    return {LsdType::Hexahedron, std::vector<std::int64_t>(n.begin(), n.end())};
+    detail::CollapsedBrick c = detail::collapse_brick(n);
+    const std::string_view type = c.mType;
+    const LsdType t = type == "tetra"     ? LsdType::Tetra
+                      : type == "pyramid" ? LsdType::Pyramid
+                      : type == "wedge"   ? LsdType::Wedge
+                                          : LsdType::Hexahedron;
+    return {t, std::move(c.mNodes)};
 }
 
 // The 8 LS-DYNA nodes of a meshio++ tetra, pyramid, wedge or hexahedron.

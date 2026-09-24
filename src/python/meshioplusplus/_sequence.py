@@ -139,6 +139,7 @@ _TIME_CAPABLE_READERS = (
     "xplt",
     "ansys_rst",
     "femap",
+    "abaqus_fil",
 )
 
 # Formats whose "file" is a DIRECTORY. A glob must keep those entries, which

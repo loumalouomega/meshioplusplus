@@ -31,6 +31,7 @@
 // Project includes
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/formats/z88.hpp"
 
 namespace meshioplusplus {
 
@@ -159,6 +160,89 @@ bool sniff_is_patran(const std::string& rHead) {
     return kc >= 1;
 }
 
+// Abaqus results file, binary: a 4096-byte Fortran record (marker 4096 in
+// either byte order) whose first 8-byte word is a record length and whose second
+// is the key of a record Abaqus writes first (1921 release, 1922 heading, 1900
+// element, 1901 node, 2000 increment start).
+bool sniff_is_fil_key(std::int64_t Key) {
+    return Key == 1921 || Key == 1922 || Key == 1900 || Key == 1901 || Key == 2000;
+}
+
+bool sniff_is_abaqus_fil_binary(const std::string& rHead) {
+    if (rHead.size() < 20)
+        return false;
+    const auto u32 = [&](std::size_t k, bool big) {
+        std::uint32_t v = 0;
+        for (std::size_t b = 0; b < 4; ++b) {
+            const std::uint32_t byte = static_cast<unsigned char>(rHead[k + b]);
+            v |= big ? byte << (8 * (3 - b)) : byte << (8 * b);
+        }
+        return v;
+    };
+    for (const bool big : {false, true}) {
+        if (u32(0, big) != 4096)
+            continue;
+        // An integer fills the first four bytes of its word (Fortran
+        // EQUIVALENCE), or the low half of an 8-byte integer: the last four
+        // bytes when big-endian.
+        for (const std::size_t lo : {std::size_t{0}, std::size_t{4}}) {
+            if (lo == 4 && !big)
+                continue;
+            const std::uint32_t length = u32(4 + lo, big);
+            const std::uint32_t key = u32(12 + lo, big);
+            if (length >= 2 && length <= 512 && sniff_is_fil_key(key))
+                return true;
+        }
+    }
+    return false;
+}
+
+// Abaqus results file, ASCII: a `*` record start, then the record length and key
+// as `I` items (`I` + two-digit digit count + the digits).
+bool sniff_is_abaqus_fil_ascii(const std::string& rStripped) {
+    if (rStripped.size() < 12 || rStripped[0] != '*')
+        return false;
+    std::size_t pos = 1;
+    std::int64_t items[2] = {0, 0};
+    for (std::int64_t& item : items) {
+        if (pos + 3 > rStripped.size() || rStripped[pos] != 'I')
+            return false;
+        const std::string width = rStripped.substr(pos + 1, 2);
+        const std::size_t first = width.find_first_not_of(' ');
+        if (first == std::string::npos || width[1] < '0' || width[1] > '9')
+            return false;
+        const int n = std::stoi(width.substr(first));
+        if (n < 1 || n > 18 || pos + 3 + static_cast<std::size_t>(n) > rStripped.size())
+            return false;
+        const std::string digits = rStripped.substr(pos + 3, static_cast<std::size_t>(n));
+        for (char c : digits)
+            if (c < '0' || c > '9')
+                return false;
+        item = std::stoll(digits);
+        pos += 3 + static_cast<std::size_t>(n);
+    }
+    return items[0] >= 2 && sniff_is_fil_key(items[1]);
+}
+
+// OpenRadioss starter deck: `#RADIOSS STARTER`, or `/BEGIN` as the first line
+// that is not a `#`/`$` comment.
+bool sniff_is_radioss(const std::string& rStripped) {
+    std::size_t pos = 0;
+    while (pos < rStripped.size()) {
+        std::size_t eol = rStripped.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = rStripped.size();
+        const std::string line = rStripped.substr(pos, eol - pos);
+        pos = eol + 1;
+        if (sniff_starts_with(line, "#RADIOSS STARTER"))
+            return true;
+        if (line.empty() || line[0] == '#' || line[0] == '$' || line[0] == '\r')
+            continue;
+        return sniff_starts_with(line, "/BEGIN");
+    }
+    return false;
+}
+
 std::string sniff_directory(const std::filesystem::path& rDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -198,6 +282,9 @@ std::string sniff_format(const std::string& rPath) {
         // The header of an Elmer mesh directory stands for the directory.
         if (path.filename() == "mesh.header" && fs::is_regular_file(path, ec))
             return "elmer";
+        // Z88's input and output files have fixed names.
+        if (is_z88_filename(rPath) && fs::is_regular_file(path, ec))
+            return "z88";
     }
     auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!in)
@@ -221,6 +308,12 @@ std::string sniff_format(const std::string& rPath) {
     if (head.size() >= 12 &&
         head.compare(0, 12, std::string("d\0\0\0\0\0\0\x80\x0c\0\0\0", 12)) == 0)
         return "ansys_rst";
+    // libMesh XDR mesh: the version string, a big-endian length then "libMesh-".
+    if (head.size() >= 12 && head.compare(0, 2, std::string("\0\0", 2)) == 0 &&
+        head.compare(4, 8, "libMesh-") == 0)
+        return "libmesh";
+    if (sniff_is_abaqus_fil_binary(head))
+        return "abaqus_fil";
     // FEBio input: XML whose root is <febio_spec>.
     if (sniff_contains(head, "<febio_spec"))
         return "febio";
@@ -344,6 +437,12 @@ std::string sniff_format(const std::string& rPath) {
         sniff_starts_with(stripped, "MFEM NURBS mesh") ||
         sniff_starts_with(stripped, "MFEM INLINE mesh"))
         return "mfem";
+    if (sniff_starts_with(stripped, "libMesh-"))
+        return "libmesh";
+    if (sniff_is_abaqus_fil_ascii(stripped))
+        return "abaqus_fil";
+    if (sniff_is_radioss(stripped))
+        return "radioss";
     if (sniff_is_femap(head))
         return "femap";
     if (sniff_is_patran(head))

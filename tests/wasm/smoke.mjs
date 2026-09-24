@@ -2381,6 +2381,10 @@ step('availableFormats reports what this build can read and write', () => {
     // Patran neutral, Femap neutral and MFEM (v16.5.0) both ways.
     for (const fmt of ['patran', 'femap', 'mfem'])
         assert.ok(readers.includes(fmt) && writers.includes(fmt), `missing format: ${fmt}`);
+    // libMesh, Abaqus .fil and OpenRadioss (v16.7.0) read-only; Z88 both ways.
+    for (const fmt of ['libmesh', 'abaqus_fil', 'radioss'])
+        assert.ok(readers.includes(fmt) && !writers.includes(fmt), `bad format: ${fmt}`);
+    assert.ok(readers.includes('z88') && writers.includes('z88'));
     // MSC Nastran HDF5 results (roadmap section 1.1, v15.7.0): read-only, HDF5-backed.
     assert.ok(readers.includes('nastran_h5') && !writers.includes('nastran_h5'));
 });
@@ -2658,6 +2662,51 @@ step('patran, femap and mfem round-trip a quadratic tetrahedron', () => {
         assert.deepEqual(back.cells.map((c) => c.type), ['tetra10'], fmt);
         assert.equal(back.points.length, 30, fmt);
     }
+});
+
+step('z88 is found by its file name; libmesh, abaqus_fil and radioss read by extension', () => {
+    const tet10 = {
+        points: new Float64Array([
+            0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0.5, 0, 0, 0, 0.5, 0.5, 0,
+            0.5, 0, 0.5, 0.5,
+        ]),
+        dim: 3,
+        cells: [{ type: 'tetra10', data: new Int32Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]), nodesPerCell: 10 }],
+    };
+    m.FS.mkdir('/z88');
+    m.writeMesh('/z88/z88i1.txt', tet10, 'z88');
+    // No format: `z88i1.txt` is Z88's fixed name, although `.txt` is xyz's.
+    const z88 = m.readMesh('/z88/z88i1.txt');
+    assert.deepEqual(z88.cells.map((c) => c.type), ['tetra10']);
+    const xda =
+        'libMesh-0.7.0+\n1\t #\n4\t #\nn/a\t #\nn/a\t #\nn/a\t #\nn/a\t #\n1\t #\n8 0 1 2 3\n' +
+        '0 0 0\n1 0 0\n0 1 0\n0 0 1\n';
+    m.FS.writeFile('/one_tet.xda', xda);
+    assert.deepEqual(m.readMesh('/one_tet.xda').cells.map((c) => c.type), ['tetra']);
+    const i = (v) => `I${String(String(v).length).padStart(2, ' ')}${v}`;
+    const d = (v) => `D${v < 0 ? '-' : ' '}${Math.abs(v).toExponential(15).replace('e', 'D').replace(/D([+-])(\d)$/, 'D$10$2')}`;
+    const rec = (...items) => `*${i(items.length + 1)}${items.join('')}`;
+    let fil = rec(i(1900), i(1), 'AC3D4    ', i(1), i(2), i(3), i(4));
+    [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach((p, k) => {
+        fil += rec(i(1901), i(k + 1), d(p[0]), d(p[1]), d(p[2]));
+    });
+    fil += rec(i(2000), d(1), d(1), d(0), d(0), i(1), i(1), i(1), i(0), d(0), d(0), d(1));
+    fil += rec(i(1911), i(1), 'A        ') + rec(i(101), i(4), d(0.5), d(0), d(0)) + rec(i(2001));
+    m.FS.writeFile('/job.fil', fil.match(/.{1,80}/g).join('\n') + '\n');
+    const res = m.readMesh('/job.fil');
+    assert.deepEqual(res.cells.map((c) => c.type), ['tetra']);
+    assert.ok('U' in res.point_data);
+    const pad = (v, w) => String(v).padStart(w, ' ');
+    let rad = '#RADIOSS STARTER\n/BEGIN\nrun\n' + pad(2019, 10) + pad(0, 10) + '\n\n\n/NODE\n';
+    [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].forEach((p, k) => {
+        rad += pad(k + 1, 10) + p.map((x) => pad(x.toFixed(1), 20)).join('') + '\n';
+    });
+    rad += '/PART/1\ntet\n' + pad(1, 10) + pad(1, 10) + pad(0, 10) + '\n/TETRA4/1\n';
+    rad += [1, 1, 2, 3, 4].map((v) => pad(v, 10)).join('') + '\n/END\n';
+    m.FS.writeFile('/deck_0000.rad', rad);
+    const deck = m.readMesh('/deck_0000.rad');
+    assert.deepEqual(deck.cells.map((c) => c.type), ['tetra']);
+    assert.ok(deck.regions.some((r) => r.name === 'tet'));
 });
 
 step('febio writes a spec-4.0 .feb and reads its surface back as a side region', () => {

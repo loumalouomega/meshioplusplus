@@ -5,7 +5,7 @@ Headerless ASCII point clouds: one point per line, columns separated by whitespa
 | | |
 |---|---|
 | **Format name** | `xyz` |
-| **Extensions** | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` |
+| **Extensions** | `.xyz`, `.xyzn`, `.xyzrgb`, `.asc`, `.pts`, `.txt` (except Z88's fixed file names `z88i1.txt`, `z88structure.txt`, `z88o2.txt`, `z88o3.txt`, which are [Z88](./z88.md)) |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 

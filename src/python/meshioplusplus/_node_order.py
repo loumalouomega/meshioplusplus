@@ -93,6 +93,42 @@ _SOURCES = [
     # FEBio .feb/.xplt: hex27's mid-height face centres run y-, x+, y+, x-
     # (FECore FEHex27); every other FEBio type is in meshio++'s order.
     ("febio", "hexahedron27", _TO, list(range(20)) + [23, 21, 20, 22, 24, 25, 26]),
+    # libMesh .xda/.xdr: HEX20/HEX27 and PRISM15/PRISM18 put the vertical
+    # mid-edges before the top ring (libMesh's own VTK connectivity,
+    # cell_hex27.C ...); every other libMesh type is in meshio++'s order.
+    (
+        "libmesh",
+        "hexahedron20",
+        _TO,
+        list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15],
+    ),
+    (
+        "libmesh",
+        "hexahedron27",
+        _TO,
+        list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15, 24, 22, 21, 23, 20, 25, 26],
+    ),
+    ("libmesh", "wedge15", _TO, list(range(9)) + [12, 13, 14, 9, 10, 11]),
+    ("libmesh", "wedge18", _TO, list(range(9)) + [12, 13, 14, 9, 10, 11, 15, 16, 17]),
+    # OpenRadioss /BRIC20: the bottom ring, the vertical mid-edges, then the top
+    # ring (gmsh's getVertexRAD; OpenRadioss discussion #2809).
+    (
+        "radioss",
+        "hexahedron20",
+        _TO,
+        list(range(12)) + [16, 17, 18, 19, 12, 13, 14, 15],
+    ),
+    # Z88 z88i1.txt: hexahedra list the manual's top face 1-2-3-4 first (their
+    # Jacobian is negative read as-is: every hex of the Z88OS examples), and
+    # tet10's last three mid-edge nodes run 2-4, 3-4, 1-4 (Z88OS example b11).
+    ("z88", "hexahedron", _TO, [4, 5, 6, 7, 0, 1, 2, 3]),
+    (
+        "z88",
+        "hexahedron20",
+        _TO,
+        [4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11, 16, 17, 18, 19],
+    ),
+    ("z88", "tetra10", _TO, [0, 1, 2, 3, 4, 5, 6, 9, 7, 8]),
     # Elmer mesh directory: 820/827 put the vertical mid-edge nodes before the top
     # ring, and the 827 mid-height face centres run y-, x+, y+, x- (elements.def;
     # ElmerSolver's VTU writer applies the same permutation).

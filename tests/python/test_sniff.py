@@ -31,6 +31,21 @@ from meshioplusplus._sniff import _sniff_format_py
         (b'MESH "m" dimension 3 ElemType Triangle Nnode 3\n', "gid"),
         (b'<?xml version="1.0"?>\n<febio_spec version="4.0">\n', "febio"),
         (b"BEF\x00\x00\x00\x00\x01", "xplt"),
+        (b"libMesh-1.3.0\n2\t # number of elements\n", "libmesh"),
+        (b"\x00\x00\x00\x0dlibMesh-1.8.0\x00\x00\x00", "libmesh"),
+        (b"*I 19I 41921A6.23-1  A07-Nov-2A024     A16:50:01I 11I 18", "abaqus_fil"),
+        (
+            b"\x00\x10\x00\x00"
+            + (9).to_bytes(8, "little")
+            + (1921).to_bytes(8, "little"),
+            "abaqus_fil",
+        ),
+        (
+            b"\x00\x00\x10\x00" + (9).to_bytes(8, "big") + (1921).to_bytes(8, "big"),
+            "abaqus_fil",
+        ),
+        (b"#RADIOSS STARTER\n/BEGIN\nrun\n", "radioss"),
+        (b"# a comment\n$ another\n/BEGIN\nrun\n      2019         0\n", "radioss"),
     ],
 )
 def test_recognizes_signatures(tmp_path, contents, expected):
@@ -51,12 +66,26 @@ def test_recognizes_signatures(tmp_path, contents, expected):
         # FreeFem output and hand-written headers all start this way). Only
         # `MESH "` is unambiguous.
         b"MESH something else\n",
+        # A starred line that is not a record of I items (an Abaqus deck's
+        # `*Node` is claimed by the abaqus rule instead).
+        b"*I am not a results file\n",
+        b"/NODE\n1 0 0 0\n",
     ],
 )
 def test_ambiguous_returns_empty(tmp_path, contents):
     f = tmp_path / "mesh.dat"
     f.write_bytes(contents)
     assert meshioplusplus.sniff_format(f) == ""
+
+
+def test_z88_is_recognised_by_its_file_name(tmp_path):
+    f = tmp_path / "Z88I1.TXT"
+    f.write_bytes(b"3 4 1 12 0\n")
+    assert meshioplusplus.sniff_format(f) == "z88"
+    assert _sniff_format_py(f) == "z88"
+    other = tmp_path / "points.txt"
+    other.write_bytes(b"3 4 1 12 0\n")
+    assert meshioplusplus.sniff_format(other) != "z88"
 
 
 def test_missing_file_returns_empty():
